@@ -560,7 +560,13 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
       open={open}
       onClose={onClose}
       PaperProps={{
-        sx: { width: 420, p: 0, display: "flex", flexDirection: "column" },
+        sx: {
+          width: { xs: "100vw", sm: 420 },
+          maxWidth: "100vw",
+          p: 0,
+          display: "flex",
+          flexDirection: "column",
+        },
       }}
     >
       {/* Header */}

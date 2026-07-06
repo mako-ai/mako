@@ -77,6 +77,15 @@ const flowSchema = z.object({
   queries: z.array(flowQuerySchema).nullable().optional(),
   syncMode: z.enum(["full", "incremental"]),
   syncEngine: z.enum(["legacy", "cdc"]).optional(),
+  backfillSchedule: z
+    .object({
+      enabled: z.boolean().optional(),
+      cron: z.string().nullable().optional(),
+      timezone: z.string().nullable().optional(),
+      lastRunAt: z.string().nullable().optional(),
+    })
+    .nullable()
+    .optional(),
   syncState: z
     .enum(["idle", "backfill", "catchup", "live", "paused", "degraded"])
     .optional(),
@@ -251,24 +260,6 @@ interface WebhookEvent {
   processingDurationMs?: number;
 }
 
-interface WebhookStats {
-  webhookUrl: string;
-  lastReceived: string | null;
-  totalReceived: number;
-  eventsToday: number;
-  deferredCount?: number;
-  backfillActive?: boolean;
-  cdc?: {
-    enabled: boolean;
-    mode: "steady" | "backfill";
-    entities: number;
-    backlogCount: number;
-    lagSeconds: number | null;
-  };
-  successRate: number;
-  recentEvents: WebhookEvent[];
-}
-
 interface ProvisionedWebhook {
   endpoint: string;
   webhookSecret: string | null;
@@ -312,6 +303,10 @@ export interface CdcStatus {
     lifetimeEventsProcessed?: number;
     lifetimeRowsApplied?: number;
     backfillDone?: boolean;
+    repartition?: {
+      status: "pending" | "running" | "done" | "failed";
+      error: string | null;
+    } | null;
   }>;
   pipeline: {
     cdcEventsByStatus: {
@@ -462,6 +457,8 @@ interface FlowStore extends FlowStoreState {
     options?: {
       deleteDestination?: boolean;
       clearWebhookEvents?: boolean;
+      /** Restrict the resync to these entities (recreate only their tables). */
+      entities?: string[];
     },
   ) => Promise<boolean>;
   recoverCdcFlow: (
@@ -539,10 +536,6 @@ interface FlowStore extends FlowStoreState {
   fetchConnectors: (workspaceId: string) => Promise<ConnectorInfo[]>;
 
   // Webhook flow monitoring
-  fetchWebhookStats: (
-    workspaceId: string,
-    flowId: string,
-  ) => Promise<WebhookStats | null>;
   fetchWebhookEvents: (
     workspaceId: string,
     flowId: string,
@@ -1181,6 +1174,9 @@ export const useFlowStore = create<FlowStore>()(
                 body: {
                   deleteDestination: options?.deleteDestination === true,
                   clearWebhookEvents: options?.clearWebhookEvents === true,
+                  ...(options?.entities && options.entities.length > 0
+                    ? { entities: options.entities }
+                    : {}),
                 },
               },
             ),
@@ -1508,25 +1504,6 @@ export const useFlowStore = create<FlowStore>()(
           set(state => {
             delete state.loading[key];
           });
-        }
-      },
-
-      fetchWebhookStats: async (workspaceId: string, flowId: string) => {
-        try {
-          const response = unwrapBody(
-            await api.GET(
-              "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/stats",
-              { params: { path: { workspaceId, flowId } } },
-            ),
-          ) as {
-            success: boolean;
-            data: WebhookStats;
-          };
-
-          return response.success ? response.data : null;
-        } catch (error) {
-          console.error("Failed to fetch webhook stats:", error);
-          return null;
         }
       },
 

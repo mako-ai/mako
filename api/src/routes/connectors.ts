@@ -16,6 +16,17 @@ import {
  */
 export const connectorRoutes = createRouter();
 
+const WebhookCapabilitiesSchema = z.object({
+  supported: z.boolean(),
+  provisioning: z.object({
+    supported: z.boolean(),
+    providerLabel: z.string(),
+    storesSecretAutomatically: z.boolean(),
+    actionHint: z.string().optional(),
+  }),
+  secretHelpText: z.string().optional(),
+});
+
 const ConnectorMetadataSchema = z
   .object({
     type: z.string(),
@@ -24,6 +35,7 @@ const ConnectorMetadataSchema = z
     description: z.string(),
     author: z.string().optional(),
     supportedEntities: z.array(z.string()),
+    webhook: WebhookCapabilitiesSchema,
   })
   .openapi("ConnectorMetadata");
 

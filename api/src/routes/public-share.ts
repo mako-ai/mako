@@ -10,7 +10,7 @@
  *   POST /api/share/:token/unlock     — verify password, set signed cookie
  *   GET  /api/share/:token/content    — sanitized dashboard/app definition
  *   GET  /api/share/:token/artifacts/:artifactId — stream snapshot parquet
- *   POST /api/share/:token/refresh    — throttled re-materialization (dash)
+ *   POST /api/share/:token/refresh    — throttled snapshot re-materialization
  */
 
 import crypto from "node:crypto";
@@ -27,10 +27,18 @@ import {
   type IMakoApp,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import {
+  buildAppSnapshot,
+  type AppSnapshot,
+} from "../services/app-version.service";
 import { buildDataSourceMaterializationStatus } from "../services/dashboard-materialization.service";
 import { queueDashboardArtifactRefresh } from "../services/dashboard-refresh-runner.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
-import { getBindingArtifactInfo } from "../services/app-binding-materialization.service";
+import {
+  getBindingArtifactInfo,
+  queueAppBindingMaterialization,
+} from "../services/app-binding-materialization.service";
+import { executePublicAppLiveBinding } from "../services/public-live-query.service";
 
 const logger = loggers.api("public-share");
 
@@ -159,12 +167,54 @@ async function buildDashboardContent(token: string, dashboard: IDashboard) {
   const workspaceId = dashboard.workspaceId.toString();
   const dashboardId = dashboard._id.toString();
 
+  // Render the PUBLISHED definition (draft/published split) so a public viewer
+  // never sees a half-edited or restored-but-unpublished draft. Fall back to
+  // the live definition for dashboards that were never published (back-compat).
+  const def = (dashboard.published as Record<string, any> | undefined) ?? {
+    title: dashboard.title,
+    description: dashboard.description,
+    widgets: dashboard.widgets,
+    globalFilters: dashboard.globalFilters,
+    relationships: dashboard.relationships,
+    crossFilter: dashboard.crossFilter,
+    layout: dashboard.layout,
+    dataSources: dashboard.dataSources,
+  };
+
+  // Materialization artifacts are server-owned and keyed by data-source id, so
+  // compute status from the LIVE data source when present (freshest), falling
+  // back to the published snapshot's definition.
+  const liveDsById = new Map(
+    (dashboard.dataSources || []).map(ds => [String(ds.id), ds]),
+  );
   const dataSources = await Promise.all(
-    (dashboard.dataSources || []).map(async ds => {
+    ((def.dataSources as Array<Record<string, any>>) || []).map(async ds => {
+      const liveDs = liveDsById.get(String(ds.id)) ?? ds;
+      const materialization =
+        (liveDs as { materialization?: string }).materialization === "live"
+          ? "live"
+          : "parquet";
+      // Live data sources execute server-side per viewer; anonymous public
+      // viewers never get live execution, so expose them as not-ready with no
+      // artifact (mirrors the public app viewer refusing live bindings).
+      if (materialization === "live") {
+        return {
+          id: ds.id,
+          name: ds.name,
+          tableRef: ds.tableRef,
+          timeDimension: ds.timeDimension,
+          computedColumns: ds.computedColumns,
+          materialization,
+          ready: false,
+          rowCount: null,
+          materializedAt: null,
+          artifactUrl: null,
+        };
+      }
       const status = await buildDataSourceMaterializationStatus({
         workspaceId,
         dashboardId,
-        dataSource: ds,
+        dataSource: liveDs as any,
       });
       const ready = status.status === "ready" && !!status.artifactKey;
       return {
@@ -173,11 +223,12 @@ async function buildDashboardContent(token: string, dashboard: IDashboard) {
         tableRef: ds.tableRef,
         timeDimension: ds.timeDimension,
         computedColumns: ds.computedColumns,
+        materialization,
         ready,
         rowCount: status.rowCount,
         materializedAt: status.builtAt || status.lastMaterializedAt,
         artifactUrl: ready
-          ? `/api/share/${token}/artifacts/${encodeURIComponent(ds.id)}?rev=${encodeURIComponent(status.artifactRevision || "")}`
+          ? `/api/share/${token}/artifacts/${encodeURIComponent(String(ds.id))}?rev=${encodeURIComponent(status.artifactRevision || "")}`
           : null,
       };
     }),
@@ -185,13 +236,13 @@ async function buildDashboardContent(token: string, dashboard: IDashboard) {
 
   return {
     type: "dashboard" as const,
-    title: dashboard.title,
-    description: dashboard.description,
-    widgets: dashboard.widgets,
-    globalFilters: dashboard.globalFilters,
-    relationships: dashboard.relationships,
-    crossFilter: dashboard.crossFilter,
-    layout: dashboard.layout,
+    title: def.title,
+    description: def.description,
+    widgets: def.widgets,
+    globalFilters: def.globalFilters,
+    relationships: def.relationships,
+    crossFilter: def.crossFilter,
+    layout: def.layout,
     dataSources,
     refresh: {
       cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
@@ -202,30 +253,47 @@ async function buildDashboardContent(token: string, dashboard: IDashboard) {
 }
 
 function buildAppContent(token: string, makoApp: IMakoApp) {
+  // Render the PUBLISHED definition (draft/published split) so a public viewer
+  // never sees half-edited or agent-in-progress work. Fall back to the live
+  // draft for apps that were never published (back-compat).
+  const def = (makoApp.published as AppSnapshot | undefined) ??
+    buildAppSnapshot(makoApp);
+  // Materialization artifacts are server-owned and keyed by binding id, so we
+  // hydrate artifact URLs from the LIVE binding caches (the published snapshot
+  // intentionally excludes `cache`).
+  const liveCacheById = new Map(
+    (makoApp.dataBindings || []).map(b => [b.id, b.cache]),
+  );
+  // Owner opt-in: when enabled, the viewer may re-run live bindings via the
+  // /binding/:id/execute route below (still owner-published SQL, never the
+  // viewer's). Default off keeps existing shares snapshot-only.
+  const allowLiveQueries = !!makoApp.publicShare?.allowLiveQueries;
   return {
     type: "app" as const,
-    title: makoApp.title,
-    description: makoApp.description,
-    entrypoint: makoApp.entrypoint,
-    files: (makoApp.files || []).map(f => ({
+    title: def.title,
+    description: def.description,
+    entrypoint: def.entrypoint,
+    allowLiveQueries,
+    files: (def.files || []).map(f => ({
       path: f.path,
       contents: f.contents,
     })),
-    dependencies: makoApp.dependencies || {},
-    dataBindings: (makoApp.dataBindings || []).map(b => {
+    dependencies: def.dependencies || {},
+    dataBindings: (def.dataBindings || []).map(b => {
+      const cache = liveCacheById.get(b.id as string);
       const ready =
         b.materialization === "parquet" &&
-        b.cache?.parquetBuildStatus === "ready" &&
-        !!b.cache?.parquetArtifactKey;
+        cache?.parquetBuildStatus === "ready" &&
+        !!cache?.parquetArtifactKey;
       return {
         id: b.id,
         name: b.name,
         materialization: b.materialization ?? "live",
         ready,
-        rowCount: b.cache?.rowCount ?? null,
-        materializedAt: b.cache?.parquetBuiltAt ?? null,
+        rowCount: cache?.rowCount ?? null,
+        materializedAt: cache?.parquetBuiltAt ?? null,
         artifactUrl: ready
-          ? `/api/share/${token}/artifacts/${encodeURIComponent(b.id)}?rev=${encodeURIComponent(b.cache?.artifactRevision || "")}`
+          ? `/api/share/${token}/artifacts/${encodeURIComponent(String(b.id))}?rev=${encodeURIComponent(cache?.artifactRevision || "")}`
           : null,
       };
     }),
@@ -455,7 +523,72 @@ app.openapi(
   },
 );
 
-// POST /:token/refresh — throttled snapshot refresh (dashboards only).
+// POST /:token/binding/:bindingId/execute — run a published live binding.
+// Apps only, and only when the owner enabled `publicShare.allowLiveQueries`.
+// The SQL is always the owner's PUBLISHED binding code (never viewer-supplied),
+// executed read-only + row-capped + rate-limited under the owner's connection.
+app.openapi(
+  createRoute({
+    method: "post",
+    path: "/{token}/binding/{bindingId}/execute",
+    tags: ["Public Shares"],
+    summary: "Run a shared app's published live binding",
+    security: [],
+    request: {
+      params: TokenParam.extend({
+        bindingId: z.string().openapi({
+          param: { name: "bindingId", in: "path" },
+        }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const token = c.req.param("token");
+      const bindingId = c.req.param("bindingId");
+      const resource = await findByToken(token);
+      if (!resource) {
+        return c.json({ success: false, error: "Share link not found" }, 404);
+      }
+      if (resource.type !== "app") {
+        return c.json(
+          { success: false, error: "Live queries are only supported for apps" },
+          400,
+        );
+      }
+      const gate = requireUnlock(c, token, resource);
+      if (gate) return gate;
+
+      const result = await executePublicAppLiveBinding({
+        app: resource.doc,
+        bindingId,
+        token,
+      });
+      if (!result.success) {
+        return c.json(
+          { success: false, error: result.error },
+          result.status as 400,
+        );
+      }
+      return c.json(
+        {
+          success: true,
+          rows: result.rows,
+          fields: result.fields,
+          rowCount: result.rowCount,
+        },
+        200,
+        { "Cache-Control": "private, no-store" },
+      );
+    } catch (error) {
+      logger.error("Error running public live binding", { error });
+      return c.json({ success: false, error: "Failed to run query" }, 500);
+    }
+  },
+);
+
+// POST /:token/refresh — throttled snapshot refresh.
 // Only re-runs the owner-defined data source queries; anonymous viewers can
 // never execute arbitrary queries.
 app.openapi(
@@ -463,7 +596,7 @@ app.openapi(
     method: "post",
     path: "/{token}/refresh",
     tags: ["Public Shares"],
-    summary: "Refresh a dashboard share snapshot",
+    summary: "Refresh a public share snapshot",
     security: [],
     request: { params: TokenParam },
     responses: { ...OPEN_RESPONSES },
@@ -477,15 +610,40 @@ app.openapi(
       }
       const gate = requireUnlock(c, token, resource);
       if (gate) return gate;
-      if (resource.type !== "dashboard") {
-        return c.json(
-          { success: false, error: "Refresh is only available for dashboards" },
-          400,
-        );
+      if (resource.type === "app") {
+        const appDoc = resource.doc;
+        if (
+          !appDoc.dataBindings.some(
+            binding => binding.materialization === "parquet",
+          )
+        ) {
+          return c.json(
+            {
+              success: false,
+              error: "No materialized app data sources to refresh",
+            },
+            400,
+          );
+        }
+      } else if (resource.type === "dashboard") {
+        const dashboardDoc = resource.doc;
+        if (
+          !(dashboardDoc.dataSources || []).some(
+            ds => ds.materialization !== "live",
+          )
+        ) {
+          return c.json(
+            {
+              success: false,
+              error: "No materialized dashboard data sources to refresh",
+            },
+            400,
+          );
+        }
       }
 
-      const dashboard = resource.doc;
-      const last = dashboard.publicShare?.lastPublicRefreshAt?.getTime() ?? 0;
+      const last =
+        resource.doc.publicShare?.lastPublicRefreshAt?.getTime() ?? 0;
       const elapsed = Date.now() - last;
       if (elapsed < PUBLIC_REFRESH_COOLDOWN_MS) {
         const retryAfterMs = PUBLIC_REFRESH_COOLDOWN_MS - elapsed;
@@ -502,22 +660,40 @@ app.openapi(
 
       // Claim the cooldown slot atomically so concurrent anonymous viewers
       // can't queue duplicate refreshes.
-      const claimed = await Dashboard.findOneAndUpdate(
-        {
-          _id: dashboard._id,
-          "publicShare.enabled": true,
-          $or: [
-            { "publicShare.lastPublicRefreshAt": { $exists: false } },
-            {
-              "publicShare.lastPublicRefreshAt": {
-                $lte: new Date(Date.now() - PUBLIC_REFRESH_COOLDOWN_MS),
+      const claimed =
+        resource.type === "dashboard"
+          ? await Dashboard.findOneAndUpdate(
+              {
+                _id: resource.doc._id,
+                "publicShare.enabled": true,
+                $or: [
+                  { "publicShare.lastPublicRefreshAt": { $exists: false } },
+                  {
+                    "publicShare.lastPublicRefreshAt": {
+                      $lte: new Date(Date.now() - PUBLIC_REFRESH_COOLDOWN_MS),
+                    },
+                  },
+                ],
               },
-            },
-          ],
-        },
-        { $set: { "publicShare.lastPublicRefreshAt": new Date() } },
-        { new: true },
-      );
+              { $set: { "publicShare.lastPublicRefreshAt": new Date() } },
+              { new: true },
+            )
+          : await MakoApp.findOneAndUpdate(
+              {
+                _id: resource.doc._id,
+                "publicShare.enabled": true,
+                $or: [
+                  { "publicShare.lastPublicRefreshAt": { $exists: false } },
+                  {
+                    "publicShare.lastPublicRefreshAt": {
+                      $lte: new Date(Date.now() - PUBLIC_REFRESH_COOLDOWN_MS),
+                    },
+                  },
+                ],
+              },
+              { $set: { "publicShare.lastPublicRefreshAt": new Date() } },
+              { new: true },
+            );
       if (!claimed) {
         return c.json(
           {
@@ -530,16 +706,51 @@ app.openapi(
         );
       }
 
-      const queueResult = await queueDashboardArtifactRefresh({
-        dashboardId: dashboard._id.toString(),
-        workspaceId: dashboard.workspaceId.toString(),
-        triggerType: "manual",
-      });
+      let queued = false;
+      let alreadyRunning = false;
+      let dataSourceIds: string[] = [];
+
+      if (resource.type === "dashboard") {
+        const dashboard = resource.doc;
+        // force: true re-queries the owner-defined source queries even when the
+        // dashboard definition is unchanged. Without it, the rebuild service
+        // reuses the cached parquet (no new parquetBuiltAt), so the viewer's
+        // "data changed?" poll never observes a fresh snapshot and times out.
+        // The 5-minute cooldown above guards against abusive/expensive re-runs.
+        const queueResult = await queueDashboardArtifactRefresh({
+          dashboardId: dashboard._id.toString(),
+          workspaceId: dashboard.workspaceId.toString(),
+          force: true,
+          triggerType: "manual",
+        });
+        queued = queueResult.queued;
+        alreadyRunning = !queueResult.queued;
+        dataSourceIds = queueResult.dataSourceIds;
+      } else {
+        const appDoc = resource.doc;
+        const materializedBindings = appDoc.dataBindings.filter(
+          binding => binding.materialization === "parquet",
+        );
+        const results = await Promise.all(
+          materializedBindings.map(binding =>
+            queueAppBindingMaterialization({
+              workspaceId: appDoc.workspaceId.toString(),
+              appId: appDoc._id.toString(),
+              bindingId: binding.id,
+              force: true,
+            }),
+          ),
+        );
+        queued = results.some(result => result.queued);
+        alreadyRunning = results.some(result => result.alreadyRunning);
+        dataSourceIds = results.map(result => result.bindingId);
+      }
 
       return c.json({
         success: true,
-        queued: queueResult.queued,
-        alreadyRunning: !queueResult.queued,
+        queued,
+        alreadyRunning,
+        dataSourceIds,
         cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
       });
     } catch (error) {

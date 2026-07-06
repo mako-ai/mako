@@ -54,23 +54,204 @@ When you need a fresh value inside `onToolCall` or `prepareSendMessagesRequest`,
 call `useConsoleStore.getState()` at invocation time rather than closing over
 render-time state.
 
-## Auto-scroll contract (`use-stick-to-bottom`)
+## List virtualization (`react-virtuoso`)
 
-Auto-scroll uses the **`use-stick-to-bottom`** library (same library used in
-Vercel's official `ai-chatbot` template). It observes container/content resizes
-via `ResizeObserver` and uses spring-based animations — no `useEffect([messages])`
-or `MutationObserver` hacks.
+The message list is **virtualized** with `react-virtuoso`. Only visible rows
+(plus an overscan buffer) are mounted in the DOM. This is the load-bearing fix
+for long-chat lag: without it, every message — each with shiki-highlighted
+markdown, tool cards, and result tables — stays mounted at once, which tanks
+DOM size, memory, paint, and scroll, especially on mobile. Memoization stops
+*re-renders* but does nothing about *mount cost / DOM size*; virtualization is
+the only thing that does.
+
+**Anti-bounce rule: a finished block's height must never change AFTER a later
+block starts rendering below it.** A whole assistant turn streams into a
+**single** Virtuoso item. The bounce/blink happens when an *already-finished*
+block (a resolved tool card, a completed thinking block) changes height while
+content below it is streaming — the shrink/grow shoves everything under it, and
+Virtuoso's resize anchoring fights the bottom-pin. The original culprit was
+`StreamingToolCard` auto-collapsing a finished card **800ms after** it resolved
+*while the rest of the turn kept streaming below it*: by then the collapse
+shifted content that already existed underneath → a snap per tool call (an
+*animated* 300ms `Collapse` made it worse — the shrink spanned ~18 frames and
+`totalListHeightChanged` doesn't fire on every sub-pixel frame, so the pin
+drifted → oscillating jitter).
+
+The fix is **collapse-on-finish + latch**, applied per block (NOT deferred to
+turn end):
+
+1. **Each block collapses the instant *it* finishes** — at its own finish
+   transition, while it is still the streaming *tail* and before the next
+   reasoning/tool/text part appends below it. Collapsing at the tail is
+   absorbed by the bottom-pin (you're watching the bottom); the block is then
+   fixed for the rest of the turn. `StreamingToolCard` collapses when it reaches
+   a terminal state (`output-available`/`error`); `ReasoningDisplay` collapses
+   when its group stops being the streaming group.
+2. **The collapse is a single discrete frame.** `StreamingToolCard`'s body uses
+   `<Collapse timeout={0}>` and `ReasoningDisplay` collapses via conditional
+   render (no MUI `Collapse`). One height change → one `totalListHeightChanged`
+   → the pin catches it in one shot. Never use an *animated* collapse on a
+   streaming turn (multi-frame shrink drifts the pin between resize callbacks).
+3. **Finished blocks latch — never auto-reopen or re-collapse.** A resolved tool
+   card's `isDone`/`isError`/`isActive` are monotonic and the memo comparator
+   freezes terminal cards, so its collapse effect runs once. `ReasoningDisplay`
+   holds a `finished` latch (`isOpen = userToggled ? userOpen : isStreaming &&
+   !finished`) so a spurious `isStreaming` flip can never re-expand a completed
+   thinking block. Only a **user** toggle may change a finished block after it
+   collapses.
+
+**Never touch a finished (non-tail) block's height mid-turn** — no re-opening a
+collapsed thinking block, no deferring a tool-card collapse until after later
+content rendered, no auto-collapse *timer* that fires once content already sits
+below the block. Collapse exactly once, at the block's own finish, then leave it
+alone.
+
+## Reasoning-block identity & dedup (`reasoning-groups.ts`)
+
+The latch above only holds if a thinking block keeps a **stable identity** and a
+**stable streaming flag**. The AI SDK's `ReasoningUIPart` has **no `id`**, only
+`state: 'streaming' | 'done'`. Three rules keep blocks stable:
+
+1. **Drive the streaming flag off `part.state`, not an index heuristic.**
+   `getStreamingReasoningGroupStart` force-expands the **last** reasoning group
+   only while its trailing part is `state === 'streaming'`. `state` flips to
+   `'done'` exactly once (at reasoning-end), so it does not thrash per token the
+   way "the group owning the last array part" did (empty reasoning parts and
+   `step-start` markers arriving at the tail used to flip it every chunk →
+   expand/collapse blinking). Parts rebuilt from history carry no `state`, so a
+   last-part fallback is used there (and the render gates on `isStreamingNow`).
+2. **A `step-start` marker does NOT break a reasoning run.** Multi-step loops and
+   resume/continuation replay interleave `step-start` between thinking segments
+   (and between a partial reasoning part and its replayed copy). `step-start`
+   bridges the run; only a real tool/text part starts a new block.
+3. **Dedupe overlapping reasoning across the WHOLE message.** Continuation-merge
+   and resumable-stream replay inject duplicate reasoning parts (a partial
+   `"ABC"` next to the replayed `"ABC more…"`) — and production data shows most
+   duplicate pairs are separated by real tool/text parts, not adjacent. So the
+   dedup in `computeReasoningGroups` is message-wide, not run-scoped: a later
+   copy folds into the EARLIER block (layout-neutral — that block is collapsed
+   by then), keyed by Anthropic `signature`, then exact text, then
+   prefix-superset (keep the longest) — the same keys the backend's
+   `dedupeAssistantReasoning` uses. Never `join("\n\n")` raw parts: that renders
+   the same thinking twice. Persistence applies `dedupeAssistantReasoning` in
+   `saveChat` too, so corrupted turns stop being written; the client dedup
+   still covers live streams and pre-existing history.
+
+Blocks are keyed **`reasoning-group-<ordinal>`** (position among reasoning
+groups), never `reasoning-<partIndex>` — a shifting array index would remount
+the block, resetting its `finished` latch and re-expanding it.
+
+## End-of-turn settle (`stickTailUntilRef` + turn-end snapshot)
+
+The bottom-pin runs while `isLoadingRef` is true **plus a bounded settling
+window** after the turn ends. Blocks now collapse per-block *during* the turn,
+so there is no mass collapse deferred to turn end — but the **last live block**
+(the final thinking block or a trailing tool card) still collapses as `status`
+leaves "streaming", and that final shrink needs the pin. Two non-obvious details
+make the settle land *on the conclusion* instead of stranding at the message
+top:
+
+- **Window length is `1200ms`** (comfortable margin around the final block's
+  single-frame collapse), not the old `700ms`.
+- **The settling pin must NOT gate on the live `isAtBottom`.** The
+  end-of-turn shrink momentarily flips `isAtBottom` false, which would disengage
+  the pin and let Virtuoso re-anchor to the item top. Instead, `pinToBottom`
+  snapshots whether the user was at the bottom *as the turn ended*
+  (`wasAtBottomAtTurnEndRef`, seeded from `isAtBottomRef` or a recent
+  `lastAtBottomAtRef`) and holds the bottom for the whole window based on that.
+  During streaming it still gates on the live `isAtBottomRef` so scrolling up to
+  read history releases the pin immediately.
+
+Key pieces (in `Chat.tsx`):
+- `<Virtuoso data={messages} computeItemKey={(_, m) => m.id} itemContent={...} />`
+  — `computeItemKey` by `message.id` keeps row identity (and memo) stable across
+  streaming ticks and history inserts (mirrors the old `key={message.id}`).
+- `components={{ List: MessageVirtuosoList }}` — a `React.memo`'d
+  `<List dense component="div">` so the `dense` ListContext still reaches each
+  `ChatMessageRow`'s `<ListItem>` (context flows through Virtuoso's div Item
+  wrappers regardless of DOM nesting). It **must forward the inline `style`**
+  Virtuoso passes (paddingTop/Bottom offsets for windowed items).
+- `increaseViewportBy={{ top: 600, bottom: 900 }}` — overscan buffer; prevents
+  blank rows on fast mobile flings.
+
+**Never revert to `messages.map(...)` over the full array.** That reintroduces
+the unbounded DOM that lags long chats on mobile.
+
+## Auto-scroll contract (`totalListHeightChanged` bottom-pin)
+
+Bottom-anchoring is owned by a **bottom-pin inside Virtuoso's
+`totalListHeightChanged` callback**, **not** `use-stick-to-bottom` (removed),
+**not** a DIY `useEffect([messages])` → `scrollIntoView` (fires every chunk →
+jank + broken hover/click), **not** a per-`messages`-tick rAF `scrollTo`
+(superseded — see below), and **not** Virtuoso's `followOutput`.
+
+**Why `followOutput` is OFF.** Virtuoso's `followOutput` only fires when the
+item **count** changes, but an entire assistant turn — thinking blocks, every
+tool card, and the final text — streams into a **single** message, growing one
+item without changing the count. So `followOutput` never fires mid-turn
+(thinking/tool cards stream in below the fold and the view never follows), and
+when it *does* fire its `scrollToIndex({ align: "end" })` races the pin and
+bounces the view ("jumping/blinking"). So `followOutput={false}`.
+
+**Why not a per-`messages`-tick rAF.** The previous fix pinned the bottom in a
+one-shot `requestAnimationFrame` scheduled on each (throttled, ~50ms) `messages`
+tick. That only covers ~1 of every 3 frames. Interior blocks that change
+height asynchronously on frames where `messages` does **not** tick — a
+single-frame collapse when a block finishes, the `modify_console` diff
+re-render, late image/table layout — race the pin. On those frames Virtuoso's
+resize anchoring nudges `scrollTop` **up** (toward the message top) to keep
+content stable, and with no pin to counter it the view paints partway up — then
+the next `messages` tick pins it back down. That alternation **is** the
+top/bottom bounce. (`requestAnimationFrame` callbacks also run *before*
+ResizeObserver in the frame, so an rAF pin can't out-write Virtuoso's
+compensation on a resize frame anyway.) Plain-text turns never bounced because
+their growth is append-only at the bottom (monotonic), so anchor and pin agree.
 
 Key pieces:
-- `scrollContainerRef` / `scrollContentRef` — refs from `useStickToBottom()` hook,
-  attached to the outer scroll `<Box>` and inner content `<div>` respectively.
-- `isAtBottom` — boolean state for showing the "scroll to bottom" button.
-- `scrollToBottom()` — imperative scroll for the button's `onClick`.
+- **Streaming follow (the load-bearing piece):** Virtuoso's
+  `totalListHeightChanged={handleListHeightChanged}` callback fires as part of
+  Virtuoso's resize processing, **after** it applies its scroll compensation, so
+  setting `scroller.scrollTop = scroller.scrollHeight` there is the *last write
+  before paint on exactly the frames that resize* — the frames the old rAF pin
+  lost.
+  - Capture the scroller via `scrollerRef={el => { scrollerElRef.current = el }}`
+    and write its `scrollTop` directly (raw position set) — never
+    `scrollToIndex({ align: "end" })` (re-derives its target from the growing
+    last item and bounces).
+  - Gated on a **live `isAtBottomRef`** (read each call, not a stale closure) so
+    scrolling up to read history releases the pin immediately.
+  - Pin only while `isLoadingRef.current` is true **plus a bounded ~700ms
+    settling window** (`stickTailUntilRef`) after the turn ends, so the closing
+    Collapse animations / results panel don't strand the view at the message
+    top. Outside that window the pin no-ops (it never hijacks normal scrolling).
+- `initialTopMostItemIndex={Math.max(0, messages.length - 1)}` — lands at the
+  newest message on mount / chat switch.
+- `atBottomStateChange={setIsAtBottom}` + `atBottomThreshold={120}` — drives the
+  `isAtBottom` state (note: this only flips when crossing the threshold, so it
+  does **not** re-render per streaming chunk).
+- `virtuosoRef.current?.scrollToIndex({ index: messages.length - 1, align: "end" })`
+  — imperative scroll for the "scroll to bottom" button's `onClick` (a one-shot
+  jump, so the bounce doesn't apply). The button is `position: absolute` inside
+  the relative parent `Box` (a sibling of `<Virtuoso>`), since Virtuoso owns the
+  scroller.
+- Opening an existing chat does an explicit `scrollToIndex({ index: "LAST" })`
+  after the bulk `setMessages`, because Virtuoso keeps one instance across chat
+  switches so `initialTopMostItemIndex` (mount-only) won't re-apply.
 
-**Never replace this with a DIY `useEffect([messages])` → `scrollIntoView`.
-That fires on every chunk and causes scroll jank + broken hover/click events.**
-The library correctly distinguishes user scrolling from programmatic scrolling
-and handles edge cases like content shrinking and mobile devices.
+## Tool-card DOM cost (`StreamingToolCard`)
+
+Virtualization unmounts off-screen rows, but a single on-screen tool card can
+still blow up the DOM. Collapsed tool cards MUST unmount their body, not just
+hide it:
+- The expandable body uses MUI `<Collapse ... unmountOnExit>` so the
+  syntax-highlighted code/JSON DOM is removed entirely when collapsed (the
+  default `Collapse` keeps children mounted at height 0).
+- Heavy body strings (`code`, `formattedOutput`) are built **only** when the body
+  will render (`shouldRenderBody = (expanded || isActive) && hasVisibleBody`);
+  collapsed history cards never pay the serialization/highlight cost.
+- Inline output/code is capped (`capForDisplay`, `MAX_INLINE_CHARS` /
+  `MAX_INLINE_LINES`) so a huge tool result never expands into thousands of DOM
+  nodes; the full payload stays available via the tool-details dialog.
 
 ## Zustand selector rules
 
@@ -115,7 +296,12 @@ callback, not via a selector subscription.
 - [ ] No new `useCallback`/`useMemo` with object dependencies
 - [ ] No new `useEffect` depending on `messages` that touches the DOM
 - [ ] `experimental_throttle: 50` is present on `useChat`
-- [ ] Auto-scroll uses `use-stick-to-bottom`, not a DIY `useEffect`
+- [ ] Message list stays virtualized (`<Virtuoso data={messages}>`), never `messages.map`
+- [ ] Auto-scroll pins the bottom in Virtuoso's `totalListHeightChanged`
+      callback (gated on a live `isAtBottomRef`), **not** Virtuoso `followOutput`,
+      **not** a per-`messages`-tick rAF `scrollTo`, and **not** a per-chunk
+      `scrollToIndex`/`scrollIntoView`
+- [ ] Collapsed `StreamingToolCard` bodies unmount (`Collapse unmountOnExit`)
 - [ ] Any new child component inside `ChatMessageRow` is `React.memo`-wrapped
 - [ ] Zustand selectors return primitives, not object references
 - [ ] Render-count test (`Chat.perf.test.ts`) still passes

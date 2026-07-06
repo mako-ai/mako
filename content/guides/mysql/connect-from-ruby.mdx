@@ -1,0 +1,182 @@
+---
+title: "How to Connect to MySQL from Ruby"
+description: "Connect to MySQL from Ruby with mysql2 or trilogy, plus Sequel and ActiveRecord. Working code for connections, pooling, parameterized queries, the utf8mb4 trap, and the caching_sha2_password authentication problem on MySQL 8."
+database: "mysql"
+category: "how-to"
+tags: ["mysql", "ruby", "rails", "mysql2", "trilogy", "sequel", "activerecord", "connection"]
+date: "2026-07-01"
+---
+
+Ruby has two serious MySQL drivers today. `mysql2` is the long-standing default, a C binding to libmysqlclient. `trilogy` is a newer client, written from scratch with no libmysqlclient dependency, open-sourced by GitHub and now natively supported by Rails. This guide shows both, explains when each makes sense, and covers the two configuration issues that cause the most MySQL-from-Ruby incidents: the `utf8mb4` charset trap and `caching_sha2_password` authentication on MySQL 8.
+
+## The options
+
+| Library | Native dependency | Notes | Version (as of July 2026) |
+|---|---|---|---|
+| `mysql2` | libmysqlclient / libmariadb | Mature, widely deployed default | 0.5.7 |
+| `trilogy` | None (pure protocol implementation) | No client-lib to install; Rails-native adapter | 2.12.6 |
+| Sequel | via mysql2 or trilogy | Toolkit/ORM, not a driver itself | 5.105.0 |
+| ActiveRecord | via mysql2 or trilogy | Full ORM (Rails) | ships with Rails |
+
+The practical decision:
+
+- **`mysql2`** if you want the established, battle-tested option and don't mind installing MySQL client libraries at build time.
+- **`trilogy`** if you want to avoid the libmysqlclient build dependency entirely (a common source of CI and Docker friction) or you're on a recent Rails and want the natively supported adapter.
+
+Sequel and ActiveRecord are layers on top; they use one of these two drivers underneath.
+
+## Installing mysql2
+
+The gem compiles against a MySQL client library, so install the headers first:
+
+- **Debian/Ubuntu:** `sudo apt-get install libmysqlclient-dev` (or `libmariadb-dev`)
+- **macOS (Homebrew):** `brew install mysql-client` then `gem install mysql2 -- --with-mysql-dir=$(brew --prefix mysql-client)`
+- **RHEL/Fedora:** `sudo dnf install mysql-devel`
+
+```bash
+gem install mysql2
+```
+
+If the build cannot find `mysql.h` or `libmysqlclient`, the dev package is missing or the `--with-mysql-dir` path is wrong. This is the most common mysql2 install failure and the exact friction trilogy avoids.
+
+## A minimal connection with mysql2
+
+```ruby
+require 'mysql2'
+
+client = Mysql2::Client.new(
+  host:     'localhost',
+  port:     3306,
+  username: 'app',
+  password: ENV['DB_PASSWORD'],
+  database: 'shop',
+  encoding: 'utf8mb4'
+)
+
+client.query('SELECT VERSION()').each do |row|
+  puts row['VERSION()']
+end
+
+client.close
+```
+
+`Mysql2::Result` yields each row as a hash keyed by column name, and mysql2 casts to native Ruby types (Integer, Float, Time) by default.
+
+## The utf8mb4 charset trap
+
+Set `encoding: 'utf8mb4'`. MySQL's historic `utf8` is a **3-byte** encoding that cannot store 4-byte characters like emoji or many CJK characters, and inserting them raises `Incorrect string value`. The name is a long-standing MySQL misnomer; `utf8mb4` is real, full UTF-8. Match this to your table and column charset (`CHARACTER SET utf8mb4`), or you get silent truncation or errors that only appear once a user pastes an emoji.
+
+## Parameterized queries
+
+mysql2 supports prepared statements with positional `?` placeholders (MySQL's placeholder syntax, unlike PostgreSQL's `$1`):
+
+```ruby
+stmt = client.prepare('SELECT id, name FROM customers WHERE region = ? AND active = ?')
+result = stmt.execute('EMEA', 1)
+result.each { |row| puts row['name'] }
+```
+
+Do not build SQL by interpolating user input. If you must use `client.query` with dynamic values, escape them with `client.escape`, but prepared statements are the safer default.
+
+## trilogy
+
+trilogy speaks the MySQL protocol directly, so there is no client library to install:
+
+```bash
+gem install trilogy
+```
+
+```ruby
+require 'trilogy'
+
+client = Trilogy.new(
+  host:     'localhost',
+  port:     3306,
+  username: 'app',
+  password: ENV['DB_PASSWORD'],
+  database: 'shop',
+  ssl_mode: Trilogy::SSL_PREFERRED
+)
+
+result = client.query('SELECT id, name FROM customers WHERE region = "EMEA"')
+result.each { |row| puts row[1] }
+
+client.close
+```
+
+trilogy returns rows as arrays by default (index by column position) and exposes `result.fields` for the column names. Its main appeal is operational: no libmysqlclient, which removes a whole class of build and deployment problems.
+
+## The caching_sha2_password problem on MySQL 8
+
+MySQL 8.0 changed the default authentication plugin from `mysql_native_password` to `caching_sha2_password`. This plugin transmits credentials in a way that requires either a secure connection (TLS) or an RSA key exchange. The practical consequences:
+
+- **mysql2:** works with `caching_sha2_password` as long as your libmysqlclient/libmariadb is recent enough. An old client library produces `Authentication plugin 'caching_sha2_password' cannot be loaded`.
+- **trilogy:** supports `caching_sha2_password`, but you must set `ssl_mode` (for example `Trilogy::SSL_PREFERRED` or stricter) so the secure-transport requirement is met. Connecting without TLS to a `caching_sha2_password` account fails.
+
+If you hit an auth-plugin error, the fix is one of: upgrade the client library, connect over TLS, or (last resort, and weaker) alter the account to `mysql_native_password`. Note that MySQL 9 removed `mysql_native_password` entirely, so the long-term answer is TLS plus a current client, not downgrading the auth method.
+
+## Connection pooling
+
+A single client object is not safe to share across threads. In threaded servers (Puma, Sidekiq) you need one connection per thread. mysql2 and trilogy do not ship pools, so use the `connection_pool` gem, or let Sequel/ActiveRecord manage it:
+
+```ruby
+require 'mysql2'
+require 'connection_pool'
+
+DB = ConnectionPool.new(size: 5, timeout: 5) do
+  Mysql2::Client.new(host: 'localhost', username: 'app',
+                     password: ENV['DB_PASSWORD'], database: 'shop',
+                     encoding: 'utf8mb4')
+end
+
+DB.with { |c| c.query('SELECT count(*) FROM orders').first }
+```
+
+Size the pool so that **pool size × process count stays under the server's `max_connections`** (default 151). Exceeding it produces `Too many connections`.
+
+## Sequel and ActiveRecord
+
+Sequel picks the driver from the URL scheme:
+
+```ruby
+require 'sequel'
+
+# mysql2 driver
+DB = Sequel.connect('mysql2://app:secret@localhost/shop?encoding=utf8mb4', max_connections: 5)
+# or trilogy
+# DB = Sequel.connect('trilogy://app:secret@localhost/shop')
+
+DB[:customers].where(region: 'EMEA').each { |row| puts row[:name] }
+```
+
+In Rails, `config/database.yml` selects the adapter:
+
+```yaml
+production:
+  adapter: mysql2        # or: trilogy
+  host: <%= ENV['DB_HOST'] %>
+  database: shop
+  username: app
+  password: <%= ENV['DB_PASSWORD'] %>
+  encoding: utf8mb4
+  pool: 5
+```
+
+The `pool` value is per process; the same `pool × processes < max_connections` rule applies.
+
+## Common errors
+
+| Error | Cause |
+|---|---|
+| Cannot find `mysql.h` / `libmysqlclient` at install | MySQL client dev package missing (mysql2 only; trilogy avoids this) |
+| `Can't connect to MySQL server` | Wrong host/port, or server not listening on TCP |
+| `Access denied for user` | Wrong credentials, or host-pattern account mismatch |
+| `Authentication plugin 'caching_sha2_password' cannot be loaded` | Old client lib, or non-TLS connection to a MySQL 8 default account |
+| `Incorrect string value` | 4-byte character into a `utf8` (3-byte) column; use `utf8mb4` end to end |
+| `Too many connections` | Pool size × process count exceeds `max_connections` |
+
+## Querying without writing connection code
+
+If your goal is to explore a MySQL database rather than build a service, a GUI client skips all of the above. Mako connects to MySQL with AI-assisted SQL -- see our [MySQL GUI client guide](/guides/mysql-gui-client) for how it compares to MySQL Workbench, DBeaver, and TablePlus. Connecting from another language? See [How to Connect to MySQL from Python](/guides/mysql/connect-from-python) and [from Node.js](/guides/mysql/connect-from-node).
+
+Mako connects to MySQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

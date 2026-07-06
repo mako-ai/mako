@@ -1,0 +1,198 @@
+---
+title: "How to Connect to PostgreSQL from Ruby"
+description: "Connect to PostgreSQL from Ruby with the pg gem, Sequel, or ActiveRecord. Working code for connections, connection pools, parameterized queries, prepared statements, and the sslmode and PostgreSQL 18 cancel-key traps."
+database: "postgresql"
+category: "how-to"
+tags: ["postgresql", "ruby", "rails", "pg", "sequel", "activerecord", "connection"]
+date: "2026-07-01"
+---
+
+Ruby has one low-level PostgreSQL driver that everything else builds on: the `pg` gem. ActiveRecord (Rails), Sequel, and most query builders use it underneath. This guide shows the raw `pg` interface first, then where Sequel and ActiveRecord fit, and covers the configuration that actually causes production incidents: pooling, parameterized queries, TLS, and a version trap specific to PostgreSQL 18.
+
+## The options
+
+| Library | Layer | When to use it | Version (as of July 2026) |
+|---|---|---|---|
+| `pg` | Raw driver (libpq wrapper) | Scripts, services, or when you want SQL and nothing else | 1.6.3 |
+| Sequel | Database toolkit + ORM | Non-Rails apps wanting a dataset API without full ActiveRecord | 5.105.0 |
+| ActiveRecord | Full ORM | Rails apps, or when you want migrations and models | ships with Rails |
+
+`pg` is the interface to libpq, PostgreSQL's official C client library. It works with PostgreSQL 10 and later. Sequel and ActiveRecord both depend on `pg` for PostgreSQL connectivity, so the driver-level concerns below apply no matter which layer you write against.
+
+## Installing the driver
+
+```bash
+gem install pg
+```
+
+The gem compiles a native extension against libpq, so you need the PostgreSQL client development headers first:
+
+- **Debian/Ubuntu:** `sudo apt-get install libpq-dev`
+- **macOS (Homebrew):** `brew install libpq` (you may need `gem install pg -- --with-pg-config=$(brew --prefix libpq)/bin/pg_config`)
+- **RHEL/Fedora:** `sudo dnf install libpq-devel`
+
+If the build fails with `Can't find the 'libpq-fe.h' header`, the dev package is missing or `pg_config` isn't on your `PATH`. That is the single most common install failure.
+
+## A minimal connection
+
+```ruby
+require 'pg'
+
+conn = PG.connect(
+  host:     'localhost',
+  port:     5432,
+  dbname:   'shop',
+  user:     'app',
+  password: ENV['PGPASSWORD']
+)
+
+result = conn.exec('SELECT version()')
+puts result.getvalue(0, 0)
+
+conn.close
+```
+
+`PG.connect` accepts either a keyword hash (above) or a libpq connection string / URI:
+
+```ruby
+conn = PG.connect('postgres://app:secret@localhost:5432/shop')
+```
+
+The gem also reads standard libpq environment variables (`PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSLMODE`). Anything you omit from the hash falls back to those, which is a clean way to keep credentials out of source.
+
+## Parameterized queries -- do not interpolate
+
+Never build SQL with string interpolation. Pass parameters separately and let the server bind them:
+
+```ruby
+conn.exec_params(
+  'SELECT id, name FROM customers WHERE region = $1 AND active = $2',
+  ['EMEA', true]
+)
+```
+
+PostgreSQL uses positional `$1, $2, ...` placeholders, not `?`. Parameters are passed as an array; `exec_params` sends them out-of-band, which closes off SQL injection and handles quoting and type conversion for you.
+
+For a statement you run repeatedly, prepare it once:
+
+```ruby
+conn.prepare('find_customer', 'SELECT id, name FROM customers WHERE region = $1')
+conn.exec_prepared('find_customer', ['EMEA'])
+```
+
+## Reading results
+
+`PG::Result` is enumerable and yields each row as a hash keyed by column name:
+
+```ruby
+conn.exec_params('SELECT id, name FROM customers WHERE region = $1', ['EMEA']).each do |row|
+  puts "#{row['id']}: #{row['name']}"
+end
+```
+
+One thing to know: by default `pg` returns every column value as a **string**. An `integer` column comes back as `"42"`. To get native Ruby types (Integer, Float, Time, boolean, arrays), enable type mapping:
+
+```ruby
+conn.type_map_for_results = PG::BasicTypeMapForResults.new(conn)
+```
+
+Sequel and ActiveRecord do this for you. If you are using raw `pg` and wondering why numeric comparisons behave oddly, this is almost always the reason.
+
+## Connection pooling
+
+A `PG::Connection` is **not** safe to share across threads. In any concurrent app (Puma, Sidekiq, a threaded script) you need one connection per thread, which means a pool. The `pg` gem does not ship a pool, so use the `connection_pool` gem:
+
+```ruby
+require 'pg'
+require 'connection_pool'
+
+DB = ConnectionPool.new(size: 5, timeout: 5) do
+  PG.connect(ENV['DATABASE_URL'])
+end
+
+DB.with do |conn|
+  conn.exec_params('SELECT count(*) FROM orders WHERE status = $1', ['open'])
+end
+```
+
+Size the pool deliberately. **Pool size × number of processes must stay under the server's `max_connections`** (default 100). Four Puma workers with a pool of 5 each is 20 connections from one machine; multiply across machines and you can exhaust the server, which surfaces as `FATAL: sorry, too many clients already`. If you have many processes, put PgBouncer in front and point the pool at it. In PgBouncer transaction-pooling mode, disable server-side prepared statements or you will hit `prepared statement "..." does not exist`.
+
+Sequel and ActiveRecord manage their own pools; you configure the size rather than wiring `connection_pool` yourself.
+
+## Sequel
+
+Sequel gives you a dataset API and connection pool without adopting Rails:
+
+```ruby
+require 'sequel'
+
+DB = Sequel.connect('postgres://app:secret@localhost:5432/shop', max_connections: 5)
+
+DB[:customers].where(region: 'EMEA').each do |row|
+  puts row[:name]
+end
+
+# Raw SQL with placeholders when you need it
+DB.fetch('SELECT count(*) FROM orders WHERE status = ?', 'open').first
+```
+
+Sequel returns native Ruby types and symbol-keyed rows out of the box, and handles pooling through `max_connections`.
+
+## ActiveRecord / Rails
+
+In a Rails app you rarely call `pg` directly. Configure `config/database.yml`:
+
+```yaml
+production:
+  adapter: postgresql
+  host: <%= ENV['DB_HOST'] %>
+  database: shop
+  username: app
+  password: <%= ENV['DB_PASSWORD'] %>
+  pool: 5
+  sslmode: require
+```
+
+The `pool` value is per process. The same `pool × processes < max_connections` rule applies. Rails uses the `pg` gem underneath, so a build failure on `bundle install` is the same libpq-dev problem described above.
+
+## TLS / sslmode
+
+For any connection crossing a network, set `sslmode`. The values, weakest to strongest:
+
+| `sslmode` | Encrypted? | Server cert verified? |
+|---|---|---|
+| `disable` | No | No |
+| `require` | Yes | No |
+| `verify-ca` | Yes | Yes (chain only) |
+| `verify-full` | Yes | Yes (chain + hostname) |
+
+`require` encrypts traffic but does not stop a man-in-the-middle presenting any certificate. For production against a managed provider, use `verify-full` and point `sslrootcert` at the provider's CA:
+
+```ruby
+conn = PG.connect(
+  'postgres://app:secret@db.example.com:5432/shop' \
+  '?sslmode=verify-full&sslrootcert=/etc/ssl/certs/provider-ca.pem'
+)
+```
+
+## The PostgreSQL 18 cancel-key trap
+
+PostgreSQL 18 introduced longer cancel keys. Older versions of the `pg` gem assumed a fixed-size key and break when connecting to PG 18, sometimes only when a query cancellation is attempted. The fix landed in **pg 1.6.0**. If you are targeting PostgreSQL 18, make sure your `Gemfile.lock` pins `pg` at 1.6.0 or newer -- an old `pg` against a new server is a subtle failure that passes basic connectivity tests and fails under load.
+
+## Common errors
+
+| Error | Cause |
+|---|---|
+| `Can't find the 'libpq-fe.h' header` | `libpq-dev` / `libpq-devel` missing at gem-install time |
+| `could not connect to server: Connection refused` | Wrong host/port, or PostgreSQL not listening on TCP (`listen_addresses`) |
+| `password authentication failed for user` | Wrong credentials, or `pg_hba.conf` auth method mismatch |
+| `FATAL: sorry, too many clients already` | Pool size × process count exceeds `max_connections` |
+| `SSL error` / `certificate verify failed` | `verify-full` without a correct `sslrootcert` |
+| `prepared statement "..." does not exist` | PgBouncer transaction pooling with server-side prepares still on |
+| Numeric column behaves like a string | Result type mapping not enabled on raw `pg` |
+
+## Querying without writing connection code
+
+If your goal is to explore a PostgreSQL database rather than build a service, a GUI client skips all of the above. Mako connects to PostgreSQL with AI-assisted SQL -- see our [PostgreSQL GUI client guide](/guides/postgresql-gui-client) for how it compares to pgAdmin, DBeaver, and TablePlus. Connecting from another language? See [How to Connect to PostgreSQL from Python](/guides/postgresql/connect-from-python) and [from Node.js](/guides/postgresql/connect-from-node).
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

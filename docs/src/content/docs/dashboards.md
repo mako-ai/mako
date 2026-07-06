@@ -135,6 +135,22 @@ Dashboards use an edit lock to prevent concurrent editing conflicts:
 
 If another user holds the lock, a confirmation dialog offers to take over.
 
+## Version History
+
+Every save of a dashboard creates an immutable version snapshot (widgets, data sources, layout). Authors, timestamps, and commit comments are preserved. Restoring a past version creates a new version record referencing the one it came from — the timeline is append-only. See [Version History](/version-history/) for the full API and agent tools.
+
+### Commit Messages
+
+When you save, the **Save version** dialog asks for a **Commit message** describing what changed — this labels the saved version in its history, not the dashboard itself.
+
+Mako can suggest the commit message for you. On save, it diffs the pending dashboard definition against the latest saved snapshot (volatile cache state stripped) and folds in the chat prompts that drove the changes, then drafts a message with the cheap [utility model](/ai-agent/#utility--fast-model). This mirrors how console versions work.
+
+```
+POST /api/workspaces/:wid/dashboards/:did/version-comment
+```
+
+Returns `{ comment, diff }` — the suggested message for the changes about to be saved (plus the diff it was based on). You can accept it as-is or edit before confirming the save.
+
 ## Sharing & Collaborators
 
 Dashboards, [consoles](/console/), and apps use a single **Google Workspace-style** sharing model, managed from each resource's **Share** dialog. Three layers stack on top of each other:

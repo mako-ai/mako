@@ -14,6 +14,61 @@ import { dirname, join } from "path";
 
 export const DEFAULT_DBT_CORE_VERSION = "1.9.10";
 
+/**
+ * Variables a dbt child (subprocess runner or resident engine) legitimately
+ * needs from the parent environment to run `uvx`/`uv`/python/dbt and reach the
+ * network behind a proxy/custom CA.
+ */
+const DBT_ENV_ALLOWLIST = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "XDG_CONFIG_HOME",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "REQUESTS_CA_BUNDLE",
+  "CURL_CA_BUNDLE",
+] as const;
+
+/**
+ * Build the base environment for any dbt child process.
+ *
+ * SECURITY: dbt's Jinja `env_var()` can read ANY variable present in the
+ * child's environment, so we must never inherit the API's full `process.env`.
+ * Doing so would let any workspace member author a one-line model
+ * (`{{ env_var("ENCRYPTION_KEY") }}`) and exfiltrate server secrets
+ * (`ENCRYPTION_KEY`, `SESSION_SECRET`, `GITHUB_APP_PRIVATE_KEY`, `DATABASE_URL`,
+ * `AI_GATEWAY_API_KEY`, …). Instead we forward only an allowlist plus
+ * operator-set `UV_*` config; per-connection credentials are layered on top by
+ * the caller via `secretEnv`/`keyfileEnv`/`connectionEnv`.
+ */
+export function buildDbtBaseEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of DBT_ENV_ALLOWLIST) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  // uv configuration (UV_*) is operator-set tooling config, not a secret store.
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith("UV_") && value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
 export interface ResolvedDbtBin {
   /** Executable to spawn. */
   bin: string;

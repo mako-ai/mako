@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   APP_BINDING_SEP,
   APP_FILE_SEP,
+  DASHBOARD_DATA_SOURCE_SEP,
   tabRevealTarget,
 } from "./explorer-reveal";
 import type { ConsoleTab } from "../store/lib/types";
@@ -31,7 +32,7 @@ describe("tabRevealTarget", () => {
     });
   });
 
-  it("maps dashboards (and their data sources) to the dashboard row", () => {
+  it("maps dashboards and dashboard data sources to dashboard explorer rows", () => {
     expect(
       tabRevealTarget(
         makeTab({ kind: "dashboard", metadata: { dashboardId: "d1" } }),
@@ -44,7 +45,10 @@ describe("tabRevealTarget", () => {
           metadata: { dashboardId: "d1", dataSourceId: "ds1" },
         }),
       ),
-    ).toEqual({ explorer: "dashboards", nodeId: "d1" });
+    ).toEqual({
+      explorer: "dashboards",
+      nodeId: `d1${DASHBOARD_DATA_SOURCE_SEP}ds1`,
+    });
   });
 
   it("maps apps, app files and bindings using the shared separators", () => {

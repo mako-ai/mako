@@ -11,6 +11,7 @@ import {
   updateDashboardWidget,
 } from "./commands";
 import { useDashboardStore } from "../store/dashboardStore";
+import { useVersionStore } from "../store/versionStore";
 import type { DashboardDataSource, DashboardWidget } from "./types";
 import { classifyDuckDBError, classifySourceError } from "./error-kinds";
 import { computeDashboardStateHash } from "../utils/stateHash";
@@ -94,12 +95,25 @@ const EDIT_MODE_EXEMPT_TOOLS = new Set([
   "create_dashboard",
   "list_open_dashboards",
   "open_dashboard",
+  // Restore is a server-side revert + reload; it does not require holding the
+  // edit lock (it replaces the open tab's state with the restored draft).
+  "dashboard_restore_version",
 ]);
 
 export async function executeDashboardAgentTool(
   toolName: string,
   input: Record<string, unknown>,
-  options?: { executionId?: string; signal?: AbortSignal },
+  options?: {
+    executionId?: string;
+    signal?: AbortSignal;
+    /**
+     * The agent toolCallId driving this execution. Forwarded to creation
+     * commands as an idempotency key: multiple windows attached to the same
+     * chat stream each dispatch the same call, and the server (or the
+     * dashboard doc) dedupes by this id so the side effect lands once.
+     */
+    toolCallId?: string;
+  },
 ): Promise<Record<string, unknown> | null> {
   if (!DASHBOARD_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
     return null;
@@ -180,6 +194,69 @@ export async function executeDashboardAgentTool(
     }
   }
 
+  if (toolName === "dashboard_restore_version") {
+    const ctx = requireDashboardId(input);
+    if (!ctx) return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    const version =
+      typeof input.version === "number" ? input.version : Number(input.version);
+    if (!Number.isFinite(version)) {
+      return { success: false, error: "version (number) is required" };
+    }
+    const comment =
+      typeof input.comment === "string" ? input.comment : undefined;
+    const res = await useVersionStore
+      .getState()
+      .restoreVersion(
+        ctx.workspaceId,
+        "dashboard",
+        ctx.dashboardId,
+        version,
+        comment,
+      );
+    if (!res.success) {
+      return { success: false, error: res.error || "Restore failed" };
+    }
+    await useDashboardStore
+      .getState()
+      .reloadDashboard(ctx.workspaceId, ctx.dashboardId);
+    throwIfAborted(signal);
+    const d = useDashboardStore.getState().openDashboards[ctx.dashboardId];
+    return {
+      success: true,
+      restoredFrom: version,
+      title: (d as any)?.title,
+      message:
+        `Restored the dashboard draft to version ${version}. This is not yet ` +
+        "published — call dashboard_save_version to push it live to viewers.",
+    };
+  }
+
+  if (toolName === "dashboard_save_version") {
+    const ctx = requireDashboardId(input);
+    if (!ctx) return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    const comment = typeof input.comment === "string" ? input.comment : "";
+    const result = await useDashboardStore
+      .getState()
+      .saveDashboard(ctx.workspaceId, ctx.dashboardId, comment);
+    if (!result.ok) {
+      return {
+        success: false,
+        error:
+          result.error ||
+          "Save failed (the dashboard may have been modified elsewhere; reload and retry).",
+      };
+    }
+    const d = useDashboardStore.getState().openDashboards[ctx.dashboardId] as
+      | (Record<string, any> & { version?: number; publishedVersion?: number })
+      | undefined;
+    return {
+      success: true,
+      version: d?.version,
+      publishedVersion: d?.publishedVersion,
+      message: `Saved and published "${d?.title ?? "dashboard"}" as version ${d?.publishedVersion ?? d?.version}.`,
+    };
+  }
+
   if (toolName === "capture_screenshot") {
     return captureScreenshot(input, { signal });
   }
@@ -202,6 +279,12 @@ export async function executeDashboardAgentTool(
             typeof input.description === "string"
               ? input.description
               : undefined,
+          // Server-side create idempotency: another window attached to the
+          // same chat stream dispatching this exact tool call gets the same
+          // dashboard back instead of creating a duplicate.
+          ...(options?.toolCallId
+            ? { idempotencyKey: options.toolCallId }
+            : {}),
         } as any,
         { signal },
       );
@@ -358,6 +441,7 @@ export async function executeDashboardAgentTool(
               : undefined,
           dashboardId: ctx.dashboardId,
           signal,
+          toolCallId: options?.toolCallId,
         });
         throwIfAborted(signal);
         const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
@@ -416,6 +500,7 @@ export async function executeDashboardAgentTool(
             : undefined,
         rowLimit:
           typeof input.rowLimit === "number" ? input.rowLimit : undefined,
+        materialization: input.materialization === "live" ? "live" : "parquet",
         dashboardId: ctx.dashboardId,
         query: {
           connectionId: input.connectionId,
@@ -431,6 +516,7 @@ export async function executeDashboardAgentTool(
               : undefined,
         },
         signal,
+        toolCallId: options?.toolCallId,
       });
       throwIfAborted(signal);
       const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
@@ -565,6 +651,11 @@ export async function executeDashboardAgentTool(
             typeof input.rowLimit === "number"
               ? input.rowLimit
               : existing.rowLimit,
+          materialization:
+            input.materialization === "live" ||
+            input.materialization === "parquet"
+              ? input.materialization
+              : existing.materialization,
           query: {
             ...existing.query,
             connectionId:

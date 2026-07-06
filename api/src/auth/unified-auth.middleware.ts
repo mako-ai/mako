@@ -1,5 +1,5 @@
 import { Context, Next } from "hono";
-import { sessionManager } from "./session";
+import { sessionManager, writeSessionCookie } from "./session";
 import { getCookie } from "hono/cookie";
 import { hashApiKey } from "./api-key.middleware";
 import { Workspace } from "../database/workspace-schema";
@@ -106,6 +106,12 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
   c.set("user", user);
   c.set("session", session);
   c.set("authType", "session");
+
+  // Slide the browser cookie whenever the session was refreshed so it tracks
+  // the DB expiry instead of hard-expiring at the original login time.
+  if (session.fresh) {
+    writeSessionCookie(c, session.id);
+  }
 
   // Enrich logging context with user ID (session auth)
   enrichContextWithUser(user.id);

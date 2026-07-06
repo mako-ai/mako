@@ -1,0 +1,103 @@
+---
+title: "How to Connect to Snowflake from PHP"
+description: "Connect to Snowflake from PHP with the official pdo_snowflake driver: building the C extension, the account-identifier DSN trap, key-pair auth after the 2025 password block, parameter binding, warehouse setup, uppercase identifiers, and the errors you actually hit."
+database: "snowflake"
+category: "how-to"
+tags: ["snowflake", "php", "pdo", "data-warehouse", "connection"]
+date: "2026-06-29"
+---
+
+Snowflake ships an official PHP PDO driver, `pdo_snowflake`, so the API feels familiar: `new PDO(...)`, prepared statements, `fetch()`. What is not familiar is the install. It is a C extension built from source, not a `composer require`, and the account identifier and authentication rules trip up nearly everyone on the first attempt. This guide covers building the driver, the DSN format, key-pair auth (which became mandatory for most accounts in late 2025), parameters, warehouses, identifier casing, and the failures you will hit.
+
+## Install: build from source
+
+`pdo_snowflake` is a PHP extension distributed as source. There is no Packagist package and no pure-PHP fallback. You clone, build, and load it. As of June 2026 the current release is 4.0.0, which supports PHP 8.5:
+
+```bash
+git clone https://github.com/snowflakedb/pdo_snowflake.git
+cd pdo_snowflake
+export PHP_HOME=/usr/bin
+/bin/bash ./scripts/build_pdo_snowflake.sh $PHP_HOME/php-config
+$PHP_HOME/php -dextension=modules/pdo_snowflake.so -m | grep pdo_snowflake
+```
+
+Then add `extension=pdo_snowflake.so` to `php.ini`. This is the biggest difference from PostgreSQL or MySQL, where the PDO driver ships with PHP. Budget time for build dependencies (gcc, cmake, libcurl) on the host.
+
+## Connect
+
+```php
+<?php
+$dsn = "snowflake:account=myorg-myaccount";
+$dbh = new PDO($dsn, "MY_USER", "MY_PASSWORD");
+$dbh->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+```
+
+## The account-identifier trap
+
+The single most common failure is the account identifier. The modern format is `organization-account` (for example `myorg-myaccount`), not the legacy region locator like `xy12345.eu-central-1`. Mixing the two, or pasting the full `.snowflakecomputing.com` host into the `account=` field, produces connection failures that look like network errors. You can sidestep the parsing by giving the host directly:
+
+```php
+$dsn = "snowflake:host=myorg-myaccount.snowflakecomputing.com";
+```
+
+Find the exact identifier under Admin → Accounts in Snowsight. Get this right before debugging anything else.
+
+## Key-pair auth (the password block)
+
+In late 2025 Snowflake began blocking single-factor password sign-in for most accounts. Username and password alone will likely be rejected. The supported path for programmatic PHP is **key-pair auth**: generate an encrypted PKCS#8 key, register the public key on the user, then authenticate with JWT:
+
+```bash
+openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out rsa_key.p8
+openssl rsa -in rsa_key.p8 -pubout -out rsa_key.pub
+```
+
+```sql
+ALTER USER MY_USER SET RSA_PUBLIC_KEY='MIIB...';
+```
+
+```php
+$dsn = "snowflake:account=myorg-myaccount;authenticator=SNOWFLAKE_JWT;"
+     . "priv_key_file=/path/rsa_key.p8;priv_key_file_pwd=passphrase";
+$dbh = new PDO($dsn, "MY_USER", "");
+```
+
+The password argument is empty; the key does the work. For interactive users, `authenticator=externalbrowser` triggers SSO instead.
+
+## Query and parameters
+
+```php
+$stmt = $dbh->prepare("SELECT name, total FROM customers WHERE region = ? AND active = ?");
+$stmt->execute(['EMEA', true]);
+foreach ($stmt as $row) {
+    printf("%s: %d\n", $row['NAME'], $row['TOTAL']);
+}
+```
+
+Positional `?` binds are the safe path. Note `$row['NAME']`, not `$row['name']`: Snowflake folds unquoted identifiers to **uppercase**, so result columns come back uppercase unless you double-quoted them at creation. Reading lowercase keys returns nulls and confuses people for hours.
+
+## You need a warehouse
+
+A query needs a running virtual warehouse to compute. Without one set, you get **"No active warehouse selected in the current session"**. Set it on connect:
+
+```php
+$dbh->exec("USE WAREHOUSE MY_WH");
+$dbh->exec("USE DATABASE MY_DB");
+$dbh->exec("USE SCHEMA PUBLIC");
+```
+
+Set role too if your default role cannot see the objects, or you get object-not-found errors that are really permission errors.
+
+## Errors you will actually hit
+
+| Symptom | Cause |
+| --- | --- |
+| Connection fails, looks like network | Wrong account identifier; use `org-account`, not the region locator. |
+| `Incorrect username or password` despite correct creds | Single-factor password blocked; switch to key-pair auth. |
+| `JWT token is invalid` | Public key not registered, or clock skew on the host. |
+| `No active warehouse selected` | Run `USE WAREHOUSE` after connecting. |
+| Object does not exist | Wrong role, database, or schema in session. |
+| Null values reading `$row['name']` | Snowflake uppercases identifiers; read `$row['NAME']`. |
+
+## Where Mako fits
+
+Mako connects to Snowflake and gives you AI-assisted autocomplete for writing and exploring queries before you wire them into PHP, including warehouse and role selection so "no active warehouse" never surprises you. It is read and query only: no warehouse administration. Try it free at mako.ai.

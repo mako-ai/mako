@@ -1,0 +1,179 @@
+---
+title: "How to Connect to MongoDB from C# (.NET)"
+description: "Connect to MongoDB from C# with the official MongoDB.Driver: MongoClient lifetime, async CRUD, the typed vs BSON document APIs, SRV connection strings, Atlas, pooling, LINQ, and the errors you actually hit."
+database: "mongodb"
+category: "how-to"
+tags: ["mongodb", "csharp", "dotnet", "mongodb-driver", "atlas", "connection"]
+date: "2026-06-23"
+---
+
+MongoDB in .NET has one driver that matters: the official `MongoDB.Driver` package. Unlike the relational databases, there is no ADO.NET layer and no Dapper here. MongoDB is a document database, so the driver exposes collections of typed objects (or raw BSON documents) rather than rows and a SQL string. This guide covers the one piece people get wrong first (client lifetime), then async CRUD, the typed-versus-BSON choice, connection strings and Atlas, pooling, and LINQ.
+
+## The one driver
+
+```bash
+dotnet add package MongoDB.Driver
+```
+
+`MongoDB.Driver` 3.9.0 is current as of June 2026. It is the only official driver and the only one you should use; it bundles the BSON library and the LINQ provider. The older `MongoDB.Driver.Core` and the standalone `MongoDB.Bson` are now folded into this single package for normal use.
+
+## MongoClient: create one, reuse it
+
+The single most important rule: **`MongoClient` is meant to be created once and reused for the lifetime of your application.** It manages an internal connection pool. Creating a new `MongoClient` per request or per operation defeats the pool, leaks sockets, and will exhaust connections under load.
+
+Register it as a singleton:
+
+```csharp
+using MongoDB.Driver;
+
+var client = new MongoClient("mongodb://localhost:27017");
+// reuse `client` everywhere
+```
+
+In ASP.NET Core:
+
+```csharp
+builder.Services.AddSingleton<IMongoClient>(_ =>
+    new MongoClient(builder.Configuration.GetConnectionString("Mongo")));
+```
+
+`MongoClient` is thread-safe by design. `IMongoDatabase` and `IMongoCollection<T>` are also thread-safe and cheap to obtain from the client, so you can fetch them per operation or cache them; both are fine.
+
+## Lazy connection
+
+Constructing a `MongoClient` does **not** connect. It returns immediately and the driver connects lazily on the first real operation in the background. That means a wrong host or down server does not throw at construction; it throws when you run your first query, typically as a `TimeoutException` after server selection times out (30 seconds by default).
+
+To verify connectivity at startup, run a ping and fail fast:
+
+```csharp
+var db = client.GetDatabase("admin");
+await db.RunCommandAsync<BsonDocument>(new BsonDocument("ping", 1));
+```
+
+## A first query: typed documents
+
+The idiomatic approach maps collections to your own C# types. Define a class, get a typed collection, and query with a filter:
+
+```csharp
+using MongoDB.Bson;
+using MongoDB.Bson.Serialization.Attributes;
+using MongoDB.Driver;
+
+public class User
+{
+    [BsonId]
+    public ObjectId Id { get; set; }
+    public string Email { get; set; } = "";
+    public bool Active { get; set; }
+}
+
+var db = client.GetDatabase("appdb");
+var users = db.GetCollection<User>("users");
+
+var filter = Builders<User>.Filter.Eq(u => u.Active, true);
+var active = await users.Find(filter).ToListAsync();
+
+foreach (var u in active)
+    Console.WriteLine($"{u.Id}: {u.Email}");
+```
+
+`[BsonId]` maps a property to the document's `_id`. The default `_id` type is `ObjectId` (a 12-byte value, not a GUID); if you want your own id type, set it explicitly and the driver will respect it.
+
+## Insert, update, delete
+
+```csharp
+// Insert
+await users.InsertOneAsync(new User { Email = "a@example.com", Active = true });
+
+// Update
+var filter = Builders<User>.Filter.Eq(u => u.Email, "a@example.com");
+var update = Builders<User>.Update.Set(u => u.Active, false);
+await users.UpdateOneAsync(filter, update);
+
+// Delete
+await users.DeleteOneAsync(filter);
+```
+
+Use the async methods throughout. Synchronous equivalents exist (`Find(...).ToList()`, `InsertOne`) but block a thread on a network round trip; in a server app prefer async.
+
+A common trap with updates: `ReplaceOneAsync` swaps the **entire** document, dropping any fields not present in the replacement object. Use `UpdateOneAsync` with `Builders<T>.Update` operators when you mean to change specific fields. See [MongoDB update operators](/guides/mongodb/update-operators) for the full set.
+
+## Typed vs BSON documents
+
+If you do not have (or want) a fixed C# class, work with `BsonDocument` directly:
+
+```csharp
+var coll = db.GetCollection<BsonDocument>("users");
+var filter = new BsonDocument("active", true);
+var docs = await coll.Find(filter).ToListAsync();
+
+foreach (var doc in docs)
+    Console.WriteLine(doc["email"].AsString);
+```
+
+Typed classes give you compile-time safety and IntelliSense; `BsonDocument` gives you flexibility for dynamic or schema-loose data. Most applications use typed classes and reach for `BsonDocument` only for ad hoc or migration code.
+
+## Connection strings and SRV
+
+The standard form is `mongodb://`. For replica sets and Atlas you usually get the `mongodb+srv://` form, which uses a DNS SRV record to discover the cluster members:
+
+```
+mongodb+srv://user:pass@cluster0.abcde.mongodb.net/?retryWrites=true&w=majority
+```
+
+A few things that trip people up:
+
+- **`mongodb+srv://` implies TLS.** You do not add a separate TLS flag; SRV connection strings enable TLS by default.
+- **Percent-encode credentials.** If your username or password contains `@`, `:`, `/`, or other reserved characters, URL-encode them or the string fails to parse.
+- **authSource is not the database you query.** Authentication happens against the database where the user was created (often `admin`), set via `authSource`. Querying `appdb` while the user lives in `admin` needs `?authSource=admin`. A wrong `authSource` produces an authentication failure even with correct credentials.
+
+## Atlas specifics
+
+For MongoDB Atlas, two non-driver things cause most "it works locally but not in the cloud" reports:
+
+- **IP allowlist.** Atlas blocks all inbound connections except allowlisted IPs. Add your app's egress IP (or `0.0.0.0/0` only for throwaway testing) in the Atlas Network Access panel.
+- **SRV DNS resolution.** `mongodb+srv://` needs working DNS SRV lookups from your host. Some locked-down container networks block this; if SRV fails, the driver cannot discover the cluster.
+
+## Pooling
+
+The driver maintains a connection pool per `MongoClient`, controlled in the connection string:
+
+```
+mongodb://host:27017/?maxPoolSize=100&minPoolSize=0
+```
+
+`maxPoolSize` defaults to 100. The relevant ceiling is the cluster's connection limit (and on Atlas, the tier's connection cap): `maxPoolSize` multiplied by the number of running app instances must stay under it. Oversizing the pool across many instances is a frequent cause of Atlas connection-limit errors.
+
+## LINQ
+
+The driver ships a LINQ provider, so you can query with LINQ syntax that is translated to the aggregation framework server-side:
+
+```csharp
+using MongoDB.Driver.Linq;
+
+var active = await users.AsQueryable()
+    .Where(u => u.Active)
+    .OrderBy(u => u.Email)
+    .ToListAsync();
+```
+
+The translation is genuine server-side execution, not in-memory filtering, as long as your expression maps to supported operators. Expressions the provider cannot translate throw at execution time rather than silently pulling the whole collection, which is the behavior you want.
+
+## Graceful shutdown
+
+`MongoClient` does not need explicit disposal in most apps; registering it as a singleton and letting the process exit is fine. If you want deterministic cleanup (for example in a short-lived console tool), there is no `Dispose` to call on older patterns, but the modern driver's client is safe to simply let go of when the app ends.
+
+## Common errors
+
+| Error | Cause | Fix |
+|---|---|---|
+| `TimeoutException` on first operation | Wrong host/port, server down, or lazy-connect surfacing late | Ping at startup to fail fast; check host and that the server is reachable |
+| Authentication failed (correct password) | Wrong `authSource` | Set `?authSource=admin` (or wherever the user was created) |
+| Connection refused on `localhost` | Driver resolved `localhost` to IPv6 `::1`, server on IPv4 | Use `127.0.0.1` explicitly |
+| Atlas connection times out | IP not allowlisted, or SRV DNS blocked | Allowlist your egress IP; confirm SRV lookups work |
+| Fields silently lost after update | Used `ReplaceOneAsync` | Use `UpdateOneAsync` with `Builders.Update` operators |
+| Connection-limit errors under load | `maxPoolSize` × instances exceeds cluster cap | Lower `maxPoolSize`; size against the tier's connection limit |
+
+For working with documents once connected, see [the MongoDB aggregation pipeline](/guides/mongodb/aggregation-pipeline), [query operators](/guides/mongodb/query-operators), and [indexes explained](/guides/mongodb/indexes-explained).
+
+Mako connects to MongoDB, PostgreSQL, MySQL, and more with AI-powered autocomplete for writing and exploring queries. Try it free at mako.ai.

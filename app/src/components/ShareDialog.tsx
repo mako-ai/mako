@@ -359,6 +359,23 @@ export default function ShareDialog({
     }
   };
 
+  const handleLiveToggle = async (allowLiveQueries: boolean) => {
+    if (!workspaceId || !resourceId) return;
+    await run(async () => {
+      const result = await updatePublicShare(
+        resourceType,
+        workspaceId,
+        resourceId,
+        { allowLiveQueries },
+      );
+      if (result.ok && result.publicShare) {
+        setPublicShare(result.publicShare);
+        onSharingChanged?.({ publicShare: result.publicShare });
+      }
+      return result;
+    });
+  };
+
   const handleSetPassword = async () => {
     if (!workspaceId || !resourceId || !password) return;
     await run(async () => {
@@ -1007,6 +1024,41 @@ export default function ShareDialog({
                       }}
                     />
                   ))}
+
+                {resourceType === "app" && (
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 1,
+                      mt: 0.5,
+                      pt: 1,
+                      borderTop: "1px solid",
+                      borderColor: "divider",
+                    }}
+                  >
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography variant="caption" sx={{ fontWeight: 500 }}>
+                        Live data
+                      </Typography>
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: "block" }}
+                      >
+                        {publicShare.allowLiveQueries
+                          ? "Viewers run this app's published queries live (read-only)"
+                          : "Viewers see the last snapshot only"}
+                      </Typography>
+                    </Box>
+                    <Switch
+                      size="small"
+                      checked={!!publicShare.allowLiveQueries}
+                      disabled={!canManage || busy}
+                      onChange={e => void handleLiveToggle(e.target.checked)}
+                    />
+                  </Box>
+                )}
               </Box>
             )}
           </>

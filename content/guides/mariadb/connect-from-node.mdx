@@ -1,0 +1,107 @@
+---
+title: "How to Connect to MariaDB from Node.js"
+description: "Connect to MariaDB from Node.js using the official mariadb driver. Working code for connection pools, promise vs callback APIs, the named-pipe and socket traps, and how it differs from mysql2."
+database: "mariadb"
+category: "how-to"
+tags: ["mariadb", "nodejs", "mariadb-driver", "connection"]
+date: "2026-06-15"
+---
+
+MariaDB has its own official Node.js driver, `mariadb`, maintained by MariaDB Corporation. It is current at version 3.5.3 (as of June 2026). You can also connect with `mysql2`, since MariaDB speaks the MySQL wire protocol, but the official driver is faster on bulk inserts and exposes MariaDB-specific features the MySQL drivers do not. Pick based on which database you actually run against, not habit.
+
+```bash
+npm install mariadb
+```
+
+## Promise API, not callbacks
+
+Unlike the older `mysql` package, the `mariadb` driver is promise-first. The main entry point exposes a promise interface directly, so you do not need a wrapper:
+
+```js
+import mariadb from "mariadb";
+
+const pool = mariadb.createPool({
+  host: "127.0.0.1",
+  port: 3306,
+  user: "app_user",
+  password: process.env.MARIADB_PASSWORD,
+  database: "analytics",
+  connectionLimit: 5,
+});
+
+const conn = await pool.getConnection();
+try {
+  const rows = await conn.query("SELECT id, email FROM users WHERE active = ?", [true]);
+  console.log(rows);
+} finally {
+  conn.release();
+}
+```
+
+There is also a callback API at `mariadb/callback` for legacy codebases, but new code should use the promise interface above.
+
+## Use a pool, and always release
+
+`createPool` is the right default for any server. The single most common leak is forgetting `conn.release()` -- once `connectionLimit` connections are checked out and never returned, every subsequent `getConnection()` hangs until `acquireTimeout` fires. The `try/finally` pattern above guarantees release even when the query throws. Call `pool.end()` on shutdown to close the pool cleanly.
+
+For one-off scripts where pooling is overkill, `mariadb.createConnection()` returns a single connection you close with `conn.end()`.
+
+## The localhost socket trap
+
+If `host` is `localhost`, some setups route through a Unix socket instead of TCP, and the socket path the driver expects may not match where your MariaDB server actually puts it. The symptom is a connection that fails locally but works from another machine. Use `127.0.0.1` to force TCP, or set `socketPath` explicitly:
+
+```js
+const conn = await mariadb.createConnection({
+  socketPath: "/run/mysqld/mysqld.sock",
+  user: "app_user",
+  password: process.env.MARIADB_PASSWORD,
+  database: "analytics",
+});
+```
+
+This is the same trap MySQL drivers hit -- see our [MySQL Node.js guide](/guides/mysql/connect-from-node) for the parallel case.
+
+## Result metadata and bulk inserts
+
+By default `query()` returns an array of row objects. For large inserts, the driver's `batch()` method sends rows far more efficiently than looping individual `INSERT` statements:
+
+```js
+await conn.batch(
+  "INSERT INTO events (user_id, action) VALUES (?, ?)",
+  [[1, "login"], [2, "signup"], [3, "logout"]]
+);
+```
+
+One behavior to know: integer columns large enough to overflow JavaScript's safe integer range come back as `BigInt` by default. If your IDs fit in a regular number and you want plain numbers, set `insertIdAsNumber: true` and `decimalAsNumber: true` (or `bigIntAsNumber: true`) in the connection options, but be deliberate -- silently truncating a real BigInt is worse than dealing with the type.
+
+## TLS for managed MariaDB
+
+SkySQL, Amazon RDS, and other managed MariaDB instances require TLS. Point the driver at the CA certificate rather than disabling verification:
+
+```js
+import fs from "node:fs";
+
+const pool = mariadb.createPool({
+  host: "db.example.com",
+  user: "app_user",
+  password: process.env.MARIADB_PASSWORD,
+  database: "analytics",
+  ssl: { ca: fs.readFileSync("/path/to/ca.pem") },
+});
+```
+
+Setting `ssl: { rejectUnauthorized: false }` makes the connection encrypted but unauthenticated against a forged certificate. Use the CA file in production.
+
+## Verifying the connection
+
+A quick sanity check before wiring the pool into an app:
+
+```js
+const conn = await pool.getConnection();
+const [{ version }] = await conn.query("SELECT VERSION() AS version");
+console.log("Connected to", version);
+conn.release();
+await pool.end();
+```
+
+If you want to inspect tables and run exploratory queries against MariaDB without writing connection code, Mako connects to MariaDB with AI-powered autocomplete. Try it free at mako.ai.

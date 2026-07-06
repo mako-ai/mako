@@ -20,6 +20,16 @@ import type { ConsoleTab, TabKind } from "../store/lib/types";
 export const APP_FILE_SEP = "::file::";
 export const APP_DIR_SEP = "::dir::";
 export const APP_BINDING_SEP = "::binding::";
+export const DASHBOARD_DATA_SOURCE_SEP = "::dashboard-data-source::";
+
+// dbt (Transforms) ResourceTree node-id encoding (kept in sync with
+// DbtExplorer, which imports these). Project node: "<projectId>";
+// dir: "<projectId>::dir::<path>"; file: "<projectId>::file::<path>";
+// job: "<projectId>::job::<jobId>"; runs: "<projectId>::runs::".
+export const DBT_FILE_SEP = "::file::";
+export const DBT_DIR_SEP = "::dir::";
+export const DBT_JOB_SEP = "::job::";
+export const DBT_RUNS_SEP = "::runs::";
 
 /** Left-pane explorers that support reveal/scroll-to-row. */
 export type RevealExplorer =
@@ -27,7 +37,8 @@ export type RevealExplorer =
   | "dashboards"
   | "apps"
   | "connectors"
-  | "flows";
+  | "flows"
+  | "dbt";
 
 export interface ExplorerRevealTarget {
   explorer: RevealExplorer;
@@ -58,9 +69,14 @@ export function tabRevealTarget(
       return id ? { explorer: "dashboards", nodeId: id } : null;
     }
     case "dashboard-data-source": {
-      // Data-source tabs live under their dashboard — reveal the dashboard row.
-      const id = meta.dashboardId as string | undefined;
-      return id ? { explorer: "dashboards", nodeId: id } : null;
+      const dashboardId = meta.dashboardId as string | undefined;
+      const dataSourceId = meta.dataSourceId as string | undefined;
+      return dashboardId && dataSourceId
+        ? {
+            explorer: "dashboards",
+            nodeId: `${dashboardId}${DASHBOARD_DATA_SOURCE_SEP}${dataSourceId}`,
+          }
+        : null;
     }
     case "app": {
       const appId = meta.appId as string | undefined;
@@ -98,13 +114,31 @@ export function tabRevealTarget(
     case "members":
       // No sidebar tree row.
       return null;
-    case "dbt-file":
-    case "dbt-job":
-    case "dbt-console":
-    case "dbt-runs":
-      // dbt tabs live in the Transforms explorer; no stable reveal id yet
-      // (mirrors tab-routing.ts — not deep-linkable yet).
-      return null;
+    case "dbt-file": {
+      const projectId = meta.projectId as string | undefined;
+      const path = meta.path as string | undefined;
+      return projectId && path
+        ? { explorer: "dbt", nodeId: `${projectId}${DBT_FILE_SEP}${path}` }
+        : null;
+    }
+    case "dbt-job": {
+      const projectId = meta.projectId as string | undefined;
+      const jobId = meta.jobId as string | undefined;
+      return projectId && jobId
+        ? { explorer: "dbt", nodeId: `${projectId}${DBT_JOB_SEP}${jobId}` }
+        : null;
+    }
+    case "dbt-runs": {
+      const projectId = meta.projectId as string | undefined;
+      return projectId
+        ? { explorer: "dbt", nodeId: `${projectId}${DBT_RUNS_SEP}` }
+        : null;
+    }
+    case "dbt-console": {
+      // The Console is the project home — reveal the project node itself.
+      const projectId = meta.projectId as string | undefined;
+      return projectId ? { explorer: "dbt", nodeId: projectId } : null;
+    }
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.
       const exhaustivenessCheck: never = kind;

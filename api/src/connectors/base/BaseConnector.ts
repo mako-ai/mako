@@ -73,6 +73,12 @@ export interface WebhookHandlerOptions {
   payload: any;
   headers: Record<string, string | string[] | undefined>;
   secret?: string;
+  /**
+   * Inbound request query parameters. Some providers (e.g. PandaDoc) deliver
+   * their HMAC signature as a query parameter rather than a header, so the
+   * generic webhook receiver forwards them here for verification.
+   */
+  query?: Record<string, string | string[] | undefined>;
 }
 
 export interface ProvisionWebhookOptions {
@@ -86,6 +92,34 @@ export interface ProvisionWebhookResult {
   providerWebhookId: string;
   endpointUrl: string;
   signingSecret?: string;
+}
+
+/**
+ * Static, UI-facing description of a connector's webhook support. Surfaced
+ * through connector metadata so the generic webhook UI stays connector-agnostic
+ * (no `if (type === "stripe")` branching in components — see rule 15).
+ */
+export interface WebhookProvisioningCapability {
+  /** Connector can create the provider-side webhook subscription itself. */
+  supported: boolean;
+  /** Provider display name, used in copy like `Create in {providerLabel}`. */
+  providerLabel: string;
+  /** Provisioning persists the signing secret automatically on creation. */
+  storesSecretAutomatically: boolean;
+  /**
+   * Optional clause appended after "One click creates the {provider} webhook"
+   * (e.g. "and stores its signing secret").
+   */
+  actionHint?: string;
+}
+
+export interface WebhookCapabilities {
+  /** Connector can receive inbound webhooks at all. */
+  supported: boolean;
+  /** Auto-provisioning capability + UI copy. */
+  provisioning: WebhookProvisioningCapability;
+  /** Help text for the manual signing-secret input field. */
+  secretHelpText?: string;
 }
 
 export type NormalizedCdcRecord = Omit<NormalizedCdcEvent, "runId">;
@@ -291,6 +325,24 @@ export abstract class BaseConnector {
   }
 
   /**
+   * Static, UI-facing webhook capabilities. Defaults are derived from the
+   * existing capability predicates; connectors override to provide provider
+   * labels and help text so the generic webhook UI never hardcodes connector
+   * types. Must be safe to call on a metadata-only (dummy) instance.
+   */
+  getWebhookCapabilities(): WebhookCapabilities {
+    return {
+      supported: this.supportsWebhooks(),
+      provisioning: {
+        supported: this.supportsWebhookProvisioning(),
+        providerLabel: this.getMetadata().name,
+        storesSecretAutomatically: false,
+      },
+      secretHelpText: "Enter the webhook signing secret from your provider",
+    };
+  }
+
+  /**
    * Create a provider-side webhook subscription.
    */
   async createWebhookSubscription(
@@ -360,19 +412,25 @@ export abstract class BaseConnector {
       return [];
     }
 
+    const sourceTs = this.resolveRecordTimestamp(extracted.data);
     return [
       {
         entity: mapping.entity,
         recordId: extracted.id,
         operation: mapping.operation,
         payload: extracted.data,
-        sourceTs: this.resolveRecordTimestamp(extracted.data),
+        sourceTs,
         source: "webhook",
+        // Prefer a vendor-unique event id. The final fallback now includes the
+        // source timestamp so two DISTINCT updates of the same record never
+        // share a changeId (which would otherwise collapse to one idempotency
+        // key and silently drop every update after the first).
         changeId:
           event?.id ||
           event?.event_id ||
           event?.eventId ||
-          `${resolvedEventType}:${extracted.id}`,
+          event?.event?.id ||
+          `${resolvedEventType}:${extracted.id}:${sourceTs.toISOString()}`,
       },
     ];
   }
@@ -404,6 +462,7 @@ export abstract class BaseConnector {
       payload?.date_updated,
       payload?.updated_at,
       payload?.updatedAt,
+      payload?.date_modified,
       payload?.date_created,
       payload?.created_at,
       payload?.createdAt,

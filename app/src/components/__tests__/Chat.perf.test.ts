@@ -32,6 +32,7 @@ function makeProps(
     isStreaming: false,
     onToolClick: stableNoop,
     onConsoleTitleClick: stableNoop,
+    onMcpApprovalResponse: stableNoop,
     connectionIconById: stableConnectionIconById,
     paletteMode: "light",
     ...overrides,
@@ -304,30 +305,132 @@ describe("Chat.tsx structural guards", () => {
     expect(chatSource).toMatch(/experimental_throttle\s*:\s*\d+/);
   });
 
-  it("uses use-stick-to-bottom for scroll management", () => {
-    expect(chatSource).toContain("useStickToBottom");
+  it("virtualizes the message list with react-virtuoso", () => {
+    // Long chats must NOT mount every message at once (DOM/memory/paint death
+    // on mobile). Virtuoso windows the list so only visible rows + overscan
+    // are mounted. Reverting to `messages.map(...)` over the full array would
+    // reintroduce the lag this guards against.
+    expect(chatSource).toContain('from "react-virtuoso"');
+    expect(chatSource).toMatch(/<Virtuoso\b/);
+    expect(chatSource).toMatch(/data=\{messages\}/);
+    expect(chatSource).toMatch(/computeItemKey=/);
   });
 
-  it("does NOT have a DIY useEffect([messages]) auto-scroll", () => {
-    const diyScrollPattern =
-      /useEffect\(\s*\(\)\s*=>\s*\{[^}]*scrollIntoView[^}]*\}\s*,\s*\[messages\]\)/s;
-    expect(chatSource).not.toMatch(diyScrollPattern);
+  it("auto-follows the streaming tail by pinning in totalListHeightChanged, gated on isAtBottom", () => {
+    // Auto-scroll is owned by a bottom-pin inside Virtuoso's
+    // `totalListHeightChanged` callback — NOT Virtuoso's `followOutput` and NOT
+    // a per-`messages`-tick rAF. `followOutput` only fires on item-COUNT change
+    // (a whole turn streams into ONE message, so it never fires mid-turn) and
+    // its `scrollToIndex({ align: "end" })` races the pin and bounces the view,
+    // so it must stay OFF. The previous rAF-on-messages-tick pin only covered
+    // ~1 of every 3 frames, so the interior Collapse/diff resizes (which fire
+    // between ticks) let Virtuoso's anchoring pull the view up → top/bottom
+    // bounce. Pinning in `totalListHeightChanged` runs after Virtuoso's
+    // compensation on exactly the resize frames, which fixes the bounce.
+    expect(chatSource).toMatch(/followOutput=\{false\}/);
+    expect(chatSource).toMatch(
+      /totalListHeightChanged=\{handleListHeightChanged\}/,
+    );
+    expect(chatSource).toMatch(/scrollerRef=\{/);
+    // While streaming, the pin writes scrollTop on the captured scroller, gated
+    // on the live isAtBottom ref (so scrolling up to read history isn't yanked
+    // down). While settling after the turn ends, it instead uses Virtuoso's
+    // authoritative `scrollToIndex({ index: "LAST" })` (a raw scrollTop write
+    // loses the race to Virtuoso re-anchoring the big end-of-turn collapse to
+    // the item top), gated on a snapshot of whether the user was at the bottom
+    // AS the turn ended (`wasAtBottomAtTurnEndRef`) — the live ref can't gate
+    // that because the collapse momentarily flips isAtBottom false.
+    // (The pin machinery lives in chat/hooks/useChatScroll.ts.)
+    const scrollHookSource = fs.readFileSync(
+      path.resolve(__dirname, "../chat/hooks/useChatScroll.ts"),
+      "utf-8",
+    );
+    expect(scrollHookSource).toMatch(/el\.scrollTop = el\.scrollHeight/);
+    expect(scrollHookSource).toMatch(/if \(!isAtBottomRef\.current\) return;/);
+    expect(scrollHookSource).toMatch(/wasAtBottomAtTurnEndRef/);
+    // Settle uses the authoritative scrollToIndex, not a raw scrollTop write,
+    // so the end-of-turn collapse can't strand the view at the message top.
+    expect(scrollHookSource).toMatch(
+      /Date\.now\(\) <= stickTailUntilRef\.current &&[\s\S]*?scrollToIndex\(\{ index: "LAST", align: "end" \}\)/,
+    );
+  });
+
+  const scrollHookSourceForNegativeGuards = fs.readFileSync(
+    path.resolve(__dirname, "../chat/hooks/useChatScroll.ts"),
+    "utf-8",
+  );
+
+  it("does NOT have a DIY useEffect([messages]) scrollIntoView auto-scroll", () => {
+    // The follow pin sets scrollTop on Virtuoso's captured scroller inside its
+    // height-change callback, never a raw per-chunk `scrollIntoView` on a DOM
+    // node, which fired every chunk and broke hover/click + caused jank.
+    expect(chatSource).not.toMatch(/scrollIntoView/);
+    expect(scrollHookSourceForNegativeGuards).not.toMatch(/scrollIntoView/);
   });
 
   it("does NOT have isNearBottomRef (old DIY scroll state)", () => {
     expect(chatSource).not.toContain("isNearBottomRef");
+    expect(scrollHookSourceForNegativeGuards).not.toContain("isNearBottomRef");
   });
 
   it("does NOT have rafIdRef (old DIY scroll coalescing)", () => {
     expect(chatSource).not.toContain("rafIdRef");
+    expect(scrollHookSourceForNegativeGuards).not.toContain("rafIdRef");
+  });
+
+  it("does NOT build a live modify_console diff while input is still streaming", () => {
+    // A line-diff of partial streamed content re-aligns its +/- groupings on
+    // every token (the modify_console "blink"). While input-streaming we show
+    // the raw SQL (append-only, smooth) and only render the diff once content
+    // is complete. (Lives in chat/tool-presentation.ts.)
+    const presentationSource = fs.readFileSync(
+      path.resolve(__dirname, "../chat/tool-presentation.ts"),
+      "utf-8",
+    );
+    expect(presentationSource).toMatch(
+      /state === "input-streaming"\s*\?\s*undefined/,
+    );
   });
 
   it("keys tool parts by toolCallId so completed cards don't remount", () => {
     // Remounting a finished tool card on every parts-array mutation drops
     // its internal expand/scroll state and causes a flicker. Keying by
     // toolCallId keeps identity stable across reorders/inserts.
-    expect(chatSource).toMatch(/key=\{\s*key\s*\}/);
-    expect(chatSource).toMatch(/`tool-\$\{toolCallId\}`/);
+    // (Lives in chat/ChatMessageRow.tsx.)
+    const rowSource = fs.readFileSync(
+      path.resolve(__dirname, "../chat/ChatMessageRow.tsx"),
+      "utf-8",
+    );
+    expect(rowSource).toMatch(/key=\{\s*key\s*\}/);
+    expect(rowSource).toMatch(/`tool-\$\{toolCallId\}`/);
+  });
+});
+
+describe("StreamingToolCard structural guards", () => {
+  const cardSource = fs.readFileSync(
+    path.resolve(__dirname, "../StreamingToolCard.tsx"),
+    "utf-8",
+  );
+
+  it("unmounts the collapsed body (Collapse unmountOnExit)", () => {
+    // Collapsed tool cards must not keep their syntax-highlighted JSON/code in
+    // the DOM — that's the dominant DOM-node source in long chats on mobile.
+    expect(cardSource).toMatch(/<Collapse[^>]*unmountOnExit/s);
+  });
+
+  it("renders full tool content but budget-gates the syntax highlighter", () => {
+    // The body must NEVER truncate tool content (users need the full streamed
+    // SQL/code inline) — but Prism explodes big payloads into tens of
+    // thousands of DOM nodes, so past a size budget the body falls back to a
+    // plain monospace <pre> (single text node) instead of highlighting.
+    expect(cardSource).toContain("isWithinHighlightBudget");
+    expect(cardSource).toMatch(/MAX_HIGHLIGHT_(CHARS|LINES)/);
+    expect(cardSource).not.toContain("truncated for display");
+    expect(cardSource).not.toContain("capForDisplay");
+  });
+
+  it("defers building the heavy body strings until the body renders", () => {
+    expect(cardSource).toMatch(/shouldRenderBody/);
   });
 });
 

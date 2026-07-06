@@ -64,11 +64,13 @@ Set these in Cloud Run's environment configuration (or via `cloud-run-env.yaml`)
 | `SESSION_SECRET`               | Yes         | Session security                         |
 | `BASE_URL`                     | Yes         | Public URL (e.g., `https://app.mako.ai`) |
 | `CLIENT_URL`                   | Yes         | Same as BASE_URL for Cloud Run           |
+| `REDIS_URL`                    | Optional    | Redis pub/sub for resumable streams and realtime — **required when running more than one API instance**; in-process otherwise |
 | `AI_GATEWAY_API_KEY`           | Required    | AI features (Vercel AI Gateway)          |
 | `OPENAI_API_KEY`               | Optional    | Text embeddings only                     |
 | `GOOGLE_CLIENT_ID` + `SECRET`  | Optional    | Google OAuth                             |
 | `GH_CLIENT_ID` + `SECRET`      | Optional    | GitHub OAuth                             |
 | `SENDGRID_API_KEY`             | Optional    | Email invitations                        |
+| `EMAIL_LOGO_URL`               | Optional    | Logo for run-notification emails (default: `https://app.mako.ai/email/mako-logo.png`). Override for self-hosted/staging. |
 | `BILLING_ENABLED`              | Optional    | Set `true` to enable Stripe billing (default: `false`) |
 | `STRIPE_SECRET_KEY`            | Optional    | Stripe secret key (required if billing enabled) |
 | `STRIPE_WEBHOOK_SECRET`        | Optional    | Stripe webhook signing secret |

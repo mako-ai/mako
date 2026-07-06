@@ -29,9 +29,18 @@ export const PREVIEW_MESSAGE = {
   bindingResult: "mako-app:binding-result",
   runDuckDb: "mako-app:run-duckdb",
   duckDbResult: "mako-app:duckdb-result",
+  // host -> iframe: the app's materialized data changed (a refresh landed new
+  // parquet snapshots in the parent's DuckDB). The booted app re-runs its data
+  // hooks without a srcdoc rebuild, so the view updates while keeping UI state.
+  dataRefresh: "mako-app:data-refresh",
   capture: "mako-app:capture",
   captureResult: "mako-app:capture-result",
   setTheme: "mako-app:set-theme",
+  // iframe -> host: the app wants to change its (host-projected) URL.
+  navigate: "mako-app:navigate",
+  // host -> iframe: the app's location changed outside the app (deep link on
+  // load, browser back/forward). The app updates without echoing back.
+  location: "mako-app:location",
   error: "mako-app:error",
 } as const;
 
@@ -169,6 +178,13 @@ export function buildPreviewHtml(
      * omitted/null the iframe follows `prefers-color-scheme` (standalone).
      */
     theme?: PreviewTheme | null;
+    /**
+     * App location (relative URL, e.g. `/customers/1?tab=open`) to boot with.
+     * The host derives this from its own shareable URL so reload + share
+     * restore the app's view; later changes flow over the message bridge
+     * (`mako-app:navigate` / `mako-app:location`), never a srcdoc rebuild.
+     */
+    location?: string | null;
   },
 ): string {
   const scriptFiles: Record<string, string> = {};
@@ -187,6 +203,7 @@ export function buildPreviewHtml(
     bareDeps,
     entrypoint,
     theme: options?.theme ?? null,
+    location: options?.location ?? null,
   });
 
   return `<!DOCTYPE html>
@@ -194,6 +211,10 @@ export function buildPreviewHtml(
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- The frame is an opaque origin (no allow-same-origin), so a plain
+         <a href> can't navigate the top frame. Default every link to a new
+         tab so app links open externally instead of silently no-opping. -->
+    <base target="_blank" />
     <script type="importmap">${importMap}</script>
     <script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"></script>
     <style>
@@ -283,6 +304,70 @@ window.addEventListener("message", (event) => {
   if (data.type === "mako-app:set-theme") setExplicitTheme(data.theme);
 });
 
+// --- Location: the app's URL relative to its mount point. The sandboxed frame
+// can't touch the real (shareable) browser URL, so the app reads/writes this
+// virtual location via useLocation()/useSearchParams()/navigate() from
+// "@mako/app-sdk"; the host projects it onto its own URL and seeds it back on
+// load (payload.location) or on browser back/forward ("mako-app:location"). ---
+const LOCATION_BASE = "http://mako.app.local";
+let currentLocation = "/";
+const locationListeners = new Set();
+
+function resolveLocation(to) {
+  try {
+    const base = new URL(currentLocation, LOCATION_BASE);
+    const next = new URL(String(to), base);
+    return (next.pathname || "/") + (next.search || "");
+  } catch (_) {
+    return currentLocation;
+  }
+}
+function notifyLocation() {
+  locationListeners.forEach((listener) => {
+    try {
+      listener(currentLocation);
+    } catch (_) {
+      /* listener errors must not break routing */
+    }
+  });
+}
+// Apply an external location change (host -> iframe). Does not post back.
+function applyLocation(next) {
+  const normalized = resolveLocation(next);
+  if (normalized === currentLocation) return;
+  currentLocation = normalized;
+  notifyLocation();
+}
+// Apply an app-initiated change and report it to the host so the real URL
+// (and any shared link) tracks the app's view.
+function navigateTo(to, opts) {
+  const normalized = resolveLocation(to);
+  const changed = normalized !== currentLocation;
+  currentLocation = normalized;
+  if (changed) notifyLocation();
+  POST({
+    type: "mako-app:navigate",
+    location: currentLocation,
+    replace: !!(opts && opts.replace),
+  });
+}
+function parseLocation(loc) {
+  const url = new URL(loc, LOCATION_BASE);
+  return {
+    pathname: url.pathname || "/",
+    search: url.search,
+    hash: url.hash,
+    href: (url.pathname || "/") + url.search + url.hash,
+    searchParams: url.searchParams,
+  };
+}
+window.addEventListener("message", (event) => {
+  const data = event.data || {};
+  if (data.type === "mako-app:location" && typeof data.location === "string") {
+    applyLocation(data.location);
+  }
+});
+
 async function waitForBabel(timeoutMs = 10000) {
   const start = Date.now();
   while (!window.Babel) {
@@ -306,6 +391,25 @@ window.addEventListener("message", (event) => {
     pending.delete(data.requestId);
     resolve(data);
   }
+});
+
+// --- Data epoch: bumps when the host swaps in a fresh materialized snapshot
+// ("mako-app:data-refresh"). Data hooks depend on it, so they re-fetch when the
+// underlying parquet changes without rebuilding the (slow) srcdoc or losing the
+// running app's UI state. ---
+const dataListeners = new Set();
+let dataEpoch = 0;
+window.addEventListener("message", (event) => {
+  const data = event.data || {};
+  if (data.type !== "mako-app:data-refresh") return;
+  dataEpoch++;
+  dataListeners.forEach((listener) => {
+    try {
+      listener(dataEpoch);
+    } catch (_) {
+      /* listener errors must not break other subscribers */
+    }
+  });
 });
 function runBinding(name, rowLimit) {
   return new Promise((resolve) => {
@@ -380,6 +484,12 @@ async function main() {
   // renders so the first paint already uses the right tokens.
   setExplicitTheme(payload.theme);
 
+  // Seed the location the host derived from its shareable URL so the very
+  // first render already reflects a deep link / reloaded view.
+  if (typeof payload.location === "string" && payload.location) {
+    currentLocation = payload.location;
+  }
+
   const Babel = await waitForBabel();
 
   // Pre-import bare npm dependencies as ESM (via the import map).
@@ -405,6 +515,14 @@ async function main() {
     useQuery(name, opts) {
       const rowLimit = opts ? opts.rowLimit : undefined;
       const [state, setState] = React.useState({ data: null, error: null, loading: true, truncated: false });
+      const [epoch, setEpoch] = React.useState(dataEpoch);
+      React.useEffect(() => {
+        const listener = (next) => setEpoch(next);
+        dataListeners.add(listener);
+        // Re-sync in case a refresh landed between render and subscribe.
+        setEpoch(dataEpoch);
+        return () => { dataListeners.delete(listener); };
+      }, []);
       React.useEffect(() => {
         let active = true;
         setState({ data: null, error: null, loading: true, truncated: false });
@@ -418,7 +536,7 @@ async function main() {
           }
         });
         return () => { active = false; };
-      }, [name, rowLimit]);
+      }, [name, rowLimit, epoch]);
       return state;
     },
     // Run analytical SQL over the app's materialized (parquet) tables in
@@ -430,6 +548,14 @@ async function main() {
     useDuckDB(sql, opts) {
       const rowLimit = opts ? opts.rowLimit : undefined;
       const [state, setState] = React.useState({ data: null, fields: null, error: null, loading: true, truncated: false, rowCount: null });
+      const [epoch, setEpoch] = React.useState(dataEpoch);
+      React.useEffect(() => {
+        const listener = (next) => setEpoch(next);
+        dataListeners.add(listener);
+        // Re-sync in case a refresh landed between render and subscribe.
+        setEpoch(dataEpoch);
+        return () => { dataListeners.delete(listener); };
+      }, []);
       React.useEffect(() => {
         let active = true;
         setState({ data: null, fields: null, error: null, loading: true, truncated: false, rowCount: null });
@@ -450,7 +576,7 @@ async function main() {
           }
         });
         return () => { active = false; };
-      }, [sql, rowLimit]);
+      }, [sql, rowLimit, epoch]);
       return state;
     },
     // Effective color mode: { theme: "light" | "dark" }. Tracks the host app
@@ -468,6 +594,48 @@ async function main() {
         return () => { themeListeners.delete(listener); };
       }, []);
       return { theme: theme };
+    },
+    // The app's current location, projected onto (and shareable via) the host
+    // URL. Returns { pathname, search, hash, href, searchParams } and
+    // re-renders on every navigate() or external (back/forward) change.
+    useLocation() {
+      const [loc, setLoc] = React.useState(() => parseLocation(currentLocation));
+      React.useEffect(() => {
+        const listener = (next) => setLoc(parseLocation(next));
+        locationListeners.add(listener);
+        // Re-sync in case the location changed between render and subscribe.
+        setLoc(parseLocation(currentLocation));
+        return () => { locationListeners.delete(listener); };
+      }, []);
+      return loc;
+    },
+    // React-Router-style query param access: [URLSearchParams, setSearchParams].
+    // setSearchParams(next, { replace }) keeps the current pathname and updates
+    // only the query string (next may be a URLSearchParams, object, or string).
+    useSearchParams() {
+      const read = () => new URL(currentLocation, LOCATION_BASE).search;
+      const [search, setSearch] = React.useState(read);
+      React.useEffect(() => {
+        const listener = () => setSearch(read());
+        locationListeners.add(listener);
+        setSearch(read());
+        return () => { locationListeners.delete(listener); };
+      }, []);
+      const setSearchParams = (next, opts) => {
+        const sp =
+          next instanceof URLSearchParams ? next : new URLSearchParams(next);
+        const qs = sp.toString();
+        const pathname = new URL(currentLocation, LOCATION_BASE).pathname || "/";
+        navigateTo(pathname + (qs ? "?" + qs : ""), opts);
+      };
+      return [new URLSearchParams(search), setSearchParams];
+    },
+    // Imperatively change the app's location. The target may be absolute
+    // ("/x"), relative ("x", "../x") or query-only ("?q=1"). Pass
+    // { replace: true } to overwrite the current history entry (use it for
+    // transient filter tweaks so back/forward isn't flooded); default pushes.
+    navigate(to, opts) {
+      navigateTo(to, opts);
     },
   };
 

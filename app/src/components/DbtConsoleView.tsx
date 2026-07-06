@@ -28,6 +28,7 @@ import {
   Tab,
   Tabs,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import {
@@ -36,12 +37,15 @@ import {
   Play as RunIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useAuth } from "../contexts/auth-context";
 import {
   useDbtStore,
+  visibleDbtEnvironments,
   type DbtCommandRunResult,
   type DbtRunLogLine,
 } from "../store/dbtStore";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
+import { resolveDevEnvName, resolveProdLikeEnvName } from "../lib/dbt-env";
 
 const DbtLineageView = lazy(() => import("./DbtLineageView"));
 
@@ -117,12 +121,14 @@ function LogLines({ logs }: { logs: DbtRunLogLine[] }) {
 
 export default function DbtConsoleView({ projectId }: { projectId: string }) {
   const { currentWorkspace } = useWorkspace();
+  const { user } = useAuth();
   const workspaceId = currentWorkspace?.id;
 
   const project = useDbtStore(s => s.projects.find(p => p._id === projectId));
   const fetchProjects = useDbtStore(s => s.fetchProjects);
   const compileModel = useDbtStore(s => s.compileModel);
   const runCommand = useDbtStore(s => s.runCommand);
+  const setMyEnvironment = useDbtStore(s => s.setMyEnvironment);
 
   const [view, setView] = useState<"console" | "lineage">("console");
   const [environment, setEnvironment] = useState("");
@@ -137,9 +143,25 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
     if (!project && workspaceId) void fetchProjects(workspaceId);
   }, [project, workspaceId, fetchProjects]);
 
+  // Default to the user's saved dev environment (per-user setting), else
+  // their personal environment, else the project default.
   useEffect(() => {
-    if (project && !environment) setEnvironment(project.defaultEnvironment);
-  }, [project, environment]);
+    if (project && !environment) {
+      setEnvironment(
+        resolveDevEnvName(project, user?.id) ?? project.defaultEnvironment,
+      );
+    }
+  }, [project, environment, user?.id]);
+
+  // Picking an environment is a per-user setting shared with the editor and
+  // agent builds — persist it.
+  const handleEnvironmentChange = useCallback(
+    (name: string) => {
+      setEnvironment(name);
+      if (workspaceId) void setMyEnvironment(workspaceId, projectId, name);
+    },
+    [workspaceId, projectId, setMyEnvironment],
+  );
 
   const runParse = useCallback(async () => {
     if (!workspaceId) return;
@@ -251,14 +273,16 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
             <Select
               size="small"
               value={environment}
-              onChange={e => setEnvironment(e.target.value)}
+              onChange={e => handleEnvironmentChange(e.target.value)}
               sx={{ fontSize: "0.8rem", minWidth: 90 }}
             >
-              {project.environments.map(env => (
-                <MenuItem key={env.name} value={env.name}>
-                  {env.name}
-                </MenuItem>
-              ))}
+              {visibleDbtEnvironments(project.environments, user?.id).map(
+                env => (
+                  <MenuItem key={env.name} value={env.name}>
+                    {env.ownerUserId ? `${env.name} (personal)` : env.name}
+                  </MenuItem>
+                ),
+              )}
             </Select>
             <TextField
               size="small"
@@ -273,21 +297,29 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
                 sx: { fontFamily: "monospace", fontSize: "0.8rem" },
               }}
             />
-            <FormControlLabel
-              control={
-                <Checkbox
-                  size="small"
-                  checked={defer}
-                  onChange={e => setDefer(e.target.checked)}
-                />
+            <Tooltip
+              title={
+                `Resolve unselected refs against the last ` +
+                `"${resolveProdLikeEnvName(project) ?? "prod"}" build ` +
+                "(dbt --defer). Change the defer target in Project settings."
               }
-              label={
-                <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>
-                  Defer to prod
-                </Typography>
-              }
-              sx={{ mr: 0 }}
-            />
+            >
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={defer}
+                    onChange={e => setDefer(e.target.checked)}
+                  />
+                }
+                label={
+                  <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>
+                    Defer to {resolveProdLikeEnvName(project) ?? "prod"}
+                  </Typography>
+                }
+                sx={{ mr: 0 }}
+              />
+            </Tooltip>
             <Button
               size="small"
               variant="contained"

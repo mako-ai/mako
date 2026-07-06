@@ -2,8 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="/favicon.ico" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
 
     <!--
       Disable all MUI X telemetry. Set before any module script loads so the
@@ -16,7 +19,7 @@
     </script>
 
     <link rel="manifest" href="/manifest.json" />
-    <link rel="apple-touch-icon" href="/logo192.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Mako</title>
 
     <!-- Google Tag Manager -->
@@ -49,8 +52,14 @@
       html,
       body {
         height: 100%;
+        height: 100dvh;
         margin: 0;
         overflow: hidden;
+      }
+
+      #root {
+        height: 100%;
+        height: 100dvh;
       }
 
       /* Streamdown base styles - required for streaming markdown */

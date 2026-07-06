@@ -33,22 +33,31 @@ import {
   DialogActions,
   Alert,
   Snackbar,
+  Tooltip,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
+  Divider,
 } from "@mui/material";
 import { Close as CloseIcon } from "@mui/icons-material";
 import {
-  SquareTerminal as ConsoleIcon,
-  Settings as SettingsIcon,
-  CloudUpload as DataSourceIcon,
   Clock as ScheduleIcon,
   Webhook as WebhookIcon,
   CirclePause as PauseIcon,
-  ChartPie as DashboardIcon,
-  AppWindow as AppIcon,
-  FileCode as AppFileIcon,
-  Database as DatabaseIcon,
-  Table as TableDataIcon,
-  ClipboardList as PlanIcon,
+  Menu as MenuIcon,
+  ChevronDown as ChevronDownIcon,
+  Plus as PlusIcon,
+  X as CloseTabIcon,
 } from "lucide-react";
+import { tabKindIcon } from "../lib/entity-icons";
+import type { TabKind } from "../store/lib/types";
+
+/** Renders the canonical icon for a tab kind (see lib/entity-icons.ts). */
+function TabKindGlyph({ kind }: { kind: TabKind | undefined }) {
+  const Icon = tabKindIcon(kind);
+  return <Icon size={18} strokeWidth={1.5} />;
+}
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { loader } from "@monaco-editor/react";
 import Console, { ConsoleRef } from "./Console";
@@ -90,8 +99,11 @@ import { useAuth } from "../contexts/auth-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import ShareDialog from "./ShareDialog";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
+import { useIsMobile } from "../hooks/useIsMobile";
 import { trackEvent } from "../lib/analytics";
 import { getApiBasePath } from "../lib/api-base-path";
+import { setIframeDragGuard } from "../lib/iframe-drag-guard";
+import { consoleLeafName } from "../lib/console-name";
 import { generateObjectId } from "../utils/objectId";
 import {
   computeConsoleStateHash,
@@ -141,9 +153,10 @@ interface TabPaginationState {
 const StyledVerticalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
   height: "4px",
   background: theme.palette.divider,
-  cursor: "row-resize",
   transition: "background-color 0.2s ease",
-  "&:hover": {
+  // The library flags hover/drag via a data attribute (its hit area extends
+  // beyond the 4px strip), so key the highlight off that instead of :hover.
+  "&[data-resize-handle-state='hover'], &[data-resize-handle-state='drag']": {
     backgroundColor: theme.palette.primary.main,
   },
 }));
@@ -288,6 +301,40 @@ function SortableConsoleTab(props: React.ComponentProps<typeof Tab>) {
   );
 }
 
+// Claude-style floating round button for the mobile editor header — paper fill,
+// blur and a hairline so it reads as floating chrome over the editor content.
+const MOBILE_FLOAT_BTN_SX = {
+  width: 38,
+  height: 38,
+  flexShrink: 0,
+  borderRadius: "50%",
+  color: "text.secondary",
+  bgcolor: "background.paper",
+  border: 1,
+  borderColor: "divider",
+  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
+  backdropFilter: "blur(8px)",
+  "&:hover": { bgcolor: "action.hover" },
+} as const;
+
+// Centered "current window" pill that opens the open-tabs switcher menu.
+const MOBILE_WINDOW_PILL_SX = {
+  flex: 1,
+  minWidth: 0,
+  maxWidth: 260,
+  height: 38,
+  px: 1.5,
+  textTransform: "none",
+  borderRadius: 999,
+  color: "text.primary",
+  bgcolor: "background.paper",
+  border: 1,
+  borderColor: "divider",
+  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
+  backdropFilter: "blur(8px)",
+  "&:hover": { bgcolor: "action.hover" },
+} as const;
+
 function Editor({
   dbFlowFormRef,
   onChartSpecChangeRef,
@@ -343,6 +390,9 @@ function Editor({
     {},
   );
   const [isSaving, setIsSaving] = useState(false);
+  const [windowMenuAnchor, setWindowMenuAnchor] = useState<null | HTMLElement>(
+    null,
+  );
   const [errorModalOpen, setErrorModalOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [errorPreviewRetry, setErrorPreviewRetry] = useState<{
@@ -613,6 +663,24 @@ function Editor({
   const setActiveEditorContent = useUIStore(
     state => state.setActiveEditorContent,
   );
+
+  // Mobile (< md): the editor and results live behind separate bottom-nav tabs
+  // instead of the desktop vertical split. `mobileResultsView` decides which of
+  // the two a console tab shows.
+  const isMobile = useIsMobile();
+  const mobileTab = useUIStore(state => state.mobileTab);
+  const setMobileTab = useUIStore(state => state.setMobileTab);
+  const mobileResultsView = isMobile && mobileTab === "results";
+
+  // Tabs whose editing surfaces are not usable on a phone; we show a dismissible
+  // notice instead of the cramped desktop UI.
+  const DESKTOP_ONLY_KINDS = useMemo(
+    () => new Set(["flow-editor", "app", "app-file", "app-binding"]),
+    [],
+  );
+  const [dismissedDesktopOnly, setDismissedDesktopOnly] = useState<
+    Record<string, boolean>
+  >({});
 
   // Update active editor content when tab focus changes AND focus the Monaco editor
   useEffect(() => {
@@ -1086,6 +1154,11 @@ function Editor({
             capApplied: result.pageInfo?.capApplied ?? false,
           },
         }));
+        // On mobile, jump to the Results pane so the answer is visible without
+        // the user having to switch tabs manually.
+        if (isMobile) {
+          setMobileTab("results");
+        }
       } else if (result.error !== "Query cancelled") {
         const errText =
           typeof result.error === "string"
@@ -1170,7 +1243,7 @@ function Editor({
   };
 
   const handleDownloadResults = useCallback(
-    (tabId: string, format: "csv" | "ndjson") => {
+    async (tabId: string, format: "csv" | "ndjson") => {
       const tab = tabs[tabId];
       if (!currentWorkspace) {
         setErrorMessage("No workspace selected");
@@ -1185,47 +1258,72 @@ function Editor({
       }
 
       const action = `${getApiBasePath(import.meta.env.VITE_API_URL)}/workspaces/${currentWorkspace.id}/execute/export`;
-      const iframe = document.createElement("iframe");
-      iframe.name = `download-frame-${Date.now()}`;
-      iframe.style.display = "none";
-      document.body.appendChild(iframe);
-
-      const form = document.createElement("form");
-      form.method = "POST";
-      form.action = action;
-      form.target = iframe.name;
-      form.style.display = "none";
-
-      const appendField = (name: string, value?: string) => {
-        if (value === undefined || value === null) {
-          return;
-        }
-        const input = document.createElement("input");
-        input.type = "hidden";
-        input.name = name;
-        input.value = value;
-        form.appendChild(input);
-      };
-
-      appendField("connectionId", tab.connectionId);
-      appendField("databaseId", tab.databaseId);
-      appendField("databaseName", tab.databaseName);
-      appendField("query", tab.content);
-      appendField("format", format);
-      appendField("filename", tab.title || "query-results");
-
-      document.body.appendChild(form);
-      form.submit();
+      const baseName = tab.title || "query-results";
 
       setSnackbarMessage(
-        format === "csv" ? "CSV download started" : "NDJSON download started",
+        format === "csv" ? "Preparing CSV…" : "Preparing NDJSON…",
       );
       setSnackbarOpen(true);
 
-      window.setTimeout(() => {
-        form.remove();
-        iframe.remove();
-      }, 60000);
+      try {
+        // We use fetch (not a hidden-iframe form POST) so that server-side
+        // errors — preview-safety rejections, BigQuery auth/permission
+        // failures, etc. — surface to the user instead of being swallowed
+        // by an invisible iframe that always shows a "download started" toast.
+        const response = await fetch(action, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            connectionId: tab.connectionId,
+            databaseId: tab.databaseId,
+            databaseName: tab.databaseName,
+            query: tab.content,
+            format,
+            filename: baseName,
+          }),
+        });
+
+        if (!response.ok) {
+          let message = `Export failed (HTTP ${response.status})`;
+          try {
+            const errorBody = await response.json();
+            if (errorBody?.error) {
+              message = errorBody.error;
+            }
+          } catch {
+            const text = await response.text().catch(() => "");
+            if (text) message = text;
+          }
+          setSnackbarOpen(false);
+          setErrorMessage(message);
+          setErrorModalOpen(true);
+          return;
+        }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `${baseName}.${format === "csv" ? "csv" : "ndjson"}`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+
+        setSnackbarMessage(
+          format === "csv" ? "CSV downloaded" : "NDJSON downloaded",
+        );
+        setSnackbarOpen(true);
+      } catch (error) {
+        setSnackbarOpen(false);
+        setErrorMessage(
+          error instanceof Error
+            ? error.message
+            : "Failed to download query results",
+        );
+        setErrorModalOpen(true);
+      }
     },
     [currentWorkspace, tabs],
   );
@@ -1305,9 +1403,9 @@ function Editor({
       }
 
       if (result.success) {
-        // Update file path and title
+        // Update file path and title (title = canonical leaf name)
         updateFilePath(tabId, savePath);
-        updateTitle(tabId, savePath);
+        updateTitle(tabId, consoleLeafName(savePath));
         updateAccess(tabId, currentTab?.access);
         updateDirty(tabId, true);
 
@@ -1619,7 +1717,7 @@ function Editor({
 
         // Update the tab properties
         updateFilePath(tabId, pendingSaveData.path);
-        updateTitle(tabId, pendingSaveData.path);
+        updateTitle(tabId, consoleLeafName(pendingSaveData.path));
         updateAccess(tabId, pendingSaveData.access);
         updateDirty(tabId, true);
 
@@ -1718,7 +1816,7 @@ function Editor({
 
         if (result.success) {
           updateFilePath(targetId, savePath);
-          updateTitle(targetId, savePath);
+          updateTitle(targetId, consoleLeafName(savePath));
           updateAccess(
             targetId,
             section === "workspace" ? "workspace" : "private",
@@ -1809,7 +1907,7 @@ function Editor({
         } else {
           // "new" — first-time save of a draft; update the originating tab.
           updateFilePath(targetId, savePath);
-          updateTitle(targetId, savePath);
+          updateTitle(targetId, consoleLeafName(savePath));
           updateAccess(
             targetId,
             section === "workspace" ? "workspace" : "private",
@@ -1998,179 +2096,283 @@ function Editor({
             flexDirection: "column",
           }}
         >
-          {/* Tabs */}
-          <Box
-            sx={{
-              display: "flex",
-              alignItems: "center",
-              minHeight: 36,
-              borderBottom: 1,
-              borderColor: "divider",
-            }}
-          >
-            <DndContext
-              sensors={dndSensors}
-              collisionDetection={closestCenter}
-              modifiers={[restrictToHorizontalAxis]}
-              onDragEnd={handleTabDragEnd}
+          {/* Tab bar (desktop) / Claude-style floating window switcher
+              (mobile): round hamburger + center window pill + new-console. */}
+          {isMobile ? (
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 1,
+                px: 1,
+                py: 0.75,
+                minHeight: 52,
+              }}
             >
-              <SortableContext
-                items={sortableTabIds}
-                strategy={horizontalListSortingStrategy}
+              <Tooltip title="Open explorer">
+                <IconButton
+                  aria-label="Open explorer"
+                  onClick={() => useUIStore.getState().openMobileDrawer()}
+                  sx={MOBILE_FLOAT_BTN_SX}
+                >
+                  <MenuIcon size={20} />
+                </IconButton>
+              </Tooltip>
+              <Button
+                aria-label="Switch window"
+                onClick={e => setWindowMenuAnchor(e.currentTarget)}
+                endIcon={<ChevronDownIcon size={16} />}
+                sx={MOBILE_WINDOW_PILL_SX}
               >
-                <Tabs
-                  value={activeConsoleId}
-                  onChange={handleTabChange}
-                  variant="scrollable"
-                  scrollButtons={false}
+                <Box
+                  component="span"
                   sx={{
-                    minHeight: 36,
-                    "& .MuiTabs-indicator": { height: 2 },
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
                   }}
                 >
-                  {consoleTabs.map((tab, index) => {
-                    const isActiveTab = activeConsoleId === tab.id;
-                    const connectionIconUrl = tab.connectionId
-                      ? connectionIconById.get(tab.connectionId)
-                      : undefined;
-                    const nextTab = consoleTabs[index + 1];
-                    const isLastTab = index === consoleTabs.length - 1;
-                    // Cursor-style separator: thin vertical rule on the trailing
-                    // edge of every tab, hidden when this tab or the next one is
-                    // active, and hidden on the very last tab.
-                    const showSeparator =
-                      !isActiveTab &&
-                      !isLastTab &&
-                      nextTab?.id !== activeConsoleId;
-                    return (
-                      <SortableConsoleTab
-                        key={tab.id}
-                        value={tab.id}
-                        sx={{
-                          minHeight: 36,
-                          py: 0.25,
-                          px: 1.25,
-                          textTransform: "none",
-                          position: "relative",
-                          "& .tab-close-btn": {
-                            visibility: isActiveTab ? "visible" : "hidden",
-                          },
-                          "&:hover .tab-close-btn": {
-                            visibility: "visible",
-                          },
-                          "&::after": showSeparator
-                            ? {
-                                content: '""',
-                                position: "absolute",
-                                right: 0,
-                                top: 0,
-                                bottom: 0,
-                                width: "1px",
-                                backgroundColor: "divider",
-                                pointerEvents: "none",
-                              }
-                            : {},
-                        }}
-                        label={
-                          <Box
-                            sx={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 0.5,
-                              minWidth: 0,
-                              maxWidth: "100%",
-                            }}
-                          >
-                            {tab.icon ? (
-                              <Box
-                                component="img"
-                                src={tab.icon}
-                                alt="tab icon"
-                                sx={{ width: 18, height: 18 }}
-                              />
-                            ) : tab.kind === "settings" ? (
-                              <SettingsIcon size={18} strokeWidth={1.5} />
-                            ) : tab.kind === "connectors" ? (
-                              <DataSourceIcon size={18} strokeWidth={1.5} />
-                            ) : tab.kind === "flow-editor" ? (
-                              tab.metadata?.flowType === "webhook" ? (
-                                <WebhookIcon size={18} strokeWidth={1.5} />
-                              ) : tab.metadata?.enabled === false ? (
-                                <PauseIcon size={18} strokeWidth={1.5} />
+                  {(activeConsoleId && tabs[activeConsoleId]?.title) ||
+                    "Console"}
+                </Box>
+              </Button>
+              <Tooltip title="New console">
+                <IconButton
+                  aria-label="New console"
+                  onClick={() => openTab({ title: "New Console", content: "" })}
+                  sx={MOBILE_FLOAT_BTN_SX}
+                >
+                  <PlusIcon size={20} />
+                </IconButton>
+              </Tooltip>
+            </Box>
+          ) : (
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                minHeight: 36,
+                borderBottom: 1,
+                borderColor: "divider",
+              }}
+            >
+              <DndContext
+                sensors={dndSensors}
+                collisionDetection={closestCenter}
+                modifiers={[restrictToHorizontalAxis]}
+                onDragEnd={handleTabDragEnd}
+              >
+                <SortableContext
+                  items={sortableTabIds}
+                  strategy={horizontalListSortingStrategy}
+                >
+                  <Tabs
+                    value={activeConsoleId}
+                    onChange={handleTabChange}
+                    variant="scrollable"
+                    scrollButtons={false}
+                    sx={{
+                      minHeight: 36,
+                      "& .MuiTabs-indicator": { height: 2 },
+                    }}
+                  >
+                    {consoleTabs.map((tab, index) => {
+                      const isActiveTab = activeConsoleId === tab.id;
+                      const connectionIconUrl = tab.connectionId
+                        ? connectionIconById.get(tab.connectionId)
+                        : undefined;
+                      // Canonical per-kind icon (see lib/entity-icons.ts);
+                      // overridden below by connector favicons, connection
+                      // icons, and flow-editor subtype icons.
+                      const KindIcon = tabKindIcon(tab.kind);
+                      const nextTab = consoleTabs[index + 1];
+                      const isLastTab = index === consoleTabs.length - 1;
+                      // Cursor-style separator: thin vertical rule on the trailing
+                      // edge of every tab, hidden when this tab or the next one is
+                      // active, and hidden on the very last tab.
+                      const showSeparator =
+                        !isActiveTab &&
+                        !isLastTab &&
+                        nextTab?.id !== activeConsoleId;
+                      return (
+                        <SortableConsoleTab
+                          key={tab.id}
+                          value={tab.id}
+                          sx={{
+                            minHeight: 36,
+                            py: 0.25,
+                            px: 1.25,
+                            textTransform: "none",
+                            position: "relative",
+                            "& .tab-close-btn": {
+                              visibility: isActiveTab ? "visible" : "hidden",
+                            },
+                            "&:hover .tab-close-btn": {
+                              visibility: "visible",
+                            },
+                            "&::after": showSeparator
+                              ? {
+                                  content: '""',
+                                  position: "absolute",
+                                  right: 0,
+                                  top: 0,
+                                  bottom: 0,
+                                  width: "1px",
+                                  backgroundColor: "divider",
+                                  pointerEvents: "none",
+                                }
+                              : {},
+                          }}
+                          label={
+                            <Box
+                              sx={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 0.5,
+                                minWidth: 0,
+                                maxWidth: "100%",
+                              }}
+                            >
+                              {tab.icon ? (
+                                <Box
+                                  component="img"
+                                  src={tab.icon}
+                                  alt="tab icon"
+                                  sx={{ width: 18, height: 18 }}
+                                />
+                              ) : tab.kind === "flow-editor" ? (
+                                tab.metadata?.flowType === "webhook" ? (
+                                  <WebhookIcon size={18} strokeWidth={1.5} />
+                                ) : tab.metadata?.enabled === false ? (
+                                  <PauseIcon size={18} strokeWidth={1.5} />
+                                ) : (
+                                  <ScheduleIcon size={18} strokeWidth={1.5} />
+                                )
+                              ) : (tab.kind ?? "console") === "console" &&
+                                connectionIconUrl ? (
+                                <Box
+                                  component="img"
+                                  src={connectionIconUrl}
+                                  alt="db icon"
+                                  sx={{
+                                    width: 18,
+                                    height: 18,
+                                    objectFit: "contain",
+                                  }}
+                                />
                               ) : (
-                                <ScheduleIcon size={18} strokeWidth={1.5} />
-                              )
-                            ) : tab.kind === "dashboard" ? (
-                              <DashboardIcon size={18} strokeWidth={1.5} />
-                            ) : tab.kind === "app" ? (
-                              <AppIcon size={18} strokeWidth={1.5} />
-                            ) : tab.kind === "app-file" ? (
-                              <AppFileIcon size={18} strokeWidth={1.5} />
-                            ) : tab.kind === "app-binding" ||
-                              tab.kind === "dashboard-data-source" ? (
-                              <DatabaseIcon size={18} strokeWidth={1.5} />
-                            ) : tab.kind === "table-data" ? (
-                              <TableDataIcon size={18} strokeWidth={1.5} />
-                            ) : tab.kind === "plan" ? (
-                              <PlanIcon size={18} strokeWidth={1.5} />
-                            ) : connectionIconUrl ? (
-                              <Box
-                                component="img"
-                                src={connectionIconUrl}
-                                alt="db icon"
-                                sx={{
-                                  width: 18,
-                                  height: 18,
-                                  objectFit: "contain",
+                                <KindIcon size={18} strokeWidth={1.5} />
+                              )}
+                              <span
+                                style={{
+                                  fontStyle: tab.isDirty ? "normal" : "italic",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                  display: "inline-block",
+                                  maxWidth: "150px",
                                 }}
-                              />
-                            ) : (
-                              <ConsoleIcon size={18} strokeWidth={1.5} />
-                            )}
-                            <span
-                              style={{
-                                fontStyle: tab.isDirty ? "normal" : "italic",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                                display: "inline-block",
-                                maxWidth: "150px",
-                              }}
-                              onDoubleClick={e => {
-                                e.stopPropagation();
-                                updateDirty(tab.id, true);
-                              }}
-                              title={tab.title}
-                            >
-                              {tab.title?.split("/").filter(Boolean).pop() ||
-                                tab.title}
-                            </span>
-                            <IconButton
-                              component="span"
-                              size="small"
-                              className="tab-close-btn"
-                              onClick={e => {
-                                e.stopPropagation();
-                                closeConsole(tab.id);
-                              }}
-                              onPointerDown={e => {
-                                // Prevent the Tab's drag listener from starting
-                                // a drag when the user clicks the close button.
-                                e.stopPropagation();
-                              }}
-                              sx={{ p: 0.25, ml: 0 }}
-                            >
-                              <CloseIcon fontSize="inherit" />
-                            </IconButton>
-                          </Box>
-                        }
-                      />
-                    );
-                  })}
-                </Tabs>
-              </SortableContext>
-            </DndContext>
-          </Box>
+                                onDoubleClick={e => {
+                                  e.stopPropagation();
+                                  updateDirty(tab.id, true);
+                                }}
+                                title={tab.title}
+                              >
+                                {tab.title}
+                              </span>
+                              <IconButton
+                                component="span"
+                                size="small"
+                                className="tab-close-btn"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  closeConsole(tab.id);
+                                }}
+                                onPointerDown={e => {
+                                  // Prevent the Tab's drag listener from starting
+                                  // a drag when the user clicks the close button.
+                                  e.stopPropagation();
+                                }}
+                                sx={{ p: 0.25, ml: 0 }}
+                              >
+                                <CloseIcon fontSize="inherit" />
+                              </IconButton>
+                            </Box>
+                          }
+                        />
+                      );
+                    })}
+                  </Tabs>
+                </SortableContext>
+              </DndContext>
+            </Box>
+          )}
+
+          {/* Mobile window switcher menu — lists open tabs + new console. */}
+          <Menu
+            anchorEl={windowMenuAnchor}
+            open={Boolean(windowMenuAnchor)}
+            onClose={() => setWindowMenuAnchor(null)}
+            anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+            transformOrigin={{ vertical: "top", horizontal: "center" }}
+            slotProps={{ paper: { sx: { maxHeight: 360, minWidth: 240 } } }}
+          >
+            {consoleTabs.map(tab => (
+              <MenuItem
+                key={tab.id}
+                selected={tab.id === activeConsoleId}
+                onClick={() => {
+                  setActiveTab(tab.id);
+                  setWindowMenuAnchor(null);
+                }}
+                sx={{ pr: 1 }}
+              >
+                <ListItemIcon>
+                  {tab.icon ? (
+                    <Box
+                      component="img"
+                      src={tab.icon}
+                      alt=""
+                      sx={{ width: 18, height: 18 }}
+                    />
+                  ) : (
+                    <TabKindGlyph kind={tab.kind} />
+                  )}
+                </ListItemIcon>
+                <ListItemText
+                  primary={tab.title}
+                  primaryTypographyProps={{
+                    noWrap: true,
+                    sx: { maxWidth: 180 },
+                  }}
+                />
+                <IconButton
+                  size="small"
+                  aria-label={`Close ${tab.title}`}
+                  onClick={e => {
+                    e.stopPropagation();
+                    cleanupTab(tab.id);
+                  }}
+                  sx={{ ml: 1 }}
+                >
+                  <CloseTabIcon size={16} />
+                </IconButton>
+              </MenuItem>
+            ))}
+            <Divider />
+            <MenuItem
+              onClick={() => {
+                openTab({ title: "New Console", content: "" });
+                setWindowMenuAnchor(null);
+              }}
+            >
+              <ListItemIcon>
+                <PlusIcon size={18} strokeWidth={1.5} />
+              </ListItemIcon>
+              <ListItemText primary="New console" />
+            </MenuItem>
+          </Menu>
 
           {/* Breadcrumb path (Cursor-style) — one consistent bar for every
               tab kind. Views that embed their own actions in the bar
@@ -2192,397 +2394,422 @@ function Editor({
 
           {/* Unified tab rendering: every tab stays mounted, visibility toggled with CSS */}
           <Box sx={{ flexGrow: 1, overflow: "hidden" }}>
-            {consoleTabs.map(tab => (
-              <Box
-                key={tab.id}
-                data-mako-tab-id={tab.id}
-                data-mako-tab-kind={tab.kind}
-                data-mako-active-tab-content={
-                  activeConsoleId === tab.id ? "true" : undefined
-                }
-                sx={{
-                  height: "100%",
-                  display: activeConsoleId === tab.id ? "block" : "none",
-                  overflow: "hidden",
-                }}
-              >
-                {tab.kind === "settings" ? (
-                  <Settings section={tab.settingsSection} />
-                ) : tab.kind === "members" ? (
-                  <WorkspaceMembers />
-                ) : tab.kind === "connectors" ? (
-                  <ConnectorTab
-                    tabId={tab.id}
-                    sourceId={
-                      typeof tab.content === "string" ? tab.content : undefined
-                    }
-                  />
-                ) : tab.kind === "flow-editor" ? (
-                  <FlowEditor
-                    flowId={tab.metadata?.flowId as string | undefined}
-                    isNew={tab.metadata?.isNew as boolean | undefined}
-                    flowType={
-                      tab.metadata?.flowType as
-                        | "webhook"
-                        | "scheduled"
-                        | "db-scheduled"
-                        | undefined
-                    }
-                    onSave={() => {
-                      // The FlowEditor already handles refreshing the flows list
-                    }}
-                    onCancel={() => {
-                      closeConsole(tab.id);
-                    }}
-                    dbFlowFormRef={dbFlowFormRef}
-                  />
-                ) : tab.kind === "table-data" ? (
-                  <TableDataView tabId={tab.id} />
-                ) : tab.kind === "dashboard" ? (
-                  <DashboardCanvas
-                    dashboardId={tab.metadata?.dashboardId as string}
-                    isNew={tab.metadata?.isNew as boolean}
-                    onCreated={(newId: string) => {
-                      useConsoleStore.setState(state => {
-                        const existingTab = state.tabs[tab.id];
-                        if (existingTab) {
-                          existingTab.metadata = {
-                            ...existingTab.metadata,
-                            dashboardId: newId,
-                            isNew: false,
-                          };
-                          existingTab.title = "Untitled Dashboard";
+            {consoleTabs.map(tab => {
+              const showDesktopOnlyNotice =
+                isMobile &&
+                !!tab.kind &&
+                DESKTOP_ONLY_KINDS.has(tab.kind) &&
+                !dismissedDesktopOnly[tab.id];
+
+              // Top (editor) and bottom (results) panes of a console tab.
+              // Extracted so the desktop vertical split and the mobile
+              // single-pane view can share the exact same children.
+              const consolePane = (
+                <Box
+                  sx={{
+                    height: "100%",
+                    display: "flex",
+                    flexDirection: "column",
+                  }}
+                >
+                  {tab.remoteUpdate && (
+                    <ConsoleRemoteUpdateBanner
+                      remoteUpdate={tab.remoteUpdate}
+                      onLoadLatest={() => {
+                        if (!currentWorkspace?.id) return;
+                        void useConsoleStore
+                          .getState()
+                          .applyRemoteConsoleUpdate(
+                            currentWorkspace.id,
+                            tab.id,
+                          );
+                      }}
+                      onKeepMine={() => {
+                        if (!currentWorkspace?.id) return;
+                        // Use the LIVE Monaco buffer, not the store
+                        // copy — it may lag keystrokes by a debounce.
+                        const live =
+                          consoleRefs.current[
+                            tab.id
+                          ]?.current?.getCurrentContent().content;
+                        void useConsoleStore
+                          .getState()
+                          .resolveRemoteUpdateKeepMine(
+                            currentWorkspace.id,
+                            tab.id,
+                            live ?? tab.content,
+                          );
+                      }}
+                      onDismiss={() =>
+                        useConsoleStore.getState().dismissRemoteUpdate(tab.id)
+                      }
+                      onCloseTab={() =>
+                        useConsoleStore.getState().closeTab(tab.id)
+                      }
+                    />
+                  )}
+                  <Box sx={{ flex: 1, minHeight: 0 }}>
+                    <Console
+                      ref={consoleRefs.current[tab.id]}
+                      consoleId={tab.id}
+                      initialContent={tab.content}
+                      title={tab.title}
+                      onExecute={(content, connectionId, databaseId) =>
+                        handleConsoleExecute(tab.id, content, connectionId, {
+                          databaseId: databaseId || tab.databaseId,
+                          databaseName: tab.databaseName,
+                        })
+                      }
+                      onCancel={() => handleConsoleCancel(tab.id)}
+                      onSave={(content, currentPath) =>
+                        handleConsoleSave(tab.id, content, currentPath)
+                      }
+                      onSaveAsCopy={content =>
+                        handleSaveAsCopy(tab.id, content)
+                      }
+                      onRenameMove={(content, currentPath) =>
+                        handleRenameMove(tab.id, content, currentPath)
+                      }
+                      isExecuting={executingTabs[tab.id] || false}
+                      isCancelling={cancellingTabs[tab.id] || false}
+                      isSaving={isSaving}
+                      onContentChange={content => {
+                        updateContent(tab.id, content);
+                        if (!tab.isDirty) {
+                          updateDirty(tab.id, true);
                         }
-                      });
+                        // Also refresh activeEditorContent for Chat consumers
+                        const ref = consoleRefs.current[tab.id]?.current;
+                        if (activeConsoleId === tab.id && ref) {
+                          setActiveEditorContent(ref.getCurrentContent());
+                        }
+                      }}
+                      connectionId={tab.connectionId}
+                      databaseId={tab.databaseId}
+                      databaseName={tab.databaseName}
+                      databases={availableDatabases}
+                      onDatabaseChange={connId =>
+                        updateConnection(tab.id, connId)
+                      }
+                      onDatabaseNameChange={(dbId, dbName) =>
+                        updateDatabase(tab.id, dbId, dbName)
+                      }
+                      filePath={tab.filePath}
+                      enableVersionControl={true}
+                      onHistoryClick={() => {
+                        setVersionHistoryTabId(tab.id);
+                        setVersionHistoryEntityType("console");
+                        setVersionHistoryOpen(true);
+                      }}
+                      historyAvailable={tab.isSaved}
+                      onShareClick={() => setShareConsoleTabId(tab.id)}
+                      shareAvailable={tab.isSaved}
+                      schedule={tab.schedule}
+                      onCreateSchedule={() =>
+                        handleOpenScheduleModal(tab.id, "create")
+                      }
+                      onUpdateSchedule={() =>
+                        handleOpenScheduleModal(tab.id, "update")
+                      }
+                    />
+                  </Box>
+                </Box>
+              );
+
+              const resultsPane = (
+                <Box
+                  sx={{
+                    height: "100%",
+                    overflow: "hidden",
+                    display: "flex",
+                    flexDirection: "column",
+                  }}
+                >
+                  <Box
+                    sx={{
+                      px: 1.5,
+                      borderBottom: 1,
+                      borderColor: "divider",
+                      minHeight: 36,
+                      display: "flex",
+                      alignItems: "center",
                     }}
-                  />
-                ) : tab.kind === "app" ? (
-                  <AppRenderer appId={tab.metadata?.appId as string} />
-                ) : tab.kind === "app-file" ? (
-                  <AppFileEditor
-                    tabId={tab.id}
-                    appId={tab.metadata?.appId as string}
-                    path={tab.metadata?.path as string}
-                  />
-                ) : tab.kind === "app-binding" ? (
-                  <AppBindingEditor
-                    tabId={tab.id}
-                    appId={tab.metadata?.appId as string}
-                    bindingId={tab.metadata?.bindingId as string}
-                  />
-                ) : tab.kind === "plan" ? (
-                  <PlanDocumentTab
-                    toolCallId={tab.metadata?.toolCallId as string}
-                  />
-                ) : tab.kind === "dbt-file" ? (
-                  <DbtFileEditor
-                    tabId={tab.id}
-                    projectId={tab.metadata?.projectId as string}
-                    path={tab.metadata?.path as string}
-                  />
-                ) : tab.kind === "dbt-job" ? (
-                  <DbtJobView
-                    projectId={tab.metadata?.projectId as string}
-                    jobId={tab.metadata?.jobId as string}
-                  />
-                ) : tab.kind === "dbt-console" ? (
-                  <DbtConsoleView
-                    projectId={tab.metadata?.projectId as string}
-                  />
-                ) : tab.kind === "dbt-runs" ? (
-                  <DbtRunsView
-                    tabId={tab.id}
-                    projectId={tab.metadata?.projectId as string}
-                    focusRunId={tab.metadata?.focusRunId as string | undefined}
-                  />
-                ) : tab.kind === "dashboard-data-source" ? (
-                  <DashboardDataSourceEditor
-                    tabId={tab.id}
-                    dashboardId={tab.metadata?.dashboardId as string}
-                    dataSourceId={tab.metadata?.dataSourceId as string}
-                  />
-                ) : (
-                  /* Console tab: editor + results split */
-                  <React.Profiler
-                    id={`Editor.console-panels.${tab.id}`}
-                    onRender={onRenderDebug}
                   >
-                    <PanelGroup
-                      direction="vertical"
-                      style={{ height: "100%", width: "100%" }}
-                      onLayout={
-                        renderDebugEnabled
-                          ? layout => handlePanelLayout(tab.id, layout)
+                    <Tabs
+                      value={tabBottomPanel[tab.id] || "results"}
+                      onChange={(_event, value: "results" | "runs") => {
+                        setTabBottomPanel(prev => ({
+                          ...prev,
+                          [tab.id]: value,
+                        }));
+                        if (value === "runs") {
+                          void loadScheduledRunsForTab(tab.id);
+                        }
+                      }}
+                      sx={{
+                        minHeight: 36,
+                        "& .MuiTabs-indicator": {
+                          height: 2,
+                        },
+                      }}
+                    >
+                      <Tab
+                        value="results"
+                        label="Results"
+                        disableRipple
+                        sx={{
+                          minHeight: 36,
+                          py: 0.25,
+                          px: 1.25,
+                          minWidth: 0,
+                          textTransform: "none",
+                          fontSize: "0.875rem",
+                          fontWeight: 600,
+                          color: "text.secondary",
+                          "&.Mui-selected": {
+                            color: "text.primary",
+                          },
+                        }}
+                      />
+                      <Tab
+                        value="runs"
+                        label={`Runs (${tab.scheduledRun?.runCount ?? 0})`}
+                        disabled={!tab.isSaved}
+                        disableRipple
+                        sx={{
+                          minHeight: 36,
+                          py: 0.25,
+                          px: 1.25,
+                          minWidth: 0,
+                          textTransform: "none",
+                          fontSize: "0.875rem",
+                          fontWeight: 600,
+                          color: "text.secondary",
+                          "&.Mui-selected": {
+                            color: "text.primary",
+                          },
+                          "&.Mui-disabled": {
+                            opacity: 0.5,
+                          },
+                        }}
+                      />
+                    </Tabs>
+                  </Box>
+                  <Box sx={{ flexGrow: 1, minHeight: 0 }}>
+                    {(tabBottomPanel[tab.id] || "results") === "runs" ? (
+                      <ScheduledRunsPanel
+                        loading={tabScheduledRunsLoading[tab.id] || false}
+                        error={tabScheduledRunsError[tab.id]}
+                        runs={tabScheduledRuns[tab.id] || []}
+                      />
+                    ) : (
+                      <ResultsTable
+                        results={tabResults[tab.id] || null}
+                        chartSpec={tabChartSpecs[tab.id] ?? null}
+                        onChartSpecChange={spec =>
+                          setChartSpecForTab(tab.id, spec)
+                        }
+                        viewMode={tabViewModes[tab.id] ?? "table"}
+                        onViewModeChange={mode =>
+                          setViewModeForTab(tab.id, mode)
+                        }
+                        onChartRenderError={error => {
+                          const cb = pendingRenderCallbackRef.current[tab.id];
+                          if (cb) {
+                            cb({ success: false, error });
+                            delete pendingRenderCallbackRef.current[tab.id];
+                          }
+                        }}
+                        onChartRenderSuccess={() => {
+                          const cb = pendingRenderCallbackRef.current[tab.id];
+                          if (cb) {
+                            cb({ success: true });
+                            delete pendingRenderCallbackRef.current[tab.id];
+                          }
+                        }}
+                        onPreviousPage={() => handlePreviousResultsPage(tab.id)}
+                        onNextPage={() => handleNextResultsPage(tab.id)}
+                        onDownload={format =>
+                          void handleDownloadResults(tab.id, format)
+                        }
+                      />
+                    )}
+                  </Box>
+                </Box>
+              );
+
+              return (
+                <Box
+                  key={tab.id}
+                  data-mako-tab-id={tab.id}
+                  data-mako-tab-kind={tab.kind}
+                  data-mako-active-tab-content={
+                    activeConsoleId === tab.id ? "true" : undefined
+                  }
+                  sx={{
+                    height: "100%",
+                    display: activeConsoleId === tab.id ? "block" : "none",
+                    overflow: "hidden",
+                  }}
+                >
+                  {showDesktopOnlyNotice ? (
+                    <Box sx={{ p: 2 }}>
+                      <Alert
+                        severity="info"
+                        onClose={() =>
+                          setDismissedDesktopOnly(prev => ({
+                            ...prev,
+                            [tab.id]: true,
+                          }))
+                        }
+                      >
+                        This view is designed for a larger screen and may be
+                        hard to use on a phone. Open Mako on a desktop for the
+                        full experience.
+                      </Alert>
+                    </Box>
+                  ) : tab.kind === "settings" ? (
+                    <Settings section={tab.settingsSection} />
+                  ) : tab.kind === "members" ? (
+                    <WorkspaceMembers />
+                  ) : tab.kind === "connectors" ? (
+                    <ConnectorTab
+                      tabId={tab.id}
+                      sourceId={
+                        typeof tab.content === "string"
+                          ? tab.content
                           : undefined
                       }
+                    />
+                  ) : tab.kind === "flow-editor" ? (
+                    <FlowEditor
+                      flowId={tab.metadata?.flowId as string | undefined}
+                      isNew={tab.metadata?.isNew as boolean | undefined}
+                      flowType={
+                        tab.metadata?.flowType as
+                          | "webhook"
+                          | "scheduled"
+                          | "db-scheduled"
+                          | undefined
+                      }
+                      onSave={() => {
+                        // The FlowEditor already handles refreshing the flows list
+                      }}
+                      onCancel={() => {
+                        closeConsole(tab.id);
+                      }}
+                      dbFlowFormRef={dbFlowFormRef}
+                    />
+                  ) : tab.kind === "table-data" ? (
+                    <TableDataView tabId={tab.id} />
+                  ) : tab.kind === "dashboard" ? (
+                    <DashboardCanvas
+                      dashboardId={tab.metadata?.dashboardId as string}
+                      isNew={tab.metadata?.isNew as boolean}
+                      onCreated={(newId: string) => {
+                        useConsoleStore.setState(state => {
+                          const existingTab = state.tabs[tab.id];
+                          if (existingTab) {
+                            existingTab.metadata = {
+                              ...existingTab.metadata,
+                              dashboardId: newId,
+                              isNew: false,
+                            };
+                            existingTab.title = "Untitled Dashboard";
+                          }
+                        });
+                      }}
+                    />
+                  ) : tab.kind === "app" ? (
+                    <AppRenderer
+                      appId={tab.metadata?.appId as string}
+                      tabId={tab.id}
+                    />
+                  ) : tab.kind === "app-file" ? (
+                    <AppFileEditor
+                      tabId={tab.id}
+                      appId={tab.metadata?.appId as string}
+                      path={tab.metadata?.path as string}
+                    />
+                  ) : tab.kind === "app-binding" ? (
+                    <AppBindingEditor
+                      tabId={tab.id}
+                      appId={tab.metadata?.appId as string}
+                      bindingId={tab.metadata?.bindingId as string}
+                    />
+                  ) : tab.kind === "plan" ? (
+                    <PlanDocumentTab
+                      toolCallId={tab.metadata?.toolCallId as string}
+                    />
+                  ) : tab.kind === "dbt-file" ? (
+                    <DbtFileEditor
+                      tabId={tab.id}
+                      projectId={tab.metadata?.projectId as string}
+                      path={tab.metadata?.path as string}
+                    />
+                  ) : tab.kind === "dbt-job" ? (
+                    <DbtJobView
+                      projectId={tab.metadata?.projectId as string}
+                      jobId={tab.metadata?.jobId as string}
+                      autoEdit={tab.metadata?.autoEdit as boolean | undefined}
+                    />
+                  ) : tab.kind === "dbt-console" ? (
+                    <DbtConsoleView
+                      projectId={tab.metadata?.projectId as string}
+                    />
+                  ) : tab.kind === "dbt-runs" ? (
+                    <DbtRunsView
+                      tabId={tab.id}
+                      projectId={tab.metadata?.projectId as string}
+                      focusRunId={
+                        tab.metadata?.focusRunId as string | undefined
+                      }
+                    />
+                  ) : tab.kind === "dashboard-data-source" ? (
+                    <DashboardDataSourceEditor
+                      tabId={tab.id}
+                      dashboardId={tab.metadata?.dashboardId as string}
+                      dataSourceId={tab.metadata?.dataSourceId as string}
+                    />
+                  ) : (
+                    /* Console tab: editor + results split (desktop) or a single
+                     full-screen pane switched by the bottom nav (mobile). */
+                    <React.Profiler
+                      id={`Editor.console-panels.${tab.id}`}
+                      onRender={onRenderDebug}
                     >
-                      <Panel defaultSize={60} minSize={1}>
-                        <Box
-                          sx={{
-                            height: "100%",
-                            display: "flex",
-                            flexDirection: "column",
-                          }}
+                      {isMobile ? (
+                        <Box sx={{ height: "100%" }}>
+                          {mobileResultsView ? resultsPane : consolePane}
+                        </Box>
+                      ) : (
+                        <PanelGroup
+                          direction="vertical"
+                          style={{ height: "100%", width: "100%" }}
+                          onLayout={
+                            renderDebugEnabled
+                              ? layout => handlePanelLayout(tab.id, layout)
+                              : undefined
+                          }
                         >
-                          {tab.remoteUpdate && (
-                            <ConsoleRemoteUpdateBanner
-                              remoteUpdate={tab.remoteUpdate}
-                              onLoadLatest={() => {
-                                if (!currentWorkspace?.id) return;
-                                void useConsoleStore
-                                  .getState()
-                                  .applyRemoteConsoleUpdate(
-                                    currentWorkspace.id,
-                                    tab.id,
-                                  );
-                              }}
-                              onKeepMine={() => {
-                                if (!currentWorkspace?.id) return;
-                                // Use the LIVE Monaco buffer, not the store
-                                // copy — it may lag keystrokes by a debounce.
-                                const live =
-                                  consoleRefs.current[
-                                    tab.id
-                                  ]?.current?.getCurrentContent().content;
-                                void useConsoleStore
-                                  .getState()
-                                  .resolveRemoteUpdateKeepMine(
-                                    currentWorkspace.id,
-                                    tab.id,
-                                    live ?? tab.content,
-                                  );
-                              }}
-                              onDismiss={() =>
-                                useConsoleStore
-                                  .getState()
-                                  .dismissRemoteUpdate(tab.id)
-                              }
-                              onCloseTab={() =>
-                                useConsoleStore.getState().closeTab(tab.id)
-                              }
-                            />
-                          )}
-                          <Box sx={{ flex: 1, minHeight: 0 }}>
-                            <Console
-                              ref={consoleRefs.current[tab.id]}
-                              consoleId={tab.id}
-                              initialContent={tab.content}
-                              title={tab.title}
-                              onExecute={(content, connectionId, databaseId) =>
-                                handleConsoleExecute(
-                                  tab.id,
-                                  content,
-                                  connectionId,
-                                  {
-                                    databaseId: databaseId || tab.databaseId,
-                                    databaseName: tab.databaseName,
-                                  },
-                                )
-                              }
-                              onCancel={() => handleConsoleCancel(tab.id)}
-                              onSave={(content, currentPath) =>
-                                handleConsoleSave(tab.id, content, currentPath)
-                              }
-                              onSaveAsCopy={content =>
-                                handleSaveAsCopy(tab.id, content)
-                              }
-                              onRenameMove={(content, currentPath) =>
-                                handleRenameMove(tab.id, content, currentPath)
-                              }
-                              isExecuting={executingTabs[tab.id] || false}
-                              isCancelling={cancellingTabs[tab.id] || false}
-                              isSaving={isSaving}
-                              onContentChange={content => {
-                                updateContent(tab.id, content);
-                                if (!tab.isDirty) {
-                                  updateDirty(tab.id, true);
-                                }
-                                // Also refresh activeEditorContent for Chat consumers
-                                const ref =
-                                  consoleRefs.current[tab.id]?.current;
-                                if (activeConsoleId === tab.id && ref) {
-                                  setActiveEditorContent(
-                                    ref.getCurrentContent(),
-                                  );
-                                }
-                              }}
-                              connectionId={tab.connectionId}
-                              databaseId={tab.databaseId}
-                              databaseName={tab.databaseName}
-                              databases={availableDatabases}
-                              onDatabaseChange={connId =>
-                                updateConnection(tab.id, connId)
-                              }
-                              onDatabaseNameChange={(dbId, dbName) =>
-                                updateDatabase(tab.id, dbId, dbName)
-                              }
-                              filePath={tab.filePath}
-                              enableVersionControl={true}
-                              onHistoryClick={() => {
-                                setVersionHistoryTabId(tab.id);
-                                setVersionHistoryEntityType("console");
-                                setVersionHistoryOpen(true);
-                              }}
-                              historyAvailable={tab.isSaved}
-                              onShareClick={() => setShareConsoleTabId(tab.id)}
-                              shareAvailable={tab.isSaved}
-                              schedule={tab.schedule}
-                              onCreateSchedule={() =>
-                                handleOpenScheduleModal(tab.id, "create")
-                              }
-                              onUpdateSchedule={() =>
-                                handleOpenScheduleModal(tab.id, "update")
-                              }
-                            />
-                          </Box>
-                        </Box>
-                      </Panel>
+                          <Panel defaultSize={60} minSize={1}>
+                            {consolePane}
+                          </Panel>
 
-                      <StyledVerticalResizeHandle />
+                          <StyledVerticalResizeHandle
+                            onDragging={setIframeDragGuard}
+                          />
 
-                      <Panel defaultSize={40} minSize={1}>
-                        <Box sx={{ height: "100%", overflow: "hidden" }}>
-                          <Box
-                            sx={{
-                              height: "100%",
-                              display: "flex",
-                              flexDirection: "column",
-                            }}
-                          >
-                            <Box
-                              sx={{
-                                px: 1.5,
-                                borderBottom: 1,
-                                borderColor: "divider",
-                                minHeight: 36,
-                                display: "flex",
-                                alignItems: "center",
-                              }}
-                            >
-                              <Tabs
-                                value={tabBottomPanel[tab.id] || "results"}
-                                onChange={(
-                                  _event,
-                                  value: "results" | "runs",
-                                ) => {
-                                  setTabBottomPanel(prev => ({
-                                    ...prev,
-                                    [tab.id]: value,
-                                  }));
-                                  if (value === "runs") {
-                                    void loadScheduledRunsForTab(tab.id);
-                                  }
-                                }}
-                                sx={{
-                                  minHeight: 36,
-                                  "& .MuiTabs-indicator": {
-                                    height: 2,
-                                  },
-                                }}
-                              >
-                                <Tab
-                                  value="results"
-                                  label="Results"
-                                  disableRipple
-                                  sx={{
-                                    minHeight: 36,
-                                    py: 0.25,
-                                    px: 1.25,
-                                    minWidth: 0,
-                                    textTransform: "none",
-                                    fontSize: "0.875rem",
-                                    fontWeight: 600,
-                                    color: "text.secondary",
-                                    "&.Mui-selected": {
-                                      color: "text.primary",
-                                    },
-                                  }}
-                                />
-                                <Tab
-                                  value="runs"
-                                  label={`Runs (${tab.scheduledRun?.runCount ?? 0})`}
-                                  disabled={!tab.isSaved}
-                                  disableRipple
-                                  sx={{
-                                    minHeight: 36,
-                                    py: 0.25,
-                                    px: 1.25,
-                                    minWidth: 0,
-                                    textTransform: "none",
-                                    fontSize: "0.875rem",
-                                    fontWeight: 600,
-                                    color: "text.secondary",
-                                    "&.Mui-selected": {
-                                      color: "text.primary",
-                                    },
-                                    "&.Mui-disabled": {
-                                      opacity: 0.5,
-                                    },
-                                  }}
-                                />
-                              </Tabs>
-                            </Box>
-                            <Box sx={{ flexGrow: 1, minHeight: 0 }}>
-                              {(tabBottomPanel[tab.id] || "results") ===
-                              "runs" ? (
-                                <ScheduledRunsPanel
-                                  loading={
-                                    tabScheduledRunsLoading[tab.id] || false
-                                  }
-                                  error={tabScheduledRunsError[tab.id]}
-                                  runs={tabScheduledRuns[tab.id] || []}
-                                />
-                              ) : (
-                                <ResultsTable
-                                  results={tabResults[tab.id] || null}
-                                  chartSpec={tabChartSpecs[tab.id] ?? null}
-                                  onChartSpecChange={spec =>
-                                    setChartSpecForTab(tab.id, spec)
-                                  }
-                                  viewMode={tabViewModes[tab.id] ?? "table"}
-                                  onViewModeChange={mode =>
-                                    setViewModeForTab(tab.id, mode)
-                                  }
-                                  onChartRenderError={error => {
-                                    const cb =
-                                      pendingRenderCallbackRef.current[tab.id];
-                                    if (cb) {
-                                      cb({ success: false, error });
-                                      delete pendingRenderCallbackRef.current[
-                                        tab.id
-                                      ];
-                                    }
-                                  }}
-                                  onChartRenderSuccess={() => {
-                                    const cb =
-                                      pendingRenderCallbackRef.current[tab.id];
-                                    if (cb) {
-                                      cb({ success: true });
-                                      delete pendingRenderCallbackRef.current[
-                                        tab.id
-                                      ];
-                                    }
-                                  }}
-                                  onPreviousPage={() =>
-                                    handlePreviousResultsPage(tab.id)
-                                  }
-                                  onNextPage={() =>
-                                    handleNextResultsPage(tab.id)
-                                  }
-                                  onDownload={format =>
-                                    handleDownloadResults(tab.id, format)
-                                  }
-                                />
-                              )}
-                            </Box>
-                          </Box>
-                        </Box>
-                      </Panel>
-                    </PanelGroup>
-                  </React.Profiler>
-                )}
-              </Box>
-            ))}
+                          <Panel defaultSize={40} minSize={1}>
+                            {resultsPane}
+                          </Panel>
+                        </PanelGroup>
+                      )}
+                    </React.Profiler>
+                  )}
+                </Box>
+              );
+            })}
           </Box>
         </Box>
       ) : (
@@ -2592,24 +2819,53 @@ function Editor({
             height: "100%",
             display: "flex",
             flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 2,
           }}
         >
-          <Typography>No console open</Typography>
-          <Button
-            variant="contained"
-            disableElevation
-            onClick={() => {
-              openTab({
-                title: "New Console",
-                content: "",
-              });
+          {isMobile && (
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                minHeight: 52,
+                px: 1,
+                py: 0.75,
+              }}
+            >
+              <Tooltip title="Open explorer">
+                <IconButton
+                  aria-label="Open explorer"
+                  onClick={() => useUIStore.getState().openMobileDrawer()}
+                  sx={MOBILE_FLOAT_BTN_SX}
+                >
+                  <MenuIcon size={20} />
+                </IconButton>
+              </Tooltip>
+            </Box>
+          )}
+          <Box
+            sx={{
+              flexGrow: 1,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 2,
             }}
           >
-            Open Console
-          </Button>
+            <Typography>No console open</Typography>
+            <Button
+              variant="contained"
+              disableElevation
+              onClick={() => {
+                openTab({
+                  title: "New Console",
+                  content: "",
+                });
+              }}
+            >
+              Open Console
+            </Button>
+          </Box>
         </Box>
       )}
 

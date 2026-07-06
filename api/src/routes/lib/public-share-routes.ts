@@ -53,6 +53,7 @@ const UpdateShareBody = {
         password: z.string().nullable().optional(),
         rotateToken: z.boolean().optional(),
         token: z.string().optional(),
+        allowLiveQueries: z.boolean().optional(),
       }),
     },
   },
@@ -133,6 +134,7 @@ function serialize(publicShare?: IPublicShare) {
     token: publicShare.token,
     hasPassword: !!publicShare.passwordHash,
     createdAt: publicShare.createdAt,
+    allowLiveQueries: !!publicShare.allowLiveQueries,
   };
 }
 
@@ -213,6 +215,7 @@ export function registerPublicShareRoutes(
           createdAt: existing?.createdAt || new Date(),
           createdBy: existing?.createdBy || userId,
           lastPublicRefreshAt: existing?.lastPublicRefreshAt,
+          allowLiveQueries: existing?.allowLiveQueries ?? false,
         };
         doc.markModified("publicShare");
         await doc.save();
@@ -323,6 +326,9 @@ export function registerPublicShareRoutes(
             }
             doc.publicShare.token = requested;
           }
+        }
+        if (typeof body?.allowLiveQueries === "boolean") {
+          doc.publicShare.allowLiveQueries = body.allowLiveQueries;
         }
         // password: string sets a new password; null removes it; undefined keeps.
         if (typeof body?.password === "string" && body.password.length > 0) {

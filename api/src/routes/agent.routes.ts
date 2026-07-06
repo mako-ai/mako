@@ -10,15 +10,21 @@ import {
   streamText,
   convertToModelMessages,
   stepCountIs,
-  UI_MESSAGE_STREAM_HEADERS,
   type UIMessage,
 } from "ai";
 import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
 import { propagateAttributes } from "@langfuse/tracing";
 import { buildAnthropicThinkingConfig } from "../agent-lib/anthropic-thinking";
 import { withThinkingSelfHeal } from "../agent-lib/thinking-self-heal";
+import { withContextOverflowSelfHeal } from "../agent-lib/context-overflow-self-heal";
+import {
+  computeInputBudget,
+  compactUiMessagesForBudget,
+  dedupeAssistantReasoning,
+  elideOldToolOutputs,
+  stripReplayedReasoning,
+} from "../agent-lib/context/compaction";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
 import type { ConsoleDataV2 } from "../agent-lib/types";
 import {
@@ -27,8 +33,7 @@ import {
   getDefaultModelId,
   getDefaultFreeModelId,
 } from "../agent-lib/ai-models";
-import { getGatewayModels } from "../services/gateway-models.service";
-import { getCatalogModels } from "../services/model-catalog.service";
+import { getWorkspaceGatewayModelListings } from "../services/model-catalog.service";
 import {
   Workspace,
   DatabaseConnection,
@@ -36,6 +41,7 @@ import {
   SavedConsole,
 } from "../database/workspace-schema";
 import { saveChat } from "../services/agent-thread.service";
+import { buildMcpToolsForChat } from "../services/mcp-client.service";
 import { trackUsage } from "../services/llm-usage.service";
 import { computeInvocationCost } from "../services/cost-calculator";
 import { generateChatTitle } from "../services/title-generator";
@@ -71,12 +77,19 @@ import { scheduleChatFinalization } from "./chat-finalization-queue";
 import {
   getResumableStreamContext,
   registerActiveGeneration,
-  stopActiveGeneration,
   clearActiveGeneration,
 } from "../services/resumable-stream.service";
 import { hasAttachedClients } from "../services/realtime-presence.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
+import { reportPubSubFailure } from "../services/pubsub.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import {
+  buildScreenshotVisionModelMessage,
+  resumeChatStream,
+  stopChatGeneration,
+  withSseKeepAlive,
+  type ScreenshotVisionAttachment,
+} from "../services/agent-stream.service";
 
 const logger = loggers.agent();
 
@@ -92,154 +105,6 @@ const StreamResponses = {
     content: { "text/event-stream": { schema: z.string() } },
   },
 };
-
-interface ScreenshotVisionAttachment {
-  renderer?: string;
-  filename?: string;
-  mediaType?: string;
-  dataUrl?: string;
-  outputBytes?: number;
-  targetLabel?: string;
-}
-
-const MAX_SCREENSHOT_VISION_ATTACHMENTS = 6;
-const MAX_SCREENSHOT_VISION_BYTES = 2_000_000;
-
-// Keep the SSE connection warm during long silent gaps.
-//
-// While a server-side tool runs (e.g. a multi-minute `dbt build`) the AI SDK
-// emits the `tool-input-available` chunk and then sends nothing on the wire
-// until the tool resolves. Edge proxies (Cloudflare's origin idle timeout is
-// ~100s with no bytes) terminate a connection that goes quiet for too long —
-// which drops the live stream and strands the in-flight tool card on
-// "Running…" in the browser. Emitting an SSE comment line on a fixed interval
-// keeps bytes flowing without affecting the protocol: lines beginning with
-// `:` are comments per the SSE spec and are ignored by the AI SDK's stream
-// parser. We wrap only the live client-facing branch; the tee'd
-// resumable-stream copy is untouched, so keepalives are never buffered or
-// replayed on reconnect.
-const SSE_KEEPALIVE_INTERVAL_MS = 15_000;
-
-function withSseKeepAlive(
-  response: Response,
-  intervalMs = SSE_KEEPALIVE_INTERVAL_MS,
-): Response {
-  if (!response.body) return response;
-
-  const encoder = new TextEncoder();
-  const reader = response.body.getReader();
-  let keepAlive: ReturnType<typeof setInterval> | null = null;
-
-  const stopKeepAlive = () => {
-    if (keepAlive) {
-      clearInterval(keepAlive);
-      keepAlive = null;
-    }
-  };
-
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      keepAlive = setInterval(() => {
-        try {
-          controller.enqueue(encoder.encode(": keep-alive\n\n"));
-        } catch {
-          // Controller already closed/errored — stop pinging.
-          stopKeepAlive();
-        }
-      }, intervalMs);
-    },
-    async pull(controller) {
-      try {
-        const { done, value } = await reader.read();
-        if (done) {
-          stopKeepAlive();
-          controller.close();
-          return;
-        }
-        controller.enqueue(value);
-      } catch (error) {
-        stopKeepAlive();
-        controller.error(error);
-      }
-    },
-    cancel(reason) {
-      stopKeepAlive();
-      void reader.cancel(reason);
-    },
-  });
-
-  return new Response(stream, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
-}
-
-function estimateDataUrlBytes(dataUrl: string): number {
-  const commaIndex = dataUrl.indexOf(",");
-  if (commaIndex === -1) return dataUrl.length;
-  return Math.floor(((dataUrl.length - commaIndex - 1) * 3) / 4);
-}
-
-function buildScreenshotVisionModelMessage(
-  attachments: ScreenshotVisionAttachment[] | undefined,
-) {
-  if (!Array.isArray(attachments) || attachments.length === 0) {
-    return null;
-  }
-
-  const accepted = attachments
-    .filter(attachment => {
-      if (
-        typeof attachment.dataUrl !== "string" ||
-        !attachment.dataUrl.startsWith("data:image/")
-      ) {
-        return false;
-      }
-      const byteCount =
-        typeof attachment.outputBytes === "number"
-          ? attachment.outputBytes
-          : estimateDataUrlBytes(attachment.dataUrl);
-      return byteCount <= MAX_SCREENSHOT_VISION_BYTES;
-    })
-    .slice(0, MAX_SCREENSHOT_VISION_ATTACHMENTS);
-
-  if (accepted.length === 0) {
-    return null;
-  }
-
-  const content: Array<
-    | { type: "text"; text: string }
-    | { type: "file"; mediaType: string; filename?: string; data: string }
-  > = [
-    {
-      type: "text",
-      text:
-        "The previous screenshot tool call captured these PNG images for visual inspection. " +
-        "Look at the actual images, describe what is visible, and use them as visual evidence when answering.",
-    },
-  ];
-
-  accepted.forEach((attachment, index) => {
-    const renderer = attachment.renderer || `renderer-${index + 1}`;
-    const filename = attachment.filename || `${renderer}.png`;
-    content.push({
-      type: "text",
-      text: `Screenshot ${index + 1}: ${renderer} (${filename})`,
-    });
-    content.push({
-      type: "file",
-      mediaType: attachment.mediaType || "image/png",
-      filename,
-      data: attachment.dataUrl as string,
-    });
-  });
-
-  return {
-    role: "user" as const,
-    content,
-  };
-}
 
 // Apply unified auth middleware to all routes
 agentRoutes.use("*", unifiedAuthMiddleware);
@@ -313,15 +178,9 @@ agentRoutes.openapi(
 /**
  * GET /gateway-models - Model catalog available to workspaces.
  *
- * Returns the Vercel AI Gateway catalog intersected with the super-admin
- * curation: only models with `visible: true` in the curation document are
- * exposed. This is the list the workspace "AI Models" settings UI picks
- * from, so workspace admins can never enable a model that the platform
- * super-admin has hidden.
- *
- * If curation is empty (e.g. fresh install before the seed migration), we
- * fall back to the unfiltered gateway list to avoid a hard "no models"
- * state — super-admins will still see everything in `/api/admin/catalog`.
+ * Returns the super-admin-curated catalog from MongoDB (same source as
+ * GET /models). Avoids a live fetch to ai-gateway.vercel.sh in the request
+ * path — that upstream call is refreshed out-of-band by Inngest/startup.
  */
 agentRoutes.openapi(
   createRoute({
@@ -333,15 +192,7 @@ agentRoutes.openapi(
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
-    const [gateway, catalog] = await Promise.all([
-      getGatewayModels(),
-      getCatalogModels(),
-    ]);
-    if (catalog.length === 0) {
-      return c.json({ models: gateway });
-    }
-    const visible = new Set(catalog.map(m => m.id));
-    const models = gateway.filter(m => visible.has(m.id));
+    const models = await getWorkspaceGatewayModelListings();
     return c.json({ models });
   },
 );
@@ -810,6 +661,31 @@ agentRoutes.openapi(
             activeDashboardContext: undefined,
           };
 
+    // MCP tools (Close CRM etc.): built from DB-cached tool definitions, so
+    // this never blocks on remote MCP servers. Executions connect on demand.
+    let mcpChatTools: Awaited<ReturnType<typeof buildMcpToolsForChat>> = {
+      tools: {},
+      readOnlyToolNames: [],
+      allToolNames: [],
+    };
+    if (resolvedAgentId === "unified") {
+      try {
+        mcpChatTools = await buildMcpToolsForChat({
+          workspaceId,
+          userId: actorId,
+        });
+        if (mcpChatTools.allToolNames.length > 0) {
+          logger.info("MCP tools loaded for chat", {
+            workspaceId,
+            chatId,
+            toolCount: mcpChatTools.allToolNames.length,
+          });
+        }
+      } catch (err) {
+        logger.warn("MCP tool loading skipped", { error: err });
+      }
+    }
+
     // Build agent context
     const agentContext: AgentContext = {
       workspaceId,
@@ -836,6 +712,9 @@ agentRoutes.openapi(
       activeDashboardContext: dashboardContext.activeDashboardContext,
       toolExecutionContext,
       canManageScheduledQueries,
+      mcpTools: mcpChatTools.tools,
+      mcpReadOnlyToolNames: mcpChatTools.readOnlyToolNames,
+      mcpToolNames: mcpChatTools.allToolNames,
     };
 
     // Create agent configuration.
@@ -874,9 +753,13 @@ agentRoutes.openapi(
     // Self-heal wrapper: if the catalog still classifies this model as manual
     // thinking but Anthropic rejects the payload with the adaptive-only 400,
     // persist the corrected mode and retry the call transparently.
-    const model = resolvedModelId.startsWith("anthropic/")
+    const baseModel = resolvedModelId.startsWith("anthropic/")
       ? withThinkingSelfHeal(getModel(resolvedModelId), resolvedModelId)
       : getModel(resolvedModelId);
+    // Provider-agnostic backstop: if the prompt still overflows the context
+    // window (estimate was too optimistic, or contextWindow unknown), retry
+    // once with aggressively trimmed history instead of surfacing a raw 400.
+    const model = withContextOverflowSelfHeal(baseModel, resolvedModelId);
     logger.info("Using model", { model: resolvedModelId });
 
     /**
@@ -902,7 +785,89 @@ agentRoutes.openapi(
       const sanitizedMessages = sanitizeMessagesForModel(
         messagesWithAttachments,
       );
-      const modelMessages = await convertToModelMessages(sanitizedMessages);
+      // Always-on cost control (budget-independent): the client replays the
+      // entire `messages[]` every turn, so a long session re-sends every prior
+      // turn's full tool outputs on every request — re-billed as input tokens
+      // each time, even when the prompt comfortably fits the context window.
+      // Elide large tool outputs from older turns (keeping the most recent
+      // turns verbatim) before any budget math. This is the main lever against
+      // runaway spend on long chats. Runs even when `contextWindow` is unknown.
+      const elision = elideOldToolOutputs(sanitizedMessages);
+      let messagesForModel = elision.messages;
+      if (elision.changed) {
+        logger.info("Elided old tool outputs before generation", {
+          chatId,
+          workspaceId,
+          modelId: resolvedModelId,
+          elidedCount: elision.elidedCount,
+        });
+      }
+      // Strip replayed thinking/reasoning traces. `sendReasoning: true` persists
+      // the model's thinking and the client replays it every turn; a model never
+      // needs to re-read its own past thinking, and those blocks are re-billed as
+      // input tokens each request. Kept only on the assistant turn being
+      // continued with tool results (Anthropic interleaved-thinking requirement).
+      const reasoningStrip = stripReplayedReasoning(messagesForModel);
+      messagesForModel = reasoningStrip.messages;
+      if (reasoningStrip.changed) {
+        logger.info("Stripped replayed reasoning before generation", {
+          chatId,
+          workspaceId,
+          modelId: resolvedModelId,
+          strippedCount: reasoningStrip.strippedCount,
+        });
+      }
+      // Collapse duplicate reasoning parts on the assistant turn(s) preserved
+      // above. A persisted assistant message can accumulate duplicate thinking
+      // blocks (streamed parts merged with `originalMessages`, resumable-stream
+      // replay, persist→reload). On a tool-use continuation Anthropic requires
+      // the latest assistant message's thinking blocks to be replayed
+      // byte-for-byte unmodified, and a duplicate IS a modification — the turn
+      // is rejected with "thinking ... blocks in the latest assistant message
+      // cannot be modified", permanently wedging the chat. De-duping restores
+      // the original sequence so the turn round-trips.
+      const reasoningDedupe = dedupeAssistantReasoning(messagesForModel);
+      messagesForModel = reasoningDedupe.messages;
+      if (reasoningDedupe.changed) {
+        logger.info("De-duplicated replayed reasoning before generation", {
+          chatId,
+          workspaceId,
+          modelId: resolvedModelId,
+          removedCount: reasoningDedupe.removedCount,
+        });
+      }
+      // Proactively keep the prompt under the model's context window. Budget is
+      // derived from the catalog `contextWindow` (provider-agnostic — every
+      // gateway model reports it); when unknown we skip this and rely on the
+      // reactive overflow backstop wrapping the model. Tool calls/results live
+      // as parts inside a single assistant UIMessage here, so compacting whole
+      // messages preserves tool call↔result pairing automatically.
+      const inputBudget = computeInputBudget({
+        contextWindow: modelDef?.contextWindow,
+        systemText: systemPrompt,
+        thinkingBudgetTokens: modelDef?.thinkingBudgetTokens,
+      });
+      if (inputBudget !== null) {
+        const compaction = await compactUiMessagesForBudget({
+          messages: messagesForModel,
+          budgetTokens: inputBudget,
+          summarize: true,
+          abortSignal: turnSignal,
+        });
+        messagesForModel = compaction.messages;
+        if (compaction.didCompact) {
+          logger.info("Compacted chat history before generation", {
+            chatId,
+            workspaceId,
+            modelId: resolvedModelId,
+            strategy: compaction.strategy,
+            estimatedTokensBefore: compaction.estimatedTokensBefore,
+            estimatedTokensAfter: compaction.estimatedTokensAfter,
+            budgetTokens: inputBudget,
+          });
+        }
+      }
+      const modelMessages = await convertToModelMessages(messagesForModel);
       if (includeVisionAttachments) {
         const screenshotVisionMessage = buildScreenshotVisionModelMessage(
           screenshotVisionAttachments,
@@ -1114,13 +1079,18 @@ agentRoutes.openapi(
                   state: "streaming",
                 });
               } catch (error) {
-                // Resumability is best-effort: the direct response stream to the
-                // originating client is unaffected by failures here.
-                logger.warn("Failed to set up resumable stream", {
+                // Resumability is best-effort: the direct response stream to
+                // the originating client is unaffected by failures here. But
+                // it failing means reload/second-device reattach is silently
+                // broken for this turn — log at ERROR so Error Reporting
+                // alerts (the Upstash quota exhaustion hid behind a warn),
+                // and feed the throttled backend-level reporter.
+                logger.error("Failed to set up resumable stream", {
                   error,
                   chatId,
                   streamId,
                 });
+                reportPubSubFailure("resumable-stream-setup", error);
               }
             },
             onFinish: ({ messages: allMessages, isAborted }) => {
@@ -1558,51 +1528,6 @@ agentRoutes.openapi(
  * auth model of POST /chat: session users need workspace membership, API
  * keys must belong to the chat's workspace.
  */
-async function authorizeChatStreamAccess(
-  c: AuthenticatedContext,
-  chatId: string,
-): Promise<
-  | {
-      ok: true;
-      chat: { activeStreamId?: string | null; workspaceId: string };
-    }
-  | { ok: false; status: 400 | 401 | 403 | 404 }
-> {
-  const user = c.get("user");
-  const apiKeyWorkspace = c.get("workspace");
-
-  if (!ObjectId.isValid(chatId)) {
-    return { ok: false, status: 400 };
-  }
-
-  const chat = await Chat.findById(chatId).select("workspaceId activeStreamId");
-  if (!chat) {
-    return { ok: false, status: 404 };
-  }
-
-  const chatWorkspaceId = chat.workspaceId.toString();
-  if (apiKeyWorkspace) {
-    if (apiKeyWorkspace._id.toString() !== chatWorkspaceId) {
-      return { ok: false, status: 403 };
-    }
-  } else if (user) {
-    const hasAccess = await workspaceService.hasAccess(
-      chatWorkspaceId,
-      user.id,
-    );
-    if (!hasAccess) {
-      return { ok: false, status: 403 };
-    }
-  } else {
-    return { ok: false, status: 401 };
-  }
-
-  return {
-    ok: true,
-    chat: { activeStreamId: chat.activeStreamId, workspaceId: chatWorkspaceId },
-  };
-}
-
 /**
  * GET /api/agent/chat/:chatId/stream
  *
@@ -1624,40 +1549,12 @@ agentRoutes.openapi(
   }),
   async c => {
     const chatId = c.req.param("chatId");
-    const access = await authorizeChatStreamAccess(c, chatId);
-    if (!access.ok) {
-      // A not-yet-created chat (client-minted chatId, no turn sent) is a normal
-      // "nothing to resume" case, not an error.
-      if (access.status === 404) return c.body(null, 204);
-      return c.json({ error: "Cannot access chat stream" }, access.status);
+    const result = await resumeChatStream(c, chatId);
+    if (result.kind === "no-content") return c.body(null, 204);
+    if (result.kind === "forbidden") {
+      return c.json({ error: "Cannot access chat stream" }, result.status);
     }
-
-    const { activeStreamId } = access.chat;
-    if (!activeStreamId) {
-      return c.body(null, 204);
-    }
-
-    const stream =
-      await getResumableStreamContext().resumeExistingStream(activeStreamId);
-    if (!stream) {
-      // Stale pointer: stream expired or was lost (e.g. process restart with
-      // the in-memory backend). Clear it so future mounts short-circuit.
-      void Chat.updateOne(
-        { _id: new ObjectId(chatId), activeStreamId },
-        { $set: { activeStreamId: null } },
-      ).catch(error =>
-        logger.warn("Failed to clear stale activeStreamId", { error, chatId }),
-      );
-      return c.body(null, 204);
-    }
-
-    logger.info("Client reattached to chat stream", {
-      chatId,
-      streamId: activeStreamId,
-    });
-    return new Response(stream.pipeThrough(new TextEncoderStream()), {
-      headers: UI_MESSAGE_STREAM_HEADERS,
-    });
+    return result.response;
   },
 );
 
@@ -1682,28 +1579,11 @@ agentRoutes.openapi(
   }),
   async c => {
     const chatId = c.req.param("chatId");
-    const access = await authorizeChatStreamAccess(c, chatId);
-    if (!access.ok) {
-      if (access.status === 404) return c.json({ stopped: false });
-      return c.json({ error: "Cannot access chat" }, access.status);
+    const result = await stopChatGeneration(c, chatId);
+    if (result.kind === "not-found") return c.json({ stopped: false });
+    if (result.kind === "forbidden") {
+      return c.json({ error: "Cannot access chat" }, result.status);
     }
-
-    const stopped = stopActiveGeneration(chatId);
-
-    // Clear the pointer immediately so reconnecting clients don't reattach to
-    // the aborted stream. Finalization also clears it, but only on the
-    // instance that owns the generation.
-    await Chat.updateOne(
-      { _id: new ObjectId(chatId) },
-      { $set: { activeStreamId: null } },
-    );
-    publishRealtimeEvent(access.chat.workspaceId, {
-      type: "chat.activity",
-      chatId,
-      state: "idle",
-    });
-
-    logger.info("Chat generation stop requested", { chatId, stopped });
-    return c.json({ stopped });
+    return c.json({ stopped: result.stopped });
   },
 );

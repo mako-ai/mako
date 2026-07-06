@@ -29,19 +29,50 @@ Hit `Cmd+Enter` (Mac) or `Ctrl+Enter` to execute. Results appear in a table belo
 Open the chat panel and describe what you want. The agent will:
 
 1. Inspect your database schema
-2. Write the query
+2. Write or revise the query
 3. Execute it to verify it works
-4. Place it in your console
+4. Place the result in your console
+
+When the agent edits a console, the chat shows the target console name and a compact diff preview of the change. Click the console name in the tool card to jump back to that console. Large edits are truncated in the preview, so use the editor as the source of truth for the full generated SQL.
 
 ### Organizing
 
 Consoles can be organized into folders. Use the sidebar tree to drag and arrange.
 
+### Version History
+
+Every explicit save of a console creates an immutable version record. Open the history panel from the editor to browse past versions, preview them, and restore with one click. Full details: [Version History](/version-history/).
+
 ### Scheduling Saved Consoles
 
 Workspace admins can schedule a saved console to run automatically from the console header. Scheduled consoles use five-field cron expressions plus an IANA timezone, for example `0 0 * * *` with `UTC` for a daily midnight run.
 
-When a console is scheduled, Mako stores the next run time and executes it through Inngest. The schedule panel shows the latest run status, duration, row count, consecutive failures, and recent run history. Admins can also trigger a scheduled console manually with **Run now**. You can attach **notifications** to a schedule (email, webhook, or Slack) — see [Notifications](/notifications/).
+When a console is scheduled, Mako stores the next run time and executes it through Inngest. The schedule panel shows the latest run status, duration, row count, consecutive failures, and recent run history. You can attach **notifications** to a schedule (email, webhook, or Slack) — see [Notifications](/notifications/).
+
+### Async Runs (Run now)
+
+**Run now** triggers an asynchronous run of any saved console — no schedule required. Each run is queued through Inngest, executes in the background, and is recorded in the **Runs** tab below the editor. Use this to:
+
+- Test a query end-to-end before attaching a schedule (notifications, retry behavior, row counts).
+- Kick off a one-off backfill or ad-hoc refresh without blocking your editor session.
+- Re-run a scheduled query immediately, off-cycle.
+
+Triggering an async run requires workspace admin access and hits `POST /api/workspaces/:wid/consoles/:id/schedule/run`.
+
+## Live Editing & Streaming
+
+When the agent edits a console, changes are applied **server-side to the authoritative draft** and any open windows update live — you don't have to be the one driving the chat to see the edit land.
+
+Edits are **incremental, not all-or-nothing**. `modify_console` supports four actions:
+
+- **`patch`** — replace a specific 1-indexed, inclusive line range (preferred for small edits, e.g. changing a single `WHERE` clause). Produces a tight, reviewable diff instead of rewriting the whole query.
+- **`replace`** — swap the full content.
+- **`insert`** — add content at a position.
+- **`append`** — add to the end.
+
+The agent reads the current content with `read_console` (which returns line-numbered text) to target the right range before patching. If a console is read-only to the agent (a workspace console it doesn't own, and it isn't an admin), modification is rejected and the agent creates a copy with `create_console` instead.
+
+Tool inputs stream as they generate, so edit cards reflect work in progress rather than blocking on a spinner until the full payload arrives.
 
 ## Sharing
 

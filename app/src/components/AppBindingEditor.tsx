@@ -2,23 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Box,
   Typography,
-  Button,
   ToggleButtonGroup,
   ToggleButton,
-  Chip,
   Tooltip,
-  IconButton,
-  Popover,
-  Divider,
 } from "@mui/material";
-import {
-  Database as MaterializeIcon,
-  Info as InfoIcon,
-  History as HistoryIcon,
-  Eye as PreviewIcon,
-  CheckCircle2 as SuccessIcon,
-  XCircle as ErrorIcon,
-} from "lucide-react";
+import { Info as InfoIcon } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppStore } from "../store/appStore";
@@ -27,6 +15,13 @@ import { previewParquetArtifact } from "../lib/parquet-preview";
 import Console from "./Console";
 import ResultsTable from "./ResultsTable";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
+import DataSourceMaterializationControls, {
+  type MaterializationHistoryItem,
+} from "./DataSourceMaterializationControls";
+import {
+  defaultMaterializationSchedule,
+  type MaterializationScheduleValue,
+} from "../lib/materializationSchedule";
 
 interface PreviewResult {
   results: Record<string, unknown>[];
@@ -72,7 +67,6 @@ export default function AppBindingEditor({
   const [running, setRunning] = useState(false);
   const [materializing, setMaterializing] = useState(false);
   const [previewingSnapshot, setPreviewingSnapshot] = useState(false);
-  const [historyAnchor, setHistoryAnchor] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!appEntity && workspaceId) void fetchApp(workspaceId, appId);
@@ -87,12 +81,23 @@ export default function AppBindingEditor({
     if (bindingName) updateTabTitle(tabId, bindingName);
   }, [bindingName, tabId, updateTabTitle]);
 
+  const resolveDbtCodeForPreview = useAppStore(s => s.resolveDbtCodeForPreview);
+  const bindingDbtProjectId = binding?.dbtProjectId;
+
   const handleExecute = useCallback(
     async (content: string, connectionId?: string, databaseId?: string) => {
       if (!workspaceId || !connectionId) return;
       setRunning(true);
       try {
-        const res = await executeQuery(workspaceId, connectionId, content, {
+        // dbt-linked bindings: resolve {{ dbt_schema }} against the app's
+        // preview environment (override or prod default) before running.
+        const resolved = await resolveDbtCodeForPreview(
+          workspaceId,
+          appId,
+          bindingDbtProjectId,
+          content,
+        );
+        const res = await executeQuery(workspaceId, connectionId, resolved, {
           databaseId,
           databaseName: binding?.databaseName,
         });
@@ -115,7 +120,14 @@ export default function AppBindingEditor({
         setRunning(false);
       }
     },
-    [workspaceId, executeQuery, binding?.databaseName],
+    [
+      workspaceId,
+      appId,
+      executeQuery,
+      binding?.databaseName,
+      bindingDbtProjectId,
+      resolveDbtCodeForPreview,
+    ],
   );
 
   const handleSave = useCallback(
@@ -131,11 +143,23 @@ export default function AppBindingEditor({
   const handleMaterialize = useCallback(async () => {
     if (!workspaceId) return;
     setMaterializing(true);
-    await materializeBinding(workspaceId, appId, bindingId);
+    // Explicit user action = rebuild now. Force past the definition-hash cache
+    // so a rematerialize picks up new upstream data even when the query text is
+    // unchanged (parity with the dashboard data source Materialize button).
+    await materializeBinding(workspaceId, appId, bindingId, { force: true });
     setMaterializing(false);
   }, [workspaceId, appId, bindingId, materializeBinding]);
 
   const bindingCache = binding?.cache;
+  const handleScheduleChange = useCallback(
+    (schedule: MaterializationScheduleValue) => {
+      if (!workspaceId) return;
+      updateBinding(appId, bindingId, { materializationSchedule: schedule });
+      void persistApp(workspaceId, appId);
+    },
+    [workspaceId, appId, bindingId, updateBinding, persistApp],
+  );
+
   const handlePreviewSnapshot = useCallback(async () => {
     if (!bindingCache?.parquetUrl) return;
     setPreviewingSnapshot(true);
@@ -187,10 +211,21 @@ export default function AppBindingEditor({
 
   const cache = binding.cache;
 
-  const history = cache?.history ?? [];
+  const historyItems: MaterializationHistoryItem[] = (cache?.history ?? []).map(
+    (run, i) => ({
+      id: `${run.at}-${i}`,
+      status: run.status === "ready" ? "ready" : "error",
+      at: run.at,
+      rowCount: run.rowCount ?? null,
+      durationMs: run.durationMs ?? null,
+      error: run.error ?? null,
+    }),
+  );
 
-  const headerExtras = (
-    <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, ml: 1 }}>
+  const isParquet = binding.materialization === "parquet";
+
+  const leadingControls = (
+    <>
       <Typography variant="caption" color="text.secondary">
         Data
       </Typography>
@@ -230,63 +265,33 @@ export default function AppBindingEditor({
           style={{ opacity: 0.6, cursor: "help" }}
         />
       </Tooltip>
+    </>
+  );
 
-      {binding.materialization === "parquet" && (
-        <>
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<MaterializeIcon size={16} strokeWidth={1.5} />}
-            onClick={handleMaterialize}
-            disabled={materializing}
-          >
-            {materializing ? "Materializing…" : "Materialize"}
-          </Button>
-          {cache?.parquetBuildStatus && (
-            <Chip
-              size="small"
-              variant="outlined"
-              color={
-                cache.parquetBuildStatus === "ready"
-                  ? "success"
-                  : cache.parquetBuildStatus === "error"
-                    ? "error"
-                    : "default"
-              }
-              label={
-                cache.parquetBuildStatus === "ready" && cache.rowCount != null
-                  ? `${cache.rowCount.toLocaleString()} rows`
-                  : cache.parquetBuildStatus
-              }
-            />
-          )}
-          {cache?.parquetBuildStatus === "ready" && cache?.parquetUrl && (
-            <Tooltip title="Preview the materialized data">
-              <span>
-                <IconButton
-                  size="small"
-                  onClick={() => void handlePreviewSnapshot()}
-                  disabled={previewingSnapshot}
-                >
-                  <PreviewIcon size={18} strokeWidth={1.5} />
-                </IconButton>
-              </span>
-            </Tooltip>
-          )}
-          <Tooltip title="Materialization history">
-            <span>
-              <IconButton
-                size="small"
-                onClick={e => setHistoryAnchor(e.currentTarget)}
-                disabled={history.length === 0}
-              >
-                <HistoryIcon size={18} strokeWidth={1.5} />
-              </IconButton>
-            </span>
-          </Tooltip>
-        </>
-      )}
-    </Box>
+  const headerExtras = (
+    <DataSourceMaterializationControls
+      leadingControls={leadingControls}
+      showMaterializeControls={isParquet}
+      buildStatus={cache?.parquetBuildStatus ?? null}
+      rowCount={cache?.rowCount ?? null}
+      builtAtMs={
+        cache?.parquetBuiltAt ? Date.parse(cache.parquetBuiltAt) : null
+      }
+      dataFreshnessTtlMs={
+        binding.materializationSchedule?.dataFreshnessTtlMs ?? null
+      }
+      onMaterialize={() => void handleMaterialize()}
+      materializing={materializing}
+      canPreview={cache?.parquetBuildStatus === "ready" && !!cache?.parquetUrl}
+      onPreviewSnapshot={() => void handlePreviewSnapshot()}
+      previewing={previewingSnapshot}
+      schedule={
+        binding.materializationSchedule ?? defaultMaterializationSchedule(false)
+      }
+      onScheduleChange={handleScheduleChange}
+      scheduleCaption="This schedule refreshes only this app data source."
+      history={historyItems}
+    />
   );
 
   return (
@@ -337,72 +342,6 @@ export default function AppBindingEditor({
           </Panel>
         </PanelGroup>
       </Box>
-
-      {/* Materialization history */}
-      <Popover
-        open={Boolean(historyAnchor)}
-        anchorEl={historyAnchor}
-        onClose={() => setHistoryAnchor(null)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
-      >
-        <Box sx={{ p: 1.5, minWidth: 320, maxWidth: 460 }}>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>
-            Materialization history
-          </Typography>
-          {history.length === 0 ? (
-            <Typography variant="caption" color="text.secondary">
-              No runs yet.
-            </Typography>
-          ) : (
-            history.map((run, i) => (
-              <Box key={i}>
-                {i > 0 && <Divider sx={{ my: 0.5 }} />}
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                  {run.status === "ready" ? (
-                    <SuccessIcon
-                      size={16}
-                      strokeWidth={1.5}
-                      style={{
-                        color: "var(--mui-palette-success-main, green)",
-                      }}
-                    />
-                  ) : (
-                    <ErrorIcon
-                      size={16}
-                      strokeWidth={1.5}
-                      style={{
-                        color: "var(--mui-palette-error-main, crimson)",
-                      }}
-                    />
-                  )}
-                  <Typography variant="caption" sx={{ flex: 1 }}>
-                    {new Date(run.at).toLocaleString()}
-                  </Typography>
-                  {run.status === "ready" && run.rowCount != null && (
-                    <Typography variant="caption" color="text.secondary">
-                      {run.rowCount.toLocaleString()} rows
-                    </Typography>
-                  )}
-                  {run.durationMs != null && (
-                    <Typography variant="caption" color="text.secondary">
-                      {(run.durationMs / 1000).toFixed(1)}s
-                    </Typography>
-                  )}
-                </Box>
-                {run.error && (
-                  <Typography
-                    variant="caption"
-                    color="error"
-                    sx={{ display: "block", pl: 3, whiteSpace: "pre-wrap" }}
-                  >
-                    {run.error}
-                  </Typography>
-                )}
-              </Box>
-            ))
-          )}
-        </Box>
-      </Popover>
     </Box>
   );
 }

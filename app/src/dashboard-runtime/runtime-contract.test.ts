@@ -123,6 +123,39 @@ describe("dashboard runtime contract", () => {
     expect(draftV2).toBe(draftV1);
   });
 
+  it("streams persistent live data sources instead of loading an artifact", () => {
+    const liveDataSource = {
+      ...baseDashboard.dataSources[0],
+      materialization: "live" as const,
+    };
+
+    // A live source resolves to live_stream even when not skipping parquet
+    // (viewer load), unlike a parquet source which uses the published artifact.
+    expect(
+      resolveActiveSource({ skipParquet: false, dataSource: liveDataSource }),
+    ).toBe("live_stream");
+    expect(
+      resolveActiveSource({
+        skipParquet: false,
+        dataSource: baseDashboard.dataSources[0],
+      }),
+    ).toBe("published_artifact");
+
+    // Live load version is prefixed live: and ignores artifact revision.
+    const liveVersion = buildDataSourceLoadVersion({
+      dataSource: liveDataSource,
+      skipParquet: false,
+    });
+    expect(liveVersion.startsWith("live:")).toBe(true);
+
+    // Toggling materialization must invalidate the cached load.
+    const parquetVersion = buildDataSourceLoadVersion({
+      dataSource: baseDashboard.dataSources[0],
+      skipParquet: false,
+    });
+    expect(liveVersion).not.toBe(parquetVersion);
+  });
+
   it("prefers a newer parquet build timestamp over a stale artifact revision", () => {
     const viewerBefore = buildDataSourceLoadVersion({
       dataSource: {

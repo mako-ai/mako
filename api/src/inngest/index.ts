@@ -2,13 +2,12 @@ import { inngest } from "./client";
 import {
   flowFunction,
   flowSchedulerFunction,
+  cdcScheduledBackfillFunction,
   manualFlowFunction,
   cancelFlowFunction,
   cleanupAbandonedFlowsFunction,
 } from "./functions/flow";
 import {
-  webhookEventProcessFunction,
-  webhookEventProcessCdcFunction,
   webhookRetryFunction,
   cdcMaterializeFunction,
   cdcMaterializeSchedulerFunction,
@@ -18,8 +17,12 @@ import {
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,
 } from "./functions/dashboard-refresh";
-import { appBindingMaterializeFunction } from "./functions/app-binding-materialize";
+import {
+  appBindingMaterializeFunction,
+  appBindingSchedulerFunction,
+} from "./functions/app-binding-materialize";
 import { syncBackfillEntityFunction } from "./functions/sync-entity";
+import { cdcRepartitionFunction } from "./functions/cdc-repartition";
 import { usageReportingFunction } from "./functions/usage-reporting";
 import { modelCatalogRefreshFunction } from "./functions/model-catalog-refresh";
 import {
@@ -44,6 +47,7 @@ const baseFunctions = [
   cancelFlowFunction,
   cleanupAbandonedFlowsFunction,
   syncBackfillEntityFunction,
+  cdcRepartitionFunction,
   dashboardRefreshFunction,
   cleanupAbandonedMaterializationRunsFunction,
   appBindingMaterializeFunction,
@@ -58,8 +62,6 @@ const baseFunctions = [
 ];
 
 const allWebhookFunctions = [
-  webhookEventProcessFunction,
-  webhookEventProcessCdcFunction,
   webhookRetryFunction,
   cdcMaterializeFunction,
   cdcMaterializeSchedulerFunction,
@@ -88,7 +90,9 @@ export function getFunctions() {
         ...baseFunctions,
         ...webhookFunctions,
         flowSchedulerFunction,
+        cdcScheduledBackfillFunction,
         dashboardSchedulerFunction,
+        appBindingSchedulerFunction,
         scheduledQuerySchedulerFunction,
         dbtSchedulerFunction,
       ];
@@ -124,14 +128,13 @@ export { inngest };
 export {
   flowFunction,
   flowSchedulerFunction,
+  cdcScheduledBackfillFunction,
   manualFlowFunction,
   cancelFlowFunction,
   cleanupAbandonedFlowsFunction,
   flowRunTerminalFanoutFunction,
   notificationDeliverFunction,
   syncBackfillEntityFunction,
-  webhookEventProcessFunction,
-  webhookEventProcessCdcFunction,
   webhookRetryFunction,
   cdcMaterializeFunction,
   cdcMaterializeSchedulerFunction,
@@ -139,6 +142,7 @@ export {
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,
   appBindingMaterializeFunction,
+  appBindingSchedulerFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,

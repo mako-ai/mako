@@ -247,6 +247,7 @@ export function buildDashboardDataSource(input: {
   timeDimension?: string;
   rowLimit?: number;
   origin?: DashboardDataSourceOrigin;
+  materialization?: "live" | "parquet";
 }): DashboardDataSource {
   return {
     id: nanoid(),
@@ -256,8 +257,31 @@ export function buildDashboardDataSource(input: {
     origin: input.origin,
     timeDimension: input.timeDimension,
     rowLimit: input.rowLimit,
+    materialization: input.materialization ?? "parquet",
     computedColumns: [],
   };
+}
+
+/**
+ * Creation idempotency for agent-created data sources: when the dashboard
+ * already holds a data source stamped with this toolCallId, return it instead
+ * of adding another. Covers a second window attached to the same chat stream
+ * dispatching the same create call after the first window's save landed.
+ * (Cross-window last-write-wins on concurrent dashboard saves is a separate
+ * consistency problem, out of scope here — the stamp at least makes the
+ * duplicate detectable and the common sequential case idempotent.)
+ */
+function findDataSourceByToolCallId(
+  dashboardId: string | undefined,
+  toolCallId: string | undefined,
+): DashboardDataSource | null {
+  if (!toolCallId) return null;
+  const dashboard = getDashboardOrThrow(dashboardId);
+  return (
+    dashboard.dataSources.find(
+      ds => ds.origin?.createdByToolCallId === toolCallId,
+    ) ?? null
+  );
 }
 
 export async function createDashboardDataSource(options: {
@@ -266,9 +290,18 @@ export async function createDashboardDataSource(options: {
   query: DashboardQueryDefinition;
   timeDimension?: string;
   rowLimit?: number;
+  materialization?: "live" | "parquet";
   dashboardId?: string;
   signal?: AbortSignal;
+  /** Agent toolCallId — creation idempotency stamp (see above). */
+  toolCallId?: string;
 }): Promise<DashboardDataSource> {
+  const existing = findDataSourceByToolCallId(
+    options.dashboardId,
+    options.toolCallId,
+  );
+  if (existing) return existing;
+
   const store = useDashboardStore.getState();
   const dashboard = getDashboardOrThrow(options.dashboardId);
   const dataSource = buildDashboardDataSource({
@@ -276,7 +309,8 @@ export async function createDashboardDataSource(options: {
     query: options.query,
     timeDimension: options.timeDimension,
     rowLimit: options.rowLimit,
-    origin: { type: "local" },
+    materialization: options.materialization,
+    origin: { type: "local", createdByToolCallId: options.toolCallId },
   });
 
   store.addDataSource(dashboard._id, dataSource);
@@ -300,7 +334,15 @@ export async function importConsoleAsDashboardDataSource(options: {
   timeDimension?: string;
   dashboardId?: string;
   signal?: AbortSignal;
+  /** Agent toolCallId — creation idempotency stamp (see above). */
+  toolCallId?: string;
 }): Promise<DashboardDataSource> {
+  const preExisting = findDataSourceByToolCallId(
+    options.dashboardId,
+    options.toolCallId,
+  );
+  if (preExisting) return preExisting;
+
   const response = await apiClient.get<ConsoleContentResponse>(
     `/workspaces/${options.workspaceId}/consoles/content`,
     { id: options.consoleId },
@@ -333,6 +375,7 @@ export async function importConsoleAsDashboardDataSource(options: {
       consoleId: response.id,
       consoleName: response.name,
       importedAt: new Date().toISOString(),
+      createdByToolCallId: options.toolCallId,
     },
   });
 

@@ -203,7 +203,12 @@ export function isLoggingInitialized(): boolean {
 //    the initialization will have completed
 // 3. The initialization promise is started here at import time, not
 //    lazily when main() is called
-void initializeLogging();
+// Skip auto-init under Vitest: vite-node's module ordering trips the database
+// sink's circular import, and tests don't need configured sinks (LogTape
+// loggers are valid uninitialized). Production/tsx paths are unaffected.
+if (!process.env.VITEST) {
+  void initializeLogging();
+}
 
 /**
  * Get a logger for a specific category

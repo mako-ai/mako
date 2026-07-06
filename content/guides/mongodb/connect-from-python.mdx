@@ -1,0 +1,170 @@
+---
+title: "How to Connect to MongoDB from Python"
+description: "Connect to MongoDB from Python with PyMongo, the PyMongo Async API, or Motor. Working code for connection strings, Atlas SRV URIs, pooling, and the lazy-connection gotcha that hides bad credentials."
+database: "mongodb"
+category: "how-to"
+tags: ["mongodb", "python", "pymongo", "motor", "connection"]
+date: "2026-06-11"
+---
+
+Python's MongoDB story consolidated recently: PyMongo is now the official driver for both synchronous and asynchronous code. Motor, the long-standing asyncio driver, was deprecated in May 2025 and its support window ended in May 2026 -- its functionality moved into PyMongo's Async API. This guide shows working connection code for both styles, plus the connection-string and pooling details that matter in production.
+
+## Which option should you use?
+
+| Option | Install | Async | Notes |
+|---|---|---|---|
+| PyMongo (sync) | `pip install pymongo` | No | The default choice for scripts, Django, Flask |
+| PyMongo Async API | `pip install pymongo` | Yes | Same package, `AsyncMongoClient`. Successor to Motor |
+| Motor | `pip install motor` | Yes | Deprecated May 2025, support ended May 2026. Migrate off it |
+| MongoEngine / Beanie / ODMantic | varies | varies | ODMs layered on PyMongo -- pick one if you want a schema layer |
+
+Short version: install **pymongo** (4.17.0 as of June 2026) and use `MongoClient` for synchronous code or `AsyncMongoClient` for asyncio. Do not start new projects on Motor; MongoDB's own docs tell existing Motor users to migrate to the PyMongo Async API.
+
+## Connection strings
+
+Two formats exist:
+
+```
+mongodb://user:password@host1:27017,host2:27017/?replicaSet=rs0&authSource=admin
+mongodb+srv://user:password@cluster0.abc123.mongodb.net/
+```
+
+`mongodb://` lists hosts explicitly. `mongodb+srv://` (what Atlas gives you) resolves the host list and options from DNS SRV records, so the cluster can change topology without you editing the string. SRV URIs imply TLS and require the `dnspython` package:
+
+```bash
+pip install "pymongo[srv]"
+```
+
+Forgetting that extra produces `ConfigurationError: The "dnspython" module must be installed to use mongodb+srv:// URIs` -- probably the most-searched PyMongo error.
+
+Two details that bite:
+
+- If your password contains `@`, `:`, `/` or `%`, percent-encode it (`urllib.parse.quote_plus`), or the URI parser will split the string in the wrong place.
+- `authSource` defaults to the database in the URI path, or `admin` if none is given. If you created the user in `admin` but connect to `mydb`, set `authSource=admin` explicitly or authentication fails.
+
+## PyMongo (synchronous)
+
+```bash
+pip install pymongo
+```
+
+```python
+import os
+from pymongo import MongoClient
+
+client = MongoClient(os.environ["MONGODB_URI"])
+db = client["shop"]
+orders = db["orders"]
+
+doc = orders.find_one({"status": "pending"})
+print(doc)
+
+client.close()
+```
+
+No `connect()` call, no cursor objects to manage -- you index into databases and collections, and PyMongo handles the rest.
+
+### The lazy-connection gotcha
+
+`MongoClient(...)` does **not** connect. It returns immediately, even if the host is unreachable or the password is wrong. The connection happens on the first actual operation, which is where the error surfaces -- often far from the configuration mistake that caused it. Verify connectivity at startup with an explicit ping:
+
+```python
+from pymongo.errors import ConnectionFailure
+
+try:
+    client.admin.command("ping")
+except ConnectionFailure as e:
+    raise SystemExit(f"MongoDB unreachable: {e}")
+```
+
+Failures show up as `ServerSelectionTimeoutError` after `serverSelectionTimeoutMS` (default 30 seconds). For a startup check, 30 seconds of silence is a long time; tighten it:
+
+```python
+client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+```
+
+## PyMongo Async API
+
+Same package, same API shape, `await` in front of operations:
+
+```python
+import asyncio, os
+from pymongo import AsyncMongoClient
+
+async def main():
+    client = AsyncMongoClient(os.environ["MONGODB_URI"])
+    orders = client["shop"]["orders"]
+
+    doc = await orders.find_one({"status": "pending"})
+    print(doc)
+
+    async for order in orders.find({"status": "shipped"}).limit(10):
+        print(order["_id"])
+
+    await client.close()
+
+asyncio.run(main())
+```
+
+Cursors are async iterators, and methods that perform I/O are coroutines. Unlike Motor, which wrapped PyMongo in a thread pool, the Async API implements asyncio natively, so there is no hidden thread hop per operation.
+
+### Migrating from Motor
+
+Mechanically the change is small: `AsyncIOMotorClient` becomes `AsyncMongoClient`, the `motor` import becomes `pymongo`, and the method names already match. MongoDB publishes a [migration guide](https://www.mongodb.com/docs/languages/python/pymongo-driver/current/reference/migration/) covering the edge cases (custom executors, `io_loop` arguments, Tornado integration). If you are on Motor today, schedule the migration -- the support window has already closed.
+
+## Pooling: you already have it
+
+`MongoClient` and `AsyncMongoClient` maintain a connection pool internally. The pattern is **one client per process, created once, reused everywhere** -- not one client per request. Useful knobs:
+
+```python
+client = MongoClient(
+    uri,
+    maxPoolSize=100,   # default 100 connections per host
+    minPoolSize=0,     # default 0
+    maxIdleTimeMS=None # how long an idle connection may live
+)
+```
+
+Two process-model rules:
+
+- **Fork safety:** never create the client before `fork()` and use it after. With Gunicorn's default prefork worker model, construct the client inside the worker (e.g. in a `post_fork` hook or lazily on first use), not at module import time in the master. PyMongo will warn `MongoClient opened before fork` if you get this wrong.
+- **Serverless:** in AWS Lambda and similar, cache the client in a module-level variable so warm invocations reuse it, and keep `maxPoolSize` small.
+
+## TLS and Atlas
+
+Atlas requires TLS; `mongodb+srv://` URIs enable it automatically. For self-hosted deployments:
+
+```python
+client = MongoClient(uri, tls=True, tlsCAFile="/path/to/ca.pem")
+```
+
+Atlas also enforces an IP access list. `ServerSelectionTimeoutError` with an SSL handshake message against a correct URI is, more often than not, your IP missing from the Atlas allowlist rather than a code problem.
+
+## Timezone-aware datetimes
+
+By default PyMongo returns naive `datetime` objects even though BSON dates are UTC. Make it explicit:
+
+```python
+client = MongoClient(uri, tz_aware=True)
+```
+
+Returned datetimes then carry UTC tzinfo, which prevents the classic bug of comparing naive and aware datetimes. More on BSON dates in [MongoDB data types and BSON](/guides/mongodb/data-types-bson).
+
+## Common errors
+
+| Error | Cause | Fix |
+|---|---|---|
+| `ServerSelectionTimeoutError` | Host unreachable, wrong port, Atlas IP allowlist, replica set name mismatch | Ping at startup, check allowlist, lower `serverSelectionTimeoutMS` to fail fast |
+| `ConfigurationError: "dnspython" must be installed` | SRV URI without the srv extra | `pip install "pymongo[srv]"` |
+| `OperationFailure: Authentication failed` | Wrong credentials or wrong `authSource` | Set `authSource` to the DB where the user was created |
+| `InvalidURI` / wrong host parsed | Unescaped `@` or `:` in password | `urllib.parse.quote_plus` the password |
+| `MongoClient opened before fork` warning | Client created in prefork master process | Create the client per worker process |
+
+## Related guides
+
+- [MongoDB query operators](/guides/mongodb/query-operators) -- what to do once you are connected
+- [MongoDB aggregation pipeline](/guides/mongodb/aggregation-pipeline)
+- [Import JSON to MongoDB](/guides/import-json-to-mongodb)
+- [Best MongoDB GUI clients](/guides/mongodb-gui-client)
+
+Mako connects to MongoDB with AI-powered autocomplete. Try it free at mako.ai.

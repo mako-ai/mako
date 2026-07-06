@@ -22,6 +22,8 @@ import {
   setConsoleConnectionSchema,
   openConsoleSchema,
   runConsoleSchema,
+  checkQueryStatusSchema,
+  cancelQueryStatusSchema,
   applyModification,
   buildModificationDiff,
   type ConsoleModification,
@@ -34,15 +36,35 @@ import {
 import { ConsoleManager } from "../../utils/console-manager";
 import { workspaceService } from "../../services/workspace.service";
 import { publishRealtimeEvent } from "../../services/realtime.service";
-import { executeSavedConsole } from "../../services/console-execution.service";
+import {
+  startDetachedConsoleRun,
+  cancelDetachedConsoleRun,
+} from "../../services/console-execution.service";
 import type { AgentToolExecutionContext } from "../../agents/types";
-import { databaseConnectionService } from "../../services/database-connection.service";
+import {
+  QUERY_SOFT_TIMEOUT_MS,
+  QUERY_HARD_MAX_EXECUTION_MS,
+  QUERY_STATUS_POLL_WAIT_MS,
+  QUERY_STATUS_POLL_INTERVAL_MS,
+} from "../../config/long-running-queries";
+import { pollRunStatus } from "./check-query-status-poll";
 import { loggers } from "../../logging";
 
 const logger = loggers.agent();
 
-const RUN_CONSOLE_TIMEOUT_MS = 120_000;
 const RUN_PREVIEW_MAX_ROWS = 50;
+
+/**
+ * A console's `name` is the canonical LEAF display name (folder placement is
+ * `folderId`, never the name). Keep agent-set names as leaves so the agent
+ * cannot reintroduce slash-delimited "paths" into the name field — the UI
+ * shows `name` verbatim as the title/breadcrumb leaf/tree row.
+ */
+function leafConsoleName(raw: string | undefined): string {
+  const value = raw ?? "";
+  const parts = value.split("/").filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : value;
+}
 
 const consoleManager = new ConsoleManager();
 
@@ -265,8 +287,17 @@ export function createServerConsoleTools({
               // Mark agent origin so a reconnecting client surfaces this as a
               // reviewable diff even if it missed the realtime poke.
               lastDraftOrigin: "agent",
+              // Set the next revision explicitly (instead of $inc) so the bump
+              // is null-safe. Legacy consoles have no draftRevision field; the
+              // Mongoose schema default reports it as 1, but `$inc` on the
+              // absent DB field also yields 1 — colliding with the value the
+              // client already holds, so revisions-sync saw "no change" and the
+              // first agent edit/rename never reached the open tab. currentRevision
+              // is the schema-defaulted value (1 for legacy), so +1 always
+              // exceeds what the client has.
+              draftRevision: currentRevision + 1,
             };
-            if (title) setFields.name = title;
+            if (title) setFields.name = leafConsoleName(title) || title;
 
             const updated = await SavedConsole.findOneAndUpdate(
               {
@@ -275,7 +306,7 @@ export function createServerConsoleTools({
                 draftRevision:
                   currentRevision === 1 ? { $in: [1, null] } : currentRevision,
               },
-              { $set: setFields, $inc: { draftRevision: 1 } },
+              { $set: setFields },
               { new: true },
             );
 
@@ -349,7 +380,7 @@ export function createServerConsoleTools({
 
           const doc = await SavedConsole.create({
             workspaceId: new Types.ObjectId(workspaceId),
-            name: title || "Untitled",
+            name: leafConsoleName(title) || "Untitled",
             code: content || "",
             language,
             connectionId: connectionId
@@ -441,8 +472,11 @@ export function createServerConsoleTools({
                 databaseId,
                 databaseName,
                 updatedAt: new Date(),
+                // Null-safe bump (see modify_console): the schema default
+                // reports a legacy console's revision as 1 while `$inc` on the
+                // absent field also yields 1, so set the next value explicitly.
+                draftRevision: (doc.draftRevision ?? 1) + 1,
               },
-              $inc: { draftRevision: 1 },
             },
             { new: true },
           );
@@ -507,7 +541,8 @@ export function createServerConsoleTools({
 
     run_console: tool({
       description:
-        "Execute the query currently in a console (runs server-side against the console's attached connection; results appear in open windows and are saved on the console). Use this AFTER modify_console to get results. The console must be connected to a database.",
+        "Execute the query currently in a console (runs server-side against the console's attached connection; results appear in open windows and are saved on the console). Use this AFTER modify_console to get results. The console must be connected to a database. " +
+        'The query runs as a detached server-side task: if it finishes quickly you get the rows back immediately; if it is still running after a short soft timeout you get { status: "running", executionId } and the query KEEPS RUNNING — poll check_query_status to fetch the result, and cancel_query to stop it.',
       inputSchema: runConsoleSchema,
       execute: async ({ consoleId }) => {
         const loaded = await loadConsole(consoleId);
@@ -529,47 +564,28 @@ export function createServerConsoleTools({
           };
         }
 
-        // Cancellation: register with the turn's execution registry so an
-        // explicit Stop (or turn abort) cancels the database query, plus a
-        // hard timeout.
+        // Register with the turn's execution registry so an explicit Stop (or
+        // turn abort) during THIS turn cancels the query. We deliberately do
+        // NOT release it on the soft-timeout path: the detached task outlives
+        // the tool call, and across later turns it is cancelled by executionId
+        // via cancel_query.
         const executionId =
           executionContext?.createExecutionId("run_console") ??
           `run_console_${Date.now()}`;
         executionContext?.registerExecution(executionId);
-        const timeoutController = new AbortController();
-        const timeoutId = setTimeout(() => {
-          timeoutController.abort("query-timeout");
-          void databaseConnectionService.cancelQuery(executionId);
-        }, RUN_CONSOLE_TIMEOUT_MS);
 
+        let started: Awaited<ReturnType<typeof startDetachedConsoleRun>>;
         try {
-          const result = await executeSavedConsole({
+          started = await startDetachedConsoleRun({
             workspaceId,
             consoleId,
             userId: userId ?? "agent",
             source: "agent",
             executionId,
-            signal: executionContext?.signal ?? timeoutController.signal,
+            signal: executionContext?.signal,
           });
-
-          if (!result.success) {
-            const timedOut = timeoutController.signal.aborted;
-            return {
-              success: false,
-              error: timedOut
-                ? `Query timed out after ${RUN_CONSOLE_TIMEOUT_MS / 1000}s. The query may be too complex or the database is under heavy load.`
-                : result.error || "Query execution failed.",
-            };
-          }
-
-          return {
-            success: true,
-            rowCount: result.rowCount,
-            preview: result.rows.slice(0, RUN_PREVIEW_MAX_ROWS),
-            durationMs: result.durationMs,
-            message: `Query executed successfully. ${result.rowCount} row(s) returned.`,
-          };
         } catch (error) {
+          executionContext?.releaseExecution(executionId);
           return {
             success: false,
             error:
@@ -577,9 +593,130 @@ export function createServerConsoleTools({
                 ? error.message
                 : "Query execution failed unexpectedly.",
           };
-        } finally {
-          clearTimeout(timeoutId);
+        }
+
+        if (!started.started) {
           executionContext?.releaseExecution(executionId);
+          return { success: false, error: started.error };
+        }
+
+        // Await up to the soft timeout. If the query finishes, return rows as
+        // before; otherwise leave it running and tell the agent to poll.
+        const TIMED_OUT = Symbol("soft-timeout");
+        let softTimer: ReturnType<typeof setTimeout> | undefined;
+        const softTimeout = new Promise<typeof TIMED_OUT>(resolve => {
+          softTimer = setTimeout(
+            () => resolve(TIMED_OUT),
+            QUERY_SOFT_TIMEOUT_MS,
+          );
+        });
+
+        try {
+          const outcome = await Promise.race([started.completion, softTimeout]);
+
+          if (outcome === TIMED_OUT) {
+            return {
+              success: true,
+              status: "running" as const,
+              executionId,
+              consoleId,
+              elapsedMs: QUERY_SOFT_TIMEOUT_MS,
+              message:
+                `Query is still running after ${Math.round(QUERY_SOFT_TIMEOUT_MS / 1000)}s and keeps running server-side. ` +
+                `Call check_query_status (consoleId="${consoleId}", executionId="${executionId}") to get the result — it blocks server-side until the query finishes (no need to wait or poll rapidly yourself). Do not re-run the query.`,
+            };
+          }
+
+          // Completed within the soft timeout — release the turn registration.
+          executionContext?.releaseExecution(executionId);
+
+          if (outcome.status === "cancelled") {
+            return {
+              success: false,
+              status: "cancelled" as const,
+              error: outcome.error || "Query was cancelled.",
+            };
+          }
+          if (!outcome.success) {
+            return {
+              success: false,
+              error: outcome.error || "Query execution failed.",
+            };
+          }
+          return {
+            success: true,
+            status: "success" as const,
+            rowCount: outcome.rowCount,
+            preview: outcome.rows.slice(0, RUN_PREVIEW_MAX_ROWS),
+            durationMs: outcome.durationMs,
+            message: `Query executed successfully. ${outcome.rowCount} row(s) returned.`,
+          };
+        } finally {
+          if (softTimer) clearTimeout(softTimer);
+        }
+      },
+    }),
+
+    check_query_status: tool({
+      description:
+        'Poll the status of a console query started with run_console (DB-backed, works across server instances). Returns { status: "running", elapsedMs } while it runs, { status: "success", rowCount, preview } when it finishes, { status: "error", error }, or { status: "cancelled" }. ' +
+        `This call BLOCKS server-side for up to ~${Math.round(QUERY_STATUS_POLL_WAIT_MS / 1000)}s, returning the instant the query settles — so you do NOT need to (and must NOT) add your own delay or spam rapid calls. After run_console returns status="running", just call this again; if it returns status="running" again, call it once more to keep waiting. ` +
+        `The query is automatically aborted server-side at a hard cap (~${Math.round(QUERY_HARD_MAX_EXECUTION_MS / 60_000)} min); if that happens, rewrite it into smaller/narrower queries rather than retrying as-is. Never silently re-run the query while it is still running.`,
+      inputSchema: checkQueryStatusSchema,
+      execute: async ({ consoleId, executionId }) =>
+        // Long-poll: an LLM cannot sleep between tool calls, so if this returned
+        // instantly while the query is "running" the model re-invokes it every
+        // ~1s — flooding the chat UI (see the rapid-poll incident this fixes).
+        // pollRunStatus blocks (re-reading the DB-backed run artifact) until the
+        // run settles or the wait window elapses. The query keeps running
+        // server-side either way (hard cap still applies); we only throttle how
+        // often the agent gets a turn back.
+        pollRunStatus({
+          readRun: async () => {
+            const loaded = await loadConsole(consoleId);
+            if (isLoadError(loaded)) return { ok: false, error: loaded.error };
+            return { ok: true, lastRun: loaded.doc.lastRun };
+          },
+          executionId,
+          waitMs: QUERY_STATUS_POLL_WAIT_MS,
+          intervalMs: QUERY_STATUS_POLL_INTERVAL_MS,
+          signal: executionContext?.signal,
+          previewMaxRows: RUN_PREVIEW_MAX_ROWS,
+        }),
+    }),
+
+    cancel_query: tool({
+      description:
+        'Cancel a console query that is still running (started with run_console and currently status="running"). Aborts the detached server-side task and issues the engine-native cancel (Postgres pid, Mongo session, ClickHouse query_id, MSSQL request, BigQuery job). Use this when the user chooses to stop waiting.',
+      inputSchema: cancelQueryStatusSchema,
+      execute: async ({ consoleId, executionId }) => {
+        const loaded = await loadConsole(consoleId);
+        if (isLoadError(loaded)) return { success: false, ...loaded };
+
+        try {
+          const result = await cancelDetachedConsoleRun(executionId);
+          if (!result.success) {
+            return {
+              success: false,
+              error:
+                result.error ||
+                "Query not found or already completed (it may have just finished — check_query_status to confirm).",
+            };
+          }
+          return {
+            success: true,
+            message:
+              "Cancellation requested. The query is being stopped; check_query_status will report it as cancelled or completed.",
+          };
+        } catch (error) {
+          logger.warn("cancel_query failed", { error, consoleId, executionId });
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to cancel query.",
+          };
         }
       },
     }),

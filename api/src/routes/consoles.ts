@@ -85,6 +85,68 @@ function buildConsoleSnapshot(doc: ISavedConsole): Record<string, unknown> {
   };
 }
 
+// IMPORTANT: this MUST stay byte-for-byte compatible with the client hash so
+// the server-computed baseline equals what the client would compute for the
+// same snapshot. Mirror of `hashContent` in `app/src/utils/hash.ts` and
+// `computeConsoleStateHash` in `app/src/utils/stateHash.ts`. The two packages
+// can't share code (no common import path), so any change to the algorithm
+// here must be made in lockstep with those files or Save will misdetect dirt.
+function hashContent(content: string): string {
+  let hash = 0;
+  if (content.length === 0) return "0";
+
+  for (let i = 0; i < content.length; i++) {
+    const char = content.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash = hash & hash;
+  }
+
+  return Math.abs(hash).toString(16);
+}
+
+function computeConsoleStateHash(
+  content: string,
+  connectionId?: string,
+  databaseId?: string,
+  databaseName?: string,
+): string {
+  return hashContent(
+    `${content}|${connectionId || ""}|${databaseId || ""}|${databaseName || ""}`,
+  );
+}
+
+function computeConsoleStateHashFromSnapshot(
+  snapshot: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!snapshot || typeof snapshot.code !== "string") return undefined;
+  return computeConsoleStateHash(
+    snapshot.code,
+    typeof snapshot.connectionId === "string"
+      ? snapshot.connectionId
+      : undefined,
+    typeof snapshot.databaseId === "string" ? snapshot.databaseId : undefined,
+    typeof snapshot.databaseName === "string"
+      ? snapshot.databaseName
+      : undefined,
+  );
+}
+
+async function getLatestConsoleSavedStateHash(
+  entityId: Types.ObjectId,
+  workspaceId: Types.ObjectId,
+): Promise<string | undefined> {
+  const latestVersion = await EntityVersion.findOne(
+    { entityId, entityType: "console", workspaceId },
+    { snapshot: 1 },
+  )
+    .sort({ version: -1 })
+    .lean();
+
+  return computeConsoleStateHashFromSnapshot(
+    latestVersion?.snapshot as Record<string, unknown> | undefined,
+  );
+}
+
 function sanitizeDownloadFilename(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, "_");
 }
@@ -339,6 +401,14 @@ consoleRoutes.openapi(
         ownerDisplayName = ownerUser?.email;
       }
 
+      const savedStateHash =
+        fullConsole && (consoleData.isSaved ?? true)
+          ? await getLatestConsoleSavedStateHash(
+              fullConsole._id,
+              new Types.ObjectId(workspaceId),
+            )
+          : undefined;
+
       return c.json({
         success: true,
         content: consoleData.content,
@@ -350,6 +420,8 @@ consoleRoutes.openapi(
         name: consoleData.name,
         path: consoleData.path,
         isSaved: consoleData.isSaved,
+        savedStateHash,
+        lastDraftOrigin: fullConsole?.lastDraftOrigin,
         chartSpec: consoleData.chartSpec,
         resultsViewMode: consoleData.resultsViewMode,
         access: consoleAccess,
@@ -453,6 +525,7 @@ consoleRoutes.openapi(
         workspaceId: new Types.ObjectId(workspaceId),
       });
       const docsById = new Map(docs.map(d => [d._id.toString(), d]));
+      const workspaceObjectId = new Types.ObjectId(workspaceId);
 
       const changed: Array<Record<string, unknown>> = [];
       const deleted: string[] = [];
@@ -469,6 +542,10 @@ consoleRoutes.openapi(
         }
         const serverRevision = doc.draftRevision ?? 1;
         if (serverRevision === clientRevision) continue;
+        const isSaved = doc.isSaved ?? true;
+        const savedStateHash = isSaved
+          ? await getLatestConsoleSavedStateHash(doc._id, workspaceObjectId)
+          : undefined;
         changed.push({
           id,
           draftRevision: serverRevision,
@@ -481,7 +558,8 @@ consoleRoutes.openapi(
           // Server truth for draft-vs-saved: clients use this to keep the
           // tab's autosave eligibility correct (drafts autosave, saved
           // consoles don't). Missing on legacy docs ⇒ treated as saved.
-          isSaved: doc.isSaved ?? true,
+          isSaved,
+          savedStateHash,
           // Lets the client route an agent edit into the diff-review flow even
           // when the live poke was missed (reconnect/reload). Undefined ⇒ user.
           lastDraftOrigin: doc.lastDraftOrigin,

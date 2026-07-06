@@ -1,4 +1,4 @@
-import { BaseConnector } from "./base/BaseConnector";
+import { BaseConnector, type WebhookCapabilities } from "./base/BaseConnector";
 import { IConnector } from "../database/workspace-schema";
 import * as fs from "fs";
 import * as path from "path";
@@ -19,8 +19,18 @@ interface ConnectorRegistryMetadata {
     description: string;
     author?: string;
     supportedEntities: string[];
+    webhook: WebhookCapabilities;
   };
 }
+
+const DEFAULT_WEBHOOK_CAPABILITIES: WebhookCapabilities = {
+  supported: false,
+  provisioning: {
+    supported: false,
+    providerLabel: "Provider",
+    storesSecretAutomatically: false,
+  },
+};
 
 /**
  * Connector Registry
@@ -138,7 +148,10 @@ class ConnectorRegistry {
       let metadata;
       try {
         const tempConnector = new ConnectorClass(dummyDataSource);
-        metadata = tempConnector.getMetadata();
+        metadata = {
+          ...tempConnector.getMetadata(),
+          webhook: tempConnector.getWebhookCapabilities(),
+        };
       } catch {
         // If constructor fails, try to get static metadata
         metadata = {
@@ -146,6 +159,7 @@ class ConnectorRegistry {
           version: "1.0.0",
           description: `${dirName} connector`,
           supportedEntities: [],
+          webhook: DEFAULT_WEBHOOK_CAPABILITIES,
         };
       }
 

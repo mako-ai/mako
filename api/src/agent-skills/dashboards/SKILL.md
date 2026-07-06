@@ -19,7 +19,7 @@ When working with dashboards, you help users create interactive data dashboards 
 ### Core Capabilities
 
 You can create, modify, and manage dashboards using structured tool calls. Dashboards consist of:
-- **Data sources** — dashboard-local query definitions materialized into an in-browser DuckDB instance
+- **Data sources** — dashboard-local query definitions loaded into an in-browser DuckDB instance. Each has a `materialization` mode (mirrors app data bindings): `parquet` (default) snapshots the query to a cached artifact (fast for aggregation, served to public shares); `live` streams the query server-side into DuckDB on every dashboard load (always fresh, but not shown in anonymous public shares). Set it on `create_data_source` or switch it later with `update_data_source_query`. Only parquet sources are materialized/scheduled/refreshed.
 - **Widgets** — charts (Vega-Lite), KPI cards, and data tables that query the local DuckDB data
 - **Cross-filtering** — clicking a bar or slice in one chart filters all other charts automatically
 - **Global filters** — dashboard-level date range pickers, dropdowns, and search fields
@@ -39,7 +39,16 @@ Before making any changes to a dashboard, you MUST call `enter_edit_mode` with t
 - If another user holds the lock, a confirmation dialog is shown to the user automatically — you do not need to handle this yourself.
 - If `enter_edit_mode` fails because the dashboard is read-only, inform the user that modifications are not possible.
 - If `enter_edit_mode` fails because the user declined to take over the lock, respect their decision and do not retry.
-- After making changes, do NOT ask the user to save — they will save when ready. The dashboard remains in edit mode for the user to review your changes.
+- After making changes, do NOT auto-save or ask the user to save — they will save when ready. The dashboard remains in edit mode for the user to review your changes.
+- EXCEPTION: when the user explicitly asks to save / publish / snapshot the dashboard, call `dashboard_save_version` (with a short `comment`). This persists the working draft, creates a version, and publishes it — the published snapshot is what viewers and shared/public links render.
+
+### Versioning & publishing (draft → published)
+
+Dashboards use a draft → published split:
+- The widgets/data sources/layout you edit are the working **draft**. Editors see the draft; viewers and shared/public links see the **published** version.
+- `dashboard_save_version` (requires edit mode) saves the draft to the server, snapshots it into history, AND publishes it. Use only when the user asks to save/publish.
+- `browse_version_history` with `entityType: "dashboard"` and the `dashboardId` lists past versions (who, when, comment, `restoredFrom`); `get_version_snapshot` shows a version's full definition.
+- `dashboard_restore_version` reverts the draft to a past version and reloads the dashboard (never lossy — the current state is snapshotted first). It does NOT publish; call `dashboard_save_version` afterward to push the restored state live. It replaces unsaved edits in the open tab, so confirm with the user before restoring over unsaved work.
 
 ### Available Tools
 
@@ -92,7 +101,7 @@ Load these tier-3 references with `read_skill_resource` only when the task needs
 **Working with an existing dashboard (most common):**
 1. Use `list_open_dashboards` to get the dashboard ID. If the dashboard isn't open, use `search_dashboards` then `open_dashboard`.
 2. Use `enter_edit_mode` with the `dashboardId` before making changes.
-3. Use `search_consoles` to find a saved console by name, then `import_console_as_data_source` to copy it in, OR use `create_data_source` to define a query from scratch. Pass `dashboardId` to both.
+3. When a saved console already contains the query (or something close), PREFER `search_consoles` + `import_console_as_data_source` — it copies the console's code and connection by reference, so you never re-type the SQL. Only use `create_data_source` to define a genuinely new query from scratch. Pass `dashboardId` to both.
 4. Use `get_dashboard_state` with `dashboardId`, or `query_duckdb` / `inspect_data_source` with `surface: { kind: "dashboard", id: dashboardId }`, to understand the data shape.
 5. Use `add_widget` with `dashboardId` to create charts, KPIs, or tables.
 

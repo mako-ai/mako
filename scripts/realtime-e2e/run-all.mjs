@@ -15,6 +15,11 @@ const scenarios = [
   "04-dead-sse.mjs",
   "05-stale-save-dual-guard.mjs",
   "06-wake-triggers.mjs",
+  "07-create-modify-same-turn.mjs",
+  "10-run-dead-sse.mjs",
+  "11-rename-legacy-console.mjs",
+  "12-rename-saved-surgical.mjs",
+  "99-modify-dead-sse-repro.mjs",
 ];
 
 const results = [];

@@ -19,6 +19,35 @@ const mongooseConnectOptions: ConnectOptions = {
   serverMonitoringMode: "poll",
 };
 
+// Startup connection retry/backoff.
+//
+// The initial `connectDatabase()` runs before the server starts listening, so
+// a single failed attempt aborts the whole boot. A brief, transient Atlas
+// condition — most commonly `ReplicaSetNoPrimary` during a failover/maintenance
+// window — would otherwise kill the process and fail a Cloud Run rollout even
+// though the cluster recovers seconds later. Retrying with bounded exponential
+// backoff rides through those blips. Kept modest so the port still opens within
+// Cloud Run's startup-probe window; a genuinely-unreachable DB (bad URI, not
+// whitelisted) still fails fast after the attempts are exhausted. All knobs are
+// env-tunable so ops can widen the window without a code change (pair with a
+// longer Cloud Run startup-probe timeout if a failover routinely runs long).
+function positiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const DB_CONNECT_MAX_ATTEMPTS = positiveIntEnv("DB_CONNECT_MAX_ATTEMPTS", 5);
+const DB_CONNECT_BASE_DELAY_MS = positiveIntEnv(
+  "DB_CONNECT_BASE_DELAY_MS",
+  1000,
+);
+const DB_CONNECT_MAX_DELAY_MS = positiveIntEnv("DB_CONNECT_MAX_DELAY_MS", 5000);
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise(resolve => setTimeout(resolve, ms));
+
 let mongooseListenersRegistered = false;
 
 function registerMongooseConnectionListeners(): void {
@@ -512,20 +541,44 @@ export async function connectDatabase(): Promise<void> {
     return;
   }
 
-  try {
-    await mongoose.connect(mongoUri, mongooseConnectOptions);
-    mongooseLogger.info("Connected to MongoDB", {
-      readyState: mongoose.connection.readyState,
-      maxPoolSize: mongooseConnectOptions.maxPoolSize,
-      maxIdleTimeMS: mongooseConnectOptions.maxIdleTimeMS,
-      serverSelectionTimeoutMS: mongooseConnectOptions.serverSelectionTimeoutMS,
-      serverMonitoringMode: mongooseConnectOptions.serverMonitoringMode,
-    });
-  } catch (error) {
-    mongooseLogger.error("MongoDB connection error", {
-      error,
-      readyState: mongoose.connection.readyState,
-    });
-    throw error;
+  for (let attempt = 1; attempt <= DB_CONNECT_MAX_ATTEMPTS; attempt++) {
+    try {
+      await mongoose.connect(mongoUri, mongooseConnectOptions);
+      mongooseLogger.info("Connected to MongoDB", {
+        attempt,
+        readyState: mongoose.connection.readyState,
+        maxPoolSize: mongooseConnectOptions.maxPoolSize,
+        maxIdleTimeMS: mongooseConnectOptions.maxIdleTimeMS,
+        serverSelectionTimeoutMS:
+          mongooseConnectOptions.serverSelectionTimeoutMS,
+        serverMonitoringMode: mongooseConnectOptions.serverMonitoringMode,
+      });
+      return;
+    } catch (error) {
+      const isLastAttempt = attempt >= DB_CONNECT_MAX_ATTEMPTS;
+      if (isLastAttempt) {
+        mongooseLogger.error("MongoDB connection error", {
+          error,
+          attempt,
+          maxAttempts: DB_CONNECT_MAX_ATTEMPTS,
+          readyState: mongoose.connection.readyState,
+        });
+        throw error;
+      }
+      // Exponential backoff, capped. Transient (e.g. ReplicaSetNoPrimary during
+      // an Atlas failover) — retry rather than aborting the whole boot.
+      const delayMs = Math.min(
+        DB_CONNECT_BASE_DELAY_MS * 2 ** (attempt - 1),
+        DB_CONNECT_MAX_DELAY_MS,
+      );
+      mongooseLogger.warn("MongoDB connection attempt failed, retrying", {
+        error: error instanceof Error ? error.message : String(error),
+        attempt,
+        maxAttempts: DB_CONNECT_MAX_ATTEMPTS,
+        retryInMs: delayMs,
+        readyState: mongoose.connection.readyState,
+      });
+      await sleep(delayMs);
+    }
   }
 }

@@ -13,6 +13,7 @@ import {
   NormalizedCdcRecord,
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
+  type WebhookCapabilities,
   type ConnectorEntitySchema,
 } from "../base/BaseConnector";
 import { resolveCalendlyEntitySchema } from "./schema";
@@ -136,8 +137,10 @@ function formatCalendlyApiError(error: unknown): string {
             : undefined;
 
     const details = Array.isArray((data as { details?: unknown[] })?.details)
-      ? (data as { details: Array<{ message?: string; parameter?: string }> })
-          .details.map(d => `${d.parameter ?? "?"}: ${d.message ?? "?"}`)
+      ? (
+          data as { details: Array<{ message?: string; parameter?: string }> }
+        ).details
+          .map(d => `${d.parameter ?? "?"}: ${d.message ?? "?"}`)
           .join("; ")
       : undefined;
 
@@ -274,10 +277,7 @@ export class CalendlyConnector extends BaseConnector {
         }
 
         const retryAfterHeader = axiosError.response?.headers?.["retry-after"];
-        const retryAfterSeconds = parseInt(
-          String(retryAfterHeader ?? "1"),
-          10,
-        );
+        const retryAfterSeconds = parseInt(String(retryAfterHeader ?? "1"), 10);
         const delayMs = Number.isFinite(retryAfterSeconds)
           ? retryAfterSeconds * 1000
           : Math.min(1000 * 2 ** attempt, 60_000);
@@ -842,6 +842,18 @@ export class CalendlyConnector extends BaseConnector {
     return true;
   }
 
+  getWebhookCapabilities(): WebhookCapabilities {
+    return {
+      supported: true,
+      provisioning: {
+        supported: true,
+        providerLabel: "Calendly",
+        storesSecretAutomatically: true,
+      },
+      secretHelpText: "Enter the webhook signing secret from your provider",
+    };
+  }
+
   async createWebhookSubscription(
     options: ProvisionWebhookOptions,
   ): Promise<ProvisionWebhookResult> {
@@ -924,14 +936,13 @@ export class CalendlyConnector extends BaseConnector {
       };
     }
 
-    const parts = sigHeader.split(",").reduce<Record<string, string>>(
-      (acc, part) => {
+    const parts = sigHeader
+      .split(",")
+      .reduce<Record<string, string>>((acc, part) => {
         const [k, v] = part.split("=");
         if (k && v) acc[k.trim()] = v.trim();
         return acc;
-      },
-      {},
-    );
+      }, {});
 
     const t = parts.t;
     const v1 = parts.v1;
@@ -986,7 +997,9 @@ export class CalendlyConnector extends BaseConnector {
         event: {
           ...parsed,
           type: eventType,
-          id: resourceUri ? `${parsed?.created_at ?? ""}:${resourceUri}` : undefined,
+          id: resourceUri
+            ? `${parsed?.created_at ?? ""}:${resourceUri}`
+            : undefined,
         },
       };
     } catch (err) {

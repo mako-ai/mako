@@ -140,7 +140,44 @@ function testResolveSchemaForRecordings() {
     assert.equal(schema?.unknownFieldPolicy, "string");
     assert.ok(schema?.fields.id);
     assert.ok(schema?.fields.createdAt);
+    assert.ok(schema?.fields.aiFields, "aiFields should be in recordings schema");
+    assert.ok(
+      schema?.fields.insightTemplates,
+      "legacy insightTemplates retained for historical rows",
+    );
   });
+}
+
+async function testRecordingsFetchRequestsAiFields() {
+  const connector = createConnector();
+  let capturedParams: Record<string, unknown> | undefined;
+
+  (connector as any).claapApi = {
+    get: (_path: string, options?: { params?: Record<string, unknown> }) => {
+      capturedParams = options?.params;
+      return Promise.resolve({
+        data: {
+          result: {
+            recordings: [{ id: "rec_1", title: "Demo" }],
+            pagination: { nextCursor: undefined, totalCount: 1 },
+          },
+        },
+      });
+    },
+  };
+
+  const batches: Record<string, unknown>[][] = [];
+  await connector.fetchEntityChunk({
+    entity: "recordings",
+    maxIterations: 1,
+    onBatch: async records => {
+      batches.push(records);
+    },
+  } as any);
+
+  assert.equal(capturedParams?.returnAiFields, true);
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0][0].id, "rec_1");
 }
 
 function testSupportsResumableFetching() {
@@ -167,6 +204,7 @@ async function main() {
   testWebhookPayloadIsExtractedForProcessing();
   testWebhookCdcRecordUsesRecordingsEntity();
   await testResolveSchemaForRecordings();
+  await testRecordingsFetchRequestsAiFields();
   testSupportsResumableFetching();
   testEntityMetadataIncludesLayoutSuggestion();
 }

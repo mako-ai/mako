@@ -18,6 +18,7 @@ import {
 } from "../postgresql/pg-type-utils";
 import { listPostgresTableLevelChildren } from "../postgresql/introspection";
 import { buildPostgresTableDefinition } from "../postgresql/table-definition";
+import { escapeSqlLiteral } from "../../sql-utils";
 
 const logger = loggers.db("cloudsql-postgres");
 
@@ -49,6 +50,17 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       displayName: "Cloud SQL (Postgres)",
       consoleLanguage: "sql",
     } as any;
+  }
+
+  buildRowCountBatchQuery(
+    schema: string,
+    tableNames: string[],
+  ): string | null {
+    if (tableNames.length === 0) return null;
+    const inList = tableNames.map(escapeSqlLiteral).join(",");
+    return `SELECT c.relname AS table_id, c.reltuples::bigint AS row_count FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ${escapeSqlLiteral(
+      schema,
+    )} AND c.relname IN (${inList})`;
   }
 
   async getTreeRoot(

@@ -1,0 +1,144 @@
+---
+title: "How to Connect to ClickHouse from PHP"
+description: "Connect to ClickHouse from PHP over the HTTP interface: the smi2/phpClickHouse client, raw cURL, the 8123-not-9000 port trap, parameter binding, batch inserts, async_insert, TLS on 8443, and the errors you actually hit."
+database: "clickhouse"
+category: "how-to"
+tags: ["clickhouse", "php", "phpclickhouse", "http-interface", "olap", "connection"]
+date: "2026-06-28"
+---
+
+ClickHouse from PHP works differently from the relational databases. There is no PDO driver and no native-protocol PHP extension worth using. PHP talks to ClickHouse over its **HTTP interface**, either with raw cURL or, more commonly, through the `smi2/phpClickHouse` library, which wraps that HTTP interface in a sane API. ClickHouse Inc. does not maintain an official PHP client, so the community `smi2` package is the de facto standard. This guide covers the port that trips everyone up, the client, raw HTTP, parameter binding, batch inserts, async inserts, TLS, and the errors you will meet.
+
+## The port trap
+
+ClickHouse listens on two different ports for two different protocols:
+
+- **8123** is the HTTP interface. This is the one PHP uses.
+- **9000** is the native TCP protocol, used by `clickhouse-client` and native drivers in other languages.
+
+PHP connects over HTTP, so you want **8123** (or **8443** for HTTPS, including ClickHouse Cloud). Pointing a PHP client at 9000 produces confusing connection or parse errors because it is speaking HTTP to a port expecting the binary native protocol. This is the single most common ClickHouse-from-PHP mistake. When something refuses to connect, check the port first.
+
+## The client
+
+```bash
+composer require smi2/phpclickhouse
+```
+
+`smi2/phpClickHouse` 1.26.610 is current as of June 2026. It requires `ext-curl`. Basic connection and a query:
+
+```php
+<?php
+require 'vendor/autoload.php';
+
+$db = new ClickHouseDB\Client([
+    'host'     => '127.0.0.1',
+    'port'     => 8123,
+    'username' => 'default',
+    'password' => '',
+]);
+
+$db->database('default');
+$db->setTimeout(10);
+
+$rows = $db->select('SELECT id, name FROM products WHERE price > 100')->rows();
+foreach ($rows as $row) {
+    echo "{$row['id']}: {$row['name']}\n";
+}
+```
+
+`select()` returns a `Statement` object; call `rows()` for all rows as arrays, `fetchOne()` for a single scalar, or `rowsAsTree()` to group by a column. The client connects lazily, so a wrong host or port surfaces on the first query.
+
+## Parameter binding
+
+Pass parameters as a second argument and reference them with ClickHouse's `{name:Type}` placeholder syntax. The type is part of the placeholder and is required:
+
+```php
+$rows = $db->select(
+    'SELECT id, name FROM products WHERE price > {min_price:Float64} AND category = {cat:String}',
+    ['min_price' => 100, 'cat' => 'hardware']
+)->rows();
+```
+
+Binding parameters this way lets ClickHouse handle escaping, which is both safer and clearer than concatenating values into the SQL string. Note the placeholder syntax is ClickHouse-specific and unlike PDO's `?` or `:name`.
+
+## Inserting data
+
+For a handful of rows, `insert()` takes the column list and an array of row arrays:
+
+```php
+$db->insert('events', [
+    [1, 'click',   '2026-06-28 10:00:00'],
+    [2, 'view',    '2026-06-28 10:00:01'],
+], ['id', 'type', 'ts']);
+```
+
+The thing to internalize about ClickHouse is that **it is built for large batch inserts, not row-at-a-time writes.** Each `INSERT` creates a new data part on disk, and parts are merged in the background. Thousands of tiny inserts create thousands of tiny parts and trigger the dreaded `Too many parts` error, at which point ClickHouse starts rejecting writes. The fix is to buffer rows in your application and insert them in big batches (tens of thousands of rows at a time), not one HTTP request per row.
+
+For bulk loading a file, the client supports streaming inserts that avoid building a giant PHP array in memory:
+
+```php
+$db->insertBatchFiles('events', ['/path/to/events.csv'], ['id', 'type', 'ts']);
+```
+
+## Async inserts for high-frequency writes
+
+If you genuinely cannot batch on the client side (many independent processes each writing a few rows), let ClickHouse do the batching with async inserts:
+
+```php
+$db->settings()->set('async_insert', 1);
+$db->settings()->set('wait_for_async_insert', 1);
+```
+
+With `async_insert` enabled, the server buffers incoming rows and flushes them as one part. `wait_for_async_insert=1` makes the insert call return only after the buffer is flushed and persisted, which is the safe default; setting it to 0 returns immediately but means an acknowledged insert can still be lost if the server crashes before the flush. Choose based on whether you can tolerate that window.
+
+## TLS and ClickHouse Cloud
+
+ClickHouse Cloud and any TLS-secured server use HTTPS on port **8443**:
+
+```php
+$db = new ClickHouseDB\Client([
+    'host'     => 'abc123.clickhouse.cloud',
+    'port'     => 8443,
+    'username' => 'default',
+    'password' => $secret,
+    'https'    => true,
+]);
+```
+
+Two Cloud-specific notes. First, the port is 8443, not 8123, when TLS is on. Second, Cloud services idle down to save resources; the first query after an idle period can take several seconds while the service wakes, so set a generous `setConnectTimeOut()` and timeout to avoid spurious failures on a cold service.
+
+## Raw cURL without the library
+
+If you want zero dependencies, the HTTP interface is just a POST with SQL in the body:
+
+```php
+$ch = curl_init('http://127.0.0.1:8123/?database=default');
+curl_setopt_array($ch, [
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_POST           => true,
+    CURLOPT_POSTFIELDS     => 'SELECT id, name FROM products FORMAT JSONEachRow',
+    CURLOPT_HTTPHEADER     => ['X-ClickHouse-User: default', 'X-ClickHouse-Key: '],
+]);
+$response = curl_exec($ch);
+// each line is a JSON object
+foreach (explode("\n", trim($response)) as $line) {
+    if ($line !== '') { $row = json_decode($line, true); /* ... */ }
+}
+```
+
+Append `FORMAT JSONEachRow` (or `JSON`, `TabSeparated`, etc.) to control the response shape. This works fine for simple scripts, but you give up parameter binding, batching helpers, and error parsing, which is exactly what the library provides.
+
+## Errors you actually hit
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Connection refused / garbled response | Pointed at native port 9000 | Use HTTP port 8123 (or 8443 for TLS) |
+| `Class "ClickHouseDB\Client" not found` | Library not installed or autoloader not required | `composer require smi2/phpclickhouse`; `require 'vendor/autoload.php'` |
+| `Too many parts` | Many small inserts creating too many parts | Batch rows; or enable `async_insert` |
+| `Authentication failed` | Wrong user/password, or password on wrong header | Check credentials; with raw cURL use `X-ClickHouse-User`/`X-ClickHouse-Key` |
+| Timeout on first Cloud query | Service was idle and is waking | Raise connect timeout; retry once |
+| Cannot parse parameter | Wrong type in `{name:Type}` placeholder | Match the placeholder type to the column |
+
+For working with data once connected, see [ClickHouse aggregate functions](/guides/clickhouse/aggregate-functions), [the MergeTree engines](/guides/clickhouse/mergetree-engines), and [partitioning](/guides/clickhouse/partitioning).
+
+Mako connects to ClickHouse, PostgreSQL, MySQL, and more with AI-powered autocomplete for writing and exploring queries. Try it free at mako.ai.

@@ -1,6 +1,11 @@
 import { promises as fs } from "fs";
 import { BigQuery } from "@google-cloud/bigquery";
 import {
+  isLocalBigQueryEmulator,
+  bigQueryEmulatorEndpoint,
+  bigQueryEmulatorHostPort,
+} from "../../utils/bigquery-emulator";
+import {
   DatabaseConnection,
   type IFlow,
   type IDatabaseConnection,
@@ -15,6 +20,7 @@ import {
   normalizePayloadKeys,
   resolveSourceTimestamp,
   selectLatestChangePerRecord,
+  withSyncedAt,
 } from "../normalization";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
@@ -145,6 +151,7 @@ export function mapLogicalTypeToBigQuery(
 }
 
 const SYSTEM_COLUMN_TYPES: Record<string, string> = {
+  _syncedAt: "TIMESTAMP",
   _mako_ingest_seq: "INT64",
   _mako_source_ts: "TIMESTAMP",
   _mako_deleted_at: "TIMESTAMP",
@@ -203,7 +210,7 @@ const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
 // Pure MERGE statement builder.
 // ---------------------------------------------------------------------------
 
-interface BuildMergeStatementParams {
+export interface BuildMergeStatementParams {
   fullLive: string;
   fullStaging: string;
   /** All columns on the live table. */
@@ -216,7 +223,13 @@ interface BuildMergeStatementParams {
   entitySchema?: ConnectorEntitySchema;
 }
 
-function buildMergeStatement(p: BuildMergeStatementParams): string {
+/**
+ * Build the BigQuery CDC MERGE statement that materializes a deduplicated
+ * staging table into the live table. Exported for contract testing — the exact
+ * SQL shape (QUALIFY dedup, ordering guards, typed NULL inserts) is
+ * correctness-critical for the CDC pipeline.
+ */
+export function buildMergeStatement(p: BuildMergeStatementParams): string {
   const {
     fullLive,
     fullStaging,
@@ -306,6 +319,54 @@ function buildMergeStatement(p: BuildMergeStatementParams): string {
     .join("\n");
 }
 
+/**
+ * BigQuery `PARTITION BY` clause for a CDC layout (empty when unpartitioned).
+ * Exported for contract testing.
+ */
+export function bigQueryPartitionClause(layout: CdcEntityLayout): string {
+  if (!layout.partitioning?.field) return "";
+  const gran = layout.partitioning.granularity?.toUpperCase() || "DAY";
+  return `PARTITION BY TIMESTAMP_TRUNC(${escId(layout.partitioning.field)}, ${gran})`;
+}
+
+export function bigQueryClusterClause(layout: CdcEntityLayout): string {
+  if (!layout.clustering?.fields?.length) return "";
+  return `CLUSTER BY ${layout.clustering.fields.map(escId).join(", ")}`;
+}
+
+export interface BigQueryRepartitionStatements {
+  createTmp: string;
+  dropLive: string;
+  rename: string;
+}
+
+/**
+ * Build the statements that rewrite a live table's partition/cluster layout in
+ * place: `CREATE OR REPLACE` a new-layout table from the current rows, drop the
+ * old table, then rename the new one into place. This is the swap BigQuery
+ * actually supports (no atomic EXCHANGE); the caller pauses the stream so the
+ * brief window where `live` is renamed is safe. Exported for contract testing +
+ * reuse by the gated integration suite.
+ */
+export function buildBigQueryRepartitionStatements(params: {
+  fullLive: string;
+  fullTmp: string;
+  liveName: string;
+  layout: CdcEntityLayout;
+}): BigQueryRepartitionStatements {
+  const partitionClause = bigQueryPartitionClause(params.layout);
+  const clusterClause = bigQueryClusterClause(params.layout);
+  return {
+    createTmp:
+      `CREATE OR REPLACE TABLE ${params.fullTmp} ${partitionClause} ${clusterClause} AS SELECT * FROM ${params.fullLive}`.replace(
+        /\s+/g,
+        " ",
+      ),
+    dropLive: `DROP TABLE ${params.fullLive}`,
+    rename: `ALTER TABLE ${params.fullTmp} RENAME TO ${escId(params.liveName)}`,
+  };
+}
+
 interface BigQueryAdapterConfig {
   destinationDatabaseId: string;
   destinationDatabaseName?: string;
@@ -384,6 +445,52 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     });
   }
 
+  async repartitionLiveTable(
+    layout: CdcEntityLayout,
+  ): Promise<{ repartitioned: boolean }> {
+    const { bq, projectId, dataset, destination, datasetLocation } =
+      await this.resolveBqClient();
+    const live = layout.tableName;
+
+    const [exists] = await bq.dataset(dataset).table(live).exists();
+    if (!exists) return { repartitioned: false };
+
+    const tmp = `${live}__repart_${Date.now().toString(36)}`;
+    const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(live)}`;
+    const fullTmp = `${escId(projectId)}.${escId(dataset)}.${escId(tmp)}`;
+
+    const run = async (sql: string) => {
+      const r = await databaseConnectionService.executeQuery(destination, sql, {
+        location: datasetLocation,
+        bigQueryJobMaxWaitMs: 15 * 60 * 1000,
+      });
+      if (!r.success) throw new Error(r.error || `BigQuery DDL failed: ${sql}`);
+    };
+
+    // CREATE OR REPLACE a new-layout table from the current rows, drop the old
+    // table, then rename the new one in. The caller pauses the stream so the
+    // brief window where `live` is renamed is safe.
+    const stmts = buildBigQueryRepartitionStatements({
+      fullLive,
+      fullTmp,
+      liveName: live,
+      layout,
+    });
+    await run(stmts.createTmp);
+    await run(stmts.dropLive);
+    await run(stmts.rename);
+
+    invalidateCachedSchema(getSchemaCacheKey(projectId, dataset, live));
+    log.info("Repartitioned live table in place", {
+      liveTable: live,
+      dataset,
+      partition: layout.partitioning?.field,
+      granularity: layout.partitioning?.granularity,
+      cluster: layout.clustering?.fields,
+    });
+    return { repartitioned: true };
+  }
+
   async applyEvents(params: {
     events: CdcStoredEvent[];
     layout: CdcEntityLayout;
@@ -411,16 +518,18 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         payload,
         new Date(event.sourceTs),
       );
-      rows.push({
-        ...payload,
-        id: event.recordId,
-        _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-        _mako_source_ts: sourceTs,
-        _mako_ingest_seq: Number(event.ingestSeq),
-        _mako_deleted_at: null,
-        is_deleted: false,
-        deleted_at: null,
-      });
+      rows.push(
+        withSyncedAt({
+          ...payload,
+          id: event.recordId,
+          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
+          _mako_source_ts: sourceTs,
+          _mako_ingest_seq: Number(event.ingestSeq),
+          _mako_deleted_at: null,
+          is_deleted: false,
+          deleted_at: null,
+        }),
+      );
     }
 
     if (deleteMode === "soft") {
@@ -431,16 +540,18 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           new Date(event.sourceTs),
         );
         const deletedAt = new Date();
-        rows.push({
-          ...payload,
-          id: event.recordId,
-          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-          _mako_source_ts: sourceTs,
-          _mako_ingest_seq: Number(event.ingestSeq),
-          _mako_deleted_at: deletedAt,
-          is_deleted: true,
-          deleted_at: deletedAt,
-        });
+        rows.push(
+          withSyncedAt({
+            ...payload,
+            id: event.recordId,
+            _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
+            _mako_source_ts: sourceTs,
+            _mako_ingest_seq: Number(event.ingestSeq),
+            _mako_deleted_at: deletedAt,
+            is_deleted: true,
+            deleted_at: deletedAt,
+          }),
+        );
       }
     }
 
@@ -486,7 +597,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         date_deleted?: unknown;
       };
       const makoDeletedAt = this.coerceToDate(payload._mako_deleted_at);
-      return {
+      return withSyncedAt({
         ...payloadWithoutDeletedAt,
         _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
         _mako_source_ts: resolveSourceTimestamp(payload),
@@ -496,7 +607,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
             : undefined,
         _mako_deleted_at: makoDeletedAt,
         deleted_at: makoDeletedAt,
-      };
+      });
     });
 
     return this.writeViaParquet({
@@ -1049,7 +1160,25 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const projectId = conn.project_id;
     const dataset = this.config.tableDestination.schema;
     const connLocation: string | undefined = conn.location;
-    const bq = new BigQuery({ projectId, credentials, location: connLocation });
+    const apiBaseUrl: string | undefined = conn.api_base_url;
+
+    const bqOptions: ConstructorParameters<typeof BigQuery>[0] = {
+      projectId,
+      credentials,
+      location: connLocation,
+    };
+    if (isLocalBigQueryEmulator(apiBaseUrl)) {
+      // Point the SDK (Parquet load jobs, dataset metadata) at the local
+      // emulator. The SDK only fully bypasses auth when BIGQUERY_EMULATOR_HOST
+      // is set, so set it alongside the explicit apiEndpoint.
+      bqOptions.apiEndpoint = bigQueryEmulatorEndpoint(apiBaseUrl as string);
+      if (!process.env.BIGQUERY_EMULATOR_HOST) {
+        process.env.BIGQUERY_EMULATOR_HOST = bigQueryEmulatorHostPort(
+          apiBaseUrl as string,
+        );
+      }
+    }
+    const bq = new BigQuery(bqOptions);
 
     if (!this._datasetLocation) {
       try {

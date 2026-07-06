@@ -88,11 +88,133 @@ function testUserWebhookCdcRecordUsesUsersEntity() {
   assert.deepEqual(records[0].payload, { id: "user_123" });
 }
 
-function main() {
+// Regression: Close nests its unique event id at `event.event.id`. The CDC
+// record's changeId must resolve to it so distinct updates get distinct
+// idempotency keys (instead of collapsing onto `lead.updated:<recordId>`).
+function testWebhookChangeIdUsesNestedEventId() {
+  const connector = createConnector();
+
+  const records = connector.extractWebhookCdcRecords(
+    {
+      event: {
+        id: "ev_nested_123",
+        object_type: "lead",
+        action: "updated",
+        object_id: "lead_abc",
+        date_updated: "2026-06-21T17:19:39.000Z",
+        data: {
+          id: "lead_abc",
+          display_name: "Acme",
+          date_updated: "2026-06-21T17:19:39.000Z",
+        },
+      },
+    },
+    "lead.updated",
+  );
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0].changeId, "ev_nested_123");
+}
+
+// When no vendor event id is present, the fallback changeId must include the
+// source timestamp so two distinct updates of the same record never share a
+// changeId (and therefore never collapse to one idempotency key).
+function testWebhookChangeIdFallbackIncludesSourceTs() {
+  const connector = createConnector();
+
+  const records = connector.extractWebhookCdcRecords(
+    {
+      event: {
+        object_type: "lead",
+        action: "updated",
+        object_id: "lead_xyz",
+        date_updated: "2026-06-21T17:19:39.000Z",
+        data: {
+          id: "lead_xyz",
+          display_name: "Beta",
+          date_updated: "2026-06-21T17:19:39.000Z",
+        },
+      },
+    },
+    "lead.updated",
+  );
+
+  assert.equal(records.length, 1);
+  assert.ok(
+    records[0].changeId.endsWith(":2026-06-21T17:19:39.000Z"),
+    `changeId should include sourceTs, got ${records[0].changeId}`,
+  );
+  assert.ok(records[0].changeId.includes("lead_xyz"));
+}
+
+function testGroupsEntityIsAvailable() {
+  const connector = createConnector();
+
+  assert.ok(
+    connector.getAvailableEntities().includes("groups"),
+    "groups should be an available entity",
+  );
+  assert.ok(
+    connector.getEntityMetadata().some(meta => meta.name === "groups"),
+    "groups should be present in entity metadata",
+  );
+}
+
+function testGroupWebhookEventsAreScopedToGroups() {
+  const connector = createConnector();
+
+  assert.deepEqual(connector.getWebhookEventsForEntities(["groups"]), [
+    "group.created",
+    "group.updated",
+    "group.deleted",
+  ]);
+}
+
+function testGroupWebhookEventsAreMapped() {
+  const connector = createConnector();
+
+  assert.deepEqual(connector.getWebhookEventMapping("group.created"), {
+    entity: "groups",
+    operation: "upsert",
+  });
+  assert.deepEqual(connector.getWebhookEventMapping("group.updated"), {
+    entity: "groups",
+    operation: "upsert",
+  });
+  assert.deepEqual(connector.getWebhookEventMapping("group.deleted"), {
+    entity: "groups",
+    operation: "delete",
+  });
+}
+
+async function testGroupSchemaResolves() {
+  const connector = createConnector();
+
+  const schema = await connector.resolveSchema("groups");
+  assert.ok(schema, "groups schema should resolve");
+  if (!schema) return;
+  assert.equal(schema.entity, "groups");
+  assert.ok(schema.fields.members, "groups schema should expose members");
+  assert.ok(
+    schema.fields.organization_id,
+    "groups schema should expose organization_id",
+  );
+}
+
+async function main() {
   testUserWebhookEventsAreSupported();
   testUserWebhookEventsAreMapped();
   testUserWebhookPayloadIsExtractedForProcessing();
   testUserWebhookCdcRecordUsesUsersEntity();
+  testWebhookChangeIdUsesNestedEventId();
+  testWebhookChangeIdFallbackIncludesSourceTs();
+  testGroupsEntityIsAvailable();
+  testGroupWebhookEventsAreScopedToGroups();
+  testGroupWebhookEventsAreMapped();
+  await testGroupSchemaResolves();
 }
 
-main();
+main().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

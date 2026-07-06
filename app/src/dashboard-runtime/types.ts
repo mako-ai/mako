@@ -352,6 +352,10 @@ const DASHBOARD_METADATA_KEYS: ReadonlySet<string> = new Set([
   "editLock",
   "cache",
   "snapshots",
+  "published",
+  "publishedVersion",
+  "publishedAt",
+  "hasUnpublishedChanges",
 ]);
 
 function stripDataSourceServerState(dataSource: Record<string, unknown>) {

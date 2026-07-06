@@ -1,0 +1,176 @@
+---
+title: "How to Connect to Snowflake from Ruby"
+description: "Connect to Snowflake from Ruby. There is no official Ruby driver, so this covers the realistic paths: ODBC with ruby-odbc, sequel-snowflake, and the SQL REST API, plus the account-identifier trap and the 2025 key-pair authentication change."
+database: "snowflake"
+category: "how-to"
+tags: ["snowflake", "ruby", "rails", "odbc", "sequel", "connection"]
+date: "2026-07-04"
+---
+
+The first thing to know about connecting to Snowflake from Ruby: there is no official, Snowflake-maintained Ruby driver. Snowflake ships and supports native drivers for Python, Node.js, Go, Java, .NET, and PHP, but not Ruby. That single fact shapes every option below, so it is worth stating up front rather than letting you discover it after `gem install`.
+
+That does not mean Ruby cannot talk to Snowflake. It can, through three realistic paths, each with real tradeoffs.
+
+## The options
+
+| Approach | How it works | Native dependency | Notes |
+|---|---|---|---|
+| ODBC via `ruby-odbc` | Ruby ODBC binding talking to Snowflake's official ODBC driver | Snowflake ODBC driver + unixODBC | The most common path; supported driver, but ODBC round-trips are slow for large result sets |
+| `sequel-snowflake` | Sequel adapter layered on top of `ruby-odbc` | Same as above | Adds Sequel's query builder; still ODBC underneath (2.3.0 as of July 2026) |
+| SQL REST API | Plain HTTPS calls to Snowflake's SQL API | None (just an HTTP client) | No driver install; you manage auth tokens and result pagination yourself |
+
+The honest summary:
+
+- **ODBC** is the path most Ruby-plus-Snowflake deployments use. The Snowflake ODBC driver is officially supported and current (version 3.13.0 as of November 2025), and `ruby-odbc` is a thin binding to it.
+- **`sequel-snowflake`** is worth it if you already use Sequel and want its query builder and connection handling. It does not avoid ODBC; it wraps it.
+- **The SQL REST API** is the dependency-free option. It is a good fit for a small number of queries, serverless functions, or environments where installing an ODBC driver is painful. It is more work for anything involving many queries or large results.
+
+There is no ActiveRecord story worth recommending. Community ODBC-based adapters exist, but Snowflake is a columnar analytics warehouse, not an OLTP row store; driving it through an ORM built for transactional CRUD is usually the wrong shape. Query it directly.
+
+## The account identifier trap
+
+Before any code, get the account identifier right. This is the single most common reason a first connection fails, across every language.
+
+The modern format is `<orgname>-<account_name>` (organization name and account name joined by a hyphen), for example `myorg-prod_eu`. The account URL is then `myorg-prod_eu.snowflakecomputing.com`.
+
+The older format is a bare account locator (like `xy12345`) sometimes with a region and cloud suffix (`xy12345.eu-central-1`). Mixing these up, or dropping the region on a legacy locator, produces connection failures that look like network problems but are not. If you can, use the org-account form.
+
+## Authentication changed in 2025
+
+Snowflake began blocking single-factor password sign-in for programmatic connections, with enforcement rolling out through late 2025. A username and password alone is no longer a connection method you should build on. Use one of:
+
+- **Key-pair authentication** (recommended for services): generate an RSA key pair, register the public key on the user with `ALTER USER myuser SET RSA_PUBLIC_KEY='...'`, and point the driver at the private key.
+- **External browser SSO** for interactive/developer use.
+- **OAuth** for delegated access from an application.
+
+The ODBC driver supports key-pair auth through the `AUTHENTICATOR=SNOWFLAKE_JWT` option plus a `PRIV_KEY_FILE` path (and passphrase if the key is encrypted). Build for this now rather than retrofitting it after a password stops working.
+
+## ODBC setup
+
+Install unixODBC and the Snowflake ODBC driver, then the Ruby gem.
+
+- **Debian/Ubuntu:** `sudo apt-get install unixodbc unixodbc-dev`
+- **macOS (Homebrew):** `brew install unixodbc`
+
+Download the Snowflake ODBC driver from Snowflake's client download page and install it. Then register it in `odbcinst.ini` so unixODBC can find the driver library:
+
+```ini
+[SnowflakeDSIIDriver]
+Description = Snowflake ODBC Driver
+Driver = /opt/snowflake/snowflakeodbc/lib/universal/libSnowflake.dylib
+```
+
+The exact library path depends on your OS and install location. A wrong path here is the usual cause of "Can't open lib ... file not found" at connection time.
+
+Install the Ruby binding:
+
+```bash
+gem install ruby-odbc
+```
+
+## A minimal connection with ruby-odbc
+
+You can connect with a full connection string rather than a pre-configured DSN, which keeps configuration in your app:
+
+```ruby
+require 'odbc'
+
+conn_str = [
+  "Driver=SnowflakeDSIIDriver",
+  "server=myorg-prod_eu.snowflakecomputing.com",
+  "uid=SVC_ANALYTICS",
+  "authenticator=SNOWFLAKE_JWT",
+  "priv_key_file=/etc/secrets/snowflake_key.p8",
+  "warehouse=ANALYTICS_WH",
+  "database=ANALYTICS",
+  "schema=PUBLIC",
+  "role=ANALYST"
+].join(';')
+
+db = ODBC::Database.new
+conn = db.drvconnect(conn_str)
+
+stmt = conn.run('SELECT CURRENT_VERSION()')
+stmt.each { |row| puts row[0] }
+stmt.drop
+
+conn.disconnect
+```
+
+Two things that bite people:
+
+- **No active warehouse.** If you omit `warehouse` (or the role has no default warehouse), queries fail with a "no active warehouse selected" error even though the connection itself succeeded. Always set `warehouse`, `database`, `schema`, and `role` explicitly.
+- **Uppercase identifiers.** Snowflake folds unquoted identifiers to uppercase. A column written as `select id from users` comes back keyed as `ID`. Read result columns by their uppercase names or by ordinal position, not by the lowercase name you typed.
+
+## Parameterized queries
+
+Use bind parameters rather than string interpolation, both for safety and to let Snowflake cache the plan:
+
+```ruby
+stmt = conn.prepare('SELECT name, plan FROM accounts WHERE region = ? AND active = ?')
+stmt.execute('EMEA', true)
+stmt.each_hash { |row| puts "#{row['NAME']}: #{row['PLAN']}" }
+stmt.drop
+```
+
+Note the uppercase keys again when using `each_hash`.
+
+## Using sequel-snowflake
+
+If you use Sequel, `sequel-snowflake` gives you the query builder on top of the same ODBC driver:
+
+```ruby
+require 'sequel'
+require 'sequel-snowflake'
+
+DB = Sequel.connect(
+  adapter: 'snowflake',
+  drvconnect: [
+    "Driver=SnowflakeDSIIDriver",
+    "server=myorg-prod_eu.snowflakecomputing.com",
+    "uid=SVC_ANALYTICS",
+    "authenticator=SNOWFLAKE_JWT",
+    "priv_key_file=/etc/secrets/snowflake_key.p8",
+    "warehouse=ANALYTICS_WH",
+    "database=ANALYTICS",
+    "schema=PUBLIC"
+  ].join(';')
+)
+
+DB.fetch('SELECT region, count(*) AS n FROM accounts GROUP BY region') do |row|
+  puts "#{row[:region]}: #{row[:n]}"
+end
+```
+
+This is convenient, but it does not change the underlying transport. ODBC is still doing the work, so the performance characteristics below apply.
+
+## The performance reality
+
+ODBC round-trips to Snowflake are noticeably slower than the native drivers other languages get, especially when fetching many rows. Ruby teams have reported multi-second loads for result sets that a native connector would return quickly, because the ODBC layer materializes and marshals rows less efficiently than Snowflake's Arrow-based native fetch.
+
+Practical mitigations:
+
+- Aggregate in SQL. Return small result sets, not raw rows. This is good Snowflake practice regardless of language.
+- For large exports, `COPY INTO` a stage (S3/GCS/Azure) and read the files, rather than streaming millions of rows back through ODBC.
+- Suspend warehouses when idle. Ruby-side latency does not change your compute bill, but an always-on warehouse does.
+
+## The SQL REST API path
+
+If installing an ODBC driver is a problem (containers, serverless, locked-down CI), Snowflake's SQL REST API lets you run statements over plain HTTPS with no driver at all. You POST a statement to the `/api/v2/statements` endpoint with a JWT built from your key pair, and read JSON back. You are responsible for token generation, result pagination, and type handling, so it is more code than a driver for anything beyond a handful of queries, but it removes the entire ODBC install chain. It is the cleanest option for a Lambda-style function that runs one query and exits.
+
+## Common errors
+
+| Error | Cause |
+|---|---|
+| `Can't open lib ... file not found` | Wrong driver library path in `odbcinst.ini`, or the ODBC driver is not installed |
+| Connection hangs or "could not connect to server" | Wrong account identifier format (locator vs org-account), or region missing on a legacy locator |
+| `No active warehouse selected in the current session` | `warehouse` not set, or role has no default warehouse |
+| `JWT token is invalid` | Public key not registered with `ALTER USER`, wrong private key, or clock skew on the client |
+| Column key not found in row hash | Reading a lowercase name; Snowflake returns unquoted identifiers uppercased |
+| Very slow large-result queries | ODBC fetch overhead; aggregate in SQL or export via `COPY INTO` a stage |
+
+## Querying without the driver chain
+
+If your goal is to explore a Snowflake warehouse rather than build a service, the entire ODBC install chain is avoidable. Mako connects to Snowflake with AI-assisted SQL and no local driver setup -- see our [Snowflake GUI client guide](/guides/snowflake-gui-client). Connecting from another language with a native driver? See [How to Connect to Snowflake from Python](/guides/snowflake/connect-from-python) and [from Node.js](/guides/snowflake/connect-from-node).
+
+Mako connects to Snowflake with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

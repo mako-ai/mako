@@ -1,10 +1,9 @@
 import { useState, type RefObject } from "react";
-import { Box } from "@mui/material";
+import { Alert, Box } from "@mui/material";
 import { ScheduledFlowForm } from "./ScheduledFlowForm";
 import { WebhookFlowForm } from "./WebhookFlowForm";
 import { DbFlowForm, type DbFlowFormRef } from "./DbFlowForm";
 import { FlowLogs } from "./FlowLogs";
-import { WebhookStats } from "./WebhookStats";
 import { BackfillPanel } from "./BackfillPanel";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
@@ -16,6 +15,11 @@ interface FlowEditorProps {
   onSave?: () => void;
   onCancel?: () => void;
   dbFlowFormRef?: RefObject<DbFlowFormRef | null>;
+}
+
+interface FlowSavedOptions {
+  showBackfillPanel?: boolean;
+  notice?: string;
 }
 
 export function FlowEditor({
@@ -30,6 +34,7 @@ export function FlowEditor({
   const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(
     flowId,
   );
+  const [backfillNotice, setBackfillNotice] = useState<string | null>(null);
 
   const { currentWorkspace } = useWorkspace();
   const { flows: flowsMap, runFlow } = useFlowStore();
@@ -45,15 +50,22 @@ export function FlowEditor({
   // Determine flow type - for new flows, use the prop; for existing, check the flow
   const isWebhookFlow =
     currentFlow?.type === "webhook" || (!currentFlow && flowType === "webhook");
-  const isCdcFlow = currentFlow?.syncEngine === "cdc";
 
   // Check if this is a database-to-database flow
   const isDbFlow =
     currentFlow?.sourceType === "database" ||
     (!currentFlow && flowType === "db-scheduled");
 
-  const handleSaved = (newFlowId: string) => {
+  const handleSaved = (newFlowId: string, options?: FlowSavedOptions) => {
     setCurrentFlowId(newFlowId);
+    if (options?.showBackfillPanel) {
+      setBackfillNotice(options.notice ?? null);
+      setIsEditing(false);
+      onSave?.();
+      return;
+    }
+
+    setBackfillNotice(null);
     // Webhook flows stay in editing mode after first save so the user
     // can see the generated webhook URL and finish setup in Step 5.
     if (!isWebhookFlow) {
@@ -69,6 +81,7 @@ export function FlowEditor({
   };
 
   const handleEditClick = () => {
+    setBackfillNotice(null);
     setIsEditing(true);
   };
 
@@ -128,22 +141,24 @@ export function FlowEditor({
               onEdit={handleEditClick}
             />
           )}
-          {currentFlowId &&
-            isWebhookFlow &&
-            currentWorkspace &&
-            (isCdcFlow ? (
+          {currentFlowId && isWebhookFlow && currentWorkspace && (
+            <>
+              {backfillNotice && (
+                <Alert
+                  severity="success"
+                  onClose={() => setBackfillNotice(null)}
+                  sx={{ m: 2, mb: 0 }}
+                >
+                  {backfillNotice}
+                </Alert>
+              )}
               <BackfillPanel
                 workspaceId={currentWorkspace.id}
                 flowId={currentFlowId}
                 onEdit={handleEditClick}
               />
-            ) : (
-              <WebhookStats
-                workspaceId={currentWorkspace.id}
-                flowId={currentFlowId}
-                onEdit={handleEditClick}
-              />
-            ))}
+            </>
+          )}
         </>
       )}
     </Box>

@@ -77,7 +77,7 @@ export function WorkspaceSelector({
           <Box sx={{ textAlign: "center", mb: 5 }}>
             <Box
               component="img"
-              src="/mako-icon.svg"
+              src="/mako-icon.png"
               alt="Mako"
               sx={{
                 width: 64,

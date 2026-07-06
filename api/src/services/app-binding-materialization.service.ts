@@ -65,11 +65,28 @@ export interface AppBindingQueueResult {
   error?: string;
 }
 
+/** Definition fields feeding the artifact hash (code substituted by callers). */
+function bindingHashFields(binding: IMakoAppDataBinding) {
+  return {
+    connectionId: binding.connectionId,
+    language: binding.language,
+    code: binding.code,
+    databaseId: binding.databaseId,
+    databaseName: binding.databaseName,
+    dbtProjectId: binding.dbtProjectId,
+  };
+}
+
 /** Stable hash of a binding's query definition; changing it invalidates cache. */
 export function buildAppBindingDefinitionHash(
   binding: Pick<
     IMakoAppDataBinding,
-    "connectionId" | "language" | "code" | "databaseId" | "databaseName"
+    | "connectionId"
+    | "language"
+    | "code"
+    | "databaseId"
+    | "databaseName"
+    | "dbtProjectId"
   >,
 ): string {
   const payload = JSON.stringify({
@@ -78,6 +95,9 @@ export function buildAppBindingDefinitionHash(
     code: binding.code,
     databaseId: binding.databaseId ?? null,
     databaseName: binding.databaseName ?? null,
+    // Only included when set so legacy (non-dbt) binding hashes — and their
+    // already-built artifacts — stay stable.
+    ...(binding.dbtProjectId ? { dbtProjectId: binding.dbtProjectId } : {}),
   });
   // djb2 — matches the lightweight (non-crypto) hashing used for dashboards.
   let hash = 5381;
@@ -247,9 +267,11 @@ export async function queueAppBindingMaterialization(input: {
   }
 
   // Validate the query up front so obvious failures (unsupported language,
-  // unsafe SQL) are reported synchronously instead of from the background run.
+  // unsafe SQL, broken dbt link) are reported synchronously instead of from
+  // the background run.
+  let executableQuery: string;
   try {
-    buildExecutableQuery(binding);
+    executableQuery = await buildExecutableQuery(binding, workspaceId);
   } catch (error) {
     return {
       bindingId,
@@ -259,7 +281,12 @@ export async function queueAppBindingMaterialization(input: {
     };
   }
 
-  const definitionHash = buildAppBindingDefinitionHash(binding);
+  // Hash the RESOLVED query so re-pointing the dbt prod environment at a new
+  // schema is a cache miss (the artifact must be rebuilt from the new schema).
+  const definitionHash = buildAppBindingDefinitionHash({
+    ...bindingHashFields(binding),
+    code: executableQuery,
+  });
   const artifactKey = buildAppBindingArtifactKey({
     workspaceId,
     appId,
@@ -363,20 +390,50 @@ export async function queueAppBindingMaterialization(input: {
   return { bindingId, status: "queued", queued: true };
 }
 
-// SQL-family bindings execute the raw code. (MongoDB materialization would need
-// collection/operation metadata; not supported yet.)
+// SQL and MongoDB bindings execute their raw code. App bindings store the query
+// as a single string (no structured collection/operation metadata), so a
+// MongoDB binding's `code` is a JS shell query (e.g. `db.users.aggregate([...])`)
+// that runs through the same streaming/execution path as live mode.
+//
+// dbt-linked bindings resolve their `{{ dbt_schema }}` token against the
+// project's PROD-like environment first — materialized artifacts always
+// contain production data, never a developer's preview schema.
 //
 // The binding code is user/agent-editable; the shared read-only safety gate
-// (also enforced inside the build core) is applied here too so queue-time
-// validation reports unsafe queries synchronously.
-function buildExecutableQuery(binding: IMakoAppDataBinding): string {
-  if (binding.language !== "sql") {
+// (a SQL analyzer, also enforced inside the build core) is applied here too so
+// queue-time validation reports unsafe SQL synchronously. It is intentionally
+// skipped for non-SQL sources (see `assertReadOnlyMaterializationQuery`).
+async function buildExecutableQuery(
+  binding: IMakoAppDataBinding,
+  workspaceId: string | Types.ObjectId,
+): Promise<string> {
+  if (binding.language !== "sql" && binding.language !== "mongodb") {
     throw new Error(
       `Materialization is not supported for ${binding.language} bindings yet`,
     );
   }
-  assertReadOnlyMaterializationQuery(binding.code);
-  return binding.code;
+  const { resolveDbtBoundCode } = await import(
+    "../dbt/dbt-environments.service"
+  );
+  const code = await resolveDbtBoundCode({
+    workspaceId,
+    dbtProjectId: binding.dbtProjectId,
+    code: binding.code,
+  });
+  assertReadOnlyMaterializationQuery(
+    code,
+    binding.language === "mongodb" ? "mongodb" : undefined,
+  );
+  return code;
+}
+
+/**
+ * SQL probes execute the query with `LIMIT 1`, so a probe failure means the SQL
+ * itself is broken (fail fast). MongoDB has no reliable schema probe, so fall
+ * back to runtime column inference — matching the dashboard pipeline.
+ */
+function schemaProbeMode(binding: IMakoAppDataBinding): "strict" | "lenient" {
+  return binding.language === "sql" ? "strict" : "lenient";
 }
 
 /**
@@ -411,7 +468,21 @@ export async function materializeAppBinding(input: {
     };
   }
 
-  const definitionHash = buildAppBindingDefinitionHash(binding);
+  let executableQuery: string;
+  try {
+    executableQuery = await buildExecutableQuery(binding, workspaceId);
+  } catch (error) {
+    return {
+      bindingId,
+      status: "error",
+      error: error instanceof Error ? error.message : "Invalid binding query",
+    };
+  }
+
+  const definitionHash = buildAppBindingDefinitionHash({
+    ...bindingHashFields(binding),
+    code: executableQuery,
+  });
   const artifactKey = buildAppBindingArtifactKey({
     workspaceId,
     appId,
@@ -492,16 +563,17 @@ export async function materializeAppBinding(input: {
       if (!connection) throw new Error("Connection not found");
 
       // Shared core: schema probe + streaming + Parquet build + upload.
-      // Strict probe — for SQL bindings a probe failure means the query is
-      // broken, so fail fast instead of building an empty artifact.
+      // SQL uses a strict probe (a failure means the query is broken, so fail
+      // fast); MongoDB has no reliable probe and falls back to runtime column
+      // inference (lenient) — see schemaProbeMode.
       const parquet = await buildQueryParquetFile({
         connection,
-        executableQuery: buildExecutableQuery(binding),
+        executableQuery,
         databaseId: binding.databaseId,
         databaseName: binding.databaseName,
         rowLimit: PARQUET_ROW_LIMIT,
         filenameBase: `app-${appId}-${bindingId}`,
-        schemaProbe: "strict",
+        schemaProbe: schemaProbeMode(binding),
       });
       await storeParquetArtifactFile({
         filePath: parquet.filePath,

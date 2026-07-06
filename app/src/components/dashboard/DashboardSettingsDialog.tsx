@@ -21,45 +21,13 @@ import { Copy, RotateCcw, Trash2 } from "lucide-react";
 import { useDashboardStore } from "../../store/dashboardStore";
 import { useWorkspace } from "../../contexts/workspace-context";
 import { useConsoleStore } from "../../store/consoleStore";
+import MaterializationScheduleControls from "../MaterializationScheduleControls";
+import type { MaterializationScheduleValue } from "../../lib/materializationSchedule";
 
 interface DashboardSettingsDialogProps {
   open: boolean;
   onClose: () => void;
   dashboardId?: string;
-}
-
-const MATERIALIZATION_SCHEDULE_PRESETS = [
-  { key: "hourly", label: "Every hour", cron: "0 * * * *" },
-  { key: "every-6-hours", label: "Every 6 hours", cron: "0 */6 * * *" },
-  { key: "daily", label: "Daily", cron: "0 0 * * *" },
-  { key: "weekly", label: "Weekly", cron: "0 0 * * 0" },
-] as const;
-
-function resolveSchedulePresetKey(cron: string | null | undefined): string {
-  const preset = MATERIALIZATION_SCHEDULE_PRESETS.find(
-    item => item.cron === cron,
-  );
-  return preset?.key ?? "custom";
-}
-
-function describeMaterializationSchedule(
-  enabled: boolean,
-  cron: string,
-): string {
-  if (!enabled) {
-    return "Automatic materialization is disabled. Refresh manually when needed.";
-  }
-
-  const preset = MATERIALIZATION_SCHEDULE_PRESETS.find(
-    item => item.cron === cron,
-  );
-  if (preset) {
-    return `${preset.label} in UTC.`;
-  }
-
-  return cron.trim()
-    ? `Runs on cron "${cron}" in UTC.`
-    : "Enter a cron expression in UTC.";
 }
 
 export default function DashboardSettingsDialog({
@@ -78,9 +46,12 @@ export default function DashboardSettingsDialog({
   const [access, setAccess] = useState<"private" | "workspace">("private");
   const [gridColumns, setGridColumns] = useState(12);
   const [rowHeight, setRowHeight] = useState(80);
-  const [materializationEnabled, setMaterializationEnabled] = useState(true);
-  const [materializationPreset, setMaterializationPreset] = useState("daily");
-  const [materializationCron, setMaterializationCron] = useState("0 0 * * *");
+  const [materializationSchedule, setMaterializationSchedule] =
+    useState<MaterializationScheduleValue>({
+      enabled: true,
+      cron: "0 0 * * *",
+      timezone: "UTC",
+    });
   const [crossFilterEnabled, setCrossFilterEnabled] = useState(false);
   const [crossFilterResolution, setCrossFilterResolution] = useState<
     "intersect" | "union"
@@ -103,9 +74,12 @@ export default function DashboardSettingsDialog({
         cron: "0 0 * * *",
         timezone: "UTC",
       };
-      setMaterializationEnabled(schedule.enabled);
-      setMaterializationCron(schedule.cron ?? "0 0 * * *");
-      setMaterializationPreset(resolveSchedulePresetKey(schedule.cron));
+      setMaterializationSchedule({
+        enabled: schedule.enabled,
+        cron: schedule.cron,
+        timezone: schedule.timezone ?? "UTC",
+        dataFreshnessTtlMs: schedule.dataFreshnessTtlMs ?? null,
+      });
       setCrossFilterEnabled(dashboard.crossFilter.enabled);
       setCrossFilterResolution(dashboard.crossFilter.resolution);
       setCrossFilterEngine(dashboard.crossFilter.engine ?? "mosaic");
@@ -123,9 +97,13 @@ export default function DashboardSettingsDialog({
         access,
         layout: { columns: gridColumns, rowHeight },
         materializationSchedule: {
-          enabled: materializationEnabled,
-          cron: materializationEnabled ? materializationCron.trim() : null,
-          timezone: "UTC",
+          enabled: materializationSchedule.enabled,
+          cron: materializationSchedule.enabled
+            ? materializationSchedule.cron?.trim() || null
+            : null,
+          timezone: materializationSchedule.timezone ?? "UTC",
+          dataFreshnessTtlMs:
+            materializationSchedule.dataFreshnessTtlMs ?? null,
         },
         crossFilter: {
           enabled: crossFilterEnabled,
@@ -141,9 +119,13 @@ export default function DashboardSettingsDialog({
           access,
           layout: { columns: gridColumns, rowHeight },
           materializationSchedule: {
-            enabled: materializationEnabled,
-            cron: materializationEnabled ? materializationCron.trim() : null,
-            timezone: "UTC",
+            enabled: materializationSchedule.enabled,
+            cron: materializationSchedule.enabled
+              ? materializationSchedule.cron?.trim() || null
+              : null,
+            timezone: materializationSchedule.timezone ?? "UTC",
+            dataFreshnessTtlMs:
+              materializationSchedule.dataFreshnessTtlMs ?? null,
           },
           crossFilter: {
             enabled: crossFilterEnabled,
@@ -278,60 +260,13 @@ export default function DashboardSettingsDialog({
           </Box>
         )}
 
-        <FormControlLabel
-          control={
-            <Switch
-              checked={materializationEnabled}
-              onChange={e => setMaterializationEnabled(e.target.checked)}
-              disabled={isReadOnly}
-            />
-          }
-          label="Automatic materialization"
+        <MaterializationScheduleControls
+          value={materializationSchedule}
+          onChange={setMaterializationSchedule}
+          disabled={isReadOnly}
+          title="Automatic materialization"
+          caption="Applies to every data source in this dashboard."
         />
-
-        {materializationEnabled && (
-          <>
-            <FormControl size="small" fullWidth>
-              <InputLabel>Materialization Schedule</InputLabel>
-              <Select
-                value={materializationPreset}
-                label="Materialization Schedule"
-                onChange={e => {
-                  const nextPreset = e.target.value;
-                  setMaterializationPreset(nextPreset);
-                  const preset = MATERIALIZATION_SCHEDULE_PRESETS.find(
-                    item => item.key === nextPreset,
-                  );
-                  if (preset) {
-                    setMaterializationCron(preset.cron);
-                  }
-                }}
-              >
-                {MATERIALIZATION_SCHEDULE_PRESETS.map(preset => (
-                  <MenuItem key={preset.key} value={preset.key}>
-                    {preset.label}
-                  </MenuItem>
-                ))}
-                <MenuItem value="custom">Custom</MenuItem>
-              </Select>
-            </FormControl>
-
-            <TextField
-              label="Cron Expression"
-              value={materializationCron}
-              onChange={e => {
-                setMaterializationPreset("custom");
-                setMaterializationCron(e.target.value);
-              }}
-              fullWidth
-              size="small"
-              helperText={describeMaterializationSchedule(
-                materializationEnabled,
-                materializationCron,
-              )}
-            />
-          </>
-        )}
 
         <FormControlLabel
           control={

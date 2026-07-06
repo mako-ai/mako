@@ -11,12 +11,23 @@ Mako is a TypeScript monorepo with three main packages: a React frontend, a Hono
 mako/
 ├── app/           # React + Vite frontend
 ├── api/           # Hono API server (Node.js)
+├── packages/      # Shared workspace packages (see below)
+├── content/       # Blog posts + programmatic guides (MDX)
 ├── docs/          # Documentation (Astro Starlight)
 ├── website/       # Marketing site (Next.js)
 ├── cloudflare/    # Cloudflare Workers
 ├── scripts/       # Build and validation scripts
 └── package.json   # Root workspace config (pnpm)
 ```
+
+The pnpm workspace spans `app`, `api`, `website`, `docs`, and everything under `packages/*`:
+
+| Package | Purpose |
+| ------- | ------- |
+| `@mako/agent-tools` | Shared agent tool definitions (console, dashboard, chart, data-source, dbt, flow, app) reused across surfaces |
+| `@mako/schemas` | Shared Zod/JSON schemas — app scaffold, dashboard, chart templates, flow form, table refs |
+| `@mako/local-agent` | localhost daemon (`127.0.0.1:41720`) that lets `app.mako.ai` query databases on the user's machine; credentials stay encrypted on disk |
+| `@mako/desktop` | Electron shell that loads the web app and bundles the local agent for on-machine database connections |
 
 ## System Components
 

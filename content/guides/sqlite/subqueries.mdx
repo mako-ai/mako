@@ -1,0 +1,151 @@
+---
+title: "Subqueries in SQLite"
+description: "How scalar, column, row, and table subqueries work in SQLite, the difference between correlated and non-correlated subqueries, IN vs EXISTS, the NOT IN NULL trap, and when a subquery should be a join or a CTE instead."
+database: "sqlite"
+category: "how-to"
+tags: ["sqlite", "sql", "subqueries", "exists", "correlated"]
+date: "2026-06-03"
+---
+
+A subquery is a SELECT nested inside another statement. SQLite supports them in the `SELECT` list, the `FROM` clause, the `WHERE` clause, and inside expressions. They let you filter against a computed set, pull a single aggregate into each row, or treat a query result as a table.
+
+This guide covers the kinds of subquery, the correlated/non-correlated distinction that drives both readability and performance, and the NULL behavior that quietly breaks `NOT IN`. For multi-step queries you reuse or recurse over, a [common table expression](/guides/sqlite/cte) is usually clearer than a nested subquery.
+
+## Four shapes of subquery
+
+SQLite cares about how many rows and columns a subquery returns, because that decides where it can be used.
+
+| Shape | Returns | Used in |
+| --- | --- | --- |
+| Scalar | One row, one column | Anywhere a value is expected |
+| Column | Many rows, one column | `IN`, `NOT IN`, `= ANY`-style checks |
+| Row | One row, many columns | Row-value comparisons |
+| Table | Many rows, many columns | `FROM` clause (a derived table) |
+
+## Scalar subqueries
+
+A scalar subquery resolves to a single value. Put it in the select list to attach a computed figure to every row, or in `WHERE` to compare against a threshold.
+
+```sql
+-- Each order alongside the average order total
+SELECT
+  id,
+  total,
+  (SELECT avg(total) FROM orders) AS avg_total
+FROM orders;
+
+-- Orders above the overall average
+SELECT id, total
+FROM orders
+WHERE total > (SELECT avg(total) FROM orders);
+```
+
+If a scalar subquery returns more than one row, SQLite uses the first row it happens to find, which is effectively undefined unless you add `ORDER BY ... LIMIT 1`. If it returns no rows, the result is NULL.
+
+## Column subqueries with IN and NOT IN
+
+A column subquery feeds a list of values to `IN`.
+
+```sql
+-- Customers who have placed at least one order
+SELECT name
+FROM customers
+WHERE id IN (SELECT customer_id FROM orders);
+```
+
+`NOT IN` looks like the obvious inverse, but it has a trap. If the subquery returns even one NULL, `NOT IN` yields no rows at all, because `x NOT IN (1, 2, NULL)` evaluates to NULL (not true) for every `x`. This is correct three-valued logic, but it surprises almost everyone the first time.
+
+```sql
+-- Risky: returns nothing if any customer_id is NULL
+SELECT name FROM customers
+WHERE id NOT IN (SELECT customer_id FROM orders);
+
+-- Safe: exclude NULLs, or use NOT EXISTS instead
+SELECT name FROM customers
+WHERE id NOT IN (SELECT customer_id FROM orders WHERE customer_id IS NOT NULL);
+```
+
+## Correlated vs non-correlated
+
+A **non-correlated** subquery can be evaluated once, on its own, with no reference to the outer query. SQLite can compute it a single time and reuse the result.
+
+A **correlated** subquery references a column from the outer query, so it is conceptually re-evaluated for each outer row.
+
+```sql
+-- Correlated: the subquery references o.customer_id from the outer row
+SELECT c.name
+FROM customers c
+WHERE EXISTS (
+  SELECT 1 FROM orders o WHERE o.customer_id = c.id
+);
+```
+
+The outer reference (`c.id`) is what makes it correlated. SQLite's planner can often rewrite correlated `EXISTS` into a join internally, but writing one inside a large select list still means a lookup per row, so check the plan with `EXPLAIN QUERY PLAN` if it feels slow.
+
+## EXISTS vs IN
+
+Both can express "does a matching row exist", but they behave differently:
+
+- `EXISTS` stops at the first match and is NULL-safe. It only checks for presence, never compares values, so NULLs in the inner table do not cause the `NOT IN`-style surprise.
+- `IN` materializes (or scans) the value list and compares. For a small, fixed set it reads cleanly; for a correlated existence check, `EXISTS` is usually the better fit.
+
+```sql
+-- These are equivalent for presence, but NOT EXISTS is the safe inverse
+SELECT name FROM customers c
+WHERE NOT EXISTS (
+  SELECT 1 FROM orders o WHERE o.customer_id = c.id
+);
+```
+
+Prefer `NOT EXISTS` over `NOT IN` whenever the inner column can be NULL. It expresses the same intent without the NULL pitfall.
+
+## Subqueries in the FROM clause
+
+A table subquery (a derived table) lets you query the result of another query. Give it an alias.
+
+```sql
+-- Average of per-customer order counts
+SELECT avg(order_count) AS avg_orders_per_customer
+FROM (
+  SELECT customer_id, count(*) AS order_count
+  FROM orders
+  GROUP BY customer_id
+) AS per_customer;
+```
+
+This is one of the few places a name is mandatory: SQLite requires the alias to refer to the derived table's columns. When a derived table grows or gets reused, lift it into a CTE for clarity.
+
+## Row-value subqueries
+
+SQLite supports row values, so you can compare several columns against a single-row subquery in one shot.
+
+```sql
+-- The most recent order, compared as a (date, id) pair
+SELECT *
+FROM orders
+WHERE (order_date, id) = (
+  SELECT max(order_date), max(id) FROM orders
+);
+```
+
+Row-value comparisons keep multi-column predicates readable and are handy for "greater than this composite key" pagination patterns.
+
+## When not to use a subquery
+
+A subquery is not always the right tool:
+
+- If you need columns from the inner table in your output, a **join** is clearer and usually faster than a correlated scalar subquery per column.
+- If the same nested query appears more than once, a **CTE** removes the duplication and names the intent.
+- If you only need to test presence, `EXISTS` beats pulling a full column list into `IN`.
+
+## Common mistakes
+
+- **`NOT IN` against a column that contains NULL.** Returns zero rows silently. Use `NOT EXISTS` or filter NULLs out.
+- **A scalar subquery that returns multiple rows.** SQLite takes an arbitrary first row instead of erroring. Add `LIMIT 1` with an explicit `ORDER BY`.
+- **Forgetting the alias on a `FROM` subquery.** SQLite needs a name to reference its columns.
+- **Reaching for a correlated subquery in the select list when a join would do.** Per-row evaluation can be much slower on large tables; check `EXPLAIN QUERY PLAN`.
+- **Repeating the same subquery in several places.** Promote it to a [CTE](/guides/sqlite/cte) so it is written and read once.
+
+When you are nesting an `EXISTS` check inside a query with several joins and filters, Mako's AI autocomplete can scaffold the correlated condition so you can confirm the inner reference points at the right outer column.
+
+Mako connects to SQLite and eight other databases with AI-powered autocomplete. Try it free at mako.ai.

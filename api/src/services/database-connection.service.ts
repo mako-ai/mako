@@ -19,6 +19,7 @@ import { Connector } from "@google-cloud/cloud-sql-connector";
 import { loggers } from "../logging";
 import { sshTunnelManager, type SshTunnelConfig } from "./ssh-tunnel.service";
 import { databaseRegistry } from "../databases/registry";
+import { isLocalBigQueryEmulator } from "../utils/bigquery-emulator";
 import {
   type PreviewPageInfo,
   buildBigQueryCursor,
@@ -376,6 +377,21 @@ export class DatabaseConnectionService {
     string,
     {
       request: MSSQLRequest;
+    }
+  > = new Map();
+
+  // Engine-agnostic registry of detached (resumable) executions, layered over
+  // the per-engine cancel maps above. Holds the detached task's AbortController
+  // plus light metadata so a long query can be cancelled by executionId from
+  // any turn (or by the server-side hard cap). The per-engine maps still do the
+  // engine-native cancel (pid / query_id / opid / request / BQ jobId).
+  private runningExecutions: Map<
+    string,
+    {
+      abortController: AbortController;
+      startedAt: number;
+      consoleId?: string;
+      workspaceId?: string;
     }
   > = new Map();
 
@@ -2237,11 +2253,56 @@ export class DatabaseConnectionService {
   }
 
   /**
+   * Register a detached (resumable) execution so it can be cancelled by
+   * executionId from any turn, and aborted by the server-side hard cap.
+   * The caller owns the AbortController and wires it into executeQuery's
+   * `signal`. Returns nothing; pair with {@link releaseDetachedExecution}.
+   */
+  registerDetachedExecution(
+    executionId: string,
+    info: {
+      abortController: AbortController;
+      consoleId?: string;
+      workspaceId?: string;
+    },
+  ): void {
+    this.runningExecutions.set(executionId, {
+      abortController: info.abortController,
+      startedAt: Date.now(),
+      consoleId: info.consoleId,
+      workspaceId: info.workspaceId,
+    });
+  }
+
+  /** Clear a detached execution entry once its task has settled. */
+  releaseDetachedExecution(executionId: string): void {
+    this.runningExecutions.delete(executionId);
+  }
+
+  /** Whether a detached execution is currently registered. */
+  hasDetachedExecution(executionId: string): boolean {
+    return this.runningExecutions.has(executionId);
+  }
+
+  /**
    * Cancel a running query (auto-detects database type)
    */
   async cancelQuery(
     executionId: string,
   ): Promise<{ success: boolean; error?: string }> {
+    // Abort the detached task first (if any) so the in-process poll/await
+    // stops; the engine-native cancel below actually kills the server-side
+    // query. Both are needed: aborting the signal alone does not stop most
+    // engines, and engine-native cancel alone leaves the detached await hanging.
+    const detached = this.runningExecutions.get(executionId);
+    if (detached) {
+      try {
+        detached.abortController.abort();
+      } catch {
+        // AbortController.abort never throws in practice; ignore defensively.
+      }
+    }
+
     // Try BigQuery first
     if (this.runningBigQueryJobs.has(executionId)) {
       return this.cancelBigQueryJob(executionId);
@@ -2276,6 +2337,13 @@ export class DatabaseConnectionService {
           return res;
         }
       }
+    }
+
+    // No engine-native handle matched. If a detached task was registered we
+    // still aborted it above, so report success — the engine query (if any)
+    // will unwind once the abort propagates or its connection closes.
+    if (detached) {
+      return { success: true };
     }
 
     return { success: false, error: "Query not found or already completed" };
@@ -2323,6 +2391,25 @@ export class DatabaseConnectionService {
 
     const cached = this.bigQueryClientCache.get(cacheKey);
     const now = Date.now();
+
+    // Local emulator (e.g. goccy/bigquery-emulator): no auth. Skip the JWT/OAuth
+    // token exchange entirely and send a dummy bearer the emulator ignores. This
+    // lets local dev / integration tests run fully offline with fake credentials.
+    if (isLocalBigQueryEmulator(apiBaseUrl)) {
+      const emulatorClient = cached?.client || axios.create({ baseURL });
+      emulatorClient.defaults.headers.common["Authorization"] =
+        "Bearer emulator";
+      emulatorClient.defaults.headers.common["Content-Type"] =
+        "application/json";
+      const expiresAtMs = now + 365 * 24 * 60 * 60 * 1000;
+      this.bigQueryClientCache.set(cacheKey, {
+        client: emulatorClient,
+        token: "emulator",
+        expiresAtMs,
+      });
+      return emulatorClient;
+    }
+
     // Refresh token if expiring soon (within 2 minutes)
     const needsRefresh = !cached || cached.expiresAtMs - now < 2 * 60 * 1000;
 
@@ -4182,7 +4269,10 @@ export class DatabaseConnectionService {
    * Supports both connection string and individual fields
    * Includes timeout and keep_alive settings for resilience
    */
-  private buildClickHouseClientConfig(database: IDatabaseConnection): {
+  private buildClickHouseClientConfig(
+    database: IDatabaseConnection,
+    databaseNameOverride?: string,
+  ): {
     url: string;
     username: string;
     password: string;
@@ -4206,6 +4296,11 @@ export class DatabaseConnectionService {
       const parsed = this.parseClickHouseConnectionString(
         conn.connectionString,
       );
+      // In cluster mode the active database is chosen per-query (e.g. from the
+      // console picker), so it must take precedence over the connection string.
+      if (databaseNameOverride) {
+        parsed.database = databaseNameOverride;
+      }
       return { ...parsed, ...baseConfig };
     }
 
@@ -4219,7 +4314,7 @@ export class DatabaseConnectionService {
       url: `${host}:${conn.port || 8123}`,
       username: conn.username || "default",
       password: conn.password || "",
-      database: conn.database || "default",
+      database: databaseNameOverride || conn.database || "default",
       ...baseConfig,
     };
   }
@@ -4285,7 +4380,13 @@ export class DatabaseConnectionService {
         return { success: false, error: "Query cancelled" };
       }
 
-      const config = this.buildClickHouseClientConfig(database);
+      // Honor a per-query database selection (cluster mode) so unqualified
+      // table references resolve against the chosen database, not just the
+      // connection's default.
+      const config = this.buildClickHouseClientConfig(
+        database,
+        options?.databaseName,
+      );
 
       // Track running query for cancellation
       if (executionId) {

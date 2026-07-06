@@ -16,7 +16,12 @@ import { z } from "zod";
 
 const appIdField = z.string().describe("App ID (from list_open_apps)");
 
-const writeFileSchema = z.object({
+// NOTE: the mutation tools below (write/delete/rename file, add/remove
+// dependency, create/delete data binding) execute SERVER-SIDE (mirroring the
+// console #475 pattern) — see api/src/agent-lib/tools/server-app-tools.ts. Their
+// schemas are exported here so the server tools and the app's tool cards share
+// a single source of truth. They are intentionally NOT in `clientAppTools`.
+export const writeFileSchema = z.object({
   appId: appIdField,
   path: z
     .string()
@@ -24,12 +29,39 @@ const writeFileSchema = z.object({
   contents: z.string().describe("Full UTF-8 file contents to write"),
 });
 
-const deleteFileSchema = z.object({
+export const editFileSchema = z.object({
+  appId: appIdField,
+  path: z
+    .string()
+    .describe("POSIX file path relative to project root, e.g. src/App.tsx"),
+  oldString: z
+    .string()
+    .describe(
+      "Exact text to replace. Must match the current file contents exactly " +
+        "(including whitespace/indentation) and exactly once — include a few " +
+        "surrounding lines to make the match unique. Must not be empty.",
+    ),
+  newString: z
+    .string()
+    .describe(
+      "Replacement text. Use \"\" to delete the matched text. To insert, " +
+        "anchor on adjacent content and include it in both strings.",
+    ),
+  replaceAll: z
+    .boolean()
+    .optional()
+    .describe(
+      "Replace every occurrence of oldString (for renames). Defaults to " +
+        "false, which requires the match to be unique.",
+    ),
+});
+
+export const deleteFileSchema = z.object({
   appId: appIdField,
   path: z.string().describe("File path to delete"),
 });
 
-const renameFileSchema = z.object({
+export const renameFileSchema = z.object({
   appId: appIdField,
   from: z.string().describe("Existing file path"),
   to: z.string().describe("New file path"),
@@ -40,7 +72,7 @@ const readFileSchema = z.object({
   path: z.string().describe("File path to read"),
 });
 
-const addDependencySchema = z.object({
+export const addDependencySchema = z.object({
   appId: appIdField,
   name: z.string().describe("npm package name, e.g. d3"),
   version: z
@@ -49,23 +81,82 @@ const addDependencySchema = z.object({
     .describe("Semver range. Defaults to 'latest' when omitted."),
 });
 
-const removeDependencySchema = z.object({
+export const removeDependencySchema = z.object({
   appId: appIdField,
   name: z.string().describe("npm package name to remove"),
 });
 
-const createDataBindingSchema = z.object({
+/**
+ * Per-binding materialization schedule. Mirrors
+ * `AppBindingMaterializationScheduleSchema` in `@mako/schemas`; kept as a local
+ * zod object so the agent-tools package stays dependency-light.
+ */
+export const bindingMaterializationScheduleSchema = z.object({
+  enabled: z.boolean().describe("Whether scheduled auto-refresh is enabled"),
+  cron: z
+    .string()
+    .nullable()
+    .describe(
+      "5-field cron expression (e.g. '0 * * * *' = hourly, '0 0 * * *' = " +
+        "daily). Required when enabled; pass null when disabled.",
+    ),
+  timezone: z
+    .string()
+    .optional()
+    .describe("IANA timezone for the cron (defaults to UTC)"),
+  dataFreshnessTtlMs: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("Optional freshness window in ms used for staleness badges"),
+});
+
+export const createDataBindingSchema = z.object({
   appId: appIdField,
   name: z
     .string()
-    .describe("Binding name referenced from app code via useQuery(name)"),
+    .optional()
+    .describe(
+      "Binding name referenced from app code via useQuery(name). Required " +
+        "unless consoleId is given (then defaults to the console's name).",
+    ),
+  consoleId: z
+    .string()
+    .optional()
+    .describe(
+      "Import a saved console by ID (from search_consoles): its query code, " +
+        "connection, language, and database resolve server-side, so you do " +
+        "not need to re-type the SQL. Explicit fields below override the " +
+        "console's values.",
+    ),
   connectionId: z
     .string()
-    .describe("Workspace connection ID to run the query against"),
-  language: z.enum(["sql", "javascript", "mongodb"]).default("sql"),
-  code: z.string().describe("Query text/code to execute server-side"),
+    .optional()
+    .describe(
+      "Workspace connection ID to run the query against (required unless " +
+        "consoleId is given)",
+    ),
+  language: z.enum(["sql", "javascript", "mongodb"]).optional(),
+  code: z
+    .string()
+    .optional()
+    .describe(
+      "Query text/code to execute server-side (required unless consoleId " +
+        "is given)",
+    ),
   databaseId: z.string().optional(),
   databaseName: z.string().optional(),
+  dbtProjectId: z
+    .string()
+    .optional()
+    .describe(
+      "Link the binding to a dbt project (from read_dbt_project_tree). When " +
+        "set, write the query against the {{ dbt_schema }} token instead of " +
+        "hardcoding a schema (e.g. SELECT * FROM {{ dbt_schema }}.fct_orders); " +
+        "it resolves to the project's PROD environment schema for published " +
+        "apps/materialization, and to the editor's preview environment " +
+        "override in the draft preview.",
+    ),
   materialization: z
     .enum(["live", "parquet"])
     .default("live")
@@ -76,9 +167,158 @@ const createDataBindingSchema = z.object({
         "Use 'parquet' for analytics/aggregation over larger result sets; after " +
         "creating a parquet binding, call materialize_binding to build it.",
     ),
+  materializationSchedule: bindingMaterializationScheduleSchema
+    .optional()
+    .describe(
+      "Optional cron schedule that auto-refreshes a 'parquet' binding. Only " +
+        "applies when materialization is 'parquet' (ignored/disabled for " +
+        "'live'). You can also set or change this later with " +
+        "app_set_binding_schedule.",
+    ),
 });
 
-const materializeBindingSchema = z.object({
+export const updateDataBindingSchema = z.object({
+  appId: appIdField,
+  name: z
+    .string()
+    .describe(
+      "Name of the EXISTING data binding to update (from list_data_sources)",
+    ),
+  code: z
+    .string()
+    .optional()
+    .describe(
+      "Full replacement query text/code. For small changes prefer " +
+        "oldString/newString instead of re-sending the whole query.",
+    ),
+  oldString: z
+    .string()
+    .optional()
+    .describe(
+      "Anchored edit of the current query: exact text to replace (must " +
+        "match exactly once). Mutually exclusive with code.",
+    ),
+  newString: z
+    .string()
+    .optional()
+    .describe("Replacement text for oldString (\"\" deletes the match)."),
+  connectionId: z
+    .string()
+    .optional()
+    .describe("Move the binding to a different workspace connection"),
+  language: z.enum(["sql", "javascript", "mongodb"]).optional(),
+  databaseId: z.string().optional(),
+  databaseName: z.string().optional(),
+  dbtProjectId: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "Link the binding to a dbt project (enables the {{ dbt_schema }} " +
+        "token in code) or pass null to unlink it.",
+    ),
+});
+
+export const deleteDataBindingSchema = z.object({
+  appId: appIdField,
+  name: z
+    .string()
+    .describe("Name of the data binding to delete (from list_data_sources)"),
+});
+
+export const saveAppVersionSchema = z.object({
+  appId: appIdField,
+  comment: z
+    .string()
+    .optional()
+    .describe(
+      "Short message describing this checkpoint, e.g. 'Add revenue chart'. " +
+        "Shown in the version history list.",
+    ),
+});
+
+export const restoreAppVersionSchema = z.object({
+  appId: appIdField,
+  version: z
+    .number()
+    .describe(
+      "Version number to restore (from browse_version_history). The current " +
+        "state is preserved as a new checkpoint, so a restore is never lossy.",
+    ),
+  comment: z
+    .string()
+    .optional()
+    .describe("Optional note explaining why this version was restored."),
+});
+
+// Schemas for the server-executed app tools (registered with execute functions
+// in api/src/agent-lib/tools/server-app-tools.ts). Apps are fully
+// server-authoritative: list/create/read/inspect/materialize all run against
+// the MakoApp document so a headless / detached agent never needs a browser.
+export const listAppsSchema = z.object({});
+
+export const createAppSchema = z.object({
+  title: z.string().describe("App title"),
+  description: z.string().optional().describe("Brief description"),
+});
+
+export const getAppStateSchema = z.object({ appId: appIdField });
+
+export { readFileSchema as appReadFileSchema };
+
+export const setBindingScheduleSchema = z.object({
+  appId: appIdField,
+  name: z
+    .string()
+    .describe(
+      "Name of the parquet binding to schedule (from list_data_sources)",
+    ),
+  enabled: z.boolean().describe("Turn the scheduled auto-refresh on or off"),
+  cron: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "5-field cron expression. Required when enabling. E.g. '0 * * * *' = " +
+        "hourly, '0 */6 * * *' = every 6h, '0 0 * * *' = daily.",
+    ),
+  timezone: z
+    .string()
+    .optional()
+    .describe("IANA timezone for the cron (defaults to UTC)"),
+  dataFreshnessTtlMs: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("Optional freshness window in ms used for staleness badges"),
+});
+
+export const setBindingMaterializationSchema = z.object({
+  appId: appIdField,
+  name: z
+    .string()
+    .describe(
+      "Name of the existing data binding to switch (from list_data_sources)",
+    ),
+  materialization: z
+    .enum(["live", "parquet"])
+    .describe(
+      "'live' runs the query server-side on every read; 'parquet' materializes " +
+        "the query to a Parquet artifact loaded into DuckDB-WASM in the browser. " +
+        "Toggles the setting on the existing binding IN PLACE — no need to " +
+        "delete and recreate. After switching to 'parquet', call " +
+        "materialize_binding to build the artifact.",
+    ),
+  materializationSchedule: bindingMaterializationScheduleSchema
+    .optional()
+    .describe(
+      "Optional cron schedule to set at the same time. Only applies when " +
+        "switching to 'parquet' (forced disabled for 'live'). Can also be set " +
+        "later with app_set_binding_schedule.",
+    ),
+});
+
+export const materializeBindingSchema = z.object({
   appId: appIdField,
   name: z.string().describe("Name of the parquet binding to (re)materialize"),
   waitSeconds: z
@@ -94,97 +334,48 @@ const materializeBindingSchema = z.object({
     ),
 });
 
-const createAppSchema = z.object({
-  title: z.string().describe("App title"),
-  description: z.string().optional().describe("Brief description"),
-});
-
+// Client-executed legs only: these depend on the browser preview (sandboxed
+// iframe) and the live UI tabs, so they cannot run server-side. A headless
+// agent simply does not call them — it operates on `appId` directly.
 export const clientAppTools = {
-  list_open_apps: tool({
-    description:
-      "List all open React App tabs. Returns each app's id, title, file count, " +
-      "dependency list, data bindings, and isActive flag. " +
-      "Call this FIRST to get app IDs before using any other app tool.",
-    inputSchema: z.object({}),
-  }),
   open_app: tool({
     description:
-      "Open a saved app by its ID into a tab and load its files. " +
-      "Returns the appId to use with other tools.",
+      "Open a saved app by its ID into a tab in the UI and load its files. " +
+      "UI convenience for an attached browser; headless flows can skip this and " +
+      "pass the appId directly to other tools.",
     inputSchema: z.object({ appId: z.string().describe("App ID to open") }),
-  }),
-  create_app: tool({
-    description:
-      "Create a new React app from the default scaffold (React + TypeScript). " +
-      "Opens it in a tab and returns the new appId. After creating, use " +
-      "app_write_file to build features and app_add_dependency to add libraries.",
-    inputSchema: createAppSchema,
-  }),
-  get_app_state: tool({
-    description:
-      "Get the app definition: file list (paths), dependencies, data bindings, " +
-      "entrypoint, runtime, and the latest preview build/runtime errors. " +
-      "Use this to understand the project and to read build errors before fixing them.",
-    inputSchema: z.object({ appId: appIdField }),
-  }),
-  app_read_file: tool({
-    description: "Read the full contents of a single file in the app.",
-    inputSchema: readFileSchema,
-  }),
-  app_write_file: tool({
-    description:
-      "Create or overwrite a file with full contents. This is the primary " +
-      "editing tool — write the complete file, not a diff. Writing the " +
-      "entrypoint or any imported file refreshes the live preview.",
-    inputSchema: writeFileSchema,
-  }),
-  app_delete_file: tool({
-    description: "Delete a file from the app.",
-    inputSchema: deleteFileSchema,
-  }),
-  app_rename_file: tool({
-    description: "Rename/move a file within the app.",
-    inputSchema: renameFileSchema,
-  }),
-  app_add_dependency: tool({
-    description:
-      "Add an npm dependency to the app (e.g. d3, framer-motion, recharts). " +
-      "The dependency becomes importable from app code on the next preview build.",
-    inputSchema: addDependencySchema,
-  }),
-  app_remove_dependency: tool({
-    description: "Remove an npm dependency from the app.",
-    inputSchema: removeDependencySchema,
-  }),
-  app_create_data_binding: tool({
-    description:
-      "Create a named data binding that the app can read via useQuery(name) " +
-      "from '@mako/app-sdk'. The query runs server-side, scoped to the " +
-      "workspace — the app never sees credentials. Set materialization to " +
-      "'parquet' for DuckDB-WASM-backed analytics (then call materialize_binding). " +
-      "Use the SQL connections/tools to inspect schema and validate the query first.",
-    inputSchema: createDataBindingSchema,
-  }),
-  materialize_binding: tool({
-    description:
-      "Build (or rebuild) the Parquet artifact for a 'parquet' data binding and " +
-      "load it into the app's DuckDB-WASM instance. Run this after creating or " +
-      "editing a parquet binding so useQuery/useDuckDB return fresh data. " +
-      "The build runs server-side in the background: the tool waits up to " +
-      "waitSeconds (default 120) and returns status 'building' if it is still " +
-      "running — that is not an error; the app picks up the data automatically " +
-      "when ready. To block until completion, call this tool again (it resumes " +
-      "waiting on the in-flight build); use waitSeconds: 0 for an instant " +
-      "status check.",
-    inputSchema: materializeBindingSchema,
   }),
   run_app: tool({
     description:
-      "Rebuild and reload the app preview. Use after a batch of edits, or to " +
-      "recover from a stuck preview. Returns any build/runtime errors.",
+      "Rebuild and reload the app's LIVE PREVIEW in the browser and return any " +
+      "build/runtime errors. This is the only browser-only app tool — use it to " +
+      "validate that edits render and to read preview errors. Requires an " +
+      "attached browser tab; it is not needed to author or persist an app.",
     inputSchema: z.object({ appId: appIdField }),
+  }),
+  app_set_preview_environment: tool({
+    description:
+      "Switch which dbt ENVIRONMENT the app's DRAFT PREVIEW reads data from " +
+      "(for dbt-linked bindings using the {{ dbt_schema }} token). This is " +
+      "per-user VIEW state — it never changes the app definition, other " +
+      "editors' previews, or what published/shared viewers see (those always " +
+      "read the prod environment). Pass environment: null to go back to the " +
+      "default (prod). Use it to verify an app against models you just built " +
+      "in a dev/personal schema before promoting them to prod.",
+    inputSchema: z.object({
+      appId: appIdField,
+      environment: z
+        .string()
+        .nullable()
+        .describe(
+          "dbt environment name from the linked project (e.g. 'dev' or a " +
+            "personal environment), or null to reset to the prod default",
+        ),
+    }),
   }),
 };
 
 export type AppWriteFileInput = z.infer<typeof writeFileSchema>;
+export type AppEditFileInput = z.infer<typeof editFileSchema>;
 export type AppCreateDataBindingInput = z.infer<typeof createDataBindingSchema>;
+export type AppUpdateDataBindingInput = z.infer<typeof updateDataBindingSchema>;

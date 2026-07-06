@@ -1,7 +1,6 @@
 import * as crypto from "crypto";
 import { Types } from "mongoose";
 import { inngest } from "../inngest/client";
-import { resolveWebhookEventName } from "../inngest/webhook-process-enqueue";
 import {
   CdcChangeEvent,
   CdcEntityState,
@@ -15,11 +14,19 @@ import {
 import { loggers } from "../logging";
 import { databaseRegistry } from "../databases/registry";
 import { resolveConfiguredEntities } from "./entity-selection";
-import { hasCdcDestinationAdapter } from "./adapters/registry";
-import { BIGQUERY_WORKING_DATASET } from "../utils/bigquery-working-dataset";
+import {
+  hasCdcDestinationAdapter,
+  resolveCdcDestinationAdapter,
+  resolveEntityPartitioning,
+  resolveEntityClustering,
+  buildCdcEntityLayout,
+} from "./adapters/registry";
 import { cdcLiveTableName, cdcStageTableName } from "./normalization";
+import { syncConnectorRegistry } from "../sync/connector-registry";
+import { databaseDataSourceManager } from "../sync/database-data-source-manager";
 import { getCdcEventStore } from "./event-store";
 import { cdcSyncStateService } from "./sync-state";
+import { resolveOrphanedWebhookApplyStatusForFlow } from "./cdc-orphan-applystatus";
 
 const log = loggers.sync("cdc.backfill");
 
@@ -512,6 +519,388 @@ export class CdcBackfillService {
     }
   }
 
+  /**
+   * Resync only a subset of a flow's entities. Used when a partition/cluster
+   * layout change requires recreating just the affected destination tables —
+   * unchanged entities keep their data and are not re-backfilled. Drops the
+   * targeted tables, clears those entities' stored CDC events + per-entity
+   * state, then triggers a subset backfill (`backfillEntities`).
+   */
+  async resyncEntities(params: {
+    workspaceId: string;
+    flowId: string;
+    entities: string[];
+    deleteDestination?: boolean;
+  }): Promise<{ queued: string[] }> {
+    const { workspaceId, flowId, deleteDestination } = params;
+    const entities = normalizeEntities(params.entities);
+    if (entities.length === 0) {
+      throw new Error("resyncEntities requires at least one entity");
+    }
+
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) {
+      throw new Error("Flow not found");
+    }
+    if (flow.syncEngine !== "cdc") {
+      throw new Error("Resync requires syncEngine=cdc");
+    }
+
+    await assertCanStartBackfill(workspaceId, flowId);
+
+    // Mark the target entities pending so the UI shows progress immediately,
+    // then hand off to the background `cdc/repartition` job. The job rewrites
+    // the partitioning/clustering in place (copy + swap, no source re-fetch)
+    // per entity as durable steps — so a long copy on a large table can't time
+    // out the request or leave the others unprocessed.
+    await CdcEntityState.updateMany(
+      { flowId: flow._id, entity: { $in: entities } },
+      {
+        $set: {
+          "repartition.status": "pending",
+          "repartition.startedAt": new Date(),
+        },
+        $unset: { "repartition.completedAt": "", "repartition.error": "" },
+      },
+    );
+
+    await inngest.send({
+      name: "cdc/repartition",
+      data: {
+        workspaceId,
+        flowId,
+        entities,
+        deleteDestination: Boolean(deleteDestination),
+      },
+    });
+
+    log.info("Enqueued cdc/repartition job", { flowId, entities });
+    return { queued: entities };
+  }
+
+  /** Resolve the in-place-repartition-capable adapter for a flow (or null). */
+  private resolveRepartitionAdapter(flow: IFlow, destinationType: string) {
+    const adapter = resolveCdcDestinationAdapter({
+      destinationType,
+      destinationDatabaseId: String(flow.destinationDatabaseId),
+      destinationDatabaseName: flow.destinationDatabaseName,
+      tableDestination: {
+        connectionId: String(flow.tableDestination?.connectionId),
+        schema: flow.tableDestination?.schema || "public",
+        tableName: flow.tableDestination?.tableName || "",
+      },
+    });
+    return adapter.repartitionLiveTable ? adapter : null;
+  }
+
+  private async setEntityRepartitionStatus(
+    workspaceId: Types.ObjectId,
+    flowId: Types.ObjectId,
+    entity: string,
+    repartition: {
+      status: "pending" | "running" | "done" | "failed";
+      startedAt?: Date;
+      completedAt?: Date;
+      error?: string;
+    },
+  ): Promise<void> {
+    await CdcEntityState.updateOne(
+      { flowId, entity },
+      { $set: { repartition }, $setOnInsert: { workspaceId, mode: "steady" } },
+      { upsert: true },
+    );
+  }
+
+  /**
+   * Pause the flow stream for an in-place repartition. Returns the prior stream
+   * state so the resume step can restore it. Tags the pause with a
+   * `REPARTITION_PAUSE` marker so a stuck pause can be auto-recovered.
+   */
+  async pauseStreamForRepartition(
+    workspaceId: string,
+    flowId: string,
+  ): Promise<{ previousStreamState: string }> {
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) throw new Error("Flow not found");
+    const previous =
+      flow.streamState && flow.streamState !== "paused"
+        ? flow.streamState
+        : "idle";
+    flow.streamState = "paused";
+    flow.syncStateMeta = {
+      ...(flow.syncStateMeta || {}),
+      lastEvent: "REPARTITION_PAUSE",
+      lastReason: "Paused for in-place repartition",
+    };
+    flow.syncStateUpdatedAt = new Date();
+    await flow.save();
+    log.info("Paused flow stream for repartition", { flowId, previous });
+    return { previousStreamState: previous };
+  }
+
+  /** Resume the stream after repartition, restoring the prior state. */
+  async resumeStreamForRepartition(
+    workspaceId: string,
+    flowId: string,
+    previousStreamState: string,
+  ): Promise<void> {
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) return;
+    // Only resume our own pause — never clobber a pause set elsewhere.
+    if (
+      flow.streamState === "paused" &&
+      flow.syncStateMeta?.lastEvent === "REPARTITION_PAUSE"
+    ) {
+      flow.streamState = (previousStreamState as IFlow["streamState"]) || "idle";
+      flow.syncStateMeta = {
+        ...(flow.syncStateMeta || {}),
+        lastEvent: "REPARTITION_RESUME",
+        lastReason: "Resumed after in-place repartition",
+      };
+      flow.syncStateUpdatedAt = new Date();
+      await flow.save();
+      log.info("Resumed flow stream after repartition", {
+        flowId,
+        restoredStreamState: flow.streamState,
+      });
+    }
+  }
+
+  /**
+   * Repartition a single entity's destination table in place (copy + swap).
+   * Updates the entity's `repartition` status. Returns the outcome so the job
+   * can decide follow-up: `repartitioned` (done), `missing` (no table → create
+   * via backfill), or `failed` (left as-is, surfaced for operator retry).
+   */
+  async repartitionEntity(params: {
+    workspaceId: string;
+    flowId: string;
+    entity: string;
+  }): Promise<{ outcome: "repartitioned" | "missing" | "failed"; error?: string }> {
+    const { workspaceId, flowId, entity } = params;
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) throw new Error("Flow not found");
+
+    if (!flow.tableDestination?.connectionId) {
+      return { outcome: "missing" };
+    }
+    const destination = await DatabaseConnection.findById(
+      flow.tableDestination.connectionId,
+    ).lean();
+    const adapter = destination
+      ? this.resolveRepartitionAdapter(flow, destination.type)
+      : null;
+    if (!adapter?.repartitionLiveTable) {
+      // Unsupported destination (PostgreSQL/Mongo) — fall back to backfill.
+      return { outcome: "missing" };
+    }
+
+    await this.setEntityRepartitionStatus(flow.workspaceId, flow._id, entity, {
+      status: "running",
+      startedAt: new Date(),
+    });
+    try {
+      const layout = await this.buildEntityLayout(flow, entity);
+      const result = await adapter.repartitionLiveTable(layout);
+      if (result.repartitioned) {
+        await this.setEntityRepartitionStatus(
+          flow.workspaceId,
+          flow._id,
+          entity,
+          { status: "done", completedAt: new Date() },
+        );
+        return { outcome: "repartitioned" };
+      }
+      // No existing table — clear status; the backfill path will create it.
+      await CdcEntityState.updateOne(
+        { flowId: flow._id, entity },
+        { $unset: { repartition: "" } },
+      );
+      return { outcome: "missing" };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error("In-place repartition failed for entity", {
+        flowId,
+        entity,
+        error: message,
+      });
+      await this.setEntityRepartitionStatus(flow.workspaceId, flow._id, entity, {
+        status: "failed",
+        completedAt: new Date(),
+        error: message.slice(0, 500),
+      });
+      return { outcome: "failed", error: message };
+    }
+  }
+
+  /** Fan out materialization for entities that were repartitioned in place. */
+  async triggerEntityMaterialization(
+    workspaceId: string,
+    flowId: string,
+    entities: string[],
+  ): Promise<void> {
+    for (const entity of entities) {
+      await inngest.send({
+        name: "cdc/materialize",
+        data: { workspaceId, flowId, entity, force: true },
+      });
+    }
+  }
+
+  /**
+   * Safety net: clear any repartition pause / running state for a flow (used by
+   * the job's onFailure handler and the stale-pause sweeper). Marks still-running
+   * entities as failed and resumes the stream.
+   */
+  async recoverRepartition(workspaceId: string, flowId: string): Promise<void> {
+    await CdcEntityState.updateMany(
+      {
+        flowId: new Types.ObjectId(flowId),
+        "repartition.status": { $in: ["pending", "running"] },
+      },
+      {
+        $set: {
+          "repartition.status": "failed",
+          "repartition.completedAt": new Date(),
+          "repartition.error": "Repartition job did not complete",
+        },
+      },
+    );
+    await this.resumeStreamForRepartition(workspaceId, flowId, "idle");
+  }
+
+  /**
+   * Resume flows stuck in a repartition pause for longer than the threshold
+   * (e.g. the job's process died before its resume step ran). Called from the
+   * CDC materialize scheduler.
+   */
+  async recoverStaleRepartitionPauses(
+    olderThanMs = 30 * 60 * 1000,
+  ): Promise<number> {
+    const cutoff = new Date(Date.now() - olderThanMs);
+    const stuck = await Flow.find({
+      streamState: "paused",
+      "syncStateMeta.lastEvent": "REPARTITION_PAUSE",
+      syncStateUpdatedAt: { $lt: cutoff },
+    })
+      .select({ _id: 1, workspaceId: 1 })
+      .lean();
+    for (const flow of stuck) {
+      await this.recoverRepartition(
+        String(flow.workspaceId),
+        String(flow._id),
+      );
+    }
+    if (stuck.length > 0) {
+      log.warn("Recovered stale repartition pauses", { count: stuck.length });
+    }
+    return stuck.length;
+  }
+
+  /** Public entry: load the flow and backfill entities lacking a live table. */
+  async backfillMissingEntities(
+    workspaceId: string,
+    flowId: string,
+    entities: string[],
+    deleteDestination?: boolean,
+  ): Promise<void> {
+    if (entities.length === 0) return;
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) throw new Error("Flow not found");
+    await this.backfillEntitiesFallback(
+      flow,
+      workspaceId,
+      flowId,
+      entities,
+      deleteDestination,
+    );
+  }
+
+  /** Drop + clear + subset backfill for entities that can't be repartitioned. */
+  private async backfillEntitiesFallback(
+    flow: IFlow,
+    workspaceId: string,
+    flowId: string,
+    entities: string[],
+    deleteDestination?: boolean,
+  ): Promise<void> {
+    await getCdcEventStore().deleteFlowEvents({ workspaceId, flowId, entities });
+    await CdcEntityState.deleteMany({
+      workspaceId: new Types.ObjectId(workspaceId),
+      flowId: new Types.ObjectId(flowId),
+      entity: { $in: entities },
+    });
+
+    if (deleteDestination) {
+      await this.deleteDestinationTables(flow, entities);
+    }
+
+    await this.startBackfill(workspaceId, flowId, {
+      entities,
+      reason: `Layout-change resync (backfill) for entities: ${entities.join(", ")}`,
+    });
+  }
+
+  /** Resolve the CDC layout (table name, key columns, new partitioning). */
+  private async buildEntityLayout(flow: IFlow, entity: string) {
+    const entityLayout = (flow.entityLayouts || []).find(
+      layout =>
+        layout.entity === entity || layout.entity === entity.split(":")[0],
+    );
+    const tableName = cdcLiveTableName(
+      flow.tableDestination?.tableName,
+      entity,
+      String(flow._id),
+    );
+
+    let keyColumns: string[] | undefined;
+    if (flow.dataSourceId) {
+      try {
+        const ds = await databaseDataSourceManager.getDataSource(
+          String(flow.dataSourceId),
+        );
+        const conn = ds ? await syncConnectorRegistry.getConnector(ds) : null;
+        const schema = conn ? await conn.resolveSchema(entity) : null;
+        keyColumns = schema?.keyColumns;
+      } catch {
+        log.warn("Schema resolution failed for repartition key columns", {
+          entity,
+          flowId: String(flow._id),
+        });
+      }
+    }
+
+    return buildCdcEntityLayout({
+      entity,
+      tableName,
+      keyColumns,
+      deleteMode: flow.deleteMode,
+      partitioning: resolveEntityPartitioning(
+        entityLayout,
+        flow.tableDestination?.partitioning,
+      ),
+      clustering: resolveEntityClustering(
+        entityLayout,
+        flow.tableDestination?.clustering,
+      ),
+    });
+  }
+
   async retryFailedMaterialization(params: {
     workspaceId: string;
     flowId: string;
@@ -696,15 +1085,26 @@ export class CdcBackfillService {
 
     let materializeTriggered = 0;
     let cursorsRewound = 0;
-    try {
-      const byEntity = await getCdcEventStore().countEventsByEntity({
-        workspaceId: params.workspaceId,
-        flowId: params.flowId,
-        materializationStatus: "pending",
-      });
-      for (const item of byEntity) {
-        if (item.count <= 0) continue;
+    let pendingEntities = 0;
+    const drainErrors: string[] = [];
 
+    // Enumerate entities with pending events. If THIS fails we must surface it
+    // (the "Reprocess pending events" button previously swallowed every error
+    // here and returned success:true, so a broken drain looked like a no-op).
+    const byEntity = await getCdcEventStore().countEventsByEntity({
+      workspaceId: params.workspaceId,
+      flowId: params.flowId,
+      materializationStatus: "pending",
+    });
+
+    for (const item of byEntity) {
+      if (item.count <= 0) continue;
+      pendingEntities++;
+
+      try {
+        // Rewind the consumer cursor just below the oldest pending event so the
+        // scheduler's findStaleEntities re-flags this entity (lastIngestSeq >
+        // lastMaterializedSeq) and a forced materialize actually reads it.
         const minPending = await CdcChangeEvent.findOne({
           flowId: new Types.ObjectId(params.flowId),
           entity: item.entity,
@@ -747,12 +1147,26 @@ export class CdcBackfillService {
           },
         });
         materializeTriggered++;
+      } catch (error) {
+        // One bad entity must not abort the rest of the drain.
+        const message = error instanceof Error ? error.message : String(error);
+        drainErrors.push(`${item.entity}: ${message}`);
+        log.warn("Failed to force-drain CDC entity during reprocess-stale", {
+          flowId: params.flowId,
+          entity: item.entity,
+          error: message,
+        });
       }
-    } catch (error) {
-      log.warn("Failed to force-drain CDC during reprocess-stale", {
-        flowId: params.flowId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    }
+
+    // If there was pending work but we couldn't trigger a single materialize,
+    // the operation genuinely failed — surface it so the UI doesn't lie.
+    if (pendingEntities > 0 && materializeTriggered === 0) {
+      throw new Error(
+        `Failed to trigger materialization for any of ${pendingEntities} pending entities: ${
+          drainErrors[0] ?? "unknown error"
+        }`,
+      );
     }
 
     const orphanedResolved = await this.resolveOrphanedWebhookApplyStatus(
@@ -765,18 +1179,22 @@ export class CdcBackfillService {
       reconciledWebhooks,
       drainedWebhooks,
       resetFailedWebhooks,
+      pendingEntities,
       materializeTriggered,
       cursorsRewound,
       orphanedResolved,
+      drainErrors: drainErrors.length,
     });
 
     return {
       reconciledWebhooks,
       drainedWebhooks,
       resetFailedWebhooks,
+      pendingEntities,
       materializeTriggered,
       cursorsRewound,
       orphanedResolved,
+      drainErrors,
     };
   }
 
@@ -1199,64 +1617,11 @@ export class CdcBackfillService {
     workspaceId: string,
     flowId: string,
   ): Promise<number> {
-    try {
-      const flowOid = new Types.ObjectId(flowId);
-      const wsOid = new Types.ObjectId(workspaceId);
-
-      const stuckWebhookEvents = await WebhookEvent.find({
-        flowId: flowOid,
-        workspaceId: wsOid,
-        status: "completed",
-        applyStatus: "pending",
-      })
-        .select({ _id: 1 })
-        .limit(1000)
-        .lean();
-
-      if (stuckWebhookEvents.length === 0) return 0;
-
-      const stuckIds = stuckWebhookEvents.map(e => String(e._id));
-
-      const withPendingCdc: string[] = await CdcChangeEvent.distinct(
-        "webhookEventId",
-        {
-          flowId: flowOid,
-          webhookEventId: { $in: stuckIds },
-          materializationStatus: "pending",
-        },
-      );
-      const pendingSet = new Set(withPendingCdc);
-
-      const orphanedIds = stuckIds.filter(id => !pendingSet.has(id));
-      if (orphanedIds.length === 0) return 0;
-
-      const orphanedOids = orphanedIds.map(id => new Types.ObjectId(id));
-
-      const result = await WebhookEvent.updateMany(
-        { _id: { $in: orphanedOids } },
-        {
-          $set: { applyStatus: "applied" },
-          $unset: { applyError: "" },
-        },
-      );
-
-      if (result.modifiedCount > 0) {
-        log.info("Resolved orphaned webhook applyStatus", {
-          flowId,
-          total: stuckWebhookEvents.length,
-          withPendingCdc: withPendingCdc.length,
-          resolved: result.modifiedCount,
-        });
-      }
-
-      return result.modifiedCount || 0;
-    } catch (error) {
-      log.warn("Failed to resolve orphaned webhook apply status", {
-        flowId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return 0;
-    }
+    // Delegates to the shared, cursor-paginated resolver so a single
+    // "Reprocess pending events" click drains the ENTIRE orphaned backlog. The
+    // old inline version capped at 1000 per call, which is why the button
+    // appeared to do nothing against a 50k+ backlog.
+    return resolveOrphanedWebhookApplyStatusForFlow({ workspaceId, flowId });
   }
 
   private async cleanupOrphanStagingTables(
@@ -1286,8 +1651,7 @@ export class CdcBackfillService {
       );
       const tablePrefix = flow.tableDestination.tableName || "";
       const schema = flow.tableDestination.schema;
-      const stageSchema =
-        destination.type === "bigquery" ? BIGQUERY_WORKING_DATASET : schema;
+      const stageSchema = driver.getStagingSchema?.(schema) ?? schema;
       const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
       let dropped = 0;
 
@@ -1340,63 +1704,39 @@ export class CdcBackfillService {
     trigger: string,
   ): Promise<number> {
     try {
-      const stuckWebhookEvents = await WebhookEvent.find({
+      // Legacy per-event enqueue (`webhook/event.process`) was decommissioned.
+      // For CDC flows, pending WebhookEvents are picked up by the CDC scheduler
+      // cron (`cdcMaterializeSchedulerFunction`) on its next cycle, so there is
+      // nothing to enqueue here. Re-arm any stuck non-pending events back to
+      // "pending" so the cron re-ingests them, and report the backlog size.
+      await WebhookEvent.updateMany(
+        {
+          flowId: new Types.ObjectId(flowId),
+          workspaceId: new Types.ObjectId(workspaceId),
+          status: "processing",
+          attempts: { $lt: 5 },
+        },
+        { $set: { status: "pending" } },
+      );
+
+      const pendingCount = await WebhookEvent.countDocuments({
         flowId: new Types.ObjectId(flowId),
         status: "pending",
         attempts: { $lt: 5 },
-      })
-        .sort({ receivedAt: 1 })
-        .limit(500)
-        .select({ eventId: 1 })
-        .lean();
-
-      if (stuckWebhookEvents.length === 0) return 0;
-
-      const flow = await Flow.findById(flowId)
-        .select("syncEngine destinationDatabaseId tableDestination")
-        .lean();
-      const destConn = flow?.destinationDatabaseId
-        ? await DatabaseConnection.findById(flow.destinationDatabaseId)
-            .select("type")
-            .lean()
-        : null;
-
-      const eventName = resolveWebhookEventName(
-        flow
-          ? {
-              syncEngine: flow.syncEngine,
-              tableDestination: flow.tableDestination,
-            }
-          : undefined,
-        destConn?.type,
-      );
-
-      const CHUNK = 100;
-      for (let i = 0; i < stuckWebhookEvents.length; i += CHUNK) {
-        const batch = stuckWebhookEvents.slice(i, i + CHUNK);
-        await inngest.send(
-          batch.map(evt => ({
-            name: eventName,
-            data: {
-              flowId,
-              workspaceId,
-              eventId: (evt as any).eventId,
-              isReplay: true,
-            },
-          })),
-        );
-      }
-
-      log.info("Drained pending WebhookEvents", {
-        flowId,
-        workspaceId,
-        trigger,
-        count: stuckWebhookEvents.length,
       });
 
-      return stuckWebhookEvents.length;
+      if (pendingCount > 0) {
+        log.info("Pending WebhookEvents awaiting CDC cron ingest", {
+          flowId,
+          workspaceId,
+          trigger,
+          count: pendingCount,
+        });
+      }
+
+      return pendingCount;
     } catch (error) {
-      log.warn("Failed to drain pending WebhookEvents", {
+      log.warn("Failed to inspect pending WebhookEvents", {
         flowId,
         workspaceId,
         trigger,
@@ -1411,6 +1751,8 @@ export class CdcBackfillService {
       IFlow,
       "_id" | "tableDestination" | "destinationDatabaseId" | "entityLayouts"
     >,
+    /** Restrict to these entities (omit to drop all configured entities). */
+    onlyEntities?: string[],
   ) {
     if (
       !flow.tableDestination?.connectionId ||
@@ -1431,11 +1773,15 @@ export class CdcBackfillService {
       return;
     }
 
-    const enabledEntities = resolveConfiguredEntities(flow).entities;
+    const configuredEntities = resolveConfiguredEntities(flow).entities;
+    const scopeSet =
+      onlyEntities && onlyEntities.length > 0 ? new Set(onlyEntities) : null;
+    const enabledEntities = scopeSet
+      ? configuredEntities.filter(e => scopeSet.has(e))
+      : configuredEntities;
     const tablePrefix = flow.tableDestination.tableName || "";
     const schema = flow.tableDestination.schema;
-    const stageSchema =
-      destination.type === "bigquery" ? BIGQUERY_WORKING_DATASET : schema;
+    const stageSchema = driver.getStagingSchema?.(schema) ?? schema;
     const flowId = flow._id.toString();
 
     const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
@@ -1524,10 +1870,9 @@ export async function purgeSoftDeletesAfterBackfill(params: {
 
   for (const entity of enabledEntities) {
     const tableName = cdcLiveTableName(tablePrefix, entity);
-    const fullTable =
-      destination.type === "bigquery"
-        ? `\`${schema}\`.${tableName}`
-        : `"${schema}"."${tableName}"`;
+    const fullTable = driver.formatTableRef
+      ? driver.formatTableRef(schema, tableName)
+      : `"${schema}"."${tableName}"`;
     const query = `DELETE FROM ${fullTable} WHERE is_deleted = true`;
     try {
       await driver.executeQuery(destination, query);

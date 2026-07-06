@@ -185,6 +185,7 @@ jobs:
       INNGEST_EVENT_KEY: ${{ secrets.INNGEST_BRANCH_EVENT_KEY || vars.INNGEST_EVENT_KEY }}
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_BRANCH_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+      TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -213,6 +214,12 @@ jobs:
       STRIPE_METER_EVENT_NAME: llm_usage_usd
       DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/pr-${{ needs.detect-changes.outputs.pr_number }}
       SUPER_ADMIN_EMAILS: ${{ secrets.SUPER_ADMIN_EMAILS }}
+      MAKO_GITHUB_APP_ID: ${{ vars.MAKO_GITHUB_APP_ID }}
+      MAKO_GITHUB_APP_SLUG: ${{ vars.MAKO_GITHUB_APP_SLUG }}
+      MAKO_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.MAKO_GITHUB_APP_WEBHOOK_SECRET }}
+      MAKO_GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_GITHUB_APP_PRIVATE_KEY }}
+      MAKO_GITHUB_APP_CLIENT_ID: ${{ vars.MAKO_GITHUB_APP_CLIENT_ID }}
+      MAKO_GITHUB_APP_CLIENT_SECRET: ${{ secrets.MAKO_GITHUB_APP_CLIENT_SECRET }}
     steps:
       - name: Warn if branch Inngest event key is missing
         # NOTE: the `secrets` context is NOT allowed in `if:` conditionals — it
@@ -596,6 +603,7 @@ jobs:
             --set-env-vars INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY} \
             --set-env-vars NODE_ENV=production \
             --set-env-vars AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY} \
+            --set-env-vars TAVILY_API_KEY=${TAVILY_API_KEY} \
             --set-env-vars ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} \
             --set-env-vars GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY} \
             --set-env-vars OPENAI_API_KEY=${OPENAI_API_KEY} \
@@ -625,6 +633,12 @@ jobs:
             --set-env-vars STRIPE_PRO_PRICE_ID=${STRIPE_PRO_PRICE_ID} \
             --set-env-vars STRIPE_OVERAGE_PRICE_ID=${STRIPE_OVERAGE_PRICE_ID} \
             --set-env-vars STRIPE_METER_EVENT_NAME=${STRIPE_METER_EVENT_NAME} \
+            --set-env-vars GITHUB_APP_ID=${MAKO_GITHUB_APP_ID} \
+            --set-env-vars GITHUB_APP_SLUG=${MAKO_GITHUB_APP_SLUG} \
+            --set-env-vars GITHUB_APP_WEBHOOK_SECRET=${MAKO_GITHUB_APP_WEBHOOK_SECRET} \
+            --set-env-vars GITHUB_APP_CLIENT_ID=${MAKO_GITHUB_APP_CLIENT_ID} \
+            --set-env-vars "^|^GITHUB_APP_CLIENT_SECRET=${MAKO_GITHUB_APP_CLIENT_SECRET}" \
+            --set-env-vars "^|^GITHUB_APP_PRIVATE_KEY=${MAKO_GITHUB_APP_PRIVATE_KEY}" \
             --set-env-vars "^|^SUPER_ADMIN_EMAILS=${SUPER_ADMIN_EMAILS}" \
             --quiet
 
@@ -827,6 +841,7 @@ jobs:
       INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+      TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -857,6 +872,12 @@ jobs:
       STRIPE_METER_EVENT_NAME: llm_usage_usd
       DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/prod
       SUPER_ADMIN_EMAILS: ${{ secrets.SUPER_ADMIN_EMAILS }}
+      MAKO_GITHUB_APP_ID: ${{ vars.MAKO_GITHUB_APP_ID }}
+      MAKO_GITHUB_APP_SLUG: ${{ vars.MAKO_GITHUB_APP_SLUG }}
+      MAKO_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.MAKO_GITHUB_APP_WEBHOOK_SECRET }}
+      MAKO_GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_GITHUB_APP_PRIVATE_KEY }}
+      MAKO_GITHUB_APP_CLIENT_ID: ${{ vars.MAKO_GITHUB_APP_CLIENT_ID }}
+      MAKO_GITHUB_APP_CLIENT_SECRET: ${{ secrets.MAKO_GITHUB_APP_CLIENT_SECRET }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -991,6 +1012,7 @@ jobs:
             --set-env-vars INNGEST_SERVE_PATH=/api/inngest \
             --set-env-vars NODE_ENV=production \
             --set-env-vars AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY} \
+            --set-env-vars TAVILY_API_KEY=${TAVILY_API_KEY} \
             --set-env-vars ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} \
             --set-env-vars GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY} \
             --set-env-vars OPENAI_API_KEY=${OPENAI_API_KEY} \
@@ -998,8 +1020,6 @@ jobs:
             --set-env-vars LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY} \
             --set-env-vars LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL} \
             --set-env-vars LANGFUSE_TRACING_ENVIRONMENT=${LANGFUSE_TRACING_ENVIRONMENT} \
-            --set-env-vars WEBHOOK_SQL_PROCESS_CONCURRENCY=3 \
-            --set-env-vars WEBHOOK_CDC_PROCESS_CONCURRENCY=10 \
             --set-env-vars CDC_MATERIALIZE_CONCURRENCY=8 \
             --set-env-vars SYNC_BULK_FLUSH_BATCH_SIZE=2000 \
             --set-env-vars SYNC_BULK_MONGO_TO_PARQUET_CHUNK=100 \
@@ -1023,6 +1043,12 @@ jobs:
             --set-env-vars STRIPE_PRO_PRICE_ID=${STRIPE_PRO_PRICE_ID} \
             --set-env-vars STRIPE_OVERAGE_PRICE_ID=${STRIPE_OVERAGE_PRICE_ID} \
             --set-env-vars STRIPE_METER_EVENT_NAME=${STRIPE_METER_EVENT_NAME} \
+            --set-env-vars GITHUB_APP_ID=${MAKO_GITHUB_APP_ID} \
+            --set-env-vars GITHUB_APP_SLUG=${MAKO_GITHUB_APP_SLUG} \
+            --set-env-vars GITHUB_APP_WEBHOOK_SECRET=${MAKO_GITHUB_APP_WEBHOOK_SECRET} \
+            --set-env-vars GITHUB_APP_CLIENT_ID=${MAKO_GITHUB_APP_CLIENT_ID} \
+            --set-env-vars "^|^GITHUB_APP_CLIENT_SECRET=${MAKO_GITHUB_APP_CLIENT_SECRET}" \
+            --set-env-vars "^|^GITHUB_APP_PRIVATE_KEY=${MAKO_GITHUB_APP_PRIVATE_KEY}" \
             --set-env-vars "^|^SUPER_ADMIN_EMAILS=${SUPER_ADMIN_EMAILS}" \
             --quiet
 

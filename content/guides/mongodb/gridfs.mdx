@@ -1,0 +1,118 @@
+---
+title: "GridFS in MongoDB: Storing Files Larger Than 16 MB"
+description: "How GridFS works: fs.files and fs.chunks, the 255 KiB chunk model, the GridFSBucket API, sharding GridFS, and when object storage is the better answer."
+database: "mongodb"
+category: "how-to"
+tags: ["mongodb", "gridfs", "file-storage", "blob", "nosql"]
+date: "2026-06-11"
+---
+
+A single BSON document in MongoDB cannot exceed 16 MiB. GridFS is MongoDB's convention for storing files past that limit: instead of one document per file, the driver splits the file into chunks of 255 KiB, stores each chunk as its own document, and keeps the file's metadata in a separate document. Reading the file back means streaming the chunks in order and reassembling them.
+
+GridFS is not a separate storage engine or server feature. It is a specification implemented by every official driver and by the `mongofiles` command-line tool. Your database just sees two ordinary collections.
+
+## The two collections
+
+By default GridFS uses a bucket named `fs`, which produces:
+
+- `fs.files` -- one document per file, holding metadata
+- `fs.chunks` -- one document per chunk, holding the binary data
+
+A files document looks like this:
+
+```javascript
+{
+  _id: ObjectId("66682f0e8a2d4b1f3c9e7a01"),
+  length: 27262976,            // total file size in bytes
+  chunkSize: 261120,           // 255 KiB default
+  uploadDate: ISODate("2026-06-11T09:14:22Z"),
+  filename: "site-survey-q2.pdf",
+  metadata: { project: "atlas-migration", uploadedBy: "dana" }
+}
+```
+
+`metadata` is yours: the spec reserves the field for arbitrary application data, so tags, owner IDs, and content types belong there. (Older fields like `contentType` and `md5` at the top level are deprecated in the current spec; put a content type inside `metadata` instead.)
+
+Each chunk document references its file and its position:
+
+```javascript
+{
+  _id: ObjectId("..."),
+  files_id: ObjectId("66682f0e8a2d4b1f3c9e7a01"),  // points to fs.files._id
+  n: 0,                                             // chunk sequence number
+  data: BinData(0, "...")                           // up to chunkSize bytes
+}
+```
+
+Drivers create a unique compound index on `{ files_id: 1, n: 1 }` in `fs.chunks` and an index on `{ filename: 1, uploadDate: 1 }` in `fs.files`, so chunk reassembly and filename lookups are index-backed. The `data` field is plain BSON `binData`; see our [BSON data types guide](/guides/mongodb/data-types-bson) for how binary subtypes work.
+
+## Using GridFS from a driver
+
+The modern driver API is `GridFSBucket`. In Node.js:
+
+```javascript
+import { MongoClient, GridFSBucket } from "mongodb";
+import fs from "node:fs";
+
+const client = await MongoClient.connect(uri);
+const db = client.db("docs");
+const bucket = new GridFSBucket(db, { bucketName: "reports" });
+
+// Upload: streams the file in, writing chunk documents as it goes
+fs.createReadStream("./site-survey-q2.pdf").pipe(
+  bucket.openUploadStream("site-survey-q2.pdf", {
+    chunkSizeBytes: 261120,
+    metadata: { project: "atlas-migration" }
+  })
+);
+
+// Download by name
+bucket.openDownloadStreamByName("site-survey-q2.pdf")
+  .pipe(fs.createWriteStream("./copy.pdf"));
+```
+
+`bucketName: "reports"` puts the data in `reports.files` and `reports.chunks` instead of the `fs.*` defaults, which is useful for separating file classes (avatars vs. invoices) or applying different shard configurations.
+
+To delete a file, use the bucket's delete method with the file `_id`. It removes the files document and all its chunks. Never delete from `fs.files` directly with `deleteOne`: you would orphan the chunks, and they keep taking space silently.
+
+For shell-adjacent work, `mongofiles` handles put/get/list/delete from the command line without writing driver code.
+
+## Range reads: the underrated feature
+
+Because chunks are addressable by sequence number, drivers can serve byte ranges without reading the whole file. `openDownloadStream` accepts `start` and `end` offsets, and the driver fetches only the chunks covering that range. This is why GridFS shows up in video-seeking and resumable-download use cases: skipping to the middle of a 2 GB file touches a handful of chunk documents, not 2 GB of data.
+
+## Sharding GridFS
+
+The two collections shard differently:
+
+- `fs.chunks` is the one that grows. Shard it on `{ files_id: 1, n: 1 }` or `{ files_id: "hashed" }` so all chunks of one file route by file ID.
+- `fs.files` is small (one document per file) and usually does not need sharding. If you do shard it, `_id` or a hashed `_id` works.
+
+## Limitations to know before committing
+
+- **No multi-document transaction support.** GridFS operations span many documents across two collections, and the spec does not support running them inside [transactions](/guides/mongodb/transactions). A crashed upload can leave partial chunks; the driver writes the files document last, so incomplete files are invisible to readers, but the orphaned chunks need cleanup.
+- **No in-place file updates.** There is no "modify bytes 4096 to 8192" operation. The pattern for changing a file is uploading a new version and deleting (or keeping) the old one, with your application tracking which version is current. If concurrent writers might update the same file, you need your own locking or versioning convention.
+- **Working-set pressure.** File chunks flow through the same WiredTiger cache as your operational data. Serving large files from the same cluster that handles your transactional queries evicts hot documents from cache. A separate cluster or bucket-per-workload helps, but the contention is structural.
+- **Overhead per file.** Each chunk carries `_id`, `files_id`, and `n` alongside the data, plus index entries. For millions of small files the metadata multiplies; for files comfortably under 16 MB, a single `binData` field inside a regular document is simpler and faster.
+
+## When GridFS is the right call, and when it is not
+
+Reasonable cases for GridFS:
+
+- Files over 16 MB that must live inside MongoDB's replication, auth, and backup story, with no extra infrastructure to operate
+- Range reads over large files (media seeking, partial downloads)
+- Deployments where adding an object store is not an option (air-gapped, strict vendor constraints)
+
+Cases where something else wins:
+
+- **Object storage (S3, GCS, Azure Blob) for most file serving.** Purpose-built blob stores are cheaper per GB, offload bandwidth from your database, and integrate with CDNs. The common production pattern is files in object storage, metadata and the object key in MongoDB.
+- **Filesystem + path in the database** for single-server setups where operational simplicity matters more than replication of the files themselves.
+- **Inline `binData`** for small files (thumbnails, certificates) that fit well under 16 MB; one document, one read. The embed-versus-reference reasoning from our [schema design guide](/guides/mongodb/schema-design) applies to binaries too.
+
+GridFS is a solid, boring tool for the narrow problem it solves. The mistake is treating it as MongoDB's general answer to file storage when an object store sits one config file away.
+
+## Inspecting GridFS data
+
+Since `fs.files` and `fs.chunks` are normal collections, you can query them like anything else: count files per project from `metadata`, find oversized uploads by `length`, or detect orphaned chunks by aggregating `fs.chunks` against `fs.files` with a [$lookup](/guides/mongodb/lookup-joins).
+
+Mako connects to MongoDB with AI-powered autocomplete, which makes ad-hoc queries against GridFS metadata quick to write. Try it free at mako.ai.

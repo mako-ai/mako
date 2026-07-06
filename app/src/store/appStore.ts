@@ -14,8 +14,11 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { api, unwrapBody } from "../api";
+import { apiClient } from "../lib/api-client";
 import {
+  containsDbtSchemaToken,
   normalizeAppFiles,
+  resolveDbtSchemaToken,
   type AppDataBinding,
   type AppFile,
 } from "@mako/schemas";
@@ -33,6 +36,11 @@ export interface AppEntity {
   dependencies: Record<string, string>;
   dataBindings: AppDataBinding[];
   version: number;
+  /** EntityVersion number last published (draft/published split). */
+  publishedVersion?: number;
+  publishedAt?: string;
+  /** True when the working draft differs from the published version. */
+  hasUnpublishedChanges?: boolean;
   access: "private" | "workspace";
   /** Role granted to workspace members when access is "workspace". */
   workspaceRole?: "viewer" | "editor";
@@ -71,6 +79,41 @@ export interface AppPreviewError {
   at: number;
 }
 
+/** dbt environment summary used by the preview environment switcher. */
+export interface AppDbtEnvSummary {
+  name: string;
+  targetSchema: string;
+  ownerUserId?: string;
+}
+
+export interface AppDbtEnvInfo {
+  environments: AppDbtEnvSummary[];
+  defaultEnvironment: string;
+}
+
+/**
+ * Prod-like environment for `{{ dbt_schema }}` resolution: `prod` when it
+ * exists, else the project default. Mirrors the server rule
+ * (api/src/dbt/dbt-environments.service.ts) — published apps, materialized
+ * artifacts, and public shares always resolve to this environment.
+ */
+export function prodLikeDbtEnvironment(info: AppDbtEnvInfo): string {
+  return info.environments.some(env => env.name === "prod")
+    ? "prod"
+    : info.defaultEnvironment;
+}
+
+const previewDbtEnvStorageKey = (appId: string) =>
+  `mako:appPreviewDbtEnv:${appId}`;
+
+function readStoredPreviewDbtEnv(appId: string): string | null {
+  try {
+    return localStorage.getItem(previewDbtEnvStorageKey(appId));
+  } catch {
+    return null;
+  }
+}
+
 interface AppState {
   myApps: Record<string, AppListItem[]>;
   workspaceApps: Record<string, AppListItem[]>;
@@ -83,6 +126,16 @@ interface AppState {
   /** Bumping the nonce forces the renderer to rebuild that app's preview. */
   previewNonce: Record<string, number>;
   previewErrors: Record<string, AppPreviewError[]>;
+
+  /**
+   * Per-user, per-app dbt environment override for the DRAFT PREVIEW only
+   * (view state, persisted in localStorage — never part of the app
+   * definition). null/undefined = default (prod). Published/shared viewers
+   * are unaffected: server paths always resolve to prod.
+   */
+  previewDbtEnv: Record<string, string | null>;
+  /** Cached dbt project environments for binding resolution (by projectId). */
+  dbtEnvInfo: Record<string, AppDbtEnvInfo>;
 }
 
 interface AppActions {
@@ -146,6 +199,31 @@ interface AppActions {
   ) => Promise<{ success: boolean; rows?: unknown[]; error?: string }>;
 
   /**
+   * Switch which dbt environment the app's draft preview reads (per-user view
+   * state). Pass null to reset to the default (prod). Bumps the preview so
+   * data hooks re-run against the new schema.
+   */
+  setPreviewDbtEnvironment: (appId: string, environment: string | null) => void;
+
+  /** Fetch (and cache) a dbt project's environments for binding resolution. */
+  fetchDbtEnvInfo: (
+    workspaceId: string,
+    dbtProjectId: string,
+  ) => Promise<AppDbtEnvInfo | null>;
+
+  /**
+   * Resolve `{{ dbt_schema }}` in dbt-linked binding code for the DRAFT
+   * preview: the per-user preview override when set (and still valid), else
+   * the prod-like environment. Non-linked / token-free code passes through.
+   */
+  resolveDbtCodeForPreview: (
+    workspaceId: string,
+    appId: string,
+    dbtProjectId: string | undefined,
+    code: string,
+  ) => Promise<string>;
+
+  /**
    * Queue a parquet binding build (server-side, background) and poll until it
    * is ready, fails, or the bounded wait elapses. Never hangs: `timeoutMs`
    * caps the wait and `signal` aborts the polling (the build itself keeps
@@ -162,6 +240,24 @@ interface AppActions {
     error?: string;
   }>;
 
+  /**
+   * (Re)materialize every parquet binding in an app in one shot. Runs each
+   * binding's build concurrently through `materializeBinding` (force rebuild by
+   * default) and returns an aggregate summary. Used by the "Rebuild data"
+   * toolbar action to recover an app whose artifact cache was lost (e.g. a DB
+   * restore) without deleting/recreating bindings.
+   */
+  materializeAllBindings: (
+    workspaceId: string,
+    appId: string,
+    options?: { force?: boolean; signal?: AbortSignal; timeoutMs?: number },
+  ) => Promise<{
+    total: number;
+    ready: number;
+    failed: number;
+    errors: string[];
+  }>;
+
   reset: () => void;
 }
 
@@ -176,6 +272,8 @@ const initialState: AppState = {
   activeAppId: null,
   previewNonce: {},
   previewErrors: {},
+  previewDbtEnv: {},
+  dbtEnvInfo: {},
 };
 
 function genId(): string {
@@ -261,6 +359,11 @@ export const useAppStore = create<AppStore>()(
           if (state.previewNonce[appId] === undefined) {
             state.previewNonce[appId] = 0;
           }
+          // Hydrate the per-user preview dbt env override from localStorage
+          // once per open app (view state survives reloads).
+          if (state.previewDbtEnv[appId] === undefined) {
+            state.previewDbtEnv[appId] = readStoredPreviewDbtEnv(appId);
+          }
         });
         return res.app;
       } catch {
@@ -330,7 +433,15 @@ export const useAppStore = create<AppStore>()(
         if (res.success && res.app) {
           set(state => {
             const current = state.openApps[appId];
-            if (current) current.version = res.app.version;
+            if (current) {
+              current.version = res.app.version;
+              // Autosave bumps the draft; mirror the server-computed publish
+              // state so the preview toolbar's Publish button reflects whether
+              // the draft now differs from the published version.
+              current.publishedVersion = res.app.publishedVersion;
+              current.publishedAt = res.app.publishedAt;
+              current.hasUnpublishedChanges = res.app.hasUnpublishedChanges;
+            }
           });
         }
       } catch {
@@ -542,6 +653,75 @@ export const useAppStore = create<AppStore>()(
         state.previewErrors[appId] = errors;
       }),
 
+    setPreviewDbtEnvironment: (appId, environment) => {
+      set(state => {
+        state.previewDbtEnv[appId] = environment;
+      });
+      try {
+        if (environment) {
+          localStorage.setItem(previewDbtEnvStorageKey(appId), environment);
+        } else {
+          localStorage.removeItem(previewDbtEnvStorageKey(appId));
+        }
+      } catch {
+        /* view state only — losing persistence is harmless */
+      }
+      // No preview bump here: AppRenderer watches this state and posts a
+      // data-refresh into the booted iframe, so data hooks re-run against the
+      // new schema without a (slow) srcdoc rebuild or losing app UI state.
+    },
+
+    fetchDbtEnvInfo: async (workspaceId, dbtProjectId) => {
+      const cached = get().dbtEnvInfo[dbtProjectId];
+      if (cached) return cached;
+      try {
+        const res = await apiClient.get<{
+          success: boolean;
+          project?: {
+            environments?: AppDbtEnvSummary[];
+            defaultEnvironment: string;
+          };
+        }>(`/workspaces/${workspaceId}/dbt/projects/${dbtProjectId}`);
+        const project = res.project;
+        if (!project) return null;
+        const info: AppDbtEnvInfo = {
+          environments: (project.environments ?? []).map(env => ({
+            name: env.name,
+            targetSchema: env.targetSchema,
+            ownerUserId: env.ownerUserId,
+          })),
+          defaultEnvironment: project.defaultEnvironment,
+        };
+        set(state => {
+          state.dbtEnvInfo[dbtProjectId] = info;
+        });
+        return info;
+      } catch {
+        return null;
+      }
+    },
+
+    resolveDbtCodeForPreview: async (
+      workspaceId,
+      appId,
+      dbtProjectId,
+      code,
+    ) => {
+      if (!dbtProjectId || !containsDbtSchemaToken(code)) return code;
+      const info = await get().fetchDbtEnvInfo(workspaceId, dbtProjectId);
+      // Unresolvable link: pass the raw code through so the warehouse fails
+      // loudly instead of silently querying the wrong schema.
+      if (!info || info.environments.length === 0) return code;
+      const override = get().previewDbtEnv[appId];
+      const envName =
+        override && info.environments.some(env => env.name === override)
+          ? override
+          : prodLikeDbtEnvironment(info);
+      const env = info.environments.find(e => e.name === envName);
+      if (!env) return code;
+      return resolveDbtSchemaToken(code, env.targetSchema);
+    },
+
     runBinding: async (workspaceId, appId, bindingName) => {
       const appEntity = get().openApps[appId];
       const binding = appEntity?.dataBindings.find(b => b.name === bindingName);
@@ -552,13 +732,21 @@ export const useAppStore = create<AppStore>()(
         };
       }
       try {
+        // dbt-linked bindings: resolve {{ dbt_schema }} against the preview
+        // environment (override or prod default) before executing.
+        const query = await get().resolveDbtCodeForPreview(
+          workspaceId,
+          appId,
+          binding.dbtProjectId,
+          binding.code,
+        );
         // 400/403 carry a structured error body (validation / permission), so
         // read the parsed body regardless of HTTP status instead of throwing.
         const result = await api.POST("/api/workspaces/{workspaceId}/execute", {
           params: { path: { workspaceId } },
           body: {
             connectionId: binding.connectionId,
-            query: binding.code,
+            query,
             databaseId: binding.databaseId,
             databaseName: binding.databaseName,
             mode: "preview",
@@ -697,6 +885,45 @@ export const useAppStore = create<AppStore>()(
         setLocalStatus("error", error);
         return { success: false, status: "error", error };
       }
+    },
+
+    materializeAllBindings: async (workspaceId, appId, options) => {
+      const appEntity = get().openApps[appId];
+      const parquetBindings = (appEntity?.dataBindings ?? []).filter(
+        b => b.materialization === "parquet",
+      );
+      if (parquetBindings.length === 0) {
+        return { total: 0, ready: 0, failed: 0, errors: [] };
+      }
+
+      // Build every binding concurrently. Each call queues a background build
+      // and polls to completion; the shared per-binding claim on the server
+      // dedupes against any build already in flight. Default to a force rebuild
+      // so a lost/stale cache is always regenerated.
+      const results = await Promise.all(
+        parquetBindings.map(binding =>
+          get()
+            .materializeBinding(workspaceId, appId, binding.id, {
+              force: options?.force ?? true,
+              signal: options?.signal,
+              timeoutMs: options?.timeoutMs,
+            })
+            .then(result => ({ name: binding.name, ...result })),
+        ),
+      );
+
+      // Ensure the open app reflects the freshly hydrated cache (parquetUrl)
+      // once all builds settle, so the preview can load every table.
+      await get().fetchApp(workspaceId, appId);
+      get().bumpPreview(appId);
+
+      const failures = results.filter(r => r.status !== "ready");
+      return {
+        total: parquetBindings.length,
+        ready: results.length - failures.length,
+        failed: failures.length,
+        errors: failures.map(f => `${f.name}: ${f.error ?? f.status}`),
+      };
     },
 
     reset: () => set(() => ({ ...initialState })),

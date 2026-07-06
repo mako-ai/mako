@@ -275,7 +275,6 @@ class S3DashboardArtifactStore implements DashboardArtifactStore {
   private readonly secretAccessKey = process.env.S3_SECRET_ACCESS_KEY || "";
   private readonly sessionToken = process.env.S3_SESSION_TOKEN || "";
   private readonly forcePathStyle = process.env.S3_FORCE_PATH_STYLE === "true";
-  private readonly publicBaseUrl = process.env.S3_PUBLIC_BASE_URL || "";
 
   private requireBucket(): string {
     if (!this.bucket) {

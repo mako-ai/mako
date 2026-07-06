@@ -2,11 +2,30 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   lazy,
+  type CSSProperties,
 } from "react";
-import { Box, CircularProgress, styled } from "@mui/material";
+import {
+  Box,
+  CircularProgress,
+  styled,
+  Drawer,
+  BottomNavigation,
+  BottomNavigationAction,
+  Paper,
+  IconButton,
+  Typography,
+} from "@mui/material";
+import {
+  MessageCircleMore as AskTabIcon,
+  SquareTerminal as EditorTabIcon,
+  Table as ResultsTabIcon,
+  X as CloseDrawerIcon,
+} from "lucide-react";
 import {
   Routes,
   Route,
@@ -15,13 +34,23 @@ import {
   useNavigate,
   useLocation,
 } from "react-router-dom";
+import {
+  Panel,
+  PanelGroup,
+  PanelResizeHandle,
+  type ImperativePanelGroupHandle,
+} from "react-resizable-panels";
 import { trackPageView } from "./lib/analytics";
-import Sidebar from "./components/Sidebar";
+import { setIframeDragGuard } from "./lib/iframe-drag-guard";
+import Sidebar, {
+  SidebarUserMenu,
+  SidebarMobileExplorerNav,
+} from "./components/Sidebar";
+import { useIsMobile } from "./hooks/useIsMobile";
 import {
   CENTER_PANE_MIN_WIDTH_PX,
   DEFAULT_LEFT_PANE_WIDTH_PX,
   DEFAULT_RIGHT_PANE_WIDTH_PX,
-  SIDE_PANEL_COLLAPSE_THRESHOLD_PX,
   SIDE_PANEL_MAX_WIDTH_PX,
   SIDE_PANEL_MIN_WIDTH_PX,
   useUIStore,
@@ -29,6 +58,7 @@ import {
 import { useConsoleStore } from "./store/consoleStore";
 import { useExplorerRevealStore } from "./store/explorerRevealStore";
 import { tabRevealTarget } from "./lib/explorer-reveal";
+import { consoleLeafName } from "./lib/console-name";
 import Chat from "./components/Chat";
 import DatabaseExplorer, {
   type CollectionInfo,
@@ -36,6 +66,7 @@ import DatabaseExplorer, {
 import ConsoleExplorer from "./components/ConsoleExplorer";
 import DataSourceExplorer from "./components/ConnectorExplorer";
 import Editor from "./components/Editor";
+import DbtProjectDrawersHost from "./components/DbtProjectDrawersHost";
 import { FlowsExplorer } from "./components/FlowsExplorer";
 import SettingsExplorer from "./components/SettingsExplorer";
 const loadDashboardsExplorer = () => import("./components/DashboardsExplorer");
@@ -47,7 +78,7 @@ const loadDbtExplorer = () => import("./components/DbtExplorer");
 const DbtExplorer = lazy(loadDbtExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
-import { WorkspaceProvider } from "./contexts/workspace-context";
+import { WorkspaceProvider, useWorkspace } from "./contexts/workspace-context";
 import { OnboardingProvider } from "./contexts/onboarding-context";
 import type { DbFlowFormRef } from "./components/DbFlowForm";
 import { generateObjectId } from "./utils/objectId";
@@ -62,21 +93,33 @@ import { useAuth } from "./contexts/auth-context";
 import { OnboardingFlow } from "./components/OnboardingFlow";
 import { UpdateNotification } from "./components/UpdateNotification";
 
-// Draggable divider between a fixed-width side pane and the flexible center.
-// Resizing changes the side pane's pixel width directly (not a percentage),
-// so side panes stay a fixed width and only the center pane flexes.
-const ResizeDivider = styled("div")(({ theme }) => ({
+// Draggable divider between a side pane and the flexible center. A real
+// react-resizable-panels handle so it participates in the library's global
+// handle registry: where it crosses a perpendicular handle (the editor/results
+// split), hovering shows the four-arrow "move" cursor and dragging resizes
+// both panes at once.
+const SideResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
   flex: "0 0 4px",
   width: "4px",
   alignSelf: "stretch",
   background: theme.palette.divider,
-  cursor: "col-resize",
   touchAction: "none",
   transition: "background-color 0.2s ease",
-  "&:hover": {
+  // The library flags hover/drag via a data attribute (it extends beyond the
+  // 4px strip through hit-area margins), so key the highlight off that.
+  "&[data-resize-handle-state='hover'], &[data-resize-handle-state='drag']": {
     backgroundColor: theme.palette.primary.main,
   },
 }));
+
+// Collapse a divider entirely while its side pane is closed.
+const HIDDEN_HANDLE_STYLE: CSSProperties = {
+  flex: "0 0 0px",
+  width: 0,
+  minWidth: 0,
+  opacity: 0,
+  pointerEvents: "none",
+};
 
 // Component for the invite page route
 function InvitePage() {
@@ -94,6 +137,7 @@ function InvitePage() {
 }
 
 import { UrlSync } from "./components/UrlSync";
+import CommandPalette from "./components/CommandPalette";
 
 // Main application component (extracted from original App)
 
@@ -101,7 +145,49 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-type SidePane = "left" | "right";
+/**
+ * User identity + active workspace shown in the mobile explorer drawer header.
+ * Rendered inside `WorkspaceProvider` (unlike `MainApp`'s body), so it can read
+ * the current workspace via `useWorkspace()`.
+ */
+function MobileDrawerIdentity() {
+  const { user } = useAuth();
+  const { currentWorkspace } = useWorkspace();
+
+  return (
+    <Box sx={{ flex: 1, minWidth: 0 }}>
+      {user?.email && (
+        <Typography
+          variant="subtitle2"
+          sx={{
+            fontWeight: 600,
+            lineHeight: 1.2,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {user.email}
+        </Typography>
+      )}
+      {currentWorkspace?.name && (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{
+            display: "block",
+            lineHeight: 1.2,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {currentWorkspace.name}
+        </Typography>
+      )}
+    </Box>
+  );
+}
 
 function MainApp() {
   const activeView = useUIStore(state => state.leftPane);
@@ -109,26 +195,49 @@ function MainApp() {
   const activeTabId = useConsoleStore(state => state.activeTabId);
   const requestReveal = useExplorerRevealStore(state => state.requestReveal);
   const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
+  const openLeftPane = useUIStore(state => state.openLeftPane);
   const closeLeftPane = useUIStore(state => state.closeLeftPane);
+  const openRightPane = useUIStore(state => state.openRightPane);
   const closeRightPane = useUIStore(state => state.closeRightPane);
   const leftPaneWidthPx = useUIStore(state => state.leftPaneWidthPx);
   const rightPaneWidthPx = useUIStore(state => state.rightPaneWidthPx);
   const setPaneWidths = useUIStore(state => state.setPaneWidths);
 
+  // Mobile (< md) shell state. Desktop ignores these entirely.
+  const isMobile = useIsMobile();
+  const mobileTab = useUIStore(state => state.mobileTab);
+  const mobileDrawer = useUIStore(state => state.mobileDrawer);
+  const setMobileTab = useUIStore(state => state.setMobileTab);
+  const closeMobileDrawer = useUIStore(state => state.closeMobileDrawer);
+
+  // On mobile, selecting a tree node in the explorer Drawer opens/focuses a
+  // console tab. Surface the editor and close the drawer so the result of the
+  // tap is visible. Gated on the drawer being open so chat-driven tab opens
+  // (e.g. the agent creating a console) don't yank the user out of the Ask
+  // view mid-conversation.
+  useEffect(() => {
+    if (!isMobile) return;
+    if (!activeTabId) return;
+    if (useUIStore.getState().mobileDrawer !== "explorer") return;
+    setMobileTab("editor");
+    closeMobileDrawer();
+  }, [activeTabId, isMobile, setMobileTab, closeMobileDrawer]);
+
   const panelContainerRef = useRef<HTMLDivElement | null>(null);
-  const leftPaneElRef = useRef<HTMLDivElement | null>(null);
-  const rightPaneElRef = useRef<HTMLDivElement | null>(null);
+  const groupRef = useRef<ImperativePanelGroupHandle | null>(null);
 
   // Side panes have a FIXED pixel width. Only the center pane flexes to fill
   // the remaining space, so resizing the window never changes the side panes —
-  // it only grows/shrinks the center (Slack/Cursor behavior). The width is a
-  // local px value, seeded from (and persisted back to) the UI store.
-  const [leftWidth, setLeftWidth] = useState(() =>
+  // it only grows/shrinks the center (Slack/Cursor behavior). react-resizable-
+  // panels is percentage-based, so we keep the source of truth in px (refs +
+  // the UI store) and translate: px → % when (re)applying layout, % → px when
+  // the user drags a handle.
+  const leftWidthRef = useRef(
     leftPaneWidthPx && leftPaneWidthPx > 0
       ? clamp(leftPaneWidthPx, SIDE_PANEL_MIN_WIDTH_PX, SIDE_PANEL_MAX_WIDTH_PX)
       : DEFAULT_LEFT_PANE_WIDTH_PX,
   );
-  const [rightWidth, setRightWidth] = useState(() =>
+  const rightWidthRef = useRef(
     rightPaneWidthPx && rightPaneWidthPx > 0
       ? clamp(
           rightPaneWidthPx,
@@ -138,147 +247,141 @@ function MainApp() {
       : DEFAULT_RIGHT_PANE_WIDTH_PX,
   );
 
-  // Mirror widths into refs so the drag handler reads fresh values without
-  // being re-created on every width change.
-  const leftWidthRef = useRef(leftWidth);
-  const rightWidthRef = useRef(rightWidth);
-  leftWidthRef.current = leftWidth;
-  rightWidthRef.current = rightWidth;
-
-  // Keep local widths in sync if the persisted store value changes elsewhere.
-  useEffect(() => {
-    if (leftPaneWidthPx && leftPaneWidthPx > 0) {
-      setLeftWidth(
-        clamp(
-          leftPaneWidthPx,
-          SIDE_PANEL_MIN_WIDTH_PX,
-          SIDE_PANEL_MAX_WIDTH_PX,
-        ),
-      );
-    }
-  }, [leftPaneWidthPx]);
-  useEffect(() => {
-    if (rightPaneWidthPx && rightPaneWidthPx > 0) {
-      setRightWidth(
-        clamp(
-          rightPaneWidthPx,
-          SIDE_PANEL_MIN_WIDTH_PX,
-          SIDE_PANEL_MAX_WIDTH_PX,
-        ),
-      );
-    }
-  }, [rightPaneWidthPx]);
-
-  // Begin a manual drag-resize of a side pane. The new width is applied
-  // imperatively to the pane element during the drag (so heavy children like
-  // the editor/chat don't re-render on every pointer move), then committed to
-  // React state + the store on release.
-  const beginResize = useCallback(
-    (side: SidePane, e: React.PointerEvent<HTMLDivElement>) => {
-      e.preventDefault();
-
-      // Capture the pointer so move/up events keep flowing to the divider even
-      // when the cursor crosses an iframe (e.g. the app preview), which would
-      // otherwise swallow them and freeze the drag.
-      const divider = e.currentTarget;
-      try {
-        divider.setPointerCapture(e.pointerId);
-      } catch {
-        // Pointer may already be gone (e.g. released between events).
-      }
-
-      // Belt-and-suspenders for browsers with flaky pointer capture across
-      // (cross-origin) iframes: make iframes transparent to pointer events
-      // for the duration of the drag.
-      const iframes = Array.from(document.querySelectorAll("iframe"));
-      const savedPointerEvents = iframes.map(f => f.style.pointerEvents);
-      iframes.forEach(f => {
-        f.style.pointerEvents = "none";
-      });
-      const restoreIframes = () => {
-        iframes.forEach((f, i) => {
-          f.style.pointerEvents = savedPointerEvents[i];
-        });
-      };
-
-      const container = panelContainerRef.current;
-      const containerWidth = container
-        ? container.clientWidth
-        : window.innerWidth;
-      const startX = e.clientX;
-      const startWidth =
-        side === "left" ? leftWidthRef.current : rightWidthRef.current;
-      const otherWidth =
-        side === "left"
-          ? rightPaneOpen
-            ? rightWidthRef.current
-            : 0
-          : leftPaneOpen
-            ? leftWidthRef.current
-            : 0;
-
-      // Cap so the center pane keeps a usable minimum width.
-      const maxWidth = Math.max(
-        SIDE_PANEL_MIN_WIDTH_PX,
-        Math.min(
-          SIDE_PANEL_MAX_WIDTH_PX,
-          containerWidth - otherWidth - CENTER_PANE_MIN_WIDTH_PX - 8,
-        ),
-      );
-
-      const el =
-        side === "left" ? leftPaneElRef.current : rightPaneElRef.current;
-      let finalWidth = startWidth;
-      let shouldCollapse = false;
-
-      const onMove = (ev: PointerEvent) => {
-        const delta = ev.clientX - startX;
-        const raw = side === "left" ? startWidth + delta : startWidth - delta;
-        shouldCollapse = raw < SIDE_PANEL_COLLAPSE_THRESHOLD_PX;
-        if (shouldCollapse) {
-          finalWidth = 0;
-          if (el) el.style.width = "0px";
-          return;
-        }
-
-        finalWidth = clamp(raw, SIDE_PANEL_MIN_WIDTH_PX, maxWidth);
-        if (el) el.style.width = `${finalWidth}px`;
-      };
-
-      const onUp = () => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
-        window.removeEventListener("pointercancel", onUp);
-        restoreIframes();
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-
-        if (shouldCollapse) {
-          if (side === "left") {
-            closeLeftPane();
-          } else {
-            closeRightPane();
-          }
-          return;
-        }
-
-        if (side === "left") {
-          setLeftWidth(finalWidth);
-          setPaneWidths({ leftPaneWidthPx: finalWidth });
-        } else {
-          setRightWidth(finalWidth);
-          setPaneWidths({ rightPaneWidthPx: finalWidth });
-        }
-      };
-
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
-      window.addEventListener("pointercancel", onUp);
-    },
-    [closeLeftPane, closeRightPane, leftPaneOpen, rightPaneOpen, setPaneWidths],
+  // Container width drives all px↔% conversions. Seeded with an estimate so
+  // the first paint is close; the ResizeObserver below corrects it.
+  const [containerWidth, setContainerWidth] = useState(() =>
+    typeof window === "undefined" ? 1200 : Math.max(window.innerWidth - 52, 1),
   );
+  const containerWidthRef = useRef(containerWidth);
+  containerWidthRef.current = containerWidth;
+
+  const openFlagsRef = useRef({ left: leftPaneOpen, right: rightPaneOpen });
+  openFlagsRef.current = { left: leftPaneOpen, right: rightPaneOpen };
+
+  // Compute the full [left, center, right] percentage layout from the px
+  // widths, honoring closed (collapsed to 0) panes.
+  const computeLayoutPct = useCallback((width: number): number[] => {
+    const { left, right } = openFlagsRef.current;
+    const leftPct = left ? (leftWidthRef.current / width) * 100 : 0;
+    const rightPct = right ? (rightWidthRef.current / width) * 100 : 0;
+    return [leftPct, Math.max(100 - leftPct - rightPct, 0), rightPct];
+  }, []);
+
+  // Keep side panes at their fixed px width when the container resizes: the
+  // library would otherwise scale all panels proportionally. A callback ref
+  // (rather than a mount effect) attaches the observer, because AuthWrapper
+  // gates the children — the container div doesn't exist on first commit.
+  const containerObserverRef = useRef<ResizeObserver | null>(null);
+  const attachPanelContainer = useCallback((el: HTMLDivElement | null) => {
+    panelContainerRef.current = el;
+    containerObserverRef.current?.disconnect();
+    containerObserverRef.current = null;
+    if (!el) return;
+    const observer = new ResizeObserver(entries => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      if (width > 0) setContainerWidth(width);
+    });
+    observer.observe(el);
+    containerObserverRef.current = observer;
+  }, []);
+  // Re-apply the px-derived layout after the width state commits, so the
+  // min/max percentage constraints derived from it are already up to date.
+  useLayoutEffect(() => {
+    if (containerWidth <= 0) return;
+    groupRef.current?.setLayout(computeLayoutPct(containerWidth));
+  }, [containerWidth, computeLayoutPct]);
+
+  // Persist px widths (debounced) as the user drags a handle.
+  const persistTimeoutRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (persistTimeoutRef.current) {
+        window.clearTimeout(persistTimeoutRef.current);
+      }
+    };
+  }, []);
+  const handleGroupLayout = useCallback(
+    (sizes: number[]) => {
+      const width = containerWidthRef.current;
+      if (width <= 0 || sizes.length !== 3) return;
+      const [leftPct, , rightPct] = sizes;
+      if (leftPct > 0) leftWidthRef.current = (leftPct * width) / 100;
+      if (rightPct > 0) rightWidthRef.current = (rightPct * width) / 100;
+
+      if (persistTimeoutRef.current) {
+        window.clearTimeout(persistTimeoutRef.current);
+      }
+      persistTimeoutRef.current = window.setTimeout(() => {
+        const updates: {
+          leftPaneWidthPx?: number;
+          rightPaneWidthPx?: number;
+        } = {};
+        if (leftPct > 0) updates.leftPaneWidthPx = leftWidthRef.current;
+        if (rightPct > 0) updates.rightPaneWidthPx = rightWidthRef.current;
+        if (Object.keys(updates).length > 0) {
+          setPaneWidths(updates);
+        }
+      }, 200);
+    },
+    [setPaneWidths],
+  );
+
+  // Re-apply the layout when the open flags change elsewhere (sidebar
+  // toggles, chat close button, ...): computeLayoutPct collapses closed panes
+  // to 0 and restores open ones to their remembered px width. Dragging a pane
+  // below the collapse threshold collapses it via the library, which flips
+  // the flag through onCollapse and keeps both in sync.
+  useEffect(() => {
+    groupRef.current?.setLayout(
+      computeLayoutPct(Math.max(containerWidthRef.current, 1)),
+    );
+  }, [leftPaneOpen, rightPaneOpen, computeLayoutPct]);
+
+  // While dragging, make iframes (e.g. the app preview) transparent to
+  // pointer events so they don't swallow the drag mid-flight. Also snapshot
+  // the pane widths so a drag-to-collapse can restore the pre-drag width
+  // (dragging past the minimum would otherwise leave the remembered width at
+  // the minimum, and the pane would reopen tiny).
+  const dragSnapshotRef = useRef<{ left: number; right: number } | null>(null);
+  const snapshotClearTimeoutRef = useRef<number | null>(null);
+  const handleDividerDragging = useCallback((isDragging: boolean) => {
+    setIframeDragGuard(isDragging);
+    if (snapshotClearTimeoutRef.current) {
+      window.clearTimeout(snapshotClearTimeoutRef.current);
+      snapshotClearTimeoutRef.current = null;
+    }
+    if (isDragging) {
+      dragSnapshotRef.current = {
+        left: leftWidthRef.current,
+        right: rightWidthRef.current,
+      };
+    } else {
+      // Clear on the next macrotask: the panel onCollapse callback fires from
+      // a React effect that may commit *after* the pointerup, and it needs
+      // the snapshot to restore the pre-drag width.
+      snapshotClearTimeoutRef.current = window.setTimeout(() => {
+        dragSnapshotRef.current = null;
+        snapshotClearTimeoutRef.current = null;
+      }, 0);
+    }
+  }, []);
+
+  const handleLeftCollapse = useCallback(() => {
+    const snapshot = dragSnapshotRef.current;
+    if (snapshot) leftWidthRef.current = snapshot.left;
+    closeLeftPane();
+  }, [closeLeftPane]);
+  const handleRightCollapse = useCallback(() => {
+    const snapshot = dragSnapshotRef.current;
+    if (snapshot) rightWidthRef.current = snapshot.right;
+    closeRightPane();
+  }, [closeRightPane]);
+
+  // px-based panel constraints expressed as percentages of the container.
+  const sideMinPct = (SIDE_PANEL_MIN_WIDTH_PX / containerWidth) * 100;
+  const sideMaxPct = (SIDE_PANEL_MAX_WIDTH_PX / containerWidth) * 100;
+  const centerMinPct = (CENTER_PANE_MIN_WIDTH_PX / containerWidth) * 100;
+  const defaultLayout = computeLayoutPct(containerWidth);
 
   // Ref for DbFlowForm - allows AI agent to manipulate form state
   const dbFlowFormRef = useRef<DbFlowFormRef | null>(null);
@@ -410,7 +513,9 @@ function MainApp() {
       databaseName?: string,
     ) => {
       openOrFocusConsoleTab(
-        path,
+        // Title is the LEAF name (canonical display name); the full path is
+        // kept as filePath for the breadcrumb folder trail + deep link.
+        consoleLeafName(path),
         content,
         connectionId,
         path,
@@ -438,8 +543,10 @@ function MainApp() {
     }
   }, [activeTabId, requestReveal]);
 
-  // Left pane content renderer
-  const renderLeftPane = () => {
+  // Left pane content. Memoized (like the editor/chat elements below) so
+  // PanelGroup re-renders during a divider drag reuse the same element and
+  // React bails out of re-rendering the heavy explorer subtree.
+  const leftPaneContent = useMemo(() => {
     switch (activeView) {
       case "databases":
         return (
@@ -462,7 +569,31 @@ function MainApp() {
       default:
         return null;
     }
-  };
+  }, [activeView, handleDatabaseCollectionClick, handleConsoleSelect]);
+
+  // Stable elements for the heavy center/right panes. All props are refs, so
+  // these never need to be re-created; identical element references let React
+  // skip re-rendering Editor/Chat on every layout change while dragging.
+  const editorElement = useMemo(
+    () => (
+      <Editor
+        dbFlowFormRef={dbFlowFormRef}
+        onChartSpecChangeRef={onChartSpecChangeRef}
+        resultsContextRef={resultsContextRef}
+      />
+    ),
+    [],
+  );
+  const chatElement = useMemo(
+    () => (
+      <Chat
+        dbFlowFormRef={dbFlowFormRef}
+        onChartSpecChangeRef={onChartSpecChangeRef}
+        resultsContextRef={resultsContextRef}
+      />
+    ),
+    [],
+  );
 
   useEffect(() => {
     const win = window as Window & {
@@ -496,45 +627,96 @@ function MainApp() {
     };
   }, []);
 
-  return (
-    <AuthWrapper>
-      <UrlSync />
-      <Box
-        data-mako-app-shell="true"
-        sx={{
-          display: "flex",
-          height: "100vh",
-          width: "100vw",
-          maxWidth: "100vw",
-          overflow: "hidden",
-        }}
-      >
-        {/* Sidebar Navigation */}
-        <Sidebar />
+  // ── Mobile shell (< md) ───────────────────────────────────────────────
+  // A chat-first, single-pane experience: one full-screen pane at a time
+  // (Ask / Editor / Results) switched by the BottomNavigation, plus an
+  // explorer Drawer. Chat and Editor stay mounted (visibility toggled) so
+  // their state survives tab switches, mirroring the desktop dual-pane mount.
+  if (isMobile) {
+    const drawerOpen = mobileDrawer === "explorer";
+    // Bottom nav only drives the content panes now; the explorer Drawer is
+    // opened from the hamburger in each pane header (top-left).
+    const bottomValue = mobileTab;
 
+    return (
+      <AuthWrapper>
+        <UrlSync />
+        <CommandPalette />
         <Box
-          ref={panelContainerRef}
+          data-mako-app-shell="true"
+          data-mako-mobile="true"
           sx={{
-            height: "100%",
-            flex: 1,
-            minWidth: 0,
             display: "flex",
-            flexDirection: "row",
+            flexDirection: "column",
+            height: "100dvh",
+            width: "100vw",
+            maxWidth: "100vw",
+            overflow: "hidden",
+            // No top app bar on mobile — navigation lives in the bottom nav and
+            // the explorer Drawer (which carries the user/workspace menu). Keep
+            // content clear of the status bar / notch on standalone installs.
+            pt: "env(safe-area-inset-top)",
           }}
         >
-          {/* Left side pane — fixed pixel width, resizable by hand */}
-          {leftPaneOpen && (
-            <>
-              <Box
-                ref={leftPaneElRef}
-                style={{ width: leftWidth }}
-                sx={{
-                  flex: "0 0 auto",
-                  flexShrink: 0,
-                  height: "100%",
-                  overflow: "hidden",
-                }}
-              >
+          {/* Content — one pane at a time, both kept mounted for state */}
+          <Box sx={{ flex: 1, minHeight: 0, position: "relative" }}>
+            <Box
+              sx={{
+                position: "absolute",
+                inset: 0,
+                display: mobileTab === "ask" ? "block" : "none",
+              }}
+            >
+              {chatElement}
+            </Box>
+            <Box
+              sx={{
+                position: "absolute",
+                inset: 0,
+                display:
+                  mobileTab === "editor" || mobileTab === "results"
+                    ? "block"
+                    : "none",
+              }}
+            >
+              {editorElement}
+            </Box>
+          </Box>
+
+          {/* Explorer drawer — reuses the same explorer panels as desktop */}
+          <Drawer
+            anchor="left"
+            open={drawerOpen}
+            onClose={closeMobileDrawer}
+            ModalProps={{ keepMounted: true }}
+            PaperProps={{ sx: { width: "85vw", maxWidth: 340 } }}
+          >
+            <Box
+              sx={{ height: "100%", display: "flex", flexDirection: "column" }}
+            >
+              <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                    px: 1,
+                    pt: 1,
+                  }}
+                >
+                  <SidebarUserMenu tooltipPlacement="bottom" />
+                  <MobileDrawerIdentity />
+                  <IconButton
+                    size="small"
+                    aria-label="Close explorer"
+                    onClick={closeMobileDrawer}
+                  >
+                    <CloseDrawerIcon size={20} />
+                  </IconButton>
+                </Box>
+                <SidebarMobileExplorerNav />
+              </Box>
+              <Box sx={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
                 <Suspense
                   fallback={
                     <Box
@@ -549,51 +731,159 @@ function MainApp() {
                     </Box>
                   }
                 >
-                  {renderLeftPane()}
+                  {leftPaneContent}
                 </Suspense>
               </Box>
-              <ResizeDivider onPointerDown={e => beginResize("left", e)} />
-            </>
-          )}
+            </Box>
+          </Drawer>
 
-          {/* Center (main content) — flexes to fill remaining space */}
-          <Box
-            data-mako-main-content="true"
-            sx={{ flex: "1 1 0", minWidth: 0, height: "100%" }}
+          {/* Bottom navigation — Ask / Editor / Results.
+              Explore lives in the top-left hamburger of each pane header. */}
+          <Paper
+            square
+            elevation={3}
+            sx={{
+              borderTop: 1,
+              borderColor: "divider",
+              pb: "env(safe-area-inset-bottom)",
+            }}
           >
-            <Editor
-              dbFlowFormRef={dbFlowFormRef}
-              onChartSpecChangeRef={onChartSpecChangeRef}
-              resultsContextRef={resultsContextRef}
-            />
-          </Box>
+            <BottomNavigation
+              showLabels
+              value={bottomValue}
+              onChange={(_event, value) =>
+                setMobileTab(value as "ask" | "editor" | "results")
+              }
+            >
+              <BottomNavigationAction
+                label="Ask"
+                value="ask"
+                icon={<AskTabIcon size={22} strokeWidth={1.5} />}
+              />
+              <BottomNavigationAction
+                label="Editor"
+                value="editor"
+                icon={<EditorTabIcon size={22} strokeWidth={1.5} />}
+              />
+              <BottomNavigationAction
+                label="Results"
+                value="results"
+                icon={<ResultsTabIcon size={22} strokeWidth={1.5} />}
+              />
+            </BottomNavigation>
+          </Paper>
+        </Box>
+        <DbtProjectDrawersHost />
+      </AuthWrapper>
+    );
+  }
 
-          {/* Right side pane (chat) — fixed pixel width, resizable by hand */}
-          {rightPaneOpen && (
-            <>
-              <ResizeDivider onPointerDown={e => beginResize("right", e)} />
+  return (
+    <AuthWrapper>
+      <UrlSync />
+      <CommandPalette />
+      <Box
+        data-mako-app-shell="true"
+        sx={{
+          display: "flex",
+          height: "100vh",
+          width: "100vw",
+          maxWidth: "100vw",
+          overflow: "hidden",
+        }}
+      >
+        {/* Sidebar Navigation */}
+        <Sidebar />
+
+        <Box
+          ref={attachPanelContainer}
+          sx={{ height: "100%", flex: 1, minWidth: 0 }}
+        >
+          <PanelGroup
+            ref={groupRef}
+            direction="horizontal"
+            style={{ height: "100%", width: "100%" }}
+            onLayout={handleGroupLayout}
+          >
+            {/* Left side pane — fixed pixel width, resizable by hand */}
+            <Panel
+              id="left-pane"
+              order={1}
+              collapsible
+              collapsedSize={0}
+              defaultSize={leftPaneOpen ? defaultLayout[0] : 0}
+              minSize={sideMinPct}
+              maxSize={sideMaxPct}
+              onCollapse={handleLeftCollapse}
+              onExpand={openLeftPane}
+            >
+              <Box sx={{ height: "100%", overflow: "hidden" }}>
+                <Suspense
+                  fallback={
+                    <Box
+                      sx={{
+                        height: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      <CircularProgress size={20} />
+                    </Box>
+                  }
+                >
+                  {leftPaneContent}
+                </Suspense>
+              </Box>
+            </Panel>
+
+            <SideResizeHandle
+              onDragging={handleDividerDragging}
+              style={leftPaneOpen ? undefined : HIDDEN_HANDLE_STYLE}
+            />
+
+            {/* Center (main content) — flexes to fill remaining space */}
+            <Panel id="center-pane" order={2} minSize={centerMinPct}>
               <Box
-                ref={rightPaneElRef}
-                style={{ width: rightWidth }}
+                data-mako-main-content="true"
+                sx={{ height: "100%", minWidth: 0 }}
+              >
+                {editorElement}
+              </Box>
+            </Panel>
+
+            <SideResizeHandle
+              onDragging={handleDividerDragging}
+              style={rightPaneOpen ? undefined : HIDDEN_HANDLE_STYLE}
+            />
+
+            {/* Right side pane (chat) — fixed pixel width, resizable by hand */}
+            <Panel
+              id="right-pane"
+              order={3}
+              collapsible
+              collapsedSize={0}
+              defaultSize={rightPaneOpen ? defaultLayout[2] : 0}
+              minSize={sideMinPct}
+              maxSize={sideMaxPct}
+              onCollapse={handleRightCollapse}
+              onExpand={openRightPane}
+            >
+              <Box
                 sx={{
-                  flex: "0 0 auto",
-                  flexShrink: 0,
                   height: "100%",
                   overflow: "hidden",
                   borderLeft: "1px solid",
                   borderColor: "divider",
                 }}
               >
-                <Chat
-                  dbFlowFormRef={dbFlowFormRef}
-                  onChartSpecChangeRef={onChartSpecChangeRef}
-                  resultsContextRef={resultsContextRef}
-                />
+                {chatElement}
               </Box>
-            </>
-          )}
+            </Panel>
+          </PanelGroup>
         </Box>
       </Box>
+      <DbtProjectDrawersHost />
     </AuthWrapper>
   );
 }

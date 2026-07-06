@@ -16,6 +16,8 @@ module.exports = {
     'dist',
     '.eslintrc.cjs',
     'drizzle.config.ts',
+    'vitest.config.ts',
+    'vitest.destinations.config.ts',
     'node_modules',
     'scripts',
   ],

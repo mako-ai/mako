@@ -176,7 +176,15 @@ function escapeDuckDBValue(
       // escape so connector payloads with inlined binary (e.g. Close emails
       // with embedded PNG bytes) don't kill the whole batch.
       const raw =
-        typeof value === "object" ? JSON.stringify(value) : String(value);
+        typeof value === "object" && value !== null
+          ? // MongoDB/BSON scalars (ObjectId, Decimal128, Long, Binary, ...)
+            // stringify to their canonical form via toString(); nested
+            // documents/arrays fall back to JSON. Matches arrow-serializer.
+            "_bsontype" in (value as Record<string, unknown>) &&
+            typeof (value as { toString?: unknown }).toString === "function"
+            ? String(value)
+            : JSON.stringify(value)
+          : String(value);
       // eslint-disable-next-line no-control-regex
       const stripped = raw.replace(/\u0000/g, "");
       return `'${stripped.replace(/'/g, "''")}'`;

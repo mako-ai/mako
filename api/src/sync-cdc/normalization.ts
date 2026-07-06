@@ -23,6 +23,23 @@ export function normalizePayloadKeys(
   return normalized;
 }
 
+/**
+ * Stamp `_syncedAt` with the destination write time.
+ *
+ * `_syncedAt` must reflect the last time a row was materialized into the
+ * destination — it is refreshed on every insert AND update, never frozen at
+ * webhook-ingest / source-fetch time. The value carried in the source payload
+ * (set upstream when the event was first received) is always overridden so a
+ * row that is updated again later gets a fresh `_syncedAt`. Returns a new
+ * object; never mutates `row`.
+ */
+export function withSyncedAt<T extends Record<string, unknown>>(
+  row: T,
+  now: Date = new Date(),
+): T & { _syncedAt: Date } {
+  return { ...row, _syncedAt: now };
+}
+
 export function resolveSourceTimestamp(
   payload?: Record<string, unknown>,
   fallback?: Date,
@@ -31,6 +48,7 @@ export function resolveSourceTimestamp(
     payload?.date_updated,
     payload?.updated_at,
     payload?.updatedAt,
+    payload?.date_modified,
     payload?.date_created,
     payload?.created_at,
     payload?.createdAt,

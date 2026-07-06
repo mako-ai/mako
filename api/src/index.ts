@@ -27,6 +27,7 @@ import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
 import { sshTunnelManager } from "./services/ssh-tunnel.service";
 import { loggers, loggingMiddleware } from "./logging";
+import { checkPubSubBackendHealth } from "./services/pubsub.service";
 import { warmPricingCache } from "./services/gateway-pricing.service";
 import { warmCatalog } from "./services/model-catalog.service";
 import { discoverSystemSkills } from "./agent-lib/skills/system-skills";
@@ -325,6 +326,16 @@ async function main(): Promise<void> {
         "Generate a key at: Vercel Dashboard > AI Gateway settings.",
     );
   }
+
+  // Redis pub/sub health (resumable chat streams + workspace realtime).
+  // Logs an ERROR when REDIS_URL is set but the backend is unusable
+  // (connectivity, auth, or provider quota) so the degradation is visible
+  // from boot instead of hiding behind per-turn warnings.
+  checkPubSubBackendHealth().catch(err => {
+    logger.warn("Pub/sub health check failed to run", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
 
   warmPricingCache().catch(err => {
     logger.warn("Startup pricing cache warm failed", {

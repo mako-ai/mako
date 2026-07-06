@@ -209,6 +209,21 @@ export async function executeAppAgentTool(
       };
     }
 
+    case "app_delete_data_binding": {
+      if (!appId) return fail("appId is required");
+      const appEntity = await ensureApp(appId);
+      if (!appEntity) return fail("App not found");
+      const name = input.name as string;
+      const binding = appEntity.dataBindings.find(b => b.name === name);
+      if (!binding) return fail(`No data binding named "${name}"`);
+      store.removeDataBinding(appId, binding.id);
+      await persist();
+      const remaining = (
+        useAppStore.getState().openApps[appId]?.dataBindings ?? []
+      ).map(b => b.name);
+      return { success: true, deleted: name, remaining };
+    }
+
     case "materialize_binding": {
       if (!appId || !workspaceId) {
         return fail("appId and workspace are required");
@@ -261,6 +276,45 @@ export async function executeAppAgentTool(
       return {
         success: true,
         errors: errors.map(e => ({ message: e.message, source: e.source })),
+      };
+    }
+
+    case "app_set_preview_environment": {
+      if (!appId) return fail("appId is required");
+      if (!workspaceId) return fail("No active workspace");
+      const appEntity = await ensureApp(appId);
+      if (!appEntity) return fail("App not found");
+      const environment = (input.environment ?? null) as string | null;
+      const dbtProjectId = appEntity.dataBindings.find(
+        b => b.dbtProjectId,
+      )?.dbtProjectId;
+      if (!dbtProjectId) {
+        return fail(
+          "This app has no dbt-linked data bindings. Link a binding to a " +
+            "dbt project (dbtProjectId + the {{ dbt_schema }} token) first.",
+        );
+      }
+      if (environment) {
+        const info = await store.fetchDbtEnvInfo(workspaceId, dbtProjectId);
+        if (!info) return fail("Failed to load the linked dbt project");
+        if (!info.environments.some(env => env.name === environment)) {
+          return fail(
+            `Environment "${environment}" not found on the linked dbt ` +
+              `project. Available: ${info.environments
+                .map(env => env.name)
+                .join(", ")}`,
+          );
+        }
+      }
+      store.setPreviewDbtEnvironment(appId, environment);
+      return {
+        success: true,
+        appId,
+        environment,
+        hint: environment
+          ? `Draft preview now reads dbt environment "${environment}". This ` +
+            "is your view only — published/shared viewers still read prod."
+          : "Draft preview reset to the default (prod) dbt environment.",
       };
     }
 

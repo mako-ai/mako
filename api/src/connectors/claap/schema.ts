@@ -41,6 +41,10 @@ export const RECORDING_SCHEMA: Record<string, ConnectorFieldSchema> = {
   companies: j(),
   crmInfo: j(),
   deal: j(),
+  // Claap is migrating AI output from the nested `insightTemplates` shape to a
+  // flatter `aiFields` array. `insightTemplates` is retained so historical rows
+  // remain queryable, but it is no longer populated by the API as of 2026-06-26.
+  aiFields: j(),
   insightTemplates: j(),
   keyTakeaways: j(),
   outlines: j(),

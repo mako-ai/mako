@@ -5,16 +5,9 @@ import {
   Flow,
   WebhookEvent,
   Connector as DataSource,
-  DatabaseConnection,
 } from "../database/workspace-schema";
-import { enqueueWebhookProcess } from "../inngest/webhook-process-enqueue";
 import { v4 as uuidv4 } from "uuid";
 import { connectorRegistry } from "../connectors/registry";
-import {
-  isEntityEnabledForFlow,
-  resolveConfiguredEntities,
-} from "../sync-cdc/entity-selection";
-import { hasCdcDestinationAdapter } from "../sync-cdc/adapters/registry";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { enrichContextWithWorkspace, loggers } from "../logging";
@@ -35,17 +28,6 @@ const WebhookParam = z.object({
     .openapi({ param: { name: "workspaceId", in: "path" } }),
   flowId: z.string().openapi({ param: { name: "flowId", in: "path" } }),
 });
-
-function isCdcFlow(
-  flow: { syncEngine?: string; tableDestination?: { connectionId?: unknown } },
-  destinationType?: string,
-): boolean {
-  return (
-    flow.syncEngine === "cdc" &&
-    Boolean(flow.tableDestination?.connectionId) &&
-    hasCdcDestinationAdapter(destinationType)
-  );
-}
 
 async function requireWebhookTestAccess(
   c: Context<AuthEnv>,
@@ -79,13 +61,11 @@ async function requireWebhookTestAccess(
  * Webhook endpoint handler
  * URL structure: /api/webhooks/:workspaceId/:flowId
  *
- * CDC flows: saves WebhookEvent as "pending" and returns 200 immediately.
- * The 2-min cron (cdcMaterializeSchedulerFunction) ingests pending events
- * into CdcChangeEvents and triggers materialization — no per-webhook Inngest
- * events are emitted.
- *
- * Non-CDC (legacy SQL) flows: saves WebhookEvent and enqueues via Inngest
- * for immediate processing (unchanged).
+ * Saves the inbound event as a "pending" WebhookEvent and returns 200
+ * immediately. The CDC scheduler cron (cdcMaterializeSchedulerFunction)
+ * ingests pending events into CdcChangeEvents and triggers materialization —
+ * no per-webhook Inngest events are emitted. The legacy real-time webhook
+ * processing pipeline (webhook/event.process) has been decommissioned.
  */
 router.openapi(
   createRoute({
@@ -107,6 +87,7 @@ router.openapi(
     const rawBodyBuffer = Buffer.from(await c.req.arrayBuffer());
     const rawBodyText = rawBodyBuffer.toString("utf8");
     const headers = c.req.header();
+    const query = c.req.query();
 
     try {
       const flow = await Flow.findOne({
@@ -145,6 +126,7 @@ router.openapi(
           payload: rawBodyText,
           headers: headers,
           secret: flow.webhookConfig.secret,
+          query,
         });
 
         if (!verificationResult.valid) {
@@ -170,7 +152,12 @@ router.openapi(
       const webhookEvent = new WebhookEvent({
         flowId,
         workspaceId,
-        eventId: event.id || uuidv4(),
+        // Close (and some other vendors) nest the unique event id at
+        // `event.event.id`; the top-level `event.id` is the OBJECT id, which is
+        // stable across updates. Falling back to it would defeat the
+        // (flowId,eventId) unique index for vendor retries. Prefer the nested
+        // event id, then top-level, then a random id as a last resort.
+        eventId: event.id || event.event?.id || uuidv4(),
         eventType:
           event.type ||
           event.event_type ||
@@ -195,128 +182,13 @@ router.openapi(
         },
       );
 
-      // CDC flows: save and return. The 2-min cron handles ingest + materialization.
-      const destConn = flow.destinationDatabaseId
-        ? await DatabaseConnection.findById(flow.destinationDatabaseId)
-            .select("type")
-            .lean()
-        : null;
-
-      if (isCdcFlow(flow, destConn?.type)) {
-        logger.info("Webhook saved for CDC cron ingest", {
-          eventId: webhookEvent.eventId,
-          flowId,
-        });
-        return c.json({ received: true, eventId: webhookEvent.eventId }, 200);
-      }
-
-      // Non-CDC flows: early entity filter + enqueue via Inngest (existing path).
-      // A single webhook can fan out into multiple entities (e.g. Calendly
-      // invitee.created -> invitees + scheduled_events), so only drop when NONE
-      // of the emitted entities are enabled for this flow.
-      const mapping = connector.getWebhookEventMapping(webhookEvent.eventType);
-      if (mapping) {
-        const { entities: configuredEntities } =
-          resolveConfiguredEntities(flow);
-        const emittedEntities = (
-          connector.extractWebhookCdcRecords(event, webhookEvent.eventType) ?? []
-        ).map(record => {
-          const payload = (record.payload || {}) as Record<string, unknown>;
-          if (record.entity === "activities" && payload._type) {
-            return `activities:${payload._type}`;
-          }
-          return record.entity;
-        });
-        // Fall back to the mapped entity for connectors that don't emit CDC records.
-        if (emittedEntities.length === 0) {
-          emittedEntities.push(mapping.entity);
-        }
-
-        const anyEnabled = emittedEntities.some(entity => {
-          const baseEntity = entity.split(":")[0];
-          const hasSubTypes = configuredEntities.some(e =>
-            e.startsWith(baseEntity + ":"),
-          );
-          return (
-            hasSubTypes || isEntityEnabledForFlow(flow, entity, baseEntity)
-          );
-        });
-
-        if (!anyEnabled) {
-          await WebhookEvent.updateOne(
-            { _id: webhookEvent._id },
-            {
-              $set: {
-                status: "completed",
-                applyStatus: "dropped",
-                entity: emittedEntities[0],
-                applyError: {
-                  code: "ENTITY_DISABLED",
-                  message: `No enabled entity (${emittedEntities.join(", ")}) for this event in flow configuration`,
-                },
-                processedAt: new Date(),
-                processingDurationMs:
-                  Date.now() - webhookEvent.receivedAt.getTime(),
-              },
-              $unset: { appliedAt: "" },
-            },
-          );
-          return c.json(
-            { received: true, eventId: webhookEvent.eventId, dropped: true },
-            200,
-          );
-        }
-      }
-
-      try {
-        await enqueueWebhookProcess({
-          flowId,
-          workspaceId,
-          eventId: webhookEvent.eventId,
-          flow: {
-            syncEngine: flow.syncEngine,
-            destinationDatabaseId: flow.destinationDatabaseId,
-            tableDestination: flow.tableDestination,
-          },
-          destinationTypeHint: destConn?.type,
-        });
-      } catch (enqueueError) {
-        await WebhookEvent.updateOne(
-          { _id: webhookEvent._id },
-          {
-            $set: {
-              status: "failed",
-              applyStatus: "failed",
-              processedAt: new Date(),
-              applyError: {
-                code: "ENQUEUE_FAILED",
-                message:
-                  enqueueError instanceof Error
-                    ? enqueueError.message
-                    : String(enqueueError),
-              },
-              error: {
-                message:
-                  enqueueError instanceof Error
-                    ? enqueueError.message
-                    : String(enqueueError),
-              },
-            },
-          },
-        );
-
-        logger.error("Failed to enqueue webhook event for processing", {
-          flowId,
-          eventId: webhookEvent.eventId,
-          error:
-            enqueueError instanceof Error
-              ? enqueueError.message
-              : String(enqueueError),
-        });
-
-        return c.json({ received: false, eventId: webhookEvent.eventId }, 200);
-      }
-
+      // Save and return. The CDC scheduler cron ingests pending events into
+      // CdcChangeEvents and triggers materialization (entity filtering happens
+      // at ingest time). No per-webhook Inngest event is emitted.
+      logger.info("Webhook saved for CDC cron ingest", {
+        eventId: webhookEvent.eventId,
+        flowId,
+      });
       return c.json({ received: true, eventId: webhookEvent.eventId }, 200);
     } catch (error) {
       logger.error("Webhook handler error", { error });
@@ -392,37 +264,10 @@ router.openapi(
 
       await webhookEvent.save();
 
-      const destConn = flow.destinationDatabaseId
-        ? await DatabaseConnection.findById(flow.destinationDatabaseId)
-            .select("type")
-            .lean()
-        : null;
-
-      if (isCdcFlow(flow, destConn?.type)) {
-        return c.json({
-          success: true,
-          message:
-            "Test webhook saved — will be ingested on next cron cycle (<=2 min)",
-          eventId: testEvent.id,
-        });
-      }
-
-      await enqueueWebhookProcess({
-        flowId,
-        workspaceId,
-        eventId: webhookEvent.eventId,
-        isTest: true,
-        flow: {
-          syncEngine: flow.syncEngine,
-          destinationDatabaseId: flow.destinationDatabaseId,
-          tableDestination: flow.tableDestination,
-        },
-        destinationTypeHint: destConn?.type,
-      });
-
       return c.json({
         success: true,
-        message: "Test webhook sent successfully",
+        message:
+          "Test webhook saved — will be ingested on the next CDC cron cycle (<=5 min)",
         eventId: testEvent.id,
       });
     } catch (error) {

@@ -12,6 +12,7 @@ import {
   normalizePayloadKeys,
   resolveSourceTimestamp,
   selectLatestChangePerRecord,
+  withSyncedAt,
 } from "../normalization";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
@@ -40,6 +41,7 @@ function mapLogicalTypeToClickHouse(logicalType: ConnectorLogicalType): string {
 }
 
 const SYSTEM_COLUMN_TYPES: Record<string, string> = {
+  _syncedAt: "DateTime64(3)",
   _mako_ingest_seq: "Int64",
   _mako_source_ts: "DateTime64(3)",
   _mako_deleted_at: "Nullable(DateTime64(3))",
@@ -64,6 +66,55 @@ const log = loggers.sync("cdc.adapter.clickhouse");
 const escId = (id: string) => `\`${id.replace(/`/g, "``")}\``;
 
 const escStr = (val: string) => val.replace(/'/g, "''");
+
+/**
+ * ClickHouse `PARTITION BY` clause for a CDC layout (empty when unpartitioned).
+ * Exported for contract testing — partition expression shape is correctness
+ * critical for in-place repartition.
+ */
+export function clickHousePartitionClause(layout: CdcEntityLayout): string {
+  if (!layout.partitioning?.field) return "";
+  const field = escId(layout.partitioning.field);
+  const gran = (layout.partitioning.granularity || "day").toLowerCase();
+  switch (gran) {
+    case "hour":
+      return `PARTITION BY toStartOfHour(${field})`;
+    case "month":
+      return `PARTITION BY toYYYYMM(${field})`;
+    case "year":
+      return `PARTITION BY toYear(${field})`;
+    default:
+      return `PARTITION BY toYYYYMMDD(${field})`;
+  }
+}
+
+export interface ClickHouseRepartitionStatements {
+  createTmp: string;
+  copy: string;
+  exchange: string;
+}
+
+/**
+ * Build the happy-path statements that rewrite a live table's partition/sort
+ * layout in place: create a sibling table with the new layout, copy the rows,
+ * then atomically swap. Exported for contract testing + reuse by the gated
+ * integration suite.
+ */
+export function buildClickHouseRepartitionStatements(params: {
+  fullLive: string;
+  fullTmp: string;
+  partitionClause: string;
+  orderByColumns: string[];
+  sourceTsColumn?: string;
+}): ClickHouseRepartitionStatements {
+  const orderBy = params.orderByColumns.map(escId).join(", ");
+  const versionCol = escId(params.sourceTsColumn || "_mako_source_ts");
+  return {
+    createTmp: `CREATE TABLE ${params.fullTmp} AS ${params.fullLive} ENGINE = ReplacingMergeTree(${versionCol}) ${params.partitionClause} ORDER BY (${orderBy})`,
+    copy: `INSERT INTO ${params.fullTmp} SELECT * FROM ${params.fullLive}`,
+    exchange: `EXCHANGE TABLES ${params.fullLive} AND ${params.fullTmp}`,
+  };
+}
 
 interface ClickHouseAdapterConfig {
   destinationDatabaseId: string;
@@ -163,6 +214,60 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     await this.executeQuery(ddl);
   }
 
+  async repartitionLiveTable(
+    layout: CdcEntityLayout,
+  ): Promise<{ repartitioned: boolean }> {
+    const db = this.getDatabase();
+    const live = layout.tableName;
+
+    const existsResult = await this.executeQuery(
+      `SELECT count() AS c FROM system.tables WHERE database = '${escStr(db)}' AND name = '${escStr(live)}'`,
+    );
+    const exists = Number(existsResult?.data?.[0]?.c || 0) > 0;
+    if (!exists) return { repartitioned: false };
+
+    const tmp = `${live}__repart_${Date.now().toString(36)}`;
+    const fullLive = `${escId(db)}.${escId(live)}`;
+    const fullTmp = `${escId(db)}.${escId(tmp)}`;
+
+    // Create a sibling table with the same columns but the new partitioning /
+    // sort key, copy the current rows, then atomically swap. The caller pauses
+    // the stream so no writes land on the old table during this window.
+    const stmts = buildClickHouseRepartitionStatements({
+      fullLive,
+      fullTmp,
+      partitionClause: clickHousePartitionClause(layout),
+      orderByColumns: layout.keyColumns,
+    });
+    await this.executeQuery(`DROP TABLE IF EXISTS ${fullTmp}`);
+    await this.executeQuery(stmts.createTmp);
+    await this.executeQuery(stmts.copy);
+    try {
+      await this.executeQuery(stmts.exchange);
+      await this.executeQuery(`DROP TABLE IF EXISTS ${fullTmp}`);
+    } catch (err) {
+      // EXCHANGE TABLES requires the Atomic database engine; fall back to a
+      // (non-atomic) RENAME swap, which the paused stream makes safe.
+      log.warn("EXCHANGE TABLES failed, falling back to RENAME swap", {
+        live,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      const old = `${live}__repart_old_${Date.now().toString(36)}`;
+      await this.executeQuery(
+        `RENAME TABLE ${fullLive} TO ${escId(db)}.${escId(old)}, ${fullTmp} TO ${fullLive}`,
+      );
+      await this.executeQuery(`DROP TABLE IF EXISTS ${escId(db)}.${escId(old)}`);
+    }
+
+    log.info("Repartitioned live table in place", {
+      liveTable: live,
+      database: db,
+      partition: layout.partitioning?.field,
+      granularity: layout.partitioning?.granularity,
+    });
+    return { repartitioned: true };
+  }
+
   async applyEvents(params: {
     events: CdcStoredEvent[];
     layout: CdcEntityLayout;
@@ -188,16 +293,18 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
         payload,
         new Date(event.sourceTs),
       );
-      rows.push({
-        ...payload,
-        id: event.recordId,
-        _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-        _mako_source_ts: sourceTs,
-        _mako_ingest_seq: Number(event.ingestSeq),
-        _mako_deleted_at: null,
-        is_deleted: false,
-        deleted_at: null,
-      });
+      rows.push(
+        withSyncedAt({
+          ...payload,
+          id: event.recordId,
+          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
+          _mako_source_ts: sourceTs,
+          _mako_ingest_seq: Number(event.ingestSeq),
+          _mako_deleted_at: null,
+          is_deleted: false,
+          deleted_at: null,
+        }),
+      );
     }
 
     if (deleteMode === "soft") {
@@ -208,16 +315,18 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
           new Date(event.sourceTs),
         );
         const deletedAt = new Date();
-        rows.push({
-          ...payload,
-          id: event.recordId,
-          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-          _mako_source_ts: sourceTs,
-          _mako_ingest_seq: Number(event.ingestSeq),
-          _mako_deleted_at: deletedAt,
-          is_deleted: true,
-          deleted_at: deletedAt,
-        });
+        rows.push(
+          withSyncedAt({
+            ...payload,
+            id: event.recordId,
+            _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
+            _mako_source_ts: sourceTs,
+            _mako_ingest_seq: Number(event.ingestSeq),
+            _mako_deleted_at: deletedAt,
+            is_deleted: true,
+            deleted_at: deletedAt,
+          }),
+        );
       }
     }
 
@@ -251,7 +360,7 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
 
     const rows = params.records.map(record => {
       const payload = normalizePayloadKeys(record);
-      return {
+      return withSyncedAt({
         ...payload,
         _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
         _mako_source_ts: resolveSourceTimestamp(payload),
@@ -259,7 +368,7 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
           typeof payload._mako_ingest_seq === "number"
             ? payload._mako_ingest_seq
             : undefined,
-      };
+      });
     });
 
     await this.writeViaParquet({

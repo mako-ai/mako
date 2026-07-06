@@ -21,7 +21,8 @@ export interface TrackUsageParams {
     | "title_generation"
     | "description_generation"
     | "embedding"
-    | "version_comment";
+    | "version_comment"
+    | "commit_message";
   modelId: string;
   inputTokens: number;
   outputTokens: number;

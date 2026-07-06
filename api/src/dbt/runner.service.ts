@@ -22,7 +22,7 @@ import { dirname, join, normalize, relative, sep } from "path";
 import { loggers } from "../logging";
 import type { ParsedDbtCommand } from "./commands";
 import type { RenderedProfile } from "./adapter-map";
-import { resolveDbtBin } from "./dbt-bin";
+import { buildDbtBaseEnv, resolveDbtBin } from "./dbt-bin";
 
 const logger = loggers.app();
 
@@ -37,6 +37,12 @@ export interface DbtRunRequest {
   profile: RenderedProfile;
   commands: ParsedDbtCommand[];
   dbtVersion?: string;
+  /**
+   * Environment-level dbt variables, injected as `--vars <json>` into every
+   * command (except `retry`, and commands that already declare their own
+   * `--vars`). Powers `{{ var('key') }}` in project code.
+   */
+  vars?: Record<string, unknown>;
   /** Per-command timeout (ms). Defaults to 9 minutes (Cloud Run is 600s). */
   commandTimeoutMs?: number;
   /**
@@ -338,6 +344,17 @@ async function reconcileWarmDir(
   return deleted;
 }
 
+/**
+ * How long a dbt subprocess gets to exit after SIGTERM before we escalate to
+ * SIGKILL. dbt traps SIGTERM to flush partial run_results.json / logs, so we
+ * give it a window to shut down cleanly, then force-kill so a cancel always
+ * frees the slot promptly even if dbt is wedged. Read per-call (not at module
+ * load) so DBT_KILL_GRACE_MS can be shortened in tests without import ordering.
+ */
+function killGraceMs(): number {
+  return Number(process.env.DBT_KILL_GRACE_MS) || 15_000;
+}
+
 function execDbtCommand(params: {
   bin: string;
   args: string[];
@@ -356,18 +373,44 @@ function execDbtCommand(params: {
 
     let stdoutBuffer = "";
     let settled = false;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+    const graceMs = killGraceMs();
 
-    const timeout = setTimeout(() => {
+    // Graceful stop: SIGTERM, then SIGKILL if the process is still alive after
+    // KILL_GRACE_MS. Used by both the per-command timeout and an external abort
+    // (run cancellation). Idempotent — the close handler clears killTimer.
+    const terminate = (cause: string) => {
       params.onLog({
         ts: new Date(),
         level: "error",
-        line: `Command timed out after ${Math.round(params.timeoutMs / 1000)}s — sending SIGTERM`,
+        line: `${cause} — sending SIGTERM`,
       });
       child.kill("SIGTERM");
+      if (killTimer) return;
+      killTimer = setTimeout(() => {
+        if (settled) return;
+        params.onLog({
+          ts: new Date(),
+          level: "error",
+          line: `Process did not exit ${Math.round(graceMs / 1000)}s after SIGTERM — sending SIGKILL`,
+        });
+        child.kill("SIGKILL");
+      }, graceMs);
+    };
+
+    const timeout = setTimeout(() => {
+      terminate(
+        `Command timed out after ${Math.round(params.timeoutMs / 1000)}s`,
+      );
     }, params.timeoutMs);
 
-    const onAbort = () => child.kill("SIGTERM");
-    params.signal?.addEventListener("abort", onAbort, { once: true });
+    const onAbort = () => terminate("Run cancellation requested");
+    if (params.signal?.aborted) {
+      // Already aborted before spawn settled — stop the child immediately.
+      onAbort();
+    } else {
+      params.signal?.addEventListener("abort", onAbort, { once: true });
+    }
 
     const flushLines = (chunk: string, isStderr: boolean) => {
       if (isStderr) {
@@ -399,6 +442,7 @@ function execDbtCommand(params: {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
       params.signal?.removeEventListener("abort", onAbort);
       reject(error);
     });
@@ -407,6 +451,7 @@ function execDbtCommand(params: {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
       params.signal?.removeEventListener("abort", onAbort);
       if (stdoutBuffer.trim()) params.onLog(parseLogLine(stdoutBuffer.trim()));
       resolve(code ?? 1);
@@ -435,6 +480,18 @@ export async function materializeDbtProject(
     reconcile?: boolean;
   },
 ): Promise<{ keyfileEnv: Record<string, string>; changed: boolean }> {
+  // Refuse to materialize a tree that cannot be a dbt project. Without this
+  // guard an empty/broken snapshot (e.g. a branch whose committed base tree
+  // is missing) would reconcile-delete dbt_project.yml and every model out of
+  // a shared warm dir, and dbt would fail with the far more confusing
+  // "No dbt_project.yml found at expected path <dir>/dbt_project.yml".
+  if (!params.files.some(file => file.path === "dbt_project.yml")) {
+    throw new Error(
+      "dbt project snapshot has no dbt_project.yml — refusing to materialize " +
+        "(the project's file tree is empty or not synced)",
+    );
+  }
+
   // Preserve list for reconciliation (profiles.yml + every snapshot file +
   // keyfiles get added below).
   const keep = new Set<string>(["profiles.yml"]);
@@ -478,6 +535,21 @@ export async function materializeDbtProject(
     changed = true;
   }
   return { keyfileEnv, changed };
+}
+
+/**
+ * Remove per-run result artifacts from a (warm) project dir's target/.
+ * Warm dirs keep target/ across runs so partial parsing stays warm, but a
+ * command that fails before writing its own run_results.json would otherwise
+ * have the PREVIOUS run's file collected and misattributed to it (an errored
+ * run "showing" passing node results). The parse cache and manifest stay.
+ */
+export async function pruneStaleRunArtifacts(
+  projectDir: string,
+): Promise<void> {
+  for (const name of ["run_results.json", "sources.json", "catalog.json"]) {
+    await rm(join(projectDir, "target", name), { force: true }).catch(() => {});
+  }
 }
 
 /**
@@ -532,6 +604,17 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
       },
     );
 
+    // Warm dirs: drop the previous run's result artifacts so a command that
+    // fails early can never have stale run_results/sources/catalog collected
+    // and misattributed to it. `retry` is the exception — it resumes FROM the
+    // prior run_results (re-seeded via restoreTarget below).
+    const isRetryRun = request.commands.some(
+      command => command.subcommand === "retry",
+    );
+    if (!ownsDir && !isRetryRun) {
+      await pruneStaleRunArtifacts(projectDir);
+    }
+
     // Seed prior artifacts into target/ for `dbt retry` (run_results.json is
     // what dbt reads to resume at the failed/skipped nodes).
     if (request.restoreTarget) {
@@ -584,7 +667,9 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
     );
 
     const childEnv: Record<string, string> = {
-      ...(process.env as Record<string, string>),
+      // SECURITY: allowlisted base env only — never spread process.env, or
+      // dbt's env_var() would expose server secrets. See buildDbtBaseEnv.
+      ...buildDbtBaseEnv(),
       ...request.profile.secretEnv,
       ...keyfileEnv,
       DBT_SEND_ANONYMOUS_USAGE_STATS: "false",
@@ -694,24 +779,18 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
         request.onLog?.(line);
       };
 
-      // --defer/--state only apply to node-executing/compiling subcommands.
-      const stateAware = new Set([
-        "run",
-        "build",
-        "test",
-        "compile",
-        "seed",
-        "snapshot",
-      ]);
-      const deferArgs =
-        stateDir && stateAware.has(command.subcommand)
-          ? ["--defer", "--state", stateDir]
-          : [];
+      // --defer/--state and environment --vars injection (pure + unit-tested).
+      const extraArgs = buildExtraDbtArgs({
+        subcommand: command.subcommand,
+        argv: command.argv,
+        stateDir,
+        vars: request.vars,
+      });
 
       const args = [
         ...resolved.prefixArgs,
         ...command.argv,
-        ...deferArgs,
+        ...extraArgs,
         "--profiles-dir",
         projectDir,
         "--project-dir",
@@ -779,6 +858,47 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
       await rm(projectDir, { recursive: true, force: true }).catch(() => {});
     }
   }
+}
+
+/** Subcommands that support --defer/--state and accept node selection. */
+const STATE_AWARE_SUBCOMMANDS = new Set([
+  "run",
+  "build",
+  "test",
+  "compile",
+  "seed",
+  "snapshot",
+]);
+
+/**
+ * Build the defer/state + environment --vars argv segment injected between the
+ * user command and the fixed --profiles-dir/--project-dir flags. Pure so the
+ * injection rules can be unit-tested without spawning dbt:
+ *
+ *  - --defer/--state only for state-aware subcommands when a stateDir exists;
+ *  - --vars only when the environment defines vars, the subcommand isn't
+ *    `retry` (which replays prior argv), and the command didn't already pass
+ *    its own --vars.
+ */
+export function buildExtraDbtArgs(opts: {
+  subcommand: string;
+  argv: string[];
+  stateDir?: string | null;
+  vars?: Record<string, unknown>;
+}): string[] {
+  const { subcommand, argv, stateDir, vars } = opts;
+  const deferArgs =
+    stateDir && STATE_AWARE_SUBCOMMANDS.has(subcommand)
+      ? ["--defer", "--state", stateDir]
+      : [];
+  const varsArgs =
+    vars &&
+    Object.keys(vars).length > 0 &&
+    subcommand !== "retry" &&
+    !argv.includes("--vars")
+      ? ["--vars", JSON.stringify(vars)]
+      : [];
+  return [...deferArgs, ...varsArgs];
 }
 
 /** Map a run_results.json artifact to the dbt_runs.stepResults shape. */

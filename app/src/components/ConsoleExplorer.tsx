@@ -192,13 +192,17 @@ function ConsoleExplorer(
           const { computeConsoleStateHash } = await import(
             "../utils/stateHash"
           );
-          const hash = computeConsoleStateHash(
-            data.content,
-            data.connectionId,
-            data.databaseId,
-            data.databaseName,
-          );
-          updateSavedState(result.id, true, hash);
+          const savedStateHash =
+            data.savedStateHash ??
+            (data.lastDraftOrigin === "agent"
+              ? undefined
+              : computeConsoleStateHash(
+                  data.content,
+                  data.connectionId,
+                  data.databaseId,
+                  data.databaseName,
+                ));
+          updateSavedState(result.id, true, savedStateHash);
         }
       } catch (e) {
         console.error("Failed to load search result console", e);
@@ -259,12 +263,16 @@ function ConsoleExplorer(
           const { computeConsoleStateHash } = await import(
             "../utils/stateHash"
           );
-          const savedStateHash = computeConsoleStateHash(
-            data.content,
-            data.connectionId,
-            data.databaseId,
-            data.databaseName,
-          );
+          const savedStateHash =
+            data.savedStateHash ??
+            (data.lastDraftOrigin === "agent"
+              ? undefined
+              : computeConsoleStateHash(
+                  data.content,
+                  data.connectionId,
+                  data.databaseId,
+                  data.databaseName,
+                ));
           updateSavedState(consoleId, true, savedStateHash);
         }
       } catch (e) {
@@ -390,7 +398,8 @@ function ConsoleExplorer(
           nextName,
         );
         updateTabFilePath(selectedItem.id, nextPath);
-        updateTabTitle(selectedItem.id, nextPath);
+        // Title is the canonical leaf name; the path drives the breadcrumb.
+        updateTabTitle(selectedItem.id, nextName);
         updateTabAccess(
           selectedItem.id,
           section === "workspace" ? "workspace" : "private",

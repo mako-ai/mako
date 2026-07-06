@@ -26,8 +26,12 @@ entities:
 
 Mako runs dbt Core projects whose files live in the workspace database (one
 document per file) and execute as subprocesses against the project's warehouse
-environments. The agent edits files with `create_dbt_file` / `modify_dbt_file`
-and verifies with `dbt_parse` → `dbt_compile_model` → `dbt_run_model`.
+environments. The agent creates files with `create_dbt_file`, modifies existing
+ones with `edit_dbt_file` (anchored `oldString`/`newString` replacement — the
+match must be unique; include surrounding lines to disambiguate, `""` deletes,
+`replaceAll: true` renames), reserves `modify_dbt_file` (COMPLETE contents) for
+full rewrites, and verifies with `dbt_parse` → `dbt_compile_model` →
+`dbt_run_model`.
 
 ## Project layout
 
@@ -129,14 +133,89 @@ AND its tests — always add at least `unique` + `not_null` on the primary key.
    (`select * from <dev_schema>.<model> limit 100`) — only after the run
    reaches `success`.
 
+> ALWAYS invoke these as real tool calls. NEVER write a tool name or its
+> arguments (`projectId`, `runId`, `waitMs`, etc.) as message text — e.g. do
+> not type `dbt_get_run <projectId> <runId> 60000` into your reply. If you want
+> to check a run, emit a `dbt_get_run` tool call; the user already sees live
+> progress in the run card. After a run finishes, reply with a short
+> human-readable summary, not raw IDs.
+
 ## Environments and jobs
 
 - Projects have environments (dev/prod) mapping to a workspace connection +
-  target schema. Ad-hoc agent builds ALWAYS default to dev.
+  target schema. Ad-hoc agent builds resolve their environment PER USER:
+  saved per-user dev environment (the UI env pickers persist this setting) >
+  personal environment > project default. Omit `environment` unless the user
+  explicitly picks one.
+- **Single vs multi player — keep this clear:**
+  - SINGLE-USER workspace: the shared dev environment IS the user's personal
+    target. Drafts and branch verification build against dev; do NOT
+    provision `dbt_<user>` schemas unless the user asks for isolation.
+  - MULTI-USER workspace: each user tests against their OWN environment.
+    `dbt_run_model` auto-provisions a personal one (schema `dbt_<user>`) on
+    the first build so teammates never build over each other's schemas.
+- **Which git tree a run builds (repo-bound projects)** — never mix these up:
+  - Ad-hoc tools (`dbt_parse`, `dbt_compile_model`, `dbt_show`,
+    `dbt_run_model`) build YOUR working tree: your checkout branch + your
+    uncommitted drafts. This is the ONLY way to verify uncommitted or
+    feature-branch work.
+  - Jobs (`dbt_run_job`, schedules) build the COMMITTED tracked branch only —
+    never your checkout or drafts. Triggering a job to test a draft silently
+    runs the OLD code; do not do it, and do not "fix" it by committing — the
+    job still builds the tracked branch, not your feature branch.
+  - **Full refresh of a draft**: pass `fullRefresh: true` to `dbt_run_model`
+    (adds `--full-refresh`). Never reach for a full-refresh job to rebuild an
+    incremental model you just edited.
+- **Prod is protected from ad-hoc runs**: on repo-connected projects the
+  prod-like environment refuses ad-hoc warehouse writes (`run`/`build`/
+  `seed`/`snapshot`). Deploys go through jobs or CI after the change is
+  merged into the tracked branch. Read-only commands (parse/compile/show)
+  still work against any environment.
+- **Personal environments**: per-user environments (schema `dbt_<user>`, same
+  connection as prod). In MULTI-USER workspaces `dbt_run_model`
+  auto-provisions the caller's on its first build;
+  `dbt_ensure_dev_environment` provisions it explicitly ahead of time. Once
+  it exists, `dbt_parse` / `dbt_compile_model` / `dbt_run_model` / `dbt_show`
+  default to it. Feature-branch verification builds into the user's dev
+  environment (dev itself when solo, personal when in a team); prod stays a
+  jobs-only deploy target.
+- **Defer (fast iteration)**: ad-hoc builds default to
+  `--defer --state <last prod manifest>` when targeting a non-prod environment
+  and a prod build exists — unselected `ref()`s resolve to prod relations, so
+  ONE model can be rebuilt in a personal schema without first rebuilding its
+  whole upstream DAG there. Pass `defer: false` to disable (e.g. when you
+  intentionally rebuilt an upstream model in the same schema and want refs to
+  use it).
 - Jobs are saved command lists (`build`, `test`, `seed`, `snapshot`,
   `source freshness`, `docs generate` + `--select/--exclude/--full-refresh`
   flags) with optional cron schedules. Trigger via `dbt_run_job` only after
-  explicit user confirmation.
+  explicit user confirmation, and only for committed work — never to verify
+  drafts.
+
+## Iterating on models that feed apps (dev → prod loop)
+
+App data bindings can link to a dbt project (`dbtProjectId` on the binding)
+and reference the build schema via the `{{ dbt_schema }}` token instead of a
+hardcoded `dbt_prod.` prefix. Published apps, parquet materialization, and
+public shares ALWAYS resolve the token to the prod-like environment; only the
+draft preview can be switched.
+
+The full safe-iteration loop:
+
+1. Edit models; verify with `dbt_parse` → `dbt_compile_model` →
+   `dbt_run_model` (defaults: the user's dev environment — dev itself when
+   solo, personal `dbt_<user>` in teams (auto-provisioned on first build) —
+   + defer to prod manifest).
+2. `app_set_preview_environment` with the personal environment — the app's
+   DRAFT preview now reads the freshly built schema. This is per-user view
+   state: other editors, the published app, and shared links keep reading
+   prod. Verify visually (screenshot) if useful.
+3. Promote the dbt change: `dbt_commit_to_branch` → `dbt_open_pull_request` →
+   (after review) `dbt_merge_pull_request`; then run the prod job via
+   `dbt_run_job` — ONLY with explicit user confirmation.
+4. After the prod build succeeds, reset the preview
+   (`app_set_preview_environment` with `environment: null`) and, if app code
+   changed, publish with `app_save_version`.
 
 ## Tier-3 references
 

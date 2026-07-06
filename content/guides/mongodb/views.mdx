@@ -1,0 +1,99 @@
+---
+title: "MongoDB Views: Standard Views and On-Demand Materialized Views"
+description: "How MongoDB views work: createView syntax, read-only semantics, pipeline and query restrictions, index behavior, and building materialized views with $merge."
+database: "mongodb"
+category: "how-to"
+tags: ["mongodb", "views", "materialized-views", "aggregation", "nosql"]
+date: "2026-06-11"
+---
+
+MongoDB has two things it calls a view, and they behave very differently. A **standard view** (available since 3.4) is a saved aggregation pipeline that runs every time you query it -- nothing is stored. An **on-demand materialized view** is not a special object type at all: it is a regular collection you populate yourself with the `$merge` stage, trading freshness for read speed. Picking the wrong one is a common source of either surprise slowness or surprise staleness.
+
+## Standard views
+
+A standard view is a read-only, queryable object defined by a pipeline over a collection (or another view):
+
+```javascript
+db.createCollection("managerView", {
+  viewOn: "employees",
+  pipeline: [
+    { $match: { active: true } },
+    { $project: { name: 1, dept: 1, startDate: 1 } }  // salary and ssn never appear
+  ]
+})
+
+// equivalent shell helper:
+db.createView("managerView", "employees", [ ... ])
+```
+
+Querying the view looks exactly like querying a collection:
+
+```javascript
+db.managerView.find({ dept: "engineering" }).sort({ startDate: 1 })
+```
+
+Under the hood, MongoDB appends your query to the view's pipeline: the find above effectively runs the view pipeline followed by a `$match` and `$sort` on `employees`. Nothing is persisted; every read recomputes.
+
+### What standard views are good for
+
+- **Field-level redaction.** The classic case: a view that `$project`s away sensitive fields, combined with role-based access that grants users `find` on the view but not the source collection. Readers cannot reach around the view to the hidden fields.
+- **Canned transformations.** A pipeline that joins reference data via [$lookup](/guides/mongodb/lookup-joins) or reshapes documents into the form analysts expect, defined once instead of copy-pasted into every client.
+- **A stable interface over a changing schema.** The view absorbs renames and reshapes so downstream consumers keep a consistent contract.
+
+### The restrictions list (read before relying on them)
+
+- **Read-only.** No insert, update, or delete through a view -- there is no `INSTEAD OF` trigger mechanism like SQLite or SQL Server.
+- **No writing stages.** The defining pipeline cannot contain `$out` or `$merge` (including inside `$lookup` sub-pipelines or `$facet`).
+- **No index creation on the view itself.** Views use the indexes of the underlying collection. You also cannot pass `hint()` when querying a view, and `$natural` sort is not allowed.
+- **No renaming** a view; drop and recreate. The pipeline *can* be changed in place with `collMod`.
+- **Position matters for text search.** A `$match` with `$text` only works as the first stage of the query against the view's source -- in practice [text search](/guides/mongodb/text-search) and views combine poorly.
+- **Performance is the pipeline's performance.** A view over a `$group`-heavy pipeline runs the whole [group aggregation](/guides/mongodb/group-aggregation) on every read. The optimizer pushes the query's `$match` toward the source where it can (so [indexes](/guides/mongodb/indexes-explained) on the base collection still help), but stages like `$group` or `$unwind` block that pushdown the same way they do in any pipeline.
+
+If a view feels slow, debug it like a pipeline: run the same stages with `explain` and check whether your predicate reached the source collection as an `IXSCAN`.
+
+## On-demand materialized views
+
+When the underlying aggregation is too expensive to recompute per read, persist its output. Since MongoDB 4.2, `$merge` writes pipeline results into a target collection and can incrementally update it:
+
+```javascript
+function refreshMonthlySales() {
+  db.orders.aggregate([
+    { $match: { orderDate: { $gte: ISODate("2026-01-01") } } },
+    { $group: {
+        _id: { $dateTrunc: { date: "$orderDate", unit: "month" } },
+        revenue: { $sum: "$amount" },
+        orders:  { $sum: 1 }
+    } },
+    { $merge: {
+        into: "monthlySales",
+        whenMatched: "replace",     // update existing month buckets
+        whenNotMatched: "insert"    // add new ones
+    } }
+  ])
+}
+```
+
+`monthlySales` is now an ordinary collection: you can index it however you like, queries against it are plain document reads, and they cost nothing of the original aggregation. The price is that *you* own the refresh: the data is exactly as fresh as the last time something ran the pipeline. Common triggers are a scheduled job (Atlas scheduled triggers, cron + script) or refresh-after-write logic in the application.
+
+Unlike `$out`, which replaces the entire target collection, `$merge` can update matched documents and leave the rest alone -- so scoping the `$match` to recent data makes incremental refreshes cheap. `$merge` can also write to a sharded collection; `$out` cannot.
+
+## Choosing between them
+
+| | Standard view | Materialized view ($merge) |
+|---|---|---|
+| Storage | None | A real collection on disk |
+| Freshness | Always current | As of last refresh |
+| Read cost | Full pipeline per read | Plain collection read |
+| Own indexes | No (uses source's) | Yes |
+| Writable | No | It's a normal collection |
+| Maintenance | None | You schedule refreshes |
+
+Rules of thumb: cheap pipeline or correctness-critical freshness, use a standard view. Expensive pipeline read many times between data changes (dashboards, rollups, leaderboards), materialize it. Access control through redaction only works with standard views -- a materialized copy of redacted data is a second dataset to secure and refresh.
+
+One operational gotcha: nothing warns you when a materialized view goes stale. If a refresh job dies silently, dashboards keep reading old numbers. Put a `lastRefreshed` timestamp in the target (or a meta document) and alert on its age.
+
+## Inspecting views
+
+`db.getCollectionInfos({ type: "view" })` lists views with their `viewOn` and full pipeline -- useful when you inherit a database and need to know what `managerView` actually hides. Materialized views won't appear there; they are indistinguishable from regular collections, which is an argument for a naming convention like an `mv_` prefix.
+
+Mako connects to MongoDB with AI-powered autocomplete, which helps when writing and testing the aggregation pipelines behind views. Try it free at mako.ai.

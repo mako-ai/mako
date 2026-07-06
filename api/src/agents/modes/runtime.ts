@@ -67,13 +67,24 @@ export function deriveModeState(
   const enabledModes = new Set<ExpertiseModeId>([defaultMode]);
   let planSubmitted = false;
   let planApproved = false;
+  let lastPlanDecision: unknown;
 
   for (const message of messages) {
-    // A new user turn starts a fresh plan cycle: any previous submission or
-    // approval is stale for the new request. Enabled expertise modes are
-    // intentionally NOT reset (they accumulate across the conversation).
+    // A new user turn normally starts a fresh plan cycle: any previous
+    // submission or approval is stale for the new request. Exception
+    // (conversational plan iteration, Cursor-style): when the latest plan was
+    // resolved with request_changes, the following user message IS the
+    // feedback — the gate stays engaged so the model revises and re-submits
+    // instead of mutating. Enabled expertise modes are intentionally NOT
+    // reset (they accumulate across the conversation).
     if (message.role === "user") {
-      planSubmitted = false;
+      const isPlanIterationFeedback =
+        planSubmitted &&
+        !planApproved &&
+        lastPlanDecision === "request_changes";
+      if (!isPlanIterationFeedback) {
+        planSubmitted = false;
+      }
       planApproved = false;
     }
 
@@ -90,6 +101,7 @@ export function deriveModeState(
         planSubmitted = true;
         const decision = (part.output as { decision?: unknown } | undefined)
           ?.decision;
+        lastPlanDecision = decision;
         // The latest decision in this turn wins; only an explicit approval
         // unlocks writes. A pending submission (no output yet) stays gated.
         planApproved = decision === "approve";
@@ -145,16 +157,25 @@ function buildModeSystem(
 export function computeActiveTools(
   modeState: ModeState,
   allToolNames: Set<string>,
+  mcp?: { toolNames: string[]; readOnlyToolNames: string[] },
 ): string[] {
   let names = new Set<string>();
   for (const name of toolNamesForModes(modeState.enabledModes)) {
     if (allToolNames.has(name)) names.add(name);
   }
+  // MCP tools are cross-cutting (not tied to an expertise mode): always
+  // active. Their own write gating happens via `needsApproval`, not modes.
+  for (const name of mcp?.toolNames ?? []) {
+    if (allToolNames.has(name)) names.add(name);
+  }
 
   if (isPlanGateActive(modeState)) {
     const gated = new Set<string>();
+    const mcpReadOnly = new Set(mcp?.readOnlyToolNames ?? []);
     for (const name of names) {
-      if (READ_ONLY_TOOL_NAMES.has(name)) gated.add(name);
+      if (READ_ONLY_TOOL_NAMES.has(name) || mcpReadOnly.has(name)) {
+        gated.add(name);
+      }
     }
     for (const allowed of PLAN_GATE_ALLOWED_TOOL_NAMES) {
       if (allToolNames.has(allowed)) gated.add(allowed);
@@ -201,9 +222,13 @@ export function buildUnifiedModeRuntime(params: {
   } as ToolSet;
 
   const allToolNames = new Set<string>(Object.keys(tools));
+  const mcpAllowlist = {
+    toolNames: context.mcpToolNames ?? [],
+    readOnlyToolNames: context.mcpReadOnlyToolNames ?? [],
+  };
 
   const prepareStep = () => ({
-    activeTools: computeActiveTools(modeState, allToolNames),
+    activeTools: computeActiveTools(modeState, allToolNames, mcpAllowlist),
     system: buildModeSystem(context, modeState),
   });
 

@@ -7,6 +7,7 @@ import { dataSourceRoutes } from "./sources";
 import { customPromptRoutes } from "./custom-prompt";
 import { skillsRoutes } from "./skills";
 import { dbtRoutes } from "./dbt.routes";
+import { githubRoutes } from "./github.routes";
 import { chatsRoutes } from "./chats";
 import { chatImagesRoutes } from "./chat-images";
 import { agentRoutes } from "./agent.routes";
@@ -28,11 +29,13 @@ import { dashboardRoutes } from "./dashboards";
 import { appRoutes } from "./apps";
 import { publicShareRoutes } from "./public-share";
 import { dashboardMaterializationRoutes } from "./dashboard-materialization";
+import { resourceDataSourceRoutes } from "./resource-data-sources";
 import { scheduledQueryRoutes } from "./scheduled-queries";
 import { notificationRulesRoutes } from "./notification-rules";
 import { devEmailPreviewRoutes } from "./dev-email-preview.routes";
 import { webhookRoutes } from "./webhooks";
 import { pgPersistenceRoutes } from "./pg-persistence.routes";
+import { mcpPresetRoutes, mcpRoutes } from "./mcp.routes";
 
 /**
  * Mounts every REST router onto the provided Hono app.
@@ -58,6 +61,8 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
   app.route("/api/workspaces/:workspaceId/skills", skillsRoutes);
   app.route("/api/workspaces/:workspaceId/dbt", dbtRoutes);
+  // GitHub App install callback (session-authed, workspace via state param).
+  app.route("/api/github", githubRoutes);
   app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
   app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
   app.route(
@@ -68,6 +73,9 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
     "/api/workspaces/:workspaceId/notification-rules",
     notificationRulesRoutes,
   );
+  app.route("/api/workspaces/:workspaceId/mcp-servers", mcpRoutes);
+  // Intentionally public: static preset metadata for the "Add MCP server" form.
+  app.route("/api/mcp", mcpPresetRoutes);
 
   if (process.env.NODE_ENV !== "production") {
     app.route("/api/dev/email-preview", devEmailPreviewRoutes);
@@ -77,6 +85,10 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   app.route("/api/workspaces/:workspaceId/billing", billingRoutes);
   app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);
   app.route("/api/workspaces/:workspaceId/apps", appRoutes);
+  app.route(
+    "/api/workspaces/:workspaceId/data-sources",
+    resourceDataSourceRoutes,
+  );
   app.route(
     "/api/workspaces/:workspaceId/dashboards/:dashboardId",
     dashboardMaterializationRoutes,

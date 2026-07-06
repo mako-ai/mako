@@ -23,6 +23,10 @@ import {
   hasBlockedDraftSave,
   hasPendingAgentReview,
 } from "./consoleStore";
+import { useAppStore } from "./appStore";
+import { useDashboardStore } from "./dashboardStore";
+import { useDbtStore } from "./dbtStore";
+import { computeDashboardStateHash } from "../utils/stateHash";
 import { decideRemoteApply } from "./lib/remoteApplyGate";
 import { useConsoleTreeStore } from "./consoleTreeStore";
 import type { ConsoleRevisionsSyncResponse } from "../lib/api-types";
@@ -53,13 +57,66 @@ export type RealtimeEvent =
       intent: "open_console";
       consoleId: string;
     }
-  | { type: "chat.activity"; chatId: string; state: "streaming" | "idle" };
+  | { type: "chat.activity"; chatId: string; state: "streaming" | "idle" }
+  | {
+      type: "app.updated";
+      appId: string;
+      version: number;
+      updatedBy: string;
+      clientId?: string;
+      origin: "agent" | "save";
+    }
+  | {
+      type: "dbt.file.updated";
+      projectId: string;
+      path: string;
+      deleted?: boolean;
+      updatedBy: string;
+      clientId?: string;
+      origin: "agent" | "save";
+      /** Draft (uncommitted) edit: only this user's windows should react. */
+      forUserId?: string;
+    }
+  | {
+      type: "dbt.git.updated";
+      projectId: string;
+      updatedBy: string;
+      clientId?: string;
+      forUserId?: string;
+    }
+  | {
+      type: "dbt.checkout.updated";
+      projectId: string;
+      branch: string;
+      forUserId: string;
+      updatedBy: string;
+      clientId?: string;
+    }
+  | { type: "dbt.job.updated"; projectId: string; clientId?: string }
+  | {
+      type: "dbt.run.updated";
+      projectId: string;
+      runId?: string;
+      jobId?: string;
+      clientId?: string;
+    }
+  | { type: "dbt.project.updated"; projectId?: string; clientId?: string }
+  | {
+      type: "dashboard.updated";
+      dashboardId: string;
+      version: number;
+      updatedBy: string;
+      clientId?: string;
+      origin: "agent" | "save";
+    };
 
 export type RealtimeStatus = "idle" | "connecting" | "open" | "reconnecting";
 
 interface RealtimeState {
   status: RealtimeStatus;
   workspaceId: string | null;
+  /** Logged-in user id — filters user-scoped (forUserId) dbt draft events. */
+  currentUserId: string | null;
   /** Chat currently open in the chat panel (for chat.ui-intent routing). */
   activeChatId: string | null;
   /** Live agent activity per chat (chat.activity events). */
@@ -70,6 +127,7 @@ interface RealtimeActions {
   connect: (workspaceId: string) => void;
   disconnect: () => void;
   setActiveChatId: (chatId: string | null) => void;
+  setCurrentUserId: (userId: string | null) => void;
   /** Pull authoritative copies of open consoles whose revisions changed. */
   syncRevisions: () => Promise<void>;
 }
@@ -95,12 +153,16 @@ const RECONNECT_MAX_MS = 30_000;
 /** Batch bursts of pokes (e.g. agent patching repeatedly) into one pull. */
 const SYNC_DEBOUNCE_MS = 250;
 /**
- * Liveness watchdog: the server heartbeats every 25s, so a stream that has
- * been silent longer than this is dead even though no `error` event fired
- * (NAT/proxy half-close, sleeping machine). 70s tolerates two missed beats.
+ * Liveness watchdog: the server heartbeats every 15s (realtime.ts
+ * HEARTBEAT_INTERVAL_MS), so a stream that has been silent longer than this
+ * is dead even though no `error` event fired (NAT/proxy half-close, sleeping
+ * machine). 35s tolerates two missed beats. This bounds how long a MISSED
+ * poke can leave a window stale with no user interaction: the reconnect's
+ * `onopen` runs syncRevisions, so lowering this directly shrinks the
+ * worst-case "edited elsewhere but not shown here" window (≈35s + one sweep).
  */
-const WATCHDOG_STALE_MS = 70_000;
-const WATCHDOG_INTERVAL_MS = 15_000;
+const WATCHDOG_STALE_MS = 35_000;
+const WATCHDOG_INTERVAL_MS = 8_000;
 /**
  * Wake-trigger staleness: when the user comes back to this window (focus /
  * visibility / pageshow), a stream that hasn't produced a frame within ~1.5
@@ -109,7 +171,7 @@ const WATCHDOG_INTERVAL_MS = 15_000;
  * their sockets without firing an `error` event, so `status === "open"`
  * cannot be trusted on wake.
  */
-const WAKE_STALE_MS = 40_000;
+const WAKE_STALE_MS = 25_000;
 /** Collapse the burst of focus+visibility events one window switch fires. */
 const WAKE_THROTTLE_MS = 1_000;
 /**
@@ -168,6 +230,18 @@ export const useRealtimeStore = create<RealtimeStore>()(
     };
 
     /**
+     * Reconnect/focus reconciliation for the dbt surface (the counterpart of
+     * syncRevisions for consoles): pokes missed while a window was
+     * backgrounded or its stream was dead would otherwise leave the branch
+     * label / change list stale until a manual refresh.
+     */
+    const syncDbtGitState = () => {
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      void useDbtStore.getState().reconcileRemoteGitState(workspaceId);
+    };
+
+    /**
      * A remote update was deferred (banner) only because the user was
      * mid-typing — re-run the sync once the recency window has passed so a
      * now-quiescent tab converges on its own. Without this, a single remote
@@ -198,14 +272,17 @@ export const useRealtimeStore = create<RealtimeStore>()(
         }
       }
 
-      const tab = useConsoleStore.getState().tabs[event.consoleId];
-      if (!tab) return; // not open in this window — nothing to update
-
-      // Remember agent-origin edits on OPEN consoles so the pull routes them
-      // into the diff review (editor keeps the baseline until accept/reject).
+      // Remember agent-origin edits even when the tab is NOT open yet (the
+      // common create_console → immediate modify_console race: the modify
+      // poke can land while openConsoleFromServer is still fetching). The
+      // reconcile after the tab opens uses this + lastDraftOrigin to route
+      // the pulled copy into the diff review instead of a silent apply.
       if (event.origin === "agent") {
         agentOriginConsoles.add(event.consoleId);
       }
+
+      const tab = useConsoleStore.getState().tabs[event.consoleId];
+      if (!tab) return; // not open yet — openConsoleFromServer reconciles
 
       // A tab that never synced (no draftRevision) counts as revision 0 so
       // even the server's first revision is pulled.
@@ -293,17 +370,222 @@ export const useRealtimeStore = create<RealtimeStore>()(
       if (!workspaceId || event.intent !== "open_console") return;
 
       const consoleStore = useConsoleStore.getState();
-      if (consoleStore.tabs[event.consoleId]) {
-        consoleStore.setActiveTab(event.consoleId);
+      void (async () => {
+        if (consoleStore.tabs[event.consoleId]) {
+          consoleStore.setActiveTab(event.consoleId);
+        } else {
+          await consoleStore.openConsoleFromServer(
+            workspaceId,
+            event.consoleId,
+          );
+        }
+        // Pokes for this console may have arrived before the tab existed
+        // (create → immediate modify). Reconcile against the server now so a
+        // dropped poke does not leave the freshly opened tab on stale
+        // create-time content.
+        void get().syncRevisions();
+      })();
+    };
+
+    // Server-executed app mutation tools (issue #475 pattern for apps): pull the
+    // authoritative app over HTTP and rebuild its preview when an OPEN app's
+    // version advances. Echo-suppressed by clientId; agent writes carry
+    // `agent:<chatId>` so they are applied (this tab did not make the edit).
+    const handleAppUpdated = (
+      event: Extract<RealtimeEvent, { type: "app.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      const appStore = useAppStore.getState();
+      const open = appStore.openApps[event.appId];
+      if (!open) {
+        // Not open in this window — but the app list may have changed (e.g. the
+        // agent created/edited an app server-side). Refresh the explorer so new
+        // apps appear without a manual reload (browser follows the server).
+        void appStore.fetchList(workspaceId);
         return;
       }
-      void consoleStore.openConsoleFromServer(workspaceId, event.consoleId);
+      if ((open.version ?? 0) >= event.version) return; // stale / own echo
+      void (async () => {
+        const fresh = await useAppStore
+          .getState()
+          .fetchApp(workspaceId, event.appId);
+        // Rebuild the preview iframe so server-applied file edits render.
+        if (fresh) useAppStore.getState().bumpPreview(event.appId);
+      })();
+    };
+
+    // User-scoped dbt events (drafts, checkouts) carry forUserId: they only
+    // concern the acting user's windows — a draft is invisible to everyone
+    // else, so other users must not react (or even refetch).
+    const isForAnotherUser = (forUserId?: string): boolean =>
+      Boolean(forUserId && forUserId !== get().currentUserId);
+
+    // Server-executed dbt file mutation tools: pull the fresh file content (or
+    // drop a deleted file) for OPEN dbt projects. Echo-suppressed by clientId;
+    // draft edits (forUserId) only apply to the author's windows.
+    const handleDbtFileUpdated = (
+      event: Extract<RealtimeEvent, { type: "dbt.file.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      if (isForAnotherUser(event.forUserId)) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      const dbt = useDbtStore.getState();
+      // Only touch projects this window has loaded (file tree OR the
+      // version-control panel's git status — they load independently).
+      const hasFiles = Boolean(dbt.filePathsByProject[event.projectId]);
+      const hasStatus = Boolean(dbt.gitStatusByProject[event.projectId]);
+      if (!hasFiles && !hasStatus) return;
+      if (hasFiles) {
+        void dbt.applyRemoteFileUpdate(
+          workspaceId,
+          event.projectId,
+          event.path,
+          event.deleted,
+        );
+      }
+      // A draft save/delete/rename changes the working-tree status too —
+      // refresh so the branch panel's change list and A/M/D badges stay in
+      // sync across the user's windows (not just the one that edited).
+      const project = dbt.projects.find(p => p._id === event.projectId);
+      if (project?.repo) {
+        void dbt.fetchGitStatus(workspaceId, event.projectId);
+      }
+    };
+
+    // Git surface changed (commit/sync/merge/branch delete — human or agent):
+    // refetch git status + file tree so the version-control panel and
+    // explorer reflect it without a manual refresh.
+    const handleDbtGitUpdated = (
+      event: Extract<RealtimeEvent, { type: "dbt.git.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      if (isForAnotherUser(event.forUserId)) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      const dbt = useDbtStore.getState();
+      // React when this window holds ANY state for the project: the
+      // version-control panel loads git status for every repo project, even
+      // ones whose file tree was never expanded.
+      if (
+        !dbt.filePathsByProject[event.projectId] &&
+        !dbt.gitStatusByProject[event.projectId]
+      ) {
+        return;
+      }
+      void dbt.applyRemoteGitUpdate(workspaceId, event.projectId);
+    };
+
+    // The current user's checkout moved (branch create/switch — e.g. by the
+    // agent): refresh branch label, tree, and status in their other windows.
+    const handleDbtCheckoutUpdated = (
+      event: Extract<RealtimeEvent, { type: "dbt.checkout.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      if (isForAnotherUser(event.forUserId)) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      const dbt = useDbtStore.getState();
+      if (!dbt.projects.some(p => p._id === event.projectId)) return;
+      void dbt.applyRemoteCheckoutUpdate(
+        workspaceId,
+        event.projectId,
+        event.branch,
+      );
+    };
+
+    const handleDbtJobUpdated = (
+      event: Extract<RealtimeEvent, { type: "dbt.job.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      const dbt = useDbtStore.getState();
+      if (!dbt.projects.some(p => p._id === event.projectId)) return;
+      void dbt.fetchJobs(workspaceId, event.projectId);
+    };
+
+    const handleDbtRunUpdated = (
+      event: Extract<RealtimeEvent, { type: "dbt.run.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      const dbt = useDbtStore.getState();
+      if (!dbt.projects.some(p => p._id === event.projectId)) return;
+      void dbt.fetchRuns(workspaceId, event.projectId);
+      if (event.jobId) {
+        void dbt.fetchRuns(workspaceId, event.projectId, event.jobId);
+      }
+    };
+
+    const handleDbtProjectUpdated = (
+      event: Extract<RealtimeEvent, { type: "dbt.project.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      // Refresh the project list lazily — only when the dbt surface was used.
+      if (!useDbtStore.getState().projectsLoaded) return;
+      void useDbtStore.getState().fetchProjects(workspaceId);
+    };
+
+    // Server-persisted dashboard saves/restores (draft/published model): pull
+    // the authoritative dashboard for an OPEN dashboard when its version
+    // advances — but NEVER clobber a user mid-edit. Skips the reload if this
+    // tab is editing or holds unsaved local changes (their work wins until they
+    // save/discard); echo-suppressed by clientId; stale events ignored.
+    const handleDashboardUpdated = (
+      event: Extract<RealtimeEvent, { type: "dashboard.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      const ds = useDashboardStore.getState();
+      const open = ds.openDashboards[event.dashboardId];
+      if (!open) return; // not open here — explorer/canvas refreshes lazily
+      if ((open.version ?? 0) >= event.version) return; // stale / own echo
+      if (ds.editingDashboards[event.dashboardId]) return; // don't stomp editor
+      const savedHash = ds.savedStateHashes[event.dashboardId];
+      if (
+        savedHash !== undefined &&
+        computeDashboardStateHash(open) !== savedHash
+      ) {
+        return; // unsaved local changes — preserve them
+      }
+      void ds.reloadDashboard(workspaceId, event.dashboardId);
     };
 
     const handleEvent = (event: RealtimeEvent) => {
       switch (event.type) {
         case "console.updated":
           handleConsoleUpdated(event);
+          break;
+        case "app.updated":
+          handleAppUpdated(event);
+          break;
+        case "dashboard.updated":
+          handleDashboardUpdated(event);
+          break;
+        case "dbt.file.updated":
+          handleDbtFileUpdated(event);
+          break;
+        case "dbt.git.updated":
+          handleDbtGitUpdated(event);
+          break;
+        case "dbt.checkout.updated":
+          handleDbtCheckoutUpdated(event);
+          break;
+        case "dbt.job.updated":
+          handleDbtJobUpdated(event);
+          break;
+        case "dbt.run.updated":
+          handleDbtRunUpdated(event);
+          break;
+        case "dbt.project.updated":
+          handleDbtProjectUpdated(event);
           break;
         case "console.deleted":
           handleConsoleDeleted(event);
@@ -318,6 +600,13 @@ export const useRealtimeStore = create<RealtimeStore>()(
           set(state => {
             state.chatActivity[event.chatId] = event.state;
           });
+          // Agent turn finished: reconcile open consoles. Tool-agnostic
+          // catch-all for any console.updated poke missed during the turn
+          // (SSE blip, poke-before-tab-open race) and for detached
+          // server-side runs that completed while this window was attached.
+          if (event.state === "idle" && event.chatId === get().activeChatId) {
+            scheduleSync();
+          }
           break;
       }
     };
@@ -392,6 +681,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
         // Reconnect is a refetch, not a replay: reconcile everything the
         // window has open against current server revisions.
         void get().syncRevisions();
+        syncDbtGitState();
       };
 
       source.addEventListener("message", (e: MessageEvent) => {
@@ -444,6 +734,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
         // Connection looks healthy; revisions may still have moved while we
         // were backgrounded (throttled timers) — reconcile.
         void get().syncRevisions();
+        syncDbtGitState();
       } else {
         // Stream missing, mid-backoff, or silent past ~1.5 heartbeats.
         // `status === "open"` is NOT trustworthy here: Chrome freezes
@@ -470,6 +761,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
     return {
       status: "idle",
       workspaceId: null,
+      currentUserId: null,
       activeChatId: null,
       chatActivity: {},
 
@@ -507,6 +799,12 @@ export const useRealtimeStore = create<RealtimeStore>()(
         });
       },
 
+      setCurrentUserId: userId => {
+        set(state => {
+          state.currentUserId = userId;
+        });
+      },
+
       syncRevisions: async () => {
         const workspaceId = get().workspaceId;
         if (!workspaceId) return;
@@ -534,6 +832,17 @@ export const useRealtimeStore = create<RealtimeStore>()(
           const store = useConsoleStore.getState();
           for (const entry of res.changed) {
             const tab = store.tabs[entry.id];
+
+            // An agent edit can also RENAME the console (modify_console title).
+            // Patch the sidebar tree node by id IN PLACE (no full refetch, so
+            // no loading skeletons or layout shift) — the Apollo-style
+            // "update entity by id" pattern. tab.title here is the pre-apply
+            // value, so a real rename is detected before it is applied below.
+            if (entry.name && tab && entry.name !== tab.title) {
+              useConsoleTreeStore
+                .getState()
+                .applyRemoteRename(workspaceId, entry.id, entry.name);
+            }
 
             // Agent (modify_console) edits surface as a Monaco Accept/Reject
             // diff instead of being applied silently. Route the pulled copy

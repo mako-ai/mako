@@ -14,6 +14,9 @@ on:
         description: "Type the target database name to confirm (e.g., 'staging' or 'dev')"
         required: true
         type: string
+  schedule:
+    # Nightly at 03:00 UTC — refresh both dev and staging from production.
+    - cron: "0 3 * * *"
 
 env:
   GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -22,11 +25,14 @@ permissions:
   contents: read
 
 jobs:
-  seed-database:
-    name: Seed ${{ inputs.target_database }} from Production
+  setup:
+    name: Determine targets
     runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.compute.outputs.targets }}
     steps:
-      - name: Validate confirmation
+      - name: Validate confirmation (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
         run: |
           if [ "${{ inputs.confirm }}" != "${{ inputs.target_database }}" ]; then
             echo "❌ Confirmation mismatch!"
@@ -38,6 +44,25 @@ jobs:
           fi
           echo "✅ Confirmation validated: ${{ inputs.target_database }}"
 
+      - name: Compute target list
+        id: compute
+        run: |
+          # Scheduled runs refresh BOTH non-prod databases; manual runs target one.
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo 'targets=["dev","staging"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'targets=["${{ inputs.target_database }}"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  seed-database:
+    name: Seed ${{ matrix.target }} from Production
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.setup.outputs.targets) }}
+    steps:
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -68,7 +93,7 @@ jobs:
           STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
           DEV_DATABASE_URL: ${{ secrets.DEV_DATABASE_URL }}
         run: |
-          case "${{ inputs.target_database }}" in
+          case "${{ matrix.target }}" in
             staging)
               if [ -z "$STAGING_DATABASE_URL" ]; then
                 echo "❌ STAGING_DATABASE_URL secret is not configured"
@@ -86,7 +111,7 @@ jobs:
               echo "Target: dev database"
               ;;
             *)
-              echo "❌ Unknown target database: ${{ inputs.target_database }}"
+              echo "❌ Unknown target database: ${{ matrix.target }}"
               exit 1
               ;;
           esac
@@ -98,7 +123,7 @@ jobs:
         run: |
           set -o pipefail
 
-          echo "🗄️ Seeding ${{ inputs.target_database }} database from production..."
+          echo "🗄️ Seeding ${{ matrix.target }} database from production..."
 
           # Extract database names from URLs
           extract_db_name() {
@@ -123,19 +148,15 @@ jobs:
           fi
 
           # Drop existing target database
-          echo "Dropping existing ${{ inputs.target_database }} database..."
+          echo "Dropping existing ${{ matrix.target }} database..."
           mongosh "$TARGET_DATABASE_URL" --eval "db.dropDatabase()" || true
 
-          # Exclude large collections that aren't needed for staging/dev testing
+          # Only the two heaviest sync collections are excluded (webhookevents ~1.7GB,
+          # flow_executions ~700MB). Everything else — chats, llmusages,
+          # query_executions, CDC/materialization — is copied. Matches ./restore.sh.
           EXCLUDE_COLLECTIONS=(
-            "flow_executions"
             "webhookevents"
-            "cdc_change_events"
-            "cdc_state_transitions"
-            "query_executions"
-            "materialization_runs"
-            "chats"
-            "llmusages"
+            "flow_executions"
           )
           EXCLUDE_ARGS=""
           for col in "${EXCLUDE_COLLECTIONS[@]}"; do
@@ -143,7 +164,7 @@ jobs:
           done
 
           # Copy production to target using archive pipe
-          echo "Copying production data to ${{ inputs.target_database }}..."
+          echo "Copying production data to ${{ matrix.target }}..."
           echo "Excluding collections: ${EXCLUDE_COLLECTIONS[*]}"
           if ! mongodump --uri="$PROD_DATABASE_URL" ${EXCLUDE_ARGS} --gzip --archive | mongorestore --uri="$TARGET_DATABASE_URL" --gzip --archive \
             --nsInclude="${PROD_DB_NAME}.*" \
@@ -153,55 +174,19 @@ jobs:
             exit 1
           fi
 
-          echo "✅ Production data successfully copied to ${{ inputs.target_database }}"
+          echo "✅ Production data successfully copied to ${{ matrix.target }}"
 
           # Create empty excluded collections with their indexes
           echo "Creating empty excluded collections with indexes..."
           mongosh "$TARGET_DATABASE_URL" --quiet --eval "
-            db.createCollection('flow_executions');
-            db.flow_executions.createIndex({ flowId: 1, startedAt: -1 });
-
             db.createCollection('webhookevents');
             db.webhookevents.createIndex({ flowId: 1, eventId: 1 }, { unique: true });
             db.webhookevents.createIndex({ flowId: 1, status: 1, receivedAt: 1 });
             db.webhookevents.createIndex({ flowId: 1, applyStatus: 1, receivedAt: 1 });
             db.webhookevents.createIndex({ workspaceId: 1, receivedAt: -1 });
 
-            db.createCollection('cdc_change_events');
-            db.cdc_change_events.createIndex({ idempotencyKey: 1 }, { unique: true });
-            db.cdc_change_events.createIndex({ flowId: 1, entity: 1, ingestSeq: 1 });
-            db.cdc_change_events.createIndex({ flowId: 1, entity: 1, recordId: 1, sourceTs: 1, ingestSeq: 1 }, { unique: true });
-            db.cdc_change_events.createIndex({ flowId: 1, entity: 1, sourceTs: 1, ingestSeq: 1 });
-            db.cdc_change_events.createIndex({ flowId: 1, entity: 1, materializationStatus: 1, ingestSeq: 1 });
-            db.cdc_change_events.createIndex({ flowId: 1, entity: 1, stageStatus: 1, ingestSeq: 1 });
-            db.cdc_change_events.createIndex({ appliedAt: 1 }, { expireAfterSeconds: 604800 });
-
-            db.createCollection('cdc_state_transitions');
-            db.cdc_state_transitions.createIndex({ flowId: 1, at: -1 });
-
-            db.createCollection('query_executions');
-            db.query_executions.createIndex({ workspaceId: 1, executedAt: -1 });
-            db.query_executions.createIndex({ userId: 1, executedAt: -1 });
-            db.query_executions.createIndex({ apiKeyId: 1, executedAt: -1 }, { sparse: true });
-            db.query_executions.createIndex({ workspaceId: 1, status: 1 });
-            db.query_executions.createIndex({ executedAt: 1 }, { expireAfterSeconds: 7776000 });
-
-            db.createCollection('materialization_runs');
-            db.materialization_runs.createIndex({ dashboardId: 1, dataSourceId: 1, requestedAt: -1 });
-            db.materialization_runs.createIndex({ workspaceId: 1, requestedAt: -1 });
-            db.materialization_runs.createIndex({ status: 1, lastHeartbeat: 1 });
-            db.materialization_runs.createIndex({ requestedAt: 1 }, { expireAfterSeconds: 2592000 });
-
-            db.createCollection('chats');
-            db.chats.createIndex({ workspaceId: 1 });
-            db.chats.createIndex({ workspaceId: 1, title: 1 });
-            db.chats.createIndex({ workspaceId: 1, createdBy: 1 });
-
-            db.createCollection('llmusages');
-            db.llmusages.createIndex({ workspaceId: 1, createdAt: -1 });
-            db.llmusages.createIndex({ userId: 1, createdAt: -1 });
-            db.llmusages.createIndex({ chatId: 1 });
-            db.llmusages.createIndex({ workspaceId: 1, userId: 1, createdAt: -1 });
+            db.createCollection('flow_executions');
+            db.flow_executions.createIndex({ flowId: 1, startedAt: -1 });
 
             print('Empty collections with indexes created');
           "
@@ -210,7 +195,7 @@ jobs:
         env:
           DATABASE_URL: ${{ steps.target-db.outputs.target_url }}
         run: |
-          echo "🔄 Running migrations on ${{ inputs.target_database }}..."
+          echo "🔄 Running migrations on ${{ matrix.target }}..."
           pnpm run migrate
           echo "✅ Migrations completed"
 
@@ -220,8 +205,9 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| | |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Target** | ${{ inputs.target_database }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Target** | ${{ matrix.target }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Source** | production |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Trigger** | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Migrations** | ✅ Applied |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "The ${{ inputs.target_database }} database has been reset with fresh production data." >> $GITHUB_STEP_SUMMARY
+          echo "The ${{ matrix.target }} database has been reset with fresh production data." >> $GITHUB_STEP_SUMMARY

@@ -31,6 +31,7 @@ import {
   Plus,
   Search,
   ShieldCheck,
+  Square,
   Table2,
   Trash2,
   Wrench,
@@ -43,6 +44,7 @@ import {
   type ToolIconKey,
   type ToolUiConfig,
 } from "../agent-runtime/client-tool-manifest";
+import { getOutputSummary } from "./streaming-tool-card-summary";
 
 export type ToolPartState =
   | "input-streaming"
@@ -116,6 +118,8 @@ function renderToolIcon(iconKey: ToolIconKey): React.ReactNode {
       return <Brain size={ICON_SIZE} />;
     case "shield-check":
       return <ShieldCheck size={ICON_SIZE} />;
+    case "square":
+      return <Square size={ICON_SIZE} />;
     case "help-circle":
       return <HelpCircle size={ICON_SIZE} />;
     default:
@@ -131,59 +135,6 @@ function getToolConfig(toolName: string): ToolUiConfig {
       icon: "help-circle",
     }
   );
-}
-
-function getOutputSummary(output: unknown): string | null {
-  if (output === null || output === undefined) return null;
-
-  const o = output as Record<string, unknown>;
-
-  if (o.success === false || o.error) {
-    const raw = o.error;
-    const err =
-      typeof raw === "string"
-        ? raw
-        : raw && typeof raw === "object" && "message" in raw
-          ? String((raw as { message: unknown }).message)
-          : "Failed";
-    return err.length > 50 ? err.slice(0, 50) + "…" : err;
-  }
-
-  if (o.state === "definition_updated") {
-    return "Definition saved only";
-  }
-  if (o.state === "loaded") {
-    if (typeof o.rowCount === "number") {
-      return `${o.rowCount} row${o.rowCount !== 1 ? "s" : ""}`;
-    }
-    return "Fresh data loaded";
-  }
-
-  if (Array.isArray(o.data)) {
-    return `${o.data.length} row${o.data.length !== 1 ? "s" : ""}`;
-  }
-  if (typeof o.rowCount === "number") {
-    return `${o.rowCount} row${o.rowCount !== 1 ? "s" : ""}`;
-  }
-
-  if (Array.isArray(output)) {
-    return `${output.length} result${output.length !== 1 ? "s" : ""}`;
-  }
-
-  if (Array.isArray(o.fields)) {
-    return `${o.fields.length} field${o.fields.length !== 1 ? "s" : ""}`;
-  }
-  if (Array.isArray(o.columns)) {
-    return `${o.columns.length} column${o.columns.length !== 1 ? "s" : ""}`;
-  }
-  if (Array.isArray(o.databases)) {
-    return `${o.databases.length} database${o.databases.length !== 1 ? "s" : ""}`;
-  }
-  if (Array.isArray(o.tables)) {
-    return `${o.tables.length} table${o.tables.length !== 1 ? "s" : ""}`;
-  }
-
-  return null;
 }
 
 function formatOutputForDisplay(output: unknown): string {
@@ -215,6 +166,101 @@ function formatOutputForDisplay(output: unknown): string {
   }
 
   return JSON.stringify(o, null, 2);
+}
+
+// The tool body always renders the FULL content — never truncated. What we DO
+// bound is the *highlighter*: Prism expands every token into a DOM node and
+// re-parses the whole string on each streaming tick, so an unbounded payload
+// would explode into tens of thousands of nodes and make long chats (and
+// mobile Safari) crawl. Past this budget the body falls back to a plain
+// monospace <pre> — a single text node, cheap at any size — trading syntax
+// colors for completeness. The scroll container bounds what's on screen.
+const MAX_HIGHLIGHT_CHARS = 20_000;
+const MAX_HIGHLIGHT_LINES = 500;
+
+function isWithinHighlightBudget(text: string): boolean {
+  if (text.length > MAX_HIGHLIGHT_CHARS) return false;
+  let lines = 1;
+  let idx = -1;
+  while ((idx = text.indexOf("\n", idx + 1)) !== -1) {
+    if (++lines > MAX_HIGHLIGHT_LINES) return false;
+  }
+  return true;
+}
+
+// Matches SyntaxHighlighter's Prism theme typography so the plain fallback is
+// visually identical apart from colorization.
+const PLAIN_CODE_FONT_FAMILY =
+  'Consolas, Monaco, "Andale Mono", "Ubuntu Mono", monospace';
+
+/**
+ * Code body renderer: syntax-highlighted while the content fits the budget,
+ * plain monospace beyond it. Either way the full text is rendered.
+ */
+function ToolCardCode({
+  text,
+  language,
+  syntaxTheme,
+  fontSize,
+}: {
+  text: string;
+  language: string;
+  syntaxTheme: Record<string, React.CSSProperties>;
+  fontSize: string;
+}) {
+  if (isWithinHighlightBudget(text)) {
+    return (
+      <SyntaxHighlighter
+        style={syntaxTheme}
+        language={language}
+        PreTag="div"
+        customStyle={{
+          fontSize,
+          margin: 0,
+          padding: "0.75rem",
+          background: "transparent",
+          overflow: "visible",
+        }}
+      >
+        {text}
+      </SyntaxHighlighter>
+    );
+  }
+  return (
+    <Box
+      component="pre"
+      sx={{
+        fontSize,
+        m: 0,
+        p: "0.75rem",
+        fontFamily: PLAIN_CODE_FONT_FAMILY,
+        whiteSpace: "pre",
+        overflow: "visible",
+        color: "text.primary",
+      }}
+    >
+      {text}
+    </Box>
+  );
+}
+
+/**
+ * Cheap check (no full serialization) for whether an output has anything worth
+ * showing in the expandable body. Used to decide `canExpand` without paying the
+ * cost of `formatOutputForDisplay` for collapsed cards.
+ */
+function hasDisplayableOutput(output: unknown): boolean {
+  if (output === null || output === undefined) return false;
+  if (typeof output === "string") return output.length > 0;
+  if (Array.isArray(output)) return output.length > 0;
+  if (typeof output === "object") {
+    const o = output as Record<string, unknown>;
+    const keys = Object.keys(o).filter(
+      k => !(k === "success" && o.success === true),
+    );
+    return keys.length > 0;
+  }
+  return false;
 }
 
 // ── Animations ───────────────────────────────────────────────
@@ -304,13 +350,28 @@ export const StreamingToolCard = React.memo(
     );
 
     useEffect(() => {
-      if ((isDone || isError) && hasCodePreview) {
-        const timer = setTimeout(() => setExpanded(false), 800);
-        return () => clearTimeout(timer);
-      }
-      if (isActive && hasCodePreview) {
+      if (!hasCodePreview) return;
+      if (isActive) {
+        // Auto-expand while the tool is actively streaming/executing so its
+        // query/preview builds live in view.
         setExpanded(true);
         setUserScrolled(false);
+        return;
+      }
+      if (isDone || isError) {
+        // Collapse the instant THIS card finishes — not deferred to the end of
+        // the turn. The anti-bounce invariant is "a finished block's height
+        // must never change AFTER a later block has started rendering below
+        // it": collapsing right at the finish transition (while this card is
+        // still the streaming tail, before the next reasoning/tool/text part
+        // appends) keeps the finished card fixed from then on. Because the body
+        // `<Collapse>` uses `timeout={0}`, the shrink is a single discrete
+        // frame that Virtuoso's bottom-pin (`totalListHeightChanged`) catches
+        // in one shot. `isDone`/`isError`/`isActive` are monotonic (a terminal
+        // card never goes back to active) and the memo comparator freezes
+        // terminal cards, so this runs exactly once and never fights a manual
+        // re-expand.
+        setExpanded(false);
       }
     }, [isDone, isError, isActive, hasCodePreview]);
 
@@ -319,15 +380,39 @@ export const StreamingToolCard = React.memo(
     const rawContent = config.preview
       ? inputObj?.[config.preview.field]
       : undefined;
-    const defaultCode =
-      typeof rawContent === "string"
-        ? rawContent
-        : rawContent && typeof rawContent === "object"
-          ? JSON.stringify(rawContent, null, 2)
-          : "";
-    const code = bodyPreview?.content ?? defaultCode;
     const codeLanguage =
       bodyPreview?.language ?? config.preview?.language ?? "text";
+
+    // Cheap presence checks (no serialization) so we can decide expandability
+    // for collapsed cards without building the (potentially huge) body strings.
+    const hasCode = Boolean(
+      bodyPreview?.content ||
+        (typeof rawContent === "string"
+          ? rawContent.length > 0
+          : rawContent != null),
+    );
+    const hasOutput = (isDone || isError) && hasDisplayableOutput(output);
+
+    const hasVisibleBody = hasCode || hasOutput;
+    const canExpand = hasVisibleBody;
+
+    // Only build the heavy body strings when they will actually be rendered:
+    // while the card is active (streaming the preview) or after the user
+    // expands it. Collapsed history cards never pay this cost. The body itself
+    // is unmounted (Collapse `unmountOnExit`) so its DOM is gone too.
+    const shouldRenderBody = (expanded || isActive) && hasVisibleBody;
+
+    const code = useMemo(() => {
+      if (!shouldRenderBody || !hasCode) return "";
+      return (
+        bodyPreview?.content ??
+        (typeof rawContent === "string"
+          ? rawContent
+          : rawContent && typeof rawContent === "object"
+            ? JSON.stringify(rawContent, null, 2)
+            : "")
+      );
+    }, [shouldRenderBody, hasCode, bodyPreview?.content, rawContent]);
 
     useEffect(() => {
       if (isStreaming && !userScrolled && codeContainerRef.current) {
@@ -351,18 +436,16 @@ export const StreamingToolCard = React.memo(
     );
 
     const formattedOutput = useMemo(
-      () => (isDone || isError ? formatOutputForDisplay(output) : ""),
-      [isDone, isError, output],
+      () =>
+        shouldRenderBody && (isDone || isError)
+          ? formatOutputForDisplay(output)
+          : "",
+      [shouldRenderBody, isDone, isError, output],
     );
     const outputLang =
       formattedOutput.startsWith("{") || formattedOutput.startsWith("[")
         ? "json"
         : "text";
-
-    const hasVisibleBody =
-      code.length > 0 || ((isDone || isError) && formattedOutput.length > 0);
-
-    const canExpand = hasVisibleBody;
 
     const statusText = isStreaming
       ? "Generating…"
@@ -565,8 +648,11 @@ export const StreamingToolCard = React.memo(
           </Box>
         </Box>
 
-        {/* Expandable body: code preview + output */}
-        <Collapse in={expanded && hasVisibleBody} timeout={300}>
+        {/* Expandable body: code preview + output.
+            `unmountOnExit` removes the syntax-highlighted DOM (and its many
+            nodes) entirely when collapsed — critical for keeping the DOM small
+            in long chats on mobile Safari. */}
+        <Collapse in={expanded && hasVisibleBody} timeout={0} unmountOnExit>
           {/* Code preview */}
           {code.length > 0 && (
             <Box
@@ -579,20 +665,12 @@ export const StreamingToolCard = React.memo(
                 borderColor: "divider",
               }}
             >
-              <SyntaxHighlighter
-                style={syntaxTheme}
+              <ToolCardCode
+                text={code || " "}
                 language={codeLanguage}
-                PreTag="div"
-                customStyle={{
-                  fontSize: "0.78rem",
-                  margin: 0,
-                  padding: "0.75rem",
-                  background: "transparent",
-                  overflow: "visible",
-                }}
-              >
-                {code || " "}
-              </SyntaxHighlighter>
+                syntaxTheme={syntaxTheme}
+                fontSize="0.78rem"
+              />
             </Box>
           )}
 
@@ -611,20 +689,12 @@ export const StreamingToolCard = React.memo(
                 }),
               }}
             >
-              <SyntaxHighlighter
-                style={syntaxTheme}
+              <ToolCardCode
+                text={formattedOutput}
                 language={outputLang}
-                PreTag="div"
-                customStyle={{
-                  fontSize: "0.75rem",
-                  margin: 0,
-                  padding: "0.75rem",
-                  background: "transparent",
-                  overflow: "visible",
-                }}
-              >
-                {formattedOutput}
-              </SyntaxHighlighter>
+                syntaxTheme={syntaxTheme}
+                fontSize="0.75rem"
+              />
             </Box>
           )}
         </Collapse>

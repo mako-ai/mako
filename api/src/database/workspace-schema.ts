@@ -350,7 +350,11 @@ export type ConsoleAccessLevel = "private" | "workspace";
  *   member role are always capped to viewer).
  * - `publicShare` (dashboards + apps only) exposes the resource read-only at
  *   /share/:token, optionally protected by a bcrypt-hashed password. Public
- *   viewers only ever see materialized snapshot artifacts — never live data.
+ *   viewers see materialized snapshot artifacts by default. When the owner
+ *   opts in with `allowLiveQueries`, an app's public viewer may also re-run the
+ *   app's *published* (owner-defined, never viewer-supplied) live bindings
+ *   server-side under the owner's connection — read-only and row-capped, so
+ *   "live" never means "arbitrary".
  */
 export type ResourceShareRole = "viewer" | "editor";
 
@@ -371,6 +375,14 @@ export interface IPublicShare {
   createdBy?: string;
   /** Throttle marker for the anonymous "Refresh data" action (dashboards). */
   lastPublicRefreshAt?: Date;
+  /**
+   * Apps only. When true, the public viewer may execute the app's published
+   * live bindings server-side (read-only, row-capped, rate-limited) instead of
+   * being limited to frozen snapshots. Default false — existing shares stay
+   * snapshot-only. The query is always the owner's published SQL; the viewer
+   * never supplies SQL.
+   */
+  allowLiveQueries?: boolean;
 }
 
 /**
@@ -470,7 +482,7 @@ export interface ISavedConsole extends Document {
    */
   lastRun?: {
     at: Date;
-    status: "success" | "error";
+    status: "running" | "success" | "error" | "cancelled";
     rowCount?: number;
     durationMs: number;
     error?: string;
@@ -478,6 +490,10 @@ export interface ISavedConsole extends Document {
     fields?: unknown;
     runBy: string;
     source: string;
+    /** Detached-run correlation: when the (still-running) task started. */
+    startedAt?: Date;
+    /** Detached-run correlation: id used to poll/cancel this execution. */
+    executionId?: string;
   };
   is_deleted?: boolean;
   deletedAt?: Date;
@@ -585,6 +601,13 @@ export interface IMessagePart {
   type: string; // "text", "reasoning", "tool-{toolName}", "dynamic-tool"
   text?: string; // For text and reasoning parts
   reasoning?: string; // Alternative field for reasoning content
+  // Provider metadata for reasoning parts. Anthropic extended thinking returns a
+  // per-block `signature` (lives at providerMetadata.anthropic.signature). The
+  // signature MUST round-trip byte-for-byte: on a tool-use continuation Anthropic
+  // rejects the turn ("thinking ... blocks in the latest assistant message cannot
+  // be modified") if a replayed thinking block lacks/alters its original
+  // signature. Persisting it keeps reloaded chats continuable.
+  providerMetadata?: unknown;
   toolCallId?: string; // For tool parts
   toolName?: string; // For tool parts
   input?: unknown; // Tool input/arguments (named 'input' for AI SDK v6 compat, was 'args')
@@ -850,6 +873,19 @@ export interface IFlow extends Document {
     cron?: string;
     timezone?: string;
   };
+  /**
+   * Optional periodic full backfill cadence for CDC flows. Independent of
+   * `schedule` (which only drives `type: scheduled` batch runs). When enabled,
+   * `cdcScheduledBackfillFunction` triggers `cdcBackfillService.startBackfill`
+   * on the cron cadence so a streaming CDC flow gets a periodic full
+   * reconciliation while the live stream stays active between runs.
+   */
+  backfillSchedule?: {
+    enabled: boolean;
+    cron?: string;
+    timezone?: string;
+    lastRunAt?: Date;
+  };
   webhookConfig?: {
     endpoint: string;
     secret: string;
@@ -1018,6 +1054,13 @@ export interface ICdcEntityState extends Document {
   consecutiveFailures: number;
   lastFailedAt?: Date;
   lastFailureError?: string;
+  // Progress of an in-place destination-table repartition (layout change).
+  repartition?: {
+    status: "pending" | "running" | "done" | "failed";
+    startedAt?: Date;
+    completedAt?: Date;
+    error?: string;
+  };
 }
 
 export type IBigQueryChangeEvent = ICdcChangeEvent;
@@ -1499,6 +1542,7 @@ const PublicShareSchema = new Schema<IPublicShare>(
     createdAt: { type: Date },
     createdBy: { type: String },
     lastPublicRefreshAt: { type: Date },
+    allowLiveQueries: { type: Boolean, default: false },
   },
   { _id: false },
 );
@@ -1685,7 +1729,11 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       type: new Schema(
         {
           at: { type: Date, required: true },
-          status: { type: String, enum: ["success", "error"], required: true },
+          status: {
+            type: String,
+            enum: ["running", "success", "error", "cancelled"],
+            required: true,
+          },
           rowCount: { type: Number },
           durationMs: { type: Number, required: true },
           error: { type: String },
@@ -1693,6 +1741,8 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
           fields: { type: Schema.Types.Mixed },
           runBy: { type: String, required: true },
           source: { type: String, required: true },
+          startedAt: { type: Date },
+          executionId: { type: String },
         },
         { _id: false },
       ),
@@ -1774,6 +1824,12 @@ const ChatSchema = new Schema<IChat>(
             },
             text: String,
             reasoning: String,
+            // Anthropic extended-thinking signature (and any other provider
+            // metadata) for reasoning parts. Must persist so a reloaded chat can
+            // replay thinking blocks byte-for-byte on a tool-use continuation;
+            // otherwise Anthropic rejects the turn with "thinking ... blocks in
+            // the latest assistant message cannot be modified".
+            providerMetadata: Schema.Types.Mixed,
             toolCallId: String,
             toolName: String,
             input: Schema.Types.Mixed,
@@ -2095,6 +2151,28 @@ const FlowSchema = new Schema<IFlow>(
         default: "UTC",
       },
     },
+    backfillSchedule: {
+      enabled: {
+        type: Boolean,
+        default: false,
+      },
+      cron: {
+        type: String,
+        validate: {
+          validator: function (v: string) {
+            if (!v) return true;
+            const fields = v.split(" ");
+            return fields.length === 5 || fields.length === 6;
+          },
+          message: "Invalid cron expression",
+        },
+      },
+      timezone: {
+        type: String,
+        default: "UTC",
+      },
+      lastRunAt: Date,
+    },
     webhookConfig: {
       endpoint: {
         type: String,
@@ -2291,6 +2369,7 @@ FlowSchema.index({ destinationDatabaseId: 1 });
 FlowSchema.index({ "tableDestination.connectionId": 1 }, { sparse: true });
 FlowSchema.index({ nextRunAt: 1 });
 FlowSchema.index({ workspaceId: 1, syncEngine: 1 });
+FlowSchema.index({ syncEngine: 1, "backfillSchedule.enabled": 1 });
 
 /**
  * FlowExecution Schema (binds to 'flow_executions' collection)
@@ -2396,10 +2475,51 @@ const WebhookEventSchema = new Schema<IWebhookEvent>(
 WebhookEventSchema.index({ flowId: 1, eventId: 1 }, { unique: true });
 WebhookEventSchema.index({ flowId: 1, status: 1, receivedAt: 1 });
 WebhookEventSchema.index({ flowId: 1, applyStatus: 1, receivedAt: 1 });
+// Supports the GLOBAL cron-ingest query in cdcMaterializeSchedulerFunction:
+// find({ status: "pending" }).sort({ receivedAt: 1 }). Without a flowId-free
+// index this query does a COLLSCAN + in-memory sort over the whole collection.
+WebhookEventSchema.index({ status: 1, receivedAt: 1 });
 WebhookEventSchema.index({ workspaceId: 1, receivedAt: -1 });
+// Tiered retention by applyStatus (anchored on receivedAt, which is required on
+// every doc so the four partial TTLs fully cover the collection). MongoDB allows
+// multiple TTL indexes on the same key when they differ by partialFilterExpression
+// (same pattern as cdc_change_events applied-vs-dropped). Successfully processed
+// events are purged quickly; errors are retained longer for debugging.
+/** Successfully processed -> short retention. */
 WebhookEventSchema.index(
   { receivedAt: 1 },
-  { expireAfterSeconds: 7 * 24 * 60 * 60 },
+  {
+    name: "webhookevents_applied_ttl_3d",
+    expireAfterSeconds: 3 * 24 * 60 * 60,
+    partialFilterExpression: { applyStatus: "applied" },
+  },
+);
+/** Awaiting destination apply -> safety net (matches prior flat behavior). */
+WebhookEventSchema.index(
+  { receivedAt: 1 },
+  {
+    name: "webhookevents_pending_ttl_7d",
+    expireAfterSeconds: 7 * 24 * 60 * 60,
+    partialFilterExpression: { applyStatus: "pending" },
+  },
+);
+/** Intentionally skipped -> keep longer for audit. */
+WebhookEventSchema.index(
+  { receivedAt: 1 },
+  {
+    name: "webhookevents_dropped_ttl_7d",
+    expireAfterSeconds: 7 * 24 * 60 * 60,
+    partialFilterExpression: { applyStatus: "dropped" },
+  },
+);
+/** Errors -> retained longest for debugging. */
+WebhookEventSchema.index(
+  { receivedAt: 1 },
+  {
+    name: "webhookevents_failed_ttl_30d",
+    expireAfterSeconds: 30 * 24 * 60 * 60,
+    partialFilterExpression: { applyStatus: "failed" },
+  },
 );
 
 /**
@@ -2541,6 +2661,15 @@ const CdcEntityStateSchema = new Schema<ICdcEntityState>(
     consecutiveFailures: { type: Number, default: 0 },
     lastFailedAt: Date,
     lastFailureError: String,
+    repartition: {
+      status: {
+        type: String,
+        enum: ["pending", "running", "done", "failed"],
+      },
+      startedAt: Date,
+      completedAt: Date,
+      error: String,
+    },
   },
   {
     collection: "cdc_entity_state",
@@ -2963,6 +3092,14 @@ export interface IDashboard extends Document {
   workspaceId: Types.ObjectId;
   title: string;
   description?: string;
+  /**
+   * Client-supplied creation idempotency key (the agent toolCallId). Multiple
+   * windows attached to the same chat stream each dispatch the same
+   * create_dashboard call; the unique partial index on
+   * { workspaceId, creationIdempotencyKey } makes the second insert a
+   * duplicate, and the create route returns the existing dashboard instead.
+   */
+  creationIdempotencyKey?: string;
 
   dataSources: IDashboardDataSource[];
 
@@ -3083,6 +3220,19 @@ export interface IDashboard extends Document {
     expiresAt: Date;
   };
 
+  /**
+   * Last published definition snapshot (draft/published split, mirrors
+   * MakoApp). The top-level definition fields are the working draft; `published`
+   * is what public/shared viewers render. Set on every explicit save (which
+   * also creates a version); a restore reverts the draft only, leaving
+   * `published` until the next save. Absent until first save — readers fall
+   * back to the live definition for back-compat. Shape = buildDashboardSnapshot.
+   */
+  published?: Record<string, unknown>;
+  /** EntityVersion number that was published into `published`. */
+  publishedVersion?: number;
+  publishedAt?: Date;
+
   folderId?: Types.ObjectId;
   access: "private" | "workspace";
   /** Role granted to workspace members when access is "workspace". */
@@ -3138,6 +3288,8 @@ export interface IDashboardDataSourceOrigin {
   consoleId?: Types.ObjectId;
   consoleName?: string;
   importedAt?: Date;
+  /** Agent toolCallId that created this data source (creation idempotency). */
+  createdByToolCallId?: string;
 }
 
 export interface IDashboardDataSource {
@@ -3148,6 +3300,11 @@ export interface IDashboardDataSource {
   origin?: IDashboardDataSourceOrigin;
   timeDimension?: string;
   rowLimit?: number;
+  /**
+   * How the data reaches widgets. `parquet` (default) materializes to a cached
+   * artifact; `live` streams the query server-side into DuckDB on every load.
+   */
+  materialization: "live" | "parquet";
   computedColumns?: Array<{
     name: string;
     expression: string;
@@ -3180,6 +3337,7 @@ const DashboardSchema = new Schema<IDashboard>(
     },
     title: { type: String, required: true },
     description: { type: String },
+    creationIdempotencyKey: { type: String },
 
     dataSources: [
       {
@@ -3228,9 +3386,15 @@ const DashboardSchema = new Schema<IDashboard>(
           },
           consoleName: { type: String },
           importedAt: { type: Date },
+          createdByToolCallId: { type: String },
         },
         timeDimension: { type: String },
         rowLimit: { type: Number },
+        materialization: {
+          type: String,
+          enum: ["live", "parquet"],
+          default: "parquet",
+        },
         computedColumns: [
           {
             name: { type: String, required: true },
@@ -3414,6 +3578,13 @@ const DashboardSchema = new Schema<IDashboard>(
       expiresAt: { type: Date },
     },
 
+    // Draft/published split (mirrors MakoApp): `published` holds the last
+    // committed definition snapshot (Mixed — same shape as
+    // buildDashboardSnapshot). Public/shared viewers render this.
+    published: { type: Schema.Types.Mixed, default: undefined },
+    publishedVersion: { type: Number },
+    publishedAt: { type: Date },
+
     folderId: {
       type: Schema.Types.ObjectId,
       ref: "DashboardFolder",
@@ -3449,6 +3620,16 @@ DashboardSchema.index({ workspaceId: 1, "sharedWith.userId": 1 });
 DashboardSchema.index(
   { "publicShare.token": 1 },
   { unique: true, sparse: true },
+);
+// Creation idempotency (see IDashboard.creationIdempotencyKey). Partial (not
+// sparse): a sparse COMPOUND index still indexes docs that have workspaceId
+// but no key, which would make every keyless dashboard collide.
+DashboardSchema.index(
+  { workspaceId: 1, creationIdempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { creationIdempotencyKey: { $type: "string" } },
+  },
 );
 
 /**
@@ -3560,7 +3741,11 @@ export const Connector = mongoose.model<IConnector>(
  * EntityVersion — immutable append-only version snapshots for consoles and dashboards.
  * Every explicit save creates a new version record; history is never rewritten.
  */
-export type VersionableEntityType = "console" | "dashboard" | "dbt-file";
+export type VersionableEntityType =
+  | "console"
+  | "dashboard"
+  | "dbt-file"
+  | "app";
 
 export interface IEntityVersion extends Document {
   _id: Types.ObjectId;
@@ -3585,7 +3770,7 @@ const EntityVersionSchema = new Schema<IEntityVersion>(
     },
     entityType: {
       type: String,
-      enum: ["console", "dashboard", "dbt-file"],
+      enum: ["console", "dashboard", "dbt-file", "app"],
       required: true,
     },
     entityId: {
@@ -3751,12 +3936,25 @@ export interface IMakoAppBindingCache {
 export interface IMakoAppDataBinding {
   id: string;
   name: string;
+  /**
+   * Optional link to a dbt project. When set, the `{{ dbt_schema }}` token in
+   * `code` resolves to a dbt environment's target schema at execution time —
+   * the prod-like environment by default (published apps, materialization,
+   * public shares), or a per-user preview override in the draft preview.
+   */
+  dbtProjectId?: string;
   connectionId: string;
   language: "sql" | "javascript" | "mongodb";
   code: string;
   databaseId?: string;
   databaseName?: string;
   materialization: "live" | "parquet";
+  materializationSchedule?: {
+    enabled: boolean;
+    cron: string | null;
+    timezone?: string;
+    dataFreshnessTtlMs?: number | null;
+  };
   cache?: IMakoAppBindingCache;
 }
 
@@ -3772,6 +3970,17 @@ export interface IMakoApp extends Document {
   dependencies: Record<string, string>;
   dataBindings: IMakoAppDataBinding[];
   version: number;
+  /**
+   * Last published definition snapshot (draft/published split). The top-level
+   * fields above are the working DRAFT (autosaved on every edit); `published`
+   * is the committed definition that public/shared viewers render. Absent until
+   * the app is first published — readers fall back to the draft for back-compat.
+   * Shape matches `buildAppSnapshot` (no server-owned binding `cache`).
+   */
+  published?: Record<string, unknown>;
+  /** EntityVersion number that was published into `published`. */
+  publishedVersion?: number;
+  publishedAt?: Date;
   access: "private" | "workspace";
   /** Role granted to workspace members when access is "workspace". */
   workspaceRole?: ResourceShareRole;
@@ -3834,6 +4043,7 @@ const MakoAppDataBindingSchema = new Schema<IMakoAppDataBinding>(
   {
     id: { type: String, required: true },
     name: { type: String, required: true },
+    dbtProjectId: { type: String },
     connectionId: { type: String, required: true },
     language: {
       type: String,
@@ -3847,6 +4057,12 @@ const MakoAppDataBindingSchema = new Schema<IMakoAppDataBinding>(
       type: String,
       enum: ["live", "parquet"],
       default: "live",
+    },
+    materializationSchedule: {
+      enabled: { type: Boolean, default: false },
+      cron: { type: String, default: null },
+      timezone: { type: String, default: "UTC" },
+      dataFreshnessTtlMs: { type: Number, default: null },
     },
     cache: { type: MakoAppBindingCacheSchema, default: undefined },
   },
@@ -3874,6 +4090,12 @@ const MakoAppSchema = new Schema<IMakoApp>(
     dependencies: { type: Schema.Types.Mixed, default: {} },
     dataBindings: { type: [MakoAppDataBindingSchema], default: [] },
     version: { type: Number, default: 1 },
+    // Draft/published split: `published` holds the last committed definition
+    // snapshot (Mixed — same shape as buildAppSnapshot). Public/shared viewers
+    // render this; the top-level fields are the working draft.
+    published: { type: Schema.Types.Mixed, default: undefined },
+    publishedVersion: { type: Number },
+    publishedAt: { type: Date },
     access: {
       type: String,
       enum: ["private", "workspace"],
@@ -4042,6 +4264,40 @@ export interface IDbtEnvironment {
   threads: number;
   /** dbt vars passed as --vars for every command in this environment. */
   vars?: Record<string, unknown>;
+  /**
+   * Personal (per-developer) environment: set to the owning user's id when
+   * this environment was auto-provisioned as that user's private dev target
+   * (dbt Cloud-style development credentials, e.g. schema `dbt_jonas`).
+   * Unset for shared environments (dev/prod). Agent/user actions without an
+   * explicit environment default to the caller's personal environment.
+   */
+  ownerUserId?: string;
+}
+
+/**
+ * Optional binding of a dbt project to a Git repository. When present, the
+ * project's files are imported/synced from this repo. Mongo (DbtFile) stays
+ * the canonical source the runner materializes from; this binding records
+ * where those files came from and lets us sync/commit against the remote.
+ */
+export interface IDbtRepoBinding {
+  provider: "github";
+  /** GitHub App installation id granting access to the repo (omit for public). */
+  installationId?: number;
+  /** Repo owner (org or user login). */
+  owner: string;
+  /** Repo name. */
+  repo: string;
+  /** Branch tracked for import/sync, e.g. "main". */
+  branch: string;
+  /**
+   * Optional sub-directory inside the repo holding the dbt project (when
+   * dbt_project.yml is not at the repo root). POSIX, no leading/trailing slash.
+   */
+  subdirectory?: string;
+  /** Commit SHA of the last successful import/sync. */
+  lastSyncedSha?: string;
+  lastSyncedAt?: Date;
 }
 
 export interface IDbtProject extends Document {
@@ -4053,10 +4309,41 @@ export interface IDbtProject extends Document {
   environments: IDbtEnvironment[];
   defaultEnvironment: string;
   /**
+   * Explicit PRODUCTION environment (the defer target). Drives which
+   * environment's successful runs update `lastProdManifestKey` (what ad-hoc
+   * `--defer` resolves against), what `{{ dbt_schema }}` resolves to for
+   * published apps, and which environment refuses ad-hoc warehouse writes.
+   * Unset → convention: the environment literally named "prod" when one
+   * exists, else the project default.
+   */
+  prodEnvironment?: string;
+  /**
    * Artifact-store key of the last successful prod manifest.json. This is
    * the state artifact for --defer / state:modified+ (Slim CI, later phase).
    */
   lastProdManifestKey?: string;
+  /** Git repository this project is imported/synced from (optional). */
+  repo?: IDbtRepoBinding;
+  /**
+   * Branches that refuse direct commits from Mako (dbt Cloud "read-only"
+   * main). Changes reach these branches only through a pull request
+   * (commit-to-branch → open PR → merge). New GitHub imports default this to
+   * the repo's default branch; existing projects migrated to [] (opt-in).
+   */
+  protectedBranches?: string[];
+  /**
+   * Pull-request CI config. When enabled, an opened/updated PR from the
+   * tracked branch triggers `dbt build --select state:modified+` (deferring to
+   * the prod manifest) and posts a GitHub commit status — like a dbt Cloud CI
+   * job. Off by default so connecting a repo never silently runs warehouse jobs.
+   */
+  ci?: {
+    enabled: boolean;
+    /** Environment (schema/connection) CI builds run against. */
+    environment?: string;
+    /** Defer unselected refs to the last prod manifest (Slim CI). Default true. */
+    deferToProduction?: boolean;
+  };
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
@@ -4073,6 +4360,21 @@ const DbtEnvironmentSchema = new Schema<IDbtEnvironment>(
     targetSchema: { type: String, required: true, trim: true },
     threads: { type: Number, default: 4, min: 1, max: 16 },
     vars: { type: Schema.Types.Mixed },
+    ownerUserId: { type: String },
+  },
+  { _id: false },
+);
+
+const DbtRepoBindingSchema = new Schema<IDbtRepoBinding>(
+  {
+    provider: { type: String, enum: ["github"], default: "github" },
+    installationId: { type: Number },
+    owner: { type: String, required: true, trim: true },
+    repo: { type: String, required: true, trim: true },
+    branch: { type: String, required: true, trim: true, default: "main" },
+    subdirectory: { type: String, trim: true },
+    lastSyncedSha: { type: String },
+    lastSyncedAt: { type: Date },
   },
   { _id: false },
 );
@@ -4088,7 +4390,21 @@ const DbtProjectSchema = new Schema<IDbtProject>(
     dbtVersion: { type: String, default: "1.9" },
     environments: { type: [DbtEnvironmentSchema], default: [] },
     defaultEnvironment: { type: String, default: "dev" },
+    prodEnvironment: { type: String },
     lastProdManifestKey: { type: String },
+    repo: { type: DbtRepoBindingSchema },
+    protectedBranches: { type: [String], default: undefined },
+    ci: {
+      type: new Schema(
+        {
+          enabled: { type: Boolean, default: false },
+          environment: { type: String },
+          deferToProduction: { type: Boolean, default: true },
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
     createdBy: { type: String, required: true },
   },
   { collection: "dbt_projects", timestamps: true },
@@ -4106,11 +4422,24 @@ export interface IDbtFile extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   projectId: Types.ObjectId;
+  /**
+   * Branch this row belongs to (repo-bound projects). A repo project keeps
+   * one COMMITTED base tree per checked-out branch: content always mirrors
+   * the branch head, uncommitted work lives in per-user DbtFileDraft
+   * overlays. Blank (non-repo) projects leave this unset — their DbtFile
+   * rows remain the single shared working tree.
+   */
+  branch?: string;
   /** POSIX path relative to project root, e.g. "models/staging/stg_x.sql". */
   path: string;
   content: string;
   updatedBy: string;
   is_deleted: boolean;
+  /**
+   * Git blob SHA of this file at the last import/sync/push. Per-user git
+   * status diffs a draft's blob SHA against this without re-fetching GitHub.
+   */
+  repoBlobSha?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -4127,18 +4456,229 @@ const DbtFileSchema = new Schema<IDbtFile>(
       ref: "DbtProject",
       required: true,
     },
+    branch: { type: String, trim: true },
     path: { type: String, required: true, trim: true },
     content: { type: String, default: "" },
     updatedBy: { type: String, required: true },
     is_deleted: { type: Boolean, default: false },
+    repoBlobSha: { type: String },
   },
   { collection: "dbt_files", timestamps: true },
 );
 
-DbtFileSchema.index({ projectId: 1, path: 1 }, { unique: true });
+// One row per (project, branch, path). Blank projects store branch: null,
+// which the unique index treats as a value, so their single tree stays unique.
+DbtFileSchema.index({ projectId: 1, branch: 1, path: 1 }, { unique: true });
 DbtFileSchema.index({ workspaceId: 1, projectId: 1, is_deleted: 1 });
 
 export const DbtFile = mongoose.model<IDbtFile>("DbtFile", DbtFileSchema);
+
+/**
+ * Per-user uncommitted edit to a dbt file (the draft overlay). Reads for a
+ * user merge draft-over-base: other workspace members never see a draft, so
+ * collaborators only observe committed changes — like separate git working
+ * trees. Drafts follow the user across branch switches (a dirty git tree
+ * carried through `git checkout`) and are cleared when committed.
+ */
+export interface IDbtFileDraft extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  /** Owning user id (or "agent" for agent edits outside a user session). */
+  userId: string;
+  path: string;
+  content: string;
+  /** Pending deletion of the base file (a staged `git rm`). */
+  is_deleted: boolean;
+  /** Blob SHA of the base content the draft started from (informational). */
+  baseBlobSha?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const DbtFileDraftSchema = new Schema<IDbtFileDraft>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "DbtProject",
+      required: true,
+    },
+    userId: { type: String, required: true },
+    path: { type: String, required: true, trim: true },
+    content: { type: String, default: "" },
+    is_deleted: { type: Boolean, default: false },
+    baseBlobSha: { type: String },
+  },
+  { collection: "dbt_file_drafts", timestamps: true },
+);
+
+DbtFileDraftSchema.index(
+  { projectId: 1, userId: 1, path: 1 },
+  { unique: true },
+);
+DbtFileDraftSchema.index({ workspaceId: 1, projectId: 1, userId: 1 });
+
+export const DbtFileDraft = mongoose.model<IDbtFileDraft>(
+  "DbtFileDraft",
+  DbtFileDraftSchema,
+);
+
+/**
+ * Per-user branch pointer for a repo-bound dbt project (dbt Cloud-style
+ * per-developer checkout). Absence of a row means the user implicitly tracks
+ * the project default branch (`project.repo.branch`). Two users on the same
+ * project can work on different branches simultaneously.
+ */
+export interface IDbtCheckout extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  userId: string;
+  branch: string;
+  /** Commit SHA this user's branch base tree was last synced/pushed at. */
+  lastSyncedSha?: string;
+  lastSyncedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const DbtCheckoutSchema = new Schema<IDbtCheckout>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "DbtProject",
+      required: true,
+    },
+    userId: { type: String, required: true },
+    branch: { type: String, required: true, trim: true },
+    lastSyncedSha: { type: String },
+    lastSyncedAt: { type: Date },
+  },
+  { collection: "dbt_checkouts", timestamps: true },
+);
+
+DbtCheckoutSchema.index({ projectId: 1, userId: 1 }, { unique: true });
+DbtCheckoutSchema.index({ projectId: 1, branch: 1 });
+
+/**
+ * Per-user DEVELOPMENT environment choice for a dbt project — which
+ * environment this user's ad-hoc work (editor runs, agent builds, previews)
+ * targets by default.
+ *
+ * The working model this encodes:
+ *  - Single player: the shared dev environment IS your personal target —
+ *    drafts and branch verification build against dev. No row needed.
+ *  - Multiple players: each user points at their own personal environment
+ *    (schema `dbt_<user>`), so nobody stomps a teammate's schema.
+ *
+ * Absent row → resolution falls back to the user's personal environment when
+ * one exists, else the project default. Explicit requests always win.
+ */
+export interface IDbtEnvPreference extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  userId: string;
+  /** Environment name from the project's environments list. */
+  environment: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const DbtEnvPreferenceSchema = new Schema<IDbtEnvPreference>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "DbtProject",
+      required: true,
+    },
+    userId: { type: String, required: true },
+    environment: { type: String, required: true, trim: true },
+  },
+  { collection: "dbt_env_preferences", timestamps: true },
+);
+
+DbtEnvPreferenceSchema.index({ projectId: 1, userId: 1 }, { unique: true });
+
+export const DbtEnvPreference = mongoose.model<IDbtEnvPreference>(
+  "DbtEnvPreference",
+  DbtEnvPreferenceSchema,
+);
+
+export const DbtCheckout = mongoose.model<IDbtCheckout>(
+  "DbtCheckout",
+  DbtCheckoutSchema,
+);
+
+/**
+ * GitHub App installation linked to a workspace. We never persist installation
+ * access tokens (they expire hourly and are minted on demand from the App's
+ * private key); this record just maps a workspace to the installation id and
+ * the account it was installed on so we can list repos and sync dbt projects.
+ */
+export interface IGitHubInstallation extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  /** GitHub App installation id (from install callback / webhook). */
+  installationId: number;
+  /** Login of the org/user the app is installed on. */
+  accountLogin: string;
+  accountType: "Organization" | "User";
+  /** Whether the app can access all repos or a selected subset. */
+  repositorySelection: "all" | "selected";
+  createdBy: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const GitHubInstallationSchema = new Schema<IGitHubInstallation>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    installationId: { type: Number, required: true },
+    accountLogin: { type: String, required: true, trim: true },
+    accountType: {
+      type: String,
+      enum: ["Organization", "User"],
+      default: "Organization",
+    },
+    repositorySelection: {
+      type: String,
+      enum: ["all", "selected"],
+      default: "all",
+    },
+    createdBy: { type: String, required: true },
+  },
+  { collection: "github_installations", timestamps: true },
+);
+
+GitHubInstallationSchema.index(
+  { workspaceId: 1, installationId: 1 },
+  { unique: true },
+);
+
+export const GitHubInstallation = mongoose.model<IGitHubInstallation>(
+  "GitHubInstallation",
+  GitHubInstallationSchema,
+);
 
 export interface IDbtJob extends Document {
   _id: Types.ObjectId;
@@ -4242,12 +4782,58 @@ export interface IDbtRun extends Document {
   environment: string;
   commands: string[];
   status: DbtRunStatus;
-  trigger: "schedule" | "manual" | "agent";
-  /** User id for manual triggers, "scheduler" / "agent" otherwise. */
+  trigger: "schedule" | "manual" | "agent" | "ci";
+  /** User id for manual triggers, "scheduler" / "agent" / "ci-webhook". */
   triggeredBy: string;
+  /**
+   * Branch whose committed base tree the run executes against (repo-bound
+   * projects). Unset means the project default branch. CI runs set the PR
+   * head branch so Slim CI builds the PR's code.
+   */
+  gitBranch?: string;
+  /**
+   * When set, the run builds this user's WORKING tree (their checkout branch
+   * plus draft overlay) instead of a committed base tree — used by
+   * agent-triggered verification builds of uncommitted work. Scheduled /
+   * CI / deploy runs leave this unset.
+   */
+  workingTreeUserId?: string;
+  /**
+   * DISPLAY-ONLY: the git branch this run's source tree came from, stamped
+   * at trigger time so the Runs UI can say what was built without re-deriving
+   * it. Working-tree runs record the caller's checkout branch; job/deploy
+   * runs record the tracked branch; CI runs record the PR head. The executor
+   * never reads this — `gitBranch` / `workingTreeUserId` stay authoritative.
+   */
+  sourceBranch?: string;
+  /**
+   * Ad-hoc/agent runs only: run with `--defer --state <prod manifest>` so
+   * unselected refs resolve to the last production build instead of
+   * rebuilding the whole upstream DAG in the target schema. Job runs read
+   * the flag from the job (`job.deferToProduction`) and CI runs from the
+   * project CI config, so those leave this unset.
+   */
+  deferToProduction?: boolean;
+  /**
+   * Pull-request CI context (trigger === "ci"). Drives the GitHub commit
+   * status posted back to the PR head on completion.
+   */
+  ci?: {
+    prNumber: number;
+    headSha: string;
+    headRef: string;
+    baseRef: string;
+    owner: string;
+    repo: string;
+    installationId?: number;
+  };
   startedAt?: Date;
   completedAt?: Date;
   durationMs?: number;
+  /** When a cancel was requested / finalized (status === "cancelled"). */
+  cancelledAt?: Date;
+  /** User id that cancelled the run, or "agent" for automated cancels. */
+  cancelledBy?: string;
   /** Capped, batch-written log lines (parsed from --log-format json). */
   logs: IDbtRunLogLine[];
   /** Parsed from run_results.json after each command. */
@@ -4297,13 +4883,34 @@ const DbtRunSchema = new Schema<IDbtRun>(
     },
     trigger: {
       type: String,
-      enum: ["schedule", "manual", "agent"],
+      enum: ["schedule", "manual", "agent", "ci"],
       required: true,
     },
     triggeredBy: { type: String, required: true },
+    gitBranch: { type: String },
+    workingTreeUserId: { type: String },
+    sourceBranch: { type: String },
+    deferToProduction: { type: Boolean },
+    ci: {
+      type: new Schema(
+        {
+          prNumber: { type: Number, required: true },
+          headSha: { type: String, required: true },
+          headRef: { type: String, required: true },
+          baseRef: { type: String, required: true },
+          owner: { type: String, required: true },
+          repo: { type: String, required: true },
+          installationId: { type: Number },
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
     startedAt: { type: Date },
     completedAt: { type: Date },
     durationMs: { type: Number },
+    cancelledAt: { type: Date },
+    cancelledBy: { type: String },
     logs: {
       type: [
         new Schema<IDbtRunLogLine>(
@@ -4355,3 +4962,349 @@ DbtRunSchema.index({ workspaceId: 1, projectId: 1, createdAt: -1 });
 DbtRunSchema.index({ jobId: 1, createdAt: -1 }, { sparse: true });
 
 export const DbtRun = mongoose.model<IDbtRun>("DbtRun", DbtRunSchema);
+
+/**
+ * MCP (Model Context Protocol) integration.
+ *
+ * Three collections, modeled after Onyx's split between server definitions
+ * and credentials:
+ *  - `mcp_servers`            — workspace-level server definition (URL,
+ *                               transport, tool policy, cached tool list).
+ *  - `mcp_connection_configs` — encrypted credentials; one per workspace
+ *                               (shared) or one per user, depending on the
+ *                               server's `authPerformer`.
+ *  - `mcp_tool_grants`        — per-user "always allow" / "always deny"
+ *                               decisions that back the chat approval flow.
+ */
+
+export type McpTransportType = "http";
+export type McpAuthType = "none" | "api_key" | "oauth";
+/**
+ * Who supplies credentials. Following the Claude-connectors model, every
+ * user authenticates individually ("user") — enabling a connector for the
+ * workspace never grants shared data access. "workspace" is retained for
+ * backward compatibility with early servers only.
+ */
+export type McpAuthPerformer = "workspace" | "user";
+
+/**
+ * Admin-set permission ceiling for one tool (Claude-connectors model):
+ *  - "always": users can choose Always allow, Ask, or Block
+ *  - "ask":    users can choose Ask or Block (never Always allow)
+ *  - "block":  the tool is never exposed to the agent
+ * Restrictions set a ceiling — users can always choose a stricter setting.
+ */
+export type McpToolRestriction = "always" | "ask" | "block";
+export type McpWriteScope = "read" | "write_safe" | "write_destructive";
+export type McpServerStatus =
+  | "created"
+  | "awaiting_auth"
+  | "connected"
+  | "error";
+
+export interface IMcpCachedTool {
+  name: string;
+  description?: string;
+  /** JSON Schema for the tool's input, captured at discovery time. */
+  inputSchema?: Record<string, unknown>;
+  /** MCP tool annotations (readOnlyHint, destructiveHint, ...) if provided. */
+  annotations?: {
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    [key: string]: unknown;
+  };
+}
+
+export interface IMcpServer extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  name: string;
+  description?: string;
+  /** Preset key ("close", "custom", ...) — drives the config form + defaults. */
+  connectorType: string;
+  transport: {
+    type: McpTransportType;
+    url: string;
+  };
+  authType: McpAuthType;
+  authPerformer: McpAuthPerformer;
+  /**
+   * Write capability requested from the server. For servers with a scope
+   * header preset (e.g. Close's `Close-Scope`), this is sent on connect and
+   * enforced server-side by the provider. Also used as the fallback risk
+   * tier for tools without MCP annotations.
+   */
+  writeScope: McpWriteScope;
+  toolPolicy: {
+    /**
+     * Ceiling applied to tools without a specific restriction below —
+     * including tools the server adds later.
+     */
+    defaultRestriction: McpToolRestriction;
+    /** Per-tool ceilings, keyed by the raw MCP tool name. */
+    restrictions: Record<string, McpToolRestriction>;
+  };
+  /**
+   * OAuth client registration (Dynamic Client Registration) for this server.
+   * Shared across all users connecting to the server; per-user tokens live on
+   * their `mcp_connection_configs` document. `clientInformation` is the
+   * encrypted JSON of the DCR response (client_id, client_secret, ...).
+   */
+  oauth?: {
+    clientInformation?: string;
+  };
+  /** Discovered tools from the last successful connect/test. */
+  cachedTools: IMcpCachedTool[];
+  status: McpServerStatus;
+  lastError?: string;
+  lastConnectedAt?: Date;
+  createdBy: string;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const McpServerSchema = new Schema<IMcpServer>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    name: { type: String, required: true, trim: true, maxlength: 100 },
+    description: { type: String, trim: true, maxlength: 500 },
+    connectorType: { type: String, required: true, default: "custom" },
+    transport: {
+      type: new Schema(
+        {
+          type: { type: String, enum: ["http"], required: true },
+          url: { type: String, required: true },
+        },
+        { _id: false },
+      ),
+      required: true,
+    },
+    authType: {
+      type: String,
+      enum: ["none", "api_key", "oauth"],
+      required: true,
+      default: "api_key",
+    },
+    authPerformer: {
+      type: String,
+      enum: ["workspace", "user"],
+      required: true,
+      default: "workspace",
+    },
+    writeScope: {
+      type: String,
+      enum: ["read", "write_safe", "write_destructive"],
+      required: true,
+      default: "read",
+    },
+    toolPolicy: {
+      type: new Schema(
+        {
+          defaultRestriction: {
+            type: String,
+            enum: ["always", "ask", "block"],
+            required: true,
+            default: "always",
+          },
+          restrictions: { type: Schema.Types.Mixed, default: {} },
+        },
+        { _id: false },
+      ),
+      required: true,
+      default: () => ({
+        defaultRestriction: "always",
+        restrictions: {},
+      }),
+    },
+    cachedTools: {
+      type: [
+        new Schema<IMcpCachedTool>(
+          {
+            name: { type: String, required: true },
+            description: { type: String },
+            inputSchema: { type: Schema.Types.Mixed },
+            annotations: { type: Schema.Types.Mixed },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+    oauth: {
+      type: new Schema(
+        {
+          clientInformation: { type: String },
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
+    status: {
+      type: String,
+      enum: ["created", "awaiting_auth", "connected", "error"],
+      required: true,
+      default: "created",
+    },
+    lastError: { type: String },
+    lastConnectedAt: { type: Date },
+    createdBy: { type: String, required: true },
+    isActive: { type: Boolean, default: true },
+  },
+  { collection: "mcp_servers", timestamps: true },
+);
+
+McpServerSchema.index({ workspaceId: 1, name: 1 }, { unique: true });
+McpServerSchema.index({ workspaceId: 1, isActive: 1 });
+
+export const McpServer = mongoose.model<IMcpServer>(
+  "McpServer",
+  McpServerSchema,
+);
+
+export interface IMcpConnectionConfig extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  serverId: Types.ObjectId;
+  /** Empty string for the shared workspace credential; else the user id. */
+  userId: string;
+  /** Encrypted header values (crypto.service `iv:ciphertext` format). */
+  headers: Record<string, string>;
+  /** OAuth tokens for this connection (encrypted JSON of OAuthTokens). */
+  oauthTokens?: string;
+  /** Absolute epoch-ms expiry of the current access token, if known. */
+  oauthExpiresAt?: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const McpConnectionConfigSchema = new Schema<IMcpConnectionConfig>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    serverId: {
+      type: Schema.Types.ObjectId,
+      ref: "McpServer",
+      required: true,
+    },
+    userId: { type: String, required: false, default: "" },
+    headers: { type: Schema.Types.Mixed, default: {} },
+    oauthTokens: { type: String },
+    oauthExpiresAt: { type: Number },
+  },
+  { collection: "mcp_connection_configs", timestamps: true },
+);
+
+McpConnectionConfigSchema.index({ serverId: 1, userId: 1 }, { unique: true });
+McpConnectionConfigSchema.index({ workspaceId: 1 });
+
+export const McpConnectionConfig = mongoose.model<IMcpConnectionConfig>(
+  "McpConnectionConfig",
+  McpConnectionConfigSchema,
+);
+
+/**
+ * Pending MCP OAuth authorization flow: one document per in-flight browser
+ * redirect, keyed by the unguessable `state` parameter. Holds the PKCE code
+ * verifier until the callback exchanges the authorization code. TTL-reaped
+ * after 10 minutes.
+ */
+export interface IMcpOAuthFlow extends Document {
+  _id: Types.ObjectId;
+  state: string;
+  workspaceId: Types.ObjectId;
+  serverId: Types.ObjectId;
+  /** User who started the flow ("" for the shared workspace credential). */
+  configUserId: string;
+  /** Session user who must complete the callback. */
+  startedByUserId: string;
+  /** Encrypted PKCE code verifier. */
+  codeVerifier?: string;
+  createdAt: Date;
+}
+
+const McpOAuthFlowSchema = new Schema<IMcpOAuthFlow>(
+  {
+    state: { type: String, required: true },
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    serverId: {
+      type: Schema.Types.ObjectId,
+      ref: "McpServer",
+      required: true,
+    },
+    configUserId: { type: String, required: true, default: "" },
+    startedByUserId: { type: String, required: true },
+    codeVerifier: { type: String },
+  },
+  { collection: "mcp_oauth_flows", timestamps: { createdAt: true } },
+);
+
+McpOAuthFlowSchema.index({ state: 1 }, { unique: true });
+McpOAuthFlowSchema.index({ createdAt: 1 }, { expireAfterSeconds: 600 });
+
+export const McpOAuthFlow = mongoose.model<IMcpOAuthFlow>(
+  "McpOAuthFlow",
+  McpOAuthFlowSchema,
+);
+
+export type McpGrantDecision = "always_allow" | "always_deny";
+
+export interface IMcpToolGrant extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  serverId: Types.ObjectId;
+  /** Grants are always per-user, even on shared workspace credentials. */
+  userId: string;
+  toolName: string;
+  decision: McpGrantDecision;
+  lastUsedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const McpToolGrantSchema = new Schema<IMcpToolGrant>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    serverId: {
+      type: Schema.Types.ObjectId,
+      ref: "McpServer",
+      required: true,
+    },
+    userId: { type: String, required: true },
+    toolName: { type: String, required: true },
+    decision: {
+      type: String,
+      enum: ["always_allow", "always_deny"],
+      required: true,
+    },
+    lastUsedAt: { type: Date },
+  },
+  { collection: "mcp_tool_grants", timestamps: true },
+);
+
+McpToolGrantSchema.index(
+  { serverId: 1, userId: 1, toolName: 1 },
+  { unique: true },
+);
+McpToolGrantSchema.index({ workspaceId: 1, userId: 1 });
+
+export const McpToolGrant = mongoose.model<IMcpToolGrant>(
+  "McpToolGrant",
+  McpToolGrantSchema,
+);

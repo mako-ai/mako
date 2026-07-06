@@ -105,6 +105,29 @@ export const runConsoleSchema = z.object({
     ),
 });
 
+export const checkQueryStatusSchema = z.object({
+  consoleId: z
+    .string()
+    .describe(
+      "Console ID whose latest run you want to poll (the one you called run_console on).",
+    ),
+  executionId: z
+    .string()
+    .optional()
+    .describe(
+      "Optional executionId returned by run_console. If set, the status is only reported when it matches the console's latest run.",
+    ),
+});
+
+export const cancelQueryStatusSchema = z.object({
+  consoleId: z
+    .string()
+    .describe("Console ID whose running query you want to cancel."),
+  executionId: z
+    .string()
+    .describe("The executionId returned by run_console for the running query."),
+});
+
 export const setConsoleConnectionSchema = z.object({
   consoleId: z
     .string()
@@ -150,3 +173,5 @@ export type SetConsoleConnectionInput = z.infer<
 >;
 export type OpenConsoleInput = z.infer<typeof openConsoleSchema>;
 export type RunConsoleInput = z.infer<typeof runConsoleSchema>;
+export type CheckQueryStatusInput = z.infer<typeof checkQueryStatusSchema>;
+export type CancelQueryStatusInput = z.infer<typeof cancelQueryStatusSchema>;

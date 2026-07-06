@@ -65,6 +65,27 @@ class CdcIngestService {
       })),
     });
 
+    // Guardrail: a persistently high dedup ratio is the signature of a
+    // non-unique idempotency key silently dropping real changes (the Close
+    // `lead.updated:<recordId>` bug). Emit an alertable WARN on a stable `code`
+    // so this class of data loss can never go unnoticed for long again.
+    const HIGH_DEDUP_MIN_ATTEMPTED = 20;
+    const HIGH_DEDUP_RATIO = 0.9;
+    if (
+      result.attempted >= HIGH_DEDUP_MIN_ATTEMPTED &&
+      result.deduped / result.attempted >= HIGH_DEDUP_RATIO
+    ) {
+      log.warn("CDC ingest dedup rate high", {
+        code: "CDC_HIGH_DEDUP_RATE",
+        flowId: params.flowId,
+        attempted: result.attempted,
+        deduped: result.deduped,
+        inserted: result.inserted,
+        dedupRatio: Number((result.deduped / result.attempted).toFixed(3)),
+        entities: result.entities.map(entity => entity.entity),
+      });
+    }
+
     return result;
   }
 }

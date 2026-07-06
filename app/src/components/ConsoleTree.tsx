@@ -7,8 +7,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { Eye as EyeIcon, SquareTerminal as ConsoleIcon } from "lucide-react";
-import { Box, Tooltip } from "@mui/material";
+import { TAB_KIND_ICONS } from "../lib/entity-icons";
+
+const ConsoleIcon = TAB_KIND_ICONS.console;
+import { Box } from "@mui/material";
 import { useExplorerStore } from "../store/explorerStore";
 import {
   useExplorerRevealStore,
@@ -234,45 +236,31 @@ function ConsoleTreeInner(
         ? typeIconUrlByConnectionId.get(node.connectionId)
         : undefined;
 
-      return (
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
-          {iconUrl ? (
-            <Box
-              component="img"
-              src={iconUrl}
-              alt=""
-              sx={{
-                width: 16,
-                height: 16,
-                display: "block",
-                flexShrink: 0,
-                // Images render via the page — avoid dragging the asset when
-                // the row is part of a DnD gesture.
-                pointerEvents: "none",
-                userSelect: "none",
-              }}
-              draggable={false}
-            />
-          ) : (
-            // Fallback when a console has no connection yet, or the catalog
-            // hasn't loaded / doesn't know this type.
-            <ConsoleIcon size={16} strokeWidth={1.5} />
-          )}
-          {!node.isDirectory &&
-            !isOwner(node) &&
-            (node.access || "private") === "workspace" && (
-              <Tooltip title="Read-only">
-                <EyeIcon
-                  size={14}
-                  strokeWidth={1.5}
-                  style={{ opacity: 0.5, flexShrink: 0 }}
-                />
-              </Tooltip>
-            )}
-        </Box>
-      );
+      if (iconUrl) {
+        return (
+          <Box
+            component="img"
+            src={iconUrl}
+            alt=""
+            sx={{
+              width: 16,
+              height: 16,
+              display: "block",
+              flexShrink: 0,
+              // Images render via the page — avoid dragging the asset when
+              // the row is part of a DnD gesture.
+              pointerEvents: "none",
+              userSelect: "none",
+            }}
+            draggable={false}
+          />
+        );
+      }
+      // Fallback when a console has no connection yet, or the catalog
+      // hasn't loaded / doesn't know this type.
+      return <ConsoleIcon size={16} strokeWidth={1.5} />;
     },
-    [isOwner, typeIconUrlByConnectionId],
+    [typeIconUrlByConnectionId],
   );
 
   const handleLocationChange = useCallback(

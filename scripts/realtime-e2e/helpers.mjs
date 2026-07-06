@@ -117,13 +117,15 @@ export async function getTabs(page) {
 export async function getEditorTextByTabId(page, tabId) {
   return page.evaluate(tid => {
     const editors = window.monaco?.editor?.getEditors?.() || [];
-    for (const ed of editors) {
+    const inTab = editors.filter(ed => {
       const node = ed.getContainerDomNode?.();
-      if (node && node.closest(`[data-mako-tab-id="${tid}"]`)) {
-        return ed.getValue();
-      }
-    }
-    return null;
+      return node && node.closest(`[data-mako-tab-id="${tid}"]`);
+    });
+    if (inTab.length === 0) return null;
+    // An agent review renders a Monaco diff (original + proposed editors); the
+    // proposed (modified) side is mounted last, so read that one — otherwise a
+    // diff under review reads back as the stale baseline.
+    return inTab.at(-1)?.getValue() ?? null;
   }, tabId);
 }
 

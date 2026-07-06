@@ -1,17 +1,21 @@
 /**
- * Client-Side dbt Tools
+ * dbt tool schemas (shared source of truth for the dbt IDE tool cards).
  *
- * File-editing tools for the dbt IDE ("dbt Cloud replica"). Like the app
- * tools these have no `execute` function, so the AI SDK routes them to the
- * browser via `onToolCall`, where `executeDbtAgentTool` applies them to the
- * dbtStore (the same writeFile path the editor uses) and persists them.
+ * ALL dbt agent tools now execute SERVER-SIDE against the authoritative
+ * DbtProject/DbtFile/DbtJob documents (issue #475 pattern) — both the file
+ * mutations (create/modify/delete) AND the reads (read_dbt_project_tree /
+ * read_dbt_file). Reads moved server-side because a client-executed read leaves
+ * a tool call pending in the browser; if the tab is slow/backgrounded/detached
+ * the SSE turn tears down with "stream disconnected before tool completed".
+ * Reading the docs on the server keeps the turn entirely server-driven.
  *
- * Server-side verification tools (dbt_parse / dbt_compile_model /
- * dbt_run_model / dbt_run_job) live in api/src/agent-lib/tools/dbt-tools.ts
- * because they invoke the dbt runner.
+ * Verification tools (dbt_parse / dbt_compile_model / dbt_run_model /
+ * dbt_run_job) also live server-side because they invoke the dbt runner.
+ *
+ * `clientDbtTools` is therefore intentionally empty — no dbt tool is browser
+ * executed anymore.
  */
 
-import { tool } from "ai";
 import { z } from "zod";
 
 const projectIdField = z
@@ -24,7 +28,7 @@ const dbtPathField = z
     "POSIX file path relative to the project root, e.g. models/staging/stg_orders.sql",
   );
 
-const readTreeSchema = z.object({
+export const readDbtTreeSchema = z.object({
   projectId: z
     .string()
     .optional()
@@ -33,18 +37,21 @@ const readTreeSchema = z.object({
     ),
 });
 
-const readFileSchema = z.object({
+export const readDbtFileSchema = z.object({
   projectId: projectIdField,
   path: dbtPathField,
 });
 
-const createFileSchema = z.object({
+// All dbt tools execute SERVER-SIDE (see api/src/agent-lib/tools/dbt-tools.ts).
+// Schemas are exported here so the server tools and the dbt IDE tool cards share
+// a single source of truth.
+export const createDbtFileSchema = z.object({
   projectId: projectIdField,
   path: dbtPathField,
   contents: z.string().describe("Full UTF-8 file contents"),
 });
 
-const modifyFileSchema = z.object({
+export const modifyDbtFileSchema = z.object({
   projectId: projectIdField,
   path: dbtPathField,
   contents: z
@@ -54,45 +61,40 @@ const modifyFileSchema = z.object({
     ),
 });
 
-const deleteFileSchema = z.object({
+export const editDbtFileSchema = z.object({
+  projectId: projectIdField,
+  path: dbtPathField,
+  oldString: z
+    .string()
+    .describe(
+      "Exact text to replace. Must match the current file contents exactly " +
+        "(including whitespace/indentation) and exactly once — include a few " +
+        "surrounding lines to make the match unique. Must not be empty.",
+    ),
+  newString: z
+    .string()
+    .describe(
+      "Replacement text. Use \"\" to delete the matched text. To insert, " +
+        "anchor on adjacent content and include it in both strings.",
+    ),
+  replaceAll: z
+    .boolean()
+    .optional()
+    .describe(
+      "Replace every occurrence of oldString (for renames). Defaults to " +
+        "false, which requires the match to be unique.",
+    ),
+});
+
+export const deleteDbtFileSchema = z.object({
   projectId: projectIdField,
   path: dbtPathField,
 });
 
-export const clientDbtTools = {
-  read_dbt_project_tree: tool({
-    description:
-      "List dbt projects in the workspace, or the file tree + jobs of one " +
-      "project when projectId is given. Call this FIRST to get project IDs " +
-      "and file paths before using any other dbt tool.",
-    inputSchema: readTreeSchema,
-  }),
-  read_dbt_file: tool({
-    description:
-      "Read the full contents of a single file in a dbt project " +
-      "(models, schema.yml, dbt_project.yml, seeds, macros...).",
-    inputSchema: readFileSchema,
-  }),
-  create_dbt_file: tool({
-    description:
-      "Create a new file in a dbt project (e.g. a staging model + its " +
-      "schema.yml entry). Fails if the file already exists — use " +
-      "modify_dbt_file to change existing files. After writing models, " +
-      "verify with dbt_parse and dbt_compile_model.",
-    inputSchema: createFileSchema,
-  }),
-  modify_dbt_file: tool({
-    description:
-      "Overwrite an existing dbt project file with full contents. The open " +
-      "editor tab updates live; every save snapshots a version for undo. " +
-      "After editing, verify with dbt_parse / dbt_compile_model.",
-    inputSchema: modifyFileSchema,
-  }),
-  delete_dbt_file: tool({
-    description: "Delete a file from a dbt project.",
-    inputSchema: deleteFileSchema,
-  }),
-};
+// No dbt tools are browser-executed anymore — reads and writes alike run on the
+// server. Kept as an (empty) export so the agent wiring/types stay stable.
+export const clientDbtTools = {};
 
-export type DbtCreateFileInput = z.infer<typeof createFileSchema>;
-export type DbtModifyFileInput = z.infer<typeof modifyFileSchema>;
+export type DbtCreateFileInput = z.infer<typeof createDbtFileSchema>;
+export type DbtModifyFileInput = z.infer<typeof modifyDbtFileSchema>;
+export type DbtEditFileInput = z.infer<typeof editDbtFileSchema>;

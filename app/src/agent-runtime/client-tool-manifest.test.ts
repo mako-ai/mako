@@ -6,10 +6,12 @@ import {
 } from "@mako/agent-tools";
 import { UNIVERSAL_PROMPT_V2 } from "../../../api/src/agent-lib/prompts/universal";
 import { buildCurrentScreenContext } from "../../../api/src/agents/unified/prompt";
+import { createDbtServerTools } from "../../../api/src/agent-lib/tools/dbt-tools";
 import {
   AGENT_TOOL_MANIFEST,
   type AgentToolName,
   type AgentToolManifestEntry,
+  getAgentToolManifestEntry,
 } from "./client-tool-manifest";
 
 function manifestKeysFor(
@@ -78,5 +80,66 @@ describe("client tool manifest contracts", () => {
     expect(context).toContain("### Open Dashboards");
     expect(context).toContain("Revenue Dashboard");
     expect(context).toContain("dash_1");
+  });
+
+  // Server-side dbt tools have no compile-time drift guard (unlike client
+  // tools), so a new dbt tool can ship without a manifest entry and render the
+  // ugly humanizeToolName fallback ("Dbt Get Run"). This is exactly what leaked
+  // into an agent transcript. Assert every dbt server tool has an entry.
+  it("covers every dbt server tool with a manifest entry", () => {
+    const dbtServerToolNames = Object.keys(
+      createDbtServerTools("000000000000000000000000"),
+    ).sort();
+
+    const missing = dbtServerToolNames.filter(
+      name => getAgentToolManifestEntry(name) === undefined,
+    );
+    expect(missing).toEqual([]);
+
+    for (const name of dbtServerToolNames) {
+      expect(getAgentToolManifestEntry(name)?.domain).toBe("dbt");
+    }
+  });
+
+  it("gives dbt status/preview tools human labels (no humanize fallback)", () => {
+    expect(getAgentToolManifestEntry("dbt_get_run")?.getLabel()).toBe(
+      "Checking dbt run status",
+    );
+    expect(
+      getAgentToolManifestEntry("dbt_show")?.getLabel({ model: "stg_orders" }),
+    ).toBe("Previewing stg_orders");
+    expect(
+      getAgentToolManifestEntry("dbt_create_project")?.getLabel({
+        name: "analytics",
+      }),
+    ).toBe('Creating dbt project "analytics"');
+    expect(
+      getAgentToolManifestEntry("dbt_open_pull_request")?.getLabel({
+        title: "Add orders mart",
+      }),
+    ).toBe("Opening PR: Add orders mart");
+  });
+
+  it("registers web tools for chat tool cards", () => {
+    expect(getAgentToolManifestEntry("fetch_url")).toMatchObject({
+      execution: "server",
+      domain: "search",
+      icon: "external-link",
+    });
+    expect(getAgentToolManifestEntry("web_search")).toMatchObject({
+      execution: "server",
+      domain: "search",
+      icon: "search",
+    });
+    expect(
+      getAgentToolManifestEntry("fetch_url")?.getLabel({
+        url: "https://example.com",
+      }),
+    ).toBe("Fetching https://example.com");
+    expect(
+      getAgentToolManifestEntry("web_search")?.getLabel({
+        query: "PostgreSQL 17",
+      }),
+    ).toBe('Searching web: "PostgreSQL 17"');
   });
 });

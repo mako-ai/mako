@@ -16,6 +16,7 @@ import { nanoid } from "nanoid";
 import {
   MakoApp,
   DatabaseConnection,
+  DbtProject,
   type IMakoApp,
 } from "../database/workspace-schema";
 import { loggers, enrichContextWithWorkspace } from "../logging";
@@ -26,10 +27,28 @@ import { AppDefinitionSchema, normalizeAppFiles } from "@mako/schemas";
 import {
   queueAppBindingMaterialization,
   buildAppBindingMaterializationStatus,
+  buildAppBindingDefinitionHash,
   hydrateAppBindingUrls,
   getBindingArtifactInfo,
 } from "../services/app-binding-materialization.service";
+import {
+  validateDashboardMaterializationSchedule,
+  isDashboardMaterializationEnabled,
+} from "../services/dashboard-materialization-schedule.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import {
+  buildAppSnapshot,
+  applyAppSnapshot,
+  appHasUnpublishedChanges,
+  type AppSnapshot,
+} from "../services/app-version.service";
+import {
+  createVersion,
+  listVersions,
+  getVersion,
+  getUserDisplayName,
+} from "../services/entity-version.service";
+import { publishRealtimeEvent } from "../services/realtime.service";
 import {
   canReadResource,
   canWriteResource,
@@ -119,12 +138,14 @@ function serializeApp(doc: IMakoApp) {
     dataBindings: (doc.dataBindings ?? []).map(b => ({
       id: b.id,
       name: b.name,
+      dbtProjectId: b.dbtProjectId,
       connectionId: b.connectionId,
       language: b.language,
       code: b.code,
       databaseId: b.databaseId,
       databaseName: b.databaseName,
       materialization: b.materialization ?? "live",
+      materializationSchedule: b.materializationSchedule,
       cache: b.cache
         ? {
             parquetArtifactKey: b.cache.parquetArtifactKey,
@@ -148,6 +169,9 @@ function serializeApp(doc: IMakoApp) {
         : undefined,
     })) as Array<Record<string, any>>,
     version: doc.version,
+    publishedVersion: doc.publishedVersion,
+    publishedAt: doc.publishedAt,
+    hasUnpublishedChanges: appHasUnpublishedChanges(doc),
     access: doc.access,
     workspaceRole: doc.workspaceRole ?? "viewer",
     sharedWith: (doc.sharedWith ?? []).map(s => ({
@@ -228,12 +252,38 @@ function canRead(
   return canReadResource(doc, userId, memberRole);
 }
 
-// Validate that every data binding references a connection in this workspace.
+// Validate that every data binding references a connection (and, when linked,
+// a dbt project) in this workspace.
 async function validateDataBindings(
   workspaceId: string,
-  dataBindings: Array<{ connectionId?: string }> | undefined,
+  dataBindings:
+    | Array<{ connectionId?: string; dbtProjectId?: string }>
+    | undefined,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!dataBindings || dataBindings.length === 0) return { ok: true };
+  const dbtProjectIds = [
+    ...new Set(dataBindings.map(b => b.dbtProjectId).filter(Boolean)),
+  ] as string[];
+  for (const id of dbtProjectIds) {
+    if (!Types.ObjectId.isValid(id)) {
+      return {
+        ok: false,
+        error: `Invalid dbtProjectId in data binding: ${id}`,
+      };
+    }
+  }
+  if (dbtProjectIds.length > 0) {
+    const validProjects = await DbtProject.countDocuments({
+      _id: { $in: dbtProjectIds.map(id => new Types.ObjectId(id)) },
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (validProjects !== dbtProjectIds.length) {
+      return {
+        ok: false,
+        error: "One or more data binding dbt projects are invalid",
+      };
+    }
+  }
   const connectionIds = [
     ...new Set(dataBindings.map(b => b.connectionId).filter(Boolean)),
   ] as string[];
@@ -345,6 +395,30 @@ app.openapi(
       if (!bindingCheck.ok) {
         return c.json({ success: false, error: bindingCheck.error }, 400);
       }
+      // Validate each binding's materialization schedule cron (parity with the
+      // dashboard create path), normalizing live bindings to a disabled schedule.
+      try {
+        for (const binding of def.dataBindings) {
+          if (!binding.materializationSchedule) continue;
+          binding.materializationSchedule =
+            validateDashboardMaterializationSchedule(
+              binding.materialization === "parquet"
+                ? binding.materializationSchedule
+                : { ...binding.materializationSchedule, enabled: false },
+            );
+        }
+      } catch (error) {
+        return c.json(
+          {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Invalid materialization schedule",
+          },
+          400,
+        );
+      }
 
       const created = await MakoApp.create({
         workspaceId: new Types.ObjectId(workspaceId),
@@ -361,6 +435,27 @@ app.openapi(
         createdBy: userId,
         version: 1,
       });
+
+      // Seed an initial published version (v1) so every app has version history
+      // from creation — mirroring consoles/dashboards. Without this, an app only
+      // gets versions after an explicit "Publish version", so freshly-created
+      // apps showed an empty history.
+      const displayName = await getUserDisplayName(userId ?? "system");
+      const initialSnapshot = buildAppSnapshot(created);
+      const initialVersion = await createVersion({
+        entityType: "app",
+        entityId: created._id,
+        workspaceId: new Types.ObjectId(workspaceId),
+        snapshot: initialSnapshot as unknown as Record<string, unknown>,
+        savedBy: userId ?? "system",
+        savedByName: displayName,
+        comment: "App created",
+      });
+      created.published = initialSnapshot as unknown as Record<string, unknown>;
+      created.markModified("published");
+      created.publishedVersion = initialVersion.version;
+      created.publishedAt = new Date();
+      await created.save();
 
       return c.json({ success: true, app: serializeApp(created) }, 201);
     } catch (error) {
@@ -446,6 +541,14 @@ app.openapi(
 
       const body = (await c.req.json()) as Record<string, unknown>;
 
+      // Snapshot of bindings before the update, keyed by id — used after save
+      // to detect which scheduled parquet bindings changed definition so we
+      // can proactively rebuild them (parity with dashboard auto-refresh).
+      let priorBindingsById: Map<
+        string,
+        IMakoApp["dataBindings"][number]
+      > | null = null;
+
       if (typeof body.title === "string" && body.title.trim()) {
         doc.title = body.title.trim();
       }
@@ -478,22 +581,52 @@ app.openapi(
         // Cache is server-owned: preserve the existing materialized cache by id;
         // never trust client-provided cache. Take only the query definition.
         const existingById = new Map(doc.dataBindings.map(b => [b.id, b]));
-        doc.dataBindings = bindings.map(b => {
-          const id = b.id || nanoid(10);
-          const prior = existingById.get(id);
-          return {
-            id,
-            name: b.name,
-            connectionId: b.connectionId,
-            language: b.language || "sql",
-            code: b.code ?? "",
-            databaseId: b.databaseId,
-            databaseName: b.databaseName,
-            materialization:
-              b.materialization === "parquet" ? "parquet" : "live",
-            cache: prior?.cache,
-          };
-        }) as IMakoApp["dataBindings"];
+        priorBindingsById = existingById;
+        try {
+          doc.dataBindings = bindings.map(b => {
+            const id = b.id || nanoid(10);
+            const prior = existingById.get(id);
+            const materialization =
+              b.materialization === "parquet" ? "parquet" : "live";
+            // Validate + persist the per-binding schedule (mirrors how
+            // dashboards validate `materializationSchedule` on save). Only
+            // parquet bindings can be scheduled, so a live binding keeps any
+            // prior schedule but is forced disabled.
+            const rawSchedule =
+              b.materializationSchedule ?? prior?.materializationSchedule;
+            const materializationSchedule = rawSchedule
+              ? validateDashboardMaterializationSchedule(
+                  materialization === "parquet"
+                    ? rawSchedule
+                    : { ...rawSchedule, enabled: false },
+                )
+              : undefined;
+            return {
+              id,
+              name: b.name,
+              dbtProjectId: b.dbtProjectId,
+              connectionId: b.connectionId,
+              language: b.language || "sql",
+              code: b.code ?? "",
+              databaseId: b.databaseId,
+              databaseName: b.databaseName,
+              materialization,
+              materializationSchedule,
+              cache: prior?.cache,
+            };
+          }) as IMakoApp["dataBindings"];
+        } catch (error) {
+          return c.json(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "Invalid materialization schedule",
+            },
+            400,
+          );
+        }
       }
       const wantsAccessChange =
         (body.access === "private" || body.access === "workspace") &&
@@ -521,6 +654,34 @@ app.openapi(
 
       doc.version += 1;
       await doc.save();
+
+      // Mechanism parity with dashboards: when a scheduled parquet binding's
+      // query definition changes, proactively rebuild its artifact so the
+      // materialized data stays in sync without a manual materialize. Gated on
+      // the binding's own schedule being enabled (apps schedule per-binding).
+      if (priorBindingsById) {
+        for (const binding of doc.dataBindings) {
+          if (binding.materialization !== "parquet") continue;
+          if (
+            !isDashboardMaterializationEnabled(binding.materializationSchedule)
+          ) {
+            continue;
+          }
+          const prior = priorBindingsById.get(binding.id);
+          const changed =
+            !prior ||
+            buildAppBindingDefinitionHash(prior) !==
+              buildAppBindingDefinitionHash(binding);
+          if (changed) {
+            void queueAppBindingMaterialization({
+              workspaceId,
+              appId: id,
+              bindingId: binding.id,
+              force: true,
+            }).catch(() => undefined);
+          }
+        }
+      }
 
       return c.json({ success: true, app: serializeApp(doc) });
     } catch (error) {
@@ -755,6 +916,270 @@ app.openapi(
     } catch (error) {
       logger.error("Error serving app binding artifact", { error });
       return c.json({ success: false, error: "Failed to serve artifact" }, 500);
+    }
+  },
+);
+
+// ── Version history (explicit checkpoints) ──
+//
+// Apps autosave on every edit, so versions are explicit checkpoints rather
+// than per-save snapshots: POST creates one, restore reverts to one (and
+// records a fresh checkpoint with `restoredFrom`). Snapshots freeze the
+// editable definition (files + deps + binding queries); the server-owned
+// materialization cache is preserved by binding id on restore.
+
+// GET /{id}/versions — list checkpoints (newest first)
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/versions",
+    tags: ["Apps"],
+    summary: "List app versions",
+    security: AUTH_SECURITY,
+    request: {
+      params: AppIdParam,
+      query: z.object({
+        limit: z.string().optional(),
+        offset: z.string().optional(),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const userId = c.get("user")?.id;
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid app ID" }, 400);
+      }
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      if (!canRead(doc, userId, c.get("memberRole"))) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      const limit = Math.min(
+        parseInt(c.req.query("limit") ?? "50", 10) || 50,
+        100,
+      );
+      const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
+      const result = await listVersions(new Types.ObjectId(id), "app", {
+        limit,
+        offset,
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      return c.json({ success: true, ...result });
+    } catch (error) {
+      logger.error("Error listing app versions", { error });
+      return c.json({ success: false, error: "Failed to list versions" }, 500);
+    }
+  },
+);
+
+// POST /{id}/versions — create a checkpoint of the current app state
+app.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/versions",
+    tags: ["Apps"],
+    summary: "Save an app version checkpoint",
+    security: AUTH_SECURITY,
+    request: { params: AppIdParam, body: AppBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const userId = c.get("user")?.id;
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid app ID" }, 400);
+      }
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      if (!canManage(doc, userId, c.get("memberRole"))) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      const body = (await c.req.json().catch(() => ({}))) as {
+        comment?: string;
+      };
+      const displayName = await getUserDisplayName(userId ?? "system");
+      const snapshot = buildAppSnapshot(doc);
+      const created = await createVersion({
+        entityType: "app",
+        entityId: doc._id,
+        workspaceId: new Types.ObjectId(workspaceId),
+        snapshot: snapshot as unknown as Record<string, unknown>,
+        savedBy: userId ?? "system",
+        savedByName: displayName,
+        comment: (body.comment ?? "").slice(0, 500),
+      });
+
+      // Saving a version publishes it: the snapshot becomes the definition that
+      // public/shared viewers render. The working draft (top-level fields) is
+      // unchanged; it simply now matches `published`.
+      doc.published = snapshot as unknown as Record<string, unknown>;
+      doc.markModified("published"); // Mixed type: assignment isn't auto-tracked
+      doc.publishedVersion = created.version;
+      doc.publishedAt = new Date();
+      await doc.save();
+
+      return c.json({
+        success: true,
+        version: created.version,
+        publishedVersion: created.version,
+        createdAt: created.createdAt,
+      });
+    } catch (error) {
+      logger.error("Error saving app version", { error });
+      return c.json({ success: false, error: "Failed to save version" }, 500);
+    }
+  },
+);
+
+// GET /{id}/versions/{version} — full snapshot of one checkpoint
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/versions/{version}",
+    tags: ["Apps"],
+    summary: "Get an app version snapshot",
+    security: AUTH_SECURITY,
+    request: {
+      params: AppIdParam.extend({
+        version: z.string().openapi({ param: { name: "version", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const versionNum = parseInt(c.req.param("version"), 10);
+      const userId = c.get("user")?.id;
+      if (!Types.ObjectId.isValid(id) || Number.isNaN(versionNum)) {
+        return c.json({ success: false, error: "Invalid request" }, 400);
+      }
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      if (!canRead(doc, userId, c.get("memberRole"))) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+      const version = await getVersion(
+        id,
+        "app",
+        versionNum,
+        new Types.ObjectId(workspaceId),
+      );
+      if (!version) {
+        return c.json({ success: false, error: "Version not found" }, 404);
+      }
+      return c.json({ success: true, version });
+    } catch (error) {
+      logger.error("Error fetching app version", { error });
+      return c.json({ success: false, error: "Failed to fetch version" }, 500);
+    }
+  },
+);
+
+// POST /{id}/versions/{version}/restore — revert the app to a checkpoint
+app.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/versions/{version}/restore",
+    tags: ["Apps"],
+    summary: "Restore an app version",
+    security: AUTH_SECURITY,
+    request: {
+      params: AppIdParam.extend({
+        version: z.string().openapi({ param: { name: "version", in: "path" } }),
+      }),
+      body: AppBody,
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const versionNum = parseInt(c.req.param("version"), 10);
+      const userId = c.get("user")?.id;
+      if (!Types.ObjectId.isValid(id) || Number.isNaN(versionNum)) {
+        return c.json({ success: false, error: "Invalid request" }, 400);
+      }
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      if (!canManage(doc, userId, c.get("memberRole"))) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+      const old = await getVersion(
+        id,
+        "app",
+        versionNum,
+        new Types.ObjectId(workspaceId),
+      );
+      if (!old) {
+        return c.json({ success: false, error: "Version not found" }, 404);
+      }
+
+      applyAppSnapshot(doc, old.snapshot as unknown as AppSnapshot);
+      doc.version += 1;
+      await doc.save();
+
+      // Record the restore as a fresh checkpoint so history stays append-only.
+      const body = (await c.req.json().catch(() => ({}))) as {
+        comment?: string;
+      };
+      const displayName = await getUserDisplayName(userId ?? "system");
+      await createVersion({
+        entityType: "app",
+        entityId: doc._id,
+        workspaceId: new Types.ObjectId(workspaceId),
+        snapshot: buildAppSnapshot(doc) as unknown as Record<string, unknown>,
+        savedBy: userId ?? "system",
+        savedByName: displayName,
+        comment: (body.comment ?? `Restored from version ${versionNum}`).slice(
+          0,
+          500,
+        ),
+        restoredFrom: versionNum,
+      });
+
+      // Poke open tabs so they pull the reverted definition and rebuild preview.
+      publishRealtimeEvent(workspaceId, {
+        type: "app.updated",
+        appId: doc._id.toString(),
+        version: doc.version,
+        updatedBy: userId ?? "system",
+        origin: "save",
+      });
+
+      return c.json({
+        success: true,
+        message: `Restored to version ${versionNum}`,
+        app: serializeApp(doc),
+      });
+    } catch (error) {
+      logger.error("Error restoring app version", { error });
+      return c.json(
+        { success: false, error: "Failed to restore version" },
+        500,
+      );
     }
   },
 );

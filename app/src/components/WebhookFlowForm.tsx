@@ -17,6 +17,11 @@ import {
   Chip,
   Stack,
   Checkbox,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
 } from "@mui/material";
 import {
   Save as SaveIcon,
@@ -34,6 +39,10 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore } from "../store/schemaStore";
 import {
+  useConnectorCatalogStore,
+  type WebhookCapabilities,
+} from "../store/connectorCatalogStore";
+import {
   useAvailableEntitiesStore,
   flattenConnectorEntities,
   type FlattenedConnectorEntity,
@@ -45,7 +54,10 @@ interface WebhookFlowFormProps {
   flowId?: string;
   isNew?: boolean;
   onSave?: () => void;
-  onSaved?: (flowId: string) => void;
+  onSaved?: (
+    flowId: string,
+    options?: { showBackfillPanel?: boolean; notice?: string },
+  ) => void;
   onCancel?: () => void;
 }
 
@@ -57,18 +69,6 @@ interface EntityLayoutConfig {
   clusterFields: string[];
   enabled?: boolean;
 }
-
-const WEBHOOK_CAPABLE_CONNECTOR_TYPES = new Set([
-  "stripe",
-  "close",
-  "claap",
-  "calendly",
-]);
-const WEBHOOK_PROVISIONING_CONNECTOR_TYPES = new Set([
-  "close",
-  "claap",
-  "calendly",
-]);
 
 const SYNC_ENGINE_PERMISSION_ERROR =
   "The flow was saved, but changing the sync engine requires the workspace Owner or Admin role. Ask an admin to upgrade your role, then set the sync engine again.";
@@ -87,6 +87,9 @@ interface FormData {
     schema?: string;
   };
   entityLayouts?: EntityLayoutConfig[];
+  backfillScheduleEnabled?: boolean;
+  backfillScheduleCron?: string;
+  backfillScheduleTimezone?: string;
 }
 
 const STEPS = [
@@ -94,7 +97,7 @@ const STEPS = [
   { label: "Destination", description: "Configure destination database" },
   {
     label: "Sync Configuration",
-    description: "Choose sync engine and delete behavior",
+    description: "Delete behavior and scheduled backfill",
   },
   {
     label: "Entity Configuration",
@@ -122,7 +125,20 @@ export function WebhookFlowForm({
     deleteFlow,
     fetchConnectors,
     provisionFlowWebhook,
+    resyncCdcFlow,
   } = useFlowStore();
+
+  const connectorTypes = useConnectorCatalogStore(state => state.types);
+  const fetchCatalog = useConnectorCatalogStore(state => state.fetchCatalog);
+  const webhookCapabilitiesByType = useMemo(() => {
+    const map: Record<string, WebhookCapabilities> = {};
+    for (const entry of connectorTypes || []) {
+      map[entry.type] = entry.webhook;
+    }
+    return map;
+  }, [connectorTypes]);
+  const isWebhookCapableType = (type: string | undefined): boolean =>
+    Boolean(type && webhookCapabilitiesByType[type]?.supported);
 
   // Get workspace-specific data
   const flows = useMemo(
@@ -150,6 +166,12 @@ export function WebhookFlowForm({
     flowId,
   );
   const [isNewMode, setIsNewMode] = useState(isNew);
+  // When a layout change on an existing flow requires recreating destination
+  // tables, hold the pending save until the user confirms the reset.
+  const [pendingLayoutReset, setPendingLayoutReset] = useState<{
+    data: FormData;
+    entities: string[];
+  } | null>(null);
   const [entityMetadata, setEntityMetadata] = useState<
     FlattenedConnectorEntity[]
   >([]);
@@ -192,35 +214,50 @@ export function WebhookFlowForm({
     defaultValues: {
       dataSourceId: "",
       destinationDatabaseId: "",
-      syncEngine: "legacy",
+      syncEngine: "cdc",
       deleteMode: "hard",
       tableDestination: {
         tablePrefix: "",
         schema: "",
       },
       entityLayouts: [],
+      backfillScheduleEnabled: false,
+      backfillScheduleCron: "0 3 * * *",
+      backfillScheduleTimezone: "UTC",
     },
   });
 
   const watchDataSourceId = watch("dataSourceId");
   const watchDestinationId = watch("destinationDatabaseId");
-  const watchSyncEngine = watch("syncEngine") || "legacy";
   const watchEntityLayouts = watch("entityLayouts") || [];
   const watchDeleteMode = watch("deleteMode");
+  const watchBackfillScheduleEnabled = watch("backfillScheduleEnabled");
   const selectedConnector = connectors.find(ds => ds._id === watchDataSourceId);
   const selectedConnectorType = selectedConnector?.type;
+  const selectedWebhookCapabilities = selectedConnectorType
+    ? webhookCapabilitiesByType[selectedConnectorType]
+    : undefined;
+  const provisioning = selectedWebhookCapabilities?.provisioning;
   const canProvisionWebhook =
-    !isNewMode &&
-    Boolean(currentFlowId) &&
-    WEBHOOK_PROVISIONING_CONNECTOR_TYPES.has(selectedConnectorType || "");
-  const provisionProviderLabel =
-    selectedConnectorType === "claap"
-      ? "Claap"
-      : selectedConnectorType === "close"
-        ? "Close"
-        : selectedConnectorType === "calendly"
-          ? "Calendly"
-          : "Provider";
+    !isNewMode && Boolean(currentFlowId) && Boolean(provisioning?.supported);
+  const provisionProviderLabel = provisioning?.providerLabel ?? "Provider";
+  const provisionActionHint = provisioning?.actionHint;
+  const webhookSecretHelpText =
+    selectedWebhookCapabilities?.secretHelpText ??
+    "Enter the webhook signing secret from your provider";
+  const webhookCapableConnectors = useMemo(
+    () => connectors.filter(source => isWebhookCapableType(source.type)),
+    // isWebhookCapableType is derived from webhookCapabilitiesByType
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [connectors, webhookCapabilitiesByType],
+  );
+  const webhookCapableConnectorNames = useMemo(
+    () =>
+      (connectorTypes || [])
+        .filter(entry => entry.webhook?.supported)
+        .map(entry => entry.name),
+    [connectorTypes],
+  );
 
   const selectedDestination = databases.find(
     db => db.id === watchDestinationId,
@@ -240,17 +277,7 @@ export function WebhookFlowForm({
         setValue("deleteMode", "soft");
       }
     }
-    if (isCdcCapableDest && isNewMode && watchSyncEngine !== "cdc") {
-      setValue("syncEngine", "cdc");
-    }
-  }, [
-    isBigQueryDest,
-    isCdcCapableDest,
-    setValue,
-    watchDeleteMode,
-    watchSyncEngine,
-    isNewMode,
-  ]);
+  }, [isBigQueryDest, setValue, watchDeleteMode]);
 
   // Fetch entity metadata from the connector API and build per-entity layout
   // defaults. Schema-driven: connectors expose entities + layout suggestions
@@ -332,10 +359,7 @@ export function WebhookFlowForm({
     setIsLoadingConnectors(true);
     try {
       const sources = await fetchConnectors(workspaceId);
-      const webhookCapable = (sources || []).filter(source =>
-        WEBHOOK_CAPABLE_CONNECTOR_TYPES.has(source.type),
-      );
-      setConnectors(webhookCapable);
+      setConnectors(sources || []);
     } catch (error) {
       console.error("Failed to fetch connectors:", error);
       setError("Failed to load connectors");
@@ -349,9 +373,10 @@ export function WebhookFlowForm({
     if (currentWorkspace?.id) {
       fetchDataSources(currentWorkspace.id);
       ensureConnections(currentWorkspace.id);
+      fetchCatalog(currentWorkspace.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentWorkspace?.id, ensureConnections]);
+  }, [currentWorkspace?.id, ensureConnections, fetchCatalog]);
 
   // Load flow data if editing
   useEffect(() => {
@@ -370,14 +395,23 @@ export function WebhookFlowForm({
         const formData: FormData = {
           dataSourceId: dataSourceId || "",
           destinationDatabaseId: destinationDatabaseId || "",
-          syncEngine: flow.syncEngine || "legacy",
+          // Webhook flows are CDC-only (legacy engine decommissioned).
+          syncEngine: "cdc",
           deleteMode: flow.deleteMode || "hard",
+          backfillScheduleEnabled: flow.backfillSchedule?.enabled ?? false,
+          backfillScheduleCron: flow.backfillSchedule?.cron || "0 3 * * *",
+          backfillScheduleTimezone: flow.backfillSchedule?.timezone || "UTC",
         };
 
         if (flow.tableDestination) {
           formData.tableDestination = {
             tablePrefix: flow.tableDestination.tableName || "",
-            schema: flow.tableDestination.schema || "",
+            // Legacy/stale BigQuery CDC flows may have stored the dataset under
+            // `database`; the CDC writer and form validation use `schema`.
+            schema:
+              flow.tableDestination.schema ||
+              flow.tableDestination.database ||
+              "",
           };
         }
 
@@ -407,7 +441,51 @@ export function WebhookFlowForm({
     };
   }, [clearError, currentWorkspace?.id]);
 
+  // Entities whose partition/granularity/cluster layout changed vs. the saved
+  // flow. A changed layout only takes effect when the destination table is
+  // recreated (BigQuery/ClickHouse partitioning + clustering are fixed at
+  // CREATE), so these entities require a destination reset to apply.
+  const getLayoutChangedEntities = (data: FormData): string[] => {
+    if (isNewMode || !currentFlowId) return [];
+    const flow = flows.find(f => f._id === currentFlowId);
+    const saved = new Map(
+      (flow?.entityLayouts || []).map((l: EntityLayoutConfig) => [l.entity, l]),
+    );
+    const sortedFields = (fields?: string[]) =>
+      JSON.stringify([...(fields || [])].sort());
+    const changed: string[] = [];
+    for (const layout of data.entityLayouts || []) {
+      if (layout.enabled === false) continue;
+      const prev = saved.get(layout.entity);
+      // A newly enabled entity has no existing table — it's created fresh with
+      // the chosen layout, so no reset is required.
+      if (!prev || prev.enabled === false) continue;
+      const partitionChanged =
+        (prev.partitionField || "") !== (layout.partitionField || "") ||
+        (prev.partitionGranularity || "") !==
+          (layout.partitionGranularity || "");
+      const clusterChanged =
+        sortedFields(prev.clusterFields) !== sortedFields(layout.clusterFields);
+      if (partitionChanged || clusterChanged) changed.push(layout.entity);
+    }
+    return changed;
+  };
+
   const onSubmit = async (data: FormData) => {
+    // For an existing CDC flow, a partition/cluster change must recreate the
+    // destination tables. Force the user to confirm the reset before saving.
+    const changedEntities = getLayoutChangedEntities(data);
+    if (changedEntities.length > 0) {
+      setPendingLayoutReset({ data, entities: changedEntities });
+      return;
+    }
+    await executeSave(data, {});
+  };
+
+  const executeSave = async (
+    data: FormData,
+    opts: { resetEntities?: string[] },
+  ) => {
     if (!currentWorkspace?.id) {
       setError("No workspace selected");
       console.error("No workspace selected");
@@ -435,12 +513,24 @@ export function WebhookFlowForm({
         "clickhouse",
         "mongodb",
       ];
+      // Webhook flows are CDC-only — the destination MUST be CDC-capable.
+      if (!cdcCapableTypes.includes(selectedDestination?.type || "")) {
+        throw new Error(
+          "Webhook flows require a CDC-capable destination (BigQuery, PostgreSQL, ClickHouse, or MongoDB).",
+        );
+      }
+
+      const backfillSchedule = {
+        enabled: Boolean(data.backfillScheduleEnabled),
+        cron: (data.backfillScheduleCron || "").trim(),
+        timezone: data.backfillScheduleTimezone || "UTC",
+      };
       if (
-        data.syncEngine === "cdc" &&
-        !cdcCapableTypes.includes(selectedDestination?.type || "")
+        backfillSchedule.enabled &&
+        backfillSchedule.cron.split(" ").filter(Boolean).length < 5
       ) {
         throw new Error(
-          "CDC engine requires a supported destination (BigQuery, PostgreSQL, ClickHouse, or MongoDB).",
+          "A valid cron expression is required to enable the scheduled backfill.",
         );
       }
 
@@ -450,10 +540,11 @@ export function WebhookFlowForm({
         dataSourceId: data.dataSourceId,
         destinationDatabaseId: data.destinationDatabaseId,
         syncMode: "incremental",
-        syncEngine: data.syncEngine || "legacy",
+        syncEngine: "cdc",
         enabled: true,
         webhookSecret: data.webhookSecret || "",
         deleteMode: isBigQueryDest ? "soft" : data.deleteMode || "hard",
+        backfillSchedule,
       };
 
       if (isCdcCapableDest && data.tableDestination?.schema) {
@@ -469,7 +560,7 @@ export function WebhookFlowForm({
           .map(l => l.entity);
       }
 
-      const desiredSyncEngine = data.syncEngine || "legacy";
+      const desiredSyncEngine = "cdc" as const;
       const currentSyncEngine =
         !isNewMode && currentFlowId
           ? (flows.find(flow => flow._id === currentFlowId)?.syncEngine ??
@@ -478,17 +569,8 @@ export function WebhookFlowForm({
 
       let newFlow;
       if (isNewMode) {
+        // Webhook flows are created as CDC by the API (no engine switch needed).
         newFlow = await createFlow(currentWorkspace.id, payload);
-        // setSyncEngine swallows its error and returns false (e.g. 403 when the
-        // user isn't owner/admin). Capture it before fetchFlows wipes storeError.
-        const syncEngineOk =
-          desiredSyncEngine === "legacy"
-            ? true
-            : await setSyncEngine(
-                currentWorkspace.id,
-                newFlow._id,
-                desiredSyncEngine,
-              );
 
         // Track flow creation
         trackEvent("flow_created", {
@@ -505,13 +587,6 @@ export function WebhookFlowForm({
 
         // Notify parent that a new flow has been created
         onSaved?.(newFlow._id);
-
-        if (!syncEngineOk) {
-          setError(SYNC_ENGINE_PERMISSION_ERROR);
-          // Keep the form open so the message stays visible; the flow itself
-          // was created, only the sync-engine change was rejected.
-          return;
-        }
 
         // Reset form with the new flow data to mark it as pristine
         reset(data);
@@ -531,11 +606,31 @@ export function WebhookFlowForm({
         // Refresh the flows list
         await useFlowStore.getState().fetchFlows(currentWorkspace.id);
 
-        onSaved?.(currentFlowId);
-
         if (!syncEngineOk) {
           setError(SYNC_ENGINE_PERMISSION_ERROR);
           return;
+        }
+
+        // A partition/cluster layout change only takes effect on freshly
+        // created tables, so recreate ONLY the changed entities' tables (drop +
+        // subset re-backfill) immediately after persisting the new layout.
+        if (opts.resetEntities && opts.resetEntities.length > 0) {
+          await resyncCdcFlow(currentWorkspace.id, currentFlowId, {
+            deleteDestination: true,
+            entities: opts.resetEntities,
+          });
+        }
+
+        const queuedRepartitionEntities = opts.resetEntities ?? [];
+        if (queuedRepartitionEntities.length > 0) {
+          onSaved?.(currentFlowId, {
+            showBackfillPanel: true,
+            notice: `Repartition job queued for ${queuedRepartitionEntities.join(
+              ", ",
+            )}. Watch the Stream column for progress.`,
+          });
+        } else {
+          onSaved?.(currentFlowId);
         }
 
         // Reset form to mark it as pristine
@@ -664,6 +759,50 @@ export function WebhookFlowForm({
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      <Dialog
+        open={pendingLayoutReset !== null}
+        onClose={() => !isSubmitting && setPendingLayoutReset(null)}
+      >
+        <DialogTitle>Rebuild destination tables?</DialogTitle>
+        <DialogContent>
+          <DialogContentText component="div">
+            You changed the partition or cluster layout for{" "}
+            <strong>{pendingLayoutReset?.entities.join(", ")}</strong>. These
+            settings are fixed when a destination table is created, so the
+            table(s) must be rebuilt for the change to take effect.
+            <Alert severity="info" sx={{ mt: 2 }}>
+              Saving rebuilds only those table(s) in place — the existing rows
+              are copied into a new table with the new layout and swapped in, so
+              no data is re-fetched from the source. If a table can&apos;t be
+              copied, it falls back to a full re-sync. Other entities are
+              unaffected.
+            </Alert>
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => setPendingLayoutReset(null)}
+            disabled={isSubmitting}
+          >
+            Cancel
+          </Button>
+          <Button
+            color="warning"
+            variant="contained"
+            disabled={isSubmitting}
+            onClick={async () => {
+              const pending = pendingLayoutReset;
+              if (!pending) return;
+              setPendingLayoutReset(null);
+              await executeSave(pending.data, {
+                resetEntities: pending.entities,
+              });
+            }}
+          >
+            {isSubmitting ? "Rebuilding..." : "Save & rebuild tables"}
+          </Button>
+        </DialogActions>
+      </Dialog>
       {/* Top bar with action buttons */}
       <Box
         sx={{
@@ -765,7 +904,7 @@ export function WebhookFlowForm({
                           }
                           disabled={isLoadingConnectors || !isNewMode}
                         >
-                          {connectors.map(source => (
+                          {webhookCapableConnectors.map(source => (
                             <MenuItem key={source._id} value={source._id}>
                               <Box
                                 sx={{
@@ -785,12 +924,14 @@ export function WebhookFlowForm({
                             {errors.dataSourceId.message}
                           </FormHelperText>
                         )}
-                        {connectors.length === 0 && !isLoadingConnectors && (
-                          <FormHelperText>
-                            Create a Stripe, Close, or Claap data source to use
-                            webhook flows
-                          </FormHelperText>
-                        )}
+                        {webhookCapableConnectors.length === 0 &&
+                          !isLoadingConnectors && (
+                            <FormHelperText>
+                              {webhookCapableConnectorNames.length > 0
+                                ? `Create a ${webhookCapableConnectorNames.join(", ")} data source to use webhook flows`
+                                : "Create a webhook-capable data source to use webhook flows"}
+                            </FormHelperText>
+                          )}
                       </FormControl>
                     )}
                   />
@@ -942,28 +1083,18 @@ export function WebhookFlowForm({
               {renderStepHeader(2)}
               <AccordionDetails>
                 <Stack spacing={3}>
-                  <Controller
-                    name="syncEngine"
-                    control={control}
-                    render={({ field }) => (
-                      <FormControl fullWidth>
-                        <InputLabel>Sync engine</InputLabel>
-                        <Select {...field} label="Sync engine">
-                          <MenuItem value="legacy">legacy</MenuItem>
-                          <MenuItem value="cdc" disabled={!isCdcCapableDest}>
-                            cdc
-                          </MenuItem>
-                        </Select>
-                        <FormHelperText>
-                          {watchSyncEngine === "cdc"
-                            ? "CDC mode enabled for this flow."
-                            : isCdcCapableDest
-                              ? "CDC is opt-in per flow; legacy remains default."
-                              : "CDC requires a supported destination (BigQuery, PostgreSQL, ClickHouse, or MongoDB)."}
-                        </FormHelperText>
-                      </FormControl>
-                    )}
-                  />
+                  <Alert
+                    severity={isCdcCapableDest ? "info" : "warning"}
+                    sx={{ "& .MuiAlert-message": { width: "100%" } }}
+                  >
+                    <Typography variant="body2">
+                      <strong>Sync engine: CDC.</strong> Webhook flows stream
+                      changes through the CDC pipeline (the legacy real-time
+                      webhook engine has been removed).
+                      {!isCdcCapableDest &&
+                        " Select a CDC-capable destination (BigQuery, PostgreSQL, ClickHouse, or MongoDB) to continue."}
+                    </Typography>
+                  </Alert>
 
                   <Controller
                     name="deleteMode"
@@ -996,6 +1127,80 @@ export function WebhookFlowForm({
                       </FormControl>
                     )}
                   />
+
+                  <Box
+                    sx={{
+                      border: 1,
+                      borderColor: "divider",
+                      borderRadius: 1,
+                      p: 2,
+                    }}
+                  >
+                    <Controller
+                      name="backfillScheduleEnabled"
+                      control={control}
+                      render={({ field }) => (
+                        <Box
+                          sx={{ display: "flex", alignItems: "center", gap: 1 }}
+                        >
+                          <Checkbox
+                            checked={Boolean(field.value)}
+                            onChange={e => field.onChange(e.target.checked)}
+                          />
+                          <Box>
+                            <Typography variant="subtitle2">
+                              Scheduled full backfill
+                            </Typography>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                            >
+                              Periodically re-runs a complete backfill to
+                              reconcile drift. The live webhook stream stays
+                              active between runs.
+                            </Typography>
+                          </Box>
+                        </Box>
+                      )}
+                    />
+
+                    {watchBackfillScheduleEnabled && (
+                      <Stack
+                        direction={{ xs: "column", sm: "row" }}
+                        spacing={2}
+                        sx={{ mt: 2 }}
+                      >
+                        <Controller
+                          name="backfillScheduleCron"
+                          control={control}
+                          render={({ field }) => (
+                            <TextField
+                              {...field}
+                              label="Cron expression"
+                              placeholder="0 3 * * *"
+                              size="small"
+                              fullWidth
+                              helperText="e.g. '0 3 * * *' = daily at 03:00"
+                            />
+                          )}
+                        />
+                        <Controller
+                          name="backfillScheduleTimezone"
+                          control={control}
+                          render={({ field }) => (
+                            <TextField
+                              {...field}
+                              label="Timezone"
+                              placeholder="UTC"
+                              size="small"
+                              fullWidth
+                              helperText="IANA timezone (e.g. UTC, Europe/Berlin)"
+                            />
+                          )}
+                        />
+                      </Stack>
+                    )}
+                  </Box>
 
                   <Box
                     sx={{ display: "flex", justifyContent: "flex-end", pt: 1 }}
@@ -1040,6 +1245,16 @@ export function WebhookFlowForm({
                         <Typography variant="subtitle2" sx={{ mb: 1 }}>
                           Entities & Table Configuration
                         </Typography>
+                        {!isNewMode && (
+                          <Alert severity="info" sx={{ mb: 1 }}>
+                            Changing the partition field, granularity, or
+                            cluster fields rebuilds the affected destination
+                            table(s) when you save: existing rows are copied
+                            into a new table with the new layout and swapped in
+                            (no re-sync from the source). You&apos;ll be asked
+                            to confirm.
+                          </Alert>
+                        )}
                         <Box
                           sx={{
                             border: 1,
@@ -1180,7 +1395,7 @@ export function WebhookFlowForm({
                                         {...field}
                                         size="small"
                                         value={field.value || "_syncedAt"}
-                                        disabled={!isEnabled || !isNewMode}
+                                        disabled={!isEnabled}
                                       >
                                         {timestampFields.map(f => (
                                           <MenuItem key={f} value={f}>
@@ -1198,7 +1413,7 @@ export function WebhookFlowForm({
                                         {...field}
                                         size="small"
                                         value={field.value || "day"}
-                                        disabled={!isEnabled || !isNewMode}
+                                        disabled={!isEnabled}
                                       >
                                         <MenuItem value="hour">hour</MenuItem>
                                         <MenuItem value="day">day</MenuItem>
@@ -1215,7 +1430,7 @@ export function WebhookFlowForm({
                                         multiple
                                         size="small"
                                         value={field.value || []}
-                                        disabled={!isEnabled || !isNewMode}
+                                        disabled={!isEnabled}
                                         onChange={e =>
                                           field.onChange(
                                             typeof e.target.value === "string"
@@ -1367,8 +1582,11 @@ export function WebhookFlowForm({
                           />
                         </Box>
                         <Typography variant="caption" color="text.secondary">
-                          Copy this URL to your Stripe, Close, or Claap webhook
-                          settings
+                          Copy this URL to your{" "}
+                          {provisionProviderLabel !== "Provider"
+                            ? provisionProviderLabel
+                            : "provider's"}{" "}
+                          webhook settings
                         </Typography>
                         {canProvisionWebhook && (
                           <Box
@@ -1396,11 +1614,9 @@ export function WebhookFlowForm({
                             >
                               One click creates the {provisionProviderLabel}{" "}
                               webhook
-                              {selectedConnectorType === "close"
-                                ? " and stores its signing secret"
-                                : selectedConnectorType === "claap"
-                                  ? " (copy the secret into this form if Claap shows it once)"
-                                  : ""}
+                              {provisionActionHint
+                                ? ` ${provisionActionHint}`
+                                : ""}
                               .
                             </Typography>
                           </Box>
@@ -1421,7 +1637,7 @@ export function WebhookFlowForm({
                           render={({ field }) => (
                             <TextField
                               {...field}
-                              placeholder="Enter webhook secret (e.g., whsec_...)"
+                              placeholder="Enter webhook secret"
                               fullWidth
                               size="small"
                               type="text"
@@ -1448,11 +1664,7 @@ export function WebhookFlowForm({
                           )}
                         />
                         <Typography variant="caption" color="text.secondary">
-                          {selectedConnectorType === "stripe"
-                            ? "Get this from Stripe Dashboard > Webhooks > Your endpoint > Signing secret"
-                            : selectedConnectorType === "claap"
-                              ? "Enter the X-Claap-Webhook-Secret from your Claap webhook settings"
-                              : "Enter the webhook signing secret from your provider"}
+                          {webhookSecretHelpText}
                         </Typography>
                       </Box>
                     </Stack>

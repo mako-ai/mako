@@ -11,6 +11,7 @@ import {
   NormalizedCdcRecord,
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
+  type WebhookCapabilities,
   type ConnectorEntitySchema,
 } from "../base/BaseConnector";
 import { resolveClaapEntitySchema } from "./schema";
@@ -369,9 +370,13 @@ export class ClaapConnector extends BaseConnector {
     limit?: number;
   }): Promise<ClaapListRecordingsResult> {
     const api = this.getClaapClient();
-    const params: Record<string, string | number> = {
+    const params: Record<string, string | number | boolean> = {
       limit: Math.min(options.limit ?? this.getBatchSize(), MAX_PAGE_LIMIT),
       sort: "created_asc",
+      // Opt into Claap's new AI output structure (`aiFields`). Without this the
+      // API returns the legacy `insightTemplates`, which stops being populated
+      // as of 2026-06-26.
+      returnAiFields: true,
     };
 
     if (options.cursor) {
@@ -502,6 +507,20 @@ export class ClaapConnector extends BaseConnector {
 
   supportsWebhookProvisioning(): boolean {
     return true;
+  }
+
+  getWebhookCapabilities(): WebhookCapabilities {
+    return {
+      supported: true,
+      provisioning: {
+        supported: true,
+        providerLabel: "Claap",
+        storesSecretAutomatically: false,
+        actionHint: "(copy the secret into this form if Claap shows it once)",
+      },
+      secretHelpText:
+        "Enter the X-Claap-Webhook-Secret from your Claap webhook settings",
+    };
   }
 
   async createWebhookSubscription(

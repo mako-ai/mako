@@ -18,6 +18,7 @@ export type ToolIconKey =
   | "clock"
   | "brain"
   | "shield-check"
+  | "square"
   | "help-circle";
 
 export type AgentToolDomain =
@@ -388,11 +389,39 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Reading chart template",
     icon: "eye",
   },
+  dashboard_save_version: {
+    domain: "dashboard",
+    execution: "client",
+    clientExecutor: "dashboard",
+    longRunning: true,
+    getLabel: input => {
+      const comment = (input as Record<string, unknown>)?.comment;
+      return comment
+        ? `Publishing version: "${comment}"`
+        : "Publishing dashboard version";
+    },
+    icon: "clock",
+  },
+  dashboard_restore_version: {
+    domain: "dashboard",
+    execution: "client",
+    clientExecutor: "dashboard",
+    longRunning: true,
+    getLabel: input => {
+      const version = (input as Record<string, unknown>)?.version;
+      return version
+        ? `Restoring version ${version}`
+        : "Restoring dashboard version";
+    },
+    icon: "clock",
+  },
+  // Full-server apps: list/create/read/inspect/materialize execute SERVER-SIDE
+  // (see api/src/agent-lib/tools/server-app-tools.ts). Entries kept for tool-card
+  // labels/icons. Only open_app and run_app remain browser-executed.
   list_open_apps: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
-    getLabel: () => "Listing open apps",
+    execution: "server",
+    getLabel: () => "Listing apps",
     icon: "list",
   },
   open_app: {
@@ -405,8 +434,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   create_app: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const title = (input as Record<string, unknown>)?.title;
@@ -416,25 +444,25 @@ export const AGENT_TOOL_MANIFEST = {
   },
   get_app_state: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     getLabel: () => "Reading app state",
     icon: "eye",
   },
   app_read_file: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
       return path ? `Reading ${path}` : "Reading file";
     },
     icon: "eye",
   },
+  // App mutation tools execute SERVER-SIDE (issue #475 pattern; see
+  // api/src/agent-lib/tools/server-app-tools.ts). Open tabs follow along via
+  // the realtime channel (app.updated). Entries kept for tool-card UI.
   app_write_file: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
@@ -443,10 +471,20 @@ export const AGENT_TOOL_MANIFEST = {
     icon: "pencil",
     preview: { field: "contents", language: "typescript" },
   },
+  app_edit_file: {
+    domain: "app",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Editing ${path}` : "Editing file";
+    },
+    icon: "pencil",
+    preview: { field: "newString", language: "typescript" },
+  },
   app_delete_file: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
       return path ? `Deleting ${path}` : "Deleting file";
@@ -455,15 +493,13 @@ export const AGENT_TOOL_MANIFEST = {
   },
   app_rename_file: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     getLabel: () => "Renaming file",
     icon: "pencil",
   },
   app_add_dependency: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const name = (input as Record<string, unknown>)?.name;
@@ -473,8 +509,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   app_remove_dependency: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     getLabel: input => {
       const name = (input as Record<string, unknown>)?.name;
       return name ? `Removing dependency ${name}` : "Removing dependency";
@@ -483,8 +518,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   app_create_data_binding: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const name = (input as Record<string, unknown>)?.name;
@@ -493,10 +527,60 @@ export const AGENT_TOOL_MANIFEST = {
     icon: "database",
     preview: { field: "code", language: "sql" },
   },
+  app_update_data_binding: {
+    domain: "app",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Updating data binding "${name}"` : "Updating data binding";
+    },
+    icon: "database",
+    preview: { field: "code", language: "sql" },
+  },
+  app_delete_data_binding: {
+    domain: "app",
+    execution: "server",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Deleting data binding "${name}"` : "Deleting data binding";
+    },
+    icon: "trash",
+  },
+  app_set_binding_materialization: {
+    domain: "app",
+    execution: "server",
+    getLabel: input => {
+      const inp = input as Record<string, unknown>;
+      const name = inp?.name;
+      const mode = inp?.materialization;
+      if (name && mode) return `Switching "${name}" to ${mode}`;
+      return "Switching materialization";
+    },
+    icon: "database",
+  },
+  app_save_version: {
+    domain: "app",
+    execution: "server",
+    getLabel: input => {
+      const comment = (input as Record<string, unknown>)?.comment;
+      return comment ? `Saving version: "${comment}"` : "Saving app version";
+    },
+    icon: "clock",
+  },
+  app_restore_version: {
+    domain: "app",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const version = (input as Record<string, unknown>)?.version;
+      return version ? `Restoring version ${version}` : "Restoring app version";
+    },
+    icon: "clock",
+  },
   materialize_binding: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const name = (input as Record<string, unknown>)?.name;
@@ -539,27 +623,44 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Rebuilding app preview",
     icon: "play",
   },
+  app_set_preview_environment: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    longRunning: true,
+    getLabel: input => {
+      const env = (input as Record<string, unknown>)?.environment;
+      return env
+        ? `Previewing dbt env "${env}"`
+        : "Resetting preview dbt env to prod";
+    },
+    icon: "database",
+  },
+  // dbt reads execute SERVER-SIDE (issue #475) — reading the authoritative
+  // DbtProject/DbtFile docs avoids a pending client tool tearing down the SSE
+  // turn ("stream disconnected before tool completed") when the tab is slow or
+  // detached. See api/src/agent-lib/tools/dbt-tools.ts.
   read_dbt_project_tree: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
     getLabel: () => "Reading dbt project tree",
     icon: "list",
   },
   read_dbt_file: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
       return path ? `Reading ${path}` : "Reading dbt file";
     },
     icon: "eye",
   },
+  // dbt file mutation tools execute SERVER-SIDE (issue #475 pattern; see
+  // createDbtServerTools in api/src/agent-lib/tools/dbt-tools.ts). Open editor
+  // tabs follow along via the realtime channel (dbt.file.updated).
   create_dbt_file: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
@@ -570,20 +671,29 @@ export const AGENT_TOOL_MANIFEST = {
   },
   modify_dbt_file: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Rewriting ${path}` : "Rewriting dbt file";
+    },
+    icon: "pencil",
+    preview: { field: "contents", language: "sql" },
+  },
+  edit_dbt_file: {
+    domain: "dbt",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
       return path ? `Editing ${path}` : "Editing dbt file";
     },
     icon: "pencil",
-    preview: { field: "contents", language: "sql" },
+    preview: { field: "newString", language: "sql" },
   },
   delete_dbt_file: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
       return path ? `Deleting ${path}` : "Deleting dbt file";
@@ -627,12 +737,238 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "play",
   },
+  // dbt_get_run polls the runner for a run's status. Without an explicit entry
+  // it fell back to humanizeToolName ("Dbt Get Run"), which is what surfaced in
+  // the agent transcript after a build. Give it a human label + a clock icon.
+  dbt_get_run: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Checking dbt run status",
+    icon: "clock",
+  },
+  dbt_show: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const model = (input as Record<string, unknown>)?.model;
+      return model ? `Previewing ${model}` : "Previewing model";
+    },
+    icon: "eye",
+  },
+  dbt_create_project: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Creating dbt project "${name}"` : "Creating dbt project";
+    },
+    icon: "plus",
+  },
+  dbt_cancel_run: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Cancelling dbt run",
+    icon: "square",
+  },
+  dbt_ensure_dev_environment: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Provisioning personal dbt environment",
+    icon: "database",
+  },
+  dbt_create_job: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Creating job "${name}"` : "Creating dbt job";
+    },
+    icon: "plus",
+  },
+  dbt_update_job: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Updating job "${name}"` : "Updating dbt job";
+    },
+    icon: "pencil",
+  },
+  dbt_delete_job: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Deleting dbt job",
+    icon: "trash",
+  },
+  dbt_sync_from_repo: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: () => "Syncing from repo",
+    icon: "download",
+  },
+  dbt_list_recoverable_files: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Listing recoverable files",
+    icon: "list",
+  },
+  dbt_restore_file: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Restoring ${path}` : "Restoring file";
+    },
+    icon: "plus",
+  },
+  dbt_git_status: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Checking git status",
+    icon: "eye",
+  },
+  dbt_commit_and_push: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const paths = (input as Record<string, unknown>)?.paths;
+      return Array.isArray(paths) && paths.length > 0
+        ? `Committing ${paths.length} file${paths.length === 1 ? "" : "s"} & pushing`
+        : "Committing & pushing";
+    },
+    icon: "external-link",
+  },
+  dbt_commit_to_branch: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      const paths = (input as Record<string, unknown>)?.paths;
+      const count =
+        Array.isArray(paths) && paths.length > 0 ? paths.length : null;
+      if (name && count) {
+        return `Committing ${count} file${count === 1 ? "" : "s"} to ${name}`;
+      }
+      return name ? `Committing to ${name}` : "Committing to new branch";
+    },
+    icon: "external-link",
+  },
+  dbt_create_branch: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Creating branch ${name}` : "Creating branch";
+    },
+    icon: "plus",
+  },
+  dbt_switch_branch: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const branch = (input as Record<string, unknown>)?.branch;
+      return branch ? `Switching to ${branch}` : "Switching branch";
+    },
+    icon: "link",
+  },
+  dbt_list_branches: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Listing branches",
+    icon: "list",
+  },
+  dbt_delete_branch: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Deleting branch ${name}` : "Deleting branch";
+    },
+    icon: "trash",
+  },
+  dbt_open_pull_request: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const title = (input as Record<string, unknown>)?.title;
+      return title ? `Opening PR: ${title}` : "Opening pull request";
+    },
+    icon: "external-link",
+  },
+  dbt_merge_pull_request: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const prNumber = (input as Record<string, unknown>)?.prNumber;
+      return prNumber ? `Merging PR #${prNumber}` : "Merging pull request";
+    },
+    icon: "external-link",
+  },
+  dbt_list_pull_requests: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const state = (input as Record<string, unknown>)?.state;
+      return state && state !== "open"
+        ? `Listing ${state} pull requests`
+        : "Listing pull requests";
+    },
+    icon: "list",
+  },
+  dbt_update_pull_request: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const prNumber = (input as Record<string, unknown>)?.prNumber;
+      return prNumber ? `Updating PR #${prNumber}` : "Updating pull request";
+    },
+    icon: "external-link",
+  },
+  dbt_close_pull_request: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const prNumber = (input as Record<string, unknown>)?.prNumber;
+      return prNumber ? `Closing PR #${prNumber}` : "Closing pull request";
+    },
+    icon: "external-link",
+  },
   search_consoles: {
     domain: "search",
     execution: "server",
     getLabel: input => {
       const query = (input as Record<string, unknown>)?.query;
       return query ? `Searching "${query}"` : "Searching consoles";
+    },
+    icon: "search",
+  },
+  fetch_url: {
+    domain: "search",
+    execution: "server",
+    getLabel: input => {
+      const url = (input as Record<string, unknown>)?.url;
+      if (typeof url === "string" && url.length > 0) {
+        const display = url.length > 48 ? `${url.slice(0, 45)}…` : url;
+        return `Fetching ${display}`;
+      }
+      return "Fetching URL";
+    },
+    icon: "external-link",
+  },
+  web_search: {
+    domain: "search",
+    execution: "server",
+    getLabel: input => {
+      const query = (input as Record<string, unknown>)?.query;
+      return query ? `Searching web: "${query}"` : "Searching the web";
     },
     icon: "search",
   },

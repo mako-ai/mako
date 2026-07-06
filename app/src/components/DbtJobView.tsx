@@ -3,7 +3,7 @@
  * the job edit form (commands list + schedule, pattern: ScheduleConsoleModal).
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
   Button,
@@ -32,7 +32,13 @@ import {
 import { CronExpressionParser } from "cron-parser";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useDbtStore, type DbtJobItem } from "../store/dbtStore";
+import { useIsMobile } from "../hooks/useIsMobile";
 import DbtRunHistory from "./DbtRunHistory";
+
+// Fast cadence while a run is active; slower idle cadence so scheduled runs
+// that fire (and progress updates) surface without a manual refresh.
+const ACTIVE_POLL_INTERVAL_MS = 3_000;
+const IDLE_POLL_INTERVAL_MS = 8_000;
 
 type SchedulePreset = "hourly" | "daily" | "every6h" | "weekly" | "custom";
 
@@ -65,16 +71,19 @@ function presetFromCron(cron: string): SchedulePreset {
 export default function DbtJobView({
   projectId,
   jobId,
+  autoEdit,
 }: {
   projectId: string;
   jobId: string;
+  autoEdit?: boolean;
 }) {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
+  const isMobile = useIsMobile();
 
   const project = useDbtStore(s => s.projects.find(p => p._id === projectId));
   const jobs = useDbtStore(s => s.jobsByProject[projectId]);
-  const runs = useDbtStore(s => s.runsByProject[projectId]);
+  const runs = useDbtStore(s => s.runsByJob[jobId]);
   const fetchProjects = useDbtStore(s => s.fetchProjects);
   const fetchJobs = useDbtStore(s => s.fetchJobs);
   const fetchRuns = useDbtStore(s => s.fetchRuns);
@@ -142,6 +151,42 @@ export default function DbtJobView({
     run => run.status === "running" || run.status === "queued",
   );
 
+  // Keep this job's run history live while the tab is open: scheduled runs
+  // that fire and in-progress runs update without a manual refresh. Cadence
+  // adapts to whether a run is active; polling pauses while the tab is hidden.
+  const hasActiveRef = useRef(false);
+  hasActiveRef.current = !!runningRun;
+  useEffect(() => {
+    if (!workspaceId) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      if (stopped) return;
+      const interval = hasActiveRef.current
+        ? ACTIVE_POLL_INTERVAL_MS
+        : IDLE_POLL_INTERVAL_MS;
+      timer = setTimeout(() => void tick(), interval);
+    };
+    const tick = async () => {
+      if (document.visibilityState === "visible") {
+        await fetchRuns(workspaceId, projectId, jobId);
+      }
+      schedule();
+    };
+    schedule();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        void fetchRuns(workspaceId, projectId, jobId);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [workspaceId, projectId, jobId, fetchRuns]);
+
   const handleRunNow = useCallback(async () => {
     if (!workspaceId) return;
     const runId = await triggerJob(workspaceId, projectId, jobId);
@@ -172,6 +217,15 @@ export default function DbtJobView({
     setFormDefer(!!job.deferToProduction);
     setEditing(true);
   }, [job]);
+
+  // For a freshly created job, drop straight into the edit form once.
+  const autoEditDone = useRef(false);
+  useEffect(() => {
+    if (autoEdit && job && !autoEditDone.current) {
+      autoEditDone.current = true;
+      beginEdit();
+    }
+  }, [autoEdit, job, beginEdit]);
 
   const previewRuns = useMemo(() => {
     if (!formScheduleEnabled || !formCron) return [];
@@ -249,11 +303,14 @@ export default function DbtJobView({
         backgroundColor: "background.paper",
       }}
     >
-      {/* Line 1 — identity + actions */}
+      {/* Line 1 — identity + actions. Wraps on mobile so the action buttons
+          stay reachable instead of overflowing a narrow viewport. */}
       <Box
         sx={{
           display: "flex",
           alignItems: "center",
+          flexWrap: isMobile ? "wrap" : "nowrap",
+          rowGap: 0.5,
           gap: 1,
           px: 1.5,
           pt: 0.75,

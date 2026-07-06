@@ -1,0 +1,116 @@
+---
+title: "Generated Columns in SQLite"
+description: "SQLite generated columns (3.31.0+): the difference between VIRTUAL and STORED, when to index a generated column, why VIRTUAL columns become expression indexes, and the limitations to know before you reach for them."
+database: "sqlite"
+category: "how-to"
+tags: ["sqlite", "sql", "generated-columns", "computed-columns", "schema"]
+date: "2026-06-03"
+---
+
+A generated column (also called a computed column) is a column whose value is derived from other columns in the same row. You never write to it directly; you write the underlying columns, and SQLite computes the generated value from them. SQLite added them in version 3.31.0 (2020-01-22).
+
+They are useful for materializing a frequently used expression, enforcing a derived constraint, or indexing the result of a calculation. This guide covers the syntax, the VIRTUAL versus STORED decision, indexing, and the limitations.
+
+## Syntax
+
+A generated column uses the `GENERATED ALWAYS AS (expression)` constraint. The `GENERATED ALWAYS` keywords are optional; `AS (expression)` alone is enough.
+
+```sql
+CREATE TABLE products (
+  id        INTEGER PRIMARY KEY,
+  price     REAL,
+  quantity  INTEGER,
+  total     REAL GENERATED ALWAYS AS (price * quantity) VIRTUAL,
+  name      TEXT,
+  name_upper TEXT AS (upper(name)) STORED
+);
+```
+
+Here `total` and `name_upper` are generated. You insert only the real columns:
+
+```sql
+INSERT INTO products (id, price, quantity, name)
+VALUES (1, 9.99, 3, 'widget');
+
+SELECT total, name_upper FROM products;
+-- 29.97 | WIDGET
+```
+
+Attempting to insert or update a generated column directly is an error. To change `total`, you change `price` or `quantity`.
+
+## VIRTUAL vs STORED
+
+This is the one real decision. The keyword goes at the end of the column definition. If you omit it, **VIRTUAL is the default**.
+
+**VIRTUAL** columns are computed every time they are read. They take up no space in the database file but cost CPU on each read.
+
+**STORED** columns are computed once, when the row is written, and saved to disk. They take up space but cost nothing extra to read.
+
+From SQL's point of view the two are almost identical: the same query returns the same result either way. The trade is space versus read-time CPU. Pick STORED when the expression is expensive and the column is read far more often than written; pick VIRTUAL (the default) when the expression is cheap or the table is write-heavy.
+
+There is one functional difference worth knowing: you can add a VIRTUAL generated column to an existing table with `ALTER TABLE ... ADD COLUMN`, but you cannot add a STORED one that way. STORED columns must be defined when the table is created.
+
+```sql
+-- works
+ALTER TABLE products ADD COLUMN discounted REAL AS (price * 0.9) VIRTUAL;
+
+-- fails: cannot ADD a STORED generated column
+ALTER TABLE products ADD COLUMN discounted REAL AS (price * 0.9) STORED;
+```
+
+## Indexing generated columns
+
+Generated columns can participate in indexes just like ordinary columns, which is one of the main reasons to use them. The behavior differs by type:
+
+- An index on a **STORED** generated column is an ordinary index. The values already live on disk, so SQLite indexes them directly.
+- An index on a **VIRTUAL** generated column is an [expression index](https://sqlite.org/expridx.html) under the hood. SQLite computes the expression to build and maintain the index, even though the column value itself is never stored as a table column.
+
+```sql
+CREATE INDEX idx_products_total ON products(total);
+
+EXPLAIN QUERY PLAN
+SELECT id FROM products WHERE total > 100;
+-- SEARCH products USING INDEX idx_products_total (total>?)
+```
+
+This is the pattern that makes generated columns useful for query performance: you define a derived value once, index it, and filter or sort on it at index speed. A common use is normalizing text for case-insensitive lookup with a `VIRTUAL` column over `lower(name)` plus an index on it, which avoids wrapping the column in a function at query time.
+
+A practical note: if your only goal is indexing a computed expression, you do not strictly need a generated column at all, since SQLite supports expression indexes directly (`CREATE INDEX idx ON products(price * quantity)`). The generated column is worth adding when you also want to *select* the derived value by name or enforce a constraint on it, not just index it.
+
+## Constraints on generated columns
+
+Generated columns can carry `NOT NULL`, `CHECK`, `UNIQUE`, and foreign key constraints, the same as ordinary columns. A `UNIQUE` constraint on a generated column is a handy way to enforce uniqueness on a derived value:
+
+```sql
+CREATE TABLE users (
+  id    INTEGER PRIMARY KEY,
+  email TEXT,
+  email_norm TEXT AS (lower(trim(email))) STORED UNIQUE
+);
+```
+
+This rejects two rows whose emails differ only by case or surrounding whitespace, without you having to remember to normalize on every insert.
+
+## Limitations
+
+Worth knowing before you design a schema around them:
+
+- **No DEFAULT clause.** A generated column's value comes entirely from its expression; it cannot also have a `DEFAULT`.
+- **The expression is restricted.** It may reference other columns in the same row (including other generated columns, as long as there is no circular dependency) but cannot reference other rows, run subqueries, or call non-deterministic functions like `random()` or `current_timestamp`.
+- **Cannot be part of the PRIMARY KEY.** A generated column may be UNIQUE, but not the primary key.
+- **STORED columns cannot be added via ALTER TABLE.** As noted above, only VIRTUAL columns can be added to an existing table.
+- **Cannot be written directly.** Every value flows from the underlying columns. If you need to override a computed value occasionally, a generated column is the wrong tool.
+
+## Common mistakes
+
+- **Forgetting VIRTUAL is the default.** Omitting the keyword gives you a VIRTUAL column, recomputed on every read. If you meant to store it for read performance, write `STORED` explicitly.
+- **Choosing STORED on a write-heavy table.** STORED columns are recomputed and rewritten on every row change. On a table with frequent updates and rare reads, that is wasted work; VIRTUAL is usually the better default.
+- **Trying to ALTER TABLE ADD a STORED column.** SQLite rejects it. Either add a VIRTUAL column or recreate the table.
+- **Expecting to UPDATE the generated column.** You change the inputs, not the output. `UPDATE products SET total = 50` fails.
+- **Using a non-deterministic expression.** `current_timestamp` or `random()` in the generating expression is not allowed; the value must be a pure function of the row's stored columns.
+
+For the indexes that make a generated column worth defining, see the [SQLite indexes guide](/guides/sqlite/indexes-explained), and to confirm an index is actually used, the [EXPLAIN QUERY PLAN guide](/guides/sqlite/explain-query-plan).
+
+When you are working out whether a generated column should be VIRTUAL or STORED for a given workload, Mako's AI autocomplete can draft the column definition and the matching index against your live schema so you can compare the query plans before committing.
+
+Mako connects to SQLite and eight other databases with AI-powered autocomplete. Try it free at mako.ai.

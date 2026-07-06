@@ -1,3 +1,6 @@
+# Local secrets (GitHub App PEM, etc.)
+.secrets/
+
 # Logs
 logs
 *.log
@@ -142,3 +145,7 @@ api/.data/
 
 # Electron build output
 packages/desktop/release/
+
+# Python bytecode (embedded dbt engine helpers)
+__pycache__/
+*.pyc

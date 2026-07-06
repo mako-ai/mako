@@ -29,6 +29,31 @@ const vegaLiteSpecField = z
       "If the spec is invalid or fails to render, the tool returns the error/hint so you can fix it with modify_widget.",
   );
 
+const saveDashboardVersionSchema = z.object({
+  dashboardId: z.string().describe("Dashboard ID (from list_open_dashboards)"),
+  comment: z
+    .string()
+    .optional()
+    .describe(
+      "Short message describing this version, e.g. 'Add revenue KPI'. Shown in " +
+        "the version history list.",
+    ),
+});
+
+const restoreDashboardVersionSchema = z.object({
+  dashboardId: z.string().describe("Dashboard ID (from list_open_dashboards)"),
+  version: z
+    .number()
+    .describe(
+      "Version number to restore (from browse_version_history). The current " +
+        "state is preserved as a new version first, so restoring is never lossy.",
+    ),
+  comment: z
+    .string()
+    .optional()
+    .describe("Optional note explaining why this version was restored."),
+});
+
 const addWidgetSchema = z.object({
   dashboardId: z.string().describe("Dashboard ID"),
   type: z.enum(["chart", "kpi", "table"]).describe("Widget type"),
@@ -183,6 +208,16 @@ const createDataSourceSchema = z.object({
     .number()
     .optional()
     .describe("Optional row limit for materialization"),
+  materialization: z
+    .enum(["live", "parquet"])
+    .default("parquet")
+    .describe(
+      "'parquet' (default) materializes the query to a cached artifact loaded " +
+        "into DuckDB — fast for aggregation and served to public shares. " +
+        "'live' streams the query server-side into DuckDB on every dashboard " +
+        "load (always fresh, not shown in anonymous public shares). Mirrors " +
+        "app data binding materialization.",
+    ),
 });
 
 const updateDataSourceQuerySchema = z.object({
@@ -211,6 +246,13 @@ const updateDataSourceQuerySchema = z.object({
   databaseName: z.string().optional().describe("Updated database name"),
   timeDimension: z.string().optional().describe("Updated default time column"),
   rowLimit: z.number().optional().describe("Updated row limit"),
+  materialization: z
+    .enum(["live", "parquet"])
+    .optional()
+    .describe(
+      "Switch this data source between 'live' (stream on every load) and " +
+        "'parquet' (cached materialized artifact).",
+    ),
   startLine: z
     .number()
     .optional()
@@ -378,5 +420,25 @@ export const clientDashboardTools = {
     inputSchema: z.object({
       templateId: z.string().describe("Template ID from get_chart_templates"),
     }),
+  }),
+  dashboard_save_version: tool({
+    description:
+      "Save AND publish the dashboard's current edits as a new version. Persists " +
+      "the working draft to the server, creates an immutable version snapshot in " +
+      "history, and publishes it — the published snapshot is what viewers and " +
+      "shared/public links render. Call enter_edit_mode first. Only call this " +
+      "when the user asks to save/publish/snapshot; otherwise leave changes in " +
+      "edit mode for the user to review. Give a short `comment`.",
+    inputSchema: saveDashboardVersionSchema,
+  }),
+  dashboard_restore_version: tool({
+    description:
+      "Restore the dashboard to a previous version (get the number from " +
+      "browse_version_history with entityType:'dashboard'). Reverts the working " +
+      "draft to that snapshot and reloads the dashboard; the current state is " +
+      "preserved as a new version first, so it is never lossy. Restoring does " +
+      "NOT publish — call dashboard_save_version afterward to push the restored " +
+      "state live to viewers. This replaces any unsaved edits in the open tab.",
+    inputSchema: restoreDashboardVersionSchema,
   }),
 };

@@ -136,12 +136,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   // other tabs, server-side agent edits) and carries chat activity/intents.
   useEffect(() => {
     if (currentWorkspace?.id) {
+      useRealtimeStore.getState().setCurrentUserId(user?.id ?? null);
       useRealtimeStore.getState().connect(currentWorkspace.id);
       return () => {
         useRealtimeStore.getState().disconnect();
       };
     }
-  }, [currentWorkspace?.id]);
+  }, [currentWorkspace?.id, user?.id]);
 
   const loadWorkspaces = useCallback(async () => {
     try {

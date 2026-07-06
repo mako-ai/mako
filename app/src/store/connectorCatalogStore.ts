@@ -3,12 +3,26 @@ import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { api, unwrapBody } from "../api";
 
+export interface WebhookProvisioningCapability {
+  supported: boolean;
+  providerLabel: string;
+  storesSecretAutomatically: boolean;
+  actionHint?: string;
+}
+
+export interface WebhookCapabilities {
+  supported: boolean;
+  provisioning: WebhookProvisioningCapability;
+  secretHelpText?: string;
+}
+
 export interface ConnectorType {
   type: string;
   name: string;
   version: string;
   description: string;
   supportedEntities: string[];
+  webhook: WebhookCapabilities;
 }
 
 export interface ConnectorSchemaResponse {

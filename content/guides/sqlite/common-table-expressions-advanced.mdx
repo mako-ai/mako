@@ -1,0 +1,136 @@
+---
+title: "Advanced Recursive CTEs in SQLite: Graphs, Cycle Detection, and Tuning"
+description: "Go beyond basic recursion in SQLite: traverse general graphs with WITH RECURSIVE, detect and break cycles by tracking the path, control depth-first vs breadth-first order, and tune materialization."
+database: "sqlite"
+category: "how-to"
+tags: ["sqlite", "sql", "cte", "recursive-queries"]
+date: "2026-06-04"
+---
+
+SQLite's recursive common table expressions handle simple hierarchies well, but real data is messier. Org charts have loops when someone is accidentally set as their own manager. Dependency graphs branch and reconverge. A naive `WITH RECURSIVE` against any of these runs until it hits an internal limit or exhausts memory. This guide covers the patterns you need once the trees stop being trees.
+
+If you are new to the `WITH` clause, start with our [SQLite CTE guide](/guides/sqlite/cte) and come back here.
+
+## How recursion actually executes
+
+A recursive CTE in SQLite has two parts joined by a compound operator (`UNION` or `UNION ALL`): an initial-select that seeds the result, and a recursive-select that references the CTE by name.
+
+```sql
+WITH RECURSIVE counter(n) AS (
+  SELECT 1                      -- initial-select (the anchor)
+  UNION ALL
+  SELECT n + 1 FROM counter     -- recursive-select
+  WHERE n < 5
+)
+SELECT n FROM counter;
+```
+
+SQLite runs this with a queue. The initial-select rows go into the queue and into the result. It then repeatedly takes one row off the queue, runs the recursive-select against it, and appends any new rows to both the queue and the result. It stops when the queue is empty. The `WHERE n < 5` is what empties the queue here. Forget a terminating condition and the queue never drains.
+
+The choice of `UNION` versus `UNION ALL` matters more than in ordinary queries. `UNION` discards rows already in the result set, which provides automatic deduplication. `UNION ALL` keeps everything. For graph work you usually want `UNION ALL` plus your own bookkeeping, because `UNION` deduplicates on the *entire* row, and once you add a path column (below) no two rows are ever identical, so the built-in dedup stops protecting you.
+
+## Traversing a general graph
+
+Trees are safe because there is exactly one path to each node. Graphs are not: edges can form cycles, and a plain recursive query will loop through them forever. SQLite has no built-in cycle detection, so you track the visited path yourself.
+
+Take a directed edge table:
+
+```sql
+CREATE TABLE edge(src INTEGER, dst INTEGER);
+INSERT INTO edge VALUES
+  (1, 2), (1, 3), (2, 4), (3, 4), (4, 1);  -- 4 -> 1 closes a cycle
+```
+
+Find everything reachable from node 1 without looping:
+
+```sql
+WITH RECURSIVE reachable(node, path) AS (
+  SELECT 1, '/1/'
+  UNION ALL
+  SELECT edge.dst, reachable.path || edge.dst || '/'
+  FROM edge
+  JOIN reachable ON edge.src = reachable.node
+  WHERE reachable.path NOT LIKE '%/' || edge.dst || '/%'
+)
+SELECT DISTINCT node FROM reachable;
+```
+
+The `path` column accumulates a string like `/1/2/4/`. Before following an edge to `dst`, the `WHERE` clause checks that `dst` is not already in the path. That single predicate is the cycle guard. The delimiters around each id (`/1/`) stop `1` from matching inside `12`.
+
+A cleaner, type-safe alternative uses a JSON array for the path and `json_each` to test membership, which avoids the substring-matching foot-guns:
+
+```sql
+WITH RECURSIVE reachable(node, path) AS (
+  SELECT 1, json_array(1)
+  UNION ALL
+  SELECT edge.dst, json_insert(reachable.path, '$[#]', edge.dst)
+  FROM edge
+  JOIN reachable ON edge.src = reachable.node
+  WHERE edge.dst NOT IN (SELECT value FROM json_each(reachable.path))
+)
+SELECT node, path FROM reachable;
+```
+
+See the [SQLite JSON guide](/guides/sqlite/json-queries) for the `json_each` and `json_insert` functions used here.
+
+## Limiting depth
+
+Cycle detection stops infinite loops, but a large graph can still explode combinatorially. Cap the depth with a level counter:
+
+```sql
+WITH RECURSIVE reachable(node, depth, path) AS (
+  SELECT 1, 0, '/1/'
+  UNION ALL
+  SELECT edge.dst, reachable.depth + 1, reachable.path || edge.dst || '/'
+  FROM edge
+  JOIN reachable ON edge.src = reachable.node
+  WHERE reachable.depth < 5
+    AND reachable.path NOT LIKE '%/' || edge.dst || '/%'
+)
+SELECT * FROM reachable;
+```
+
+Both predicates earn their place: `depth < 5` bounds the work even on an acyclic but very deep graph, and the path check handles cycles.
+
+## Depth-first vs breadth-first order
+
+By default SQLite processes its queue in a way that produces breadth-first order. You can force a specific traversal order by adding `ORDER BY` to the recursive-select, which is a SQLite-specific extension. To get depth-first order, order by the accumulated path:
+
+```sql
+WITH RECURSIVE tree(id, name, path) AS (
+  SELECT id, name, printf('%08d', id)
+  FROM node WHERE parent_id IS NULL
+  UNION ALL
+  SELECT node.id, node.name, tree.path || '.' || printf('%08d', node.id)
+  FROM node JOIN tree ON node.parent_id = tree.id
+  ORDER BY 3                       -- order by path -> depth-first
+)
+SELECT id, name FROM tree;
+```
+
+Replacing `ORDER BY 3` with `ORDER BY 2` (or any non-path column) changes the visitation order. This `ORDER BY` controls the order rows are *pulled from the queue*, which is different from an `ORDER BY` on the outer `SELECT` that only sorts the final output.
+
+## Materialization hints
+
+Since **version 3.35.0** (March 2021), SQLite accepts `MATERIALIZED` and `NOT MATERIALIZED` hints on ordinary CTEs to override the query planner's default.
+
+```sql
+WITH expensive AS MATERIALIZED (
+  SELECT customer_id, SUM(amount) AS total
+  FROM orders GROUP BY customer_id
+)
+SELECT * FROM expensive WHERE total > 1000;
+```
+
+`MATERIALIZED` tells SQLite to compute the CTE once into a temporary table and reuse it. `NOT MATERIALIZED` tells it to inline the CTE into each place it is referenced, which can let indexes on the underlying tables do more work. Use `MATERIALIZED` when a CTE is referenced multiple times and is expensive to compute; use `NOT MATERIALIZED` when it is referenced once and inlining would expose a useful index. These hints apply to ordinary CTEs; recursive CTEs are always materialized.
+
+When in doubt, measure with [EXPLAIN QUERY PLAN](/guides/sqlite/explain-query-plan) rather than guessing.
+
+## Common mistakes
+
+- **Missing termination.** No `WHERE` bound on the recursive-select means the queue never empties. SQLite will keep going until it hits an internal limit or runs out of memory.
+- **Cycle guard on the wrong column.** Check membership against the *accumulated path*, not the current node alone. Testing only the latest node misses longer loops.
+- **`UNION` with a path column.** Once every row carries a distinct path string, `UNION`'s row-level dedup never fires, so it behaves like `UNION ALL` while costing more. Use `UNION ALL` and your own guard.
+- **Substring false positives.** `path LIKE '%2%'` matches `12`, `20`, `321`. Always wrap ids in delimiters, or use a JSON array with `json_each`.
+
+Mako connects to SQLite with AI-powered autocomplete that helps you draft and debug recursive queries like these. Try it free at mako.ai.
