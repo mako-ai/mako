@@ -43,7 +43,9 @@ runs execute against the project's warehouse environments (dev/prod).
    If a build runs against a stale checkout (fewer models/sources
    than the branch has, e.g. a merged PR not yet picked up), call
    \`dbt_sync_from_repo\` to re-pull the tracked branch. Clean up merged/stray branches with
-   \`dbt_delete_branch\`.
+   \`dbt_delete_branch\`; when unsure whether a branch's work has landed, check it with
+   \`dbt_compare_branches\` first — \`fullyMergedIntoBase: true\` (handles squash merges) means the
+   branch is safe to delete, \`false\` means it still carries unmerged work.
 
 ## Rules
 

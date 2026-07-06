@@ -883,6 +883,19 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Listing branches",
     icon: "list",
   },
+  dbt_compare_branches: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const params = input as Record<string, unknown> | undefined;
+      const head = params?.head;
+      const base = params?.base;
+      if (head && base) return `Comparing ${head} against ${base}`;
+      if (head) return `Comparing ${head} against the default branch`;
+      return "Comparing branches";
+    },
+    icon: "eye",
+  },
   dbt_delete_branch: {
     domain: "dbt",
     execution: "server",

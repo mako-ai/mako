@@ -67,6 +67,7 @@ import {
   closeProjectPullRequest,
   commitAndPush,
   commitToNewBranch,
+  compareProjectRefs,
   createProjectBranch,
   deleteProjectBranch,
   getGitStatus,
@@ -1971,11 +1972,89 @@ export const createDbtServerTools = (
       },
     }),
 
+    dbt_compare_branches: tool({
+      description:
+        "Compare a branch (or any ref) against a base branch WITHOUT " +
+        "switching checkouts — GitHub's base...head compare (head vs the " +
+        "merge base, like a PR diff). Returns ahead/behind commit counts, " +
+        "the changed files, the PRs opened from that branch, and " +
+        "fullyMergedIntoBase — true when the branch's content is already in " +
+        "the base (directly merged, or squash/rebase-merged via a PR after " +
+        "its last commit). ALWAYS check this before dbt_delete_branch when " +
+        "cleaning up branches: fullyMergedIntoBase true → safe to delete; " +
+        "false → the branch still carries unmerged work.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        head: z
+          .string()
+          .min(1)
+          .max(255)
+          .optional()
+          .describe(
+            "Branch/ref to inspect; defaults to the user's checked-out branch",
+          ),
+        base: z
+          .string()
+          .min(1)
+          .max(255)
+          .optional()
+          .describe(
+            "Branch/ref to compare against; defaults to the repo's default " +
+              "branch",
+          ),
+      }),
+      execute: async ({ projectId, head, base }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          const headRef =
+            head?.trim() ||
+            ((await getCheckoutBranch(project, actingUserId)) as string);
+          const result = await compareProjectRefs(project, {
+            head: headRef,
+            base: base?.trim() || undefined,
+          });
+          const MAX_COMMITS = 20;
+          const MAX_FILES = 100;
+          return {
+            success: true,
+            base: result.base,
+            head: result.head,
+            status: result.status,
+            aheadBy: result.aheadBy,
+            behindBy: result.behindBy,
+            fullyMergedIntoBase: result.fullyMergedIntoBase,
+            // Newest commits are the most informative — keep the tail.
+            commits: result.commits.slice(-MAX_COMMITS).map(c => ({
+              sha: c.sha.slice(0, 7),
+              message: c.message.split("\n", 1)[0],
+              date: c.date,
+            })),
+            commitsTruncated: result.commits.length > MAX_COMMITS,
+            files: result.files.slice(0, MAX_FILES),
+            filesTruncated: result.files.length > MAX_FILES,
+            pullRequests: result.pullRequests.map(pr => ({
+              number: pr.number,
+              title: pr.title,
+              state: pr.state,
+              merged: pr.merged,
+              mergedAt: pr.mergedAt,
+              baseRef: pr.baseRef,
+              url: pr.htmlUrl,
+            })),
+          };
+        } catch (error) {
+          return toolError(error, "Failed to compare branches");
+        }
+      },
+    }),
+
     dbt_delete_branch: tool({
       description:
         "Delete a remote branch from the project's repository — use to clean up " +
         "a stray/merged feature branch (e.g. after its PR is merged, or an " +
-        "abandoned branch from a failed promote). Refuses to delete the branch " +
+        "abandoned branch from a failed promote). If unsure whether the " +
+        "branch's work has landed, check dbt_compare_branches first " +
+        "(fullyMergedIntoBase). Refuses to delete the branch " +
         "the project currently tracks (switch away first with dbt_switch_branch) " +
         "and the repo's default branch. DESTRUCTIVE for stashed work: any " +
         "uncommitted drafts saved on that branch are permanently dropped with " +
