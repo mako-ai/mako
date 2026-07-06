@@ -359,9 +359,13 @@ export const clientAppTools = {
       "(for dbt-linked bindings using the {{ dbt_schema }} token). This is " +
       "per-user VIEW state — it never changes the app definition, other " +
       "editors' previews, or what published/shared viewers see (those always " +
-      "read the prod environment). Pass environment: null to go back to the " +
-      "default (prod). Use it to verify an app against models you just built " +
-      "in a dev/personal schema before promoting them to prod.",
+      "read the prod environment). While an override is active, dbt-linked " +
+      "parquet bindings serve a live (row-capped) run against the override " +
+      "schema — useQuery, useDuckDB, and query_duckdb all read it; do NOT " +
+      "call materialize_binding to preview dev data (materialization always " +
+      "builds from prod). Pass environment: null to go back to the default " +
+      "(prod). Use it to verify an app against models you just built in a " +
+      "dev/personal schema before promoting them to prod.",
     inputSchema: z.object({
       appId: appIdField,
       environment: z
