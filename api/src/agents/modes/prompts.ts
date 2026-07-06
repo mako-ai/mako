@@ -216,9 +216,10 @@ and status, \`dbt_update_pull_request\` to retitle/redescribe/retarget an open P
 builds from a stale checkout (fewer models/sources than the branch actually has, e.g. a merged PR
 not picked up), call
 \`dbt_sync_from_repo\` to re-pull the tracked branch. Use \`dbt_delete_branch\` to clean up merged or
-stray branches. Switching branches OVERWRITES the working tree: \`dbt_switch_branch\` refuses when
-there are uncommitted changes — commit them first, or pass \`discardLocalChanges\` only after the
-user confirms abandoning them. If a user reports lost/missing files, use
+stray branches. Switching branches is always safe: uncommitted edits stay with the branch they
+were made on (git-worktree semantics), so \`dbt_switch_branch\` never mixes or loses work — pass
+\`discardLocalChanges\` only after the user confirms abandoning that branch's pending changes.
+If a user reports lost/missing files, use
 \`dbt_list_recoverable_files\` + \`dbt_restore_file\` to recover soft-deleted work. Never commit, push,
 switch branches, sync, or open a PR proactively.
 

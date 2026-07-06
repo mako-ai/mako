@@ -3,12 +3,14 @@
  * status, commit & push, branch create/switch, and pull requests — the in-IDE
  * git surface that mirrors dbt Cloud.
  *
- * The working tree is per user: DbtFile rows are the COMMITTED base tree of a
- * branch, DbtFileDraft rows are the caller's uncommitted overlay, and
- * DbtCheckout points each user at their own branch. Status/commit therefore
- * only ever see the acting user's drafts. Pushing builds a single commit via
- * the Git Data API, updates the branch's base tree, and clears the committed
- * drafts.
+ * The working tree is per user AND per branch: DbtFile rows are the COMMITTED
+ * base tree of a branch, DbtFileDraft rows are the caller's uncommitted
+ * overlay keyed to the branch they were made on, and DbtCheckout points each
+ * user at their own branch. Status/commit therefore only ever see the acting
+ * user's drafts for their checked-out branch — switching branches leaves each
+ * branch's dirty state in place (git-worktree semantics). Pushing builds a
+ * single commit via the Git Data API, updates the branch's base tree, and
+ * clears the committed drafts.
  *
  * Branch protection: branches listed in `project.protectedBranches` refuse
  * direct commits — changes reach them only through a PR (commit-to-branch →
@@ -46,8 +48,11 @@ import {
   baseTreeFilter,
   cloneBranchBaseTree,
   deleteBranchBaseTree,
+  deleteBranchDrafts,
   discardUserDrafts,
   getCheckoutBranch,
+  moveBranchDrafts,
+  moveUserDrafts,
   setCheckoutBranch,
 } from "./dbt-working-tree.service";
 
@@ -257,7 +262,7 @@ async function loadStatusInputs(
   }
   const branch = (await getCheckoutBranch(project, userId)) as string;
   const [drafts, baseRows] = await Promise.all([
-    DbtFileDraft.find({ projectId: project._id, userId })
+    DbtFileDraft.find({ projectId: project._id, userId, branch })
       .select("path content is_deleted")
       .lean(),
     DbtFile.find({
@@ -317,7 +322,7 @@ export async function getProjectFileDiff(
   }
   const branch = await getCheckoutBranch(project, userId);
   const [draft, baseRow] = await Promise.all([
-    DbtFileDraft.findOne({ projectId: project._id, userId, path })
+    DbtFileDraft.findOne({ projectId: project._id, userId, branch, path })
       .select("content is_deleted")
       .lean(),
     DbtFile.findOne({
@@ -400,7 +405,11 @@ async function pushWorkingTree(
   const token = await resolveRepoToken(project.repo.installationId);
   const { owner, repo } = project.repo;
 
-  const drafts = await DbtFileDraft.find({ projectId: project._id, userId })
+  const drafts = await DbtFileDraft.find({
+    projectId: project._id,
+    userId,
+    branch,
+  })
     .select("path content is_deleted")
     .lean();
   const draftByPath = new Map(drafts.map(d => [d.path, d]));
@@ -443,6 +452,7 @@ async function pushWorkingTree(
       DbtFileDraft.deleteOne({
         projectId: project._id,
         userId,
+        branch,
         path: change.path,
       }).exec(),
     );
@@ -565,11 +575,13 @@ export async function commitToNewBranch(
     const { owner, repo } = fresh.repo;
 
     // Fork the new branch from the branch the user currently tracks, clone
-    // its committed base tree, and point the user's checkout at it BEFORE
-    // committing so pushWorkingTree targets the new branch.
+    // its committed base tree, move the user's drafts onto the new branch
+    // (the promote takes their dirty tree with it), and point their checkout
+    // at it BEFORE committing so pushWorkingTree targets the new branch.
     const { commitSha } = await getRefCommit(owner, repo, fromBranch, token);
     await createBranch(owner, repo, params.branchName, commitSha, token);
     await cloneBranchBaseTree(fresh, fromBranch, params.branchName);
+    await moveUserDrafts(fresh, params.userId, fromBranch, params.branchName);
     await setCheckoutBranch(fresh, params.userId, params.branchName);
 
     const result = await pushWorkingTree(
@@ -620,10 +632,14 @@ export async function createProjectBranch(
 
 /**
  * Switch the caller's checkout to another branch. Only their branch pointer
- * moves; their drafts carry over as an overlay (like `git checkout` with a
- * dirty tree), so nothing is lost. Pass `discardLocalChanges` to drop the
- * caller's drafts instead. The target branch's committed base tree is synced
- * from GitHub.
+ * moves; their drafts STAY WITH THE BRANCH they were made on (git-worktree
+ * semantics), so uncommitted work on the old branch is waiting untouched
+ * when they switch back, and never re-bases onto the target branch. Pass
+ * `discardLocalChanges` to drop the caller's drafts on the branch they are
+ * leaving. The target branch's committed base tree is synced from GitHub.
+ *
+ * `pendingChanges` reports the caller's uncommitted changes already stashed
+ * on the TARGET branch (from a previous session there).
  */
 export async function switchProjectBranch(
   project: IDbtProject,
@@ -631,15 +647,16 @@ export async function switchProjectBranch(
   branchName: string,
   updatedBy: string,
   options: { discardLocalChanges?: boolean } = {},
-): Promise<{ branch: string; discarded?: GitStatus; carriedChanges: number }> {
+): Promise<{ branch: string; discarded?: GitStatus; pendingChanges: number }> {
   return withProjectGitLock(project._id.toString(), async () => {
     const fresh = await reloadRepoProject(project);
 
     let discarded: GitStatus | undefined;
     if (options.discardLocalChanges) {
+      const fromBranch = (await getCheckoutBranch(fresh, userId)) as string;
       const status = await getGitStatus(fresh, userId);
       if (status.hasChanges) discarded = status;
-      await discardUserDrafts(fresh, userId);
+      await discardUserDrafts(fresh, userId, fromBranch);
     }
 
     // Materialize/refresh the target branch's committed base tree.
@@ -648,19 +665,18 @@ export async function switchProjectBranch(
       lastSyncedSha: sync.sha,
     });
 
-    const carried = discarded
-      ? 0
-      : (await getGitStatus(fresh, userId)).changes.length;
+    const pendingChanges = (await getGitStatus(fresh, userId)).changes.length;
     return discarded?.hasChanges
-      ? { branch: branchName, discarded, carriedChanges: carried }
-      : { branch: branchName, carriedChanges: carried };
+      ? { branch: branchName, discarded, pendingChanges }
+      : { branch: branchName, pendingChanges };
   });
 }
 
 /**
  * Delete a remote branch. Refuses to delete the caller's checked-out branch,
  * any branch another user has checked out, the project default branch, and
- * the repo default branch. Cleans up the branch's local base tree.
+ * the repo default branch. Cleans up the branch's local base tree and any
+ * drafts stashed on it (deleting a branch abandons its uncommitted work).
  */
 export async function deleteProjectBranch(
   project: IDbtProject,
@@ -703,6 +719,7 @@ export async function deleteProjectBranch(
     }
     await deleteBranch(owner, repo, branchName, token);
     await deleteBranchBaseTree(fresh, branchName);
+    await deleteBranchDrafts(fresh, branchName);
     return { deleted: branchName };
   });
 }
@@ -761,8 +778,9 @@ export async function restoreDeletedFile(
     if (!file) {
       throw new Error(`No recoverable file at "${path}".`);
     }
+    const branch = (await getCheckoutBranch(project, userId)) as string;
     await DbtFileDraft.updateOne(
-      { projectId: project._id, userId, path },
+      { projectId: project._id, userId, branch, path },
       {
         $set: {
           content: file.content ?? "",
@@ -923,6 +941,7 @@ export async function closeProjectPullRequest(
         branchDeleteWarning = deleteResult.warning;
         if (branchDeleted) {
           await deleteBranchBaseTree(fresh, headRef);
+          await deleteBranchDrafts(fresh, headRef);
         }
       }
     }
@@ -942,9 +961,10 @@ export interface MergePullRequestResult {
 /**
  * Merge a GitHub pull request, optionally delete its head branch, then switch
  * the caller's checkout back to the repo default branch and sync the merged
- * state into that branch's base tree. The caller's drafts (if any) carry over
- * as an overlay. Users checked out on the deleted head branch are moved back
- * to the default branch.
+ * state into that branch's base tree. Users checked out on the deleted head
+ * branch are moved back to the default branch, and uncommitted drafts on the
+ * deleted branch move with them (they would otherwise be orphaned on a
+ * branch that no longer exists).
  */
 export async function mergeProjectPullRequest(
   project: IDbtProject,
@@ -1014,6 +1034,7 @@ export async function mergeProjectPullRequest(
         branchDeleteWarning = deleteResult.warning;
         if (branchDeleted) {
           await deleteBranchBaseTree(fresh, pr.headRef);
+          await moveBranchDrafts(fresh, pr.headRef, defaultBranch);
           await DbtCheckout.updateMany(
             { projectId: fresh._id, branch: pr.headRef },
             {

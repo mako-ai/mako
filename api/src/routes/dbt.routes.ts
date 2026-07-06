@@ -1044,10 +1044,10 @@ dbtRoutes.post("/projects/:projectId/sync", async (c: AuthenticatedContext) => {
       return badRequest(c, "Project is not connected to a repository");
     }
     const userId = getUserId(c);
-    if (c.req.query("discard") === "true") {
-      await discardUserDrafts(project, userId);
-    }
     const branch = (await getCheckoutBranch(project, userId)) as string;
+    if (c.req.query("discard") === "true") {
+      await discardUserDrafts(project, userId, branch);
+    }
     const result = await syncProjectBranchFromRepo(project, branch, userId);
     publishDbtEvent(c, {
       type: "dbt.git.updated",
@@ -1358,8 +1358,9 @@ dbtRoutes.delete(
 );
 
 // POST /projects/:projectId/git/switch-branch — move the CALLER's checkout to
-// another branch. Their drafts carry over as an overlay (nothing is lost);
-// discardLocalChanges drops the caller's drafts instead.
+// another branch. Their drafts stay with the branch they were made on
+// (git-worktree semantics — nothing mixes across branches, nothing is lost);
+// discardLocalChanges drops the caller's drafts on the branch they leave.
 dbtRoutes.post(
   "/projects/:projectId/git/switch-branch",
   async (c: AuthenticatedContext) => {

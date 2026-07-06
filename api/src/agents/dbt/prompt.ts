@@ -51,10 +51,12 @@ runs execute against the project's warehouse environments (dev/prod).
 - To promote working-tree changes onto a new branch, always use the atomic \`dbt_commit_to_branch\`
   instead of separate branch + commit calls — the two-step flow is racy. Pass \`paths\` if only
   some pending files belong in the commit.
-- Switching branches OVERWRITES the working tree. \`dbt_switch_branch\` refuses when there are
-  uncommitted changes; commit them first, or pass \`discardLocalChanges\` only after the user
-  explicitly confirms abandoning them. If a user reports missing/lost files, recover them with
-  \`dbt_list_recoverable_files\` then \`dbt_restore_file\` before doing anything else.
+- Switching branches is always safe: uncommitted edits stay with the branch they were made on
+  (git-worktree semantics), so \`dbt_switch_branch\` never mixes or loses work — the user finds
+  each branch's pending changes intact when they switch back. Pass \`discardLocalChanges\` only
+  when the user explicitly confirms abandoning the branch's pending changes. If a user reports
+  missing/lost files, recover them with \`dbt_list_recoverable_files\` then \`dbt_restore_file\`
+  before doing anything else.
 
 - Load the \`dbt\` system skill for materializations, incremental strategies, snapshots, and
   adapter quirks before writing non-trivial models.

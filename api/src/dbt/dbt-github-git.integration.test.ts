@@ -6,12 +6,15 @@
  * their actual code paths. Verifies the collaboration model end-to-end:
  *
  *  - drafts are per user (uncommitted edits invisible to other users)
+ *  - drafts are per branch (each branch keeps its own uncommitted overlay;
+ *    switching never mixes dirty state across bases — git-worktree semantics)
  *  - syncs never touch drafts
  *  - commits push drafts, advance the branch base tree, and clear drafts
  *  - protected branches refuse direct commits; commit-to-branch is the
- *    escape hatch
+ *    escape hatch (and takes the dirty tree with it)
  *  - checkouts (branch pointers) are per user
  *  - PR merge updates the default branch and relocates stranded checkouts
+ *    together with their uncommitted drafts
  */
 import {
   afterAll,
@@ -472,7 +475,7 @@ describe("branch protection", () => {
 });
 
 describe("per-user checkouts", () => {
-  it("switching branches moves only the caller's checkout and carries drafts", async () => {
+  it("switching branches moves only the caller's checkout; drafts stay with their branch", async () => {
     const project = await seedProject();
     remote.setBranch("feature/x", {
       "dbt_project.yml": "name: analytics",
@@ -487,23 +490,73 @@ describe("per-user checkouts", () => {
       "alice",
     );
     expect(result.branch).toBe("feature/x");
-    expect(result.carriedChanges).toBe(1);
+    // Nothing pending on feature/x: the main draft stayed on main.
+    expect(result.pendingChanges).toBe(0);
 
-    // Alice sees feature/x base + her carried draft.
+    // Alice sees the feature/x base, WITHOUT her main work-in-progress.
     expect(
       (await readWorkingFile(project, "alice", "models/a.sql"))?.content,
     ).toBe("select 100");
     expect(
-      (await readWorkingFile(project, "alice", "models/wip.sql"))?.content,
-    ).toBe("select 42");
+      await readWorkingFile(project, "alice", "models/wip.sql"),
+    ).toBeNull();
+    expect((await getGitStatus(project, "alice")).hasChanges).toBe(false);
     // Bob is untouched on main.
     expect(await getCheckoutBranch(project, "bob")).toBe("main");
     expect(
       (await readWorkingFile(project, "bob", "models/a.sql"))?.content,
     ).toBe("select 1");
+
+    // Switching back restores the main draft exactly where it was.
+    const back = await switchProjectBranch(project, "alice", "main", "alice");
+    expect(back.pendingChanges).toBe(1);
+    expect(
+      (await readWorkingFile(project, "alice", "models/wip.sql"))?.content,
+    ).toBe("select 42");
   });
 
-  it("discardLocalChanges drops the caller's drafts on switch", async () => {
+  it("a user iterates on two branches with independent uncommitted state", async () => {
+    const project = await seedProject();
+    remote.setBranch("feature/x", {
+      "dbt_project.yml": "name: analytics",
+      "models/a.sql": "select 1",
+    });
+
+    // Dirty main, switch, dirty feature/x differently — same path.
+    await writeWorkingFile(project, "alice", "models/a.sql", "select 2 -- main");
+    await switchProjectBranch(project, "alice", "feature/x", "alice");
+    await writeWorkingFile(project, "alice", "models/a.sql", "select 3 -- feat");
+
+    // Each branch shows only its own draft.
+    expect(
+      (await readWorkingFile(project, "alice", "models/a.sql"))?.content,
+    ).toBe("select 3 -- feat");
+    await switchProjectBranch(project, "alice", "main", "alice");
+    expect(
+      (await readWorkingFile(project, "alice", "models/a.sql"))?.content,
+    ).toBe("select 2 -- main");
+
+    // Committing on main pushes ONLY main's draft; feature/x keeps its own.
+    const result = await commitAndPush(project, {
+      userId: "alice",
+      message: "fix: main only",
+      updatedBy: "alice",
+    });
+    expect(result.pushed).toEqual({ added: 0, modified: 1, deleted: 0 });
+    expect(remote.branch("main").files.get("models/a.sql")).toBe(
+      "select 2 -- main",
+    );
+    expect(remote.branch("feature/x").files.get("models/a.sql")).toBe(
+      "select 1",
+    );
+    await switchProjectBranch(project, "alice", "feature/x", "alice");
+    expect(
+      (await readWorkingFile(project, "alice", "models/a.sql"))?.content,
+    ).toBe("select 3 -- feat");
+    expect((await getGitStatus(project, "alice")).modified).toBe(1);
+  });
+
+  it("discardLocalChanges drops the caller's drafts on the branch they leave", async () => {
     const project = await seedProject();
     remote.setBranch("feature/x", { "dbt_project.yml": "name: analytics" });
     await writeWorkingFile(project, "alice", "models/wip.sql", "select 42");
@@ -521,6 +574,12 @@ describe("per-user checkouts", () => {
     expect(
       await readWorkingFile(project, "alice", "models/wip.sql"),
     ).toBeNull();
+    // Gone for good: switching back to main finds a clean tree.
+    await switchProjectBranch(project, "alice", "main", "alice");
+    expect(
+      await readWorkingFile(project, "alice", "models/wip.sql"),
+    ).toBeNull();
+    expect((await getGitStatus(project, "alice")).hasChanges).toBe(false);
   });
 
   it("create branch clones the base tree locally and checks it out for the caller", async () => {
@@ -538,6 +597,22 @@ describe("per-user checkouts", () => {
     // Working tree contents come from the cloned branch.
     const files = await loadWorkingTreeContents(project, { userId: "alice" });
     expect(files.map(f => f.path)).toEqual(["dbt_project.yml", "models/a.sql"]);
+  });
+
+  it("deleting a branch drops the drafts stashed on it", async () => {
+    const project = await seedProject();
+    remote.setBranch("feature/x", { "dbt_project.yml": "name: analytics" });
+    await switchProjectBranch(project, "alice", "feature/x", "alice");
+    await writeWorkingFile(project, "alice", "models/wip.sql", "select 42");
+    await switchProjectBranch(project, "alice", "main", "alice");
+
+    await deleteProjectBranch(project, "alice", "feature/x");
+    expect(
+      await DbtFileDraft.countDocuments({
+        projectId: project._id,
+        branch: "feature/x",
+      }),
+    ).toBe(0);
   });
 
   it("refuses to delete a branch that any user has checked out", async () => {
@@ -600,6 +675,44 @@ describe("pull request merge", () => {
     ).toBe(0);
     expect(
       await DbtCheckout.countDocuments({
+        projectId: project._id,
+        branch: "feat/a",
+      }),
+    ).toBe(0);
+  });
+
+  it("relocates uncommitted drafts on the deleted head branch to the default branch", async () => {
+    const project = await seedProject();
+    await writeWorkingFile(project, "alice", "models/a.sql", "select 2");
+    await commitToNewBranch(project, {
+      userId: "alice",
+      branchName: "feat/a",
+      message: "feat: change a",
+      updatedBy: "alice",
+    });
+    // More work on feat/a that is NOT committed before the PR merges.
+    await writeWorkingFile(project, "alice", "models/followup.sql", "select 9");
+    remote.state.pulls.set(8, {
+      headRef: "feat/a",
+      baseRef: "main",
+      state: "open",
+    });
+
+    const result = await mergeProjectPullRequest(project, {
+      userId: "alice",
+      prNumber: 8,
+      updatedBy: "alice",
+    });
+    expect(result.branchDeleted).toBe(true);
+    // Alice is back on main and her uncommitted follow-up moved with her
+    // instead of orphaning on the deleted branch.
+    expect(result.workingTreeClean).toBe(false);
+    expect(await getCheckoutBranch(project, "alice")).toBe("main");
+    expect(
+      (await readWorkingFile(project, "alice", "models/followup.sql"))?.content,
+    ).toBe("select 9");
+    expect(
+      await DbtFileDraft.countDocuments({
         projectId: project._id,
         branch: "feat/a",
       }),

@@ -1,12 +1,15 @@
 /**
- * Per-user dbt working trees.
+ * Per-user, per-branch dbt working trees.
  *
  * Repo-bound projects keep one COMMITTED base tree per checked-out branch in
- * DbtFile (content mirrors the branch head) and a per-user draft overlay in
- * DbtFileDraft. A user's working tree is draft-over-base for the branch their
- * DbtCheckout points at, so uncommitted work is only ever visible to its
- * author — collaborators see changes when they are committed, like separate
- * git clones.
+ * DbtFile (content mirrors the branch head) and a per-user, per-branch draft
+ * overlay in DbtFileDraft. A user's working tree is draft-over-base for the
+ * branch their DbtCheckout points at, so uncommitted work is only ever
+ * visible to its author — collaborators see changes when they are committed,
+ * like separate git clones. Drafts are keyed to the branch they were made
+ * on, so switching branches leaves each branch's uncommitted work exactly
+ * where it was (git-worktree semantics) — a user can iterate on several
+ * branches without their dirty state mixing across bases.
  *
  * Blank (non-repo) projects keep the original shared model: DbtFile rows with
  * no `branch` are the single working tree every member edits directly.
@@ -168,8 +171,10 @@ async function loadBaseRows(
 async function loadDrafts(
   project: IDbtProject,
   userId: string,
+  branch: string | undefined,
 ): Promise<DraftLean[]> {
-  return DbtFileDraft.find({ projectId: project._id, userId })
+  if (!branch) return [];
+  return DbtFileDraft.find({ projectId: project._id, userId, branch })
     .select("path content is_deleted updatedAt")
     .lean();
 }
@@ -189,7 +194,7 @@ export async function listWorkingFiles(
   const branch = await getCheckoutBranch(project, userId);
   const [baseRows, drafts] = await Promise.all([
     loadBaseRows(project, branch),
-    loadDrafts(project, userId),
+    loadDrafts(project, userId, branch),
   ]);
   const merged = new Map<string, WorkingFileMeta>();
   for (const row of baseRows) {
@@ -219,10 +224,14 @@ export async function readWorkingFile(
   userId: string,
   path: string,
 ): Promise<WorkingFile | null> {
-  if (project.repo) {
+  const branch = project.repo
+    ? await getCheckoutBranch(project, userId)
+    : undefined;
+  if (project.repo && branch) {
     const draft = await DbtFileDraft.findOne({
       projectId: project._id,
       userId,
+      branch,
       path,
     }).lean();
     if (draft) {
@@ -235,9 +244,6 @@ export async function readWorkingFile(
       };
     }
   }
-  const branch = project.repo
-    ? await getCheckoutBranch(project, userId)
-    : undefined;
   const base = await DbtFile.findOne({
     ...baseTreeFilter(project, branch),
     path,
@@ -285,7 +291,7 @@ export async function writeWorkingFile(
     return { versionEntityId: file._id };
   }
 
-  const branch = await getCheckoutBranch(project, userId);
+  const branch = (await getCheckoutBranch(project, userId)) as string;
   const base = await DbtFile.findOne({
     ...baseTreeFilter(project, branch),
     path,
@@ -299,13 +305,14 @@ export async function writeWorkingFile(
     const existing = await DbtFileDraft.findOneAndDelete({
       projectId: project._id,
       userId,
+      branch,
       path,
     });
     return { versionEntityId: existing?._id ?? new Types.ObjectId() };
   }
 
   const draft = await DbtFileDraft.findOneAndUpdate(
-    { projectId: project._id, userId, path },
+    { projectId: project._id, userId, branch, path },
     {
       $set: {
         content,
@@ -339,21 +346,21 @@ export async function deleteWorkingFile(
     return result.matchedCount > 0;
   }
 
-  const branch = await getCheckoutBranch(project, userId);
+  const branch = (await getCheckoutBranch(project, userId)) as string;
   const [base, draft] = await Promise.all([
     DbtFile.exists({
       ...baseTreeFilter(project, branch),
       path,
       is_deleted: { $ne: true },
     }),
-    DbtFileDraft.findOne({ projectId: project._id, userId, path })
+    DbtFileDraft.findOne({ projectId: project._id, userId, branch, path })
       .select("is_deleted")
       .lean(),
   ]);
 
   if (base) {
     await DbtFileDraft.updateOne(
-      { projectId: project._id, userId, path },
+      { projectId: project._id, userId, branch, path },
       {
         $set: {
           content: "",
@@ -371,6 +378,7 @@ export async function deleteWorkingFile(
     await DbtFileDraft.deleteOne({
       projectId: project._id,
       userId,
+      branch,
       path,
     }).exec();
     return true;
@@ -415,14 +423,93 @@ export async function renameWorkingFile(
   return null;
 }
 
-/** Discard all of a user's drafts for a project (`git checkout -- .`). */
+/**
+ * Discard a user's drafts on one branch (`git checkout -- .` on that
+ * branch). Drafts the user stashed on other branches are untouched.
+ */
 export async function discardUserDrafts(
   project: IDbtProject,
   userId: string,
+  branch: string,
 ): Promise<number> {
   const result = await DbtFileDraft.deleteMany({
     projectId: project._id,
     userId,
+    branch,
+  }).exec();
+  return result.deletedCount ?? 0;
+}
+
+/**
+ * Re-key a user's drafts from one branch to another (an atomic promote moves
+ * the dirty tree onto the just-created branch). Orphaned same-path drafts
+ * already keyed to the target (relics of a deleted branch with the same
+ * name) are dropped so the unique index can't reject the move.
+ */
+export async function moveUserDrafts(
+  project: IDbtProject,
+  userId: string,
+  fromBranch: string,
+  toBranch: string,
+): Promise<void> {
+  const moving = await DbtFileDraft.find({
+    projectId: project._id,
+    userId,
+    branch: fromBranch,
+  })
+    .select("path")
+    .lean();
+  if (moving.length === 0) return;
+  await DbtFileDraft.deleteMany({
+    projectId: project._id,
+    userId,
+    branch: toBranch,
+    path: { $in: moving.map(d => d.path) },
+  }).exec();
+  await DbtFileDraft.updateMany(
+    { projectId: project._id, userId, branch: fromBranch },
+    { $set: { branch: toBranch } },
+  ).exec();
+}
+
+/**
+ * Re-key EVERY user's drafts from one branch to another (a merged-and-deleted
+ * PR head: users stranded on the branch move to the default branch, and their
+ * uncommitted work must move with them instead of orphaning). On a same-path
+ * collision the moved draft wins — it is the user's latest work on the
+ * branch that just merged.
+ */
+export async function moveBranchDrafts(
+  project: IDbtProject,
+  fromBranch: string,
+  toBranch: string,
+): Promise<void> {
+  const moving = await DbtFileDraft.find({
+    projectId: project._id,
+    branch: fromBranch,
+  })
+    .select("userId path")
+    .lean();
+  if (moving.length === 0) return;
+  await DbtFileDraft.deleteMany({
+    projectId: project._id,
+    branch: toBranch,
+    $or: moving.map(d => ({ userId: d.userId, path: d.path })),
+  }).exec();
+  await DbtFileDraft.updateMany(
+    { projectId: project._id, branch: fromBranch },
+    { $set: { branch: toBranch } },
+  ).exec();
+}
+
+/** Drop every user's drafts on a branch (the branch itself was deleted). */
+export async function deleteBranchDrafts(
+  project: IDbtProject,
+  branch: string,
+): Promise<number> {
+  const result = await DbtFileDraft.deleteMany({
+    projectId: project._id,
+    branch,
   }).exec();
   return result.deletedCount ?? 0;
 }
@@ -454,7 +541,7 @@ export async function loadWorkingTreeContents(
     baseRows.map(row => [row.path, row.content ?? ""]),
   );
   if (opts.userId) {
-    const drafts = await loadDrafts(project, opts.userId);
+    const drafts = await loadDrafts(project, opts.userId, branch);
     for (const draft of drafts) {
       if (draft.is_deleted) files.delete(draft.path);
       else files.set(draft.path, draft.content ?? "");

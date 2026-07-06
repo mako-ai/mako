@@ -1570,13 +1570,13 @@ export const createDbtServerTools = (
       execute: async ({ projectId, discardLocalChanges }) => {
         try {
           const project = await assertRepoProject(projectId);
-          if (discardLocalChanges) {
-            await discardUserDrafts(project, actingUserId);
-          }
           const branch = (await getCheckoutBranch(
             project,
             actingUserId,
           )) as string;
+          if (discardLocalChanges) {
+            await discardUserDrafts(project, actingUserId, branch);
+          }
           const result = await syncProjectBranchFromRepo(
             project,
             branch,
@@ -1889,10 +1889,13 @@ export const createDbtServerTools = (
       description:
         "Switch the USER's checked-out branch and pull its committed contents " +
         "into the base tree. Only the acting user's checkout moves — other " +
-        "collaborators keep their own branches. Uncommitted draft edits carry " +
-        "over as an overlay (like `git checkout` with a dirty tree), so " +
-        "nothing is lost; pass discardLocalChanges:true to drop the user's " +
-        "drafts instead (only after the user explicitly confirms).",
+        "collaborators keep their own branches. ALWAYS SAFE: uncommitted " +
+        "draft edits STAY WITH THE BRANCH they were made on (git-worktree " +
+        "semantics), so the user can iterate on several branches and find " +
+        "each branch's work-in-progress intact when they switch back — " +
+        "nothing mixes across branches. Pass discardLocalChanges:true to " +
+        "drop the user's drafts on the branch being left (only after the " +
+        "user explicitly confirms).",
       inputSchema: z.object({
         projectId: projectIdField,
         branch: z.string().min(1).max(255).describe("Existing branch to track"),
@@ -1900,8 +1903,8 @@ export const createDbtServerTools = (
           .boolean()
           .optional()
           .describe(
-            "Set true to throw away the user's uncommitted draft changes " +
-              "before switching. Only after the user explicitly confirms.",
+            "Set true to throw away the user's uncommitted draft changes on " +
+              "the branch being left. Only after the user explicitly confirms.",
           ),
       }),
       execute: async ({ projectId, branch, discardLocalChanges }) => {
@@ -1918,7 +1921,9 @@ export const createDbtServerTools = (
           return {
             success: true,
             branch: result.branch,
-            carriedChanges: result.carriedChanges,
+            // Uncommitted changes the user had previously stashed on the
+            // target branch, now visible again in their working tree.
+            pendingChangesOnBranch: result.pendingChanges,
             discardedChanges: result.discarded?.changes,
           };
         } catch (error) {
