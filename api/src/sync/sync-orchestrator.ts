@@ -117,6 +117,8 @@ export interface SyncChunkOptions {
   /** When set, writes to SQL/BigQuery instead of MongoDB */
   tableDestination?: ITableDestination;
   deleteMode?: "hard" | "soft";
+  /** Airbyte-style destination write mode (default append_dedup). */
+  writeMode?: "append_dedup" | "append" | "overwrite";
   flowId?: string;
   workspaceId?: string;
   syncEngine?: string;
@@ -649,6 +651,7 @@ async function performSyncChunkSql(
   // (backfillSchedule), not by polls.
   const anchorIncremental =
     syncMode === "incremental" &&
+    options.writeMode !== "overwrite" &&
     !state &&
     (!isCdcEnabled || isUnifiedSyncFlowsEnabled());
   let lastSyncDate: Date | undefined;
@@ -715,10 +718,27 @@ async function performSyncChunkSql(
         tableName: entityTableName,
         keyColumns: entitySchema?.keyColumns,
         deleteMode: options.deleteMode,
+        writeMode: options.writeMode,
         partitioning: options.entityPartitioning,
         clustering: options.entityClustering,
       })
     : undefined;
+
+  // Full Refresh | Overwrite: clear the live table once, before the first
+  // chunk of the run writes (checkpoint resumes carry state and skip this).
+  if (
+    isCdcEnabled &&
+    cdcAdapter?.truncateLiveTable &&
+    cdcLayout &&
+    options.writeMode === "overwrite" &&
+    !state
+  ) {
+    await cdcAdapter.truncateLiveTable(cdcLayout);
+    logger?.log(
+      "info",
+      `Overwrite mode: cleared live table ${entityTableName}`,
+    );
+  }
 
   const useBulkPath =
     isCdcEnabled && Boolean(cdcAdapter?.loadStagingFromParquet);
@@ -1406,7 +1426,16 @@ export async function performPrepareStaging(
   const cdcLayout = buildCdcEntityLayout({
     entity,
     tableName: entityTableName,
+    writeMode: options.writeMode,
   });
+
+  if (options.writeMode === "overwrite" && cdcAdapter.truncateLiveTable) {
+    await cdcAdapter.truncateLiveTable(cdcLayout);
+    orchestratorLogger.info("Overwrite mode: cleared live table", {
+      entity,
+      flowId,
+    });
+  }
 
   orchestratorLogger.info(
     "performPrepareStaging: dropping staging table for fresh load",
@@ -1450,6 +1479,7 @@ export async function performStagingMerge(
     entity,
     tableName: entityTableName,
     keyColumns: entitySchema?.keyColumns,
+    writeMode: options.writeMode,
     partitioning: options.entityPartitioning,
     clustering: options.entityClustering,
   });

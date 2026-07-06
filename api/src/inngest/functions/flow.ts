@@ -1392,6 +1392,7 @@ export const flowFunction = inngest.createFunction(
             destinationId: flow.destinationDatabaseId.toString(),
             destinationDatabaseName: flow.destinationDatabaseName,
             syncMode: flow.syncMode,
+            writeMode: (flow as any).writeMode,
             syncEngine: (flow as any).syncEngine,
             tableDestination: (flow as any).tableDestination,
             deleteMode: (flow as any).deleteMode,

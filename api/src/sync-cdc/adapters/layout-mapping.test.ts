@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildPgLayoutIndexStatements } from "./postgresql";
 import { buildMongoLayoutIndexSpecs } from "./mongodb";
+import { supportedCdcWriteModes } from "./registry";
 
 /**
  * Destination-layout contract: the engine-agnostic layout hints
@@ -64,7 +65,7 @@ describe("postgresql layout mapping — hints → btree indexes", () => {
       {
         tableName: "MyTable",
         keyColumns: [],
-        partitioning: { type: "time", field: '_syncedAt' },
+        partitioning: { type: "time", field: "_syncedAt" },
       },
       "Analytics",
     );
@@ -106,5 +107,26 @@ describe("mongodb layout mapping — hints → secondary indexes", () => {
 
   it("returns nothing when no hints are set", () => {
     expect(buildMongoLayoutIndexSpecs({ keyColumns: ["id"] })).toHaveLength(0);
+  });
+});
+
+describe("supportedCdcWriteModes — Airbyte-style destination capability", () => {
+  it("full-capability destinations support all three write modes", () => {
+    for (const type of ["postgresql", "mysql", "mongodb", "bigquery"]) {
+      expect(supportedCdcWriteModes(type)).toEqual([
+        "append_dedup",
+        "append",
+        "overwrite",
+      ]);
+    }
+  });
+
+  it("ClickHouse (ReplacingMergeTree) only supports deduped writes", () => {
+    expect(supportedCdcWriteModes("clickhouse")).toEqual(["append_dedup"]);
+  });
+
+  it("non-CDC destinations support none", () => {
+    expect(supportedCdcWriteModes("redshift")).toEqual([]);
+    expect(supportedCdcWriteModes(undefined)).toEqual([]);
   });
 });

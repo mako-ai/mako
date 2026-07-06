@@ -49,6 +49,31 @@ export class MySqlDestinationAdapter implements CdcDestinationAdapter {
     // DestinationWriter creates tables lazily on first write.
   }
 
+  /** Full Refresh | Overwrite: clear the live table (no-op when absent). */
+  async truncateLiveTable(layout: CdcEntityLayout): Promise<void> {
+    const destination = await DatabaseConnection.findById(
+      this.config.tableDestination.connectionId,
+    );
+    if (!destination) return;
+    const driver = databaseRegistry.getDriver(destination.type) as
+      | MySQLDatabaseDriver
+      | undefined;
+    if (!driver) return;
+    const schema = this.config.tableDestination.schema;
+    const result = await driver.executeQuery(
+      destination,
+      `DELETE FROM ${driver.formatTableRef(schema, layout.tableName)}`,
+    );
+    if (
+      !result.success &&
+      !/doesn't exist|does not exist/i.test(result.error || "")
+    ) {
+      throw new Error(
+        result.error || "Failed to clear MySQL live table for overwrite",
+      );
+    }
+  }
+
   async applyEvents(params: {
     events: CdcStoredEvent[];
     layout: CdcEntityLayout;
@@ -87,10 +112,15 @@ export class MySqlDestinationAdapter implements CdcDestinationAdapter {
         });
       });
 
-      const write = await writer.writeBatch(rows, {
-        keyColumns: params.layout.keyColumns,
-        conflictStrategy: "update",
-      });
+      const write = await writer.writeBatch(
+        rows,
+        params.layout.writeMode === "append"
+          ? {}
+          : {
+              keyColumns: params.layout.keyColumns,
+              conflictStrategy: "update",
+            },
+      );
       if (!write.success) {
         throw new Error(write.error || "Failed to apply MySQL CDC upserts");
       }
@@ -99,7 +129,9 @@ export class MySqlDestinationAdapter implements CdcDestinationAdapter {
 
     if (deletes.length > 0) {
       const deleteMode =
-        params.flow.deleteMode || params.layout.deleteMode || "hard";
+        params.layout.writeMode === "append"
+          ? "soft" // append mode never mutates prior rows; deletions land as tombstone rows
+          : params.flow.deleteMode || params.layout.deleteMode || "hard";
       if (deleteMode === "soft") {
         const rows = deletes.map(event => {
           const payload = normalizePayloadKeys(event.payload || {});
@@ -119,10 +151,15 @@ export class MySqlDestinationAdapter implements CdcDestinationAdapter {
           });
         });
 
-        const write = await writer.writeBatch(rows, {
-          keyColumns: params.layout.keyColumns,
-          conflictStrategy: "update",
-        });
+        const write = await writer.writeBatch(
+          rows,
+          params.layout.writeMode === "append"
+            ? {}
+            : {
+                keyColumns: params.layout.keyColumns,
+                conflictStrategy: "update",
+              },
+        );
         if (!write.success) {
           throw new Error(
             write.error || "Failed to apply MySQL CDC soft deletes",
@@ -178,10 +215,15 @@ export class MySqlDestinationAdapter implements CdcDestinationAdapter {
       });
     });
 
-    const write = await writer.writeBatch(rows, {
-      keyColumns: params.layout.keyColumns,
-      conflictStrategy: "update",
-    });
+    const write = await writer.writeBatch(
+      rows,
+      params.layout.writeMode === "append"
+        ? {}
+        : {
+            keyColumns: params.layout.keyColumns,
+            conflictStrategy: "update",
+          },
+    );
     if (!write.success) {
       log.error("MySQL batch apply failed", {
         table: params.layout.tableName,
@@ -234,7 +276,10 @@ export class MySqlDestinationAdapter implements CdcDestinationAdapter {
       )) {
         if (existingNames.has(indexName.toLowerCase())) continue;
         const result = await driver.executeQuery(destination, sql);
-        if (!result.success && !/duplicate key name/i.test(result.error || "")) {
+        if (
+          !result.success &&
+          !/duplicate key name/i.test(result.error || "")
+        ) {
           log.warn("Failed to ensure MySQL layout index", {
             table: layout.tableName,
             indexName,

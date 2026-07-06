@@ -30,7 +30,10 @@ import { syncConnectorRegistry } from "../sync/connector-registry";
 import { databaseDataSourceManager } from "../sync/database-data-source-manager";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { mapLogicalTypeToBigQuery } from "../sync-cdc/adapters/bigquery";
-import { hasCdcDestinationAdapter } from "../sync-cdc/adapters/registry";
+import {
+  hasCdcDestinationAdapter,
+  supportedCdcWriteModes,
+} from "../sync-cdc/adapters/registry";
 import {
   isUnifiedSyncFlowsEnabled,
   resolveDefaultSyncEngine,
@@ -536,6 +539,41 @@ flowRoutes.openapi(
   },
 );
 
+/**
+ * Validate an Airbyte-style write mode against the read mode, trigger set,
+ * and destination capability. Returns an error string or null.
+ */
+function validateWriteMode(params: {
+  writeMode?: unknown;
+  syncMode: string;
+  destinationType?: string;
+  syncEngine: string;
+  webhookEnabled: boolean;
+}): string | null {
+  const { writeMode } = params;
+  if (writeMode === undefined || writeMode === null) return null;
+  if (
+    writeMode !== "append_dedup" &&
+    writeMode !== "append" &&
+    writeMode !== "overwrite"
+  ) {
+    return "writeMode must be 'append_dedup', 'append', or 'overwrite'";
+  }
+  if (writeMode === "overwrite" && params.syncMode !== "full") {
+    return "writeMode 'overwrite' requires a Full Refresh (syncMode 'full')";
+  }
+  if (writeMode === "overwrite" && params.webhookEnabled) {
+    return "writeMode 'overwrite' cannot be combined with a webhook trigger";
+  }
+  if (params.syncEngine === "cdc" && writeMode !== "append_dedup") {
+    const supported = supportedCdcWriteModes(params.destinationType);
+    if (!supported.includes(writeMode)) {
+      return `writeMode '${writeMode}' is not supported by '${params.destinationType}' destinations (supported: ${supported.join(", ") || "none"})`;
+    }
+  }
+  return null;
+}
+
 // POST /api/workspaces/:workspaceId/flows - Create a new flow
 flowRoutes.openapi(
   createRoute({
@@ -731,6 +769,7 @@ flowRoutes.openapi(
           hasTableDestination: Boolean(body.tableDestination?.connectionId),
           destinationSupportsCdc: hasCdcDestinationAdapter(destinationType),
         }),
+        writeMode: body.writeMode || "append_dedup",
         syncStateUpdatedAt: new Date(),
         enabled: true,
         createdBy: userId,
@@ -870,6 +909,17 @@ flowRoutes.openapi(
           secret: webhookSecret,
           enabled: true,
         };
+      }
+
+      const writeModeError = validateWriteMode({
+        writeMode: flowData.writeMode,
+        syncMode: flowData.syncMode,
+        destinationType,
+        syncEngine: flowData.syncEngine,
+        webhookEnabled: flowType === "webhook",
+      });
+      if (writeModeError) {
+        return c.json({ success: false, error: writeModeError }, 400);
       }
 
       const flow = new Flow(flowData);
@@ -1067,6 +1117,26 @@ flowRoutes.openapi(
             : undefined;
       }
       if (body.syncMode) flow.syncMode = body.syncMode;
+      if (body.writeMode !== undefined) {
+        const destForWriteMode = await DatabaseConnection.findById(
+          flow.tableDestination?.connectionId || flow.destinationDatabaseId,
+        )
+          .select({ type: 1 })
+          .lean();
+        const writeModeError = validateWriteMode({
+          writeMode: body.writeMode,
+          syncMode: flow.syncMode,
+          destinationType: destForWriteMode?.type,
+          syncEngine: flow.syncEngine,
+          webhookEnabled: Boolean(
+            flow.webhookConfig?.enabled && flow.webhookConfig?.endpoint,
+          ),
+        });
+        if (writeModeError) {
+          return c.json({ success: false, error: writeModeError }, 400);
+        }
+        (flow as any).writeMode = body.writeMode;
+      }
 
       // Update connector source specific fields
       if (flow.sourceType !== "database") {

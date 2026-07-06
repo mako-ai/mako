@@ -898,6 +898,17 @@ export interface IFlow extends Document {
   entityFilter?: string[]; // Optional: specific entities to sync (for connector sources)
   queries?: IFlowQuery[]; // Queries for GraphQL/PostHog connectors
   syncMode: "full" | "incremental";
+  /**
+   * Destination write mode (Airbyte-style sync modes; the read mode is
+   * `syncMode`):
+   * - "append_dedup" (default): upsert by key — the destination holds one
+   *   deduplicated row per record.
+   * - "append": insert-only — every fetched record version becomes a new row
+   *   (re-syncs duplicate, by design).
+   * - "overwrite": full-refresh only — the destination is cleared at the
+   *   start of each run, ending up as an exact snapshot.
+   */
+  writeMode?: "append_dedup" | "append" | "overwrite";
   syncEngine: SyncEngine;
   /** @deprecated Use streamState + backfillState.status instead */
   syncState?: SyncState;
@@ -2227,6 +2238,11 @@ const FlowSchema = new Schema<IFlow>(
       type: String,
       enum: ["full", "incremental"],
       default: "full",
+    },
+    writeMode: {
+      type: String,
+      enum: ["append_dedup", "append", "overwrite"],
+      default: "append_dedup",
     },
     syncEngine: {
       type: String,
@@ -4474,7 +4490,10 @@ const DbtFileDraftSchema = new Schema<IDbtFileDraft>(
   { collection: "dbt_file_drafts", timestamps: true },
 );
 
-DbtFileDraftSchema.index({ projectId: 1, userId: 1, path: 1 }, { unique: true });
+DbtFileDraftSchema.index(
+  { projectId: 1, userId: 1, path: 1 },
+  { unique: true },
+);
 DbtFileDraftSchema.index({ workspaceId: 1, projectId: 1, userId: 1 });
 
 export const DbtFileDraft = mongoose.model<IDbtFileDraft>(

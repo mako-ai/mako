@@ -76,6 +76,7 @@ const flowSchema = z.object({
   entityFilter: z.array(z.string()).nullable().optional(),
   queries: z.array(flowQuerySchema).nullable().optional(),
   syncMode: z.enum(["full", "incremental"]),
+  writeMode: z.enum(["append_dedup", "append", "overwrite"]).optional(),
   syncEngine: z.enum(["legacy", "cdc"]).optional(),
   backfillSchedule: z
     .object({

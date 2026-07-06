@@ -121,6 +121,7 @@ interface FormData {
   webhookSecret?: string;
   // Sync configuration
   syncMode: "full" | "incremental";
+  writeMode: "append_dedup" | "append" | "overwrite";
   deleteMode?: "hard" | "soft";
   backfillScheduleEnabled?: boolean;
   backfillScheduleCron?: string;
@@ -154,6 +155,53 @@ const SCHEDULE_PRESETS = [
   { label: "Daily at 6 AM", cron: "0 6 * * *" },
   { label: "Weekly on Sunday", cron: "0 0 * * 0" },
   { label: "Monthly on 1st", cron: "0 0 1 * *" },
+];
+
+interface SyncModeCombo {
+  value: string;
+  syncMode: "full" | "incremental";
+  writeMode: "append_dedup" | "append" | "overwrite";
+  label: string;
+  help: string;
+}
+
+/** Airbyte-style sync modes: read mode (Full Refresh / Incremental) | destination write mode. */
+const SYNC_MODE_COMBOS: SyncModeCombo[] = [
+  {
+    value: "incremental:append_dedup",
+    syncMode: "incremental",
+    writeMode: "append_dedup",
+    label: "Incremental | Append + Deduped",
+    help: "Fetch new or updated records and upsert by primary key — one deduplicated row per record.",
+  },
+  {
+    value: "incremental:append",
+    syncMode: "incremental",
+    writeMode: "append",
+    label: "Incremental | Append",
+    help: "Fetch new or updated records and add them as new rows — keeps every version (history).",
+  },
+  {
+    value: "full:append_dedup",
+    syncMode: "full",
+    writeMode: "append_dedup",
+    label: "Full Refresh | Deduped",
+    help: "Re-fetch everything each run and upsert by primary key (reconciles drift).",
+  },
+  {
+    value: "full:append",
+    syncMode: "full",
+    writeMode: "append",
+    label: "Full Refresh | Append",
+    help: "Re-fetch everything each run and add all rows — accumulates a snapshot per run.",
+  },
+  {
+    value: "full:overwrite",
+    syncMode: "full",
+    writeMode: "overwrite",
+    label: "Full Refresh | Overwrite",
+    help: "Re-fetch everything each run; the destination is cleared first and ends up an exact snapshot.",
+  },
 ];
 
 const STEPS = [
@@ -282,6 +330,7 @@ export function SyncFlowForm({
       webhookEnabled: false,
       webhookSecret: "",
       syncMode: "incremental",
+      writeMode: "append_dedup",
       deleteMode: "hard",
       backfillScheduleEnabled: false,
       backfillScheduleCron: "0 3 * * *",
@@ -334,6 +383,12 @@ export function SyncFlowForm({
   // Engine-agnostic layout hints map to each destination's native physical
   // layout: BigQuery/ClickHouse partition+cluster DDL; Postgres/Mongo
   // secondary indexes on the same fields.
+  // Mirrors the server-side supportedCdcWriteModes capability.
+  const supportedWriteModes: Array<"append_dedup" | "append" | "overwrite"> =
+    !isCdcCapableDest || destType === "clickhouse"
+      ? ["append_dedup"]
+      : ["append_dedup", "append", "overwrite"];
+
   const layoutMode: "partition" | "index" | "none" = hasStagingDest
     ? "partition"
     : destType === "postgresql" ||
@@ -350,6 +405,25 @@ export function SyncFlowForm({
       setValue("deleteMode", "soft");
     }
   }, [isBigQueryDest, setValue, watchDeleteMode]);
+
+  // Overwrite cannot be combined with a webhook trigger (the stream would
+  // race the truncation) — fall back to the deduped default.
+  const watchWriteMode = watch("writeMode");
+  useEffect(() => {
+    if (watchWebhookEnabled && watchWriteMode === "overwrite") {
+      setValue("syncMode", "incremental");
+      setValue("writeMode", "append_dedup");
+    }
+  }, [watchWebhookEnabled, watchWriteMode, setValue]);
+
+  // Destinations that only support dedup (ClickHouse / legacy) force it.
+  useEffect(() => {
+    if (destType && !supportedWriteModes.includes(watchWriteMode)) {
+      setValue("writeMode", "append_dedup");
+    }
+    // supportedWriteModes derives from destType
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [destType, watchWriteMode, setValue]);
 
   // Webhook trigger requires a webhook-capable connector; auto-disable when
   // the user switches to a pull-only connector.
@@ -516,6 +590,9 @@ export function SyncFlowForm({
       webhookEnabled: hasWebhookTrigger,
       webhookSecret: flow.webhookConfig?.secret || "",
       syncMode: (flow.syncMode as "full" | "incremental") || "full",
+      writeMode:
+        (flow.writeMode as "append_dedup" | "append" | "overwrite") ||
+        "append_dedup",
       deleteMode: flow.deleteMode || "hard",
       backfillScheduleEnabled: flow.backfillSchedule?.enabled ?? false,
       backfillScheduleCron: flow.backfillSchedule?.cron || "0 3 * * *",
@@ -685,6 +762,7 @@ export function SyncFlowForm({
         dataSourceId: data.dataSourceId,
         destinationDatabaseId: data.destinationDatabaseId,
         syncMode: data.syncMode,
+        writeMode: data.writeMode,
         schedule: data.scheduleEnabled
           ? {
               enabled: true,
@@ -1511,26 +1589,45 @@ export function SyncFlowForm({
               {renderStepHeader(3)}
               <AccordionDetails>
                 <Stack spacing={3}>
-                  <Controller
-                    name="syncMode"
-                    control={control}
-                    render={({ field }) => (
-                      <FormControl fullWidth>
-                        <InputLabel>Sync Mode</InputLabel>
-                        <Select {...field} label="Sync Mode">
-                          <MenuItem value="full">Full Sync</MenuItem>
-                          <MenuItem value="incremental">
-                            Incremental Sync
-                          </MenuItem>
-                        </Select>
-                        <FormHelperText>
-                          {field.value === "full"
-                            ? "Re-fetch everything on each scheduled run"
-                            : "Only fetch new or updated records on each scheduled run"}
-                        </FormHelperText>
-                      </FormControl>
-                    )}
-                  />
+                  <FormControl fullWidth>
+                    <InputLabel>Sync Mode</InputLabel>
+                    <Select
+                      label="Sync Mode"
+                      value={`${watch("syncMode")}:${watch("writeMode")}`}
+                      onChange={e => {
+                        const combo = SYNC_MODE_COMBOS.find(
+                          c => c.value === e.target.value,
+                        );
+                        if (!combo) return;
+                        setValue("syncMode", combo.syncMode, {
+                          shouldDirty: true,
+                        });
+                        setValue("writeMode", combo.writeMode, {
+                          shouldDirty: true,
+                        });
+                      }}
+                    >
+                      {SYNC_MODE_COMBOS.filter(
+                        combo =>
+                          supportedWriteModes.includes(combo.writeMode) &&
+                          !(
+                            combo.writeMode === "overwrite" &&
+                            watchWebhookEnabled
+                          ),
+                      ).map(combo => (
+                        <MenuItem key={combo.value} value={combo.value}>
+                          {combo.label}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                    <FormHelperText>
+                      {SYNC_MODE_COMBOS.find(
+                        c =>
+                          c.value ===
+                          `${watch("syncMode")}:${watch("writeMode")}`,
+                      )?.help ?? "How records are read and written each run."}
+                    </FormHelperText>
+                  </FormControl>
 
                   {isCdcCapableDest && (
                     <>

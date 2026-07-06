@@ -1,5 +1,8 @@
 import { Types } from "mongoose";
-import { DatabaseConnection, type IFlow } from "../../database/workspace-schema";
+import {
+  DatabaseConnection,
+  type IFlow,
+} from "../../database/workspace-schema";
 import { createDestinationWriter } from "../../services/destination-writer.service";
 import { databaseRegistry } from "../../databases/registry";
 import { loggers } from "../../logging";
@@ -71,6 +74,27 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
 
   async ensureLiveTable(_layout: CdcEntityLayout): Promise<void> {
     // DestinationWriter creates tables lazily on first write.
+  }
+
+  /** Full Refresh | Overwrite: clear the live table (no-op when absent). */
+  async truncateLiveTable(layout: CdcEntityLayout): Promise<void> {
+    const destination = await DatabaseConnection.findById(
+      this.config.tableDestination.connectionId,
+    );
+    if (!destination) return;
+    const driver = databaseRegistry.getDriver(destination.type);
+    if (!driver) return;
+    const schema = this.config.tableDestination.schema || "public";
+    const result = await driver.executeQuery(
+      destination,
+      `DELETE FROM ${pgIdent(schema)}.${pgIdent(layout.tableName)}`,
+      { databaseName: this.config.destinationDatabaseName },
+    );
+    if (!result.success && !/does not exist/i.test(result.error || "")) {
+      throw new Error(
+        result.error || "Failed to clear PostgreSQL live table for overwrite",
+      );
+    }
   }
 
   /**
@@ -154,10 +178,15 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
         });
       });
 
-      const write = await writer.writeBatch(rows, {
-        keyColumns: params.layout.keyColumns,
-        conflictStrategy: "update",
-      });
+      const write = await writer.writeBatch(
+        rows,
+        params.layout.writeMode === "append"
+          ? {}
+          : {
+              keyColumns: params.layout.keyColumns,
+              conflictStrategy: "update",
+            },
+      );
       if (!write.success) {
         throw new Error(
           write.error || "Failed to apply PostgreSQL CDC upserts",
@@ -168,7 +197,9 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
 
     if (deletes.length > 0) {
       const deleteMode =
-        params.flow.deleteMode || params.layout.deleteMode || "hard";
+        params.layout.writeMode === "append"
+          ? "soft" // append mode never mutates prior rows; deletions land as tombstone rows
+          : params.flow.deleteMode || params.layout.deleteMode || "hard";
       if (deleteMode === "soft") {
         const rows = deletes.map(event => {
           const payload = normalizePayloadKeys(event.payload || {});
@@ -188,10 +219,15 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
           });
         });
 
-        const write = await writer.writeBatch(rows, {
-          keyColumns: params.layout.keyColumns,
-          conflictStrategy: "update",
-        });
+        const write = await writer.writeBatch(
+          rows,
+          params.layout.writeMode === "append"
+            ? {}
+            : {
+                keyColumns: params.layout.keyColumns,
+                conflictStrategy: "update",
+              },
+        );
         if (!write.success) {
           throw new Error(
             write.error || "Failed to apply PostgreSQL CDC soft deletes",
@@ -249,10 +285,15 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
       });
     });
 
-    const write = await writer.writeBatch(rows, {
-      keyColumns: params.layout.keyColumns,
-      conflictStrategy: "update",
-    });
+    const write = await writer.writeBatch(
+      rows,
+      params.layout.writeMode === "append"
+        ? {}
+        : {
+            keyColumns: params.layout.keyColumns,
+            conflictStrategy: "update",
+          },
+    );
     if (!write.success) {
       log.error("PostgreSQL batch apply failed", {
         table: params.layout.tableName,
