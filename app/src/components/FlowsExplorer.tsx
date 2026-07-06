@@ -25,7 +25,6 @@ import type {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useConsoleStore } from "../store/consoleStore";
-import { useFeatureStore, selectUnifiedSyncFlows } from "../store/featureStore";
 import {
   useExplorerRevealStore,
   selectRevealFor,
@@ -89,8 +88,6 @@ export function FlowsExplorer() {
   } = useFlowStore();
   const { tabs, activeTabId, openTab, setActiveTab, loadConsole } =
     useConsoleStore();
-  const unifiedSyncFlows = useFeatureStore(selectUnifiedSyncFlows);
-  const initFeatures = useFeatureStore(state => state.init);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [scheduledQueries, setScheduledQueries] = useState<
     ScheduledQueryListItem[]
@@ -126,10 +123,6 @@ export function FlowsExplorer() {
   }, [workspaceId]);
 
   useEffect(() => {
-    void initFeatures();
-  }, [initFeatures]);
-
-  useEffect(() => {
     if (!workspaceId) return;
     void init(workspaceId);
     void fetchScheduledQueries();
@@ -141,14 +134,7 @@ export function FlowsExplorer() {
     await fetchScheduledQueries();
   };
 
-  const handleCreateNew = (
-    flowType:
-      | "scheduled"
-      | "webhook"
-      | "db-scheduled"
-      | "scheduled-query"
-      | "sync",
-  ) => {
+  const handleCreateNew = (flowType: "scheduled-query" | "sync") => {
     if (flowType === "scheduled-query") {
       const id = openTab({
         title: "New Scheduled Query",
@@ -160,17 +146,8 @@ export function FlowsExplorer() {
       return;
     }
 
-    const title =
-      flowType === "sync"
-        ? "New Sync"
-        : flowType === "scheduled"
-          ? "New Scheduled Flow"
-          : flowType === "webhook"
-            ? "New Webhook Flow"
-            : "New Database Sync";
-
     const id = openTab({
-      title,
+      title: "New Sync",
       content: "",
       kind: "flow-editor",
       metadata: { isNew: true, flowType },
@@ -220,91 +197,34 @@ export function FlowsExplorer() {
       consoleId: query.id,
     }));
 
-    // Unified IA: one "Sync" section (triggers/engine are row metadata, not
-    // sections) + "Scheduled Queries".
-    if (unifiedSyncFlows) {
-      const syncNodes: FlowTreeNode[] = flows.map(flow => ({
-        id: flow._id,
-        name: getFlowTitle(flow),
-        path: flow._id,
-        isDirectory: false,
-        itemType: "flow",
-        flowId: flow._id,
-        flowKind: classifyFlow(flow),
-        triggerKind: classifyTriggers(flow),
-      }));
-
-      return [
-        {
-          key: "sync",
-          label: "Sync",
-          icon: <CdcIcon size={16} strokeWidth={1.5} />,
-          nodes: syncNodes,
-        },
-        {
-          key: "scheduled-query",
-          label: "Scheduled Queries",
-          icon: <ConsoleIcon size={16} strokeWidth={1.5} />,
-          nodes: scheduledNodes,
-        },
-      ].filter(section => section.nodes.length > 0);
-    }
-
-    const connectorNodes: FlowTreeNode[] = [];
-    const webhookNodes: FlowTreeNode[] = [];
-    const dbSyncNodes: FlowTreeNode[] = [];
-    const cdcNodes: FlowTreeNode[] = [];
-
-    for (const flow of flows) {
-      const node: FlowTreeNode = {
-        id: flow._id,
-        name: getFlowTitle(flow),
-        path: flow._id,
-        isDirectory: false,
-        itemType: "flow",
-        flowId: flow._id,
-        flowKind: classifyFlow(flow),
-      };
-
-      if (node.flowKind === "cdc") cdcNodes.push(node);
-      else if (node.flowKind === "webhook") webhookNodes.push(node);
-      else if (node.flowKind === "db-sync") dbSyncNodes.push(node);
-      else connectorNodes.push(node);
-    }
+    // One "Sync" section (triggers/engine are row metadata, not sections)
+    // + "Scheduled Queries".
+    const syncNodes: FlowTreeNode[] = flows.map(flow => ({
+      id: flow._id,
+      name: getFlowTitle(flow),
+      path: flow._id,
+      isDirectory: false,
+      itemType: "flow",
+      flowId: flow._id,
+      flowKind: classifyFlow(flow),
+      triggerKind: classifyTriggers(flow),
+    }));
 
     return [
       {
-        key: "connector-sync",
-        label: "Connector Sync",
-        icon: <ScheduleIcon size={16} strokeWidth={1.5} />,
-        nodes: connectorNodes,
-      },
-      {
-        key: "webhook",
-        label: "Webhook",
-        icon: <WebhookIcon size={16} strokeWidth={1.5} />,
-        nodes: webhookNodes,
-      },
-      {
-        key: "db-sync",
-        label: "DB Sync",
-        icon: <DatabaseIcon size={16} strokeWidth={1.5} />,
-        nodes: dbSyncNodes,
-      },
-      {
-        key: "cdc",
-        label: "CDC",
+        key: "sync",
+        label: "Sync",
         icon: <CdcIcon size={16} strokeWidth={1.5} />,
-        nodes: cdcNodes,
+        nodes: syncNodes,
       },
       {
         key: "scheduled-query",
-        label: "Scheduled Query",
+        label: "Scheduled Queries",
         icon: <ConsoleIcon size={16} strokeWidth={1.5} />,
         nodes: scheduledNodes,
       },
     ].filter(section => section.nodes.length > 0);
-  }, [flows, scheduledQueries, unifiedSyncFlows]);
+  }, [flows, scheduledQueries]);
 
   const activeItemId = useMemo(() => {
     if (!activeTabId) return null;
@@ -321,40 +241,25 @@ export function FlowsExplorer() {
 
   const reveal = useExplorerRevealStore(selectRevealFor("flows"));
 
-  const getItemIcon = useCallback(
-    (node: ResourceTreeNode) => {
-      const flowNode = node as FlowTreeNode;
-      if (flowNode.itemType === "scheduled-query") {
-        return <ConsoleIcon size={16} strokeWidth={1.5} />;
-      }
-      // Unified IA: the row icon reflects the trigger set (schedule / webhook
-      // / hybrid) or the database source — never the internal engine.
-      if (unifiedSyncFlows) {
-        if (flowNode.flowKind === "db-sync") {
-          return <DatabaseIcon size={16} strokeWidth={1.5} />;
-        }
-        switch (flowNode.triggerKind) {
-          case "webhook":
-            return <WebhookIcon size={16} strokeWidth={1.5} />;
-          case "hybrid":
-            return <CdcIcon size={16} strokeWidth={1.5} />;
-          default:
-            return <ScheduleIcon size={16} strokeWidth={1.5} />;
-        }
-      }
-      switch (flowNode.flowKind) {
-        case "webhook":
-          return <WebhookIcon size={16} strokeWidth={1.5} />;
-        case "db-sync":
-          return <DatabaseIcon size={16} strokeWidth={1.5} />;
-        case "cdc":
-          return <CdcIcon size={16} strokeWidth={1.5} />;
-        default:
-          return <ScheduleIcon size={16} strokeWidth={1.5} />;
-      }
-    },
-    [unifiedSyncFlows],
-  );
+  const getItemIcon = useCallback((node: ResourceTreeNode) => {
+    const flowNode = node as FlowTreeNode;
+    if (flowNode.itemType === "scheduled-query") {
+      return <ConsoleIcon size={16} strokeWidth={1.5} />;
+    }
+    // The row icon reflects the trigger set (schedule / webhook / hybrid)
+    // or the database source — never the internal engine.
+    if (flowNode.flowKind === "db-sync") {
+      return <DatabaseIcon size={16} strokeWidth={1.5} />;
+    }
+    switch (flowNode.triggerKind) {
+      case "webhook":
+        return <WebhookIcon size={16} strokeWidth={1.5} />;
+      case "hybrid":
+        return <CdcIcon size={16} strokeWidth={1.5} />;
+      default:
+        return <ScheduleIcon size={16} strokeWidth={1.5} />;
+    }
+  }, []);
 
   const handleItemClick = async (node: ResourceTreeNode) => {
     const flowNode = node as FlowTreeNode;
@@ -475,44 +380,10 @@ export function FlowsExplorer() {
         anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
         transformOrigin={{ vertical: "top", horizontal: "right" }}
       >
-        {unifiedSyncFlows
-          ? [
-              <MenuItem key="sync" onClick={() => handleCreateNew("sync")}>
-                Sync
-              </MenuItem>,
-              <MenuItem
-                key="scheduled-query"
-                onClick={() => handleCreateNew("scheduled-query")}
-              >
-                Scheduled Query
-              </MenuItem>,
-            ]
-          : [
-              <MenuItem
-                key="db-scheduled"
-                onClick={() => handleCreateNew("db-scheduled")}
-              >
-                Database Sync
-              </MenuItem>,
-              <MenuItem
-                key="scheduled"
-                onClick={() => handleCreateNew("scheduled")}
-              >
-                Connector Sync
-              </MenuItem>,
-              <MenuItem
-                key="webhook"
-                onClick={() => handleCreateNew("webhook")}
-              >
-                Webhook Sync
-              </MenuItem>,
-              <MenuItem
-                key="scheduled-query"
-                onClick={() => handleCreateNew("scheduled-query")}
-              >
-                Scheduled Query
-              </MenuItem>,
-            ]}
+        <MenuItem onClick={() => handleCreateNew("sync")}>Sync</MenuItem>
+        <MenuItem onClick={() => handleCreateNew("scheduled-query")}>
+          Scheduled Query
+        </MenuItem>
       </Menu>
     </Box>
   );

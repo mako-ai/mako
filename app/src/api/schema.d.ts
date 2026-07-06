@@ -4,23 +4,6 @@
  */
 
 export interface paths {
-    "/api/features": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** GET / (server feature flags) */
-        get: operations["get_api_features"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/auth/config": {
         parameters: {
             query?: never;
@@ -4351,46 +4334,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    get_api_features: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Server feature flags */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        unifiedSyncFlows: boolean;
-                    };
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
     get_api_auth_config: {
         parameters: {
             query?: never;
@@ -4413,7 +4356,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                    "application/json": components["schemas"]["GenericJsonResponse"];
                 };
             };
             /** @description Invalid request */

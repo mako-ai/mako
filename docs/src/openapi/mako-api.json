@@ -1177,55 +1177,6 @@
     "parameters": {}
   },
   "paths": {
-    "/api/features": {
-      "get": {
-        "tags": [
-          "Features"
-        ],
-        "summary": "GET / (server feature flags)",
-        "responses": {
-          "200": {
-            "description": "Server feature flags",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "unifiedSyncFlows": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "unifiedSyncFlows"
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_features"
-      }
-    },
     "/api/auth/config": {
       "get": {
         "tags": [
@@ -1242,17 +1193,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/GenericJsonResponse"
                 }
               }
             }

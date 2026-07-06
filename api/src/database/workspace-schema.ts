@@ -2,8 +2,6 @@ import mongoose, { Schema, Document, Types } from "mongoose";
 import { v4 as uuidv4 } from "uuid";
 import * as crypto from "crypto";
 import { loggers } from "../logging";
-// Dependency-free by design, safe to import from the schema module.
-import { isUnifiedSyncFlowsEnabled } from "../services/flow-triggers.service";
 
 // Encryption helper functions
 let _encryptionKey: string | null = null;
@@ -2155,14 +2153,9 @@ const FlowSchema = new Schema<IFlow>(
         },
         validate: {
           validator: function (v: string) {
-            // Absence is handled by `required`. In legacy mode keep the
-            // historical behavior of skipping webhook flows entirely so
-            // existing documents never start failing on save; under the
-            // unified trigger model any present cron must be well-formed.
+            // Absence is handled by `required`; any present cron must be
+            // well-formed regardless of flow type.
             if (!v) return true;
-            if (this.type === "webhook" && !isUnifiedSyncFlowsEnabled()) {
-              return true;
-            }
             // Basic cron validation - 5 or 6 fields
             const fields = v.split(" ");
             return fields.length === 5 || fields.length === 6;

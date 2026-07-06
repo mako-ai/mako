@@ -37,7 +37,6 @@ import {
   buildScheduledFlowSelection,
   hasScheduleTrigger,
   hasWebhookTrigger,
-  isUnifiedSyncFlowsEnabled,
 } from "../../services/flow-triggers.service";
 
 const flowLogger = loggers.inngest("flow");
@@ -631,18 +630,11 @@ export const flowFunction = inngest.createFunction(
         Boolean(flow.tableDestination?.connectionId) &&
         hasCdcDestinationAdapter(destinationType);
 
-      // Snapshot the flag inside a step so replays of this run stay
-      // deterministic even if the env flag flips mid-run (e.g. a deploy).
-      const unifiedFlows = (await step.run(
-        `resolve-unified-sync-flag${fetchStepSuffix}`,
-        async () => isUnifiedSyncFlowsEnabled(),
-      )) as boolean;
-      // Under the unified trigger model, "webhook-only" replaces the `type`
-      // discriminator: a flow whose sole freshness source is its webhook has
-      // no poll schedule to execute, but any flow with a poll trigger may run.
-      const isWebhookOnly = unifiedFlows
-        ? hasWebhookTrigger(flow) && !hasScheduleTrigger(flow)
-        : flow.type === "webhook";
+      // "Webhook-only" replaces the `type` discriminator: a flow whose sole
+      // freshness source is its webhook has no poll schedule to execute, but
+      // any flow with a poll trigger may run.
+      const isWebhookOnly =
+        hasWebhookTrigger(flow) && !hasScheduleTrigger(flow);
       // A CDC backfill run is a full reconcile regardless of which trigger
       // the flow uses day-to-day.
       const isCdcBackfill = backfill && isCdcEnabled;
@@ -651,10 +643,9 @@ export const flowFunction = inngest.createFunction(
         typeof backfillRunId === "string" && backfillRunId.length > 0
           ? backfillRunId
           : undefined;
-      cdcBackfillRunId =
-        isCdcBackfill && (unifiedFlows || flow.type === "webhook")
-          ? requestedBackfillRunId || flow.backfillState?.runId
-          : undefined;
+      cdcBackfillRunId = isCdcBackfill
+        ? requestedBackfillRunId || flow.backfillState?.runId
+        : undefined;
 
       // Webhook-only flows should not be executed unless it's a backfill
       if (isWebhookOnly && !backfill) {
@@ -680,7 +671,7 @@ export const flowFunction = inngest.createFunction(
         );
       }
 
-      if (isCdcBackfill && (unifiedFlows || flow.type === "webhook")) {
+      if (isCdcBackfill) {
         flow.syncMode = "full";
         logger.info("Backfill mode: CDC enabled, forcing full sync", {
           flowId,
@@ -1195,13 +1186,9 @@ export const flowFunction = inngest.createFunction(
       );
 
       if (supportsChunking) {
-        // Checkpointed backfills apply to any CDC backfill run, not only
-        // webhook flows (cdcBackfillRunId is already gated accordingly).
+        // Checkpointed backfills apply to any CDC backfill run.
         const checkpointEnabled =
-          Boolean(backfill) &&
-          (unifiedFlows || flow.type === "webhook") &&
-          isCdcEnabled &&
-          Boolean(cdcBackfillRunId);
+          Boolean(backfill) && isCdcEnabled && Boolean(cdcBackfillRunId);
         let checkpointCompletedEntities = new Set<string>();
         if (checkpointEnabled && cdcBackfillRunId) {
           const runId = cdcBackfillRunId;
@@ -1582,7 +1569,7 @@ export const flowFunction = inngest.createFunction(
 
       // Post-backfill CDC state machine: complete the backfill, drain pending
       // events, and (re)start the stream. Applies to any CDC backfill run.
-      if (isCdcBackfill && (unifiedFlows || flow.type === "webhook")) {
+      if (isCdcBackfill) {
         await step.run("mark-cdc-backfill-complete", async () => {
           await markCdcBackfillCompletedForFlow({
             flowId: String(flowId),
@@ -1934,11 +1921,7 @@ export const flowFunction = inngest.createFunction(
       // unified model, webhook flows otherwise. Without this, a failed
       // backfill leaves backfillState.status stuck on "running", which blocks
       // the reconcile scheduler and the auto-recovery loop forever.
-      if (
-        backfill &&
-        flowRef &&
-        (isUnifiedSyncFlowsEnabled() || flowRef.type === "webhook")
-      ) {
+      if (backfill && flowRef) {
         const destinationType = flowRef.tableDestination?.connectionId
           ? (
               await DatabaseConnection.findById(
@@ -2021,13 +2004,10 @@ export const flowSchedulerFunction = inngest.createFunction(
       timestamp: new Date().toISOString(),
     });
 
-    // Get all flows with an enabled poll schedule. In unified mode the
-    // selection is trigger-based (any flow with an enabled schedule + cron);
-    // otherwise it stays partitioned on type: "scheduled".
+    // Get all flows with an enabled poll schedule (trigger-based selection:
+    // any flow with an enabled schedule + cron, including hybrids).
     const flows = (await step.run("fetch-enabled-flows", async () => {
-      const found = await Flow.find(
-        buildScheduledFlowSelection(isUnifiedSyncFlowsEnabled()),
-      );
+      const found = await Flow.find(buildScheduledFlowSelection());
       scheduleLogger.info("Found flows with enabled poll schedules", {
         count: found.length,
         // Log flow types for debugging
@@ -2050,14 +2030,9 @@ export const flowSchedulerFunction = inngest.createFunction(
           const flowDisplayName = await getFlowDisplayName(flow);
           const flowLogger = getSyncLogger(`scheduler.${flow._id}`);
 
-          // Safety check: skip flows without a poll cron. In legacy mode
-          // also skip webhook flows (shouldn't happen with our filter, but
-          // just in case); in unified mode a webhook flow with an enabled
-          // schedule is a valid hybrid and must be polled.
-          if (
-            !flow.schedule?.cron ||
-            (!isUnifiedSyncFlowsEnabled() && flow.type === "webhook")
-          ) {
+          // Safety check: skip flows without a poll cron (a webhook flow
+          // with an enabled schedule is a valid hybrid and must be polled).
+          if (!flow.schedule?.cron) {
             flowLogger.warn(
               "CRITICAL: Flow without poll schedule found in scheduler!",
               {

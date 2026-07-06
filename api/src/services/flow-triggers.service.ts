@@ -1,9 +1,9 @@
 /**
  * Unified sync-flow trigger model (docs/unified-sync-flow-proposal.md).
  *
- * Behind the UNIFIED_SYNC_FLOWS flag, a flow's behavior is driven by an
- * orthogonal trigger set derived from existing fields instead of the hard
- * `type: "scheduled" | "webhook"` discriminator:
+ * A flow's behavior is driven by an orthogonal trigger set derived from
+ * existing fields instead of the hard `type: "scheduled" | "webhook"`
+ * discriminator:
  *
  * - poll trigger      → `schedule.enabled` + a cron expression
  * - webhook trigger   → `webhookConfig.enabled`
@@ -12,10 +12,6 @@
  * This module is intentionally dependency-free (structural types only) so it
  * can be imported from `workspace-schema.ts` without creating import cycles.
  */
-
-export function isUnifiedSyncFlowsEnabled(): boolean {
-  return process.env.UNIFIED_SYNC_FLOWS === "true";
-}
 
 /** Structural subset of IFlow used for trigger derivation. */
 export interface FlowTriggerFields {
@@ -103,10 +99,9 @@ export function deriveFlowType(
 
 /**
  * Engine default for newly created flows. Webhook flows are always CDC (the
- * legacy real-time webhook pipeline has been decommissioned). Under the
- * unified model, connector flows targeting a CDC-capable table destination
- * default to CDC as well; everything else stays on the legacy engine until
- * the Phase 5 sunset.
+ * legacy real-time webhook pipeline has been decommissioned). Connector
+ * flows targeting a CDC-capable table destination default to CDC; everything
+ * else stays on the legacy engine until the full sunset.
  */
 export function resolveDefaultSyncEngine(params: {
   flowType: "scheduled" | "webhook";
@@ -115,7 +110,6 @@ export function resolveDefaultSyncEngine(params: {
   destinationSupportsCdc: boolean;
 }): "cdc" | "legacy" {
   if (params.flowType === "webhook") return "cdc";
-  if (!isUnifiedSyncFlowsEnabled()) return "legacy";
   return params.sourceType === "connector" &&
     params.hasTableDestination &&
     params.destinationSupportsCdc
@@ -124,19 +118,11 @@ export function resolveDefaultSyncEngine(params: {
 }
 
 /**
- * Mongo selection for the poll-trigger scheduler (`flowSchedulerFunction`).
- * Legacy mode partitions by `type`; unified mode selects purely on the
- * trigger fields (a webhook flow with a poll schedule gets polled too).
+ * Mongo selection for the poll-trigger scheduler (`flowSchedulerFunction`):
+ * purely trigger-based — any flow with an enabled poll schedule and a real
+ * cron is polled (a webhook flow with a poll schedule is a hybrid).
  */
-export function buildScheduledFlowSelection(
-  unified: boolean,
-): Record<string, unknown> {
-  if (!unified) {
-    return {
-      type: "scheduled",
-      "schedule.enabled": true,
-    };
-  }
+export function buildScheduledFlowSelection(): Record<string, unknown> {
   return {
     "schedule.enabled": true,
     // String, non-empty, not whitespace-only — mirrors hasScheduleTrigger.

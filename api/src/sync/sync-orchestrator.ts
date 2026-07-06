@@ -38,7 +38,6 @@ import {
   resolveCdcDestinationAdapter,
   type CdcDestinationAdapter,
 } from "../sync-cdc/adapters/registry";
-import { isUnifiedSyncFlowsEnabled } from "../services/flow-triggers.service";
 
 const orchestratorLogger = loggers.sync("orchestrator");
 
@@ -650,10 +649,7 @@ async function performSyncChunkSql(
   // upsert-only; deletes are reconciled by the periodic full backfill
   // (backfillSchedule), not by polls.
   const anchorIncremental =
-    syncMode === "incremental" &&
-    options.writeMode !== "overwrite" &&
-    !state &&
-    (!isCdcEnabled || isUnifiedSyncFlowsEnabled());
+    syncMode === "incremental" && options.writeMode !== "overwrite" && !state;
   let lastSyncDate: Date | undefined;
   if (anchorIncremental) {
     try {

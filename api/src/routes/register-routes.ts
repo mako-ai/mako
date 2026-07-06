@@ -34,7 +34,6 @@ import { scheduledQueryRoutes } from "./scheduled-queries";
 import { notificationRulesRoutes } from "./notification-rules";
 import { devEmailPreviewRoutes } from "./dev-email-preview.routes";
 import { webhookRoutes } from "./webhooks";
-import { featureRoutes } from "./features";
 import { mcpPresetRoutes, mcpRoutes } from "./mcp.routes";
 
 /**
@@ -50,7 +49,6 @@ import { mcpPresetRoutes, mcpRoutes } from "./mcp.routes";
  * documented surface.
  */
 export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
-  app.route("/api/features", featureRoutes);
   app.route("/api/auth", authRoutes);
   app.route("/api/workspaces", workspaceRoutes);
   app.route("/api/workspaces/:workspaceId/databases", workspaceDatabaseRoutes);

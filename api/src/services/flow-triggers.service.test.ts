@@ -4,39 +4,8 @@ import {
   deriveFlowType,
   deriveTriggerSet,
   hasAnyTrigger,
-  isUnifiedSyncFlowsEnabled,
   resolveDefaultSyncEngine,
 } from "./flow-triggers.service";
-
-function withFlag<T>(value: string | undefined, fn: () => T): T {
-  const previous = process.env.UNIFIED_SYNC_FLOWS;
-  if (value === undefined) {
-    delete process.env.UNIFIED_SYNC_FLOWS;
-  } else {
-    process.env.UNIFIED_SYNC_FLOWS = value;
-  }
-  try {
-    return fn();
-  } finally {
-    if (previous === undefined) {
-      delete process.env.UNIFIED_SYNC_FLOWS;
-    } else {
-      process.env.UNIFIED_SYNC_FLOWS = previous;
-    }
-  }
-}
-
-function testFlagDefaultsOff() {
-  withFlag(undefined, () => {
-    assert.equal(isUnifiedSyncFlowsEnabled(), false);
-  });
-  withFlag("false", () => {
-    assert.equal(isUnifiedSyncFlowsEnabled(), false);
-  });
-  withFlag("true", () => {
-    assert.equal(isUnifiedSyncFlowsEnabled(), true);
-  });
-}
 
 function testScheduledFlowTriggerSet() {
   const triggers = deriveTriggerSet({
@@ -48,7 +17,10 @@ function testScheduledFlowTriggerSet() {
     webhook: false,
     reconcile: false,
   });
-  assert.equal(deriveFlowType({ schedule: { enabled: true, cron: "0 * * * *" } }), "scheduled");
+  assert.equal(
+    deriveFlowType({ schedule: { enabled: true, cron: "0 * * * *" } }),
+    "scheduled",
+  );
 }
 
 function testWebhookFlowWithMongooseScheduleDefault() {
@@ -126,99 +98,79 @@ function testNoTriggers() {
   );
 }
 
-function testDefaultSyncEngineLegacyMode() {
-  withFlag(undefined, () => {
-    assert.equal(
-      resolveDefaultSyncEngine({
-        flowType: "webhook",
-        sourceType: "connector",
-        hasTableDestination: true,
-        destinationSupportsCdc: true,
-      }),
-      "cdc",
-    );
-    // Scheduled flows stay legacy when the flag is off, even with a
-    // CDC-capable destination.
-    assert.equal(
-      resolveDefaultSyncEngine({
-        flowType: "scheduled",
-        sourceType: "connector",
-        hasTableDestination: true,
-        destinationSupportsCdc: true,
-      }),
-      "legacy",
-    );
-  });
-}
-
-function testDefaultSyncEngineUnifiedMode() {
-  withFlag("true", () => {
-    assert.equal(
-      resolveDefaultSyncEngine({
-        flowType: "scheduled",
-        sourceType: "connector",
-        hasTableDestination: true,
-        destinationSupportsCdc: true,
-      }),
-      "cdc",
-    );
-    // Non-CDC destination stays legacy.
-    assert.equal(
-      resolveDefaultSyncEngine({
-        flowType: "scheduled",
-        sourceType: "connector",
-        hasTableDestination: true,
-        destinationSupportsCdc: false,
-      }),
-      "legacy",
-    );
-    // Mongo collection destination (no tableDestination) stays legacy.
-    assert.equal(
-      resolveDefaultSyncEngine({
-        flowType: "scheduled",
-        sourceType: "connector",
-        hasTableDestination: false,
-        destinationSupportsCdc: true,
-      }),
-      "legacy",
-    );
-    // Database (SQL query) sources keep the legacy DB-sync path.
-    assert.equal(
-      resolveDefaultSyncEngine({
-        flowType: "scheduled",
-        sourceType: "database",
-        hasTableDestination: true,
-        destinationSupportsCdc: true,
-      }),
-      "legacy",
-    );
-  });
+function testDefaultSyncEngine() {
+  // Webhook flows are always CDC.
+  assert.equal(
+    resolveDefaultSyncEngine({
+      flowType: "webhook",
+      sourceType: "connector",
+      hasTableDestination: true,
+      destinationSupportsCdc: true,
+    }),
+    "cdc",
+  );
+  // Connector flows to CDC-capable table destinations default to CDC.
+  assert.equal(
+    resolveDefaultSyncEngine({
+      flowType: "scheduled",
+      sourceType: "connector",
+      hasTableDestination: true,
+      destinationSupportsCdc: true,
+    }),
+    "cdc",
+  );
+  // Non-CDC destination stays legacy.
+  assert.equal(
+    resolveDefaultSyncEngine({
+      flowType: "scheduled",
+      sourceType: "connector",
+      hasTableDestination: true,
+      destinationSupportsCdc: false,
+    }),
+    "legacy",
+  );
+  // Mongo collection destination (no tableDestination) stays legacy.
+  assert.equal(
+    resolveDefaultSyncEngine({
+      flowType: "scheduled",
+      sourceType: "connector",
+      hasTableDestination: false,
+      destinationSupportsCdc: true,
+    }),
+    "legacy",
+  );
+  // Database (SQL query) sources keep the legacy DB-sync path.
+  assert.equal(
+    resolveDefaultSyncEngine({
+      flowType: "scheduled",
+      sourceType: "database",
+      hasTableDestination: true,
+      destinationSupportsCdc: true,
+    }),
+    "legacy",
+  );
 }
 
 function testScheduledFlowSelection() {
-  assert.deepEqual(buildScheduledFlowSelection(false), {
-    type: "scheduled",
-    "schedule.enabled": true,
-  });
-  const unified = buildScheduledFlowSelection(true) as Record<string, any>;
-  assert.equal(unified["schedule.enabled"], true);
-  const cronCond = unified["schedule.cron"];
+  const selection = buildScheduledFlowSelection() as Record<string, any>;
+  assert.equal(selection["schedule.enabled"], true);
+  const cronCond = selection["schedule.cron"];
   assert.equal(cronCond.$exists, true);
   assert.equal(cronCond.$type, "string");
   // Whitespace-only crons must be excluded.
   assert.equal(cronCond.$not.test("   "), true);
   assert.equal(cronCond.$not.test("*/5 * * * *"), false);
+  // No type partitioning — hybrids (webhook flows with a cron) are polled.
+  assert.equal("type" in selection, false);
 }
 
 function main() {
-  testFlagDefaultsOff();
   testScheduledFlowTriggerSet();
   testWebhookFlowWithMongooseScheduleDefault();
   testScheduledFlowWithMongooseWebhookDefault();
   testHybridFlowIsScheduledForBackCompat();
   testNoTriggers();
-  testDefaultSyncEngineLegacyMode();
-  testDefaultSyncEngineUnifiedMode();
+  testDefaultSyncEngine();
   testScheduledFlowSelection();
   // eslint-disable-next-line no-console
   console.log("flow-triggers.service tests passed");

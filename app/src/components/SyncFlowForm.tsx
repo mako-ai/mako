@@ -1,5 +1,5 @@
 /**
- * Unified Sync builder (UNIFIED_SYNC_FLOWS flag).
+ * Unified Sync builder.
  *
  * Replaces the ScheduledFlowForm / WebhookFlowForm split: the trigger set
  * (scheduled poll and/or webhook push) is a property of one Sync, chosen in
