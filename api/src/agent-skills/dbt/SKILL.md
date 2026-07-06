@@ -167,6 +167,10 @@ AND its tests — always add at least `unique` + `not_null` on the primary key.
   - Deleting a branch (`dbt_delete_branch`, or `deleteBranch` on close/merge
     of a PR) drops the drafts stashed on it — except a PR merge, which moves
     them to the default branch with the user.
+  - `dbt_compare_branches` diffs any branch against a base without switching
+    checkouts (ahead/behind, changed files, that branch's PRs). Its
+    `fullyMergedIntoBase` flag detects squash/rebase merges too — check it
+    before deleting a branch during cleanup.
   - `discardLocalChanges` (on switch/sync) only discards the branch being
     left / the current branch — never other branches' stashes.
 - **Which git tree a run builds (repo-bound projects)** — never mix these up:

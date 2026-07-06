@@ -195,6 +195,7 @@ const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   "dbt_create_branch",
   "dbt_switch_branch",
   "dbt_list_branches",
+  "dbt_compare_branches",
   "dbt_delete_branch",
   "dbt_open_pull_request",
   "dbt_merge_pull_request",

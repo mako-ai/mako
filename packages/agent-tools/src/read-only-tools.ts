@@ -52,9 +52,10 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   "dbt_compile_model",
   "dbt_get_run",
   "dbt_show",
-  // dbt git reads (status + branch listing never mutate the repo)
+  // dbt git reads (status + branch listing/compare never mutate the repo)
   "dbt_git_status",
   "dbt_list_branches",
+  "dbt_compare_branches",
   "dbt_list_recoverable_files",
   // Surface-scoped data-source reads (apps + dashboards, local DuckDB only)
   "list_data_sources",

@@ -41,11 +41,11 @@ function sha1(value) {
 const trees = new Map();
 /** blobSha -> content */
 const blobs = new Map();
-/** commitSha -> { treeSha, parents, message } */
+/** commitSha -> { treeSha, parents, message, date } */
 const commits = new Map();
 /** branch -> head commit sha */
 const branches = new Map();
-/** number -> { headRef, baseRef, state, title, body } */
+/** number -> { headRef, baseRef, state, title, body, createdAt, mergedAt } */
 const pulls = new Map();
 let pullCounter = 0;
 
@@ -61,8 +61,27 @@ function storeTree(files) {
 
 function storeCommit(treeSha, parents, message) {
   const sha = sha1(`${treeSha}|${parents.join(",")}|${message}|${Date.now()}|${Math.random()}`);
-  commits.set(sha, { treeSha, parents, message });
+  commits.set(sha, {
+    treeSha,
+    parents,
+    message,
+    date: new Date().toISOString(),
+  });
   return sha;
+}
+
+/** All commit SHAs reachable from `sha` (inclusive). */
+function ancestors(sha) {
+  const seen = new Set();
+  const stack = [sha];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current || seen.has(current)) continue;
+    seen.add(current);
+    const commit = commits.get(current);
+    if (commit) stack.push(...commit.parents);
+  }
+  return seen;
 }
 
 function branchFiles(branch) {
@@ -313,7 +332,85 @@ const server = createServer(async (req, res) => {
       }
     }
 
+    // GET /compare/:base...:head — three-dot ref comparison
+    if (req.method === "GET" && sub.startsWith("/compare/")) {
+      const basehead = sub.slice("/compare/".length);
+      const [baseRef, headRef] = basehead.split("...");
+      const resolveHead = ref =>
+        branches.get(ref) ?? (commits.has(ref) ? ref : null);
+      const baseSha = resolveHead(baseRef);
+      const headSha = resolveHead(headRef);
+      if (!baseSha || !headSha) return notFound(res);
+      const baseAncestors = ancestors(baseSha);
+      const headAncestors = ancestors(headSha);
+      const aheadShas = [...headAncestors].filter(s => !baseAncestors.has(s));
+      const behindBy = [...baseAncestors].filter(
+        s => !headAncestors.has(s),
+      ).length;
+      const status =
+        aheadShas.length === 0
+          ? behindBy === 0
+            ? "identical"
+            : "behind"
+          : behindBy === 0
+            ? "ahead"
+            : "diverged";
+      const baseFiles = trees.get(commits.get(baseSha).treeSha);
+      const headFiles = trees.get(commits.get(headSha).treeSha);
+      const files = [];
+      for (const [p, c] of headFiles) {
+        if (!baseFiles.has(p)) {
+          files.push({ filename: p, status: "added", additions: 1, deletions: 0 });
+        } else if (baseFiles.get(p) !== c) {
+          files.push({ filename: p, status: "modified", additions: 1, deletions: 1 });
+        }
+      }
+      for (const p of baseFiles.keys()) {
+        if (!headFiles.has(p)) {
+          files.push({ filename: p, status: "removed", additions: 0, deletions: 1 });
+        }
+      }
+      return json(res, 200, {
+        status,
+        ahead_by: aheadShas.length,
+        behind_by: behindBy,
+        total_commits: aheadShas.length,
+        commits: aheadShas.map(sha => ({
+          sha,
+          commit: {
+            message: commits.get(sha).message,
+            committer: { date: commits.get(sha).date },
+          },
+        })),
+        files,
+      });
+    }
+
     // Pull requests
+    if (req.method === "GET" && sub === "/pulls") {
+      const state = url.searchParams.get("state") ?? "open";
+      const headFilter = url.searchParams.get("head"); // "owner:branch"
+      const headBranch = headFilter ? headFilter.split(":").pop() : null;
+      const list = [...pulls.entries()]
+        .filter(([, pr]) => state === "all" || pr.state === state)
+        .filter(([, pr]) => !headBranch || pr.headRef === headBranch)
+        .sort(([a], [b]) => b - a)
+        .map(([number, pr]) => ({
+          number,
+          title: pr.title,
+          state: pr.state,
+          merged_at: pr.mergedAt ?? null,
+          draft: false,
+          head: { ref: pr.headRef },
+          base: { ref: pr.baseRef },
+          html_url: `http://127.0.0.1:${PORT}/${OWNER}/${REPO}/pull/${number}`,
+          user: { login: "fake-user" },
+          body: pr.body ?? "",
+          created_at: pr.createdAt,
+          updated_at: pr.mergedAt ?? pr.createdAt,
+        }));
+      return json(res, 200, list);
+    }
     if (req.method === "POST" && sub === "/pulls") {
       const body = await readBody(req);
       pullCounter += 1;
@@ -323,6 +420,7 @@ const server = createServer(async (req, res) => {
         state: "open",
         title: body.title,
         body: body.body ?? "",
+        createdAt: new Date().toISOString(),
       });
       return json(res, 201, {
         number: pullCounter,
@@ -358,16 +456,27 @@ const server = createServer(async (req, res) => {
         const headFiles = branchFiles(pr.headRef);
         const baseFiles = branchFiles(pr.baseRef);
         if (!headFiles || !baseFiles) return notFound(res);
+        const mergeBody = await readBody(req);
         const merged = new Map(baseFiles);
         for (const [p, c] of headFiles) merged.set(p, c);
         const treeSha = storeTree(merged);
+        // Squash (Mako's default) keeps a single parent: the head branch's
+        // SHAs never become ancestors of the base, so /compare keeps
+        // reporting them "ahead" — exactly what dbt_compare_branches'
+        // merged-PR fallback exists to detect. A "merge" commit gets both
+        // parents, making the head reachable from base (ahead_by drops to 0).
+        const parents =
+          mergeBody.merge_method === "merge"
+            ? [branches.get(pr.baseRef), branches.get(pr.headRef)]
+            : [branches.get(pr.baseRef)];
         const sha = storeCommit(
           treeSha,
-          [branches.get(pr.baseRef)],
+          parents,
           `Merge pull request #${number}`,
         );
         branches.set(pr.baseRef, sha);
         pr.state = "closed";
+        pr.mergedAt = new Date().toISOString();
         return json(res, 200, { sha, merged: true });
       }
     }

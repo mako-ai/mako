@@ -413,6 +413,76 @@ export async function postCommitStatus(
   });
 }
 
+export interface CompareRefsResult {
+  /** How `head` relates to `base`: "identical" | "ahead" | "behind" | "diverged". */
+  status: string;
+  /** Commits on `head` that are not on `base` (by SHA). */
+  aheadBy: number;
+  /** Commits on `base` that are not on `head` (by SHA). */
+  behindBy: number;
+  /** The `aheadBy` commits, oldest first (first page, up to 100). */
+  commits: Array<{ sha: string; message: string; date?: string }>;
+  /** Files that differ between the merge base and `head` (up to 300). */
+  files: Array<{
+    filename: string;
+    status: string;
+    additions: number;
+    deletions: number;
+  }>;
+}
+
+/**
+ * Compare two refs (branches, tags, or SHAs) via GitHub's compare API —
+ * `base...head` (three-dot: head vs the merge base, like a PR diff).
+ * `aheadBy === 0` means every commit on head is already on base. Note that a
+ * SQUASH-merged branch still shows ahead (its original SHAs never land on
+ * base) — cross-check merged PRs for the head branch in that case.
+ */
+export async function compareRefs(
+  owner: string,
+  repo: string,
+  base: string,
+  head: string,
+  token?: string,
+): Promise<CompareRefsResult> {
+  const basehead = `${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
+  const res = await ghFetch(
+    `/repos/${owner}/${repo}/compare/${basehead}?per_page=100`,
+    token,
+  );
+  const json = (await res.json()) as {
+    status: string;
+    ahead_by: number;
+    behind_by: number;
+    commits: Array<{
+      sha: string;
+      commit: { message: string; committer?: { date?: string } | null };
+    }>;
+    files?: Array<{
+      filename: string;
+      status: string;
+      additions: number;
+      deletions: number;
+    }>;
+  };
+  return {
+    status: json.status,
+    aheadBy: json.ahead_by,
+    behindBy: json.behind_by,
+    commits: json.commits.map(c => ({
+      sha: c.sha,
+      message: c.commit.message,
+      date: c.commit.committer?.date,
+    })),
+    files: (json.files ?? []).map(f => ({
+      filename: f.filename,
+      status: f.status,
+      additions: f.additions,
+      deletions: f.deletions,
+    })),
+  };
+}
+
 /** Filenames changed by a pull request (paginated). */
 export async function getPullRequestFiles(
   owner: string,
@@ -466,6 +536,8 @@ export interface PullRequestSummary {
   /** "open" or "closed" (merged PRs are "closed" with `merged: true`). */
   state: string;
   merged: boolean;
+  /** ISO timestamp of the merge, when merged. */
+  mergedAt?: string;
   draft: boolean;
   headRef: string;
   baseRef: string;
@@ -497,6 +569,7 @@ function toPullRequestSummary(json: RawPullRequest): PullRequestSummary {
     title: json.title,
     state: json.state,
     merged: json.merged_at !== null,
+    mergedAt: json.merged_at ?? undefined,
     draft: json.draft ?? false,
     headRef: json.head.ref,
     baseRef: json.base.ref,
@@ -508,17 +581,23 @@ function toPullRequestSummary(json: RawPullRequest): PullRequestSummary {
   };
 }
 
-/** Pull requests of a repo, newest first (paginated up to ~1000). */
+/**
+ * Pull requests of a repo, newest first (paginated up to ~1000). Pass `head`
+ * as `"owner:branch"` to only return PRs whose head is that branch.
+ */
 export async function listPullRequests(
   owner: string,
   repo: string,
-  params: { state: "open" | "closed" | "all" },
+  params: { state: "open" | "closed" | "all"; head?: string },
   token?: string,
 ): Promise<PullRequestSummary[]> {
+  const headFilter = params.head
+    ? `&head=${encodeURIComponent(params.head)}`
+    : "";
   const prs: PullRequestSummary[] = [];
   for (let page = 1; page <= 10; page++) {
     const res = await ghFetch(
-      `/repos/${owner}/${repo}/pulls?state=${params.state}&sort=created&direction=desc&per_page=100&page=${page}`,
+      `/repos/${owner}/${repo}/pulls?state=${params.state}${headFilter}&sort=created&direction=desc&per_page=100&page=${page}`,
       token,
     );
     const json = (await res.json()) as RawPullRequest[];

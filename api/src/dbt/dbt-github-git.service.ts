@@ -27,6 +27,7 @@ import { resolveRepoToken } from "../integrations/github/app-auth";
 import { gitBlobSha } from "../integrations/github/git-blob";
 import {
   commitChanges,
+  compareRefs,
   createBranch,
   createPullRequest,
   deleteBranch,
@@ -39,6 +40,7 @@ import {
   mergePullRequest,
   tryDeleteBranch,
   updatePullRequest,
+  type CompareRefsResult,
   type MergeMethod,
   type PullRequestSummary,
   type TreeChange,
@@ -845,6 +847,76 @@ export async function listProjectPullRequests(
     { state: params.state ?? "open" },
     token,
   );
+}
+
+export interface BranchComparison extends CompareRefsResult {
+  base: string;
+  head: string;
+  /** PRs (any state) whose head is the compared branch. */
+  pullRequests: PullRequestSummary[];
+  /**
+   * True when head's content is already in base: either every head commit is
+   * on base (`aheadBy === 0`), or a PR from head into base was merged after
+   * head's last commit (squash/rebase merges keep aheadBy > 0 even though the
+   * content landed).
+   */
+  fullyMergedIntoBase: boolean;
+}
+
+/**
+ * Compare a branch (or any ref) against a base ref — GitHub's
+ * `base...head` three-dot compare (head vs the merge base, like a PR diff) —
+ * plus the PRs opened from that branch. Purely a GitHub read — no git lock.
+ * `base` defaults to the repo's default branch.
+ */
+export async function compareProjectRefs(
+  project: IDbtProject,
+  params: { head: string; base?: string },
+): Promise<BranchComparison> {
+  if (!project.repo) {
+    throw new Error("Project is not connected to a repository");
+  }
+  const token = await resolveRepoToken(project.repo.installationId);
+  const { owner, repo } = project.repo;
+
+  let base = params.base;
+  if (!base) {
+    const info = await getRepoInfo(owner, repo, token);
+    base = info.defaultBranch;
+  }
+
+  const [compare, pullRequests] = await Promise.all([
+    compareRefs(owner, repo, base, params.head, token),
+    listPullRequests(
+      owner,
+      repo,
+      { state: "all", head: `${owner}:${params.head}` },
+      token,
+    ),
+  ]);
+
+  // Squash/rebase merges never put head's SHAs on base, so aheadBy stays > 0.
+  // A PR into base merged AFTER head's last commit proves the content landed.
+  const lastCommitAt = compare.commits.reduce<string | undefined>(
+    (latest, c) => (c.date && (!latest || c.date > latest) ? c.date : latest),
+    undefined,
+  );
+  const mergedViaPr = pullRequests.some(
+    pr =>
+      pr.merged &&
+      pr.baseRef === base &&
+      lastCommitAt !== undefined &&
+      pr.mergedAt !== undefined &&
+      pr.mergedAt >= lastCommitAt,
+  );
+
+  return {
+    ...compare,
+    base,
+    head: params.head,
+    pullRequests,
+    fullyMergedIntoBase: compare.aheadBy === 0 || mergedViaPr,
+  };
 }
 
 /**
