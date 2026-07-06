@@ -1,12 +1,12 @@
 /**
- * Dashboard version context
+ * Entity version context
  *
  * Best-effort extraction of the chat prompts that drove changes to a given
- * dashboard. There is no persisted FK from a chat to a dashboard, so we scan
- * the user's recent chats for tool calls that reference the dashboard id and
- * collect the user prompts that immediately preceded those edits. This covers
- * AI-driven dashboard changes; purely manual edits simply yield no prompts and
- * the comment generator falls back to the diff alone.
+ * entity (dashboard, app, ...). There is no persisted FK from a chat to an
+ * entity, so we scan the user's recent chats for tool calls that reference the
+ * entity id and collect the user prompts that immediately preceded those
+ * edits. This covers AI-driven changes; purely manual edits simply yield no
+ * prompts and the comment generator falls back to the diff alone.
  */
 
 import { Types } from "mongoose";
@@ -63,13 +63,16 @@ function extractToolInputs(msg: any): Array<Record<string, unknown>> {
   return inputs;
 }
 
-function messageTouchesDashboard(msg: any, dashboardId: string): boolean {
+function messageTouchesEntity(
+  msg: any,
+  entityId: string,
+  idFields: string[],
+): boolean {
   for (const input of extractToolInputs(msg)) {
-    if (
-      typeof input.dashboardId === "string" &&
-      input.dashboardId === dashboardId
-    ) {
-      return true;
+    for (const field of idFields) {
+      if (typeof input[field] === "string" && input[field] === entityId) {
+        return true;
+      }
     }
   }
   return false;
@@ -77,13 +80,16 @@ function messageTouchesDashboard(msg: any, dashboardId: string): boolean {
 
 /**
  * Returns the most recent user prompts (oldest → newest) that triggered AI
- * edits to the given dashboard, across the user's recent chats. Best effort:
- * returns an empty array on any error or when no chat touched the dashboard.
+ * edits to the given entity, across the user's recent chats. Tool calls are
+ * matched by the given id input fields (e.g. `["dashboardId"]`, `["appId"]`).
+ * Best effort: returns an empty array on any error or when no chat touched
+ * the entity.
  */
-export async function getDashboardChatPrompts(
+export async function getEntityChatPrompts(
   workspaceId: string,
   userId: string,
-  dashboardId: string,
+  entityId: string,
+  idFields: string[],
 ): Promise<string[]> {
   if (!Types.ObjectId.isValid(workspaceId)) return [];
 
@@ -113,7 +119,7 @@ export async function getDashboardChatPrompts(
           if (text) lastUserPrompt = text;
         } else if (
           msg?.role === "assistant" &&
-          messageTouchesDashboard(msg, dashboardId) &&
+          messageTouchesEntity(msg, entityId, idFields) &&
           lastUserPrompt
         ) {
           if (!prompts.includes(lastUserPrompt)) {
@@ -125,9 +131,9 @@ export async function getDashboardChatPrompts(
 
     return prompts.slice(-MAX_PROMPTS);
   } catch (err) {
-    logger.warn("Failed to gather dashboard chat prompts", {
+    logger.warn("Failed to gather entity chat prompts", {
       error: String(err),
-      dashboardId,
+      entityId,
     });
     return [];
   }

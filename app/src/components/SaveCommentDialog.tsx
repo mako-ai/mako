@@ -19,6 +19,12 @@ interface SaveCommentDialogProps {
   onSave: (comment: string) => void;
   onCancel: () => void;
   title?: string;
+  /** Optional explanatory text shown above the comment field. */
+  description?: string;
+  /** Label for the confirm button (defaults to "Save version"). */
+  confirmLabel?: string;
+  /** Disables actions while the save/publish itself is running. */
+  busy?: boolean;
   defaultComment?: string;
   loading?: boolean;
   diff?: string | null;
@@ -29,6 +35,9 @@ export function SaveCommentDialog({
   onSave,
   onCancel,
   title = "Save version",
+  description,
+  confirmLabel = "Save version",
+  busy,
   defaultComment,
   loading,
   diff,
@@ -68,9 +77,19 @@ export function SaveCommentDialog({
   );
 
   return (
-    <Dialog open={open} onClose={onCancel} maxWidth="sm" fullWidth>
+    <Dialog
+      open={open}
+      onClose={busy ? undefined : onCancel}
+      maxWidth="sm"
+      fullWidth
+    >
       <DialogTitle>{title}</DialogTitle>
       <DialogContent>
+        {description && (
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            {description}
+          </Typography>
+        )}
         <TextField
           autoFocus
           fullWidth
@@ -178,11 +197,16 @@ export function SaveCommentDialog({
         )}
       </DialogContent>
       <DialogActions>
-        <Button onClick={onCancel} size="small">
+        <Button onClick={onCancel} size="small" disabled={busy}>
           Cancel
         </Button>
-        <Button onClick={handleSave} variant="contained" size="small">
-          Save version
+        <Button
+          onClick={handleSave}
+          variant="contained"
+          size="small"
+          disabled={busy}
+        >
+          {confirmLabel}
         </Button>
       </DialogActions>
     </Dialog>

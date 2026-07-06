@@ -47,6 +47,8 @@ import {
 } from "../store/explorerRevealStore";
 import { useAppStore, type AppListItem } from "../store/appStore";
 import { useVersionStore } from "../store/versionStore";
+import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
+import { SaveCommentDialog } from "./SaveCommentDialog";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
 import {
   APP_FILE_SEP as FILE_SEP,
@@ -197,6 +199,7 @@ export function AppsExplorer() {
   const removeDataBinding = useAppStore(s => s.removeDataBinding);
   const materializeBinding = useAppStore(s => s.materializeBinding);
   const persistApp = useAppStore(s => s.persistApp);
+  const generateSaveComment = useAppStore(s => s.generateSaveComment);
   const setAppAccess = useAppStore(s => s.setAppAccess);
   const bumpPreview = useAppStore(s => s.bumpPreview);
   const saveVersion = useVersionStore(s => s.saveVersion);
@@ -240,8 +243,8 @@ export function AppsExplorer() {
     id: string;
     name: string;
   } | null>(null);
-  const [saveVersionComment, setSaveVersionComment] = useState("");
   const [savingVersion, setSavingVersion] = useState(false);
+  const saveVersionSuggestion = useSaveCommentSuggestion();
 
   useEffect(() => {
     if (workspaceId) void fetchList(workspaceId);
@@ -450,6 +453,57 @@ export function AppsExplorer() {
     [],
   );
 
+  const openSaveVersionDialog = useCallback(
+    (appId: string, name: string) => {
+      setSaveVersionApp({ id: appId, name });
+      if (!workspaceId) return;
+      saveVersionSuggestion.begin(async signal => {
+        // Flush any pending local edits so the server-side diff matches
+        // what's on screen.
+        if (openApps[appId]) {
+          await persistApp(workspaceId, appId);
+        }
+        if (signal.aborted) return { comment: null, diff: null };
+        return generateSaveComment(workspaceId, appId, signal);
+      });
+    },
+    [
+      workspaceId,
+      openApps,
+      persistApp,
+      generateSaveComment,
+      saveVersionSuggestion,
+    ],
+  );
+
+  const closeSaveVersionDialog = useCallback(() => {
+    saveVersionSuggestion.cancel();
+    setSaveVersionApp(null);
+  }, [saveVersionSuggestion]);
+
+  const handleSaveVersionConfirm = useCallback(
+    async (comment: string) => {
+      if (!saveVersionApp || !workspaceId) return;
+      setSavingVersion(true);
+      // Flush any pending local edits so the checkpoint matches what's on screen.
+      if (openApps[saveVersionApp.id]) {
+        await persistApp(workspaceId, saveVersionApp.id);
+      }
+      await saveVersion(workspaceId, "app", saveVersionApp.id, comment.trim());
+      setSavingVersion(false);
+      saveVersionSuggestion.cancel();
+      setSaveVersionApp(null);
+    },
+    [
+      saveVersionApp,
+      workspaceId,
+      openApps,
+      persistApp,
+      saveVersion,
+      saveVersionSuggestion,
+    ],
+  );
+
   const getContextMenuItems = useCallback(
     (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
       const parsed = parseNodeId(node.id);
@@ -525,8 +579,7 @@ export function AppsExplorer() {
             <MenuItem
               key="save-version"
               onClick={() => {
-                setSaveVersionApp({ id: parsed.appId, name: node.name });
-                setSaveVersionComment("");
+                openSaveVersionDialog(parsed.appId, node.name);
                 helpers.closeMenu();
               }}
             >
@@ -595,7 +648,14 @@ export function AppsExplorer() {
       );
       return items;
     },
-    [workspaceId, openApps, materializeBinding, canManageNode, setAppAccess],
+    [
+      workspaceId,
+      openApps,
+      materializeBinding,
+      canManageNode,
+      setAppAccess,
+      openSaveVersionDialog,
+    ],
   );
 
   const handleRenameConfirm = useCallback(async () => {
@@ -642,30 +702,6 @@ export function AppsExplorer() {
     deleteFile,
     removeDataBinding,
     persistApp,
-  ]);
-
-  const handleSaveVersionConfirm = useCallback(async () => {
-    if (!saveVersionApp || !workspaceId) return;
-    setSavingVersion(true);
-    // Flush any pending local edits so the checkpoint matches what's on screen.
-    if (openApps[saveVersionApp.id]) {
-      await persistApp(workspaceId, saveVersionApp.id);
-    }
-    await saveVersion(
-      workspaceId,
-      "app",
-      saveVersionApp.id,
-      saveVersionComment.trim(),
-    );
-    setSavingVersion(false);
-    setSaveVersionApp(null);
-  }, [
-    saveVersionApp,
-    workspaceId,
-    openApps,
-    persistApp,
-    saveVersion,
-    saveVersionComment,
   ]);
 
   const actions = (
@@ -793,47 +829,18 @@ export function AppsExplorer() {
       </Dialog>
 
       {/* Save version dialog */}
-      <Dialog
+      <SaveCommentDialog
         open={!!saveVersionApp}
-        onClose={() => !savingVersion && setSaveVersionApp(null)}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle>Publish version of {saveVersionApp?.name}</DialogTitle>
-        <DialogContent>
-          <DialogContentText sx={{ mb: 2 }}>
-            Snapshots the current draft into version history and publishes it as
-            the live version that shared links and viewers see.
-          </DialogContentText>
-          <TextField
-            autoFocus
-            fullWidth
-            size="small"
-            label="Comment (optional)"
-            placeholder="e.g. Add revenue chart"
-            value={saveVersionComment}
-            onChange={e => setSaveVersionComment(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter") void handleSaveVersionConfirm();
-            }}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={() => setSaveVersionApp(null)}
-            disabled={savingVersion}
-          >
-            Cancel
-          </Button>
-          <Button
-            onClick={handleSaveVersionConfirm}
-            variant="contained"
-            disabled={savingVersion}
-          >
-            {savingVersion ? "Publishing..." : "Publish version"}
-          </Button>
-        </DialogActions>
-      </Dialog>
+        title={`Publish version of ${saveVersionApp?.name ?? ""}`}
+        description="Snapshots the current draft into version history and publishes it as the live version that shared links and viewers see."
+        confirmLabel={savingVersion ? "Publishing..." : "Publish version"}
+        busy={savingVersion}
+        defaultComment={saveVersionSuggestion.comment}
+        loading={saveVersionSuggestion.loading}
+        diff={saveVersionSuggestion.diff}
+        onCancel={closeSaveVersionDialog}
+        onSave={comment => void handleSaveVersionConfirm(comment)}
+      />
 
       {/* Version history drawer */}
       {historyApp && (

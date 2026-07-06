@@ -36,7 +36,7 @@ import {
   getUserDisplayName,
 } from "../services/entity-version.service";
 import { generateDashboardVersionComment } from "../services/version-comment.service";
-import { getDashboardChatPrompts } from "../services/dashboard-version-context.service";
+import { getEntityChatPrompts } from "../services/entity-version-context.service";
 import {
   registerCollaboratorRoutes,
   registerSharingSettingsRoutes,
@@ -1480,10 +1480,11 @@ app.openapi(
         (latestVersion?.snapshot as Record<string, unknown> | undefined) ??
         null;
 
-      const chatPrompts = await getDashboardChatPrompts(
+      const chatPrompts = await getEntityChatPrompts(
         workspaceId,
         userId,
         dashboardId,
+        ["dashboardId"],
       );
 
       const result = await generateDashboardVersionComment(

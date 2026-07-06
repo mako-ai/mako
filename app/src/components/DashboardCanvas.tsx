@@ -1,10 +1,4 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Box,
   Typography,
@@ -64,6 +58,7 @@ import ShareDialog from "./ShareDialog";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import WidgetInspector from "./dashboard/WidgetInspector";
 import { SaveCommentDialog } from "./SaveCommentDialog";
+import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
 
 type ViewMode = "canvas" | "code";
@@ -149,45 +144,27 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     useState<DashboardWidget | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [commentDialogOpen, setCommentDialogOpen] = useState(false);
-  const [suggestedComment, setSuggestedComment] = useState<string | undefined>(
-    undefined,
-  );
-  const [suggestedCommentLoading, setSuggestedCommentLoading] = useState(false);
-  const [saveCommentDiff, setSaveCommentDiff] = useState<string | null>(null);
-  const saveCommentAbortRef = useRef<AbortController | null>(null);
+  const saveSuggestion = useSaveCommentSuggestion();
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
 
   const openSaveDialog = useCallback(() => {
-    setSuggestedComment(undefined);
-    setSaveCommentDiff(null);
-    setSuggestedCommentLoading(false);
     setCommentDialogOpen(true);
 
     // Only existing (persisted) dashboards can be diffed against a saved
     // version for an AI suggestion.
-    if (!workspaceId || !dashboardId || isNew) return;
-
-    saveCommentAbortRef.current?.abort();
-    const controller = new AbortController();
-    saveCommentAbortRef.current = controller;
-    setSuggestedCommentLoading(true);
-    void generateSaveCommentAction(
-      workspaceId,
-      dashboardId,
-      controller.signal,
-    ).then(result => {
-      if (controller.signal.aborted) return;
-      setSuggestedComment(result.comment ?? undefined);
-      setSaveCommentDiff(result.diff);
-      setSuggestedCommentLoading(false);
-    });
-  }, [workspaceId, dashboardId, isNew]);
+    if (!workspaceId || !dashboardId || isNew) {
+      saveSuggestion.begin();
+      return;
+    }
+    saveSuggestion.begin(signal =>
+      generateSaveCommentAction(workspaceId, dashboardId, signal),
+    );
+  }, [workspaceId, dashboardId, isNew, saveSuggestion]);
 
   const closeSaveDialog = useCallback(() => {
-    saveCommentAbortRef.current?.abort();
-    setSuggestedCommentLoading(false);
+    saveSuggestion.cancel();
     setCommentDialogOpen(false);
-  }, []);
+  }, [saveSuggestion]);
 
   const queryGeneration = runtimeSession?.queryGeneration ?? 0;
 
@@ -705,12 +682,12 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       <SaveCommentDialog
         open={commentDialogOpen}
         title="Save dashboard version"
-        defaultComment={suggestedComment}
-        loading={suggestedCommentLoading}
-        diff={saveCommentDiff}
+        defaultComment={saveSuggestion.comment}
+        loading={saveSuggestion.loading}
+        diff={saveSuggestion.diff}
         onCancel={closeSaveDialog}
         onSave={async comment => {
-          saveCommentAbortRef.current?.abort();
+          saveSuggestion.cancel();
           setCommentDialogOpen(false);
           if (!workspaceId || !dashboardId) return;
           try {
