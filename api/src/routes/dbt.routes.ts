@@ -229,9 +229,10 @@ const environmentSchema = z.object({
   threads: z.number().int().min(1).max(16).default(4),
   vars: z.record(z.string(), z.unknown()).optional(),
   /**
-   * Personal environment owner (auto-provisioned per-developer target).
-   * Round-tripped by settings saves so admin edits never strip ownership;
-   * provisioning happens via POST .../environments/personal, not here.
+   * Personal environment owner (per-developer target). Auto-provisioned via
+   * POST .../environments/personal, and editable from environment settings
+   * (claim/release). Round-tripped by settings saves so admin edits never
+   * strip ownership.
    */
   ownerUserId: z.string().optional(),
 });
@@ -308,6 +309,40 @@ const patchProjectSchema = z.object({
    */
   repoBranch: z.string().min(1).max(255).optional(),
 });
+
+/**
+ * Personal environments are per-user build targets: at most one per user, and
+ * never the shared default or the production (defer target) environment —
+ * both are resolved for OTHER users too, so pointing them at a private
+ * schema would leak one developer's scratch data into everyone's builds.
+ */
+function validatePersonalEnvironments(
+  environments: Array<{ name: string; ownerUserId?: string }>,
+  defaultEnvironment: string | undefined,
+  prodEnvironment: string | undefined,
+): string | null {
+  const ownedNames = new Map<string, string>();
+  for (const env of environments) {
+    if (!env.ownerUserId) continue;
+    const prior = ownedNames.get(env.ownerUserId);
+    if (prior) {
+      return (
+        `"${prior}" and "${env.name}" are personal environments of the ` +
+        `same user — each user can own only one per project`
+      );
+    }
+    ownedNames.set(env.ownerUserId, env.name);
+  }
+  const isPersonal = (name: string | undefined) =>
+    Boolean(name) && environments.some(e => e.name === name && e.ownerUserId);
+  if (isPersonal(defaultEnvironment)) {
+    return `Default environment "${defaultEnvironment}" cannot be a personal environment`;
+  }
+  if (isPersonal(prodEnvironment)) {
+    return `Production environment "${prodEnvironment}" cannot be a personal environment`;
+  }
+  return null;
+}
 
 async function validateEnvironments(
   workspaceId: string,
@@ -399,6 +434,12 @@ dbtRoutes.post("/projects", async (c: AuthenticatedContext) => {
     }
     const envError = await validateEnvironments(workspaceId, body.environments);
     if (envError) return badRequest(c, envError);
+    const personalError = validatePersonalEnvironments(
+      body.environments,
+      body.defaultEnvironment,
+      undefined,
+    );
+    if (personalError) return badRequest(c, personalError);
 
     const userId = getUserId(c);
     const project = await DbtProject.create({
@@ -516,6 +557,14 @@ dbtRoutes.patch("/projects/:projectId", async (c: AuthenticatedContext) => {
         }
         project.prodEnvironment = body.prodEnvironment;
       }
+    }
+    {
+      const personalError = validatePersonalEnvironments(
+        project.environments,
+        project.defaultEnvironment,
+        project.prodEnvironment,
+      );
+      if (personalError) return badRequest(c, personalError);
     }
     if (body.ci) {
       if (
@@ -932,6 +981,12 @@ dbtRoutes.post("/projects/import-github", async (c: AuthenticatedContext) => {
     }
     const envError = await validateEnvironments(workspaceId, body.environments);
     if (envError) return badRequest(c, envError);
+    const personalError = validatePersonalEnvironments(
+      body.environments,
+      body.defaultEnvironment,
+      undefined,
+    );
+    if (personalError) return badRequest(c, personalError);
 
     // SECURITY: never mint an installation token for an installation that is
     // not bound to THIS workspace — otherwise an admin could read any private
