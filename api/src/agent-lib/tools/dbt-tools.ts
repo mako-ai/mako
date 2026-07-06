@@ -2015,6 +2015,22 @@ export const createDbtServerTools = (
           });
           const MAX_COMMITS = 20;
           const MAX_FILES = 100;
+          // Spell the verdict out — "aheadBy > 0 but fully merged" (squash
+          // merge) is easy to misread as unmerged work.
+          const mergedPr = result.pullRequests.find(
+            pr => pr.merged && pr.baseRef === result.base,
+          );
+          const hint = result.fullyMergedIntoBase
+            ? result.aheadBy === 0
+              ? `Every commit on "${result.head}" is already on ` +
+                `"${result.base}" — the branch is safe to delete.`
+              : `aheadBy is ${result.aheadBy} only because the branch was ` +
+                `squash/rebase-merged${mergedPr ? ` (PR #${mergedPr.number}` : " (PR"} ` +
+                `merged after its last commit), so its original SHAs never ` +
+                `landed on "${result.base}". Its CONTENT is already in ` +
+                `"${result.base}" — the branch is safe to delete.`
+            : `"${result.head}" carries commits whose content is NOT in ` +
+              `"${result.base}" — deleting it would lose that work.`;
           return {
             success: true,
             base: result.base,
@@ -2023,6 +2039,7 @@ export const createDbtServerTools = (
             aheadBy: result.aheadBy,
             behindBy: result.behindBy,
             fullyMergedIntoBase: result.fullyMergedIntoBase,
+            hint,
             // Newest commits are the most informative — keep the tail.
             commits: result.commits.slice(-MAX_COMMITS).map(c => ({
               sha: c.sha.slice(0, 7),
