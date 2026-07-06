@@ -73,7 +73,15 @@ export async function up(db: Db): Promise<void> {
   }
 
   // --- 2: re-key the unique index ---
-  const indexes = await drafts.indexes();
+  // On a fresh database the collection may not exist yet (indexes() throws
+  // "ns does not exist"); createIndex below creates it implicitly.
+  const collectionExists =
+    (
+      await db
+        .listCollections({ name: "dbt_file_drafts" }, { nameOnly: true })
+        .toArray()
+    ).length > 0;
+  const indexes = collectionExists ? await drafts.indexes() : [];
   const oldUnique = indexes.find(
     idx =>
       JSON.stringify(idx.key) ===
