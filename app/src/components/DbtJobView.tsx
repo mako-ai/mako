@@ -34,6 +34,10 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useDbtStore, type DbtJobItem } from "../store/dbtStore";
 import { useIsMobile } from "../hooks/useIsMobile";
 import DbtRunHistory from "./DbtRunHistory";
+import EntityLoadErrorState, {
+  EntityLoadingState,
+} from "./EntityLoadErrorState";
+import { missingEntityError } from "../lib/entity-labels";
 
 // Fast cadence while a run is active; slower idle cadence so scheduled runs
 // that fire (and progress updates) surface without a manual refresh.
@@ -83,6 +87,7 @@ export default function DbtJobView({
 
   const project = useDbtStore(s => s.projects.find(p => p._id === projectId));
   const jobs = useDbtStore(s => s.jobsByProject[projectId]);
+  const jobsLoadError = useDbtStore(s => s.loadErrors[`jobs:${projectId}`]);
   const runs = useDbtStore(s => s.runsByJob[jobId]);
   const fetchProjects = useDbtStore(s => s.fetchProjects);
   const fetchJobs = useDbtStore(s => s.fetchJobs);
@@ -281,11 +286,27 @@ export default function DbtJobView({
   ]);
 
   if (!job) {
-    return (
-      <Box sx={{ p: 3, color: "text.secondary" }}>
-        <Typography variant="body2">Loading job…</Typography>
-      </Box>
-    );
+    if (jobsLoadError) {
+      return (
+        <EntityLoadErrorState
+          error={jobsLoadError}
+          entityLabel="job"
+          onRetry={() => {
+            if (workspaceId) void fetchJobs(workspaceId, projectId);
+          }}
+        />
+      );
+    }
+    // The jobs list for this project loaded but this job isn't in it.
+    if (jobs !== undefined) {
+      return (
+        <EntityLoadErrorState
+          error={missingEntityError("job")}
+          entityLabel="job"
+        />
+      );
+    }
+    return <EntityLoadingState label="Loading job…" />;
   }
 
   const commandSummary = job.commands

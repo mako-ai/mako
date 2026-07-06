@@ -46,6 +46,10 @@ import {
 } from "../store/dbtStore";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
 import { resolveDevEnvName, resolveProdLikeEnvName } from "../lib/dbt-env";
+import EntityLoadErrorState, {
+  EntityLoadingState,
+} from "./EntityLoadErrorState";
+import { missingEntityError } from "../lib/entity-labels";
 
 const DbtLineageView = lazy(() => import("./DbtLineageView"));
 
@@ -125,6 +129,8 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
   const workspaceId = currentWorkspace?.id;
 
   const project = useDbtStore(s => s.projects.find(p => p._id === projectId));
+  const projectsLoaded = useDbtStore(s => s.projectsLoaded);
+  const projectsLoadError = useDbtStore(s => s.loadErrors.projects);
   const fetchProjects = useDbtStore(s => s.fetchProjects);
   const compileModel = useDbtStore(s => s.compileModel);
   const runCommand = useDbtStore(s => s.runCommand);
@@ -215,11 +221,27 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
   );
 
   if (!project) {
-    return (
-      <Box sx={{ p: 3, color: "text.secondary" }}>
-        <Typography variant="body2">Loading project…</Typography>
-      </Box>
-    );
+    if (projectsLoadError) {
+      return (
+        <EntityLoadErrorState
+          error={projectsLoadError}
+          entityLabel="project"
+          onRetry={() => {
+            if (workspaceId) void fetchProjects(workspaceId);
+          }}
+        />
+      );
+    }
+    // The workspace's project list loaded but this project isn't in it.
+    if (projectsLoaded) {
+      return (
+        <EntityLoadErrorState
+          error={missingEntityError("project")}
+          entityLabel="project"
+        />
+      );
+    }
+    return <EntityLoadingState label="Loading project…" />;
   }
 
   return (

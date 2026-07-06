@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
-import { api, unwrap, unwrapBody } from "../api";
+import { api, toLoadError, unwrap, unwrapBody, type LoadError } from "../api";
 import {
   DashboardDefinitionSchema,
   normalizeWidgetLayouts,
@@ -139,6 +139,12 @@ interface DashboardStoreState {
   error: Record<string, string | null>;
 
   openDashboards: Record<string, Dashboard>;
+  /**
+   * Per-dashboard load failure (404 / 403 / transport) from `reloadDashboard`.
+   * Views use this to render "not found" / "no access" instead of loading
+   * forever.
+   */
+  openDashboardErrors: Record<string, LoadError>;
   editingDashboards: Record<string, boolean>;
   activeDashboardId: string | null;
   historyMap: Record<string, HistoryEntry>;
@@ -294,6 +300,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
       loading: {},
       error: {},
       openDashboards: {},
+      openDashboardErrors: {},
       editingDashboards: {},
       activeDashboardId: null,
       historyMap: {},
@@ -507,14 +514,23 @@ export const useDashboardStore = create<DashboardStoreState>()(
             }
             set(state => {
               state.openDashboards[dashboardId] = dashboard;
+              delete state.openDashboardErrors[dashboardId];
               state.activeDashboardId = dashboardId;
               state.historyMap[dashboardId] = { stack: [], index: -1 };
               state.savedStateHashes[dashboardId] =
                 computeDashboardStateHash(dashboard);
             });
           }
-        } catch {
-          // silent
+        } catch (e) {
+          // An aborted request is not a load failure — the caller navigated
+          // away; don't paint the tab with an error.
+          if (e instanceof DOMException && e.name === "AbortError") return;
+          set(state => {
+            state.openDashboardErrors[dashboardId] = toLoadError(
+              e,
+              "Failed to load dashboard",
+            );
+          });
         }
       },
 
@@ -529,6 +545,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
         set(state => {
           delete state.editingDashboards[dashboardId];
           delete state.openDashboards[dashboardId];
+          delete state.openDashboardErrors[dashboardId];
           delete state.historyMap[dashboardId];
           delete state.savedStateHashes[dashboardId];
           if (state.activeDashboardId === dashboardId) {

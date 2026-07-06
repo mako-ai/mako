@@ -18,6 +18,10 @@ import { previewParquetArtifact } from "../lib/parquet-preview";
 import Console from "./Console";
 import ResultsTable from "./ResultsTable";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
+import EntityLoadErrorState, {
+  EntityLoadingState,
+} from "./EntityLoadErrorState";
+import { missingEntityError } from "../lib/entity-labels";
 import DataSourceMaterializationControls, {
   type MaterializationHistoryItem,
 } from "./DataSourceMaterializationControls";
@@ -56,6 +60,9 @@ export default function DashboardDataSourceEditor({
   const workspaceId = currentWorkspace?.id;
 
   const dashboard = useDashboardStore(s => s.openDashboards[dashboardId]);
+  const dashboardLoadError = useDashboardStore(
+    s => s.openDashboardErrors[dashboardId],
+  );
   const openDashboard = useDashboardStore(s => s.openDashboard);
   const updateDataSource = useDashboardStore(s => s.updateDataSource);
   const saveDashboard = useDashboardStore(s => s.saveDashboard);
@@ -249,19 +256,26 @@ export default function DashboardDataSourceEditor({
   }, [workspaceId, dashboardId, dataSourceId, fetchMaterializationRuns]);
 
   if (!dashboard) {
-    return (
-      <Box sx={{ p: 3, color: "text.secondary" }}>
-        <Typography variant="body2">Loading…</Typography>
-      </Box>
-    );
+    if (dashboardLoadError) {
+      return (
+        <EntityLoadErrorState
+          error={dashboardLoadError}
+          entityLabel="dashboard"
+          onRetry={() => {
+            if (workspaceId) void openDashboard(workspaceId, dashboardId);
+          }}
+        />
+      );
+    }
+    return <EntityLoadingState label="Loading data source…" />;
   }
   if (!dataSource) {
     return (
-      <Box sx={{ p: 3, color: "text.secondary" }}>
-        <Typography variant="body2">
-          This data source no longer exists.
-        </Typography>
-      </Box>
+      <EntityLoadErrorState
+        error={missingEntityError("data source")}
+        entityLabel="data source"
+        detail="This data source no longer exists in this dashboard."
+      />
     );
   }
 

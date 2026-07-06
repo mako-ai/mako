@@ -23,6 +23,9 @@ import {
 import { containsDbtSchemaToken } from "@mako/schemas";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
+import EntityLoadErrorState, {
+  EntityLoadingState,
+} from "./EntityLoadErrorState";
 import { useTheme } from "../contexts/ThemeContext";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import { useAppStore } from "../store/appStore";
@@ -77,6 +80,7 @@ export default function AppRenderer({
   effectiveModeRef.current = effectiveMode;
 
   const appEntity = useAppStore(s => s.openApps[appId]);
+  const appLoadError = useAppStore(s => s.openAppErrors[appId]);
   const previewNonce = useAppStore(s => s.previewNonce[appId] ?? 0);
   const previewErrors = useAppStore(s => s.previewErrors[appId]);
   const fetchApp = useAppStore(s => s.fetchApp);
@@ -483,11 +487,18 @@ export default function AppRenderer({
   }, [srcDoc, previewNonce]);
 
   if (!appEntity) {
-    return (
-      <Box sx={{ p: 3, color: "text.secondary" }}>
-        <Typography variant="body2">Loading app…</Typography>
-      </Box>
-    );
+    if (appLoadError) {
+      return (
+        <EntityLoadErrorState
+          error={appLoadError}
+          entityLabel="app"
+          onRetry={() => {
+            if (workspaceId) void fetchApp(workspaceId, appId);
+          }}
+        />
+      );
+    }
+    return <EntityLoadingState label="Loading app…" />;
   }
 
   const errors = previewErrors || [];

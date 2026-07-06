@@ -78,6 +78,9 @@ import DbtRunsView from "./DbtRunsView";
 import DashboardDataSourceEditor from "./DashboardDataSourceEditor";
 import TableDataView from "./TableDataView";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
+import EntityLoadErrorState from "./EntityLoadErrorState";
+import { tabKindEntityLabel } from "../lib/entity-labels";
+import type { LoadError } from "../api";
 import ScheduleConsoleModal from "./ScheduleConsoleModal";
 import ConsoleRemoteUpdateBanner from "./ConsoleRemoteUpdateBanner";
 import ScheduledRunsPanel from "./ScheduledRunsPanel";
@@ -2655,6 +2658,28 @@ function Editor({
                         full experience.
                       </Alert>
                     </Box>
+                  ) : tab.metadata?.loadError ? (
+                    /* Placeholder tab for an entity that failed to load (e.g.
+                       a /c/:id deep link into a workspace that doesn't have
+                       that console): explicit not-found / no-access copy
+                       instead of a silent redirect. Any tab kind may carry
+                       `metadata.loadError`; the label comes from the shared
+                       entity-label map. */
+                    <EntityLoadErrorState
+                      error={tab.metadata.loadError as LoadError}
+                      entityLabel={tabKindEntityLabel(tab.kind)}
+                      onRetry={
+                        (tab.kind ?? "console") === "console"
+                          ? () => {
+                              if (currentWorkspace?.id) {
+                                void useConsoleStore
+                                  .getState()
+                                  .loadConsole(currentWorkspace.id, tab.id);
+                              }
+                            }
+                          : undefined
+                      }
+                    />
                   ) : tab.kind === "settings" ? (
                     <Settings section={tab.settingsSection} />
                   ) : tab.kind === "members" ? (

@@ -15,6 +15,10 @@ import { previewParquetArtifact } from "../lib/parquet-preview";
 import Console from "./Console";
 import ResultsTable from "./ResultsTable";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
+import EntityLoadErrorState, {
+  EntityLoadingState,
+} from "./EntityLoadErrorState";
+import { missingEntityError } from "../lib/entity-labels";
 import DataSourceMaterializationControls, {
   type MaterializationHistoryItem,
 } from "./DataSourceMaterializationControls";
@@ -55,6 +59,7 @@ export default function AppBindingEditor({
   const workspaceId = currentWorkspace?.id;
 
   const appEntity = useAppStore(s => s.openApps[appId]);
+  const appLoadError = useAppStore(s => s.openAppErrors[appId]);
   const fetchApp = useAppStore(s => s.fetchApp);
   const updateBinding = useAppStore(s => s.updateBinding);
   const persistApp = useAppStore(s => s.persistApp);
@@ -193,19 +198,26 @@ export default function AppBindingEditor({
   }, [bindingCache?.parquetUrl]);
 
   if (!appEntity) {
-    return (
-      <Box sx={{ p: 3, color: "text.secondary" }}>
-        <Typography variant="body2">Loading…</Typography>
-      </Box>
-    );
+    if (appLoadError) {
+      return (
+        <EntityLoadErrorState
+          error={appLoadError}
+          entityLabel="app"
+          onRetry={() => {
+            if (workspaceId) void fetchApp(workspaceId, appId);
+          }}
+        />
+      );
+    }
+    return <EntityLoadingState label="Loading data source…" />;
   }
   if (!binding) {
     return (
-      <Box sx={{ p: 3, color: "text.secondary" }}>
-        <Typography variant="body2">
-          This data source no longer exists.
-        </Typography>
-      </Box>
+      <EntityLoadErrorState
+        error={missingEntityError("data source")}
+        entityLabel="data source"
+        detail="This data source no longer exists in this app."
+      />
     );
   }
 
