@@ -347,7 +347,6 @@ export function SyncFlowForm({
   const watchScheduleCron = watch("scheduleCron");
   const watchWebhookEnabled = watch("webhookEnabled");
   const watchEntityLayouts = watch("entityLayouts") || [];
-  const watchEntityFilter = watch("entityFilter") || [];
   const watchDeleteMode = watch("deleteMode");
   const watchBackfillScheduleEnabled = watch("backfillScheduleEnabled");
 
@@ -808,10 +807,8 @@ export function SyncFlowForm({
         }
       }
 
-      let savedFlowId = currentFlowId;
       if (isNewMode) {
         const newFlow = await createFlow(currentWorkspace.id, payload);
-        savedFlowId = newFlow._id;
         trackEvent("flow_created", {
           flow_type: flowType,
           connector_type: selectedSource?.type,
@@ -862,7 +859,6 @@ export function SyncFlowForm({
         reset(data);
         onSave?.();
       }
-      void savedFlowId;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save sync");
     } finally {
@@ -2158,8 +2154,6 @@ export function SyncFlowForm({
                         Loading entities for this connector…
                       </Alert>
                     )}
-
-                  {void watchEntityFilter}
 
                   {currentWorkspace && (
                     <FlowRunNotificationsSection
