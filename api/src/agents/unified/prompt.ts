@@ -376,6 +376,22 @@ export function buildCurrentScreenContext(context: AgentContext): string {
   sections.push("## Current Workspace State");
   sections.push("");
 
+  // Ground relative-date reasoning ("next Friday", "last quarter") — without
+  // this the model guesses a date from its training cutoff, which produces
+  // silently wrong due dates in CRM tasks, SQL date filters, etc. Date-only
+  // (no clock time) so the block stays stable within a day.
+  const now = new Date();
+  sections.push(
+    `Current date: ${now.toLocaleDateString("en-US", {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      timeZone: "UTC",
+    })} (UTC)`,
+  );
+  sections.push("");
+
   sections.push(...buildTabSummary(context));
   sections.push("");
 
