@@ -475,9 +475,12 @@ export default function AppRenderer({
   }, [appEntity?._id, previewNonce]);
 
   // Every new srcdoc boots from scratch (deps re-import, Babel re-transpiles).
+  // Keyed on the nonce (not just the srcdoc string): a manual "Rebuild
+  // preview" with unchanged code regenerates an identical string, which
+  // Object.is-equal deps would ignore.
   useEffect(() => {
     if (srcDoc) setBooting(true);
-  }, [srcDoc]);
+  }, [srcDoc, previewNonce]);
 
   if (!appEntity) {
     return (
@@ -706,6 +709,10 @@ export default function AppRenderer({
         }}
       >
         <iframe
+          // Keyed on the nonce so "Rebuild preview" always reboots: with
+          // unchanged code the regenerated srcDoc string is identical, so a
+          // srcdoc-prop update alone would be skipped by React entirely.
+          key={previewNonce}
           ref={iframeRef}
           title={`app-preview-${appId}`}
           data-mako-app-preview={appId}
