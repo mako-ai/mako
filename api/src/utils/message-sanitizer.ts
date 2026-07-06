@@ -50,6 +50,41 @@ function dropMalformedFileParts(
 }
 
 /**
+ * Coerce a persisted tool-call input into the plain object shape providers
+ * require. Anthropic rejects any replayed `tool_use` whose `input` is not a
+ * JSON object ("Input should be a valid dictionary"), which happens when:
+ *
+ * - the model emitted malformed/truncated tool-call JSON (the AI SDK keeps
+ *   the raw text on `rawInput` and leaves `input` undefined), or
+ * - a stream was interrupted mid tool-input and the client persisted the
+ *   partial raw string.
+ *
+ * `convertToModelMessages` (v6) forwards `input ?? rawInput` verbatim for
+ * `output-error` parts, so a string leaks straight through to the provider.
+ * Strings that parse to an object are recovered; everything else falls back
+ * to `{}` (the tool-result/errorText still tells the model what happened).
+ */
+function coerceToolInputToObject(input: unknown, rawInput: unknown): unknown {
+  const candidates = [input, rawInput];
+  for (const candidate of candidates) {
+    if (isRecord(candidate) && !Array.isArray(candidate)) {
+      return candidate;
+    }
+    if (typeof candidate === "string") {
+      try {
+        const parsed: unknown = JSON.parse(candidate);
+        if (isRecord(parsed) && !Array.isArray(parsed)) {
+          return parsed;
+        }
+      } catch {
+        // Malformed JSON (e.g. truncated stream) — fall through.
+      }
+    }
+  }
+  return {};
+}
+
+/**
  * Sanitize UIMessages by removing incomplete tool parts.
  *
  * When a chat stream is interrupted (user closes browser, network failure, etc.),
@@ -117,6 +152,12 @@ export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
       }
 
       const p = part as Record<string, unknown>;
+      // Providers require tool_use.input to be a JSON object on replay; a
+      // string/undefined input (invalid tool call, interrupted stream) must
+      // be repaired here or the whole continuation request 400s. `rawInput`
+      // is dropped so `convertToModelMessages` cannot fall back to the raw
+      // (possibly malformed) string for output-error parts.
+      const input = coerceToolInputToObject(p.input, p.rawInput);
       if (p.state === "error") {
         const output = p.output as Record<string, unknown> | null | undefined;
         const errorText =
@@ -134,11 +175,17 @@ export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
         return {
           ...part,
           state: "output-error",
+          input,
+          rawInput: undefined,
           output: undefined,
           errorText,
         } as typeof part;
       }
-      return part;
+      return {
+        ...part,
+        input,
+        rawInput: undefined,
+      } as typeof part;
     });
 
     const sanitizedParts = partsNormalized.filter(part => {
