@@ -412,6 +412,18 @@ export default function DbtProjectSettingsDrawer({
       setEnvModalError(error);
       return;
     }
+    if (normalized.ownerUserId) {
+      const existingEnvs = isEditing ? editEnvs : (project?.environments ?? []);
+      const owned = existingEnvs.find(
+        e => e.ownerUserId === normalized.ownerUserId,
+      );
+      if (owned) {
+        setEnvModalError(
+          `You already own the personal environment "${owned.name}" — each user can own only one per project.`,
+        );
+        return;
+      }
+    }
 
     if (isEditing) {
       setEditEnvs(prev => [...prev, normalized]);
@@ -518,6 +530,26 @@ export default function DbtProjectSettingsDrawer({
     }
     if (editProdEnv && !editEnvs.some(e => e.name.trim() === editProdEnv)) {
       return "Production environment must match one of the environment names.";
+    }
+    // Personal (owned) environments are per-user build targets: at most one
+    // per user, and never the shared default / production environment.
+    const ownedNames = new Map<string, string>();
+    for (const env of editEnvs) {
+      if (!env.ownerUserId) continue;
+      const prior = ownedNames.get(env.ownerUserId);
+      if (prior) {
+        return `"${prior}" and "${env.name.trim()}" are personal environments of the same user — each user can own only one.`;
+      }
+      ownedNames.set(env.ownerUserId, env.name.trim());
+    }
+    if (editEnvs.find(e => e.name.trim() === editDefaultEnv)?.ownerUserId) {
+      return "The default environment cannot be a personal environment.";
+    }
+    if (
+      editProdEnv &&
+      editEnvs.find(e => e.name.trim() === editProdEnv)?.ownerUserId
+    ) {
+      return "The production environment cannot be a personal environment.";
     }
     for (const env of editEnvs) {
       if (!env.connectionId) return `Connection is required for "${env.name}".`;
@@ -720,6 +752,36 @@ export default function DbtProjectSettingsDrawer({
           inputProps={{ min: 1, max: 32 }}
           sx={{ mb: 1.5 }}
         />
+        <FormControl fullWidth size="small" sx={{ mb: 1.5 }}>
+          <InputLabel id={`dbt-settings-owner-${index}`}>Ownership</InputLabel>
+          <Select
+            labelId={`dbt-settings-owner-${index}`}
+            label="Ownership"
+            value={env.ownerUserId ?? ""}
+            onChange={e =>
+              updateEditEnv(index, { ownerUserId: e.target.value || undefined })
+            }
+          >
+            <MenuItem value="">Shared — whole team</MenuItem>
+            {user?.id && (
+              <MenuItem value={user.id}>Personal — only me</MenuItem>
+            )}
+            {env.ownerUserId && env.ownerUserId !== user?.id && (
+              <MenuItem value={env.ownerUserId}>
+                Personal — another user
+              </MenuItem>
+            )}
+          </Select>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ mt: 0.5, display: "block" }}
+          >
+            Personal environments become the owner&apos;s default build target
+            and are hidden from teammates&apos; pickers. They can&apos;t be the
+            project default or the production environment.
+          </Typography>
+        </FormControl>
 
         <Typography
           variant="caption"
@@ -897,6 +959,16 @@ export default function DbtProjectSettingsDrawer({
               <ReadOnlyField
                 label="Threads"
                 value={String(selectedEnv.threads)}
+              />
+              <ReadOnlyField
+                label="Ownership"
+                value={
+                  selectedEnv.ownerUserId
+                    ? selectedEnv.ownerUserId === user?.id
+                      ? "Personal — only me"
+                      : "Personal — another user"
+                    : "Shared — whole team"
+                }
               />
               <Box sx={{ mb: 1.5 }}>
                 <Typography
@@ -1438,6 +1510,26 @@ export default function DbtProjectSettingsDrawer({
                 inputProps={{ min: 1, max: 32 }}
                 sx={{ mb: 1.5 }}
               />
+              <FormControl fullWidth size="small" sx={{ mb: 1.5 }}>
+                <InputLabel id="dbt-env-modal-owner">Ownership</InputLabel>
+                <Select
+                  labelId="dbt-env-modal-owner"
+                  label="Ownership"
+                  value={envModalDraft.ownerUserId ?? ""}
+                  onChange={e =>
+                    setEnvModalDraft(prev =>
+                      prev
+                        ? { ...prev, ownerUserId: e.target.value || undefined }
+                        : prev,
+                    )
+                  }
+                >
+                  <MenuItem value="">Shared — whole team</MenuItem>
+                  {user?.id && (
+                    <MenuItem value={user.id}>Personal — only me</MenuItem>
+                  )}
+                </Select>
+              </FormControl>
               <Typography
                 variant="caption"
                 color="text.secondary"
