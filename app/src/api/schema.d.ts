@@ -4360,13 +4360,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful response */
-            "2XX": {
+            /** @description Server feature flags */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"];
+                    "application/json": {
+                        unifiedSyncFlows: boolean;
+                    };
                 };
             };
             /** @description Invalid request */

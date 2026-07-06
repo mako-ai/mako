@@ -1184,12 +1184,20 @@
         ],
         "summary": "GET / (server feature flags)",
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "Server feature flags",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GenericJsonResponse"
+                  "type": "object",
+                  "properties": {
+                    "unifiedSyncFlows": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "unifiedSyncFlows"
+                  ]
                 }
               }
             }
