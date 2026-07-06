@@ -582,6 +582,24 @@ describe("per-user checkouts", () => {
     expect((await getGitStatus(project, "alice")).hasChanges).toBe(false);
   });
 
+  it("create branch takes the caller's dirty tree with it (git checkout -b)", async () => {
+    const project = await seedProject();
+    await writeWorkingFile(project, "alice", "models/a.sql", "select 2");
+
+    await createProjectBranch(project, "alice", "feat/b");
+    // The pending change followed alice onto the new branch...
+    expect((await getGitStatus(project, "alice")).modified).toBe(1);
+    expect(
+      (await readWorkingFile(project, "alice", "models/a.sql"))?.content,
+    ).toBe("select 2");
+    // ...and main is clean when she switches back.
+    await switchProjectBranch(project, "alice", "main", "alice");
+    expect((await getGitStatus(project, "alice")).hasChanges).toBe(false);
+    expect(
+      (await readWorkingFile(project, "alice", "models/a.sql"))?.content,
+    ).toBe("select 1");
+  });
+
   it("create branch clones the base tree locally and checks it out for the caller", async () => {
     const project = await seedProject();
     const result = await createProjectBranch(project, "alice", "feat/clone");

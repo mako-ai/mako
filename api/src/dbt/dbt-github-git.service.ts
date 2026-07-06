@@ -608,7 +608,10 @@ export async function listProjectBranches(
 /**
  * Create a new branch off the caller's checkout HEAD and check it out for
  * them (only their checkout moves — other users are unaffected). Content is
- * identical to the source branch, so the base tree is cloned locally.
+ * identical to the source branch, so the base tree is cloned locally. The
+ * caller's uncommitted drafts move to the new branch (`git checkout -b`
+ * takes the dirty tree with it — the "started on main, need a branch" flow);
+ * the bases are identical so the diff is unchanged.
  */
 export async function createProjectBranch(
   project: IDbtProject,
@@ -623,6 +626,7 @@ export async function createProjectBranch(
     const { commitSha } = await getRefCommit(owner, repo, fromBranch, token);
     await createBranch(owner, repo, branchName, commitSha, token);
     await cloneBranchBaseTree(fresh, fromBranch, branchName);
+    await moveUserDrafts(fresh, userId, fromBranch, branchName);
     await setCheckoutBranch(fresh, userId, branchName, {
       lastSyncedSha: commitSha,
     });
