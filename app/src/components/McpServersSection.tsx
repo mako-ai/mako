@@ -3,7 +3,7 @@
  * any custom Streamable-HTTP server), save credentials, test the connection,
  * curate the exposed tool list, and review per-user approval grants.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -391,9 +391,12 @@ function RestrictionControl({
 function OAuthConnectSection({
   server,
   onNotify,
+  onAlreadyAuthorized,
 }: {
   server: McpServerInfo;
   onNotify: (message: string, severity: "success" | "error") => void;
+  /** Called when no redirect is needed (valid tokens already stored). */
+  onAlreadyAuthorized?: () => void;
 }) {
   const { currentWorkspace } = useWorkspace();
   const startOAuth = useMcpStore(s => s.startOAuth);
@@ -415,6 +418,7 @@ function OAuthConnectSection({
       if (alreadyAuthorized) {
         onNotify("Account already connected", "success");
         setConnecting(false);
+        onAlreadyAuthorized?.();
         return;
       }
       // Hand the browser to the provider's consent screen; it redirects
@@ -710,11 +714,16 @@ function ServerDetail({
   server,
   preset,
   isAdmin,
+  autoDiscover,
+  onAutoDiscoverConsumed,
   onNotify,
 }: {
   server: McpServerInfo;
   preset: McpPresetInfo | undefined;
   isAdmin: boolean;
+  /** Run discovery automatically on mount (set after an OAuth return). */
+  autoDiscover?: boolean;
+  onAutoDiscoverConsumed?: () => void;
   onNotify: (message: string, severity: "success" | "error") => void;
 }) {
   const { currentWorkspace } = useWorkspace();
@@ -756,6 +765,18 @@ function ServerDetail({
       result.ok ? "success" : "error",
     );
   };
+
+  // After an OAuth return, kick off discovery without the extra click. The
+  // ref guards StrictMode double-invocation; the parent clears the flag so
+  // reopening the modal later doesn't re-trigger.
+  const autoDiscoverRan = useRef(false);
+  useEffect(() => {
+    if (!autoDiscover || autoDiscoverRan.current || !currentWorkspace) return;
+    autoDiscoverRan.current = true;
+    onAutoDiscoverConsumed?.();
+    void handleTest();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoDiscover, currentWorkspace]);
 
   const handleSetRestriction = async (
     toolName: string,
@@ -831,7 +852,11 @@ function ServerDetail({
       )}
 
       {server.authType === "oauth" ? (
-        <OAuthConnectSection server={server} onNotify={onNotify} />
+        <OAuthConnectSection
+          server={server}
+          onNotify={onNotify}
+          onAlreadyAuthorized={() => void handleTest()}
+        />
       ) : server.authType === "api_key" ? (
         <CredentialsForm
           server={server}
@@ -1211,11 +1236,20 @@ export function McpServersSection() {
   const { currentWorkspace, loading: workspaceLoading } = useWorkspace();
   const muiTheme = useTheme();
   const fullScreenDialog = useMediaQuery(muiTheme.breakpoints.down("sm"));
-  const { servers, presets, loading, error, fetchServers, fetchPresets } =
-    useMcpStore();
+  const {
+    servers,
+    presets,
+    loading,
+    error,
+    fetchServers,
+    fetchPresets,
+    oauthReturn,
+    clearOAuthReturn,
+  } = useMcpStore();
   const [addOpen, setAddOpen] = useState(false);
   const [addPreset, setAddPreset] = useState<string | undefined>(undefined);
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [autoDiscoverId, setAutoDiscoverId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [snackbar, setSnackbar] = useState<{
     open: boolean;
@@ -1236,28 +1270,34 @@ export function McpServersSection() {
   const notify = (message: string, severity: "success" | "error") =>
     setSnackbar({ open: true, message, severity });
 
-  // Surface the OAuth callback outcome (we land back here with a query flag).
+  // Fallback capture for entry paths that skip UrlSync hydration — normally
+  // UrlSync already moved the query flags into the store on page load.
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const oauthError = params.get("oauth_error");
-    const oauthConnected = params.get("oauth_connected");
-    if (!oauthError && !oauthConnected) return;
-    setSnackbar({
-      open: true,
-      message: oauthError
-        ? `OAuth connection failed: ${oauthError}`
-        : "Account connected — test the connection to load tools",
-      severity: oauthError ? "error" : "success",
-    });
-    params.delete("oauth_error");
-    params.delete("oauth_connected");
-    const query = params.toString();
-    window.history.replaceState(
-      null,
-      "",
-      window.location.pathname + (query ? `?${query}` : ""),
-    );
+    useMcpStore.getState().captureOAuthReturn();
   }, []);
+
+  // Surface the OAuth callback outcome: reopen the server's modal and, on
+  // success, auto-run discovery so tools load without another click.
+  useEffect(() => {
+    if (!oauthReturn) return;
+    clearOAuthReturn();
+    const { connected, error: oauthError, serverId } = oauthReturn;
+    if (serverId) setDetailId(serverId);
+    if (oauthError) {
+      notify(`OAuth connection failed: ${oauthError}`, "error");
+      return;
+    }
+    if (!connected) return;
+    if (serverId) {
+      setAutoDiscoverId(serverId);
+      notify("Account connected — loading tools…", "success");
+    } else {
+      notify(
+        "Account connected — test the connection to load tools",
+        "success",
+      );
+    }
+  }, [oauthReturn, clearOAuthReturn]);
 
   const effectivePresets: McpPresetInfo[] =
     presets.length > 0
@@ -1465,6 +1505,8 @@ export function McpServersSection() {
                 server={detailServer}
                 preset={presetByType(detailServer.connectorType)}
                 isAdmin={isAdmin}
+                autoDiscover={autoDiscoverId === detailServer.id}
+                onAutoDiscoverConsumed={() => setAutoDiscoverId(null)}
                 onNotify={notify}
               />
             </DialogContent>
