@@ -464,6 +464,8 @@ flowRoutes.openapi(
             entityFilter: 1,
             queries: 1,
             syncMode: 1,
+            writeMode: 1,
+            backfillSchedule: 1,
             syncEngine: 1,
             syncState: 1,
             syncStateUpdatedAt: 1,

@@ -376,7 +376,19 @@ export function SyncFlowForm({
   const selectedDestination = databases.find(
     db => db.id === watchDestinationId,
   );
-  const destType = selectedDestination?.type;
+  // When editing an existing flow the connections cache may not (yet) contain
+  // the destination — fall back to the type populated on the flow itself so
+  // destination-dependent UI (reconcile trigger, delete mode, write modes)
+  // renders correctly regardless of cache state.
+  const editedFlow =
+    !isNewMode && currentFlowId
+      ? flows.find(f => f._id === currentFlowId)
+      : null;
+  const editedFlowDestType =
+    editedFlow && typeof editedFlow.destinationDatabaseId === "object"
+      ? editedFlow.destinationDatabaseId?.type
+      : undefined;
+  const destType = selectedDestination?.type ?? editedFlowDestType;
   const isBigQueryDest = destType === "bigquery";
   const isCdcCapableDest = CDC_CAPABLE_TYPES.includes(destType || "");
   const hasStagingDest = destType === "bigquery" || destType === "clickhouse";
