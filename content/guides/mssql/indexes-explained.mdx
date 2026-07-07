@@ -1,0 +1,153 @@
+---
+title: "SQL Server Indexes Explained"
+description: "Clustered vs nonclustered indexes, included columns, key lookups, filtered indexes, and columnstore, with execution plan checks to verify indexes are used."
+database: "mssql"
+category: "how-to"
+tags: ["sql-server", "t-sql", "indexes", "performance", "execution-plans"]
+date: "2026-07-07"
+---
+
+Indexes in SQL Server follow the same B-tree fundamentals as every other relational database, but the clustered/nonclustered split shapes everything: how tables are physically stored, how lookups work, and why an innocent-looking `SELECT *` can turn a good index useless. If you're coming from PostgreSQL, where all indexes are secondary and the table is a heap, this is the main mental adjustment.
+
+## Clustered indexes: the table IS the index
+
+A clustered index defines the physical storage order of the table. The leaf level of a clustered index doesn't point at the data -- it *is* the data. Consequently a table can have exactly one clustered index.
+
+By default, a primary key creates a clustered index:
+
+```sql
+CREATE TABLE orders (
+    id INT IDENTITY PRIMARY KEY,      -- clustered index on id
+    customer_id INT NOT NULL,
+    status NVARCHAR(20) NOT NULL,
+    total DECIMAL(10,2) NOT NULL,
+    created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+```
+
+You can decouple the two -- `PRIMARY KEY NONCLUSTERED` plus a separate `CREATE CLUSTERED INDEX` on another column -- but for most OLTP tables an ever-increasing integer or sequential key as the clustered key is the right default. It keeps inserts appending at the end instead of splitting pages mid-table, and it keeps the clustered key narrow, which matters for the next section.
+
+A table without any clustered index is a *heap*. Heaps are legitimate for staging tables you bulk-load and truncate, but as a permanent home for queried data they invite forwarded-record problems and slow scans. If you find one in the wild (`SELECT * FROM sys.indexes WHERE object_id = OBJECT_ID('dbo.orders') AND type = 0`), it usually wasn't a deliberate choice.
+
+## Nonclustered indexes and the key lookup
+
+A nonclustered index is a separate structure: its leaf level contains the index key columns plus a *row locator* pointing back to the table. On a clustered table, that locator is the clustered key. This has two consequences:
+
+1. **A fat clustered key makes every nonclustered index fat.** A `UNIQUEIDENTIFIER` or wide composite clustered key gets silently copied into every other index on the table.
+2. **Queries that need columns beyond the index must go fetch them.** That fetch is the *key lookup*, and it's the most common performance surprise in SQL Server.
+
+```sql
+CREATE INDEX ix_orders_customer ON orders (customer_id);
+
+-- Uses the index... plus one key lookup per matching row
+SELECT customer_id, status, total
+FROM orders
+WHERE customer_id = 42;
+```
+
+The index seek finds the matching rows fast, but `status` and `total` aren't in the index, so SQL Server does a lookup into the clustered index for each row. For a handful of rows, fine. For 100,000 rows, the optimizer will often decide the lookups cost more than just scanning the whole table -- and your index gets ignored entirely. This "tipping point" is why an index that worked in testing gets abandoned in production once data volumes grow.
+
+## Included columns: covering the query
+
+The fix is to put the extra columns in the index leaf level without making them key columns:
+
+```sql
+CREATE INDEX ix_orders_customer
+ON orders (customer_id)
+INCLUDE (status, total)
+WITH (DROP_EXISTING = ON);
+```
+
+Now the query above is *covered*: everything it needs is in the index, no lookups. Key columns versus included columns:
+
+- **Key columns** order the B-tree. Use them for columns you filter or sort on.
+- **INCLUDE columns** exist only at the leaf level. They can't help a `WHERE` or `ORDER BY`, but they satisfy the `SELECT` list, don't count against key size limits (key max is 1,700 bytes for nonclustered indexes), and allow types like `NVARCHAR(MAX)` that can't be keys at all.
+
+The habit that makes covering indexes viable: select only the columns you need. `SELECT *` is effectively a request to never be covered.
+
+For composite keys, order matters. An index on `(customer_id, created_at)` supports `WHERE customer_id = 42` and `WHERE customer_id = 42 AND created_at > '2026-01-01'`, but not `WHERE created_at > '2026-01-01'` alone -- the leading column must be constrained. Put equality-filtered columns before range-filtered ones.
+
+## Filtered indexes
+
+A filtered index is a nonclustered index with a `WHERE` clause -- it only indexes rows matching the predicate:
+
+```sql
+CREATE INDEX ix_orders_pending
+ON orders (created_at)
+INCLUDE (customer_id, total)
+WHERE status = 'pending';
+```
+
+If 2% of orders are pending and your dashboard only ever queries pending orders, this index is 50x smaller than a full one, cheaper to maintain, and its statistics are more precise. The classic use cases: soft-delete flags (`WHERE deleted = 0`), sparse columns (`WHERE email IS NOT NULL`), and hot-status subsets like the above.
+
+Caveat: the query's predicate must match the filter closely enough for the optimizer to prove the index applies, and parameterized queries (`WHERE status = @status`) generally can't use a filtered index, because the plan must work for every parameter value.
+
+## Unique indexes and constraints
+
+`UNIQUE` constraints are enforced by unique indexes; creating either gives you both. Unique indexes also help the optimizer -- knowing at most one row matches enables cheaper plans:
+
+```sql
+CREATE UNIQUE INDEX ux_customers_email ON customers (email);
+```
+
+One SQL Server quirk versus PostgreSQL and MySQL: a unique index treats `NULL` as a value, so only *one* NULL is allowed. The workaround is a filtered unique index: `CREATE UNIQUE INDEX ux ON customers (email) WHERE email IS NOT NULL;`.
+
+## Columnstore: the analytics option
+
+Rowstore B-trees are built for finding few rows fast. For analytical scans over millions of rows, SQL Server has columnstore indexes -- data stored per-column, heavily compressed, processed in batches:
+
+```sql
+CREATE NONCLUSTERED COLUMNSTORE INDEX ncci_orders
+ON orders (customer_id, status, total, created_at);
+```
+
+A nonclustered columnstore on an OLTP table enables real-time analytics without moving data; a *clustered* columnstore makes the whole table columnar, the usual choice for fact tables in a warehouse. Aggregation queries (`SUM(total) GROUP BY customer_id` over the full table) can run an order of magnitude faster. Don't reach for it below a few million rows; segment elimination and batch mode need volume to pay off.
+
+## Verifying with execution plans
+
+The only way to know whether indexes are used is the execution plan. In SSMS press Ctrl+M (actual plan) before running, or use `SET STATISTICS IO ON` to see logical reads. What to look for:
+
+- **Index Seek** -- the B-tree navigated to matching rows. What you want for selective predicates.
+- **Index Scan / Clustered Index Scan** -- reading the whole index or table. Expected for unselective queries; a red flag when you thought you had a usable index.
+- **Key Lookup** -- the per-row fetch described above. A key lookup next to a nested loops join, repeated many times, is the signature of a non-covering index.
+
+The most common reason a seek silently becomes a scan is a *non-sargable* predicate -- wrapping the indexed column in a function or implicit conversion:
+
+```sql
+-- Scan: the column is inside a function
+WHERE YEAR(created_at) = 2026
+-- Seek: range on the bare column
+WHERE created_at >= '2026-01-01' AND created_at < '2027-01-01'
+
+-- Scan: NVARCHAR parameter vs VARCHAR column forces CONVERT_IMPLICIT on the column
+WHERE varchar_col = @nvarchar_param
+```
+
+Implicit conversions are sneaky because the query still returns correct results; the plan XML shows `CONVERT_IMPLICIT` on the column side. Match parameter types to column types.
+
+## Maintenance basics
+
+- **Unused indexes cost writes.** Every INSERT/UPDATE/DELETE maintains every index. Check `sys.dm_db_index_usage_stats` for indexes with high `user_updates` and zero `user_seeks`/`user_scans`, and drop them (the DMV resets on instance restart, so check uptime first).
+- **Statistics matter more than fragmentation.** On modern SSDs, obsessing over fragmentation percentages is mostly wasted effort; out-of-date statistics causing bad row estimates is the real plan-killer. `UPDATE STATISTICS` or leave auto-update on.
+- **Missing index DMVs are suggestions, not orders.** `sys.dm_db_missing_index_details` over-suggests wide INCLUDE lists and never accounts for overlap with existing indexes. Read them as hints, consolidate, and never create all of them blindly.
+
+## Common mistakes
+
+- Indexing every column individually. Five single-column indexes rarely help; one well-ordered composite usually does.
+- `SELECT *` defeating covering indexes.
+- Functions or type mismatches on the filtered column (non-sargable predicates).
+- Wide clustered keys (GUIDs) inflating every nonclustered index.
+- Creating every missing-index suggestion the DMV emits.
+
+Reading execution plans takes practice; Mako's AI assistant can explain why a specific query scans instead of seeks and suggest the index or rewrite.
+
+## See also
+
+- [Window functions in SQL Server](/guides/mssql/window-functions)
+- [Working with JSON in SQL Server](/guides/mssql/json-queries)
+- [MySQL indexes explained](/guides/mysql/indexes-explained)
+- [PostgreSQL indexes explained](/guides/postgresql/indexes-explained)
+
+---
+
+Mako connects to SQL Server with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

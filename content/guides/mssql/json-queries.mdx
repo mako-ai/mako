@@ -1,0 +1,223 @@
+---
+title: "Working with JSON in SQL Server"
+description: "A practical guide to T-SQL JSON functions: JSON_VALUE, JSON_QUERY, OPENJSON, FOR JSON, JSON_MODIFY, plus the native json type and JSON indexes in SQL Server 2025."
+database: "mssql"
+category: "how-to"
+tags: ["sql-server", "t-sql", "json", "openjson", "for-json"]
+date: "2026-07-07"
+---
+
+SQL Server has supported JSON since SQL Server 2016, but with a design choice that surprises people coming from PostgreSQL or MySQL: for most of its history there was no JSON data type. You stored JSON as plain `NVARCHAR(MAX)` and used functions to parse it. That changed in SQL Server 2025, which shipped a native `json` type and a JSON index, but the function-based model is still what you'll encounter in nearly every existing database.
+
+This guide covers both: the function toolkit that works from 2016 onward, and what the 2025 native type changes.
+
+## Storing JSON: NVARCHAR plus a constraint
+
+On SQL Server 2016 through 2022, the standard pattern is an `NVARCHAR(MAX)` column with an `ISJSON` check constraint so invalid documents are rejected at insert time:
+
+```sql
+CREATE TABLE orders (
+    id INT IDENTITY PRIMARY KEY,
+    customer NVARCHAR(100),
+    details NVARCHAR(MAX),
+    CONSTRAINT chk_details_json CHECK (ISJSON(details) = 1)
+);
+
+INSERT INTO orders (customer, details) VALUES
+('Acme', N'{"status": "shipped", "items": [{"sku": "A-100", "qty": 2}, {"sku": "B-200", "qty": 1}], "priority": true}'),
+('Globex', N'{"status": "pending", "items": [{"sku": "A-100", "qty": 5}], "priority": false}');
+```
+
+Without the constraint, nothing stops `'not json at all'` from landing in the column and blowing up your queries later. Use `NVARCHAR`, not `VARCHAR`: JSON is Unicode by definition, and the JSON functions expect it.
+
+## Extracting scalars: JSON_VALUE
+
+`JSON_VALUE` pulls a single scalar (string, number, boolean) out of a document using a JSON path:
+
+```sql
+SELECT
+    id,
+    customer,
+    JSON_VALUE(details, '$.status') AS status,
+    JSON_VALUE(details, '$.items[0].sku') AS first_sku
+FROM orders;
+```
+
+Paths start at `$` (the document root), use `.key` for object properties and `[n]` for array elements. Array indexing is zero-based, matching JSON convention (note that this differs from T-SQL strings, where `SUBSTRING` is 1-based).
+
+Two behaviors to know:
+
+- `JSON_VALUE` returns `NVARCHAR(4000)`. If you need a number or date, cast it: `CAST(JSON_VALUE(details, '$.total') AS DECIMAL(10,2))`.
+- In *lax mode* (the default), a missing path returns `NULL`. In *strict mode* it raises an error: `JSON_VALUE(details, 'strict $.missing')`. Lax is forgiving during exploration; strict catches typos in production code.
+
+## Extracting objects and arrays: JSON_QUERY
+
+`JSON_VALUE` returns `NULL` (lax mode) if the path points at an object or array rather than a scalar. That silent `NULL` is the most common JSON gotcha in SQL Server. To extract a fragment, use `JSON_QUERY`:
+
+```sql
+SELECT
+    JSON_VALUE(details, '$.items') AS items_wrong,   -- NULL, it's an array
+    JSON_QUERY(details, '$.items') AS items_right    -- [{"sku":"A-100",...}]
+FROM orders
+WHERE id = 1;
+```
+
+Rule of thumb: scalar → `JSON_VALUE`, object or array → `JSON_QUERY`. If a query keeps returning `NULL` and you're sure the path is right, you've probably used the wrong one.
+
+## Shredding JSON into rows: OPENJSON
+
+`OPENJSON` is a table-valued function that turns JSON into a rowset, which makes it the workhorse for anything relational: joins, aggregation, filtering on array elements. It appears in the `FROM` clause like a table.
+
+Without a schema, it returns key/value/type triples:
+
+```sql
+SELECT j.[key], j.value, j.type
+FROM orders
+CROSS APPLY OPENJSON(details) AS j
+WHERE id = 1;
+```
+
+The far more useful form specifies an explicit schema with `WITH`:
+
+```sql
+SELECT o.id, o.customer, i.sku, i.qty
+FROM orders AS o
+CROSS APPLY OPENJSON(o.details, '$.items')
+    WITH (
+        sku NVARCHAR(20) '$.sku',
+        qty INT          '$.qty'
+    ) AS i
+WHERE i.qty >= 2;
+```
+
+This unnests the `items` array into one row per element, with typed columns. `CROSS APPLY` is the T-SQL idiom for "call this table-valued function once per outer row" (use `OUTER APPLY` to keep rows whose array is empty or missing, analogous to a left join).
+
+Aggregating over array elements works the way you'd expect once the data is rows:
+
+```sql
+SELECT i.sku, SUM(i.qty) AS total_qty
+FROM orders AS o
+CROSS APPLY OPENJSON(o.details, '$.items')
+    WITH (sku NVARCHAR(20), qty INT) AS i
+GROUP BY i.sku
+ORDER BY total_qty DESC;
+```
+
+When the `WITH` column name matches the JSON key, you can omit the path, as above. To grab a nested object as raw JSON inside a `WITH` schema, add `AS JSON`: `items NVARCHAR(MAX) '$.items' AS JSON`.
+
+`OPENJSON` requires database compatibility level 130 or higher. If you get "Invalid object name 'OPENJSON'", check `SELECT compatibility_level FROM sys.databases WHERE name = DB_NAME();` -- databases restored from old instances often sit at a lower level than the server supports.
+
+## Producing JSON: FOR JSON
+
+Going the other direction, `FOR JSON` serializes query results to JSON. `FOR JSON PATH` gives you control over nesting via column aliases:
+
+```sql
+SELECT
+    id,
+    customer AS [info.name],
+    JSON_VALUE(details, '$.status') AS [info.status]
+FROM orders
+FOR JSON PATH;
+```
+
+Dots in aliases become nested objects: `[{"id":1,"info":{"name":"Acme","status":"shipped"}}, ...]`.
+
+Useful modifiers:
+
+- `ROOT('orders')` wraps the array in a named root object.
+- `WITHOUT_ARRAY_WRAPPER` drops the outer `[...]` for single-row results (careful: the result is no longer valid JSON if more than one row comes back, they get comma-joined).
+- `INCLUDE_NULL_VALUES` emits `"key": null` instead of omitting NULL columns, which is the default.
+
+Correlated subqueries with `FOR JSON PATH` build nested arrays, the standard pattern for parent/child shapes:
+
+```sql
+SELECT c.name,
+    (SELECT o.id, JSON_VALUE(o.details, '$.status') AS status
+     FROM orders AS o WHERE o.customer = c.name
+     FOR JSON PATH) AS orders
+FROM customers AS c
+FOR JSON PATH;
+```
+
+## Modifying JSON: JSON_MODIFY
+
+`JSON_MODIFY` returns a new document with one path changed; combine it with `UPDATE` to persist:
+
+```sql
+UPDATE orders
+SET details = JSON_MODIFY(details, '$.status', 'delivered')
+WHERE id = 1;
+
+-- Append to an array
+UPDATE orders
+SET details = JSON_MODIFY(details, 'append $.items',
+    JSON_QUERY(N'{"sku": "C-300", "qty": 4}'))
+WHERE id = 1;
+
+-- Delete a key by setting it to NULL (lax mode)
+UPDATE orders
+SET details = JSON_MODIFY(details, '$.priority', NULL)
+WHERE id = 1;
+```
+
+The `JSON_QUERY` wrapper in the append example matters: without it, the new value is inserted as an escaped string rather than an object. Each `JSON_MODIFY` call changes one path; chain calls to change several: `JSON_MODIFY(JSON_MODIFY(details, '$.a', 1), '$.b', 2)`.
+
+## Indexing JSON queries (2016-2022)
+
+Since JSON lives in an `NVARCHAR` column, `JSON_VALUE` in a `WHERE` clause means a full scan by default. The classic fix is a computed column plus a regular index:
+
+```sql
+ALTER TABLE orders
+ADD status AS JSON_VALUE(details, '$.status');
+
+CREATE INDEX ix_orders_status ON orders (status);
+```
+
+The computed column doesn't have to be `PERSISTED` for the index to work. Queries that filter on the same expression, `WHERE JSON_VALUE(details, '$.status') = 'shipped'`, will use the index automatically as long as the expression matches exactly.
+
+## SQL Server 2025: the native json type
+
+SQL Server 2025 (GA November 2025) finally added a native `json` data type, aligned with what Azure SQL Database has had since 2024:
+
+```sql
+CREATE TABLE events (
+    id INT IDENTITY PRIMARY KEY,
+    payload JSON
+);
+```
+
+What it buys you (as of mid-2026):
+
+- **Binary storage.** Documents are stored in a parsed binary format rather than text, so reads skip re-parsing and storage is more compact.
+- **Validation built in.** No `ISJSON` constraint needed; invalid JSON is rejected on insert.
+- **JSON indexes.** A new index type for path queries inside documents: `CREATE JSON INDEX ix_payload ON events (payload);` -- this replaces the computed-column workaround for many cases.
+- **ANSI aggregate functions.** `JSON_OBJECTAGG` and `JSON_ARRAYAGG` build objects/arrays from grouped rows, closing a long-standing gap with PostgreSQL and MySQL:
+
+```sql
+SELECT customer, JSON_ARRAYAGG(JSON_VALUE(details, '$.status')) AS statuses
+FROM orders
+GROUP BY customer;
+```
+
+All the existing functions (`JSON_VALUE`, `OPENJSON`, etc.) work against the new type unchanged. If you're on 2025 or Azure SQL, prefer `json` over `NVARCHAR(MAX)` for new tables; for 2016-2022 the NVARCHAR-plus-functions model remains the only option.
+
+## Common mistakes
+
+- **Using JSON_VALUE on an array/object.** Returns `NULL` in lax mode with no error. Use `JSON_QUERY`, or strict mode to fail loudly.
+- **Forgetting the N prefix.** `'{"k":"v"}'` is VARCHAR; non-ASCII characters get mangled before the JSON functions ever see them. Write `N'{"k":"v"}'`.
+- **Comparing JSON_VALUE output as the wrong type.** It returns NVARCHAR, so `JSON_VALUE(d, '$.qty') > 9` does a string comparison ('10' < '9'). Cast first.
+- **OPENJSON missing.** Compatibility level below 130. Fix with `ALTER DATABASE ... SET COMPATIBILITY_LEVEL = 160;` after testing.
+- **WITHOUT_ARRAY_WRAPPER on multi-row results.** Produces comma-separated objects that aren't a valid JSON document.
+
+When exploring an unfamiliar JSON column, an AI-assisted editor like Mako's helps generate the `OPENJSON ... WITH` schema from a sample document instead of hand-typing every path.
+
+## See also
+
+- [Window functions in SQL Server](/guides/mssql/window-functions)
+- [CTEs in SQL Server](/guides/mssql/cte)
+- [Import JSON to SQL Server](/guides/import-json-to-mssql)
+- [Working with JSON in MySQL](/guides/mysql/json-queries)
+
+---
+
+Mako connects to SQL Server with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
