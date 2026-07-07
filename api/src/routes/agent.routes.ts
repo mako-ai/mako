@@ -13,6 +13,10 @@ import {
   type UIMessage,
 } from "ai";
 import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
+import {
+  buildClientStreamErrorPayload,
+  describeStreamError,
+} from "../agent-lib/stream-error";
 import { repairStringifiedToolInputs } from "../agent-lib/tool-input-repair";
 import { propagateAttributes } from "@langfuse/tracing";
 import { buildAnthropicThinkingConfig } from "../agent-lib/anthropic-thinking";
@@ -999,6 +1003,23 @@ agentRoutes.openapi(
                 invocationType: "chat",
               },
             },
+            // The AI SDK's default onError is a bare console.error(error) —
+            // unstructured and without any request context, which made
+            // provider-scoped gateway failures (e.g. a 401 for one provider
+            // while others work) effectively untraceable. Log the full
+            // description so failed turns can be found by chatId / model /
+            // gateway generationId in logs and alerting.
+            onError({ error }: { error: unknown }) {
+              logger.error("Chat model stream error", {
+                ...describeStreamError(error),
+                chatId,
+                workspaceId,
+                agentId: resolvedAgentId,
+                modelId: resolvedModelId,
+                continuationDepth,
+                error,
+              });
+            },
             onStepFinish({ toolCalls }: { toolCalls?: Array<unknown> }) {
               stepsCompleted += 1;
 
@@ -1033,6 +1054,14 @@ agentRoutes.openapi(
           const streamResponse = result.toUIMessageStreamResponse({
             originalMessages: segmentUiMessages,
             generateMessageId: () => new ObjectId().toString(),
+            // Replace the SDK's raw error text (for gateway auth failures a
+            // misleading "configure AI_GATEWAY_API_KEY" message) with the
+            // structured `{ code, message, ... }` JSON envelope. The client
+            // treats JSON errors with a `code` as terminal server errors:
+            // it renders `message` immediately instead of burning resume
+            // retries on a turn that is already dead.
+            onError: (error: unknown) =>
+              buildClientStreamErrorPayload(error, resolvedModelId),
             // Forward reasoning tokens from models that support extended thinking
             // (e.g., Claude claude-3-7-sonnet-20250219, DeepSeek deepseek-r1)
             sendReasoning: true,
