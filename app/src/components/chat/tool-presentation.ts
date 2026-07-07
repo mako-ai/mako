@@ -55,6 +55,15 @@ export const APP_SERVER_MUTATION_TOOLS = new Set<string>([
   "app_create_data_binding",
   "app_update_data_binding",
   "app_delete_data_binding",
+  // Binding cache/schedule mutations and restores also happen server-side
+  // with only the workspace poke as delivery. materialize_binding especially:
+  // a missed poke left the open tab's binding cache stale (status null), so
+  // the client-side query_duckdb / inspect_data_source kept reporting the
+  // parquet table as missing even though the build was long done.
+  "materialize_binding",
+  "app_set_binding_materialization",
+  "app_set_binding_schedule",
+  "app_restore_version",
 ]);
 export const DBT_SERVER_MUTATION_TOOLS = new Set<string>([
   "create_dbt_file",
