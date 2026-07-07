@@ -3,6 +3,7 @@
  */
 import { getApiBasePath } from "./api-base-path";
 import { handleUnauthorized } from "./auth-redirect";
+import { ApiError } from "../api/result";
 
 interface ApiRequestOptions extends RequestInit {
   params?: Record<string, string>;
@@ -50,14 +51,19 @@ class ApiClient {
     // transient 401 during a deploy doesn't bounce the user to /login.
     if (response.status === 401) {
       void handleUnauthorized();
-      throw new Error("Unauthorized");
+      throw new ApiError("Unauthorized", 401);
     }
 
     if (!response.ok) {
       const error = await response
         .json()
         .catch(() => ({ error: "An error occurred" }));
-      throw new Error(error.error || `HTTP error! status: ${response.status}`);
+      // ApiError (extends Error) carries the HTTP status so callers can
+      // distinguish "not found" from "no access" without string parsing.
+      throw new ApiError(
+        error.error || `HTTP error! status: ${response.status}`,
+        response.status,
+      );
     }
 
     // Handle empty responses

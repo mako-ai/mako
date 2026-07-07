@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Box,
-  Typography,
   IconButton,
   Tooltip,
   Chip,
@@ -55,6 +54,9 @@ import DataSourcePanel from "./dashboard/DataSourcePanel";
 import AddWidgetDialog from "./dashboard/AddWidgetDialog";
 import DashboardSettingsDialog from "./dashboard/DashboardSettingsDialog";
 import ShareDialog from "./ShareDialog";
+import EntityLoadErrorState, {
+  EntityLoadingState,
+} from "./EntityLoadErrorState";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import WidgetInspector from "./dashboard/WidgetInspector";
 import { SaveCommentDialog } from "./SaveCommentDialog";
@@ -115,6 +117,10 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   } = useDashboardEditSession({ dashboardId, workspaceId });
 
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
+
+  const dashboardLoadError = useDashboardStore(state =>
+    dashboardId ? state.openDashboardErrors[dashboardId] : undefined,
+  );
 
   const tabId = useConsoleStore(state =>
     Object.keys(state.tabs).find(id => {
@@ -275,19 +281,22 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   );
 
   if (!dashboard) {
-    return (
-      <Box
-        sx={{
-          height: "100%",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "text.secondary",
-        }}
-      >
-        <Typography>Loading dashboard...</Typography>
-      </Box>
-    );
+    if (dashboardLoadError && dashboardId) {
+      return (
+        <EntityLoadErrorState
+          error={dashboardLoadError}
+          entityLabel="dashboard"
+          onRetry={() => {
+            if (workspaceId) {
+              void useDashboardStore
+                .getState()
+                .reloadDashboard(workspaceId, dashboardId);
+            }
+          }}
+        />
+      );
+    }
+    return <EntityLoadingState label="Loading dashboard…" />;
   }
 
   const isDashboardOwner =

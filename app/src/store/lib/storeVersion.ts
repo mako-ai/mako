@@ -24,6 +24,23 @@ const PERSISTED_STORE_KEYS = [
 ];
 
 /**
+ * Prefixes of workspace-scoped persisted stores (`<prefix>:<workspaceId>`).
+ * Every matching key is cleared on version change.
+ */
+const PERSISTED_STORE_KEY_PREFIXES = ["console-store:"];
+
+function removeKeysWithPrefixes(): void {
+  const toRemove: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && PERSISTED_STORE_KEY_PREFIXES.some(p => key.startsWith(p))) {
+      toRemove.push(key);
+    }
+  }
+  toRemove.forEach(key => localStorage.removeItem(key));
+}
+
+/**
  * Legacy keys to always remove (from old store architecture).
  * These are cleared regardless of version to clean up old data.
  */
@@ -50,8 +67,9 @@ export function initializeStoreVersion(): void {
   if (storedVersion !== CURRENT_VERSION) {
     // Store version changed - clearing stored data for clean upgrade
 
-    // Clear all persisted stores
+    // Clear all persisted stores (including workspace-scoped buckets)
     PERSISTED_STORE_KEYS.forEach(key => localStorage.removeItem(key));
+    removeKeysWithPrefixes();
 
     // Set new version
     localStorage.setItem(STORE_VERSION_KEY, String(CURRENT_VERSION));
@@ -72,6 +90,7 @@ export function getStoreVersion(): number {
  */
 export function clearAllStoreData(): void {
   PERSISTED_STORE_KEYS.forEach(key => localStorage.removeItem(key));
+  removeKeysWithPrefixes();
   LEGACY_KEYS.forEach(key => localStorage.removeItem(key));
   localStorage.removeItem(STORE_VERSION_KEY);
 }

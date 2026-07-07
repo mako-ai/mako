@@ -10,6 +10,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
+import { toLoadError, type LoadError } from "../api/result";
 import { realtimeClientId } from "../lib/realtime-client-id";
 
 export interface DbtEnvironment {
@@ -354,6 +355,12 @@ interface DbtState {
   createProjectMode: "blank" | "github";
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
+  /**
+   * Structured load failures (status + message) for the fetches that tab
+   * views gate on: `projects`, `jobs:<projectId>`, `file:<projectId>:<path>`.
+   * Lets views render "not found" / "no access" instead of loading forever.
+   */
+  loadErrors: Record<string, LoadError>;
 }
 
 interface DbtActions {
@@ -658,6 +665,7 @@ const initialState: DbtState = {
   createProjectMode: "blank",
   loading: {},
   error: {},
+  loadErrors: {},
 };
 
 function errMessage(error: unknown, fallback: string): string {
@@ -696,6 +704,7 @@ export const useDbtStore = create<DbtStore>()(
       set(state => {
         state.loading.projects = true;
         state.error.projects = null;
+        delete state.loadErrors.projects;
       });
       try {
         const response = await apiClient.get<{
@@ -720,6 +729,10 @@ export const useDbtStore = create<DbtStore>()(
         set(state => {
           state.loading.projects = false;
           state.error.projects = errMessage(error, "Failed to load projects");
+          state.loadErrors.projects = toLoadError(
+            error,
+            "Failed to load projects",
+          );
         });
       }
     },
@@ -1295,6 +1308,9 @@ export const useDbtStore = create<DbtStore>()(
     readFile: async (workspaceId, projectId, path) => {
       const existing = get().filesByProject[projectId]?.[path];
       if (existing?.loaded) return existing.content;
+      set(state => {
+        delete state.loadErrors[`file:${projectId}:${path}`];
+      });
       try {
         const response = await apiClient.get<{
           success: boolean;
@@ -1317,6 +1333,10 @@ export const useDbtStore = create<DbtStore>()(
       } catch (error) {
         set(state => {
           state.error[`file:${projectId}:${path}`] = errMessage(
+            error,
+            "Failed to read file",
+          );
+          state.loadErrors[`file:${projectId}:${path}`] = toLoadError(
             error,
             "Failed to read file",
           );
@@ -1541,6 +1561,9 @@ export const useDbtStore = create<DbtStore>()(
     },
 
     fetchJobs: async (workspaceId, projectId) => {
+      set(state => {
+        delete state.loadErrors[`jobs:${projectId}`];
+      });
       try {
         const response = await apiClient.get<{
           success: boolean;
@@ -1552,6 +1575,10 @@ export const useDbtStore = create<DbtStore>()(
       } catch (error) {
         set(state => {
           state.error[`jobs:${projectId}`] = errMessage(
+            error,
+            "Failed to load jobs",
+          );
+          state.loadErrors[`jobs:${projectId}`] = toLoadError(
             error,
             "Failed to load jobs",
           );
