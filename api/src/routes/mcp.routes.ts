@@ -92,7 +92,9 @@ mcpPresetRoutes.openapi(
     const flowServerId = state
       ? await findMcpOAuthFlowServerId(state).catch(() => null)
       : null;
-    const serverParam = flowServerId ? { oauth_server: flowServerId } : {};
+    const serverParam: Record<string, string> = flowServerId
+      ? { oauth_server: flowServerId }
+      : {};
     if (error) {
       logger.warn("MCP OAuth callback returned an error", {
         error,
