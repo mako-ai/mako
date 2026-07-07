@@ -551,6 +551,27 @@ export interface CloseCustomField {
   acceptsMultipleValues?: boolean;
 }
 
+/**
+ * Build the Search API `_fields` selection for a core object type.
+ *
+ * Requests every custom field explicitly (`custom.cf_<id>`) in addition to
+ * the aggregate `custom` blob. The explicit selectors guarantee each field is
+ * returned as a flat key even if the blob omits it; the blob is kept as a
+ * fallback (and lands as a JSON column) in case the Search API ignores the
+ * dotted selectors.
+ */
+export function buildCloseSearchFieldSelection(
+  baseFields: readonly string[],
+  customFields: CloseCustomField[],
+): string[] {
+  const fields = new Set<string>([...baseFields, "custom"]);
+  for (const field of customFields) {
+    if (!field.id) continue;
+    fields.add(`custom.${field.id}`);
+  }
+  return Array.from(fields);
+}
+
 export function resolveCloseEntitySchema(
   entity: string,
   customFields: CloseCustomField[],
