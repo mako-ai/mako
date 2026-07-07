@@ -12,10 +12,20 @@ You get a file IDE, saved jobs with cron schedules, run history with artifacts, 
 A **project** is a dbt Core project scoped to one workspace. It holds:
 
 - A pinned `dbtVersion` (default `1.9`, informational for now).
-- A set of **environments** — each maps a name (e.g. `dev`, `prod`) to a database **connection** + **target schema**, with `threads` (1–16, default 4) and optional dbt `vars`.
-- A `defaultEnvironment` (default `dev`). Ad-hoc and agent-triggered builds always default to `dev`; production targets require an explicit job or selection.
+- A set of **environments** — each maps a name (e.g. `dev`, `prod`) to a database **connection** + **target schema**, with `threads` (1–16, default 4), optional dbt `vars`, and optional **ownership** (see [Personal environments](#personal-environments)).
+- A `defaultEnvironment` (default `dev`). Ad-hoc and agent-triggered builds resolve their target as: explicit selection → your saved per-user dev environment → your personal environment (when provisioned) → the project default. Production targets require an explicit job or selection.
 
 Project names are unique per workspace. New projects are scaffolded with a standard `dbt_project.yml`, `models/staging`, `models/marts`, `seeds/`, `macros/`, and `snapshots/` layout.
+
+## Personal environments
+
+A **personal environment** is a per-developer build target so iteration never lands in a shared schema:
+
+- **Auto-provisioned** — `POST .../environments/personal` (also triggered from the editor) idempotently creates yours: same connection as the prod-like environment, private schema `dbt_<slug>` (slug = your email local-part, lowercased, `[a-z0-9_]`; name/schema collisions get a numeric suffix).
+- **Claim / release from settings** — each environment row in the project settings drawer has an **Ownership** dropdown (`Shared`, `Personal — only me`, or shows `Personal — another user`), so an existing environment can be claimed as personal or released back to shared.
+- **Rules** (validated on create, update, and GitHub import): at most **one personal environment per user**, and neither the `defaultEnvironment` nor the production (`prodEnvironment`) environment can be personal — both are resolved for other users too, so a private schema there would leak one developer's scratch data into everyone's builds.
+- **Member+, not admin-only** — provisioning your own personal environment only affects your own iteration target. It requires a user session (not an API key). Shared environment config stays admin-gated as usual.
+- **Per-user dev preference** — `PUT .../projects/:projectId/my-environment` saves *your* default development environment for the project (the editor/console env pickers persist here; `""` clears back to Auto). Project reads carry it back as `myDevEnvironment`.
 
 ## File IDE
 
@@ -111,6 +121,8 @@ dbt routes are mounted under `/api/workspaces/:workspaceId/dbt`. Highlights (ful
 | `GET` | `/projects/:projectId/files` | List project files |
 | `GET` / `PUT` / `DELETE` | `/projects/:projectId/files/:path` | Read / write / delete a file |
 | `POST` | `/projects/:projectId/files/rename` | Rename / move a file |
+| `POST` | `/projects/:projectId/environments/personal` | Idempotently provision the caller's personal environment |
+| `PUT` | `/projects/:projectId/my-environment` | Save the caller's default dev environment (`""` = Auto) |
 | `GET` / `POST` | `/projects/:projectId/jobs` | List / create jobs |
 | `PATCH` / `DELETE` | `/projects/:projectId/jobs/:jobId` | Update / delete a job |
 | `POST` | `/projects/:projectId/jobs/:jobId/trigger` | Run a job now |
