@@ -300,10 +300,12 @@ export default function AppRenderer({
           dbtOverrideActive &&
           Boolean(binding?.dbtProjectId) &&
           containsDbtSchemaToken(binding?.code ?? "");
-        // Materialized binding -> read its table from DuckDB-WASM.
+        // Materialized binding -> read its table from DuckDB-WASM. The
+        // preview-aware loader also evicts rows a previous env override left
+        // behind when no prod artifact exists to reload (stale-data guard).
         if (binding?.materialization === "parquet" && !dbtLiveOverride) {
           const rowLimit = resolveSandboxRowLimit(data.rowLimit);
-          void ensureBindingLoaded(appId, binding)
+          void ensureBindingLoadedForPreview(workspaceId, appId, binding)
             .then(() =>
               queryAppDuckDB(
                 appId,

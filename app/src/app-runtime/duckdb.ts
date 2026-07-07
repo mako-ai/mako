@@ -165,6 +165,48 @@ export async function loadBindingRowsTable(
   });
 }
 
+/**
+ * Drop a binding's table when its loaded revision starts with
+ * `revisionPrefix`. Used when a preview-env override resets but the prod
+ * artifact cannot be (re)loaded (not materialized yet / build failed): rows
+ * loaded for the override must not keep serving under prod, so the table is
+ * removed and reads fail loudly ("table does not exist") instead. No-ops when
+ * nothing matching is loaded. Serializes with in-flight loads of the table so
+ * a concurrent (re)load is never dropped mid-swap.
+ */
+export async function dropBindingTableByRevisionPrefix(
+  appId: string,
+  bindingName: string,
+  revisionPrefix: string,
+): Promise<void> {
+  const inst = instances.get(appId);
+  if (!inst) return;
+  const table = bindingTableName(bindingName);
+  if (!inst.loaded.get(table)?.startsWith(revisionPrefix)) return;
+
+  const prior = inst.loading.get(table) ?? Promise.resolve();
+  const result = prior.then(async () => {
+    // Re-check after waiting: an in-flight load may have replaced the table
+    // with a revision this drop no longer applies to.
+    if (!inst.loaded.get(table)?.startsWith(revisionPrefix)) return;
+    const conn = await inst.db.connect();
+    try {
+      await conn.query(`DROP TABLE IF EXISTS "${table}"`);
+    } finally {
+      await conn.close();
+    }
+    inst.loaded.delete(table);
+  });
+  inst.loading.set(
+    table,
+    result.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return result;
+}
+
 /** Run analytical SQL against the app's loaded tables. */
 export async function queryAppDuckDB(
   appId: string,
