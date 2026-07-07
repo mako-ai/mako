@@ -1115,6 +1115,7 @@ const Chat: React.FC<ChatProps> = ({
       {error && (
         <Box sx={{ p: 1 }}>
           {(() => {
+            let displayMessage = error.message;
             try {
               const parsed = JSON.parse(error.message);
               if (
@@ -1130,6 +1131,15 @@ const Chat: React.FC<ChatProps> = ({
                     quotaUsd={parsed.quotaUsd}
                   />
                 );
+              }
+              // Other structured server errors (model auth / rate limit /
+              // stream failures): show the human-readable message, not the
+              // raw JSON envelope.
+              if (
+                typeof parsed?.code === "string" &&
+                typeof parsed?.message === "string"
+              ) {
+                displayMessage = parsed.message;
               }
             } catch {
               // not JSON, fall through to generic
@@ -1147,7 +1157,7 @@ const Chat: React.FC<ChatProps> = ({
                   },
                 }}
               >
-                {error.message}
+                {displayMessage}
               </Alert>
             );
           })()}
