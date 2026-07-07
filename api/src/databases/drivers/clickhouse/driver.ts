@@ -15,6 +15,17 @@ export class ClickHouseDatabaseDriver implements DatabaseDriver {
     };
   }
 
+  /**
+   * Cheap metadata-based row counts from `system.tables.total_rows`
+   * (approximate for MergeTree, null for views — coalesced to 0).
+   */
+  buildRowCountBatchQuery(schema: string, tableNames: string[]): string | null {
+    if (tableNames.length === 0) return null;
+    const escape = (value: string) => `'${value.replace(/'/g, "''")}'`;
+    const inList = tableNames.map(escape).join(",");
+    return `SELECT name AS table_id, coalesce(total_rows, 0) AS row_count FROM system.tables WHERE database = ${escape(schema)} AND name IN (${inList})`;
+  }
+
   async getTreeRoot(
     database: IDatabaseConnection,
   ): Promise<DatabaseTreeNode[]> {

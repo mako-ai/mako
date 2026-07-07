@@ -235,8 +235,18 @@ async function getDestinationEntityRowCountsBatch(params: {
   const result: Record<string, number | null> = {};
   for (const entity of params.entities) result[entity] = 0;
 
+  // For MongoDB the tableDestination "schema" IS the target database name and
+  // the count expression runs against the connection's active db, so it must
+  // be routed explicitly. SQL engines fully qualify inside the query instead.
+  const isMongoDestination =
+    String(params.destination.type || "").toLowerCase() === "mongodb";
+
   try {
-    const queryResult = await driver.executeQuery(params.destination, query);
+    const queryResult = await driver.executeQuery(
+      params.destination,
+      query,
+      isMongoDestination ? { databaseName: params.schema } : undefined,
+    );
     if (!queryResult.success) {
       if (isTableMissingError(queryResult.error)) {
         destinationCountBatchCache.set(cacheKey, {

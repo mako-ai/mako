@@ -675,6 +675,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             runId: checkpointRunId,
             entity,
             fetchState: state,
+            rowsWritten: totalWrittenForEntity,
           });
         },
       );

@@ -209,11 +209,12 @@ const STEPS = [
   { label: "Destination", description: "Where the data is written" },
   {
     label: "Triggers",
-    description: "How the sync is triggered — schedule, webhook, or both",
+    description:
+      "How the sync is triggered — schedule, webhook, or periodic reconcile",
   },
   {
     label: "Sync Configuration",
-    description: "Sync mode, delete behavior, periodic reconcile",
+    description: "Sync mode and delete behavior",
   },
   { label: "Entities", description: "What data is synced" },
 ];
@@ -674,9 +675,15 @@ export function SyncFlowForm({
       return;
     }
 
-    // Trigger-set validation
-    if (!data.scheduleEnabled && !data.webhookEnabled) {
-      setError("Enable at least one trigger — a schedule, a webhook, or both.");
+    // Trigger-set validation. The periodic full reconcile is a real trigger
+    // (migrated legacy full-refresh syncs run on it exclusively), but it only
+    // exists for CDC-capable destinations.
+    const hasReconcileTrigger =
+      isCdcCapableDest && Boolean(data.backfillScheduleEnabled);
+    if (!data.scheduleEnabled && !data.webhookEnabled && !hasReconcileTrigger) {
+      setError(
+        "Enable at least one trigger — a schedule, a webhook, or a periodic full reconcile.",
+      );
       setOpenSteps(prev => new Set([...prev, 2]));
       return;
     }
@@ -733,7 +740,7 @@ export function SyncFlowForm({
       setError(
         "A valid cron expression is required to enable the periodic full reconcile.",
       );
-      setOpenSteps(prev => new Set([...prev, 3]));
+      setOpenSteps(prev => new Set([...prev, 2]));
       return;
     }
 
@@ -815,6 +822,9 @@ export function SyncFlowForm({
           triggers: [
             ...(data.scheduleEnabled ? ["schedule"] : []),
             ...(data.webhookEnabled ? ["webhook"] : []),
+            ...(isCdcCapableDest && data.backfillScheduleEnabled
+              ? ["reconcile"]
+              : []),
           ].join("+"),
         });
         await useFlowStore.getState().fetchFlows(currentWorkspace.id);
@@ -1321,12 +1331,14 @@ export function SyncFlowForm({
               {renderStepHeader(2)}
               <AccordionDetails>
                 <Stack spacing={2}>
-                  {!watchScheduleEnabled && !watchWebhookEnabled && (
-                    <Alert severity="warning">
-                      Enable at least one trigger — a schedule, a webhook, or
-                      both.
-                    </Alert>
-                  )}
+                  {!watchScheduleEnabled &&
+                    !watchWebhookEnabled &&
+                    !(isCdcCapableDest && watchBackfillScheduleEnabled) && (
+                      <Alert severity="warning">
+                        Enable at least one trigger — a schedule, a webhook, or
+                        a periodic full reconcile.
+                      </Alert>
+                    )}
 
                   {/* Scheduled trigger */}
                   <Box
@@ -1560,6 +1572,85 @@ export function SyncFlowForm({
                     </Box>
                   </Tooltip>
 
+                  {/* Periodic full reconcile trigger (CDC destinations).
+                      Migrated legacy full-refresh scheduled syncs run on this
+                      cadence exclusively, so it must surface as a trigger. */}
+                  {isCdcCapableDest && (
+                    <Box
+                      sx={{
+                        border: 1,
+                        borderColor: "divider",
+                        borderRadius: 1,
+                        p: 2,
+                      }}
+                    >
+                      <Controller
+                        name="backfillScheduleEnabled"
+                        control={control}
+                        render={({ field }) => (
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={Boolean(field.value)}
+                                onChange={e => field.onChange(e.target.checked)}
+                              />
+                            }
+                            label={
+                              <Box>
+                                <Typography variant="subtitle2">
+                                  Periodic full reconcile
+                                </Typography>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                >
+                                  Re-runs a complete backfill on a cadence to
+                                  reconcile drift and deletions. Other triggers
+                                  stay active between runs.
+                                </Typography>
+                              </Box>
+                            }
+                          />
+                        )}
+                      />
+                      {watchBackfillScheduleEnabled && (
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={2}
+                          sx={{ mt: 2 }}
+                        >
+                          <Controller
+                            name="backfillScheduleCron"
+                            control={control}
+                            render={({ field }) => (
+                              <TextField
+                                {...field}
+                                label="Cron expression"
+                                placeholder="0 3 * * *"
+                                size="small"
+                                fullWidth
+                                helperText="e.g. '0 3 * * *' = daily at 03:00"
+                              />
+                            )}
+                          />
+                          <Controller
+                            name="backfillScheduleTimezone"
+                            control={control}
+                            render={({ field }) => (
+                              <TextField
+                                {...field}
+                                label="Timezone"
+                                placeholder="UTC"
+                                size="small"
+                                fullWidth
+                              />
+                            )}
+                          />
+                        </Stack>
+                      )}
+                    </Box>
+                  )}
+
                   <Box
                     sx={{ display: "flex", justifyContent: "flex-end", pt: 1 }}
                   >
@@ -1567,7 +1658,11 @@ export function SyncFlowForm({
                       variant="contained"
                       endIcon={<NextIcon />}
                       onClick={() => openNextStep(2)}
-                      disabled={!watchScheduleEnabled && !watchWebhookEnabled}
+                      disabled={
+                        !watchScheduleEnabled &&
+                        !watchWebhookEnabled &&
+                        !(isCdcCapableDest && watchBackfillScheduleEnabled)
+                      }
                     >
                       Continue to Sync Configuration
                     </Button>
@@ -1626,115 +1721,37 @@ export function SyncFlowForm({
                   </FormControl>
 
                   {isCdcCapableDest && (
-                    <>
-                      <Controller
-                        name="deleteMode"
-                        control={control}
-                        render={({ field }) => (
-                          <FormControl fullWidth>
-                            <InputLabel>Delete Mode</InputLabel>
-                            <Select
-                              {...field}
-                              label="Delete Mode"
-                              value={
-                                isBigQueryDest ? "soft" : field.value || "hard"
-                              }
-                              disabled={isBigQueryDest}
-                            >
-                              {!isBigQueryDest && (
-                                <MenuItem value="hard">
-                                  Hard delete (remove rows)
-                                </MenuItem>
-                              )}
-                              <MenuItem value="soft">
-                                Soft delete (set is_deleted flag)
-                              </MenuItem>
-                            </Select>
-                            <FormHelperText>
-                              {isBigQueryDest
-                                ? "BigQuery syncs always use soft delete (CDC tombstones)."
-                                : "How source deletions are applied in the destination"}
-                            </FormHelperText>
-                          </FormControl>
-                        )}
-                      />
-
-                      <Box
-                        sx={{
-                          border: 1,
-                          borderColor: "divider",
-                          borderRadius: 1,
-                          p: 2,
-                        }}
-                      >
-                        <Controller
-                          name="backfillScheduleEnabled"
-                          control={control}
-                          render={({ field }) => (
-                            <FormControlLabel
-                              control={
-                                <Checkbox
-                                  checked={Boolean(field.value)}
-                                  onChange={e =>
-                                    field.onChange(e.target.checked)
-                                  }
-                                />
-                              }
-                              label={
-                                <Box>
-                                  <Typography variant="subtitle2">
-                                    Periodic full reconcile
-                                  </Typography>
-                                  <Typography
-                                    variant="caption"
-                                    color="text.secondary"
-                                  >
-                                    Re-runs a complete backfill on a cadence to
-                                    reconcile drift and deletions. Triggers stay
-                                    active between runs.
-                                  </Typography>
-                                </Box>
-                              }
-                            />
-                          )}
-                        />
-                        {watchBackfillScheduleEnabled && (
-                          <Stack
-                            direction={{ xs: "column", sm: "row" }}
-                            spacing={2}
-                            sx={{ mt: 2 }}
+                    <Controller
+                      name="deleteMode"
+                      control={control}
+                      render={({ field }) => (
+                        <FormControl fullWidth>
+                          <InputLabel>Delete Mode</InputLabel>
+                          <Select
+                            {...field}
+                            label="Delete Mode"
+                            value={
+                              isBigQueryDest ? "soft" : field.value || "hard"
+                            }
+                            disabled={isBigQueryDest}
                           >
-                            <Controller
-                              name="backfillScheduleCron"
-                              control={control}
-                              render={({ field }) => (
-                                <TextField
-                                  {...field}
-                                  label="Cron expression"
-                                  placeholder="0 3 * * *"
-                                  size="small"
-                                  fullWidth
-                                  helperText="e.g. '0 3 * * *' = daily at 03:00"
-                                />
-                              )}
-                            />
-                            <Controller
-                              name="backfillScheduleTimezone"
-                              control={control}
-                              render={({ field }) => (
-                                <TextField
-                                  {...field}
-                                  label="Timezone"
-                                  placeholder="UTC"
-                                  size="small"
-                                  fullWidth
-                                />
-                              )}
-                            />
-                          </Stack>
-                        )}
-                      </Box>
-                    </>
+                            {!isBigQueryDest && (
+                              <MenuItem value="hard">
+                                Hard delete (remove rows)
+                              </MenuItem>
+                            )}
+                            <MenuItem value="soft">
+                              Soft delete (set is_deleted flag)
+                            </MenuItem>
+                          </Select>
+                          <FormHelperText>
+                            {isBigQueryDest
+                              ? "BigQuery syncs always use soft delete (CDC tombstones)."
+                              : "How source deletions are applied in the destination"}
+                          </FormHelperText>
+                        </FormControl>
+                      )}
+                    />
                   )}
 
                   <Box
