@@ -29,6 +29,7 @@ import {
   PARQUET_ROW_LIMIT,
 } from "./parquet-build.service";
 import { inngest } from "../inngest/client";
+import { publishRealtimeEvent } from "./realtime.service";
 import { loggers } from "../logging";
 
 const logger = loggers.api("app-materialization");
@@ -605,6 +606,24 @@ export async function materializeAppBinding(input: {
         status: "ready",
         rowCount: parquet.rowCount,
         byteSize: parquet.byteSize,
+      });
+
+      // Bump the doc version + poke so open tabs refetch and load the fresh
+      // artifact. Foreground callers (the agent tool, the browser's status
+      // poller) converge on their own, but background builds — scheduled
+      // refreshes and the serve route's missing-artifact self-heal — would
+      // otherwise complete silently, leaving open tabs on the broken state.
+      const bumped = await MakoApp.findByIdAndUpdate(
+        appDoc._id,
+        { $inc: { version: 1 } },
+        { new: true },
+      );
+      publishRealtimeEvent(workspaceId, {
+        type: "app.updated",
+        appId,
+        version: bumped?.version ?? appDoc.version + 1,
+        updatedBy: "system",
+        origin: "save",
       });
 
       logger.info("Materialized app binding", {
