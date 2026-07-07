@@ -76,7 +76,7 @@ Use distinct **paths** for separate views (`/`, `/customers/42`) and **query par
 
 ## Versioning & Publishing
 
-Apps autosave every edit, so what you (or the AI agent) work on is a **draft**. To create an immutable checkpoint, **save a version** — this snapshots the current draft into version history *and* **publishes** it.
+Apps autosave every edit, so what you (or the AI agent) work on is a **draft**. Every app starts with a v1 `App created` checkpoint (also its first published version), so version history is never empty. To create a further immutable checkpoint, **save a version** — this snapshots the current draft into version history *and* **publishes** it.
 
 - Public and shared links render the **published** version, never the live draft, so viewers never see a half-finished edit.
 - **Restoring** a past version reverts the draft (snapshotting the current draft first, so it's never lossy) but does **not** auto-publish — save a version afterward to push the restored state live.
