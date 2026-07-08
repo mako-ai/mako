@@ -2,7 +2,6 @@ packages:
   - .
   - app
   - api
-  - website
   - docs
   - packages/*
 ignoredBuiltDependencies:
