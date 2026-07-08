@@ -7,6 +7,7 @@
 
 import { create } from "zustand";
 import { api, unwrapBody } from "../api";
+import { trackEvent } from "../lib/analytics";
 
 export interface BillingStatus {
   billingEnabled: boolean;
@@ -86,6 +87,8 @@ export const useBillingStore = create<BillingState>()(set => ({
           body: { successUrl, cancelUrl },
         }),
       ) as { url: string };
+      // Marketing funnel event: the user is being handed to Stripe Checkout.
+      trackEvent("checkout_started", { workspace_id: workspaceId });
       return result.url;
     } catch (err) {
       set({

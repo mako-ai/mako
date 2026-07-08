@@ -40,7 +40,7 @@ import {
   PanelResizeHandle,
   type ImperativePanelGroupHandle,
 } from "react-resizable-panels";
-import { trackPageView } from "./lib/analytics";
+import { trackEvent, trackPageView } from "./lib/analytics";
 import { setIframeDragGuard } from "./lib/iframe-drag-guard";
 import Sidebar, {
   SidebarUserMenu,
@@ -1015,6 +1015,30 @@ function DesktopAuthResume() {
   return <Navigate to="/desktop-auth" replace />;
 }
 
+// Fire checkout_completed exactly once when Stripe redirects back with
+// ?billing=success (see api billing route's default successUrl). The param is
+// stripped via replaceState so refreshes/back-navigation don't re-fire it.
+function CheckoutSuccessTracker() {
+  const location = useLocation();
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get("billing") !== "success") return;
+
+    trackEvent("checkout_completed");
+
+    params.delete("billing");
+    const query = params.toString();
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${location.pathname}${query ? `?${query}` : ""}${location.hash}`,
+    );
+  }, [location.search, location.pathname, location.hash]);
+
+  return null;
+}
+
 // Track page views on route changes for SPA
 function PageViewTracker() {
   const location = useLocation();
@@ -1046,6 +1070,7 @@ function App() {
   return (
     <>
       <PageViewTracker />
+      <CheckoutSuccessTracker />
       <DesktopAuthResume />
       <UpdateNotification />
       <Routes>
