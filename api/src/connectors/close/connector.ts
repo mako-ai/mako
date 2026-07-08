@@ -14,7 +14,11 @@ import {
   type WebhookCapabilities,
   type ConnectorEntitySchema,
 } from "../base/BaseConnector";
-import { resolveCloseEntitySchema, type CloseCustomField } from "./schema";
+import {
+  resolveCloseEntitySchema,
+  buildCloseSearchFieldSelection,
+  type CloseCustomField,
+} from "./schema";
 import axios, { AxiosInstance } from "axios";
 import * as crypto from "crypto";
 import { loggers } from "../../logging";
@@ -464,11 +468,22 @@ export class CloseConnector extends BaseConnector {
   }
 
   /**
-   * Flatten nested `custom` object into `custom_<cfId>` columns so that
-   * webhook payloads (nested object) match backfill payloads (flat keys via
-   * `_fields=custom.cf_xxx`).
+   * Flatten custom fields into `custom_<cfId>` columns so that webhook
+   * payloads (nested `custom` object) and backfill payloads (flat dotted keys
+   * via `_fields=custom.cf_xxx`) both land in the schema-declared columns.
    */
   private static flattenCustomFields(record: Record<string, unknown>): void {
+    // Flat dotted keys from explicit `_fields` selectors: custom.cf_x → custom_cf_x
+    for (const rawKey of Object.keys(record)) {
+      if (!/^custom\.cf_[A-Za-z0-9]+$/.test(rawKey)) continue;
+      const flatKey = rawKey.replace(/\./g, "_");
+      if (!(flatKey in record)) {
+        record[flatKey] = record[rawKey];
+      }
+      delete record[rawKey];
+    }
+
+    // Nested `custom` object (webhook payloads, Search API `custom` blob)
     if (
       record.custom &&
       typeof record.custom === "object" &&
@@ -484,6 +499,13 @@ export class CloseConnector extends BaseConnector {
       }
     }
   }
+
+  /** Entities whose payloads carry Close custom fields that must be flattened. */
+  private static readonly CUSTOM_FIELD_FLATTEN_ENTITIES = new Set([
+    "opportunities",
+    "contacts",
+    "custom_objects",
+  ]);
 
   private normalizeLeadRecord(
     record: Record<string, unknown>,
@@ -1232,6 +1254,24 @@ export class CloseConnector extends BaseConnector {
       fieldsMap[objectType] = activityFields;
     }
 
+    // Core objects: enumerate every custom field as an explicit
+    // `custom.cf_<id>` selector so values come back as flat keys (matching the
+    // schema's `custom_cf_*` columns) instead of relying solely on the
+    // aggregate `custom` blob. Resolved once per chunk; the custom-field
+    // schema lookup is cached per connector instance.
+    let coreFieldSelection: string[] | null = null;
+    if (
+      objectType === "lead" ||
+      objectType === "contact" ||
+      objectType === "opportunity"
+    ) {
+      const customFields = await this.fetchCustomFieldsViaSchema(objectType);
+      coreFieldSelection = buildCloseSearchFieldSelection(
+        fieldsMap[objectType] || [],
+        customFields,
+      );
+    }
+
     // Forward-scanning ASC date windows avoid the non-deterministic row drops
     // that occur with DESC sort + cursor resets.  Close's Search API cursor is
     // unstable under DESC sort: resetting the cursor mid-window can silently
@@ -1387,15 +1427,8 @@ export class CloseConnector extends BaseConnector {
           ],
         };
 
-        if (
-          objectType === "lead" ||
-          objectType === "contact" ||
-          objectType === "opportunity"
-        ) {
-          const baseFields = fieldsMap[objectType] || [];
-          body._fields = {
-            [objectType]: Array.from(new Set([...baseFields, "custom"])),
-          };
+        if (coreFieldSelection) {
+          body._fields = { [objectType]: coreFieldSelection };
         } else if (fieldsMap[objectType]) {
           body._fields = { [objectType]: fieldsMap[objectType] };
         }
@@ -1409,7 +1442,17 @@ export class CloseConnector extends BaseConnector {
 
         if (data.length > 0) {
           const records =
-            entity === "leads" ? this.normalizeLeadBatch(data) : data;
+            entity === "leads"
+              ? this.normalizeLeadBatch(data)
+              : CloseConnector.CUSTOM_FIELD_FLATTEN_ENTITIES.has(entity)
+                ? data.map((record: any) => {
+                    const normalized = {
+                      ...(record || {}),
+                    } as Record<string, unknown>;
+                    CloseConnector.flattenCustomFields(normalized);
+                    return normalized;
+                  })
+                : data;
           await onBatch(records);
           recordCount += records.length;
           if (onProgress) onProgress(recordCount, undefined);
@@ -2596,7 +2639,10 @@ export class CloseConnector extends BaseConnector {
       let payload = (record.payload || {}) as Record<string, unknown>;
       if (record.entity === "leads") {
         payload = this.normalizeLeadRecord(payload);
-      } else if (record.entity === "custom_objects") {
+      } else if (
+        CloseConnector.CUSTOM_FIELD_FLATTEN_ENTITIES.has(record.entity)
+      ) {
+        payload = { ...payload };
         CloseConnector.flattenCustomFields(payload);
       }
       return {
@@ -2628,7 +2674,8 @@ export class CloseConnector extends BaseConnector {
     let payload = (normalized.payload || {}) as Record<string, unknown>;
     if (entity === "leads") {
       payload = this.normalizeLeadRecord(payload);
-    } else if (entity === "custom_objects") {
+    } else if (CloseConnector.CUSTOM_FIELD_FLATTEN_ENTITIES.has(entity)) {
+      payload = { ...payload };
       CloseConnector.flattenCustomFields(payload);
     }
 
