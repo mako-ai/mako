@@ -1,0 +1,97 @@
+/*
+ * Editorial theme for Mako Docs.
+ *
+ * Matches the mako.ai marketing site design: cream paper / warm dark ink,
+ * Inter for text, JetBrains Mono for UI labels and code, sharp corners,
+ * and the site's purple as the single chromatic accent.
+ *
+ * Starlight is themed through its CSS custom properties; see
+ * https://starlight.astro.build/guides/css-and-tailwind/
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+/* Dark mode colors (Starlight default theme). */
+:root {
+  --sl-color-accent-low: #362b66;
+  --sl-color-accent: #6c4fd8;
+  --sl-color-accent-high: #cbc7f0;
+  --sl-color-white: #edeae3;
+  --sl-color-gray-1: #d9d5cc;
+  --sl-color-gray-2: #b8b3a9;
+  --sl-color-gray-3: #8a857b;
+  --sl-color-gray-4: #55504a;
+  --sl-color-gray-5: #3a362f;
+  --sl-color-gray-6: #201e1a;
+  --sl-color-black: #161513;
+
+  --sl-font: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --sl-font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* Light mode colors. */
+:root[data-theme='light'] {
+  --sl-color-accent-low: #e2dcf7;
+  --sl-color-accent: #6c4fd8;
+  --sl-color-accent-high: #3b2a80;
+  --sl-color-white: #1a1a1a;
+  --sl-color-gray-1: #2e2b26;
+  --sl-color-gray-2: #4a4741;
+  --sl-color-gray-3: #8a857b;
+  --sl-color-gray-4: #b8b3a9;
+  --sl-color-gray-5: #d8d2c6;
+  --sl-color-gray-6: #f2eee6;
+  --sl-color-gray-7: #f7f4ef;
+  --sl-color-black: #f7f4ef;
+}
+
+/* ---------- editorial details ---------- */
+
+/* Sharp corners everywhere — the marketing site has no border radius. */
+:root {
+  --sl-nav-pad-x: 1.25rem;
+}
+.sl-markdown-content code,
+.sl-markdown-content pre,
+.sl-markdown-content .expressive-code .frame,
+.sl-markdown-content aside,
+starlight-tabs,
+.starlight-aside,
+.sl-link-button,
+.pagination-links > a,
+site-search dialog,
+button[data-open-modal] {
+  border-radius: 0 !important;
+}
+
+/* Mono uppercase sidebar group labels, like the site's section labels. */
+#starlight__sidebar .group-label > .large {
+  font-family: var(--sl-font-mono);
+  font-size: var(--sl-text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--sl-color-gray-3);
+}
+
+/* Site title in mono uppercase ink, matching the marketing nav wordmark. */
+.site-title,
+.site-title span {
+  font-family: var(--sl-font-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--sl-color-white);
+}
+
+/* Inline code as a bordered cell on paper-2, like the marketing articles. */
+.sl-markdown-content code:not(pre code) {
+  border: 1px solid var(--sl-color-gray-5);
+  background: var(--sl-color-gray-6);
+  padding: 0.1em 0.35em;
+}
+
+/* Hairlines slightly warmer/stronger so panels read as drawn cells. */
+:root {
+  --sl-color-hairline-shade: var(--sl-color-gray-5);
+}

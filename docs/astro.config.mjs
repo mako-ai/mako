@@ -9,6 +9,8 @@ export default defineConfig({
   integrations: [
     starlight({
       title: "Mako Docs",
+      // Editorial theme matching the mako.ai marketing site.
+      customCss: ["./src/styles/editorial.css"],
       social: [
         {
           icon: "github",
