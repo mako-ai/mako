@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Box,
+  Chip,
+  MenuItem,
+  Select,
   Typography,
   ToggleButtonGroup,
   ToggleButton,
@@ -8,9 +11,11 @@ import {
 } from "@mui/material";
 import { Info as InfoIcon } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { containsDbtSchemaToken } from "@mako/schemas";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppStore } from "../store/appStore";
 import { useConsoleStore } from "../store/consoleStore";
+import { useDbtStore } from "../store/dbtStore";
 import { previewParquetArtifact } from "../lib/parquet-preview";
 import Console from "./Console";
 import ResultsTable from "./ResultsTable";
@@ -88,6 +93,29 @@ export default function AppBindingEditor({
 
   const resolveDbtCodeForPreview = useAppStore(s => s.resolveDbtCodeForPreview);
   const bindingDbtProjectId = binding?.dbtProjectId;
+
+  // dbt link: lets the user connect this binding to a workspace dbt project
+  // from the UI (previously agent-tool only). Linking enables the
+  // {{ dbt_schema }} token in the query and, with it, the app preview's
+  // environment (schema) switcher — including for materialized (parquet)
+  // bindings, which serve a live row-capped run while an override is active.
+  const dbtProjects = useDbtStore(s => s.projects);
+  const dbtProjectsLoaded = useDbtStore(s => s.projectsLoaded);
+  const fetchDbtProjects = useDbtStore(s => s.fetchProjects);
+  useEffect(() => {
+    if (workspaceId && !dbtProjectsLoaded) void fetchDbtProjects(workspaceId);
+  }, [workspaceId, dbtProjectsLoaded, fetchDbtProjects]);
+
+  const handleDbtLinkChange = useCallback(
+    (projectId: string) => {
+      if (!workspaceId) return;
+      updateBinding(appId, bindingId, {
+        dbtProjectId: projectId || undefined,
+      });
+      void persistApp(workspaceId, appId);
+    },
+    [workspaceId, appId, bindingId, updateBinding, persistApp],
+  );
 
   const handleExecute = useCallback(
     async (content: string, connectionId?: string, databaseId?: string) => {
@@ -236,6 +264,19 @@ export default function AppBindingEditor({
 
   const isParquet = binding.materialization === "parquet";
 
+  // Show the dbt link picker when the workspace has dbt projects, or when the
+  // binding is already linked (so the link stays visible/unlinkable even if
+  // its project was deleted).
+  const showDbtLink = dbtProjects.length > 0 || Boolean(binding.dbtProjectId);
+  const linkedDbtProjectMissing = Boolean(
+    binding.dbtProjectId &&
+      dbtProjectsLoaded &&
+      !dbtProjects.some(p => p._id === binding.dbtProjectId),
+  );
+  const dbtLinkedWithoutToken = Boolean(
+    binding.dbtProjectId && !containsDbtSchemaToken(binding.code),
+  );
+
   const leadingControls = (
     <>
       <Typography variant="caption" color="text.secondary">
@@ -277,6 +318,76 @@ export default function AppBindingEditor({
           style={{ opacity: 0.6, cursor: "help" }}
         />
       </Tooltip>
+      {showDbtLink && (
+        <>
+          <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+            dbt
+          </Typography>
+          <Select
+            size="small"
+            variant="outlined"
+            displayEmpty
+            value={binding.dbtProjectId ?? ""}
+            onChange={e => handleDbtLinkChange(e.target.value)}
+            sx={{ fontSize: "0.72rem", height: 26, minWidth: 110 }}
+            renderValue={value => {
+              if (!value) return "Not linked";
+              return (
+                dbtProjects.find(p => p._id === value)?.name ??
+                (linkedDbtProjectMissing ? "Deleted project" : "…")
+              );
+            }}
+          >
+            <MenuItem value="">Not linked</MenuItem>
+            {dbtProjects.map(p => (
+              <MenuItem key={p._id} value={p._id}>
+                {p.name}
+              </MenuItem>
+            ))}
+          </Select>
+          <Tooltip
+            title={
+              <Box sx={{ p: 0.5 }}>
+                <Typography variant="caption" display="block" sx={{ mb: 0.5 }}>
+                  Link this data source to a dbt project to write
+                  environment-agnostic SQL: use the{" "}
+                  <code>{"{{ dbt_schema }}"}</code> token instead of hardcoding
+                  a schema (e.g.{" "}
+                  <code>{"SELECT * FROM {{ dbt_schema }}.fct_orders"}</code>).
+                </Typography>
+                <Typography variant="caption" display="block">
+                  The token resolves to the project&apos;s prod environment for
+                  published apps and materialized snapshots, and the app preview
+                  gains an environment switcher to point the draft (including
+                  materialized bindings) at a dev schema.
+                </Typography>
+              </Box>
+            }
+          >
+            <InfoIcon
+              size={15}
+              strokeWidth={1.5}
+              style={{ opacity: 0.6, cursor: "help" }}
+            />
+          </Tooltip>
+          {dbtLinkedWithoutToken && (
+            <Tooltip
+              title={
+                'Add the {{ dbt_schema }} token to the query (e.g. "FROM ' +
+                '{{ dbt_schema }}.my_model") to enable the schema switcher ' +
+                "in the app preview."
+              }
+            >
+              <Chip
+                size="small"
+                color="warning"
+                variant="outlined"
+                label="No {{ dbt_schema }} token"
+              />
+            </Tooltip>
+          )}
+        </>
+      )}
     </>
   );
 
