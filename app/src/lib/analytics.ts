@@ -16,7 +16,9 @@ type MarketingEvent =
   | "workspace_created"
   | "onboarding_completed"
   | "email_verified"
-  | "demo_database_created";
+  | "demo_database_created"
+  | "checkout_started"
+  | "checkout_completed";
 
 // Product events - sent to PostHog via GTM for product analytics
 type ProductEvent =
