@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mako"
+version = "0.1.0"
+description = "Mako SDK — read Mako-managed data sources from notebooks as DataFrames."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+authors = [{ name = "Mako" }]
+keywords = ["mako", "analytics", "notebook", "sql", "dataframe"]
+dependencies = [
+  # Arrow is the wire format for reads (zero-copy into pandas/polars).
+  "pyarrow>=14",
+  "pandas>=1.3",
+]
+
+[project.optional-dependencies]
+polars = ["polars>=0.20"]
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://mako.ai"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mako"]
