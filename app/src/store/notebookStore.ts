@@ -44,6 +44,10 @@ interface NotebookStore {
   createNotebook: (name?: string) => Promise<NotebookDoc | null>;
   getNotebook: (id: string) => Promise<NotebookDoc | null>;
   deleteNotebook: (id: string) => Promise<void>;
+  updateNotebook: (
+    id: string,
+    patch: { name?: string; blocks?: NotebookBlock[] },
+  ) => Promise<NotebookDoc | null>;
 }
 
 export const useNotebookStore = create<NotebookStore>((set, get) => ({
@@ -109,6 +113,35 @@ export const useNotebookStore = create<NotebookStore>((set, get) => ({
       set({
         error: e instanceof Error ? e.message : "Failed to delete notebook",
       });
+    }
+  },
+
+  updateNotebook: async (id, patch) => {
+    const ws = currentWorkspaceId();
+    if (!ws) return null;
+    try {
+      const res = await apiClient.patch<{ data: NotebookDoc }>(
+        `/workspaces/${ws}/notebooks/${id}`,
+        patch,
+      );
+      const doc = res.data ?? null;
+      // Reflect a rename in the explorer list without reloading it on every
+      // block autosave.
+      if (doc && patch.name !== undefined) {
+        set(state => ({
+          notebooks: state.notebooks.map(n =>
+            n.id === id
+              ? { ...n, name: doc.name, updatedAt: doc.updatedAt }
+              : n,
+          ),
+        }));
+      }
+      return doc;
+    } catch (e) {
+      set({
+        error: e instanceof Error ? e.message : "Failed to save notebook",
+      });
+      return null;
     }
   },
 }));
