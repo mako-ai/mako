@@ -111,6 +111,25 @@ function toolInputJsonSchema(tool: BridgeableTool): Record<string, unknown> {
   return { type: "object", properties: {} };
 }
 
+/**
+ * Escape hatch for tools whose result is richer than text (e.g. render_app
+ * screenshots): a result of shape `{ mcpContent: [...] }` is passed through
+ * as the MCP content array verbatim instead of being JSON-stringified.
+ */
+function extractMcpContent(
+  result: unknown,
+): Array<Record<string, unknown>> | null {
+  if (
+    typeof result === "object" &&
+    result !== null &&
+    Array.isArray((result as { mcpContent?: unknown }).mcpContent)
+  ) {
+    return (result as { mcpContent: Array<Record<string, unknown>> })
+      .mcpContent;
+  }
+  return null;
+}
+
 function serializeToolResult(result: unknown): string {
   const text =
     typeof result === "string" ? result : JSON.stringify(result, null, 2);
@@ -181,10 +200,12 @@ export function buildMakoMcpServer(
         toolCallId: nanoid(),
         messages: [],
       });
+      const richContent = extractMcpContent(result);
+      if (richContent) {
+        return { content: richContent };
+      }
       return {
-        content: [
-          { type: "text" as const, text: serializeToolResult(result) },
-        ],
+        content: [{ type: "text" as const, text: serializeToolResult(result) }],
       };
     } catch (error) {
       logger.error("MCP tool execution failed", {

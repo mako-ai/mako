@@ -18,6 +18,10 @@ import {
   DEFAULT_PREVIEW_TTL_SECONDS,
   MAX_PREVIEW_TTL_SECONDS,
 } from "../services/app-preview-token.service";
+import {
+  renderAppPreview,
+  isAppRenderEnabled,
+} from "../services/app-render.service";
 import type { MakoMcpContext } from "./mako-mcp-server";
 
 function clientBaseUrl(): string {
@@ -27,6 +31,19 @@ function clientBaseUrl(): string {
     "http://localhost:5173"
   );
 }
+
+const renderAppSchema = z.object({
+  appId: z.string().describe("The app whose DRAFT should be rendered"),
+  width: z.number().int().min(320).max(1920).optional(),
+  height: z.number().int().min(320).max(1920).optional(),
+  timeoutMs: z
+    .number()
+    .int()
+    .min(5_000)
+    .max(45_000)
+    .optional()
+    .describe("How long to wait for the app to finish rendering (ms)"),
+});
 
 const createPreviewTokenSchema = z.object({
   appId: z.string().describe("The app whose DRAFT should be previewable"),
@@ -82,6 +99,70 @@ export function createMcpPreviewTools(context: MakoMcpContext) {
           note:
             "Open this URL in a browser to render the draft. Console lines " +
             "prefixed [mako-preview-error] carry render/build errors as JSON.",
+        };
+      },
+    }),
+
+    render_app: tool({
+      description:
+        "Render the app's current DRAFT in a server-side headless browser " +
+        "and return its render status, any build/runtime errors, filtered " +
+        "console output, and a screenshot. Use this after edits to verify " +
+        "the app actually works — it needs no browser on your side. " +
+        (isAppRenderEnabled()
+          ? ""
+          : "NOTE: server-side rendering is not configured on this " +
+            "deployment; use create_preview_token with your own browser instead."),
+      inputSchema: renderAppSchema,
+      execute: async ({ appId, width, height, timeoutMs }) => {
+        if (!Types.ObjectId.isValid(appId)) {
+          return { success: false, error: `Invalid app ID: ${appId}` };
+        }
+        const app = await MakoApp.findOne({
+          _id: new Types.ObjectId(appId),
+          workspaceId: new Types.ObjectId(workspaceId),
+        })
+          .select({ _id: 1 })
+          .lean();
+        if (!app) {
+          return {
+            success: false,
+            error: `App ${appId} not found. Use list_open_apps to see available apps.`,
+          };
+        }
+
+        // Short-lived token minted per render; never returned to the caller.
+        const { token } = mintAppPreviewToken({
+          appId,
+          workspaceId,
+          ttlSeconds: 300,
+        });
+        const result = await renderAppPreview({
+          url: `${clientBaseUrl()}/preview/${token}`,
+          width,
+          height,
+          timeoutMs,
+        });
+
+        const summary = {
+          success: result.success,
+          status: result.status,
+          errors: result.errors,
+          consoleLogs: result.consoleLogs,
+          ...(result.error ? { error: result.error } : {}),
+        };
+        if (!result.screenshotBase64) {
+          return summary;
+        }
+        return {
+          mcpContent: [
+            { type: "text", text: JSON.stringify(summary, null, 2) },
+            {
+              type: "image",
+              data: result.screenshotBase64,
+              mimeType: "image/jpeg",
+            },
+          ],
         };
       },
     }),
