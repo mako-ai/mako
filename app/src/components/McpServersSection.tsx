@@ -801,9 +801,10 @@ function ServerDetail({
   };
 
   /**
-   * The user's own per-tool permission (Claude-style): Always allow / Ask /
-   * Block, stored as a grant ("Ask" simply clears it — the tool prompts on
-   * next use). Capped by the admin ceiling via disabled options.
+   * The user's own permission (Claude-style): Always allow / Ask / Block,
+   * stored as a grant ("Ask" simply clears it — the tool prompts on next
+   * use). `toolName` may be `"*"` for a server-wide grant. Capped by the
+   * admin ceiling via disabled options.
    */
   const handleSetUserPermission = async (
     toolName: string,
@@ -811,19 +812,37 @@ function ServerDetail({
     grantId?: string,
   ) => {
     if (!currentWorkspace) return;
-    if (value === "ask") {
-      if (grantId) {
-        await revokeGrant(currentWorkspace.id, server.id, grantId);
+    try {
+      if (value === "ask") {
+        if (grantId) {
+          await revokeGrant(currentWorkspace.id, server.id, grantId);
+        }
+        return;
       }
-      return;
+      await saveGrant(
+        currentWorkspace.id,
+        server.id,
+        toolName,
+        value === "always_allow" ? "always_allow" : "always_deny",
+      );
+    } catch (error) {
+      onNotify(
+        error instanceof Error ? error.message : "Failed to update permission",
+        "error",
+      );
     }
-    await saveGrant(
-      currentWorkspace.id,
-      server.id,
-      toolName,
-      value === "always_allow" ? "always_allow" : "always_deny",
-    );
   };
+
+  const serverWideGrant = myGrants.find(g => g.toolName === "*");
+  const serverWideValue =
+    serverWideGrant?.decision === "always_allow"
+      ? "always_allow"
+      : serverWideGrant?.decision === "always_deny"
+        ? "block"
+        : "ask";
+  const canServerWideAlwaysAllow = server.cachedTools.some(
+    t => t.restriction === "always",
+  );
 
   const handleDelete = async () => {
     if (!currentWorkspace) return;
@@ -1049,10 +1068,59 @@ function ServerDetail({
               color="text.secondary"
               sx={{ display: "block", mb: 1 }}
             >
-              These choices apply only to you. Tools ask on first use until you
-              decide — pick a permission here or from the approval prompt in
-              chat.
+              These choices apply only to you. Read tools run without prompting.
+              Write tools ask until you Always allow — per tool below, or for
+              the whole server.
             </Typography>
+            <Stack
+              direction="row"
+              alignItems="center"
+              spacing={1}
+              useFlexGap
+              sx={{
+                mb: 1,
+                py: 0.75,
+                px: 1,
+                borderRadius: 1,
+                bgcolor: "action.hover",
+                flexWrap: "wrap",
+                rowGap: 0.5,
+              }}
+            >
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography variant="body2" fontWeight={600}>
+                  All tools on {server.name}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Server-wide Always allow covers every tool the admin still
+                  permits. Per-tool Block below overrides it. Destructive tools
+                  stay Ask unless an admin unlocks them.
+                </Typography>
+              </Box>
+              <FormControl size="small" sx={{ minWidth: 160 }}>
+                <Select
+                  value={serverWideValue}
+                  disabled={!currentWorkspace}
+                  onChange={e =>
+                    void handleSetUserPermission(
+                      "*",
+                      e.target.value as "always_allow" | "ask" | "block",
+                      serverWideGrant?.id,
+                    )
+                  }
+                  sx={{ fontSize: 13 }}
+                >
+                  <MenuItem
+                    value="always_allow"
+                    disabled={!canServerWideAlwaysAllow}
+                  >
+                    Always allow
+                  </MenuItem>
+                  <MenuItem value="ask">Ask (default)</MenuItem>
+                  <MenuItem value="block">Block all</MenuItem>
+                </Select>
+              </FormControl>
+            </Stack>
             <Stack spacing={0.25}>
               {server.cachedTools.map(tool => {
                 const grant = myGrants.find(g => g.toolName === tool.name);
@@ -1063,6 +1131,14 @@ function ServerDetail({
                       ? "block"
                       : "ask";
                 const blockedByAdmin = tool.restriction === "block";
+                const inheritedAlways =
+                  !grant &&
+                  serverWideGrant?.decision === "always_allow" &&
+                  tool.restriction === "always" &&
+                  tool.riskTier !== "read";
+                const ceilingOverridesGrant =
+                  grant?.decision === "always_allow" &&
+                  tool.restriction === "ask";
                 return (
                   <Stack
                     key={tool.name}
@@ -1079,13 +1155,30 @@ function ServerDetail({
                       "&:hover": { bgcolor: "action.hover" },
                     }}
                   >
-                    <Typography
-                      variant="body2"
-                      sx={{ fontFamily: "monospace", flex: 1, minWidth: 0 }}
-                      noWrap
-                    >
-                      {tool.name}
-                    </Typography>
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography
+                        variant="body2"
+                        sx={{ fontFamily: "monospace" }}
+                        noWrap
+                      >
+                        {tool.name}
+                      </Typography>
+                      {tool.riskTier === "read" && value === "ask" && (
+                        <Typography variant="caption" color="text.secondary">
+                          Read — runs without prompting
+                        </Typography>
+                      )}
+                      {inheritedAlways && (
+                        <Typography variant="caption" color="text.secondary">
+                          Covered by server-wide Always allow
+                        </Typography>
+                      )}
+                      {ceilingOverridesGrant && (
+                        <Typography variant="caption" color="warning.main">
+                          Always allow saved, but admin Ask still prompts
+                        </Typography>
+                      )}
+                    </Box>
                     {blockedByAdmin ? (
                       <Typography variant="caption" color="text.disabled">
                         Blocked by admin

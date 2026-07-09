@@ -45,19 +45,20 @@ Within an allowed scope, each discovered tool is assigned a **risk tier**:
 
 ## Approval flow
 
-MCP tool calls use a Claude-style human-in-the-loop approval, surfaced as an **approval card** in chat with an input preview and risk badge. Three choices:
+MCP tool calls use a Claude-style human-in-the-loop approval, surfaced as an **approval card** in chat with an input preview and risk badge. Choices:
 
 - **Allow once** — run this call now.
-- **Always allow** — run now and persist an `always_allow` grant so future calls of this tool skip the prompt.
+- **Always allow this tool** — run now and persist an `always_allow` grant so future calls of **this tool** skip the prompt.
+- **Always allow all tools from this server** — same, but stores a server-wide `*` grant covering every tool the admin ceiling still permits (per-tool Block overrides it).
 - **Deny / Block** — refuse this call; a persisted `always_deny` grant refuses future calls at execution without prompting.
 
 Default behavior by tier:
 
-- **read** tools auto-run (no prompt).
-- **write** tools prompt unless you've granted **always allow**.
-- **destructive** tools always prompt and can only be unlocked by a workspace admin.
+- **read** tools auto-run (no prompt) when the admin ceiling is Always.
+- **write** tools prompt unless you've granted **always allow** (per-tool or server-wide).
+- **destructive** tools always prompt by default (admin ceiling Ask) and can only be unlocked by a workspace admin setting that tool's restriction to Always.
 
-Grants are per-user and per-tool. Manage or revoke them under **Settings → MCP Servers**.
+Grants are per-user. Manage or revoke them under **Settings → MCP Servers** (including a server-wide Always allow control). Admin restrictions are a *ceiling*: if a tool is set to Ask, your Always allow grant is ignored and the prompt still appears.
 
 Tools are namespaced `mcp_<server>_<tool>` in the agent runtime, and are treated as cross-cutting across modes. The [plan gate](/skills/) keeps only read-tier MCP tools available during planning.
 

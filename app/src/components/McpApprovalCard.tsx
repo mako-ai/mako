@@ -6,13 +6,15 @@
  *          { input preview }
  *          [ Always allow ⏎ | v ]  [ Deny esc ]
  *
- * "Always allow" persists a per-user grant (each user decides only for
- * themselves) and is offered only when the workspace admin's restriction
- * ceiling for the tool permits it — otherwise "Allow once ⏎" is primary.
+ * "Always allow" persists a per-user grant for this tool. The overflow menu
+ * also offers "Always allow all tools from <server>" (server-wide `*` grant).
+ * Both are offered only when the workspace admin's restriction ceiling for
+ * the tool permits Always allow — otherwise "Allow once ⏎" is primary.
  * Enter triggers the primary action, Escape denies.
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Alert,
   Box,
   Button,
   ButtonGroup,
@@ -32,6 +34,9 @@ import {
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useMcpStore } from "../store/mcpStore";
+
+/** Sentinel matching api MCP_SERVER_WIDE_GRANT_TOOL. */
+const SERVER_WIDE_GRANT = "*";
 
 export interface McpApprovalResponseArgs {
   approvalId: string;
@@ -111,6 +116,7 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
   const saveGrant = useMcpStore(s => s.saveGrant);
   const [busy, setBusy] = useState<"once" | "always" | "deny" | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
+  const [grantError, setGrantError] = useState<string | null>(null);
   const busyRef = useRef(busy);
   busyRef.current = busy;
 
@@ -131,10 +137,15 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
     }
   }, [pendingForInfo, currentWorkspace]);
 
-  const respond = async (approved: boolean, always: boolean) => {
+  const respond = async (
+    approved: boolean,
+    always: boolean,
+    scope: "tool" | "server" = "tool",
+  ) => {
     if (busyRef.current) return;
     setBusy(always ? "always" : approved ? "once" : "deny");
     setMenuAnchor(null);
+    setGrantError(null);
     try {
       if (always && approved && currentWorkspace && toolInfo) {
         // Persist the grant first so the server-side needsApproval check
@@ -142,12 +153,20 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
         await saveGrant(
           currentWorkspace.id,
           toolInfo.serverId,
-          toolInfo.toolName,
+          scope === "server" ? SERVER_WIDE_GRANT : toolInfo.toolName,
           "always_allow",
         );
       }
-    } catch {
-      // Grant persistence failing shouldn't block the one-time approval.
+    } catch (error) {
+      // Grant persistence failing shouldn't block the one-time approval, but
+      // surface it — otherwise "Always allow" looks like it stuck when it didn't.
+      if (always && approved) {
+        setGrantError(
+          error instanceof Error
+            ? error.message
+            : "Could not save Always allow — this call will still run once.",
+        );
+      }
     } finally {
       onRespond({ approvalId, approved });
       setBusy(null);
@@ -178,7 +197,7 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
         if (isTextInput && inputText.trim().length > 0) return;
         event.preventDefault();
         event.stopPropagation();
-        void respond(true, primaryIsAlways);
+        void respond(true, primaryIsAlways, "tool");
       } else if (event.key === "Escape") {
         event.preventDefault();
         void respond(false, false);
@@ -276,6 +295,16 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
             {secondChip}
           </Stack>
 
+          {pending && !canAlwaysAllow && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mt: 0.5 }}
+            >
+              Workspace policy requires approval each time for this tool.
+            </Typography>
+          )}
+
           {inputPreview && (
             <Box
               component="pre"
@@ -296,6 +325,12 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
             >
               {inputPreview}
             </Box>
+          )}
+
+          {grantError && (
+            <Alert severity="warning" sx={{ mt: 1, py: 0 }}>
+              {grantError}
+            </Alert>
           )}
 
           {pending && (
@@ -320,7 +355,7 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
               >
                 <Button
                   disabled={busy !== null}
-                  onClick={() => void respond(true, primaryIsAlways)}
+                  onClick={() => void respond(true, primaryIsAlways, "tool")}
                   startIcon={
                     busy === (primaryIsAlways ? "always" : "once") ? (
                       <CircularProgress size={12} color="inherit" />
@@ -335,7 +370,7 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
                       : "mcp-approval-allow-once"
                   }
                 >
-                  {primaryIsAlways ? "Always allow" : "Allow once"}
+                  {primaryIsAlways ? "Always allow this tool" : "Allow once"}
                 </Button>
                 {primaryIsAlways && (
                   <Button
@@ -361,6 +396,15 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
                 >
                   Allow once
                 </MenuItem>
+                {canAlwaysAllow && serverName && (
+                  <MenuItem
+                    dense
+                    onClick={() => void respond(true, true, "server")}
+                    data-testid="mcp-approval-always-allow-server"
+                  >
+                    Always allow all tools from {serverName}
+                  </MenuItem>
+                )}
               </Menu>
               <Button
                 variant="outlined"
