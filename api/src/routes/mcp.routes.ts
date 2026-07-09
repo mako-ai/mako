@@ -26,6 +26,7 @@ import {
 } from "../openapi/core";
 import {
   type IMcpServer,
+  MCP_SERVER_WIDE_GRANT_TOOL,
   McpConnectionConfig,
   McpServer,
   McpToolGrant,
@@ -1044,6 +1045,10 @@ mcpRoutes.openapi(
 );
 
 const GrantSchema = z.object({
+  /**
+   * Raw MCP tool name, or `"*"` for a server-wide Always allow / Block grant
+   * (applies to every tool the admin ceiling still permits).
+   */
   toolName: z.string().min(1),
   decision: z.enum(["always_allow", "always_deny"]),
 });
@@ -1132,26 +1137,46 @@ mcpRoutes.openapi(
         return c.json({ success: false, error: "Invalid request body" }, 400);
       }
       const { toolName, decision } = parsed.data;
+      const isServerWide = toolName === MCP_SERVER_WIDE_GRANT_TOOL;
 
-      const cachedTool = server.cachedTools.find(t => t.name === toolName);
-      if (!cachedTool) {
-        return c.json({ success: false, error: "Unknown tool" }, 404);
-      }
-      // The admin restriction is a ceiling: users can always choose stricter
-      // (always_deny/Block is always permitted), but "Always allow" requires
-      // an "always" ceiling.
-      const ceiling = mcpToolRestriction(server, cachedTool);
-      if (decision === "always_allow" && ceiling !== "always") {
-        return c.json(
-          {
-            success: false,
-            error:
-              ceiling === "block"
-                ? "This tool has been blocked by a workspace admin."
-                : "A workspace admin restricted this tool to Ask — it cannot be always-allowed.",
-          },
-          403,
+      if (!isServerWide) {
+        const cachedTool = server.cachedTools.find(t => t.name === toolName);
+        if (!cachedTool) {
+          return c.json({ success: false, error: "Unknown tool" }, 404);
+        }
+        // The admin restriction is a ceiling: users can always choose stricter
+        // (always_deny/Block is always permitted), but "Always allow" requires
+        // an "always" ceiling.
+        const ceiling = mcpToolRestriction(server, cachedTool);
+        if (decision === "always_allow" && ceiling !== "always") {
+          return c.json(
+            {
+              success: false,
+              error:
+                ceiling === "block"
+                  ? "This tool has been blocked by a workspace admin."
+                  : "A workspace admin restricted this tool to Ask — it cannot be always-allowed.",
+            },
+            403,
+          );
+        }
+      } else if (decision === "always_allow") {
+        // Server-wide Always allow only covers tools with an "always" ceiling;
+        // ask/block tools still prompt or stay hidden. Require at least one
+        // always-allowable tool so the grant isn't a silent no-op.
+        const hasAlwaysCeiling = server.cachedTools.some(
+          t => mcpToolRestriction(server, t) === "always",
         );
+        if (!hasAlwaysCeiling) {
+          return c.json(
+            {
+              success: false,
+              error:
+                "No tools on this server can be always-allowed — a workspace admin restricted them to Ask or Block.",
+            },
+            403,
+          );
+        }
       }
 
       await McpToolGrant.updateOne(
@@ -1164,6 +1189,7 @@ mcpRoutes.openapi(
         serverId: server._id.toString(),
         toolName,
         decision,
+        serverWide: isServerWide,
       });
       return c.json({ success: true });
     } catch (error) {

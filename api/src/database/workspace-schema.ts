@@ -5183,12 +5183,22 @@ export const McpOAuthFlow = mongoose.model<IMcpOAuthFlow>(
 
 export type McpGrantDecision = "always_allow" | "always_deny";
 
+/**
+ * Sentinel toolName for a per-user, server-wide grant. Applies to every tool
+ * on the server that the admin ceiling still permits (ask/block ceilings win).
+ */
+export const MCP_SERVER_WIDE_GRANT_TOOL = "*";
+
 export interface IMcpToolGrant extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   serverId: Types.ObjectId;
   /** Grants are always per-user, even on shared workspace credentials. */
   userId: string;
+  /**
+   * Raw MCP tool name, or {@link MCP_SERVER_WIDE_GRANT_TOOL} (`"*"`) for a
+   * server-wide Always allow / Block decision.
+   */
   toolName: string;
   decision: McpGrantDecision;
   lastUsedAt?: Date;

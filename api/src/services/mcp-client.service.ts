@@ -10,8 +10,10 @@
  *  - Tool *executions* open a short-lived client per call (connect → call →
  *    close). No pooling — every call is bound to exactly one workspace/user
  *    credential, so credentials can never bleed across tenants.
- *  - Write-risk tiers + per-user grants drive the AI SDK's native
- *    `needsApproval` human-in-the-loop flow (allow once / always allow).
+ *  - Risk tiers + per-user grants (per-tool or server-wide `*`) drive the
+ *    AI SDK's native `needsApproval` flow (allow once / always allow).
+ *    Read-tier tools with an open admin ceiling auto-run; writes prompt
+ *    until granted.
  */
 
 import { createMCPClient } from "@ai-sdk/mcp";
@@ -22,7 +24,9 @@ import { Types } from "mongoose";
 import {
   type IMcpCachedTool,
   type IMcpServer,
+  type McpGrantDecision,
   type McpToolRestriction,
+  MCP_SERVER_WIDE_GRANT_TOOL,
   McpConnectionConfig,
   McpServer,
   McpToolGrant,
@@ -435,19 +439,53 @@ async function resolveActiveServers(
 }
 
 /**
- * Approval decision for one tool call, following the Claude-connectors
- * model: the admin restriction is a *ceiling*, and the user's per-tool
- * choice (grant) picks a setting up to that ceiling.
+ * Resolve the effective per-user grant for a tool.
  *
- * Every tool — reads included — prompts on first use until the user decides
- * (Claude behavior: access is granted by the individual, never implicitly).
+ * Precedence: tool-specific grant > server-wide (`*`) grant > none.
+ * A tool-level Block always wins over a server-wide Always allow.
+ */
+export async function resolveMcpToolGrant(params: {
+  serverId: Types.ObjectId | string;
+  userId: string | undefined;
+  toolName: string;
+}): Promise<{ decision: McpGrantDecision; toolName: string } | null> {
+  const { serverId, userId, toolName } = params;
+  if (!userId) return null;
+
+  const grants = await McpToolGrant.find({
+    serverId,
+    userId,
+    toolName: { $in: [toolName, MCP_SERVER_WIDE_GRANT_TOOL] },
+  }).lean();
+
+  const toolGrant = grants.find(g => g.toolName === toolName);
+  if (toolGrant) {
+    return { decision: toolGrant.decision, toolName: toolGrant.toolName };
+  }
+  const serverGrant = grants.find(
+    g => g.toolName === MCP_SERVER_WIDE_GRANT_TOOL,
+  );
+  if (serverGrant) {
+    return {
+      decision: serverGrant.decision,
+      toolName: serverGrant.toolName,
+    };
+  }
+  return null;
+}
+
+/**
+ * Approval decision for one tool call, following the Claude-connectors
+ * model: the admin restriction is a *ceiling*, and the user's grant
+ * (per-tool or server-wide `*`) picks a setting up to that ceiling.
  *
  * Resolution:
  *  - blocked tools never get here (filtered at build time)
- *  - user chose Block (always_deny) → no prompt; execute() refuses
- *  - ceiling "ask" → always prompt (user's Always allow can't apply)
- *  - user chose Always allow → auto-run
- *  - no choice yet → prompt
+ *  - user chose Block (always_deny, tool or `*`) → no prompt; execute() refuses
+ *  - ceiling "ask" → always prompt (Always allow grants can't apply)
+ *  - read-tier tools with an "always" ceiling → auto-run (no grant needed)
+ *  - user chose Always allow (tool or `*`) → auto-run
+ *  - no choice yet on a write tool → prompt
  */
 async function mcpNeedsApproval(params: {
   server: IMcpServer;
@@ -456,20 +494,20 @@ async function mcpNeedsApproval(params: {
 }): Promise<boolean> {
   const { server, tool, userId } = params;
   const ceiling = mcpToolRestriction(server, tool);
-
-  const grant = userId
-    ? await McpToolGrant.findOne({
-        serverId: server._id,
-        userId,
-        toolName: tool.name,
-      }).lean()
-    : null;
+  const grant = await resolveMcpToolGrant({
+    serverId: server._id,
+    userId,
+    toolName: tool.name,
+  });
 
   if (grant?.decision === "always_deny") {
     // No approval prompt: execute() returns the denial to the model.
     return false;
   }
   if (ceiling === "ask") return true;
+  // Read tools with an open ceiling don't need a grant — matches the product
+  // docs and stops Close-style connectors from prompting on every search.
+  if (mcpToolRiskTier(server, tool) === "read") return false;
   return grant?.decision !== "always_allow";
 }
 
@@ -554,13 +592,11 @@ export async function buildMcpToolsForChat(params: {
             };
           }
 
-          const grant = userId
-            ? await McpToolGrant.findOne({
-                serverId: server._id,
-                userId,
-                toolName: cachedTool.name,
-              }).lean()
-            : null;
+          const grant = await resolveMcpToolGrant({
+            serverId: server._id,
+            userId,
+            toolName: cachedTool.name,
+          });
 
           if (grant?.decision === "always_deny") {
             logger.info("MCP tool call denied by user grant", {
@@ -568,6 +604,7 @@ export async function buildMcpToolsForChat(params: {
               userId,
               serverId: server._id.toString(),
               toolName: cachedTool.name,
+              grantToolName: grant.toolName,
             });
             return {
               success: false,
@@ -600,7 +637,11 @@ export async function buildMcpToolsForChat(params: {
             });
             if (grant) {
               void McpToolGrant.updateOne(
-                { _id: grant._id },
+                {
+                  serverId: server._id,
+                  userId,
+                  toolName: grant.toolName,
+                },
                 { $set: { lastUsedAt: new Date() } },
               ).catch(() => undefined);
             }

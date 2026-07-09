@@ -450,10 +450,10 @@ function testCryptoRoundTrip() {
 
 /**
  * Grants → approval flow, against in-memory Mongo:
- * read tools never need approval; write tools need approval until an
- * always_allow grant exists; always_deny tools skip the prompt and refuse
- * at execute time; destructive tools stay prompt-only unless the admin
- * unlocked grants.
+ * read tools auto-run (no grant); write tools need approval until an
+ * always_allow grant (tool or server-wide `*`) exists; always_deny tools
+ * skip the prompt and refuse at execute time; destructive tools stay
+ * prompt-only unless the admin unlocked grants.
  */
 async function testGrantsAndNeedsApproval() {
   const replSet = await MongoMemoryReplSet.create({
@@ -489,6 +489,12 @@ async function testGrantsAndNeedsApproval() {
           inputSchema: { type: "object", properties: {} },
         },
         {
+          name: "lead_update",
+          description: "Update a lead",
+          annotations: { readOnlyHint: false, destructiveHint: false },
+          inputSchema: { type: "object", properties: {} },
+        },
+        {
           name: "lead_delete",
           description: "Delete a lead",
           annotations: { destructiveHint: true },
@@ -510,7 +516,7 @@ async function testGrantsAndNeedsApproval() {
       });
 
     let chatTools = await loadTools();
-    assert.equal(chatTools.allToolNames.length, 3);
+    assert.equal(chatTools.allToolNames.length, 4);
     assert.deepEqual(chatTools.readOnlyToolNames, [
       "mcp_close_crm_lead_search",
     ]);
@@ -528,23 +534,49 @@ async function testGrantsAndNeedsApproval() {
       return fn === true;
     };
 
-    // Claude model: EVERY tool prompts on first use — reads included —
-    // until the user chooses a permission.
-    assert.equal(await needsApproval("mcp_close_crm_lead_search"), true);
+    // Read tools auto-run; write/destructive still prompt on first use.
+    assert.equal(await needsApproval("mcp_close_crm_lead_search"), false);
     assert.equal(await needsApproval("mcp_close_crm_lead_create"), true);
+    assert.equal(await needsApproval("mcp_close_crm_lead_update"), true);
     assert.equal(await needsApproval("mcp_close_crm_lead_delete"), true);
 
-    // "Always allow" grant on the read tool: no more prompts.
+    // Server-wide Always allow covers every always-ceiling write tool.
     await McpToolGrant.create({
       workspaceId,
       serverId: server._id,
       userId,
-      toolName: "lead_search",
+      toolName: "*",
       decision: "always_allow",
     });
-    assert.equal(await needsApproval("mcp_close_crm_lead_search"), false);
+    assert.equal(await needsApproval("mcp_close_crm_lead_create"), false);
+    assert.equal(await needsApproval("mcp_close_crm_lead_update"), false);
+    // Destructive still prompts — default ceiling is "ask".
+    assert.equal(await needsApproval("mcp_close_crm_lead_delete"), true);
 
-    // "Always allow" grant on the write tool: no more prompts.
+    // Tool-level Block beats a server-wide Always allow.
+    await McpToolGrant.create({
+      workspaceId,
+      serverId: server._id,
+      userId,
+      toolName: "lead_update",
+      decision: "always_deny",
+    });
+    assert.equal(await needsApproval("mcp_close_crm_lead_update"), false);
+    const updateTool = chatTools.tools["mcp_close_crm_lead_update"];
+    assert.ok(updateTool.execute);
+    const updateDenied = (await updateTool.execute(
+      {},
+      { toolCallId: "t", messages: [], experimental_context: undefined },
+    )) as { success: boolean; denied?: boolean };
+    assert.equal(updateDenied.success, false);
+    assert.equal(updateDenied.denied, true);
+
+    // Clear the server-wide grant; per-tool Always allow still works.
+    await McpToolGrant.deleteOne({
+      serverId: server._id,
+      userId,
+      toolName: "*",
+    });
     await McpToolGrant.create({
       workspaceId,
       serverId: server._id,
@@ -552,7 +584,9 @@ async function testGrantsAndNeedsApproval() {
       toolName: "lead_create",
       decision: "always_allow",
     });
+    chatTools = await loadTools();
     assert.equal(await needsApproval("mcp_close_crm_lead_create"), false);
+    assert.equal(await needsApproval("mcp_close_crm_lead_update"), false); // still blocked
 
     // Destructive tool: defaults to an "ask" ceiling, so an always_allow
     // grant is IGNORED until an admin explicitly relaxes that tool.
@@ -608,6 +642,12 @@ async function testGrantsAndNeedsApproval() {
       { _id: server._id },
       { $set: { "toolPolicy.restrictions": { lead_delete: "always" } } },
     );
+    // Drop the tool-level block so lead_update is promptable again.
+    await McpToolGrant.deleteOne({
+      serverId: server._id,
+      userId,
+      toolName: "lead_update",
+    });
     chatTools = await loadTools();
 
     // "Always deny": no prompt, and execute refuses without contacting the
@@ -615,6 +655,7 @@ async function testGrantsAndNeedsApproval() {
     await McpToolGrant.updateOne(
       { serverId: server._id, userId, toolName: "lead_create" },
       { $set: { decision: "always_deny" } },
+      { upsert: true },
     );
     chatTools = await loadTools();
     assert.equal(await needsApproval("mcp_close_crm_lead_create"), false);
@@ -627,7 +668,7 @@ async function testGrantsAndNeedsApproval() {
     assert.equal(denied.success, false);
     assert.equal(denied.denied, true);
 
-    // Grants are per-user: a different user still gets prompted.
+    // Grants are per-user: a different user still gets prompted on writes.
     const otherUserTools = await buildMcpToolsForChat({
       workspaceId: workspaceId.toString(),
       userId: "user-2",
@@ -642,6 +683,18 @@ async function testGrantsAndNeedsApproval() {
           )
         : otherFn,
       true,
+    );
+    // Reads still auto-run for the other user.
+    const otherSearch = otherUserTools.tools["mcp_close_crm_lead_search"];
+    const otherSearchFn = otherSearch.needsApproval;
+    assert.equal(
+      typeof otherSearchFn === "function"
+        ? await otherSearchFn(
+            {},
+            { toolCallId: "t", messages: [], experimental_context: undefined },
+          )
+        : otherSearchFn,
+      false,
     );
 
     // A tool captured earlier in the turn must not execute after the server is
