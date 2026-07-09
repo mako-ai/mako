@@ -47,6 +47,10 @@ import { isMakoDesktop } from "../lib/desktop";
 import { useForm, Controller } from "react-hook-form";
 import { trackEvent } from "../lib/analytics";
 import {
+  interpretCloudSaveResponse,
+  type PersistOutcome,
+} from "../lib/connection-save";
+import {
   parsePostgresConnectionString,
   buildPostgresConnectionString,
 } from "../utils/postgres-connection-string";
@@ -99,6 +103,18 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     success: boolean;
     error?: string;
   } | null>(null);
+
+  // Save flow: Save/Create runs a connection test first (savePhase drives the
+  // button label). If the test fails, we hold the attempted values and open a
+  // modal offering "Edit connection string" vs "Save anyways".
+  const [savePhase, setSavePhase] = useState<"idle" | "testing" | "saving">(
+    "idle",
+  );
+  const [failedTest, setFailedTest] = useState<{
+    open: boolean;
+    values: FormValues | null;
+    error?: string;
+  }>({ open: false, values: null });
 
   // Local connection (Mako Agent) state. Local addresses are detected from
   // the form values and routed through the agent automatically — no toggle.
@@ -409,7 +425,97 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     setStep("select");
     setShowPassword({});
     setTestResult(null);
+    setSavePhase("idle");
+    setFailedTest({ open: false, values: null });
     onClose();
+  };
+
+  // Save a connection, optionally verifying reachability first. For local
+  // (Mako Agent) connections we test via the agent then save; for cloud
+  // connections the API tests-before-save in one call (verifyBeforeSave) so
+  // lastConnectedAt stays authoritative. `verify: false` is the "Save anyways"
+  // escape hatch and never reports the connection as verified.
+  const persistConnection = useCallback(
+    async (
+      values: FormValues,
+      { verify }: { verify: boolean },
+    ): Promise<PersistOutcome> => {
+      if (!currentWorkspace) return { outcome: "error", error: "No workspace" };
+
+      const local =
+        isEditingLocal ||
+        (!databaseId && connectionLooksLocal(values.connection));
+
+      if (local) {
+        const status = await checkAgent();
+        if (status !== "online") {
+          return { outcome: "error", error: agentOfflineMessage };
+        }
+        if (verify) {
+          setSavePhase("testing");
+          const test = await testConnection(
+            currentWorkspace.id,
+            { type: values.type, connection: values.connection },
+            { local: true },
+          );
+          if (!test.success) {
+            return { outcome: "test_failed", error: test.error };
+          }
+        }
+        setSavePhase("saving");
+        const res = await saveDatabase(
+          currentWorkspace.id,
+          values,
+          databaseId,
+          {
+            local: true,
+          },
+        );
+        if (!res.success) return { outcome: "error", error: res.error };
+        return {
+          outcome: "saved",
+          verified: verify,
+          data: res.data as { _id?: string } | undefined,
+        };
+      }
+
+      // Cloud: the API verifies-before-save when verifyBeforeSave is true.
+      setSavePhase(verify ? "testing" : "saving");
+      const res = await saveDatabase(currentWorkspace.id, values, databaseId, {
+        verifyBeforeSave: verify,
+      });
+      return interpretCloudSaveResponse(res);
+    },
+    [
+      currentWorkspace,
+      isEditingLocal,
+      databaseId,
+      checkAgent,
+      agentOfflineMessage,
+      testConnection,
+      saveDatabase,
+    ],
+  );
+
+  // Fire analytics after a successful save. `database_connection_created` means
+  // "config saved"; `database_connection_verified` is the activation signal and
+  // only fires when connectivity was actually confirmed. Updates fire neither.
+  const emitConnectionEvents = (
+    values: FormValues,
+    verified: boolean,
+    id?: string,
+  ) => {
+    if (databaseId) return;
+    trackEvent("database_connection_created", {
+      connection_type: values.type,
+      connection_id: id,
+    });
+    if (verified) {
+      trackEvent("database_connection_verified", {
+        connection_type: values.type,
+        connection_id: id,
+      });
+    }
   };
 
   const onSubmit = async (values: FormValues) => {
@@ -421,39 +527,52 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     setError(null);
     setTestResult(null);
     try {
-      const local =
-        isEditingLocal ||
-        (!databaseId && connectionLooksLocal(values.connection));
-
-      if (local) {
-        const status = await checkAgent();
-        if (status !== "online") {
-          throw new Error(agentOfflineMessage);
-        }
+      const result = await persistConnection(values, { verify: true });
+      if (result.outcome === "test_failed") {
+        setFailedTest({ open: true, values, error: result.error });
+        return;
       }
-
-      const res = await saveDatabase(currentWorkspace.id, values, databaseId, {
-        local,
-      });
-
-      if (!res.success) {
-        throw new Error(res.error || "Failed to save database");
+      if (result.outcome === "error") {
+        throw new Error(result.error || "Failed to save database");
       }
-
-      // Track database connection creation (not updates)
-      if (!databaseId) {
-        const savedData = res.data as { _id?: string } | undefined;
-        trackEvent("database_connection_created", {
-          connection_type: values.type,
-          connection_id: savedData?._id,
-        });
-      }
-
+      emitConnectionEvents(values, result.verified, result.data?._id);
       onSuccess();
       handleClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error occurred");
     } finally {
+      setSavePhase("idle");
+      setLoading(false);
+    }
+  };
+
+  // "Edit connection string": dismiss the modal, keep the form values intact.
+  const handleEditConnection = () => {
+    setFailedTest(prev => ({ ...prev, open: false }));
+  };
+
+  // "Save anyways": persist the unverified connection. Never marks it verified,
+  // so it does not count as activation.
+  const handleSaveAnyways = async () => {
+    const values = failedTest.values;
+    if (!values) return;
+    setFailedTest(prev => ({ ...prev, open: false }));
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await persistConnection(values, { verify: false });
+      if (result.outcome === "error") {
+        throw new Error(result.error || "Failed to save database");
+      }
+      if (result.outcome === "saved") {
+        emitConnectionEvents(values, false, result.data?._id);
+        onSuccess();
+        handleClose();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown error occurred");
+    } finally {
+      setSavePhase("idle");
       setLoading(false);
     }
   };
@@ -504,490 +623,543 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
   };
 
   return (
-    <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
-      {step === "select" ? (
-        <>
-          <DialogTitle>Select Database Type</DialogTitle>
-          <DialogContent>
-            <Box sx={{ pt: 1 }}>
-              <Box
-                sx={{
-                  display: "grid",
-                  gridTemplateColumns: {
-                    xs: "repeat(2, 1fr)",
-                    sm: "repeat(3, 1fr)",
-                  },
-                  gap: 2,
-                }}
-              >
-                {(dbTypes || []).map(t => (
-                  <Card
-                    key={t.type}
-                    variant="outlined"
-                    sx={{
-                      height: "100%",
-                      "&:hover": { borderColor: "primary.main" },
-                    }}
-                  >
-                    <CardActionArea
-                      onClick={() => handleTypeChange(t.type)}
-                      sx={{ height: "100%", p: 2 }}
+    <>
+      <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
+        {step === "select" ? (
+          <>
+            <DialogTitle>Select Database Type</DialogTitle>
+            <DialogContent>
+              <Box sx={{ pt: 1 }}>
+                <Box
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: {
+                      xs: "repeat(2, 1fr)",
+                      sm: "repeat(3, 1fr)",
+                    },
+                    gap: 2,
+                  }}
+                >
+                  {(dbTypes || []).map(t => (
+                    <Card
+                      key={t.type}
+                      variant="outlined"
+                      sx={{
+                        height: "100%",
+                        "&:hover": { borderColor: "primary.main" },
+                      }}
                     >
-                      <Box
-                        sx={{
-                          display: "flex",
-                          flexDirection: "column",
-                          alignItems: "center",
-                          gap: 1,
-                        }}
+                      <CardActionArea
+                        onClick={() => handleTypeChange(t.type)}
+                        sx={{ height: "100%", p: 2 }}
                       >
-                        <Avatar
-                          src={t.iconUrl}
-                          alt={t.displayName}
+                        <Box
                           sx={{
-                            width: 40,
-                            height: 40,
-                            "& .MuiAvatar-img": {
-                              objectFit: "contain",
-                            },
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                            gap: 1,
                           }}
-                          variant="square"
                         >
-                          {t.displayName?.[0]}
-                        </Avatar>
-                        <Typography
-                          variant="body2"
-                          align="center"
-                          fontWeight="medium"
-                        >
-                          {t.displayName || t.type}
-                        </Typography>
-                      </Box>
-                    </CardActionArea>
-                  </Card>
-                ))}
+                          <Avatar
+                            src={t.iconUrl}
+                            alt={t.displayName}
+                            sx={{
+                              width: 40,
+                              height: 40,
+                              "& .MuiAvatar-img": {
+                                objectFit: "contain",
+                              },
+                            }}
+                            variant="square"
+                          >
+                            {t.displayName?.[0]}
+                          </Avatar>
+                          <Typography
+                            variant="body2"
+                            align="center"
+                            fontWeight="medium"
+                          >
+                            {t.displayName || t.type}
+                          </Typography>
+                        </Box>
+                      </CardActionArea>
+                    </Card>
+                  ))}
+                </Box>
               </Box>
-            </Box>
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={handleClose}>Cancel</Button>
-          </DialogActions>
-        </>
-      ) : (
-        <>
-          <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-            {!databaseId && (
-              <IconButton onClick={handleBack} size="small" edge="start">
-                <ArrowBackIcon />
-              </IconButton>
-            )}
-            {databaseId ? "Edit Database" : "Configure Database"}
-          </DialogTitle>
-          <DialogContent>
-            <Box
-              component="form"
-              autoComplete="off"
-              data-form-type="other"
-              data-lpignore="true"
-              data-1p-ignore
-              sx={{ pt: 1 }}
-              onSubmit={e => e.preventDefault()}
-            >
-              {error && (
-                <Alert severity="error" sx={{ mb: 2 }}>
-                  {error}
-                </Alert>
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={handleClose}>Cancel</Button>
+            </DialogActions>
+          </>
+        ) : (
+          <>
+            <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+              {!databaseId && (
+                <IconButton onClick={handleBack} size="small" edge="start">
+                  <ArrowBackIcon />
+                </IconButton>
               )}
-
-              <TextField
-                fullWidth
-                label="Database Name"
-                {...register("name", { required: "Name is required" })}
-                margin="normal"
-                required
-                placeholder="My Database"
-                error={Boolean(errors.name)}
-                helperText={errors.name?.message as string}
+              {databaseId ? "Edit Database" : "Configure Database"}
+            </DialogTitle>
+            <DialogContent>
+              <Box
+                component="form"
                 autoComplete="off"
-              />
+                data-form-type="other"
+                data-lpignore="true"
+                data-1p-ignore
+                sx={{ pt: 1 }}
+                onSubmit={e => e.preventDefault()}
+              >
+                {error && (
+                  <Alert severity="error" sx={{ mb: 2 }}>
+                    {error}
+                  </Alert>
+                )}
 
-              {/* Local-address banner: web only. Inside Mako Desktop the
+                <TextField
+                  fullWidth
+                  label="Database Name"
+                  {...register("name", { required: "Name is required" })}
+                  margin="normal"
+                  required
+                  placeholder="My Database"
+                  error={Boolean(errors.name)}
+                  helperText={errors.name?.message as string}
+                  autoComplete="off"
+                />
+
+                {/* Local-address banner: web only. Inside Mako Desktop the
                   agent is bundled and routing is automatic, so nothing is
                   shown. */}
-              {!isDesktop && looksLocal && (
-                <Alert
-                  severity={
-                    databaseId && !isEditingLocal
-                      ? "warning"
+                {!isDesktop && looksLocal && (
+                  <Alert
+                    severity={
+                      databaseId && !isEditingLocal
+                        ? "warning"
+                        : agentStatus === "online"
+                          ? "info"
+                          : "warning"
+                    }
+                    sx={{ mt: 2 }}
+                  >
+                    {databaseId && !isEditingLocal
+                      ? "This address points at your local network, which Mako Cloud can't reach. Create a new connection instead — local addresses connect through the Mako Agent automatically."
                       : agentStatus === "online"
-                        ? "info"
-                        : "warning"
-                  }
-                  sx={{ mt: 2 }}
-                >
-                  {databaseId && !isEditingLocal
-                    ? "This address points at your local network, which Mako Cloud can't reach. Create a new connection instead — local addresses connect through the Mako Agent automatically."
-                    : agentStatus === "online"
-                      ? "Local database detected. It will connect through the Mako Agent on this machine — credentials stay local and are never sent to Mako Cloud."
-                      : "Local database detected, which Mako Cloud can't reach. Install Mako Desktop or run the Mako Agent on this machine to connect."}
-                </Alert>
-              )}
+                        ? "Local database detected. It will connect through the Mako Agent on this machine — credentials stay local and are never sent to Mako Cloud."
+                        : "Local database detected, which Mako Cloud can't reach. Install Mako Desktop or run the Mako Agent on this machine to connect."}
+                  </Alert>
+                )}
 
-              {/* Hidden input to register 'type' as required for validation */}
-              <input
-                type="hidden"
-                {...register("type", { required: "Database type is required" })}
-              />
+                {/* Hidden input to register 'type' as required for validation */}
+                <input
+                  type="hidden"
+                  {...register("type", {
+                    required: "Database type is required",
+                  })}
+                />
 
-              {/* Dynamic schema-driven form */}
-              {loading ? (
-                <Box sx={{ display: "flex", justifyContent: "center", p: 4 }}>
-                  <CircularProgress />
-                </Box>
-              ) : (
-                selectedType &&
-                schemas[selectedType]?.fields &&
-                (() => {
-                  const allFields = schemas[selectedType].fields;
-                  const primaryFields = allFields.filter(f => !f.advanced);
-                  const advancedFields = allFields.filter(f => f.advanced);
+                {/* Dynamic schema-driven form */}
+                {loading ? (
+                  <Box sx={{ display: "flex", justifyContent: "center", p: 4 }}>
+                    <CircularProgress />
+                  </Box>
+                ) : (
+                  selectedType &&
+                  schemas[selectedType]?.fields &&
+                  (() => {
+                    const allFields = schemas[selectedType].fields;
+                    const primaryFields = allFields.filter(f => !f.advanced);
+                    const advancedFields = allFields.filter(f => f.advanced);
 
-                  const advancedGroups = advancedFields.reduce<
-                    Record<string, typeof advancedFields>
-                  >((acc, f) => {
-                    const g = f.group || "Advanced";
-                    (acc[g] ||= []).push(f);
-                    return acc;
-                  }, {});
+                    const advancedGroups = advancedFields.reduce<
+                      Record<string, typeof advancedFields>
+                    >((acc, f) => {
+                      const g = f.group || "Advanced";
+                      (acc[g] ||= []).push(f);
+                      return acc;
+                    }, {});
 
-                  const isFieldVisible = (
-                    field: (typeof allFields)[number],
-                  ) => {
-                    if (!field.visibleWhen) return true;
-                    const val = getNested(
-                      watchedConnection,
-                      field.visibleWhen.field,
-                    );
-                    return val === field.visibleWhen.equals;
-                  };
+                    const isFieldVisible = (
+                      field: (typeof allFields)[number],
+                    ) => {
+                      if (!field.visibleWhen) return true;
+                      const val = getNested(
+                        watchedConnection,
+                        field.visibleWhen.field,
+                      );
+                      return val === field.visibleWhen.equals;
+                    };
 
-                  const renderField = (field: (typeof allFields)[number]) => {
-                    if (!isFieldVisible(field)) return null;
+                    const renderField = (field: (typeof allFields)[number]) => {
+                      if (!isFieldVisible(field)) return null;
 
-                    const fieldName =
-                      `connection.${field.name}` as `connection.${string}`;
-                    const requiredRule = field.required
-                      ? { required: `${field.label} is required` }
-                      : {};
-                    const fieldError =
-                      (getNested(errors, fieldName)?.message as string) ||
-                      undefined;
+                      const fieldName =
+                        `connection.${field.name}` as `connection.${string}`;
+                      const requiredRule = field.required
+                        ? { required: `${field.label} is required` }
+                        : {};
+                      const fieldError =
+                        (getNested(errors, fieldName)?.message as string) ||
+                        undefined;
 
-                    switch (field.type) {
-                      case "boolean":
-                        return (
-                          <FormControl
-                            key={field.name}
-                            fullWidth
-                            margin="normal"
-                          >
-                            <Box
-                              sx={{
-                                display: "flex",
-                                alignItems: "center",
-                              }}
+                      switch (field.type) {
+                        case "boolean":
+                          return (
+                            <FormControl
+                              key={field.name}
+                              fullWidth
+                              margin="normal"
                             >
-                              <Typography sx={{ mr: 2 }}>
-                                {field.label}
-                              </Typography>
+                              <Box
+                                sx={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                }}
+                              >
+                                <Typography sx={{ mr: 2 }}>
+                                  {field.label}
+                                </Typography>
+                                <Controller
+                                  control={control}
+                                  name={fieldName}
+                                  rules={requiredRule}
+                                  render={({
+                                    field: ctrlField,
+                                    fieldState,
+                                  }) => (
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(ctrlField.value)}
+                                      onChange={e =>
+                                        ctrlField.onChange(e.target.checked)
+                                      }
+                                      aria-invalid={
+                                        fieldState.error ? "true" : "false"
+                                      }
+                                    />
+                                  )}
+                                />
+                              </Box>
+                              {fieldError ? (
+                                <Typography variant="caption" color="error">
+                                  {fieldError}
+                                </Typography>
+                              ) : (
+                                field.helperText && (
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                  >
+                                    {field.helperText}
+                                  </Typography>
+                                )
+                              )}
+                            </FormControl>
+                          );
+                        case "textarea":
+                          return (
+                            <TextField
+                              key={field.name}
+                              fullWidth
+                              label={field.label}
+                              margin="normal"
+                              placeholder={field.placeholder}
+                              multiline
+                              rows={field.rows || 3}
+                              {...register(fieldName, requiredRule)}
+                              error={Boolean(fieldError)}
+                              helperText={fieldError ?? field.helperText}
+                              autoComplete="off"
+                            />
+                          );
+                        case "password":
+                          return (
+                            <TextField
+                              key={field.name}
+                              fullWidth
+                              type={
+                                showPassword[field.name] ? "text" : "password"
+                              }
+                              label={field.label}
+                              margin="normal"
+                              placeholder={field.placeholder}
+                              {...register(fieldName, requiredRule)}
+                              error={Boolean(fieldError)}
+                              helperText={fieldError ?? field.helperText}
+                              autoComplete="off"
+                              slotProps={{
+                                input: {
+                                  endAdornment: (
+                                    <InputAdornment position="end">
+                                      <IconButton
+                                        aria-label={
+                                          showPassword[field.name]
+                                            ? "Hide password"
+                                            : "Show password"
+                                        }
+                                        onClick={() =>
+                                          togglePasswordVisibility(field.name)
+                                        }
+                                        edge="end"
+                                        size="small"
+                                      >
+                                        {showPassword[field.name] ? (
+                                          <VisibilityOff fontSize="small" />
+                                        ) : (
+                                          <Visibility fontSize="small" />
+                                        )}
+                                      </IconButton>
+                                    </InputAdornment>
+                                  ),
+                                },
+                                htmlInput: {
+                                  "data-1p-ignore": true,
+                                  "data-lpignore": "true",
+                                  "data-form-type": "other",
+                                },
+                              }}
+                            />
+                          );
+                        case "number":
+                          return (
+                            <TextField
+                              key={field.name}
+                              fullWidth
+                              type="number"
+                              label={field.label}
+                              margin="normal"
+                              placeholder={field.placeholder}
+                              {...register(fieldName, {
+                                ...requiredRule,
+                                valueAsNumber: true,
+                              })}
+                              error={Boolean(fieldError)}
+                              helperText={fieldError ?? field.helperText}
+                              autoComplete="off"
+                            />
+                          );
+                        case "select":
+                          return (
+                            <FormControl
+                              key={field.name}
+                              fullWidth
+                              margin="normal"
+                              required={field.required}
+                              error={Boolean(fieldError)}
+                            >
+                              <InputLabel>{field.label}</InputLabel>
                               <Controller
                                 control={control}
                                 name={fieldName}
                                 rules={requiredRule}
-                                render={({ field: ctrlField, fieldState }) => (
-                                  <input
-                                    type="checkbox"
-                                    checked={Boolean(ctrlField.value)}
+                                render={({ field: ctrlField }) => (
+                                  <Select
+                                    label={field.label}
+                                    value={ctrlField.value ?? ""}
                                     onChange={e =>
-                                      ctrlField.onChange(e.target.checked)
+                                      ctrlField.onChange(String(e.target.value))
                                     }
-                                    aria-invalid={
-                                      fieldState.error ? "true" : "false"
-                                    }
-                                  />
+                                  >
+                                    {(field.options || []).map(opt => (
+                                      <MenuItem
+                                        key={opt.value}
+                                        value={opt.value}
+                                      >
+                                        {opt.label}
+                                      </MenuItem>
+                                    ))}
+                                  </Select>
                                 )}
                               />
-                            </Box>
-                            {fieldError ? (
-                              <Typography variant="caption" color="error">
-                                {fieldError}
-                              </Typography>
-                            ) : (
-                              field.helperText && (
-                                <Typography
-                                  variant="caption"
-                                  color="text.secondary"
-                                >
-                                  {field.helperText}
+                              {fieldError ? (
+                                <Typography variant="caption" color="error">
+                                  {fieldError}
                                 </Typography>
-                              )
-                            )}
-                          </FormControl>
-                        );
-                      case "textarea":
-                        return (
-                          <TextField
-                            key={field.name}
-                            fullWidth
-                            label={field.label}
-                            margin="normal"
-                            placeholder={field.placeholder}
-                            multiline
-                            rows={field.rows || 3}
-                            {...register(fieldName, requiredRule)}
-                            error={Boolean(fieldError)}
-                            helperText={fieldError ?? field.helperText}
-                            autoComplete="off"
-                          />
-                        );
-                      case "password":
-                        return (
-                          <TextField
-                            key={field.name}
-                            fullWidth
-                            type={
-                              showPassword[field.name] ? "text" : "password"
-                            }
-                            label={field.label}
-                            margin="normal"
-                            placeholder={field.placeholder}
-                            {...register(fieldName, requiredRule)}
-                            error={Boolean(fieldError)}
-                            helperText={fieldError ?? field.helperText}
-                            autoComplete="off"
-                            slotProps={{
-                              input: {
-                                endAdornment: (
-                                  <InputAdornment position="end">
-                                    <IconButton
-                                      aria-label={
-                                        showPassword[field.name]
-                                          ? "Hide password"
-                                          : "Show password"
-                                      }
-                                      onClick={() =>
-                                        togglePasswordVisibility(field.name)
-                                      }
-                                      edge="end"
-                                      size="small"
-                                    >
-                                      {showPassword[field.name] ? (
-                                        <VisibilityOff fontSize="small" />
-                                      ) : (
-                                        <Visibility fontSize="small" />
-                                      )}
-                                    </IconButton>
-                                  </InputAdornment>
-                                ),
-                              },
-                              htmlInput: {
-                                "data-1p-ignore": true,
-                                "data-lpignore": "true",
-                                "data-form-type": "other",
-                              },
-                            }}
-                          />
-                        );
-                      case "number":
-                        return (
-                          <TextField
-                            key={field.name}
-                            fullWidth
-                            type="number"
-                            label={field.label}
-                            margin="normal"
-                            placeholder={field.placeholder}
-                            {...register(fieldName, {
-                              ...requiredRule,
-                              valueAsNumber: true,
-                            })}
-                            error={Boolean(fieldError)}
-                            helperText={fieldError ?? field.helperText}
-                            autoComplete="off"
-                          />
-                        );
-                      case "select":
-                        return (
-                          <FormControl
-                            key={field.name}
-                            fullWidth
-                            margin="normal"
-                            required={field.required}
-                            error={Boolean(fieldError)}
-                          >
-                            <InputLabel>{field.label}</InputLabel>
-                            <Controller
-                              control={control}
-                              name={fieldName}
-                              rules={requiredRule}
-                              render={({ field: ctrlField }) => (
-                                <Select
-                                  label={field.label}
-                                  value={ctrlField.value ?? ""}
-                                  onChange={e =>
-                                    ctrlField.onChange(String(e.target.value))
-                                  }
-                                >
-                                  {(field.options || []).map(opt => (
-                                    <MenuItem key={opt.value} value={opt.value}>
-                                      {opt.label}
-                                    </MenuItem>
-                                  ))}
-                                </Select>
+                              ) : (
+                                field.helperText && (
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                  >
+                                    {field.helperText}
+                                  </Typography>
+                                )
                               )}
+                            </FormControl>
+                          );
+                        case "string":
+                        default:
+                          return (
+                            <TextField
+                              key={field.name}
+                              fullWidth
+                              label={field.label}
+                              margin="normal"
+                              placeholder={field.placeholder}
+                              {...register(fieldName, requiredRule)}
+                              error={Boolean(fieldError)}
+                              helperText={fieldError ?? field.helperText}
+                              autoComplete="off"
+                              slotProps={
+                                field.name === "username"
+                                  ? {
+                                      htmlInput: {
+                                        "data-1p-ignore": true,
+                                        "data-lpignore": "true",
+                                        "data-form-type": "other",
+                                      },
+                                    }
+                                  : undefined
+                              }
                             />
-                            {fieldError ? (
-                              <Typography variant="caption" color="error">
-                                {fieldError}
-                              </Typography>
-                            ) : (
-                              field.helperText && (
-                                <Typography
-                                  variant="caption"
-                                  color="text.secondary"
-                                >
-                                  {field.helperText}
+                          );
+                      }
+                    };
+
+                    return (
+                      <>
+                        {primaryFields.map(renderField)}
+                        {Object.entries(advancedGroups).map(
+                          ([group, fields]) => (
+                            <Accordion
+                              key={group}
+                              disableGutters
+                              elevation={0}
+                              sx={{
+                                mt: 2,
+                                border: 1,
+                                borderColor: "divider",
+                                borderRadius: 1,
+                                "&::before": { display: "none" },
+                              }}
+                            >
+                              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                                <Typography variant="subtitle2">
+                                  {group}
                                 </Typography>
-                              )
-                            )}
-                          </FormControl>
-                        );
-                      case "string":
-                      default:
-                        return (
-                          <TextField
-                            key={field.name}
-                            fullWidth
-                            label={field.label}
-                            margin="normal"
-                            placeholder={field.placeholder}
-                            {...register(fieldName, requiredRule)}
-                            error={Boolean(fieldError)}
-                            helperText={fieldError ?? field.helperText}
-                            autoComplete="off"
-                            slotProps={
-                              field.name === "username"
-                                ? {
-                                    htmlInput: {
-                                      "data-1p-ignore": true,
-                                      "data-lpignore": "true",
-                                      "data-form-type": "other",
-                                    },
-                                  }
-                                : undefined
-                            }
-                          />
-                        );
-                    }
-                  };
-
-                  return (
-                    <>
-                      {primaryFields.map(renderField)}
-                      {Object.entries(advancedGroups).map(([group, fields]) => (
-                        <Accordion
-                          key={group}
-                          disableGutters
-                          elevation={0}
-                          sx={{
-                            mt: 2,
-                            border: 1,
-                            borderColor: "divider",
-                            borderRadius: 1,
-                            "&::before": { display: "none" },
-                          }}
-                        >
-                          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                            <Typography variant="subtitle2">{group}</Typography>
-                          </AccordionSummary>
-                          <AccordionDetails sx={{ pt: 0 }}>
-                            {fields.map(renderField)}
-                          </AccordionDetails>
-                        </Accordion>
-                      ))}
-                    </>
-                  );
-                })()
-              )}
-            </Box>
-          </DialogContent>
-          <DialogActions
-            sx={{
-              flexDirection: "column",
-              alignItems: "stretch",
-              gap: 1,
-              px: 3,
-              pb: 2,
-            }}
-          >
-            {/* Test connection result */}
-            {testResult && (
-              <Alert
-                severity={testResult.success ? "success" : "error"}
-                icon={
-                  testResult.success ? (
-                    <CheckCircleIcon fontSize="inherit" />
-                  ) : (
-                    <ErrorIcon fontSize="inherit" />
-                  )
-                }
-                sx={{ width: "100%" }}
-              >
-                {testResult.success
-                  ? "Connection successful!"
-                  : testResult.error || "Connection failed"}
-              </Alert>
-            )}
-
-            {/* Action buttons */}
-            <Box
+                              </AccordionSummary>
+                              <AccordionDetails sx={{ pt: 0 }}>
+                                {fields.map(renderField)}
+                              </AccordionDetails>
+                            </Accordion>
+                          ),
+                        )}
+                      </>
+                    );
+                  })()
+                )}
+              </Box>
+            </DialogContent>
+            <DialogActions
               sx={{
-                display: "flex",
-                justifyContent: "flex-end",
+                flexDirection: "column",
+                alignItems: "stretch",
                 gap: 1,
-                width: "100%",
+                px: 3,
+                pb: 2,
               }}
             >
-              <Button onClick={handleClose} disabled={loading}>
-                Cancel
-              </Button>
-              <Button
-                onClick={handleTestConnection}
-                disabled={loading || testingConnection}
-                variant="outlined"
-                startIcon={
-                  testingConnection ? <CircularProgress size={16} /> : null
-                }
+              {/* Test connection result */}
+              {testResult && (
+                <Alert
+                  severity={testResult.success ? "success" : "error"}
+                  icon={
+                    testResult.success ? (
+                      <CheckCircleIcon fontSize="inherit" />
+                    ) : (
+                      <ErrorIcon fontSize="inherit" />
+                    )
+                  }
+                  sx={{ width: "100%" }}
+                >
+                  {testResult.success
+                    ? "Connection successful!"
+                    : testResult.error || "Connection failed"}
+                </Alert>
+              )}
+
+              {/* Action buttons */}
+              <Box
+                sx={{
+                  display: "flex",
+                  justifyContent: "flex-end",
+                  gap: 1,
+                  width: "100%",
+                }}
               >
-                {testingConnection ? "Testing..." : "Test Connection"}
-              </Button>
-              <Button
-                onClick={handleSubmit(onSubmit)}
-                variant="contained"
-                disabled={loading}
-                startIcon={loading ? <CircularProgress size={16} /> : null}
-              >
-                {loading
-                  ? "Saving..."
-                  : databaseId
-                    ? "Update Database"
-                    : "Create Database"}
-              </Button>
-            </Box>
-          </DialogActions>
-        </>
-      )}
-    </Dialog>
+                <Button onClick={handleClose} disabled={loading}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleTestConnection}
+                  disabled={loading || testingConnection}
+                  variant="outlined"
+                  startIcon={
+                    testingConnection ? <CircularProgress size={16} /> : null
+                  }
+                >
+                  {testingConnection ? "Testing..." : "Test Connection"}
+                </Button>
+                <Button
+                  onClick={handleSubmit(onSubmit)}
+                  variant="contained"
+                  disabled={loading}
+                  startIcon={loading ? <CircularProgress size={16} /> : null}
+                >
+                  {loading
+                    ? savePhase === "testing"
+                      ? "Testing connection..."
+                      : "Saving..."
+                    : databaseId
+                      ? "Update Database"
+                      : "Create Database"}
+                </Button>
+              </Box>
+            </DialogActions>
+          </>
+        )}
+      </Dialog>
+
+      {/* Connection test failed before save: let the user fix the config or
+        persist it unverified. Save anyways never counts as activation. */}
+      <Dialog
+        open={failedTest.open}
+        onClose={handleEditConnection}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Connection test failed</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            Mako couldn&apos;t connect to this database, so we haven&apos;t
+            saved it yet. This can happen if the credentials are wrong, or if
+            the database isn&apos;t reachable from Mako (for example a private
+            network or an allowlist).
+          </Typography>
+          {failedTest.error && (
+            <Alert severity="error" sx={{ mt: 1 }}>
+              {failedTest.error}
+            </Alert>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleEditConnection} variant="outlined">
+            Edit connection string
+          </Button>
+          <Button
+            onClick={handleSaveAnyways}
+            variant="contained"
+            disabled={loading}
+            startIcon={loading ? <CircularProgress size={16} /> : null}
+          >
+            Save anyways
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </>
   );
 };
 
