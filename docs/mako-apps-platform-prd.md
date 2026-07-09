@@ -226,6 +226,27 @@ Everything Claude Code already does well — local files, local server, local br
 
 **Rule of thumb:** Loop A needs no local setup and keeps a human visually in the loop; Loop B is the fastest agent-autonomous cycle. New plumbing needed for A is just the preview-error report endpoint + tool and the signed preview token; B needs none beyond WS2 itself.
 
+### Full iteration autonomy without git (Phases 1–2 only)
+
+Git (Phase 3) is a *sync* mechanism, not what powers iteration. The loop is **edit → render → read errors → checkpoint**, and each leg closes without git:
+
+| Leg | Mechanism (no git needed) | Phase |
+| --- | --- | --- |
+| Edit | MCP app tools (files, deps, bindings) — full mutation surface, server-side | 1 |
+| Data correctness | `run_binding`, `get_schema` — validate SQL/shape before UI work | 1 |
+| Render + errors | see render ladder below | 1 / 1.5 |
+| Checkpoint / rollback | `app_save_version` / `app_restore_version` + `EntityVersion` history — this *is* the "commit" substitute; origin-stamped (L19) it doubles as an audit trail | exists |
+
+**The render ladder** — three rungs, increasing autonomy:
+
+1. **Human tab open (pair mode):** live-reload via `app.updated` (exists) + `get_preview_errors`. Human eyes are the renderer. Zero autonomy cost, but blocked when nobody's watching.
+2. **Agent-driven browser:** `create_preview_token` → Claude Code drives its own local Playwright/Chromium against the signed draft-preview URL, reads console errors directly, screenshots itself. Fully autonomous, but only for MCP clients that *have* a local browser (Claude Code yes; Claude Desktop/claude.ai no).
+3. **`render_app` MCP tool (server-side headless render) — the missing piece for full autonomy.** Mako runs a pooled headless Chromium that loads the draft preview, waits for first paint / error settle, and returns `{ previewErrors[], screenshot, consoleLogs[] }` in one tool call. Works from *any* MCP client with nothing but the API key — no human tab, no local browser, no git. This makes rung 1's report endpoint mostly redundant (keep it as the cheap path when a tab happens to be open).
+
+`render_app` costs: a Chromium pool (Playwright is already a dev dependency pattern in the stack), per-key rate limits + render timeouts (extends L8), screenshots stored as ephemeral artifacts with short TTLs, and the render context must use the same signed-token auth as rung 2 (never a raw key in the page). Recommend shipping rungs 1–2 in Phase 1 and `render_app` as **Phase 1.5** — it's the single highest-leverage addition for headless/hosted agents.
+
+In Phase 2, `mako dev` gives the same full loop locally (terminal errors + localhost screenshots) with the repo as scratch space — still no git host involved; `mako push`/`pull` sync straight to the Mako draft, and Mako's version history remains the rollback mechanism.
+
 ## 6. Key decisions to confirm
 
 1. **API key auth for MCP (v1) vs MCP OAuth** — propose API key first (matches the "simple API key" goal), OAuth later for marketplace-grade clients.
