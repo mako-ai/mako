@@ -1,4 +1,5 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import type { Context } from "hono";
 import { setCookie, getCookie } from "hono/cookie";
 import { generateState, generateCodeVerifier } from "arctic";
 import { sessionManager } from "./session";
@@ -22,10 +23,21 @@ import {
   isValidChallenge,
   DESKTOP_AUTH_CODE_TTL_MS,
 } from "./desktop-auth";
+import { ATTRIBUTION_COOKIE, type SignupContext } from "./signup-attribution";
 import { loggers } from "../logging";
 import { OPEN_RESPONSES } from "../openapi/core";
 
 const logger = loggers.auth();
+
+/**
+ * Request-derived signup context: the first-party `mako_attr` attribution
+ * cookie (set by the marketing site on the parent domain) plus the edge
+ * country header when present. Forwarded into user creation.
+ */
+const signupContext = (c: Context): SignupContext => ({
+  attributionCookie: getCookie(c, ATTRIBUTION_COOKIE),
+  country: c.req.header("cf-ipcountry") ?? c.req.header("x-country"),
+});
 
 type Variables = {
   user: any;
@@ -117,6 +129,7 @@ authRoutes.openapi(
       const { user, requiresVerification } = await authService.register(
         email,
         password,
+        signupContext(c),
       );
 
       return c.json({
@@ -716,6 +729,7 @@ authRoutes.openapi(
           "google",
           googleUser.sub.toString(),
           googleUser.email,
+          signupContext(c),
         );
 
         const sessionCookie = sessionManager.createSessionCookie(session.id);
@@ -888,6 +902,7 @@ authRoutes.openapi(
           "github",
           githubUser.id.toString(),
           primaryEmail || githubUser.email,
+          signupContext(c),
         );
 
         const sessionCookie = sessionManager.createSessionCookie(session.id);
@@ -1053,6 +1068,7 @@ authRoutes.openapi(
         transferData.provider as "google" | "github",
         transferData.providerUserId,
         transferData.email,
+        signupContext(c),
       );
 
       const sessionCookie = sessionManager.createSessionCookie(session.id);
