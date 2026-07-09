@@ -52,6 +52,7 @@ type NavigationView =
   | "flows"
   | "dashboards"
   | "apps"
+  | "notebooks"
   | "dbt"
   | "settings"
   | "views";
@@ -68,6 +69,7 @@ const topNavigationItems: {
   { view: "connectors", icon: EXPLORER_ICONS.connectors, label: "Connectors" },
   { view: "dashboards", icon: EXPLORER_ICONS.dashboards, label: "Dashboards" },
   { view: "apps", icon: EXPLORER_ICONS.apps, label: "Apps" },
+  { view: "notebooks", icon: EXPLORER_ICONS.notebooks, label: "Notebooks" },
 ];
 
 const bottomNavigationItems: {
@@ -289,6 +291,7 @@ function Sidebar() {
       view === "flows" ||
       view === "dashboards" ||
       view === "apps" ||
+      view === "notebooks" ||
       view === "dbt" ||
       view === "settings"
     ) {
@@ -301,6 +304,7 @@ function Sidebar() {
             | "flows"
             | "dashboards"
             | "apps"
+            | "notebooks"
             | "dbt"
             | "settings",
         );

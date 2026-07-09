@@ -45,6 +45,7 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
     metadata: { schema: "public", table: "users" },
   }),
   app: baseTab({ kind: "app", metadata: { appId: "app-1" } }),
+  notebook: baseTab({ kind: "notebook", metadata: { notebookId: "nb-1" } }),
   "app-file": baseTab({
     kind: "app-file",
     metadata: { appId: "app-1", path: "src/App.tsx" },

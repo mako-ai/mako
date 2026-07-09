@@ -24,7 +24,8 @@ export type TabKind =
   | "dbt-file"
   | "dbt-job"
   | "dbt-console"
-  | "dbt-runs";
+  | "dbt-runs"
+  | "notebook";
 
 /**
  * Sub-section for `kind === "settings"` tabs. Each section is rendered in its
@@ -179,6 +180,7 @@ export type LeftPaneView =
   | "flows"
   | "dashboards"
   | "apps"
+  | "notebooks"
   | "dbt"
   | "settings";
 

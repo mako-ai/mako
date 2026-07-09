@@ -54,6 +54,7 @@ export const TAB_DEEP_LINK_PATTERNS = {
   "dbt-job": /^\/x\/([a-zA-Z0-9-]+)\/job\/([a-zA-Z0-9-]+)/,
   "dbt-runs": /^\/x\/([a-zA-Z0-9-]+)\/runs\/?$/,
   "dbt-console": /^\/x\/([a-zA-Z0-9-]+)\/?$/,
+  notebook: /^\/n\/([a-zA-Z0-9-]+)\/?$/,
 } as const satisfies Record<NonNullable<TabKind>, RegExp | null>;
 
 /**
@@ -146,6 +147,10 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
     case "dbt-console": {
       const projectId = tab.metadata?.projectId as string | undefined;
       return projectId ? `/x/${projectId}` : null;
+    }
+    case "notebook": {
+      const notebookId = tab.metadata?.notebookId as string | undefined;
+      return notebookId ? `/n/${notebookId}` : null;
     }
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.

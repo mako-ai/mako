@@ -112,7 +112,8 @@ export function tabRevealTarget(
     case "plan":
     case "settings":
     case "members":
-      // No sidebar tree row.
+    case "notebook":
+      // No sidebar tree row (notebook reveal lands with the list endpoint).
       return null;
     case "dbt-file": {
       const projectId = meta.projectId as string | undefined;

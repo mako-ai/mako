@@ -68,6 +68,7 @@ import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
 import DashboardCanvas from "./DashboardCanvas";
 import AppRenderer from "./AppRenderer";
+import NotebookRenderer from "./NotebookRenderer";
 import AppFileEditor from "./AppFileEditor";
 import AppBindingEditor from "./AppBindingEditor";
 import PlanDocumentTab from "./PlanDocumentTab";
@@ -2736,6 +2737,11 @@ function Editor({
                   ) : tab.kind === "app" ? (
                     <AppRenderer
                       appId={tab.metadata?.appId as string}
+                      tabId={tab.id}
+                    />
+                  ) : tab.kind === "notebook" ? (
+                    <NotebookRenderer
+                      notebookId={tab.metadata?.notebookId as string}
                       tabId={tab.id}
                     />
                   ) : tab.kind === "app-file" ? (
