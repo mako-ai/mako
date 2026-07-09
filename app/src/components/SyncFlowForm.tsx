@@ -52,7 +52,9 @@ import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore, type TreeNode } from "../store/schemaStore";
 import {
   useConnectorCatalogStore,
+  effectiveIncrementalMode,
   type WebhookCapabilities,
+  type IncrementalCapabilities,
 } from "../store/connectorCatalogStore";
 import {
   useAvailableEntitiesStore,
@@ -253,6 +255,14 @@ export function SyncFlowForm({
     return map;
   }, [connectorTypes]);
 
+  const incrementalCapabilitiesByType = useMemo(() => {
+    const map: Record<string, IncrementalCapabilities> = {};
+    for (const entry of connectorTypes || []) {
+      map[entry.type] = entry.incremental;
+    }
+    return map;
+  }, [connectorTypes]);
+
   const flows = useMemo(
     () => (currentWorkspace ? flowsMap[currentWorkspace.id] || [] : []),
     [currentWorkspace, flowsMap],
@@ -350,6 +360,8 @@ export function SyncFlowForm({
   const watchEntityLayouts = watch("entityLayouts") || [];
   const watchDeleteMode = watch("deleteMode");
   const watchBackfillScheduleEnabled = watch("backfillScheduleEnabled");
+  const watchSyncMode = watch("syncMode");
+  const watchWriteMode = watch("writeMode");
 
   const {
     fields: queryFields,
@@ -372,6 +384,40 @@ export function SyncFlowForm({
   const webhookSecretHelpText =
     selectedWebhookCapabilities?.secretHelpText ??
     "Enter the webhook signing secret from your provider";
+
+  const selectedIncrementalCapabilities = selectedConnectorType
+    ? incrementalCapabilitiesByType[selectedConnectorType]
+    : undefined;
+  // Which entities Incremental would actually apply to: the ones explicitly
+  // enabled in the Entities step, or — before that step has any data (new
+  // syncs, or a connector/entity list not loaded yet) — every entity the
+  // connector declares a capability override for. Falls back to the
+  // connector-level `mode` when neither is available.
+  const enabledEntityNames = watchEntityLayouts
+    .filter(l => l.enabled !== false)
+    .map(l => l.entity)
+    .filter(Boolean);
+  const incrementalCheckEntities =
+    enabledEntityNames.length > 0
+      ? enabledEntityNames
+      : Object.keys(selectedIncrementalCapabilities?.perEntity || {});
+  const incrementalEntityModes = incrementalCheckEntities.length
+    ? incrementalCheckEntities.map(entity =>
+        effectiveIncrementalMode(selectedIncrementalCapabilities, entity),
+      )
+    : [selectedIncrementalCapabilities?.mode ?? "none"];
+  // Hide "Incremental" entirely once we know NO relevant entity does better
+  // than a full re-pull — a silently-full-repulling "Incremental" option is
+  // worse than not offering it (see docs/sync-modes-hardening-plan.md,
+  // Phase 4). Connectors not yet loaded (selectedIncrementalCapabilities
+  // undefined) default to allowed so the dropdown isn't empty mid-load.
+  const connectorSupportsIncremental =
+    !selectedConnectorType ||
+    !selectedIncrementalCapabilities ||
+    incrementalEntityModes.some(mode => mode !== "none");
+  const incrementalWarning = incrementalEntityModes.includes("created-anchor")
+    ? selectedIncrementalCapabilities?.warning
+    : undefined;
 
   const selectedDestination = databases.find(
     db => db.id === watchDestinationId,
@@ -411,6 +457,17 @@ export function SyncFlowForm({
   const requiresQueries = !!transferQueriesSchema;
   const requiresDestinationDatabaseName =
     !isCdcCapableDest && availableDatabases.length > 0;
+  // For Full Refresh on a CDC destination, "poll on a cron" and "periodic
+  // full reconcile" both mean "run a complete backfill on this cadence" —
+  // the same underlying operation exposed as two controls. Collapse to the
+  // single reconcile cron below and hide the redundant Scheduled trigger.
+  const showScheduleTrigger = !(isCdcCapableDest && watchSyncMode === "full");
+  const reconcileDescription =
+    watchSyncMode === "full" && watchWriteMode === "overwrite"
+      ? "Refreshes an exact snapshot each run — additions, edits, and deletions at the source are all reflected."
+      : watchWriteMode === "append"
+        ? "Appends a full snapshot as new history rows each run."
+        : "Upserts every current record on this cadence, reconciling drift. Rows removed at the source are NOT deleted automatically — use Full Refresh | Overwrite, or delete webhooks, to propagate deletions.";
 
   useEffect(() => {
     if (isBigQueryDest && watchDeleteMode !== "soft") {
@@ -420,7 +477,6 @@ export function SyncFlowForm({
 
   // Overwrite cannot be combined with a webhook trigger (the stream would
   // race the truncation) — fall back to the deduped default.
-  const watchWriteMode = watch("writeMode");
   useEffect(() => {
     if (watchWebhookEnabled && watchWriteMode === "overwrite") {
       setValue("syncMode", "incremental");
@@ -451,6 +507,34 @@ export function SyncFlowForm({
     watchWebhookEnabled,
     selectedConnectorType,
     connectorSupportsWebhook,
+    setValue,
+  ]);
+
+  // The Scheduled trigger is hidden (see showScheduleTrigger) once Full
+  // Refresh + a CDC destination make it redundant with the reconcile cron —
+  // disable it too so it doesn't keep firing invisibly in the background.
+  useEffect(() => {
+    if (!showScheduleTrigger && watchScheduleEnabled) {
+      setValue("scheduleEnabled", false);
+    }
+  }, [showScheduleTrigger, watchScheduleEnabled, setValue]);
+
+  // Incremental requires at least one selected entity to do better than a
+  // full re-pull; fall back to Full Refresh | Deduped when the connector (or
+  // the current entity selection) can't support it.
+  useEffect(() => {
+    if (
+      watchSyncMode === "incremental" &&
+      selectedConnectorType &&
+      !connectorSupportsIncremental
+    ) {
+      setValue("syncMode", "full");
+      setValue("writeMode", "append_dedup");
+    }
+  }, [
+    watchSyncMode,
+    selectedConnectorType,
+    connectorSupportsIncremental,
     setValue,
   ]);
 
@@ -1352,109 +1436,118 @@ export function SyncFlowForm({
                       </Alert>
                     )}
 
-                  {/* Scheduled trigger */}
-                  <Box
-                    sx={{
-                      border: 1,
-                      borderColor: "divider",
-                      borderRadius: 1,
-                      p: 2,
-                    }}
-                  >
-                    <Controller
-                      name="scheduleEnabled"
-                      control={control}
-                      render={({ field }) => (
-                        <FormControlLabel
-                          control={
-                            <Checkbox
-                              checked={Boolean(field.value)}
-                              onChange={e => field.onChange(e.target.checked)}
-                            />
-                          }
-                          label={
-                            <Box>
-                              <Typography variant="subtitle2">
-                                Scheduled
-                              </Typography>
-                              <Typography
-                                variant="caption"
-                                color="text.secondary"
-                              >
-                                Poll the source on a cron cadence.
-                              </Typography>
-                            </Box>
-                          }
-                        />
-                      )}
-                    />
-                    {watchScheduleEnabled && (
-                      <Stack
-                        direction={{ xs: "column", sm: "row" }}
-                        spacing={2}
-                        sx={{ mt: 1 }}
-                      >
-                        <FormControl size="small" fullWidth>
-                          <InputLabel>Cadence</InputLabel>
-                          <Select
-                            label="Cadence"
-                            value={
-                              scheduleCronMode === "custom"
-                                ? "__custom__"
-                                : cronPresetValue
+                  {/* Scheduled trigger. Hidden for Full Refresh on CDC
+                      destinations: "poll on a cron" and "periodic full
+                      reconcile" are the same operation there (a full
+                      backfill), so showing both would just be two cron
+                      controls for one behavior. The reconcile trigger below
+                      becomes the sync's single cron in that case. */}
+                  {showScheduleTrigger && (
+                    <Box
+                      sx={{
+                        border: 1,
+                        borderColor: "divider",
+                        borderRadius: 1,
+                        p: 2,
+                      }}
+                    >
+                      <Controller
+                        name="scheduleEnabled"
+                        control={control}
+                        render={({ field }) => (
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={Boolean(field.value)}
+                                onChange={e => field.onChange(e.target.checked)}
+                              />
                             }
-                            onChange={e => {
-                              const value = e.target.value;
-                              if (value === "__custom__") {
-                                setScheduleCronMode("custom");
-                              } else {
-                                setScheduleCronMode("preset");
-                                setValue("scheduleCron", value, {
-                                  shouldDirty: true,
-                                });
+                            label={
+                              <Box>
+                                <Typography variant="subtitle2">
+                                  Scheduled
+                                </Typography>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                >
+                                  Poll the source on a cron cadence.
+                                </Typography>
+                              </Box>
+                            }
+                          />
+                        )}
+                      />
+                      {watchScheduleEnabled && (
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={2}
+                          sx={{ mt: 1 }}
+                        >
+                          <FormControl size="small" fullWidth>
+                            <InputLabel>Cadence</InputLabel>
+                            <Select
+                              label="Cadence"
+                              value={
+                                scheduleCronMode === "custom"
+                                  ? "__custom__"
+                                  : cronPresetValue
                               }
-                            }}
-                          >
-                            {SCHEDULE_PRESETS.map(preset => (
-                              <MenuItem key={preset.cron} value={preset.cron}>
-                                {preset.label}
+                              onChange={e => {
+                                const value = e.target.value;
+                                if (value === "__custom__") {
+                                  setScheduleCronMode("custom");
+                                } else {
+                                  setScheduleCronMode("preset");
+                                  setValue("scheduleCron", value, {
+                                    shouldDirty: true,
+                                  });
+                                }
+                              }}
+                            >
+                              {SCHEDULE_PRESETS.map(preset => (
+                                <MenuItem key={preset.cron} value={preset.cron}>
+                                  {preset.label}
+                                </MenuItem>
+                              ))}
+                              <MenuItem value="__custom__">
+                                Custom cron…
                               </MenuItem>
-                            ))}
-                            <MenuItem value="__custom__">Custom cron…</MenuItem>
-                          </Select>
-                        </FormControl>
-                        {scheduleCronMode === "custom" && (
+                            </Select>
+                          </FormControl>
+                          {scheduleCronMode === "custom" && (
+                            <Controller
+                              name="scheduleCron"
+                              control={control}
+                              render={({ field }) => (
+                                <TextField
+                                  {...field}
+                                  label="Cron Expression"
+                                  placeholder="0 * * * *"
+                                  size="small"
+                                  fullWidth
+                                  helperText="Format: minute hour day month weekday"
+                                />
+                              )}
+                            />
+                          )}
                           <Controller
-                            name="scheduleCron"
+                            name="scheduleTimezone"
                             control={control}
                             render={({ field }) => (
                               <TextField
                                 {...field}
-                                label="Cron Expression"
-                                placeholder="0 * * * *"
+                                label="Timezone"
+                                placeholder="UTC"
                                 size="small"
                                 fullWidth
-                                helperText="Format: minute hour day month weekday"
                               />
                             )}
                           />
-                        )}
-                        <Controller
-                          name="scheduleTimezone"
-                          control={control}
-                          render={({ field }) => (
-                            <TextField
-                              {...field}
-                              label="Timezone"
-                              placeholder="UTC"
-                              size="small"
-                              fullWidth
-                            />
-                          )}
-                        />
-                      </Stack>
-                    )}
-                  </Box>
+                        </Stack>
+                      )}
+                    </Box>
+                  )}
 
                   {/* Webhook trigger */}
                   <Tooltip
@@ -1585,8 +1678,9 @@ export function SyncFlowForm({
                   </Tooltip>
 
                   {/* Periodic full reconcile trigger (CDC destinations).
-                      Migrated legacy full-refresh scheduled syncs run on this
-                      cadence exclusively, so it must surface as a trigger. */}
+                      For Full Refresh, this IS the schedule (see
+                      showScheduleTrigger above) — the label and helper text
+                      reflect that instead of duplicating a second cron. */}
                   {isCdcCapableDest && (
                     <Box
                       sx={{
@@ -1610,21 +1704,33 @@ export function SyncFlowForm({
                             label={
                               <Box>
                                 <Typography variant="subtitle2">
-                                  Periodic full reconcile
+                                  {showScheduleTrigger
+                                    ? "Periodic full reconcile"
+                                    : "Schedule (periodic full reconcile)"}
                                 </Typography>
                                 <Typography
                                   variant="caption"
                                   color="text.secondary"
                                 >
-                                  Re-runs a complete backfill on a cadence to
-                                  reconcile drift and deletions. Other triggers
-                                  stay active between runs.
+                                  {reconcileDescription}
+                                  {showScheduleTrigger &&
+                                    " Other triggers stay active between runs."}
                                 </Typography>
                               </Box>
                             }
                           />
                         )}
                       />
+                      {watchBackfillScheduleEnabled &&
+                        watchSyncMode === "incremental" &&
+                        watchWriteMode === "append" && (
+                          <Alert severity="warning" sx={{ mt: 1 }}>
+                            Combined with Incremental | Append, each reconcile
+                            run appends a full duplicate snapshot into the
+                            history table. Consider Full Refresh | Append (a
+                            snapshot-per-run table) or Deduped instead.
+                          </Alert>
+                        )}
                       {watchBackfillScheduleEnabled && (
                         <Stack
                           direction={{ xs: "column", sm: "row" }}
@@ -1716,6 +1822,10 @@ export function SyncFlowForm({
                           !(
                             combo.writeMode === "overwrite" &&
                             watchWebhookEnabled
+                          ) &&
+                          !(
+                            combo.syncMode === "incremental" &&
+                            !connectorSupportsIncremental
                           ),
                       ).map(combo => (
                         <MenuItem key={combo.value} value={combo.value}>
@@ -1731,6 +1841,21 @@ export function SyncFlowForm({
                       )?.help ?? "How records are read and written each run."}
                     </FormHelperText>
                   </FormControl>
+
+                  {!connectorSupportsIncremental && selectedConnectorType && (
+                    <Alert severity="info">
+                      Incremental is hidden —{" "}
+                      {selectedConnector?.name || "this connector"} has no way
+                      to fetch only changed records for the selected entities,
+                      so every run would silently re-fetch everything anyway.
+                      Use Full Refresh, and add the webhook trigger or a
+                      periodic full reconcile to stay current between runs.
+                    </Alert>
+                  )}
+
+                  {watchSyncMode === "incremental" && incrementalWarning && (
+                    <Alert severity="warning">{incrementalWarning}</Alert>
+                  )}
 
                   {isCdcCapableDest && (
                     <Controller
