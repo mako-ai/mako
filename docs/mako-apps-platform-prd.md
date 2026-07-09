@@ -10,15 +10,33 @@ The full headless iteration loop, on existing unscoped `revops_` keys (Phase 0 h
 - **Signed draft previews** — `create_preview_token` MCP tool mints `mpt_*` HMAC tokens (60s–30min TTL, single app); `/api/preview/:token` serves the draft definition and `/api/preview/:token/binding/:id/execute` runs draft bindings through the same read-only/row-cap/timeout/rate-limit envelope as public shares. Frontend `/preview/:token` renders the draft and publishes machine-observable state (`window.__MAKO_PREVIEW_STATE__`, `[mako-preview-ready|error]` console markers).
 - **`render_app` MCP tool** — pooled server-side headless Chromium (env-gated via `RENDER_APP_BROWSER_PATH`, graceful degradation) renders the draft and returns status + errors + console + JPEG screenshot as MCP image content.
 
-Quickstart:
+Quickstart — **Claude Code**:
 
 ```bash
 claude mcp add --transport http mako https://<host>/api/mcp \
   --header "Authorization: Bearer revops_..."
+# or team-shared, checked into the repo (.mcp.json):
+#   { "mcpServers": { "mako": { "type": "http", "url": "https://<host>/api/mcp",
+#     "headers": { "Authorization": "Bearer ${MAKO_API_KEY}" } } } }
 # then: "Build me an app showing revenue by month" — the agent creates the
 # app, iterates with render_app (or create_preview_token + local browser),
 # and any open Mako tab live-reloads on every edit.
 ```
+
+**Codex CLI** (`~/.codex/config.toml`) — native streamable-HTTP client:
+
+```toml
+[mcp_servers.mako]
+url = "https://<host>/api/mcp"
+bearer_token_env_var = "MAKO_API_KEY"   # sends Authorization: Bearer $MAKO_API_KEY
+# on older Codex versions enable: experimental_use_rmcp_client = true
+# fallback for stdio-only versions:
+# command = "npx"
+# args = ["-y", "mcp-remote", "https://<host>/api/mcp",
+#         "--header", "Authorization: Bearer ${MAKO_API_KEY}"]
+```
+
+Claude Desktop / claude.ai custom connectors need OAuth (no custom headers) — covered by open decision #1; interim workaround is the same `mcp-remote` proxy.
 **Goal:** Let anyone build Mako apps from *outside* the Mako UI — with an MCP client (Claude Desktop, Claude Code, any agent), or directly in a GitHub repo with Claude Code — and let published apps run **standalone**, needing only a simple API key that grants access to their data resources.
 
 ---
