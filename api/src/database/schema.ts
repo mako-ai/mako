@@ -140,6 +140,26 @@ export interface IDesktopAuthCode extends Document {
 }
 
 /**
+ * User attribution model interface.
+ *
+ * One write-once document per user, persisted at signup from the first-party
+ * `mako_attr` cookie set by the marketing site (see auth/signup-attribution.ts).
+ * Touch payloads are whitelisted/truncated before insert and kept schemaless
+ * here (Schema.Types.Mixed) so the marketing site can evolve captured fields
+ * without an app migration. Contains no IP address.
+ */
+export interface IUserAttribution extends Document {
+  _id: string; // user id (1:1 with users)
+  sid?: string; // marketing-site visitor id (random UUID)
+  gclid?: string; // denormalized ad click id for indexed joins
+  signupMethod: "email" | "google" | "github";
+  country?: string; // ISO 3166-1 alpha-2, derived from the signup request
+  firstTouch: Record<string, unknown>;
+  lastTouch: Record<string, unknown>;
+  capturedAt: Date;
+}
+
+/**
  * Session model interface for Lucia
  */
 export interface ISession extends Document {
@@ -342,6 +362,29 @@ const OAuthAccountSchema = new Schema<IOAuthAccount>(
 OAuthAccountSchema.index({ provider: 1, providerUserId: 1 }, { unique: true });
 OAuthAccountSchema.index({ userId: 1 });
 
+/**
+ * User Attribution Schema (collection: user_attributions)
+ */
+const UserAttributionSchema = new Schema<IUserAttribution>(
+  {
+    _id: { type: String }, // user id
+    sid: { type: String, required: false },
+    gclid: { type: String, required: false },
+    signupMethod: {
+      type: String,
+      enum: ["email", "google", "github"],
+      required: true,
+    },
+    country: { type: String, required: false },
+    firstTouch: { type: Schema.Types.Mixed, required: true },
+    lastTouch: { type: Schema.Types.Mixed, required: true },
+    capturedAt: { type: Date, required: true },
+  },
+  { collection: "user_attributions" },
+);
+
+UserAttributionSchema.index({ gclid: 1 }, { sparse: true });
+
 // Models - use existing model if already compiled (prevents hot reload issues)
 export const User =
   (mongoose.models.User as mongoose.Model<IUser>) ||
@@ -354,6 +397,10 @@ export const Session =
 export const OAuthAccount =
   (mongoose.models.OAuthAccount as mongoose.Model<IOAuthAccount>) ||
   mongoose.model<IOAuthAccount>("OAuthAccount", OAuthAccountSchema);
+
+export const UserAttribution =
+  (mongoose.models.UserAttribution as mongoose.Model<IUserAttribution>) ||
+  mongoose.model<IUserAttribution>("UserAttribution", UserAttributionSchema);
 
 export const EmailVerification =
   (mongoose.models.EmailVerification as mongoose.Model<IEmailVerification>) ||
