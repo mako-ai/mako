@@ -13,7 +13,6 @@ CI is stricter than the `husky` pre-commit hook. Always run the package's full l
 | --- | --- |
 | `app/` | `pnpm --filter app run typecheck && pnpm --filter app run lint` |
 | `api/` | `pnpm --filter api run lint` (typecheck runs inside `api:build`) |
-| `website/` | `pnpm --filter website run lint` |
 
 For cross-package changes, `pnpm run lint:all` covers `app` + `api` + connector-agnosticism.
 

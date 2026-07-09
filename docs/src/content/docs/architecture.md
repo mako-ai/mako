@@ -12,15 +12,13 @@ mako/
 ├── app/           # React + Vite frontend
 ├── api/           # Hono API server (Node.js)
 ├── packages/      # Shared workspace packages (see below)
-├── content/       # Blog posts + programmatic guides (MDX)
 ├── docs/          # Documentation (Astro Starlight)
-├── website/       # Marketing site (Next.js)
 ├── cloudflare/    # Cloudflare Workers
 ├── scripts/       # Build and validation scripts
 └── package.json   # Root workspace config (pnpm)
 ```
 
-The pnpm workspace spans `app`, `api`, `website`, `docs`, and everything under `packages/*`:
+The pnpm workspace spans `app`, `api`, `docs`, and everything under `packages/*` (the marketing site lives in a separate repo):
 
 | Package | Purpose |
 | ------- | ------- |

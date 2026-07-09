@@ -13,7 +13,7 @@ description: Build, test, package, and release Mako Desktop and the Mako Local A
 | Desktop shell | `packages/desktop` | `release/*` (dmg/exe/AppImage via electron-builder) |
 | Release pipeline | `.github/workflows/release-desktop.yml` | GitHub Release `desktop-vX.Y.Z` |
 | PR smoke build | `.github/workflows/desktop-ci.yml` | build-only |
-| Website links | `website/lib/downloads.ts`, `website/app/download` | evergreen download page |
+| Website links | marketing repo: `lib/downloads.ts`, `app/download` | evergreen download page |
 
 ## Local development
 
@@ -45,7 +45,7 @@ The shell skips spawning the agent if one is already listening (or set
    x64, Linux x64 and creates tag + GitHub Release `desktop-vX.Y.Z`.
 3. No version bump → no release (the workflow checks for an existing release
    and skips). Re-run manually with workflow_dispatch `force` to re-upload.
-4. Evergreen links (used by the website) — do not rename artifacts:
+4. Evergreen links (used by the marketing site, separate repo) — do not rename artifacts:
    `https://github.com/mako-ai/mako/releases/latest/download/Mako-{mac-arm64.dmg,mac-x64.dmg,win-x64.exe,linux-x86_64.AppImage}`
 
 ## Gotchas

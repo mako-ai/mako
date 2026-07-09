@@ -33,7 +33,7 @@ routing in `app/src/lib/local-agent-client.ts`, `app/src/store/localAgentStore.t
 - Releases: bump `packages/desktop/package.json` version in the PR; merge to
   master triggers `.github/workflows/release-desktop.yml`, which creates the
   `desktop-vX.Y.Z` tag + GitHub Release. Keep electron-builder
-  `artifactName`s stable — the website's evergreen download links
+  `artifactName`s stable — the marketing site's evergreen download links (marketing repo)
   (`releases/latest/download/<asset>`) depend on them.
 - PR smoke build: `.github/workflows/desktop-ci.yml`.
 

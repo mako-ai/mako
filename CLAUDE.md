@@ -10,12 +10,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Mako is a production-ready, multi-tenant AI-powered SQL client built with a PNPM workspace monorepo structure. It combines multi-database query execution (MongoDB, PostgreSQL, BigQuery, ClickHouse, etc.), AI-powered query generation with multi-provider LLM support (OpenAI, Anthropic, Google), team collaboration features, and optional data source connectors (Stripe, Close CRM, GraphQL APIs, PostHog, REST APIs) with event-driven synchronization (batch and CDC/streaming) via Inngest.
 
-**Architecture:** Five main packages:
+**Architecture:** Four main packages:
 
 - **Root**: Data sync scripts, database migrations, and shared configuration
 - **API**: Hono-based backend server (Node.js 20+, TypeScript, MongoDB with Mongoose, Arctic OAuth)
 - **App**: React/Vite frontend (React 18, MUI v7, Zustand, Monaco Editor, Vercel AI SDK)
-- **Website**: Next.js 14 marketing site with Tailwind CSS
 - **Docs**: Astro-based documentation site
 
 ## Agent prompts & skills
@@ -33,7 +32,6 @@ always-on prompt literals. See `.cursor/rules/35-agent-prompts.mdc` and
 pnpm dev                    # Start API (8080) + App (5173) + Inngest Dev Server concurrently
 pnpm app:dev               # Frontend only (Vite dev server on port 5173)
 pnpm api:dev               # Backend only (Hono server on port 8080)
-pnpm website:dev           # Marketing website (Next.js)
 pnpm docs:dev              # Documentation site (Astro)
 ```
 
