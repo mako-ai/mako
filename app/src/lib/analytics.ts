@@ -76,6 +76,11 @@ export function trackEvent(
 
   const eventProps = {
     ...properties,
+    event_id:
+      properties?.event_id ??
+      (typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`),
     event_timestamp: new Date().toISOString(),
   };
 
