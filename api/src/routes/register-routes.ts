@@ -35,6 +35,7 @@ import { notificationRulesRoutes } from "./notification-rules";
 import { devEmailPreviewRoutes } from "./dev-email-preview.routes";
 import { webhookRoutes } from "./webhooks";
 import { mcpPresetRoutes, mcpRoutes } from "./mcp.routes";
+import { mcpProtocolRoutes } from "./mcp-server.routes";
 
 /**
  * Mounts every REST router onto the provided Hono app.
@@ -75,6 +76,8 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   app.route("/api/workspaces/:workspaceId/mcp-servers", mcpRoutes);
   // Intentionally public: static preset metadata for the "Add MCP server" form.
   app.route("/api/mcp", mcpPresetRoutes);
+  // Mako's own MCP endpoint (POST /api/mcp, API-key authed, JSON-RPC not REST).
+  app.route("/api/mcp", mcpProtocolRoutes);
 
   if (process.env.NODE_ENV !== "production") {
     app.route("/api/dev/email-preview", devEmailPreviewRoutes);
