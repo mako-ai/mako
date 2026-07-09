@@ -36,6 +36,7 @@ import { devEmailPreviewRoutes } from "./dev-email-preview.routes";
 import { webhookRoutes } from "./webhooks";
 import { mcpPresetRoutes, mcpRoutes } from "./mcp.routes";
 import { mcpProtocolRoutes } from "./mcp-server.routes";
+import { appPreviewRoutes } from "./app-preview.routes";
 
 /**
  * Mounts every REST router onto the provided Hono app.
@@ -97,6 +98,8 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   );
   // Intentionally public: token-gated read-only shares (dashboards + apps).
   app.route("/api/share", publicShareRoutes);
+  // Intentionally public: signed short-TTL draft previews (headless renders).
+  app.route("/api/preview", appPreviewRoutes);
   app.route("/api/agent", agentRoutes);
   app.route("/api/admin", adminRoutes);
   app.route("/api/connectors", connectorRoutes);

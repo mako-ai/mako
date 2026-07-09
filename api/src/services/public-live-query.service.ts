@@ -158,6 +158,47 @@ export async function executePublicAppLiveBinding(input: {
     return { success: false, error: "Data source not found", status: 404 };
   }
 
+  return executeAppBindingCore({ app, binding, bindingId, rateKey: token });
+}
+
+/**
+ * Execute one DRAFT binding for a signed preview-token viewer (headless
+ * render / iteration loop). Same safety envelope as the public path — the
+ * stored binding code only (read-only checked, row-capped, timed out); the
+ * caller's authorization is the signed token, so there is no owner opt-in
+ * gate. Note: `{{ dbt_schema }}` resolves to the PROD environment here,
+ * matching the public path — dev-environment preview stays an in-product
+ * editor concern.
+ */
+export async function executeAppPreviewBinding(input: {
+  app: IMakoApp;
+  bindingId: string;
+  token: string;
+}): Promise<PublicLiveQueryResult> {
+  const { app, bindingId, token } = input;
+  const binding = (app.dataBindings ?? []).find(b => b.id === bindingId) as
+    | PublishedBinding
+    | undefined;
+  if (!binding) {
+    return { success: false, error: "Data source not found", status: 404 };
+  }
+  return executeAppBindingCore({
+    app,
+    binding,
+    bindingId,
+    rateKey: `preview:${token}`,
+  });
+}
+
+/** Shared execution envelope for published-share and draft-preview bindings. */
+async function executeAppBindingCore(input: {
+  app: IMakoApp;
+  binding: PublishedBinding;
+  bindingId: string;
+  rateKey: string;
+}): Promise<PublicLiveQueryResult> {
+  const { app, binding, bindingId, rateKey } = input;
+
   // v1 supports SQL bindings only. MongoDB/JS live execution would need its own
   // safety story; until then it stays snapshot-only on public links.
   if (binding.language !== "sql") {
@@ -211,14 +252,14 @@ export async function executePublicAppLiveBinding(input: {
     .update(code)
     .digest("hex")
     .slice(0, 16);
-  const key = cacheKey(token, bindingId, queryHash);
+  const key = cacheKey(rateKey, bindingId, queryHash);
 
   const cached = resultCache.get(key);
   if (cached && cached.expiresAt > Date.now()) {
     return { ...cached.payload, cached: true };
   }
 
-  if (isRateLimited(`${token}:${bindingId}`)) {
+  if (isRateLimited(`${rateKey}:${bindingId}`)) {
     return {
       success: false,
       error: "Too many live requests — please wait a moment and retry",

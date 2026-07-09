@@ -22,6 +22,7 @@ import {
   isApiKeyAuth,
 } from "../auth/unified-auth.middleware";
 import { buildMakoMcpServer } from "../mcp/mako-mcp-server";
+import { createMcpPreviewTools } from "../mcp/preview-tools";
 import { StatelessMcpTransport } from "../mcp/stateless-transport";
 import type { AuthEnv } from "../openapi/core";
 import { loggers } from "../logging";
@@ -80,10 +81,14 @@ mcpProtocolRoutes.post("/", unifiedAuthMiddleware, async c => {
     );
   }
 
-  const server = buildMakoMcpServer({
+  const mcpContext = {
     workspaceId,
     userId: user ? String(user.id) : undefined,
-  });
+  };
+  const server = buildMakoMcpServer(
+    mcpContext,
+    createMcpPreviewTools(mcpContext),
+  );
   const transport = new StatelessMcpTransport();
 
   try {
