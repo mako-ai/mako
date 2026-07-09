@@ -151,7 +151,36 @@ Make a *published* app runnable outside Mako entirely:
 
 Phase 1 alone delivers the headline: *anyone with a workspace API key can point Claude Code/Desktop at Mako's MCP server and build, iterate on, and publish an app* — because the server-side tool suite already does all the work headlessly today.
 
-## 5. Key decisions to confirm
+## 5. The Claude Code iteration workflow (preview & feedback loop)
+
+Two loops, depending on phase. Both hinge on closing the feedback triangle: **edit → see it render → read the errors**.
+
+### Loop A — Phase 1, MCP only (no local checkout): "pair mode"
+
+The developer keeps a Mako browser tab open next to the Claude Code terminal; Mako *is* the preview.
+
+1. **Setup (once):** `claude mcp add --transport http mako <base>/api/mcp --header "Authorization: Bearer <key>"`.
+2. **Create:** Claude Code calls `create_app` → gets `appId` + the preview URL (`/a/:appId`); the human opens it.
+3. **Live reload is already built:** every server-side app mutation broadcasts an `app.updated` realtime event; open tabs refetch the draft and rebuild the preview iframe automatically (`app/src/store/realtimeStore.ts` `handleAppUpdated`). The MCP tools reuse the same server implementations, so external edits hot-reload the human's tab with **zero new plumbing**.
+4. **Feedback back into Claude Code** — three channels:
+   - **`run_binding` (exists):** validates SQL/data shape server-side before any UI work.
+   - **`get_preview_errors` (new, small):** compile/runtime errors are currently collected only in the browser (`previewErrors` in `appStore`, read by the in-product `run_app` client tool). Add a report endpoint (`POST /api/workspaces/:id/apps/:appId/preview-errors`) that the open tab posts to after each rebuild, and an MCP tool that reads the latest batch. This gives headless agents the same signal the in-product agent gets from `run_app`.
+   - **Screenshots (optional, for visual iteration):** an MCP tool `create_preview_token` mints a short-lived signed URL for the draft preview; Claude Code drives its own headless Chromium (Playwright) against it and screenshots. (Never put API keys in URLs — hence the ephemeral token.) Fallback: the human pastes a screenshot into the chat.
+5. **Checkpoint & ship:** `app_save_version` at good states; `publish_app` when done.
+
+### Loop B — Phase 2, repo + `mako dev`: "local mode" (the fast loop)
+
+Everything Claude Code already does well — local files, local server, local browser — with real workspace data behind it.
+
+1. `mako init` (or `mako pull`) → repo with `CLAUDE.md`, typed `@mako/app-sdk`, binding files.
+2. `mako dev` → local Vite server on `localhost` with HMR. The dev SDK implements `useQuery` by executing the **local** binding code through the workspace API (requires `query:execute` scope on the dev key — bindings in the repo aren't on the server yet). Published/standalone apps never do this; only dev mode runs ad-hoc binding code.
+3. Claude Code edits `src/` and `bindings/` directly — errors appear in the Vite terminal output (which Claude Code reads natively), HMR refreshes instantly, and Claude Code can screenshot `localhost` with Playwright. No Mako-side round-trip per edit.
+4. `mako push` → syncs to the Mako draft to verify in the real (sandboxed, esm.sh) renderer — the fidelity check, since local Vite is a simulation of the cdn runtime.
+5. `mako publish` (or merge to the bound branch once WS3 lands, and CI sync does the rest).
+
+**Rule of thumb:** Loop A needs no local setup and keeps a human visually in the loop; Loop B is the fastest agent-autonomous cycle. New plumbing needed for A is just the preview-error report endpoint + tool and the signed preview token; B needs none beyond WS2 itself.
+
+## 6. Key decisions to confirm
 
 1. **API key auth for MCP (v1) vs MCP OAuth** — propose API key first (matches the "simple API key" goal), OAuth later for marketplace-grade clients.
 2. **Scope vocabulary granularity** — proposal above is coarse resource-level; fine per-connection scoping deferred.
@@ -159,7 +188,7 @@ Phase 1 alone delivers the headline: *anyone with a workspace API key can point 
 4. **Git sync direction** — one-way git → Mako in v1 (dbt precedent), Mako-side editing locked for bound apps.
 5. **Key prefix naming** — keep `revops_` for back-compat, introduce `mako_sk_`/`mako_pk_` aliases now or later.
 
-## 6. Risks / open questions
+## 7. Risks / open questions
 
 - **Arbitrary query execution via keys** (`query:execute`) is the sharpest tool — default off, admin-only grant, and audit-log key usage per request (extend `lastUsedAt` into a proper usage log).
 - **No global rate limiting exists today** — must land with WS0 before any public/standalone traffic.
