@@ -28,7 +28,9 @@ export default defineConfig({
       "src/databases/**/*.test.ts",
       "src/services/destination-writer.service.test.ts",
       "src/sync-cdc/adapters/**/*.test.ts",
+      "src/sync-cdc/consumer.test.ts",
       "src/sync/legacy-flow-migration.test.ts",
+      "src/sync/sync-orchestrator.test.ts",
       "src/utils/bigquery-emulator.test.ts",
     ],
     exclude: [

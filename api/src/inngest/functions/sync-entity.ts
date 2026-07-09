@@ -4,6 +4,7 @@ import {
   performSyncChunk,
   performBulkFlush,
   performPrepareStaging,
+  performOverwriteTruncate,
   getTempCollectionCount,
   performStagingMerge,
   performStagingCleanup,
@@ -322,6 +323,13 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           // Staging table may not exist — that's fine
         }
 
+        // Overwrite mode: clear the live table exactly once, here, before
+        // any flush of this run writes. Do NOT call this from the
+        // flush-merge/flush-final steps below — they re-run
+        // performPrepareStaging per flush cycle, and re-truncating there
+        // would wipe rows already written by earlier flushes (bug B1, see
+        // docs/sync-modes-hardening-plan.md).
+        await performOverwriteTruncate(bulkSyncOptions as any);
         await performPrepareStaging(bulkSyncOptions as any);
       });
       stepsUsed++;
