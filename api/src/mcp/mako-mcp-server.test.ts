@@ -75,13 +75,28 @@ async function main() {
     for (const expected of [
       "create_app",
       "get_app_state",
+      "app_read_file",
       "app_write_file",
+      "app_edit_file",
+      "app_add_dependency",
       "app_create_data_binding",
+      "app_update_data_binding",
+      "materialize_binding",
       "app_save_version",
+      "app_restore_version",
+      "list_connections",
       "sql_list_connections",
+      "sql_list_databases",
+      "sql_list_tables",
+      "sql_inspect_table",
       "sql_execute_query",
       "mongo_list_connections",
       "mongo_execute_query",
+      "search_consoles",
+      "browse_version_history",
+      "get_version_snapshot",
+      "load_skill",
+      "read_skill_resource",
     ]) {
       assert.ok(names.has(expected), `missing tool: ${expected}`);
     }
@@ -147,7 +162,10 @@ async function main() {
       contents: { mimeType: string; text: string }[];
     };
     assert.equal(contents[0].mimeType, "text/markdown");
-    assert.ok(contents[0].text.length > 500, "skill body should be substantial");
+    assert.ok(
+      contents[0].text.length > 500,
+      "skill body should be substantial",
+    );
   }
 
   // 6. Notification-only exchange produces no responses (HTTP layer → 202).
@@ -158,11 +176,16 @@ async function main() {
     assert.equal(responses.length, 0);
   }
 
+  // eslint-disable-next-line no-console
   console.log("mako-mcp-server tests passed");
+  // Imported tool modules hold live handles (driver pools/timers); an
+  // explicit exit keeps the tsx test chain moving.
+  // eslint-disable-next-line no-process-exit
   process.exit(0);
 }
 
 main().catch(err => {
   console.error(err);
+  // eslint-disable-next-line no-process-exit
   process.exit(1);
 });

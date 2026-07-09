@@ -25,6 +25,10 @@ import { z } from "zod";
 import { createServerAppTools } from "../agent-lib/tools/server-app-tools";
 import { createSqlToolsV2 } from "../agent-lib/tools/sql-tools";
 import { createMongoToolsV2 } from "../agent-lib/tools/mongodb-tools";
+import { createUniversalTools } from "../agent-lib/tools/universal-tools";
+import { createConsoleSearchTools } from "../agent-lib/tools/console-search-tools";
+import { createVersionHistoryTools } from "../agent-lib/tools/version-history-tools";
+import { createSkillTools } from "../agent-lib/tools/skill-tools";
 import {
   getSystemSkillIndex,
   getSystemSkillFullText,
@@ -70,9 +74,25 @@ export function buildMakoMcpToolset(
 
   const sqlTools = createSqlToolsV2(workspaceId, [], undefined, userId);
   const mongoTools = createMongoToolsV2(workspaceId, [], undefined, userId);
+  // Cross-database discovery: one call that spans SQL + MongoDB connections
+  // (the same entry point the in-product app mode starts from).
+  const { list_connections } = createUniversalTools(
+    workspaceId,
+    [],
+    undefined,
+    userId,
+  );
+  const consoleSearchTools = createConsoleSearchTools(workspaceId);
+  const versionHistoryTools = createVersionHistoryTools(workspaceId);
+  // Read-only skill access; the write tools (save/delete) stay in-product.
+  const { load_skill, read_skill_resource } = createSkillTools(
+    workspaceId,
+    userId,
+  );
 
   return {
     ...appTools,
+    list_connections,
     sql_list_connections: sqlTools.sql_list_connections,
     sql_list_databases: sqlTools.sql_list_databases,
     sql_list_tables: sqlTools.sql_list_tables,
@@ -83,6 +103,16 @@ export function buildMakoMcpToolset(
     mongo_list_collections: mongoTools.list_collections,
     mongo_inspect_collection: mongoTools.inspect_collection,
     mongo_execute_query: mongoTools.execute_query,
+    // Reuse existing validated queries as binding sources
+    // (app_create_data_binding accepts a consoleId to seed from).
+    search_consoles: consoleSearchTools.search_consoles,
+    // Version history: app_restore_version needs these to be discoverable.
+    browse_version_history: versionHistoryTools.browse_version_history,
+    get_version_snapshot: versionHistoryTools.get_version_snapshot,
+    // Authoring guidance (apps playbook, SQL dialects) — same knowledge the
+    // in-product agent retrieves; also exposed as mako://skills resources.
+    load_skill,
+    read_skill_resource,
   };
 }
 

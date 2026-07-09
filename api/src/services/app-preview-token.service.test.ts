@@ -40,7 +40,9 @@ function main() {
       appId: APP_ID,
       workspaceId: WORKSPACE_ID,
     });
-    const [payload, sig] = token.slice(APP_PREVIEW_TOKEN_PREFIX.length).split(".");
+    const [payload, sig] = token
+      .slice(APP_PREVIEW_TOKEN_PREFIX.length)
+      .split(".");
     const forged = JSON.parse(
       Buffer.from(payload, "base64url").toString("utf8"),
     );
@@ -86,6 +88,7 @@ function main() {
     );
   }
 
+  // eslint-disable-next-line no-console
   console.log("app-preview-token tests passed");
 }
 
