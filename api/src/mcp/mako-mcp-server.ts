@@ -26,6 +26,7 @@ import { createServerAppTools } from "../agent-lib/tools/server-app-tools";
 import { createSqlToolsV2 } from "../agent-lib/tools/sql-tools";
 import { createMongoToolsV2 } from "../agent-lib/tools/mongodb-tools";
 import { createUniversalTools } from "../agent-lib/tools/universal-tools";
+import { createServerConsoleTools } from "../agent-lib/tools/server-console-tools";
 import { createConsoleSearchTools } from "../agent-lib/tools/console-search-tools";
 import { createVersionHistoryTools } from "../agent-lib/tools/version-history-tools";
 import { createSkillTools } from "../agent-lib/tools/skill-tools";
@@ -66,10 +67,19 @@ export function buildMakoMcpToolset(
   // The chatId feeds realtime echo-suppression (`agent:<chatId>`); a fresh
   // id per exchange means no open browser tab suppresses these events, so
   // tabs live-reload on every MCP-driven mutation.
-  const appTools = createServerAppTools({
+  const chatId = `mcp-${nanoid(10)}`;
+  const appTools = createServerAppTools({ workspaceId, userId, chatId });
+
+  // Long-running query escape hatch: sql_execute_query enforces a short
+  // exploration timeout and points at the resumable console path
+  // (create_console → run_console → check_query_status) for slow
+  // warehouses — without these, binding validation on e.g. BigQuery
+  // dead-ends. read_console also lets the agent inspect a console found
+  // via search_consoles before seeding a binding from it.
+  const consoleTools = createServerConsoleTools({
     workspaceId,
     userId,
-    chatId: `mcp-${nanoid(10)}`,
+    chatId,
   });
 
   const sqlTools = createSqlToolsV2(workspaceId, [], undefined, userId);
@@ -106,6 +116,13 @@ export function buildMakoMcpToolset(
     // Reuse existing validated queries as binding sources
     // (app_create_data_binding accepts a consoleId to seed from).
     search_consoles: consoleSearchTools.search_consoles,
+    read_console: consoleTools.read_console,
+    create_console: consoleTools.create_console,
+    modify_console: consoleTools.modify_console,
+    set_console_connection: consoleTools.set_console_connection,
+    run_console: consoleTools.run_console,
+    check_query_status: consoleTools.check_query_status,
+    cancel_query: consoleTools.cancel_query,
     // Version history: app_restore_version needs these to be discoverable.
     browse_version_history: versionHistoryTools.browse_version_history,
     get_version_snapshot: versionHistoryTools.get_version_snapshot,
