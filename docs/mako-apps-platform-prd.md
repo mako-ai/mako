@@ -1,6 +1,24 @@
 # Mako Apps Platform — Build Mako-Compatible Apps via MCP, Claude Code, and GitHub
 
-**Status:** Proposal / plan
+**Status:** Proposal / plan — **vertical slice of Phase 1 + 1.5 implemented on this branch** (see §0)
+
+## 0. Implemented vertical slice (this branch)
+
+The full headless iteration loop, on existing unscoped `revops_` keys (Phase 0 hardening still pending — do not expose externally before scopes + rate limiting land):
+
+- **`POST /api/mcp`** — Mako as a stateless MCP server (Streamable HTTP, JSON mode). Bearer workspace API key required. Bridges the existing server-side agent tools: all app tools (`create_app`, `app_write_file`, bindings, versions, …), `sql_*` (5), `mongo_*` (5). System skills exposed as `mako://skills/*` resources. Files: `api/src/mcp/`, `api/src/routes/mcp-server.routes.ts`.
+- **Signed draft previews** — `create_preview_token` MCP tool mints `mpt_*` HMAC tokens (60s–30min TTL, single app); `/api/preview/:token` serves the draft definition and `/api/preview/:token/binding/:id/execute` runs draft bindings through the same read-only/row-cap/timeout/rate-limit envelope as public shares. Frontend `/preview/:token` renders the draft and publishes machine-observable state (`window.__MAKO_PREVIEW_STATE__`, `[mako-preview-ready|error]` console markers).
+- **`render_app` MCP tool** — pooled server-side headless Chromium (env-gated via `RENDER_APP_BROWSER_PATH`, graceful degradation) renders the draft and returns status + errors + console + JPEG screenshot as MCP image content.
+
+Quickstart:
+
+```bash
+claude mcp add --transport http mako https://<host>/api/mcp \
+  --header "Authorization: Bearer revops_..."
+# then: "Build me an app showing revenue by month" — the agent creates the
+# app, iterates with render_app (or create_preview_token + local browser),
+# and any open Mako tab live-reloads on every edit.
+```
 **Goal:** Let anyone build Mako apps from *outside* the Mako UI — with an MCP client (Claude Desktop, Claude Code, any agent), or directly in a GitHub repo with Claude Code — and let published apps run **standalone**, needing only a simple API key that grants access to their data resources.
 
 ---
