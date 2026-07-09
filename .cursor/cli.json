@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Mcp(playwright:*)",
+      "Mcp(*playwright:*)"
+    ]
+  }
+}

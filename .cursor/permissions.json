@@ -1,0 +1,25 @@
+{
+  // Source of truth for MCP auto-approval in this repo.
+  // Prefer this file over clicking "Always allow" in chat — UI entries are
+  // per exact server:tool and break when Cursor's internal server ID format
+  // changes (e.g. playwright vs project-0-playwright).
+  //
+  // Docs: https://cursor.com/docs/reference/permissions.md
+  // Requires Run Mode = Auto-review or Allowlist (Settings > Agents > Approvals).
+  //
+  // When this key is set, the in-app MCP allowlist editor becomes read-only.
+  // Personal servers belong in ~/.cursor/permissions.json (arrays merge).
+
+  "mcpAllowlist": [
+    // Repo MCP from .cursor/mcp.json
+    "playwright:*",
+    // Tolerate Cursor's project-prefixed server IDs (known allowlist mismatch)
+    "*playwright:*"
+  ],
+
+  "autoRun": {
+    "allow_instructions": [
+      "Playwright MCP browser automation tools configured in this repo are trusted and should auto-run without prompting."
+    ]
+  }
+}
