@@ -15,6 +15,7 @@ import {
   ProvisionWebhookResult,
   type WebhookCapabilities,
   type ConnectorEntitySchema,
+  type IncrementalCapabilities,
 } from "../base/BaseConnector";
 import { resolveCalendlyEntitySchema } from "./schema";
 import { loggers } from "../../logging";
@@ -851,6 +852,29 @@ export class CalendlyConnector extends BaseConnector {
         storesSecretAutomatically: true,
       },
       secretHelpText: "Enter the webhook signing secret from your provider",
+    };
+  }
+
+  getIncrementalCapabilities(): IncrementalCapabilities {
+    return {
+      supported: true,
+      // `organizations` is a single fixed-shape fetch with no time filter.
+      mode: "none",
+      perEntity: {
+        // `min_start_time` filters on the event's start time, not on when
+        // it was last modified — an event edited after being scheduled in
+        // the past is never re-fetched by a poll.
+        scheduled_events: {
+          mode: "created-anchor",
+          anchorField: "min_start_time",
+        },
+        groups: { mode: "client-filter", anchorField: "updated_at" },
+        event_types: { mode: "client-filter", anchorField: "updated_at" },
+        contacts: { mode: "client-filter", anchorField: "updated_at" },
+        users: { mode: "client-filter", anchorField: "updated_at" },
+      },
+      warning:
+        "Calendly events are matched by scheduled start time, not last edit; changes to already-scheduled events require the webhook trigger.",
     };
   }
 

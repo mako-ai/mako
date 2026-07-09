@@ -4,6 +4,7 @@ import {
   FetchOptions,
   ResumableFetchOptions,
   FetchState,
+  type IncrementalCapabilities,
 } from "../base/BaseConnector";
 import axios, { AxiosInstance } from "axios";
 
@@ -362,5 +363,11 @@ export class PosthogConnector extends BaseConnector {
       }
     }
     throw new Error("Max retries exceeded");
+  }
+
+  getIncrementalCapabilities(): IncrementalCapabilities {
+    // `since` is accepted by `FetchOptions` but never applied to any
+    // PostHog query — every poll re-fetches the full result set.
+    return { supported: false, mode: "none" };
   }
 }

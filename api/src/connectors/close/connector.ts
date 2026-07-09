@@ -13,6 +13,7 @@ import {
   ProvisionWebhookResult,
   type WebhookCapabilities,
   type ConnectorEntitySchema,
+  type IncrementalCapabilities,
 } from "../base/BaseConnector";
 import { resolveCloseEntitySchema, type CloseCustomField } from "./schema";
 import axios, { AxiosInstance } from "axios";
@@ -2132,6 +2133,27 @@ export class CloseConnector extends BaseConnector {
         actionHint: "and stores its signing secret",
       },
       secretHelpText: "Enter the webhook signing secret from your provider",
+    };
+  }
+
+  getIncrementalCapabilities(): IncrementalCapabilities {
+    return {
+      supported: true,
+      // Fallback for leads/contacts/opportunities/activities:* (activity
+      // sub-types are keyed as `activities:Call`, `activities:Note`, etc.,
+      // so they can't be listed individually in `perEntity`). All of these
+      // go through `fetchViaSearchApi`, which ignores `since` entirely —
+      // every poll re-fetches the full object set (see Phase 6 backlog item
+      // to wire `date_updated` into the Search-API request).
+      mode: "none",
+      perEntity: {
+        // `users` and `custom_fields` use the offset-pagination fallback,
+        // which applies a real `date_updated__gte` filter.
+        users: { mode: "native", anchorField: "date_updated__gte" },
+        custom_fields: { mode: "native", anchorField: "date_updated__gte" },
+      },
+      warning:
+        "Leads, contacts, opportunities, and activities always fetch the full data set on every poll; use the webhook trigger or a periodic full reconcile to keep them current.",
     };
   }
 

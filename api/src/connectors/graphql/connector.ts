@@ -4,6 +4,7 @@ import {
   FetchOptions,
   ResumableFetchOptions,
   FetchState,
+  type IncrementalCapabilities,
 } from "../base/BaseConnector";
 import axios, { AxiosInstance } from "axios";
 import { loggers } from "../../logging";
@@ -811,5 +812,13 @@ export class GraphQLConnector extends BaseConnector {
     return path.split(".").reduce((current, key) => {
       return current && current[key] !== undefined ? current[key] : null;
     }, obj);
+  }
+
+  getIncrementalCapabilities(): IncrementalCapabilities {
+    // `since` is not threaded into the user-authored query/variables at all
+    // — every poll re-runs the full paginated query. Queries are flow-level
+    // configuration, not fixed entities, so there's nothing to scope this to
+    // per-entity yet (Phase 6 backlog: optional `$since` variable injection).
+    return { supported: false, mode: "none" };
   }
 }

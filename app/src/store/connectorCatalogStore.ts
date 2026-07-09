@@ -16,6 +16,19 @@ export interface WebhookCapabilities {
   secretHelpText?: string;
 }
 
+export type IncrementalMode =
+  | "native"
+  | "client-filter"
+  | "created-anchor"
+  | "none";
+
+export interface IncrementalCapabilities {
+  supported: boolean;
+  mode: IncrementalMode;
+  perEntity?: Record<string, { mode: IncrementalMode; anchorField?: string }>;
+  warning?: string;
+}
+
 export interface ConnectorType {
   type: string;
   name: string;
@@ -23,6 +36,19 @@ export interface ConnectorType {
   description: string;
   supportedEntities: string[];
   webhook: WebhookCapabilities;
+  incremental: IncrementalCapabilities;
+}
+
+/** Effective incremental mode for a specific entity, applying the perEntity override. */
+export function effectiveIncrementalMode(
+  capabilities: IncrementalCapabilities | undefined,
+  entity: string | undefined,
+): IncrementalMode {
+  if (!capabilities) return "none";
+  if (entity && capabilities.perEntity?.[entity]) {
+    return capabilities.perEntity[entity].mode;
+  }
+  return capabilities.mode;
 }
 
 export interface ConnectorSchemaResponse {

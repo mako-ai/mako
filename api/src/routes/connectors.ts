@@ -27,6 +27,28 @@ const WebhookCapabilitiesSchema = z.object({
   secretHelpText: z.string().optional(),
 });
 
+const IncrementalModeSchema = z.enum([
+  "native",
+  "client-filter",
+  "created-anchor",
+  "none",
+]);
+
+const IncrementalCapabilitiesSchema = z.object({
+  supported: z.boolean(),
+  mode: IncrementalModeSchema,
+  perEntity: z
+    .record(
+      z.string(),
+      z.object({
+        mode: IncrementalModeSchema,
+        anchorField: z.string().optional(),
+      }),
+    )
+    .optional(),
+  warning: z.string().optional(),
+});
+
 const ConnectorMetadataSchema = z
   .object({
     type: z.string(),
@@ -36,6 +58,7 @@ const ConnectorMetadataSchema = z
     author: z.string().optional(),
     supportedEntities: z.array(z.string()),
     webhook: WebhookCapabilitiesSchema,
+    incremental: IncrementalCapabilitiesSchema,
   })
   .openapi("ConnectorMetadata");
 

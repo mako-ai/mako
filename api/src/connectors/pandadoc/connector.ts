@@ -14,6 +14,7 @@ import {
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
   type WebhookCapabilities,
+  type IncrementalCapabilities,
   type ConnectorEntitySchema,
 } from "../base/BaseConnector";
 import { resolvePandaDocEntitySchema } from "./schema";
@@ -638,6 +639,20 @@ export class PandaDocConnector extends BaseConnector {
       },
       secretHelpText:
         "Enter the webhook subscription Shared Key from the PandaDoc Developer Dashboard (used to verify the HMAC signature).",
+    };
+  }
+
+  getIncrementalCapabilities(): IncrementalCapabilities {
+    return {
+      supported: true,
+      // Fallback for any entity not listed below (e.g. contacts): `since`
+      // is not applied by `fetchEntityChunk`, so treat as unsupported.
+      mode: "none",
+      perEntity: {
+        documents: { mode: "native", anchorField: "modified_from" },
+        templates: { mode: "client-filter" },
+        members: { mode: "client-filter" },
+      },
     };
   }
 

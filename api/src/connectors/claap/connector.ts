@@ -13,6 +13,7 @@ import {
   ProvisionWebhookResult,
   type WebhookCapabilities,
   type ConnectorEntitySchema,
+  type IncrementalCapabilities,
 } from "../base/BaseConnector";
 import { resolveClaapEntitySchema } from "./schema";
 import axios, { AxiosError, AxiosInstance } from "axios";
@@ -520,6 +521,21 @@ export class ClaapConnector extends BaseConnector {
       },
       secretHelpText:
         "Enter the X-Claap-Webhook-Secret from your Claap webhook settings",
+    };
+  }
+
+  getIncrementalCapabilities(): IncrementalCapabilities {
+    return {
+      supported: true,
+      // `workspace` is a single-object fetch with no time filter at all.
+      mode: "none",
+      perEntity: {
+        // `createdAfter` only — a recording edited after creation won't be
+        // re-polled; only the webhook trigger catches later edits.
+        recordings: { mode: "created-anchor", anchorField: "createdAfter" },
+      },
+      warning:
+        "Claap recordings are matched by creation date only; edits to existing recordings require the webhook trigger.",
     };
   }
 

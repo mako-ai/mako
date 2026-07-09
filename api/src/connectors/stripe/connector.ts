@@ -12,6 +12,7 @@ import {
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
   type WebhookCapabilities,
+  type IncrementalCapabilities,
   type ConnectorEntitySchema,
 } from "../base/BaseConnector";
 import Stripe from "stripe";
@@ -758,6 +759,19 @@ export class StripeConnector extends BaseConnector {
       },
       secretHelpText:
         "Get this from Stripe Dashboard > Webhooks > Your endpoint > Signing secret",
+    };
+  }
+
+  getIncrementalCapabilities(): IncrementalCapabilities {
+    return {
+      // `fetchEntityChunk` filters with `created[gte]` on every entity — a
+      // poll never re-fetches an object that was updated after it was
+      // created (e.g. a subscription that changed plans). Real-time updates
+      // only arrive via the webhook trigger.
+      supported: true,
+      mode: "created-anchor",
+      warning:
+        "Stripe only reports newly created records to polls; updates to existing records require the webhook trigger.",
     };
   }
 

@@ -1059,6 +1059,53 @@
               "supported",
               "provisioning"
             ]
+          },
+          "incremental": {
+            "type": "object",
+            "properties": {
+              "supported": {
+                "type": "boolean"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "native",
+                  "client-filter",
+                  "created-anchor",
+                  "none"
+                ]
+              },
+              "perEntity": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "native",
+                        "client-filter",
+                        "created-anchor",
+                        "none"
+                      ]
+                    },
+                    "anchorField": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "mode"
+                  ]
+                }
+              },
+              "warning": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "supported",
+              "mode"
+            ]
           }
         },
         "required": [
@@ -1067,7 +1114,8 @@
           "version",
           "description",
           "supportedEntities",
-          "webhook"
+          "webhook",
+          "incremental"
         ]
       },
       "DatabaseType": {
