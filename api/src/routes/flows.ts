@@ -580,6 +580,14 @@ function validateWriteMode(params: {
       return `writeMode '${writeMode}' is not supported by '${params.destinationType}' destinations (supported: ${supported.join(", ") || "none"})`;
     }
   }
+  if (params.syncEngine !== "cdc" && writeMode !== "append_dedup") {
+    // The legacy engine has no write-mode branching — it always upserts.
+    // Accepting `append`/`overwrite` here would silently save a setting the
+    // sync never honors (the CDC-only combos aren't even offered by the UI
+    // for legacy/non-CDC destinations — see `supportedWriteModes` in
+    // SyncFlowForm.tsx — but the API must not accept them either).
+    return `writeMode '${writeMode}' requires the CDC sync engine (syncEngine 'cdc'); the legacy engine only supports 'append_dedup'`;
+  }
   return null;
 }
 
