@@ -383,7 +383,12 @@ const UserAttributionSchema = new Schema<IUserAttribution>(
   { collection: "user_attributions" },
 );
 
-UserAttributionSchema.index({ gclid: 1 }, { sparse: true });
+// Name must match the migration (2026-07-09-100000_user_attributions) so
+// Mongoose autoIndex and the migration converge on one index.
+UserAttributionSchema.index(
+  { gclid: 1 },
+  { sparse: true, name: "user_attributions_gclid" },
+);
 
 // Models - use existing model if already compiled (prevents hot reload issues)
 export const User =
