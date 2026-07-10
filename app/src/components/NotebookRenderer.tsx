@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Box,
   Button,
@@ -12,21 +12,14 @@ import { Notebook as NotebookIcon, Plus } from "lucide-react";
 
 import {
   useNotebookStore,
-  type NotebookBlock,
   type NotebookBlockType,
-  type NotebookDoc,
+  type NotebookSaveState,
 } from "../store/notebookStore";
 import NotebookCell from "./NotebookCell";
 import { useSchemaStore } from "../store/schemaStore";
 import { useUIStore } from "../store/uiStore";
 
-type SaveState = "idle" | "saving" | "saved" | "error";
-
-function newBlock(type: NotebookBlockType): NotebookBlock {
-  return { id: crypto.randomUUID(), type, source: "" };
-}
-
-const SAVE_LABEL: Record<SaveState, string> = {
+const SAVE_LABEL: Record<NotebookSaveState, string> = {
   idle: "",
   saving: "Saving…",
   saved: "Saved",
@@ -39,96 +32,51 @@ interface NotebookRendererProps {
 }
 
 /**
- * Center-pane editor for a `kind: "notebook"` tab: editable title + ordered
- * cells (Python/SQL via Monaco, Markdown via a text field), add/delete/reorder,
- * with debounced autosave through the CRUD API. Cell *execution* (kernels /
- * SQL results) lands in the execution slice.
+ * Center-pane editor for a `kind: "notebook"` tab. All edit state + autosave
+ * live in `notebookStore.openNotebooks`, so the editor, the AI agent, and (later)
+ * live collaboration all mutate one shared document. SQL cells run against a
+ * chosen data source; Python cells run once the kernel lands.
  */
 export default function NotebookRenderer({
   notebookId,
 }: NotebookRendererProps) {
-  const getNotebook = useNotebookStore(s => s.getNotebook);
-  const updateNotebook = useNotebookStore(s => s.updateNotebook);
+  const doc = useNotebookStore(s => s.openNotebooks[notebookId]);
+  const saveState = useNotebookStore(s => s.saveState[notebookId] ?? "idle");
+  const openNotebook = useNotebookStore(s => s.openNotebook);
+  const renameOpenNotebook = useNotebookStore(s => s.renameOpenNotebook);
+  const addCell = useNotebookStore(s => s.addCell);
+  const updateCell = useNotebookStore(s => s.updateCell);
+  const deleteCell = useNotebookStore(s => s.deleteCell);
+  const moveCell = useNotebookStore(s => s.moveCell);
+
   const workspaceId = useUIStore(s => s.currentWorkspaceId) ?? null;
   const connectionsByWs = useSchemaStore(s => s.connections);
   const ensureConnections = useSchemaStore(s => s.ensureConnections);
   const sources = workspaceId ? (connectionsByWs[workspaceId] ?? []) : [];
 
-  const [doc, setDoc] = useState<NotebookDoc | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [loading, setLoading] = useState(!doc);
   const [addAnchor, setAddAnchor] = useState<HTMLElement | null>(null);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let alive = true;
-    setLoading(true);
-    void getNotebook(notebookId).then(d => {
-      if (alive) {
-        setDoc(d);
-        setLoading(false);
-      }
+    void openNotebook(notebookId).finally(() => {
+      if (alive) setLoading(false);
     });
     return () => {
       alive = false;
-      if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [notebookId, getNotebook]);
+  }, [notebookId, openNotebook]);
 
   useEffect(() => {
     if (workspaceId) void ensureConnections(workspaceId);
   }, [workspaceId, ensureConnections]);
 
-  const scheduleSave = useCallback(
-    (next: NotebookDoc, nameChanged: boolean) => {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      setSaveState("saving");
-      saveTimer.current = setTimeout(() => {
-        void updateNotebook(next.id, {
-          name: nameChanged ? next.name : undefined,
-          blocks: next.blocks,
-        }).then(res => setSaveState(res ? "saved" : "error"));
-      }, 700);
-    },
-    [updateNotebook],
-  );
-
-  const mutate = useCallback(
-    (updater: (d: NotebookDoc) => NotebookDoc, nameChanged = false) => {
-      setDoc(prev => {
-        if (!prev) return prev;
-        const next = updater(prev);
-        scheduleSave(next, nameChanged);
-        return next;
-      });
-    },
-    [scheduleSave],
-  );
-
-  const addBlock = (type: NotebookBlockType) => {
+  const handleAdd = (type: NotebookBlockType) => {
     setAddAnchor(null);
-    mutate(d => ({ ...d, blocks: [...d.blocks, newBlock(type)] }));
+    addCell(notebookId, type);
   };
 
-  const changeBlock = (id: string, patch: Partial<NotebookBlock>) =>
-    mutate(d => ({
-      ...d,
-      blocks: d.blocks.map(b => (b.id === id ? { ...b, ...patch } : b)),
-    }));
-
-  const deleteBlock = (id: string) =>
-    mutate(d => ({ ...d, blocks: d.blocks.filter(b => b.id !== id) }));
-
-  const moveBlock = (index: number, direction: -1 | 1) =>
-    mutate(d => {
-      const target = index + direction;
-      if (target < 0 || target >= d.blocks.length) return d;
-      const blocks = [...d.blocks];
-      [blocks[index], blocks[target]] = [blocks[target], blocks[index]];
-      return { ...d, blocks };
-    });
-
-  if (loading) {
+  if (loading && !doc) {
     return (
       <Box
         sx={{
@@ -171,7 +119,7 @@ export default function NotebookRenderer({
         <NotebookIcon size={18} style={{ flexShrink: 0, opacity: 0.8 }} />
         <InputBase
           value={doc.name}
-          onChange={e => mutate(d => ({ ...d, name: e.target.value }), true)}
+          onChange={e => renameOpenNotebook(notebookId, e.target.value)}
           placeholder="Untitled notebook"
           sx={{ flex: 1, fontSize: "1.05rem", fontWeight: 600 }}
         />
@@ -196,9 +144,9 @@ export default function NotebookRenderer({
             count={doc.blocks.length}
             workspaceId={workspaceId}
             sources={sources}
-            onChange={patch => changeBlock(block.id, patch)}
-            onDelete={() => deleteBlock(block.id)}
-            onMove={dir => moveBlock(index, dir)}
+            onChange={patch => updateCell(notebookId, block.id, patch)}
+            onDelete={() => deleteCell(notebookId, block.id)}
+            onMove={dir => moveCell(notebookId, index, dir)}
           />
         ))}
 
@@ -208,8 +156,9 @@ export default function NotebookRenderer({
             color="text.secondary"
             sx={{ mb: 2, maxWidth: 520 }}
           >
-            Empty notebook. Add a cell to get started — Python and SQL cells run
-            once the execution slice lands; Markdown renders inline.
+            Empty notebook. Add a cell to get started — SQL cells run against a
+            data source; Python runs once the kernel lands; Markdown renders
+            inline.
           </Typography>
         )}
 
@@ -226,9 +175,9 @@ export default function NotebookRenderer({
           open={Boolean(addAnchor)}
           onClose={() => setAddAnchor(null)}
         >
-          <MenuItem onClick={() => addBlock("code")}>Python</MenuItem>
-          <MenuItem onClick={() => addBlock("sql")}>SQL</MenuItem>
-          <MenuItem onClick={() => addBlock("markdown")}>Markdown</MenuItem>
+          <MenuItem onClick={() => handleAdd("code")}>Python</MenuItem>
+          <MenuItem onClick={() => handleAdd("sql")}>SQL</MenuItem>
+          <MenuItem onClick={() => handleAdd("markdown")}>Markdown</MenuItem>
         </Menu>
       </Box>
     </Box>
