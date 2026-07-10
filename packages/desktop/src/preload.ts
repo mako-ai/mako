@@ -5,9 +5,14 @@
  */
 import { contextBridge, ipcRenderer } from "electron";
 
+const metadata = ipcRenderer.sendSync("mako:get-app-metadata") as {
+  version: string;
+  platform: string;
+  arch: string;
+};
+
 contextBridge.exposeInMainWorld("makoDesktop", {
-  version: process.env.npm_package_version || "0.1.0",
-  platform: process.platform,
+  ...metadata,
   /**
    * Ask the main process to open the system browser at /desktop-auth with a
    * fresh PKCE challenge. The session comes back via a mako:// deep link.
