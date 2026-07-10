@@ -13,5 +13,7 @@ export const MONGO_QUERY_WRITE_SCOPE_REQUIRED =
 export function sqlReadOnlyAccessError(query: string): string | null {
   const safety = checkPreviewQuerySafety(query);
   if (safety.safe) return null;
-  return `${QUERY_WRITE_SCOPE_REQUIRED} ${safety.errors.join(" ")}`;
+  // Several overlapping checks usually fire on the same query; one concrete
+  // reason is enough for the calling agent (the rest is repetitive noise).
+  return `${QUERY_WRITE_SCOPE_REQUIRED} ${safety.errors[0] ?? ""}`.trim();
 }
