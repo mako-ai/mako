@@ -141,8 +141,37 @@ export function LoginPage({
         </Alert>
       )}
 
+      {/* Desktop: credentials are never entered in the embedded window (no
+          visible address bar, no password manager). All sign-in is handed to
+          the system browser instead. */}
+      {useBrowserAuth && (
+        <Box>
+          <Button
+            fullWidth
+            variant="contained"
+            size="large"
+            onClick={() => void handleBrowserAuth()}
+            disabled={loading}
+            sx={{ py: 1.5 }}
+          >
+            {browserAuthStarted
+              ? "Reopen browser to continue"
+              : "Continue in your browser"}
+          </Button>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ display: "block", mt: 1.5, lineHeight: 1.5 }}
+          >
+            For your security, Mako Desktop signs you in through your web
+            browser, where you can check the address bar and use your password
+            manager.
+          </Typography>
+        </Box>
+      )}
+
       {/* Social Login Buttons - Hidden when OAuth is disabled (PR previews) */}
-      {isOAuthEnabled && (
+      {!useBrowserAuth && isOAuthEnabled && (
         <>
           <Box
             sx={{
@@ -189,116 +218,103 @@ export function LoginPage({
         </>
       )}
 
-      <form onSubmit={handleSubmit}>
-        <Box sx={{ mb: 2 }}>
-          <Typography
-            variant="body2"
-            sx={{ fontWeight: 500, mb: 1, color: "text.primary" }}
-          >
-            Email
-          </Typography>
-          <TextField
-            fullWidth
-            size="small"
-            type="email"
-            value={email}
-            onChange={e => setEmail(e.target.value)}
-            error={!!formErrors.email}
-            helperText={formErrors.email}
-            disabled={loading}
-            autoComplete="email"
-            autoFocus
-            placeholder="you@example.com"
-          />
-        </Box>
-
-        <Box sx={{ mb: 2.5 }}>
-          <Box
-            sx={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              mb: 1,
-            }}
-          >
+      {!useBrowserAuth && (
+        <form onSubmit={handleSubmit}>
+          <Box sx={{ mb: 2 }}>
             <Typography
               variant="body2"
-              sx={{ fontWeight: 500, color: "text.primary" }}
+              sx={{ fontWeight: 500, mb: 1, color: "text.primary" }}
             >
-              Password
+              Email
             </Typography>
-            <Link
-              component="button"
-              type="button"
-              variant="body2"
-              onClick={e => {
-                e.preventDefault();
-                onForgotPassword();
-              }}
+            <TextField
+              fullWidth
+              size="small"
+              type="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              error={!!formErrors.email}
+              helperText={formErrors.email}
               disabled={loading}
-              sx={{ textDecoration: "none" }}
-            >
-              Forgot Password?
-            </Link>
+              autoComplete="email"
+              autoFocus
+              placeholder="you@example.com"
+            />
           </Box>
-          <TextField
+
+          <Box sx={{ mb: 2.5 }}>
+            <Box
+              sx={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                mb: 1,
+              }}
+            >
+              <Typography
+                variant="body2"
+                sx={{ fontWeight: 500, color: "text.primary" }}
+              >
+                Password
+              </Typography>
+              <Link
+                component="button"
+                type="button"
+                variant="body2"
+                onClick={e => {
+                  e.preventDefault();
+                  onForgotPassword();
+                }}
+                disabled={loading}
+                sx={{ textDecoration: "none" }}
+              >
+                Forgot Password?
+              </Link>
+            </Box>
+            <TextField
+              fullWidth
+              size="small"
+              type={showPassword ? "text" : "password"}
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              error={!!formErrors.password}
+              helperText={formErrors.password}
+              disabled={loading}
+              autoComplete="current-password"
+              slotProps={{
+                input: {
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <IconButton
+                        aria-label="toggle password visibility"
+                        onClick={() => setShowPassword(!showPassword)}
+                        edge="end"
+                        size="small"
+                      >
+                        {showPassword ? (
+                          <VisibilityOff fontSize="small" />
+                        ) : (
+                          <Visibility fontSize="small" />
+                        )}
+                      </IconButton>
+                    </InputAdornment>
+                  ),
+                },
+              }}
+            />
+          </Box>
+
+          <Button
+            type="submit"
             fullWidth
-            size="small"
-            type={showPassword ? "text" : "password"}
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            error={!!formErrors.password}
-            helperText={formErrors.password}
+            variant="contained"
+            size="large"
             disabled={loading}
-            autoComplete="current-password"
-            slotProps={{
-              input: {
-                endAdornment: (
-                  <InputAdornment position="end">
-                    <IconButton
-                      aria-label="toggle password visibility"
-                      onClick={() => setShowPassword(!showPassword)}
-                      edge="end"
-                      size="small"
-                    >
-                      {showPassword ? (
-                        <VisibilityOff fontSize="small" />
-                      ) : (
-                        <Visibility fontSize="small" />
-                      )}
-                    </IconButton>
-                  </InputAdornment>
-                ),
-              },
-            }}
-          />
-        </Box>
-
-        <Button
-          type="submit"
-          fullWidth
-          variant="contained"
-          size="large"
-          disabled={loading}
-          sx={{ py: 1.5 }}
-        >
-          {loading ? "Logging in..." : "Log in"}
-        </Button>
-      </form>
-
-      {useBrowserAuth && (
-        <Box sx={{ textAlign: "center", mt: 2 }}>
-          <Link
-            component="button"
-            type="button"
-            variant="body2"
-            onClick={() => void handleBrowserAuth()}
-            disabled={loading}
-            sx={{ textDecoration: "none" }}
+            sx={{ py: 1.5 }}
           >
-            Sign in using your browser instead
-          </Link>
-        </Box>
+            {loading ? "Logging in..." : "Log in"}
+          </Button>
+        </form>
       )}
 
       <Box sx={{ textAlign: "center", mt: 4 }}>

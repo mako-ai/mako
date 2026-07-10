@@ -12,6 +12,26 @@ import {
   type RegisterCredentials,
 } from "../lib/auth-client";
 import { identify, trackEvent } from "../lib/analytics";
+import { isMakoDesktop } from "../lib/desktop";
+
+/**
+ * Fire `app_session_started` at most once per browser session (tab), so it is a
+ * retention primitive ("came back on N days") rather than a per-navigation
+ * event. `identify()` alone is not an event and cannot answer recurrence.
+ */
+const SESSION_STARTED_KEY = "mako_session_started";
+function trackSessionStartedOnce() {
+  if (typeof window === "undefined") return;
+  try {
+    if (window.sessionStorage.getItem(SESSION_STARTED_KEY)) return;
+    window.sessionStorage.setItem(SESSION_STARTED_KEY, "1");
+  } catch {
+    // Private mode / storage disabled: fall through and still emit once.
+  }
+  trackEvent("app_session_started", {
+    source: isMakoDesktop() ? "desktop" : "web",
+  });
+}
 
 /**
  * Auth context state interface
@@ -63,6 +83,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Identify user for analytics on app start (only if authenticated)
       if (currentUser) {
         identify(currentUser.id, { email: currentUser.email });
+        // Behavioral session-start signal for retention (once per session).
+        trackSessionStartedOnce();
 
         // Check for OAuth sign-up flag (set by backend after OAuth callback)
         // Value is the provider name: "google" or "github"
