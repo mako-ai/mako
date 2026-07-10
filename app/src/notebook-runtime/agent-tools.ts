@@ -13,6 +13,7 @@ import {
   type NotebookBlockType,
 } from "../store/notebookStore";
 import { useUIStore } from "../store/uiStore";
+import { focusNotebookTab } from "./shell";
 
 type ToolResult = Record<string, unknown>;
 
@@ -52,6 +53,22 @@ export async function executeNotebookAgentTool(
   input: Record<string, unknown>,
   options?: { executionId?: string; signal?: AbortSignal },
 ): Promise<ToolResult> {
+  if (toolName === "create_notebook") {
+    const name =
+      typeof input.name === "string" && input.name ? input.name : undefined;
+    const doc = await useNotebookStore.getState().createNotebook(name);
+    if (!doc) return fail("Failed to create notebook");
+    // Open + focus it so it becomes the active notebook the cell tools default
+    // to (resolveNotebookId reads the active tab).
+    focusNotebookTab(doc.id, doc.name);
+    return {
+      success: true,
+      notebookId: doc.id,
+      name: doc.name,
+      cellCount: doc.blocks.length,
+    };
+  }
+
   if (toolName === "list_open_notebooks") {
     const { tabs } = useConsoleStore.getState();
     const open = useNotebookStore.getState().openNotebooks;

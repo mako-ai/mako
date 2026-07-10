@@ -238,6 +238,7 @@ const EXPLORE_MODE_TOOL_NAMES: string[] = [
 
 const NOTEBOOK_MODE_TOOL_NAMES: string[] = [
   // Client notebook tools
+  "create_notebook",
   "list_open_notebooks",
   "read_notebook",
   "add_notebook_cell",

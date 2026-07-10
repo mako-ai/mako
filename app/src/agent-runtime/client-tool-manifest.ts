@@ -1155,6 +1155,13 @@ export const AGENT_TOOL_MANIFEST = {
     icon: "shield-check",
   },
   // -- Notebook tools (client-executed via app/src/notebook-runtime) ---------
+  create_notebook: {
+    domain: "notebook",
+    execution: "client",
+    clientExecutor: "notebook",
+    getLabel: () => "Creating notebook",
+    icon: "plus",
+  },
   list_open_notebooks: {
     domain: "notebook",
     execution: "client",

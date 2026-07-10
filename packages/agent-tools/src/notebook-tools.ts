@@ -23,6 +23,18 @@ const cellTypeField = z
   );
 
 export const clientNotebookTools = {
+  create_notebook: tool({
+    description:
+      "Create a new notebook, open it in a tab, and make it the active " +
+      "notebook. Use this first when no notebook is open (or the user asks " +
+      "for a new one); subsequent cell tools then default to it.",
+    inputSchema: z.object({
+      name: z
+        .string()
+        .optional()
+        .describe("Notebook title. Defaults to 'Untitled notebook'."),
+    }),
+  }),
   list_open_notebooks: tool({
     description:
       "List notebooks currently open in a tab (id, title, cell count). Use to " +
