@@ -1,0 +1,52 @@
+# Egress lockdown for kernel pods. Untrusted user/agent code runs here, so we
+# deny everything by default and re-open only what a kernel legitimately needs:
+#   - DNS (kube-dns) for name resolution
+#   - outbound HTTPS to reach the Mako API (SQL reads proxy through it)
+# Crucially this DENIES pod-to-pod traffic inside the cluster, so a compromised
+# kernel cannot reach the API server, metadata server, or co-tenant pods'
+# internals beyond the API it is meant to call.
+#
+# NOTE: enforcement requires network policy on the cluster (GKE Dataplane V2 /
+# Cilium). GKE Standard clusters created with Dataplane V2 enforce this natively.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kernel-egress-lockdown
+  namespace: mako-notebooks
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mako-kernel
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Only the control plane (reaching in from outside the namespace via the
+    # headless Service) talks to kernels; deny cross-pod ingress otherwise.
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8888
+  egress:
+    # DNS resolution.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Outbound HTTPS to the Mako API (and, transitively, nothing on the private
+    # ranges — block RFC1918 + the GCP metadata server 169.254.169.254).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 443

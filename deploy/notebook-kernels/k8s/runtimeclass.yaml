@@ -1,0 +1,19 @@
+# On GKE Sandbox node pools the `gvisor` RuntimeClass is installed by GKE
+# itself — this manifest is here for documentation and for non-GKE clusters
+# running gVisor manually. Applying it on GKE is a harmless no-op (kubectl
+# apply reconciles to the same object). Kernel pods reference it via
+# `runtimeClassName: gvisor` so untrusted user/agent code runs under the
+# gVisor syscall sandbox, not directly on the host kernel.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+scheduling:
+  nodeSelector:
+    sandbox.gke.io/runtime: gvisor
+  tolerations:
+    - key: sandbox.gke.io/runtime
+      operator: Equal
+      value: gvisor
+      effect: NoSchedule

@@ -1,0 +1,43 @@
+# Namespace that holds every notebook kernel workload. Quota + default limits
+# live here so a runaway workspace can never starve the cluster.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mako-notebooks
+  labels:
+    app.kubernetes.io/part-of: mako-notebooks
+---
+# Hard ceiling on what the whole notebook plane can request cluster-wide.
+# Sized for the default 0..5-node gVisor pool; raise alongside KERNEL_MAX_NODES.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: mako-notebooks-quota
+  namespace: mako-notebooks
+spec:
+  hard:
+    requests.cpu: "16"
+    requests.memory: 96Gi
+    limits.cpu: "32"
+    limits.memory: 128Gi
+    pods: "40"
+---
+# Defaults applied to any kernel pod that omits explicit resources, so a
+# malformed spec can't launch an unbounded container.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: mako-notebooks-limits
+  namespace: mako-notebooks
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "1"
+        memory: 2Gi
+      defaultRequest:
+        cpu: 250m
+        memory: 512Mi
+      max:
+        cpu: "4"
+        memory: 24Gi

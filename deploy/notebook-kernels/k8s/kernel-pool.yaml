@@ -1,0 +1,108 @@
+# Warm pool of pre-imported kernel pods. The control plane (kernel-session
+# service) claims an idle pod from this Deployment on session start — trading a
+# few always-on pods for sub-5s "cold" starts. Scale replicas to your desired
+# warm headroom; the cluster autoscaler grows the gVisor node pool to fit.
+#
+# ${KERNEL_IMAGE} is substituted by build-and-deploy.sh (envsubst) with the
+# pushed Artifact Registry tag.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kernel-pool
+  namespace: mako-notebooks
+  labels:
+    app.kubernetes.io/name: mako-kernel
+    app.kubernetes.io/component: warm-pool
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mako-kernel
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mako-kernel
+        app.kubernetes.io/component: warm-pool
+    spec:
+      # Run under gVisor and pin to the sandbox node pool created by provision.sh.
+      runtimeClassName: gvisor
+      nodeSelector:
+        mako.ai/pool: kernels
+      tolerations:
+        - key: mako.ai/kernels
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kernel
+          image: ${KERNEL_IMAGE}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: kernel-gw
+              containerPort: 8888
+          env:
+            # Kernels hold NO database credentials. Reads proxy through the API
+            # using a short-lived, read-only kernel token injected per session.
+            - name: MAKO_API_URL
+              value: "https://mako.kuodata.com"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 8Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # Real scratch disk for the kernel — parquet spill, temp files.
+            - name: scratch
+              mountPath: /home/mako/scratch
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /api
+              port: kernel-gw
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api
+              port: kernel-gw
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: scratch
+          emptyDir:
+            sizeLimit: 8Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+---
+# Stable in-cluster address the control plane uses to reach kernel gateways.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kernel-pool
+  namespace: mako-notebooks
+  labels:
+    app.kubernetes.io/name: mako-kernel
+spec:
+  clusterIP: None # headless: control plane addresses individual pods
+  selector:
+    app.kubernetes.io/name: mako-kernel
+  ports:
+    - name: kernel-gw
+      port: 8888
+      targetPort: kernel-gw
