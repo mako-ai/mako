@@ -29,6 +29,7 @@ import { dashboardRoutes } from "./dashboards";
 import { appRoutes } from "./apps";
 import { notebookDataRoutes } from "./notebook-data";
 import { notebookRoutes } from "./notebooks";
+import { notebookSessionRoutes } from "./notebook-sessions";
 import { publicShareRoutes } from "./public-share";
 import { dashboardMaterializationRoutes } from "./dashboard-materialization";
 import { resourceDataSourceRoutes } from "./resource-data-sources";
@@ -88,6 +89,7 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   app.route("/api/workspaces/:workspaceId/apps", appRoutes);
   app.route("/api/workspaces/:workspaceId/notebook", notebookDataRoutes);
   app.route("/api/workspaces/:workspaceId/notebooks", notebookRoutes);
+  app.route("/api/workspaces/:workspaceId/notebooks", notebookSessionRoutes);
   app.route(
     "/api/workspaces/:workspaceId/data-sources",
     resourceDataSourceRoutes,

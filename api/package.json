@@ -13,7 +13,7 @@
     "worker:dev": "tsx watch --include \"src/**/*\" src/worker.ts",
     "migrate:workspaces": "tsx src/migrations/migrate-to-workspaces.ts",
     "openapi:generate": "tsx src/openapi/generate-cli.ts",
-    "test": "tsx src/openapi/core.test.ts && tsx src/openapi/openapi.test.ts && tsx src/dbt/warm-dir-cache.test.ts && tsx src/connectors/stripe/connector.test.ts && tsx src/connectors/close/connector.test.ts && tsx src/connectors/pandadoc/connector.test.ts && tsx src/connectors/claap/connector.test.ts && tsx src/sync-cdc/idempotency.test.ts && tsx src/services/flow-triggers.service.test.ts && tsx src/agent-lib/context/compaction.test.ts && tsx src/agent-lib/tool-input-repair.test.ts && tsx src/agent-lib/stream-error.test.ts && tsx src/services/safe-fetch.service.test.ts && tsx src/services/mcp-client.service.test.ts && tsx src/utils/message-sanitizer.test.ts && tsx src/agent-lib/tools/check-query-status-poll.test.ts && tsx src/agent-lib/tools/str-replace.test.ts && tsx src/agents/modes/derive-mode-state.test.ts && tsx src/auth/signup-attribution.test.ts && tsx src/services/kernel-token.service.test.ts && tsx src/notebooks/notebook-workingtree.service.test.ts",
+    "test": "tsx src/openapi/core.test.ts && tsx src/openapi/openapi.test.ts && tsx src/dbt/warm-dir-cache.test.ts && tsx src/connectors/stripe/connector.test.ts && tsx src/connectors/close/connector.test.ts && tsx src/connectors/pandadoc/connector.test.ts && tsx src/connectors/claap/connector.test.ts && tsx src/sync-cdc/idempotency.test.ts && tsx src/services/flow-triggers.service.test.ts && tsx src/agent-lib/context/compaction.test.ts && tsx src/agent-lib/tool-input-repair.test.ts && tsx src/agent-lib/stream-error.test.ts && tsx src/services/safe-fetch.service.test.ts && tsx src/services/mcp-client.service.test.ts && tsx src/utils/message-sanitizer.test.ts && tsx src/agent-lib/tools/check-query-status-poll.test.ts && tsx src/agent-lib/tools/str-replace.test.ts && tsx src/agents/modes/derive-mode-state.test.ts && tsx src/auth/signup-attribution.test.ts && tsx src/services/kernel-token.service.test.ts && tsx src/notebooks/notebook-workingtree.service.test.ts && tsx src/services/kernel-provider/kernel-gateway-client.test.ts",
     "test:dbt": "vitest run",
     "test:dbt:watch": "vitest",
     "test:destinations": "vitest run --config vitest.destinations.config.ts",
@@ -31,6 +31,7 @@
     "@google-cloud/storage": "^7.19.0",
     "@hono/node-server": "^1.14.4",
     "@hono/zod-openapi": "1.3.0",
+    "@kubernetes/client-node": "^1.4.0",
     "@langfuse/otel": "^5.4.1",
     "@langfuse/tracing": "^5.4.1",
     "@logtape/logtape": "^1.0.4",
@@ -80,6 +81,7 @@
     "undici": "^6.26.0",
     "unpdf": "^1.6.2",
     "uuid": "^9.0.0",
+    "ws": "^8.18.0",
     "zod": "^4.2.1"
   },
   "devDependencies": {
@@ -95,6 +97,7 @@
     "@types/react": "^18.3.23",
     "@types/react-dom": "^18.3.7",
     "@types/ssh2": "^1.15.5",
+    "@types/ws": "^8.5.12",
     "@types/uuid": "^9.0.0",
     "@typescript-eslint/eslint-plugin": "^8.34.0",
     "@typescript-eslint/parser": "^8.34.0",
