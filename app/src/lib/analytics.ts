@@ -3,6 +3,7 @@
  * All events are pushed to window.dataLayer for GTM to handle distribution
  * to GA4, PostHog, and other configured destinations.
  */
+import { isMakoDesktop } from "./desktop";
 
 // Marketing events - sent to GA4 + Google Ads for attribution and conversions
 type MarketingEvent =
@@ -57,6 +58,65 @@ export interface QueryEventProperties {
 
 export type AnalyticsEvent = MarketingEvent | ProductEvent;
 
+const SESSION_ID_KEY = "mako_analytics_session_id";
+const DESKTOP_INSTALLATION_ID_KEY = "mako_desktop_installation_id";
+let fallbackSessionId: string | null = null;
+let fallbackInstallationId: string | null = null;
+
+function newId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function storedId(
+  storage: Storage,
+  key: string,
+  fallback: string | null,
+): string {
+  try {
+    const existing = storage.getItem(key);
+    if (existing) return existing;
+    const created = newId();
+    storage.setItem(key, created);
+    return created;
+  } catch {
+    return fallback ?? newId();
+  }
+}
+
+export function getAnalyticsContext(): Record<string, unknown> {
+  if (typeof window === "undefined") return {};
+  const desktop = isMakoDesktop();
+  fallbackSessionId ??= newId();
+  const appSessionId = storedId(
+    window.sessionStorage,
+    SESSION_ID_KEY,
+    fallbackSessionId,
+  );
+  if (!desktop) {
+    return {
+      app_surface: "web",
+      app_session_id: appSessionId,
+    };
+  }
+
+  fallbackInstallationId ??= newId();
+  const installationId = storedId(
+    window.localStorage,
+    DESKTOP_INSTALLATION_ID_KEY,
+    fallbackInstallationId,
+  );
+  return {
+    app_surface: "desktop",
+    app_session_id: appSessionId,
+    desktop_installation_id: installationId,
+    app_version: window.makoDesktop?.version,
+    app_os: window.makoDesktop?.platform,
+    app_arch: window.makoDesktop?.arch,
+  };
+}
+
 /**
  * Push an event to the GTM dataLayer.
  * GTM will handle routing to appropriate destinations (GA4, PostHog, etc.)
@@ -76,11 +136,8 @@ export function trackEvent(
 
   const eventProps = {
     ...properties,
-    event_id:
-      properties?.event_id ??
-      (typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(36).slice(2)}`),
+    ...getAnalyticsContext(),
+    event_id: properties?.event_id ?? newId(),
     event_timestamp: new Date().toISOString(),
   };
 
@@ -123,14 +180,18 @@ export function identify(
   window.dataLayer = window.dataLayer || [];
 
   const userTraits = traits || {};
+  const context = getAnalyticsContext();
 
   window.dataLayer.push({
     event: "identify",
     user_id: userId,
+    event_id: newId(),
+    event_timestamp: new Date().toISOString(),
     // Flat traits for GA4 user properties
     ...userTraits,
+    ...context,
     // Nested object for PostHog
-    user_traits: userTraits,
+    user_traits: { ...userTraits, ...context },
   });
 }
 
@@ -145,5 +206,8 @@ export function resetIdentity(): void {
   window.dataLayer.push({
     event: "reset_identity",
     user_id: null,
+    event_id: newId(),
+    event_timestamp: new Date().toISOString(),
+    ...getAnalyticsContext(),
   });
 }

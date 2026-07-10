@@ -328,6 +328,13 @@ if (!hasSingleInstanceLock) {
   ipcMain.handle("mako:start-browser-auth", () => {
     startBrowserAuth();
   });
+  ipcMain.on("mako:get-app-metadata", event => {
+    event.returnValue = {
+      version: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+    };
+  });
 
   app.whenReady().then(async () => {
     setupAutoUpdater();
