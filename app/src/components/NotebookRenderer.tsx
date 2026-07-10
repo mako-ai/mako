@@ -17,6 +17,8 @@ import {
   type NotebookDoc,
 } from "../store/notebookStore";
 import NotebookCell from "./NotebookCell";
+import { useSchemaStore } from "../store/schemaStore";
+import { useUIStore } from "../store/uiStore";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
@@ -47,6 +49,10 @@ export default function NotebookRenderer({
 }: NotebookRendererProps) {
   const getNotebook = useNotebookStore(s => s.getNotebook);
   const updateNotebook = useNotebookStore(s => s.updateNotebook);
+  const workspaceId = useUIStore(s => s.currentWorkspaceId) ?? null;
+  const connectionsByWs = useSchemaStore(s => s.connections);
+  const ensureConnections = useSchemaStore(s => s.ensureConnections);
+  const sources = workspaceId ? (connectionsByWs[workspaceId] ?? []) : [];
 
   const [doc, setDoc] = useState<NotebookDoc | null>(null);
   const [loading, setLoading] = useState(true);
@@ -68,6 +74,10 @@ export default function NotebookRenderer({
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
   }, [notebookId, getNotebook]);
+
+  useEffect(() => {
+    if (workspaceId) void ensureConnections(workspaceId);
+  }, [workspaceId, ensureConnections]);
 
   const scheduleSave = useCallback(
     (next: NotebookDoc, nameChanged: boolean) => {
@@ -184,6 +194,8 @@ export default function NotebookRenderer({
             block={block}
             index={index}
             count={doc.blocks.length}
+            workspaceId={workspaceId}
+            sources={sources}
             onChange={patch => changeBlock(block.id, patch)}
             onDelete={() => deleteBlock(block.id)}
             onMove={dir => moveBlock(index, dir)}

@@ -1,5 +1,9 @@
+import { useState } from "react";
 import {
+  Alert,
   Box,
+  Button,
+  CircularProgress,
   IconButton,
   MenuItem,
   Select,
@@ -8,9 +12,12 @@ import {
   useTheme,
 } from "@mui/material";
 import Editor from "@monaco-editor/react";
-import { ChevronDown, ChevronUp, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Play, Trash2 } from "lucide-react";
 
 import type { NotebookBlock, NotebookBlockType } from "../store/notebookStore";
+import type { Connection } from "../store/schemaStore";
+import { useConsoleStore } from "../store/consoleStore";
+import ResultsTable from "./ResultsTable";
 
 const MONACO_LANGUAGE: Record<NotebookBlockType, string | null> = {
   code: "python",
@@ -24,10 +31,23 @@ function editorHeight(source: string): number {
   return Math.min(lines * 19 + 16, 360);
 }
 
+/** The `results`-prop shape ResultsTable expects (see Editor's execute path). */
+interface CellResult {
+  results: unknown[];
+  executedAt: string;
+  resultCount: number;
+  executionTime?: number;
+  fields?: Array<{ name?: string; originalName?: string } | string>;
+  pageInfo: null;
+  currentPage: number;
+}
+
 interface NotebookCellProps {
   block: NotebookBlock;
   index: number;
   count: number;
+  workspaceId: string | null;
+  sources: Connection[];
   onChange: (patch: Partial<NotebookBlock>) => void;
   onDelete: () => void;
   onMove: (direction: -1 | 1) => void;
@@ -37,12 +57,64 @@ export default function NotebookCell({
   block,
   index,
   count,
+  workspaceId,
+  sources,
   onChange,
   onDelete,
   onMove,
 }: NotebookCellProps) {
   const theme = useTheme();
   const monacoLanguage = MONACO_LANGUAGE[block.type];
+
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<CellResult | null>(null);
+
+  const canRunSql =
+    block.type === "sql" &&
+    !!workspaceId &&
+    !!block.connectionId &&
+    block.source.trim().length > 0 &&
+    !running;
+
+  const runSql = async () => {
+    if (!workspaceId || !block.connectionId) return;
+    setRunning(true);
+    setError(null);
+    const start = Date.now();
+    try {
+      const res = await useConsoleStore
+        .getState()
+        .executeQuery(workspaceId, block.connectionId, block.source, {
+          pageSize: 500,
+        });
+      if (!res.success) {
+        setError(typeof res.error === "string" ? res.error : "Query failed");
+        setResult(null);
+        return;
+      }
+      const rows = (res as { rows?: unknown[] }).rows ?? [];
+      const fields = (
+        res as {
+          fields?: Array<{ name?: string; originalName?: string } | string>;
+        }
+      ).fields;
+      setResult({
+        results: rows,
+        executedAt: new Date().toISOString(),
+        resultCount: rows.length,
+        executionTime: Date.now() - start,
+        fields,
+        pageInfo: null,
+        currentPage: 1,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Query failed");
+      setResult(null);
+    } finally {
+      setRunning(false);
+    }
+  };
 
   return (
     <Box
@@ -123,6 +195,67 @@ export default function NotebookCell({
         </Box>
       </Box>
 
+      {/* SQL run toolbar: pick a source, run against it (control-plane preview). */}
+      {block.type === "sql" && (
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+            px: 1,
+            py: 0.5,
+            borderBottom: 1,
+            borderColor: "divider",
+          }}
+        >
+          <Select
+            size="small"
+            displayEmpty
+            value={block.connectionId ?? ""}
+            onChange={e =>
+              onChange({ connectionId: e.target.value || undefined })
+            }
+            sx={{ minWidth: 180, fontSize: "0.8rem" }}
+          >
+            <MenuItem value="" disabled>
+              Select a data source…
+            </MenuItem>
+            {sources.map(s => (
+              <MenuItem key={s.id} value={s.id} sx={{ fontSize: "0.8rem" }}>
+                {s.displayName || s.name}
+              </MenuItem>
+            ))}
+          </Select>
+          <Tooltip
+            title={
+              !block.connectionId
+                ? "Pick a data source first"
+                : "Run (read-only preview, first 500 rows)"
+            }
+          >
+            <span>
+              <Button
+                size="small"
+                variant="contained"
+                disableElevation
+                startIcon={
+                  running ? (
+                    <CircularProgress size={13} color="inherit" />
+                  ) : (
+                    <Play size={13} />
+                  )
+                }
+                disabled={!canRunSql}
+                onClick={() => void runSql()}
+                sx={{ textTransform: "none" }}
+              >
+                Run
+              </Button>
+            </span>
+          </Tooltip>
+        </Box>
+      )}
+
       {monacoLanguage ? (
         <Editor
           language={monacoLanguage}
@@ -156,6 +289,24 @@ export default function NotebookCell({
             sx: { fontSize: "0.85rem", p: 1, alignItems: "flex-start" },
           }}
         />
+      )}
+
+      {/* SQL results / error, inline under the cell. */}
+      {block.type === "sql" && (error || result) && (
+        <Box sx={{ borderTop: 1, borderColor: "divider" }}>
+          {error ? (
+            <Alert
+              severity="error"
+              sx={{ borderRadius: 0, fontSize: "0.8rem" }}
+            >
+              {error}
+            </Alert>
+          ) : (
+            <Box sx={{ height: 320, position: "relative" }}>
+              <ResultsTable results={result} />
+            </Box>
+          )}
+        </Box>
       )}
     </Box>
   );
