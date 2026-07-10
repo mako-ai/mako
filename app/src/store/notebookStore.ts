@@ -86,6 +86,11 @@ interface NotebookStore {
   moveCell: (id: string, index: number, direction: -1 | 1) => void;
   /** Pull a fresh copy of an open notebook (realtime poke-then-pull). */
   reloadOpenNotebook: (id: string) => Promise<void>;
+  /** Create a notebook from imported blocks (e.g. an uploaded .ipynb). */
+  importNotebook: (
+    name: string,
+    blocks: NotebookBlock[],
+  ) => Promise<NotebookDoc | null>;
 }
 
 export const useNotebookStore = create<NotebookStore>((set, get) => {
@@ -244,6 +249,13 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
           saveState: { ...s.saveState, [id]: "idle" },
         }));
       }
+    },
+
+    importNotebook: async (name, blocks) => {
+      const created = await get().createNotebook(name);
+      if (!created) return null;
+      const updated = await get().updateNotebook(created.id, { blocks });
+      return updated ?? created;
     },
 
     renameOpenNotebook: (id, name) =>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import {
   Box,
   Button,
@@ -15,16 +15,24 @@ import {
   Typography,
 } from "@mui/material";
 import {
+  Download,
   MoreVertical,
   Notebook as NotebookIcon,
   Pencil,
   Plus,
   Trash2,
+  Upload,
 } from "lucide-react";
 
 import ExplorerShell from "./ExplorerShell";
 import { useNotebookStore, type NotebookSummary } from "../store/notebookStore";
 import { focusNotebookTab } from "../notebook-runtime/shell";
+import {
+  blocksFromIpynb,
+  nameFromIpynb,
+  notebookToIpynb,
+  type Ipynb,
+} from "../notebook-runtime/ipynb";
 
 /**
  * Left-pane explorer for Notebooks: lists the workspace's notebooks, creates a
@@ -38,6 +46,8 @@ export default function NotebooksExplorer() {
   const createNotebook = useNotebookStore(s => s.createNotebook);
   const updateNotebook = useNotebookStore(s => s.updateNotebook);
   const deleteNotebook = useNotebookStore(s => s.deleteNotebook);
+  const getNotebook = useNotebookStore(s => s.getNotebook);
+  const importNotebook = useNotebookStore(s => s.importNotebook);
 
   const [menu, setMenu] = useState<{
     anchor: HTMLElement;
@@ -53,9 +63,44 @@ export default function NotebooksExplorer() {
     void loadNotebooks();
   }, [loadNotebooks]);
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const handleCreate = async () => {
     const doc = await createNotebook();
     if (doc) focusNotebookTab(doc.id, doc.name);
+  };
+
+  const handleImportFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-importing the same file
+    if (!file) return;
+    try {
+      const json = JSON.parse(await file.text()) as Ipynb;
+      const fallback =
+        file.name.replace(/\.ipynb$/i, "") || "Imported notebook";
+      const doc = await importNotebook(
+        nameFromIpynb(json, fallback),
+        blocksFromIpynb(json),
+      );
+      if (doc) focusNotebookTab(doc.id, doc.name);
+    } catch {
+      // Malformed file — ignore; store errors surface via the explorer banner.
+    }
+  };
+
+  const handleExport = async (nb: NotebookSummary) => {
+    setMenu(null);
+    const doc = await getNotebook(nb.id);
+    if (!doc) return;
+    const json = JSON.stringify(notebookToIpynb(doc.name, doc.blocks), null, 2);
+    const url = URL.createObjectURL(
+      new Blob([json], { type: "application/json" }),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${doc.name || "notebook"}.ipynb`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const startRename = (nb: NotebookSummary) => {
@@ -88,11 +133,21 @@ export default function NotebooksExplorer() {
         loading={isLoading}
         error={error}
         actions={
-          <Tooltip title="New notebook">
-            <IconButton size="small" onClick={() => void handleCreate()}>
-              <Plus size={18} />
-            </IconButton>
-          </Tooltip>
+          <>
+            <Tooltip title="Import .ipynb">
+              <IconButton
+                size="small"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Upload size={17} />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="New notebook">
+              <IconButton size="small" onClick={() => void handleCreate()}>
+                <Plus size={18} />
+              </IconButton>
+            </Tooltip>
+          </>
         }
       >
         {({ searchQuery }) => {
@@ -214,6 +269,13 @@ export default function NotebooksExplorer() {
         </MenuItem>
         <MenuItem
           onClick={() => {
+            if (menu) void handleExport(menu.nb);
+          }}
+        >
+          <Download size={14} style={{ marginRight: 8 }} /> Export .ipynb
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
             if (menu) setDeleteTarget(menu.nb);
             setMenu(null);
           }}
@@ -240,6 +302,14 @@ export default function NotebooksExplorer() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".ipynb,application/json"
+        style={{ display: "none" }}
+        onChange={e => void handleImportFile(e)}
+      />
     </>
   );
 }
