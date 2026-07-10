@@ -81,13 +81,41 @@ PROJECT_ID=revops-462013 REGION=europe-west1 ./build-and-deploy.sh
 pre-imported on boot. Served on `:8888`; the control plane connects, the browser
 never does.
 
-## How the control plane uses this (next step, in-repo)
+## How the control plane uses this
 
-The `KernelProvider` GKE implementation (`api/src/services/kernel-provider/`,
-not yet written) claims an idle pod from the `kernel-pool` Deployment via the
-k8s API, mints a kernel token, and drives execution over the gateway. Warm-pool
-`replicas` trade always-on cost for sub-5s starts; the autoscaler grows the
-`kernels` pool to fit demand.
+The `KernelProvider` GKE implementation (`api/src/services/kernel-provider/`)
+claims a ready pod from the `kernel-pool` Deployment via the k8s API (scaling it
+up from zero when cold), mints a read-only kernel token, and drives execution
+over the gateway. Warm-pool `replicas` trade always-on cost for sub-5s starts;
+the autoscaler grows the `kernels` pool to fit demand.
+
+To turn it on, the Cloud Run `mako` service needs:
+
+**IAM** — the runtime SA may call the cluster's k8s API:
+
+```bash
+gcloud container clusters add-iam-policy-binding ...   # or, project-scoped:
+gcloud projects add-iam-policy-binding revops-462013 \
+  --member="serviceAccount:813928377715-compute@developer.gserviceaccount.com" \
+  --role="roles/container.developer"
+```
+
+**Env** (the endpoint is the in-VPC private one, reached over the existing
+`mako-vpc` egress; the CA authenticates it):
+
+```bash
+KERNEL_PROVIDER=gke
+KERNEL_GKE_ENDPOINT=https://10.200.0.2
+KERNEL_GKE_CA_CERT=$(gcloud container clusters describe mako-notebooks \
+  --location europe-west1-b --format='value(masterAuth.clusterCaCertificate)')
+# optional: KERNEL_NAMESPACE, KERNEL_POOL_DEPLOYMENT, KERNEL_ACQUIRE_TIMEOUT_MS,
+#           NOTEBOOK_KERNEL_SECRET (else falls back to SESSION_SECRET),
+#           NOTEBOOK_KERNEL_API_URL (kernel→API base for the mako SDK; defaults BASE_URL)
+```
+
+Without `KERNEL_PROVIDER`/endpoint the provider auto-detects: a configured GKE
+cluster wins, else a static `KERNEL_GATEWAY_URL` (local dev), else notebook
+execution reports `503 kernel provider not configured` instead of failing hard.
 
 ## Teardown
 
