@@ -87,7 +87,7 @@ Every turn, Mako injects a compact index of every skill plus the top-3 auto-retr
 
 ## Expertise Modes
 
-Mako runs a **single unified agent**, not a fleet of separate agents. Capability is loaded dynamically: the agent switches *expertise modes* mid-conversation via the `enable_mode` tool, and each mode unlocks a domain-specific toolset plus guidance. A set of core tools (memory, skills, search, version history, planning, mode-switching) is always available regardless of mode.
+Mako runs a **single unified agent**, not a fleet of separate agents. Capability is loaded dynamically: the agent switches *expertise modes* mid-conversation via the `enable_mode` tool, and each mode unlocks a domain-specific toolset plus guidance. A set of core tools (memory, skills, search, web access, version history, planning, mode-switching) is always available regardless of mode.
 
 On a fresh request the default mode is picked from what you're looking at — a dashboard view opens in **Dashboard**, the flow editor in **Sync Flow**, an app in **React App**, a dbt file/job in **Transforms** — otherwise **Query**. The agent then switches as the task demands.
 
@@ -144,7 +144,7 @@ This lets the agent verify dashboard rendering (chart legibility, overlap, layou
 
 ## Web Access
 
-When a request needs information from the public internet — a pasted URL, an online document, or fresh facts not in your data — the agent reaches for two web tools (loaded via the `web` skill):
+When a request needs information from the public internet — a pasted URL, an online document, or fresh facts not in your data — the agent reaches for two web tools. They are always active in every expertise mode (usage guidance lives in the `web` skill):
 
 | Tool | What It Does |
 |------|--------------|

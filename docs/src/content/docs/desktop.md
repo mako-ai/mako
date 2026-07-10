@@ -18,7 +18,7 @@ These links always serve the latest release. The app keeps itself up to date aut
 
 ## Signing in
 
-Mako Desktop never shows third-party login pages inside its own window. Clicking **Sign in** opens your **system browser** — where your password manager, Google/GitHub sessions, and the URL bar are available — and hands the session back to the app via a `mako://` deep link. The handoff uses one-time, PKCE-bound codes that expire after 60 seconds, so an intercepted link can't be replayed.
+Mako Desktop never asks for credentials inside its own window. Every sign-in and registration method — email/password included — runs in your **system browser**, where your password manager, Google/GitHub sessions, and the URL bar are available, and hands the session back to the app via a `mako://` deep link. The handoff uses one-time, PKCE-bound codes that expire after 60 seconds, so an intercepted link can't be replayed.
 
 ## Local databases (Mako Agent)
 
