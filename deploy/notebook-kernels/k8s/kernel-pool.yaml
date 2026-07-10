@@ -1,7 +1,9 @@
 # Warm pool of pre-imported kernel pods. The control plane (kernel-session
 # service) claims an idle pod from this Deployment on session start — trading a
-# few always-on pods for sub-5s "cold" starts. Scale replicas to your desired
-# warm headroom; the cluster autoscaler grows the gVisor node pool to fit.
+# few always-on pods for sub-5s "cold" starts. Each running replica keeps a
+# gVisor e2-highmem-4 node up, so the default is 0 until the KernelProvider
+# control-plane wiring exists; bump it for real warm headroom once notebooks
+# consume the pool. The cluster autoscaler grows the gVisor node pool to fit.
 #
 # ${KERNEL_IMAGE} is substituted by build-and-deploy.sh (envsubst) with the
 # pushed Artifact Registry tag.
@@ -14,7 +16,7 @@ metadata:
     app.kubernetes.io/name: mako-kernel
     app.kubernetes.io/component: warm-pool
 spec:
-  replicas: 2
+  replicas: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: mako-kernel
@@ -65,9 +67,11 @@ spec:
             capabilities:
               drop: ["ALL"]
           volumeMounts:
-            # Real scratch disk for the kernel — parquet spill, temp files.
-            - name: scratch
-              mountPath: /home/mako/scratch
+            # Writable home: the root FS stays read-only (immutable /usr, site-
+            # packages, /etc), but Jupyter/ipykernel need to write their runtime
+            # dir under ~/.local, and user code writes scratch/parquet here.
+            - name: home
+              mountPath: /home/mako
             - name: tmp
               mountPath: /tmp
           readinessProbe:
@@ -83,7 +87,7 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
       volumes:
-        - name: scratch
+        - name: home
           emptyDir:
             sizeLimit: 8Gi
         - name: tmp

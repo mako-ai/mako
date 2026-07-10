@@ -40,7 +40,11 @@ docker push "${KERNEL_IMAGE}"
 
 echo "→ Applying manifests (namespace, quota, runtimeclass, policy, pool)"
 kubectl apply -f "${SCRIPT_DIR}/k8s/namespace.yaml"
-kubectl apply -f "${SCRIPT_DIR}/k8s/runtimeclass.yaml"
+# On GKE Sandbox the 'gvisor' RuntimeClass is pre-installed (handler runsc,
+# immutable) so this apply is a no-op that errors; tolerate it. It only really
+# applies on non-GKE clusters running gVisor manually.
+kubectl apply -f "${SCRIPT_DIR}/k8s/runtimeclass.yaml" 2>/dev/null \
+  || echo "  (gvisor RuntimeClass already present — skipped)"
 kubectl apply -f "${SCRIPT_DIR}/k8s/network-policy.yaml"
 # Substitute ${KERNEL_IMAGE} into the pool spec before applying.
 envsubst '${KERNEL_IMAGE}' < "${SCRIPT_DIR}/k8s/kernel-pool.yaml" | kubectl apply -f -
