@@ -180,9 +180,6 @@ jobs:
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_BRANCH_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
       TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
       LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
@@ -589,9 +586,6 @@ jobs:
             --set-env-vars NODE_ENV=production \
             --set-env-vars AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY} \
             --set-env-vars TAVILY_API_KEY=${TAVILY_API_KEY} \
-            --set-env-vars ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} \
-            --set-env-vars GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY} \
-            --set-env-vars OPENAI_API_KEY=${OPENAI_API_KEY} \
             --set-env-vars LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY} \
             --set-env-vars LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY} \
             --set-env-vars LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL} \
@@ -801,10 +795,9 @@ jobs:
       name: production
       url: https://app.mako.ai
     env:
-      # Production keeps deploying to the prod project.
-      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-      GCP_ARTIFACT_REPOSITORY: ${{ vars.GCP_ARTIFACT_REPOSITORY }}
-      GCS_DASHBOARD_BUCKET: revops-462013-dashboard-artifacts
+      # One JSON variable makes the project/repo/runtime/bucket target an
+      # atomic snapshot for each workflow run.
+      PROD_DEPLOY_CONFIG: ${{ vars.GCP_PROD_DEPLOY_CONFIG }}
       BASE_URL: https://app.mako.ai
       BCRYPT_ROUNDS: ${{ vars.BCRYPT_ROUNDS }}
       CLIENT_URL: https://app.mako.ai
@@ -820,9 +813,6 @@ jobs:
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
       TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
       LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
@@ -857,6 +847,22 @@ jobs:
       MAKO_GITHUB_APP_CLIENT_ID: ${{ vars.MAKO_GITHUB_APP_CLIENT_ID }}
       MAKO_GITHUB_APP_CLIENT_SECRET: ${{ secrets.MAKO_GITHUB_APP_CLIENT_SECRET }}
     steps:
+      - name: Resolve production deployment target
+        env:
+          CONFIG: ${{ env.PROD_DEPLOY_CONFIG }}
+        run: |
+          set -euo pipefail
+          echo "${CONFIG}" | jq -e '
+            .project_id and
+            .artifact_repository and
+            .runtime_service_account and
+            .dashboard_bucket
+          ' >/dev/null
+          echo "GCP_PROJECT_ID=$(echo "${CONFIG}" | jq -er '.project_id')" >> "$GITHUB_ENV"
+          echo "GCP_ARTIFACT_REPOSITORY=$(echo "${CONFIG}" | jq -er '.artifact_repository')" >> "$GITHUB_ENV"
+          echo "GCP_RUNTIME_SERVICE_ACCOUNT=$(echo "${CONFIG}" | jq -er '.runtime_service_account')" >> "$GITHUB_ENV"
+          echo "GCS_DASHBOARD_BUCKET=$(echo "${CONFIG}" | jq -er '.dashboard_bucket')" >> "$GITHUB_ENV"
+
       - name: Checkout
         uses: actions/checkout@v5
         with:
@@ -937,18 +943,24 @@ jobs:
       - name: Clean temporary env.production file
         run: rm -f .env.production
 
-      - name: Get Cloud Run URL
-        id: cloud-run-url
+      - name: Resolve existing Cloud Run URL
+        id: cloud-run-before
         run: |
-          CLOUD_RUN_URL=$(gcloud run services describe ${SERVICE_NAME} --region=${GCP_REGION} --format="value(status.url)")
-          echo "cloud_run_url=${CLOUD_RUN_URL}" >> "$GITHUB_OUTPUT"
-          echo "Cloud Run direct URL: ${CLOUD_RUN_URL}"
+          CLOUD_RUN_URL=$(gcloud run services describe "${SERVICE_NAME}" \
+            --project="${GCP_PROJECT_ID}" \
+            --region="${GCP_REGION}" \
+            --format="value(status.url)" 2>/dev/null || true)
+          echo "url=${CLOUD_RUN_URL}" >> "$GITHUB_OUTPUT"
 
       - name: Deploy to Cloud Run
+        env:
+          INNGEST_SERVE_ORIGIN: ${{ steps.cloud-run-before.outputs.url || env.BASE_URL }}
         run: |
           gcloud run deploy ${SERVICE_NAME} \
+            --project ${GCP_PROJECT_ID} \
             --image ${{ steps.image.outputs.sha_tag }} \
             --region ${GCP_REGION} \
+            --service-account ${GCP_RUNTIME_SERVICE_ACCOUNT} \
             --timeout=3600 \
             --memory=4Gi \
             --concurrency=80 \
@@ -971,14 +983,11 @@ jobs:
             --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
             --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
             --set-env-vars INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY} \
-            --set-env-vars INNGEST_SERVE_ORIGIN=${{ steps.cloud-run-url.outputs.cloud_run_url }} \
+            --set-env-vars INNGEST_SERVE_ORIGIN=${INNGEST_SERVE_ORIGIN} \
             --set-env-vars INNGEST_SERVE_PATH=/api/inngest \
             --set-env-vars NODE_ENV=production \
             --set-env-vars AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY} \
             --set-env-vars TAVILY_API_KEY=${TAVILY_API_KEY} \
-            --set-env-vars ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} \
-            --set-env-vars GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY} \
-            --set-env-vars OPENAI_API_KEY=${OPENAI_API_KEY} \
             --set-env-vars LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY} \
             --set-env-vars LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY} \
             --set-env-vars LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL} \
@@ -1015,6 +1024,28 @@ jobs:
             --set-env-vars "^|^SUPER_ADMIN_EMAILS=${SUPER_ADMIN_EMAILS}" \
             --quiet
 
+      - name: Finalize Cloud Run direct URL
+        id: cloud-run-url
+        run: |
+          CLOUD_RUN_URL=$(gcloud run services describe "${SERVICE_NAME}" \
+            --project="${GCP_PROJECT_ID}" \
+            --region="${GCP_REGION}" \
+            --format="value(status.url)")
+
+          if [ -z "${{ steps.cloud-run-before.outputs.url }}" ]; then
+            gcloud run services update "${SERVICE_NAME}" \
+              --project="${GCP_PROJECT_ID}" \
+              --region="${GCP_REGION}" \
+              --update-env-vars="INNGEST_SERVE_ORIGIN=${CLOUD_RUN_URL},INNGEST_SERVE_PATH=/api/inngest" \
+              --quiet
+          fi
+
+          echo "cloud_run_url=${CLOUD_RUN_URL}" >> "$GITHUB_OUTPUT"
+          echo "Cloud Run direct URL: ${CLOUD_RUN_URL}"
+
+      - name: Run database migrations
+        run: pnpm run migrate
+
       - name: Sync Inngest app
         run: |
           INNGEST_URL="${{ steps.cloud-run-url.outputs.cloud_run_url }}/api/inngest"
@@ -1029,6 +1060,3 @@ jobs:
           done
           echo "::error::Inngest sync failed after 5 attempts; production functions are not registered" >&2
           exit 1
-
-      - name: Run database migrations
-        run: pnpm run migrate

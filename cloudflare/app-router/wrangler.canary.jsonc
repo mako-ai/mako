@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "mako-app-router-canary",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-07-10",
+  "routes": [
+    {
+      "pattern": "app-canary.mako.ai/*",
+      "zone_name": "mako.ai"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "MAKO_APP_ROUTING",
+      "id": "4b7600c488094db88540a401e8fbbce1"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}
