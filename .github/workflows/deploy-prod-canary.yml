@@ -1,0 +1,227 @@
+name: Deploy Mako Production Migration Canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type mako-ai-prod to confirm the isolated canary deploy"
+        required: true
+        type: string
+
+concurrency:
+  group: mako-ai-prod-migration-canary
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy-canary:
+    name: Deploy isolated production canary
+    if: inputs.confirm == 'mako-ai-prod' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://app-canary.mako.ai
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_MIGRATION_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_ARTIFACT_REPOSITORY: ${{ vars.GCP_MIGRATION_ARTIFACT_REPOSITORY }}
+      GCP_RUNTIME_SERVICE_ACCOUNT: ${{ vars.GCP_MIGRATION_RUNTIME_SERVICE_ACCOUNT }}
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
+      GCS_DASHBOARD_BUCKET: ${{ vars.GCS_MIGRATION_DASHBOARD_BUCKET }}
+      BASE_URL: https://app-canary.mako.ai
+      BCRYPT_ROUNDS: ${{ vars.BCRYPT_ROUNDS }}
+      CLIENT_URL: https://app-canary.mako.ai
+      PRODUCTION_URL: https://app.mako.ai
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+      ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+      GH_CLIENT_ID: ${{ vars.GH_CLIENT_ID }}
+      GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
+      GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      IMAGE_NAME: mako-canary
+      SERVICE_NAME: mako-canary
+      INNGEST_ENV: migration-canary
+      AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+      TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
+      RATE_LIMIT_MAX_REQUESTS: ${{ vars.RATE_LIMIT_MAX_REQUESTS }}
+      RATE_LIMIT_WINDOW_MS: ${{ vars.RATE_LIMIT_WINDOW_MS }}
+      REDIS_URL: ${{ secrets.MAKO_AI_PROD_REDIS_URL }}
+      SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+      SENDGRID_FROM_EMAIL: ${{ vars.SENDGRID_FROM_EMAIL }}
+      SENDGRID_INVITATION_TEMPLATE_ID: ${{ vars.SENDGRID_INVITATION_TEMPLATE_ID }}
+      SENDGRID_PASSWORD_RESET_TEMPLATE_ID: ${{ vars.SENDGRID_PASSWORD_RESET_TEMPLATE_ID }}
+      SENDGRID_VERIFICATION_TEMPLATE_ID: ${{ vars.SENDGRID_VERIFICATION_TEMPLATE_ID }}
+      SESSION_DURATION: ${{ vars.SESSION_DURATION }}
+      SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+      VITE_API_URL: https://app-canary.mako.ai/api
+      VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
+      VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
+      DEMO_DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+      STRIPE_PRO_PRICE_ID: ${{ secrets.STRIPE_PRO_PRICE_ID }}
+      STRIPE_OVERAGE_PRICE_ID: ${{ secrets.STRIPE_OVERAGE_PRICE_ID }}
+      SUPER_ADMIN_EMAILS: ${{ secrets.SUPER_ADMIN_EMAILS }}
+      MAKO_GITHUB_APP_ID: ${{ vars.MAKO_GITHUB_APP_ID }}
+      MAKO_GITHUB_APP_SLUG: ${{ vars.MAKO_GITHUB_APP_SLUG }}
+      MAKO_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.MAKO_GITHUB_APP_WEBHOOK_SECRET }}
+      MAKO_GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_GITHUB_APP_PRIVATE_KEY }}
+      MAKO_GITHUB_APP_CLIENT_ID: ${{ vars.MAKO_GITHUB_APP_CLIENT_ID }}
+      MAKO_GITHUB_APP_CLIENT_SECRET: ${{ secrets.MAKO_GITHUB_APP_CLIENT_SECRET }}
+
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v5
+        with:
+          # Pin build contents to the dispatch SHA so image tags are truthful.
+          ref: ${{ github.sha }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint web app
+        run: pnpm run --filter app lint
+
+      - name: Lint API
+        run: pnpm run --filter api lint
+
+      - name: Build workspaces
+        run: pnpm run build
+        env:
+          NODE_ENV: production
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      - name: Compute image URI
+        id: image
+        run: |
+          IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_ARTIFACT_REPOSITORY}/${IMAGE_NAME}"
+          echo "sha_tag=${IMAGE_URI}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Create frontend build environment
+        run: |
+          cat <<EOF > .env.production
+          VITE_API_URL=${VITE_API_URL}
+          VITE_MUI_LICENSE_KEY=${VITE_MUI_LICENSE_KEY}
+          VITE_GTM_ID=${VITE_GTM_ID}
+          VITE_BUILD_ID=${GITHUB_SHA}
+          EOF
+
+      - name: Build and push Docker image
+        run: |
+          docker build --platform linux/amd64 -t "${{ steps.image.outputs.sha_tag }}" .
+          docker push "${{ steps.image.outputs.sha_tag }}"
+          rm -f .env.production
+
+      - name: Deploy quiesced canary
+        run: |
+          gcloud run deploy "${SERVICE_NAME}" \
+            --project="${GCP_PROJECT_ID}" \
+            --image="${{ steps.image.outputs.sha_tag }}" \
+            --region="${GCP_REGION}" \
+            --service-account="${GCP_RUNTIME_SERVICE_ACCOUNT}" \
+            --timeout=3600 \
+            --memory=4Gi \
+            --concurrency=80 \
+            --min-instances=0 \
+            --max-instances=2 \
+            --allow-unauthenticated \
+            --network=mako-vpc \
+            --subnet=mako-subnet \
+            --vpc-egress=all-traffic \
+            --set-env-vars BASE_URL=${BASE_URL} \
+            --set-env-vars BCRYPT_ROUNDS=${BCRYPT_ROUNDS} \
+            --set-env-vars CLIENT_URL=${CLIENT_URL} \
+            --set-env-vars PRODUCTION_URL=${PRODUCTION_URL} \
+            --set-env-vars DASHBOARD_ARTIFACT_PREFIX=dashboard-artifacts/canary \
+            --set-env-vars DASHBOARD_ARTIFACT_STORE=gcs \
+            --set-env-vars DATABASE_URL=${DATABASE_URL} \
+            --set-env-vars GCS_DASHBOARD_BUCKET=${GCS_DASHBOARD_BUCKET} \
+            --set-env-vars DISABLE_SCHEDULED_SYNC=true \
+            --set-env-vars DISABLE_WEBHOOK_PROCESSING=true \
+            --set-env-vars ENCRYPTION_KEY=${ENCRYPTION_KEY} \
+            --set-env-vars GH_CLIENT_ID=${GH_CLIENT_ID} \
+            --set-env-vars GH_CLIENT_SECRET=${GH_CLIENT_SECRET} \
+            --set-env-vars GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID} \
+            --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
+            --set-env-vars INNGEST_ENV=${INNGEST_ENV} \
+            --set-env-vars INNGEST_SERVE_ORIGIN=${BASE_URL} \
+            --set-env-vars INNGEST_SERVE_PATH=/api/inngest \
+            --set-env-vars NODE_ENV=production \
+            --set-env-vars AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY} \
+            --set-env-vars TAVILY_API_KEY=${TAVILY_API_KEY} \
+            --set-env-vars LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY} \
+            --set-env-vars LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY} \
+            --set-env-vars LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL} \
+            --set-env-vars LANGFUSE_TRACING_ENVIRONMENT=migration-canary \
+            --set-env-vars CDC_MATERIALIZE_CONCURRENCY=8 \
+            --set-env-vars SYNC_BULK_FLUSH_BATCH_SIZE=2000 \
+            --set-env-vars SYNC_BULK_MONGO_TO_PARQUET_CHUNK=100 \
+            --set-env-vars SYNC_PARQUET_DUCKDB_MEMORY_LIMIT_MB=512 \
+            --set-env-vars SYNC_PARQUET_DUCKDB_THREADS=1 \
+            --set-env-vars RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS} \
+            --set-env-vars RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS} \
+            --set-env-vars REDIS_URL=${REDIS_URL} \
+            --set-env-vars SENDGRID_API_KEY=${SENDGRID_API_KEY} \
+            --set-env-vars SENDGRID_FROM_EMAIL=${SENDGRID_FROM_EMAIL} \
+            --set-env-vars SENDGRID_INVITATION_TEMPLATE_ID=${SENDGRID_INVITATION_TEMPLATE_ID} \
+            --set-env-vars SENDGRID_PASSWORD_RESET_TEMPLATE_ID=${SENDGRID_PASSWORD_RESET_TEMPLATE_ID} \
+            --set-env-vars SENDGRID_VERIFICATION_TEMPLATE_ID=${SENDGRID_VERIFICATION_TEMPLATE_ID} \
+            --set-env-vars SESSION_DURATION=${SESSION_DURATION} \
+            --set-env-vars SESSION_SECRET=${SESSION_SECRET} \
+            --set-env-vars VITE_API_URL=${VITE_API_URL} \
+            --set-env-vars DEMO_DATABASE_URL=${DEMO_DATABASE_URL} \
+            --set-env-vars BILLING_ENABLED=false \
+            --set-env-vars STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY} \
+            --set-env-vars STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET} \
+            --set-env-vars STRIPE_PRO_PRICE_ID=${STRIPE_PRO_PRICE_ID} \
+            --set-env-vars STRIPE_OVERAGE_PRICE_ID=${STRIPE_OVERAGE_PRICE_ID} \
+            --set-env-vars STRIPE_METER_EVENT_NAME=llm_usage_usd \
+            --set-env-vars GITHUB_APP_ID=${MAKO_GITHUB_APP_ID} \
+            --set-env-vars GITHUB_APP_SLUG=${MAKO_GITHUB_APP_SLUG} \
+            --set-env-vars GITHUB_APP_WEBHOOK_SECRET=${MAKO_GITHUB_APP_WEBHOOK_SECRET} \
+            --set-env-vars GITHUB_APP_CLIENT_ID=${MAKO_GITHUB_APP_CLIENT_ID} \
+            --set-env-vars "^|^GITHUB_APP_CLIENT_SECRET=${MAKO_GITHUB_APP_CLIENT_SECRET}" \
+            --set-env-vars "^|^GITHUB_APP_PRIVATE_KEY=${MAKO_GITHUB_APP_PRIVATE_KEY}" \
+            --set-env-vars "^|^SUPER_ADMIN_EMAILS=${SUPER_ADMIN_EMAILS}" \
+            --quiet
+
+      - name: Report direct canary URL
+        run: |
+          CLOUD_RUN_URL=$(gcloud run services describe "${SERVICE_NAME}" \
+            --project="${GCP_PROJECT_ID}" \
+            --region="${GCP_REGION}" \
+            --format="value(status.url)")
+          echo "Cloud Run direct URL: ${CLOUD_RUN_URL}"
+          echo "## Migration canary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Direct URL: ${CLOUD_RUN_URL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Inngest sync: disabled" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Database migrations: disabled" >> "$GITHUB_STEP_SUMMARY"
