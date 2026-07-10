@@ -9,8 +9,11 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
 
+# Previews live in the dedicated DEV project (mako-ai-dev), so cleanup
+# targets that project. Production is never touched by this workflow.
 env:
-  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GCP_PROJECT_ID: ${{ vars.GCP_DEV_PROJECT_ID }}
+  GCP_ARTIFACT_REPOSITORY: ${{ vars.GCP_DEV_ARTIFACT_REPOSITORY }}
   GCP_REGION: ${{ vars.GCP_REGION }}
 
 permissions:
@@ -58,7 +61,7 @@ jobs:
         continue-on-error: true
         run: |
           IMAGE_NAME="mako-pr-${PR_NUMBER}"
-          IMAGE_PATH="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${{ vars.GCP_ARTIFACT_REPOSITORY }}/${IMAGE_NAME}"
+          IMAGE_PATH="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_ARTIFACT_REPOSITORY}/${IMAGE_NAME}"
 
           echo "Deleting Docker images: ${IMAGE_PATH}"
 
@@ -191,7 +194,7 @@ jobs:
       - name: Delete Artifact Registry images for closed PRs
         run: |
           gcloud artifacts docker images list \
-            "${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${{ vars.GCP_ARTIFACT_REPOSITORY }}" \
+            "${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_ARTIFACT_REPOSITORY}" \
             --format='value(package)' 2>/dev/null \
             | sort -u | grep '/mako-pr-' | sed 's|.*/mako-pr-||' | sort > /tmp/image_prs.txt || true
 
@@ -202,7 +205,7 @@ jobs:
             [ -z "$pr" ] && continue
             echo "Deleting image package mako-pr-${pr}"
             gcloud artifacts packages delete "mako-pr-${pr}" \
-              --repository="${{ vars.GCP_ARTIFACT_REPOSITORY }}" \
+              --repository="${GCP_ARTIFACT_REPOSITORY}" \
               --location="${GCP_REGION}" --quiet \
               || echo "::warning::Failed to delete image package mako-pr-${pr}"
           done < /tmp/stale_image_prs.txt

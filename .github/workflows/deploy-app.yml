@@ -22,11 +22,10 @@ concurrency:
   group: deploy-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || (github.event_name == 'workflow_dispatch' && inputs.pr_number != '' && format('pr-{0}', inputs.pr_number)) || github.ref_name }}
   cancel-in-progress: true
 
+# PR previews deploy to the dedicated DEV project (mako-ai-dev); production
+# stays in the prod project. Project-scoped values live on each deploy job.
 env:
-  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
   GCP_REGION: ${{ vars.GCP_REGION }}
-  GCP_ARTIFACT_REPOSITORY: ${{ vars.GCP_ARTIFACT_REPOSITORY }}
-  GCS_DASHBOARD_BUCKET: revops-462013-dashboard-artifacts
 
 permissions:
   contents: read
@@ -147,6 +146,10 @@ jobs:
       name: pr-${{ needs.detect-changes.outputs.pr_number }}
       url: https://pr-${{ needs.detect-changes.outputs.pr_number }}.mako.ai
     env:
+      # Previews deploy to the dedicated DEV project, not production's.
+      GCP_PROJECT_ID: ${{ vars.GCP_DEV_PROJECT_ID }}
+      GCP_ARTIFACT_REPOSITORY: ${{ vars.GCP_DEV_ARTIFACT_REPOSITORY }}
+      GCS_DASHBOARD_BUCKET: ${{ vars.GCS_DEV_DASHBOARD_BUCKET }}
       PR_NUMBER: ${{ needs.detect-changes.outputs.pr_number }}
       BASE_URL: https://pr-${{ needs.detect-changes.outputs.pr_number }}.mako.ai
       CLIENT_URL: https://pr-${{ needs.detect-changes.outputs.pr_number }}.mako.ai
@@ -186,7 +189,9 @@ jobs:
       LANGFUSE_TRACING_ENVIRONMENT: pr-${{ needs.detect-changes.outputs.pr_number }}
       RATE_LIMIT_MAX_REQUESTS: ${{ vars.RATE_LIMIT_MAX_REQUESTS }}
       RATE_LIMIT_WINDOW_MS: ${{ vars.RATE_LIMIT_WINDOW_MS }}
-      REDIS_URL: ${{ secrets.REDIS_URL }}
+      # No REDIS_URL for previews: the prod Memorystore instance lives in the
+      # prod project's VPC and is unreachable from mako-ai-dev. The API falls
+      # back to in-process pub/sub when REDIS_URL is unset (fine for previews).
       SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
       SENDGRID_FROM_EMAIL: ${{ vars.SENDGRID_FROM_EMAIL }}
       SENDGRID_INVITATION_TEMPLATE_ID: ${{ vars.SENDGRID_INVITATION_TEMPLATE_ID }}
@@ -594,7 +599,6 @@ jobs:
             --set-env-vars SYNC_PARQUET_DUCKDB_THREADS=1 \
             --set-env-vars RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS} \
             --set-env-vars RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS} \
-            --set-env-vars REDIS_URL=${REDIS_URL} \
             --set-env-vars SENDGRID_API_KEY=${SENDGRID_API_KEY} \
             --set-env-vars SENDGRID_FROM_EMAIL=${SENDGRID_FROM_EMAIL} \
             --set-env-vars SENDGRID_INVITATION_TEMPLATE_ID=${SENDGRID_INVITATION_TEMPLATE_ID} \
@@ -794,6 +798,10 @@ jobs:
       name: production
       url: https://app.mako.ai
     env:
+      # Production keeps deploying to the prod project.
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_ARTIFACT_REPOSITORY: ${{ vars.GCP_ARTIFACT_REPOSITORY }}
+      GCS_DASHBOARD_BUCKET: revops-462013-dashboard-artifacts
       BASE_URL: https://app.mako.ai
       BCRYPT_ROUNDS: ${{ vars.BCRYPT_ROUNDS }}
       CLIENT_URL: https://app.mako.ai
