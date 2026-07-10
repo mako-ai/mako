@@ -104,10 +104,16 @@ async function main() {
     const result = res.result as {
       serverInfo: { name: string };
       capabilities: Record<string, unknown>;
+      instructions?: string;
     };
     assert.equal(result.serverInfo.name, "mako");
     assert.ok(result.capabilities.tools);
     assert.ok(result.capabilities.resources);
+    assert.match(
+      result.instructions ?? "",
+      /render_app/,
+      "initialize should ship the workflow instructions",
+    );
   }
 
   // 3. Stateless: tools/list works on a fresh exchange WITHOUT initialize
@@ -117,9 +123,45 @@ async function main() {
       { jsonrpc: "2.0", id: 2, method: "tools/list" },
     ]);
     const { tools } = res.result as {
-      tools: { name: string; inputSchema: { type?: string } }[];
+      tools: {
+        name: string;
+        inputSchema: { type?: string };
+        annotations?: {
+          readOnlyHint?: boolean;
+          destructiveHint?: boolean;
+        };
+      }[];
     };
     const names = new Set(tools.map(t => t.name));
+    const byName = new Map(tools.map(t => [t.name, t]));
+
+    // Annotations drive client-side auto-approval: pure reads must say so,
+    // and under a query:read key the enforced-read-only query loop too.
+    for (const readOnlyTool of [
+      "sql_list_tables",
+      "sql_inspect_table",
+      "sql_execute_query",
+      "run_console",
+      "read_console",
+    ]) {
+      assert.equal(
+        byName.get(readOnlyTool)?.annotations?.readOnlyHint,
+        true,
+        `${readOnlyTool} should be annotated read-only for a query:read key`,
+      );
+    }
+    assert.equal(
+      byName.get("app_write_file")?.annotations?.readOnlyHint,
+      false,
+    );
+    assert.equal(
+      byName.get("app_write_file")?.annotations?.destructiveHint,
+      false,
+    );
+    assert.equal(
+      byName.get("app_delete_file")?.annotations?.destructiveHint,
+      true,
+    );
     for (const expected of [
       "create_app",
       "get_app_state",
@@ -172,8 +214,19 @@ async function main() {
       [{ jsonrpc: "2.0", id: 3, method: "tools/list" }],
       ["mcp", "query:write"],
     );
-    const { tools } = res.result as { tools: { name: string }[] };
+    const { tools } = res.result as {
+      tools: {
+        name: string;
+        annotations?: { readOnlyHint?: boolean };
+      }[];
+    };
     assert.ok(tools.some(tool => tool.name === "mongo_execute_query"));
+    assert.equal(
+      tools.find(tool => tool.name === "sql_execute_query")?.annotations
+        ?.readOnlyHint,
+      false,
+      "a query:write key must not advertise sql_execute_query as read-only",
+    );
   }
 
   // 5. Unsafe SQL is rejected before any database lookup/execution.

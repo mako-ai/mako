@@ -37,6 +37,7 @@ import {
 import {
   queryAccessFromScopes,
   resolveWorkspaceApiKeyScopes,
+  type QueryAccess,
   type WorkspaceApiKeyScope,
 } from "../auth/api-key-scopes";
 import { loggers } from "../logging";
@@ -45,6 +46,22 @@ const logger = loggers.api("mcp-server");
 
 const SERVER_NAME = "mako";
 const SERVER_VERSION = "0.1.0";
+
+/**
+ * Injected into the client's system context on initialize. Kept short — it
+ * costs the client tokens on every session — but a compact workflow guide
+ * saves far more by avoiding failed exploratory round-trips.
+ */
+const SERVER_INSTRUCTIONS = `Mako builds data apps (React + data bindings) inside one workspace.
+
+Typical loop:
+1. Discover data: list_connections, then sql_list_tables / sql_inspect_table.
+2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
+3. create_app → app_write_file / app_edit_file → app_create_data_binding (bind the validated query; pass consoleId to seed from a console).
+4. Verify with render_app after edits. Pass includeScreenshot: false when you only need status/errors — it is much cheaper than the screenshot.
+5. app_save_version to snapshot/publish.
+
+Before writing app code, read the authoring playbook: resource mako://skills/apps (or the load_skill tool).`;
 
 /** Defensive cap so a huge query result cannot blow up the JSON response. */
 const MAX_TOOL_RESULT_CHARS = 200_000;
@@ -163,6 +180,60 @@ export function buildMakoMcpToolset(
   };
 }
 
+/**
+ * Tools that never mutate workspace state. Clients (Claude Code, Cursor)
+ * use readOnlyHint to auto-approve these without prompting the user, so
+ * discovery/verification loops run uninterrupted.
+ */
+const READ_ONLY_TOOLS = new Set([
+  "list_open_apps",
+  "get_app_state",
+  "app_read_file",
+  "list_connections",
+  "sql_list_connections",
+  "sql_list_databases",
+  "sql_list_tables",
+  "sql_inspect_table",
+  "mongo_list_connections",
+  "mongo_list_databases",
+  "mongo_list_collections",
+  "mongo_inspect_collection",
+  "search_consoles",
+  "read_console",
+  "check_query_status",
+  "browse_version_history",
+  "get_version_snapshot",
+  "load_skill",
+  "read_skill_resource",
+  "render_app",
+  "create_preview_token",
+]);
+
+/** Irreversible deletions (destructiveHint defaults to true in the spec). */
+const DESTRUCTIVE_TOOLS = new Set([
+  "app_delete_file",
+  "app_delete_data_binding",
+  "app_remove_dependency",
+  "mongo_execute_query",
+]);
+
+function toolAnnotations(
+  name: string,
+  queryAccess: QueryAccess,
+): Record<string, unknown> {
+  // Under a query:read key these run inside an enforced read-only envelope,
+  // so clients can safely auto-approve the whole query loop.
+  const readOnly =
+    READ_ONLY_TOOLS.has(name) ||
+    (queryAccess === "read" &&
+      (name === "sql_execute_query" || name === "run_console"));
+  return {
+    readOnlyHint: readOnly,
+    destructiveHint: !readOnly && DESTRUCTIVE_TOOLS.has(name),
+    openWorldHint: false,
+  };
+}
+
 function isZodSchema(value: unknown): value is z.ZodType {
   return (
     typeof value === "object" &&
@@ -208,8 +279,9 @@ function extractMcpContent(
 }
 
 function serializeToolResult(result: unknown): string {
-  const text =
-    typeof result === "string" ? result : JSON.stringify(result, null, 2);
+  // Compact JSON on purpose: results feed straight into the client model's
+  // context, and pretty-printing inflates token usage by roughly a third.
+  const text = typeof result === "string" ? result : JSON.stringify(result);
   if (text === undefined) return "null";
   if (text.length <= MAX_TOOL_RESULT_CHARS) return text;
   return (
@@ -231,10 +303,16 @@ export function buildMakoMcpServer(
     ...buildMakoMcpToolset(context),
     ...extraTools,
   };
+  const queryAccess = queryAccessFromScopes(
+    resolveWorkspaceApiKeyScopes(context.scopes),
+  );
 
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
-    { capabilities: { tools: {}, resources: {} } },
+    {
+      capabilities: { tools: {}, resources: {} },
+      instructions: SERVER_INSTRUCTIONS,
+    },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, () => ({
@@ -242,6 +320,7 @@ export function buildMakoMcpServer(
       name,
       description: tool.description ?? "",
       inputSchema: toolInputJsonSchema(tool),
+      annotations: toolAnnotations(name, queryAccess),
     })),
   }));
 

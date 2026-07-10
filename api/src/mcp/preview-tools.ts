@@ -43,6 +43,13 @@ const renderAppSchema = z.object({
     .max(45_000)
     .optional()
     .describe("How long to wait for the app to finish rendering (ms)"),
+  includeScreenshot: z
+    .boolean()
+    .optional()
+    .describe(
+      "Default true. Pass false to get status/errors/console only — much " +
+        "cheaper when you just need to know whether the render succeeded.",
+    ),
 });
 
 const createPreviewTokenSchema = z.object({
@@ -114,7 +121,13 @@ export function createMcpPreviewTools(context: MakoMcpContext) {
           : "NOTE: server-side rendering is not configured on this " +
             "deployment; use create_preview_token with your own browser instead."),
       inputSchema: renderAppSchema,
-      execute: async ({ appId, width, height, timeoutMs }) => {
+      execute: async ({
+        appId,
+        width,
+        height,
+        timeoutMs,
+        includeScreenshot,
+      }) => {
         if (!Types.ObjectId.isValid(appId)) {
           return { success: false, error: `Invalid app ID: ${appId}` };
         }
@@ -142,6 +155,7 @@ export function createMcpPreviewTools(context: MakoMcpContext) {
           width,
           height,
           timeoutMs,
+          screenshot: includeScreenshot !== false,
         });
 
         const summary = {
@@ -151,12 +165,12 @@ export function createMcpPreviewTools(context: MakoMcpContext) {
           consoleLogs: result.consoleLogs,
           ...(result.error ? { error: result.error } : {}),
         };
-        if (!result.screenshotBase64) {
+        if (includeScreenshot === false || !result.screenshotBase64) {
           return summary;
         }
         return {
           mcpContent: [
-            { type: "text", text: JSON.stringify(summary, null, 2) },
+            { type: "text", text: JSON.stringify(summary) },
             {
               type: "image",
               data: result.screenshotBase64,

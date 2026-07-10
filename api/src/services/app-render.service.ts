@@ -107,6 +107,8 @@ export async function renderAppPreview(input: {
   width?: number;
   height?: number;
   timeoutMs?: number;
+  /** Default true. False skips the paint delay + JPEG capture entirely. */
+  screenshot?: boolean;
 }): Promise<AppRenderResult> {
   if (!isAppRenderEnabled()) {
     return {
@@ -193,14 +195,18 @@ export async function renderAppPreview(input: {
         settled = null; // timeout — still screenshot whatever rendered
       }
 
-      if (settled?.status === "ready") {
-        await page.waitForTimeout(PAINT_DELAY_MS);
+      const wantScreenshot = input.screenshot !== false;
+      let screenshotBase64: string | undefined;
+      if (wantScreenshot) {
+        if (settled?.status === "ready") {
+          await page.waitForTimeout(PAINT_DELAY_MS);
+        }
+        const screenshot = await page.screenshot({
+          type: "jpeg",
+          quality: 70,
+        });
+        screenshotBase64 = screenshot.toString("base64");
       }
-
-      const screenshot = await page.screenshot({
-        type: "jpeg",
-        quality: 70,
-      });
 
       const status: AppRenderResult["status"] =
         settled?.status === "ready"
@@ -214,7 +220,7 @@ export async function renderAppPreview(input: {
         status,
         errors: [...(settled?.errors ?? []), ...pageErrors],
         consoleLogs,
-        screenshotBase64: screenshot.toString("base64"),
+        ...(screenshotBase64 ? { screenshotBase64 } : {}),
       };
     } finally {
       await context.close().catch(() => {});
