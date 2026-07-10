@@ -5,6 +5,7 @@ import {
   clientAppTools,
   clientDbtTools,
   clientDataSourceTools,
+  clientNotebookTools,
 } from "@mako/agent-tools";
 import { createDbtServerTools } from "../../agent-lib/tools/dbt-tools";
 import { createServerAppTools } from "../../agent-lib/tools/server-app-tools";
@@ -88,6 +89,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
       ...clientDbtTools,
       ...dbtServerTools,
       ...clientDataSourceTools,
+      ...clientNotebookTools,
       ...flowUniqueTools,
       ...selfDirectiveTools,
       ...skillTools,

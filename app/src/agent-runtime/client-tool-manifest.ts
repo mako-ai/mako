@@ -31,6 +31,7 @@ export type AgentToolDomain =
   | "search"
   | "memory"
   | "database"
+  | "notebook"
   | "plan";
 
 export type ClientToolExecutor =
@@ -39,7 +40,8 @@ export type ClientToolExecutor =
   | "flow"
   | "app"
   | "dbt"
-  | "data";
+  | "data"
+  | "notebook";
 
 export interface ToolUiConfig {
   getLabel: (input?: unknown) => string;
@@ -1152,6 +1154,57 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "shield-check",
   },
+  // -- Notebook tools (client-executed via app/src/notebook-runtime) ---------
+  list_open_notebooks: {
+    domain: "notebook",
+    execution: "client",
+    clientExecutor: "notebook",
+    getLabel: () => "Listing notebooks",
+    icon: "list",
+  },
+  read_notebook: {
+    domain: "notebook",
+    execution: "client",
+    clientExecutor: "notebook",
+    getLabel: () => "Reading notebook",
+    icon: "eye",
+  },
+  add_notebook_cell: {
+    domain: "notebook",
+    execution: "client",
+    clientExecutor: "notebook",
+    getLabel: input => {
+      const type = (input as Record<string, unknown>)?.type;
+      return `Adding ${typeof type === "string" ? type : ""} cell`.replace(
+        "  ",
+        " ",
+      );
+    },
+    icon: "plus",
+    preview: { field: "source", language: "sql" },
+  },
+  edit_notebook_cell: {
+    domain: "notebook",
+    execution: "client",
+    clientExecutor: "notebook",
+    getLabel: () => "Editing cell",
+    icon: "pencil",
+    preview: { field: "source", language: "sql" },
+  },
+  delete_notebook_cell: {
+    domain: "notebook",
+    execution: "client",
+    clientExecutor: "notebook",
+    getLabel: () => "Deleting cell",
+    icon: "trash",
+  },
+  run_notebook_sql_cell: {
+    domain: "notebook",
+    execution: "client",
+    clientExecutor: "notebook",
+    getLabel: () => "Running SQL cell",
+    icon: "play",
+  },
 } as const satisfies Record<string, AgentToolManifestEntry>;
 
 export type AgentToolName = keyof typeof AGENT_TOOL_MANIFEST;
@@ -1205,6 +1258,10 @@ export const DBT_EXECUTOR_TOOL_NAMES = createToolNameSet(
 
 export const DATA_SOURCE_EXECUTOR_TOOL_NAMES = createToolNameSet(
   entry => entry.execution === "client" && entry.clientExecutor === "data",
+);
+
+export const NOTEBOOK_EXECUTOR_TOOL_NAMES = createToolNameSet(
+  entry => entry.execution === "client" && entry.clientExecutor === "notebook",
 );
 
 export const LONG_RUNNING_DASHBOARD_TOOL_NAMES = createToolNameSet(

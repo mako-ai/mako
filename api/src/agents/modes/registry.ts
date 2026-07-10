@@ -8,6 +8,7 @@ import {
   APP_MODE_SYSTEM_PROMPT,
   TRANSFORM_MODE_SYSTEM_PROMPT,
   EXPLORE_MODE_SYSTEM_PROMPT,
+  NOTEBOOK_MODE_SYSTEM_PROMPT,
 } from "./prompts";
 
 /**
@@ -236,6 +237,22 @@ const EXPLORE_MODE_TOOL_NAMES: string[] = [
   "web_search",
 ];
 
+const NOTEBOOK_MODE_TOOL_NAMES: string[] = [
+  // Client notebook tools
+  "list_open_notebooks",
+  "read_notebook",
+  "add_notebook_cell",
+  "edit_notebook_cell",
+  "delete_notebook_cell",
+  "run_notebook_sql_cell",
+  // Discovery: find data sources + tables for SQL cells
+  "list_connections",
+  "sql_list_connections",
+  "sql_list_databases",
+  "sql_list_tables",
+  "sql_inspect_table",
+];
+
 export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {
   query: {
     id: "query",
@@ -303,6 +320,19 @@ export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {
       "Verify with dbt_parse, dbt_compile_model, then dbt_run_model on dev",
     ],
   },
+  notebook: {
+    id: "notebook",
+    name: "Notebook",
+    routingPrompt:
+      "Build data notebooks: add SQL/Python/Markdown cells, run SQL against data sources, and iterate on the analysis.",
+    systemPrompt: NOTEBOOK_MODE_SYSTEM_PROMPT,
+    toolNames: NOTEBOOK_MODE_TOOL_NAMES,
+    trajectories: [
+      "Read the notebook and find the data source",
+      "Add SQL/Markdown cells for the analysis",
+      "Run the SQL cells and refine from the results",
+    ],
+  },
   explore: {
     id: "explore",
     name: "Explore",
@@ -356,6 +386,7 @@ export function defaultExpertiseMode(
   if (view === "dashboard" || tabKind === "dashboard") return "dashboard";
   if (view === "flow-editor" || tabKind === "flow-editor") return "flow";
   if (view === "app" || tabKind === "app") return "app";
+  if (tabKind === "notebook") return "notebook";
   if (view === "dbt" || tabKind === "dbt-file" || tabKind === "dbt-job") {
     return "transform";
   }

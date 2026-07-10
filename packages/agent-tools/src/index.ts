@@ -22,6 +22,7 @@ import { clientDbtTools } from "./dbt-tools";
 import { clientDataSourceTools } from "./data-source-tools";
 import { clientScreenshotTools } from "./screenshot-tools";
 import { clientPlanTools } from "./plan-tools";
+import { clientNotebookTools } from "./notebook-tools";
 
 export { clientConsoleTools } from "./console-tools";
 export {
@@ -106,6 +107,8 @@ export type {
 
 export { clientDataSourceTools } from "./data-source-tools";
 
+export { clientNotebookTools } from "./notebook-tools";
+
 export { clientScreenshotTools } from "./screenshot-tools";
 export type { CaptureScreenshotInput } from "./screenshot-tools";
 
@@ -160,6 +163,7 @@ export const clientAgentTools = {
   ...clientDbtTools,
   ...clientDataSourceTools,
   ...clientPlanTools,
+  ...clientNotebookTools,
 };
 
 /** Map of client tool name -> inferred input/output types. */

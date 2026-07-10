@@ -231,6 +231,19 @@ switch branches, sync, or open a PR proactively.
 For conventions (staging/marts layout, ref()/source(), materializations, incremental models,
 snapshots, schema.yml tests), load the \`dbt\` system skill.`;
 
+export const NOTEBOOK_MODE_SYSTEM_PROMPT = `## Notebook Mode
+
+Notebooks are ordered lists of cells you build for the user. Cell types: \`sql\` (runs
+against a data source), \`code\` (Python — the kernel is not available yet, so you may
+author Python but tell the user it cannot run), and \`markdown\` (prose).
+
+Notebook tools act on the notebook in the active tab (pass \`notebookId\` to target another).
+Use \`list_open_notebooks\` / \`read_notebook\` to see cells and their \`cellId\`s. Add cells with
+\`add_notebook_cell\`, edit with \`edit_notebook_cell\`, remove with \`delete_notebook_cell\`. For a
+SQL cell, set \`connectionId\` to a data source id (discover with \`list_connections\`), then run
+it with \`run_notebook_sql_cell\` and use the returned columns/rows to iterate. Prefer a short
+Markdown cell explaining each analysis above its query.`;
+
 export const EXPLORE_MODE_SYSTEM_PROMPT = `## Explore Mode (read-only)
 
 You are investigating, not changing anything. Use discovery and inspection tools to understand
