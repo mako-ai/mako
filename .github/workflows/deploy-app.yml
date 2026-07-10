@@ -197,6 +197,12 @@ jobs:
       VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
       VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
       DEMO_DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+      # Notebook GKE kernel plane (see deploy/notebook-kernels). Endpoint + CA
+      # are public cluster config stored as repo variables; the runtime SA has
+      # roles/container.developer on the mako-notebooks cluster.
+      KERNEL_PROVIDER: gke
+      KERNEL_GKE_ENDPOINT: ${{ vars.KERNEL_GKE_ENDPOINT }}
+      KERNEL_GKE_CA_CERT: ${{ vars.KERNEL_GKE_CA_CERT }}
       BILLING_ENABLED: "true"
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}
@@ -617,6 +623,9 @@ jobs:
             --set-env-vars "^|^GITHUB_APP_CLIENT_SECRET=${MAKO_GITHUB_APP_CLIENT_SECRET}" \
             --set-env-vars "^|^GITHUB_APP_PRIVATE_KEY=${MAKO_GITHUB_APP_PRIVATE_KEY}" \
             --set-env-vars "^|^SUPER_ADMIN_EMAILS=${SUPER_ADMIN_EMAILS}" \
+            --set-env-vars KERNEL_PROVIDER=${KERNEL_PROVIDER} \
+            --set-env-vars KERNEL_GKE_ENDPOINT=${KERNEL_GKE_ENDPOINT} \
+            --set-env-vars KERNEL_GKE_CA_CERT=${KERNEL_GKE_CA_CERT} \
             --quiet
 
           # Get the Cloud Run URL
@@ -831,6 +840,10 @@ jobs:
       VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
       VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
       DEMO_DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+      # Notebook GKE kernel plane (see deploy/notebook-kernels).
+      KERNEL_PROVIDER: gke
+      KERNEL_GKE_ENDPOINT: ${{ vars.KERNEL_GKE_ENDPOINT }}
+      KERNEL_GKE_CA_CERT: ${{ vars.KERNEL_GKE_CA_CERT }}
       BILLING_ENABLED: "true"
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
@@ -1002,6 +1015,9 @@ jobs:
             --set-env-vars "^|^GITHUB_APP_CLIENT_SECRET=${MAKO_GITHUB_APP_CLIENT_SECRET}" \
             --set-env-vars "^|^GITHUB_APP_PRIVATE_KEY=${MAKO_GITHUB_APP_PRIVATE_KEY}" \
             --set-env-vars "^|^SUPER_ADMIN_EMAILS=${SUPER_ADMIN_EMAILS}" \
+            --set-env-vars KERNEL_PROVIDER=${KERNEL_PROVIDER} \
+            --set-env-vars KERNEL_GKE_ENDPOINT=${KERNEL_GKE_ENDPOINT} \
+            --set-env-vars KERNEL_GKE_CA_CERT=${KERNEL_GKE_CA_CERT} \
             --quiet
 
       - name: Sync Inngest app
