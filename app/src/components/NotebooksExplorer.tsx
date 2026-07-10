@@ -15,6 +15,7 @@ import {
   Typography,
 } from "@mui/material";
 import {
+  Copy,
   Download,
   MoreVertical,
   Notebook as NotebookIcon,
@@ -101,6 +102,17 @@ export default function NotebooksExplorer() {
     a.download = `${doc.name || "notebook"}.ipynb`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleDuplicate = async (nb: NotebookSummary) => {
+    setMenu(null);
+    const doc = await getNotebook(nb.id);
+    if (!doc) return;
+    const copy = await importNotebook(
+      `${doc.name} (copy)`,
+      doc.blocks.map(b => ({ ...b, id: crypto.randomUUID() })),
+    );
+    if (copy) focusNotebookTab(copy.id, copy.name);
   };
 
   const startRename = (nb: NotebookSummary) => {
@@ -266,6 +278,13 @@ export default function NotebooksExplorer() {
       >
         <MenuItem onClick={() => menu && startRename(menu.nb)}>
           <Pencil size={14} style={{ marginRight: 8 }} /> Rename
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            if (menu) void handleDuplicate(menu.nb);
+          }}
+        >
+          <Copy size={14} style={{ marginRight: 8 }} /> Duplicate
         </MenuItem>
         <MenuItem
           onClick={() => {
