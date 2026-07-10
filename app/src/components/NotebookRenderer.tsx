@@ -142,6 +142,7 @@ export default function NotebookRenderer({
             block={block}
             index={index}
             count={doc.blocks.length}
+            notebookId={notebookId}
             workspaceId={workspaceId}
             sources={sources}
             onChange={patch => updateCell(notebookId, block.id, patch)}

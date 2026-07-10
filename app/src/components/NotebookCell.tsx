@@ -17,6 +17,12 @@ import { ChevronDown, ChevronUp, Play, Trash2 } from "lucide-react";
 import type { NotebookBlock, NotebookBlockType } from "../store/notebookStore";
 import type { Connection } from "../store/schemaStore";
 import { useConsoleStore } from "../store/consoleStore";
+import {
+  executeCode,
+  startKernelSession,
+  type KernelOutput,
+} from "../notebook-runtime/kernel";
+import KernelOutputView from "./KernelOutputView";
 import ResultsTable from "./ResultsTable";
 import { StreamingMarkdown } from "./StreamingMarkdown";
 
@@ -47,6 +53,7 @@ interface NotebookCellProps {
   block: NotebookBlock;
   index: number;
   count: number;
+  notebookId: string;
   workspaceId: string | null;
   sources: Connection[];
   onChange: (patch: Partial<NotebookBlock>) => void;
@@ -58,6 +65,7 @@ export default function NotebookCell({
   block,
   index,
   count,
+  notebookId,
   workspaceId,
   sources,
   onChange,
@@ -70,6 +78,7 @@ export default function NotebookCell({
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CellResult | null>(null);
+  const [kernelOutputs, setKernelOutputs] = useState<KernelOutput[]>([]);
   const [editingMarkdown, setEditingMarkdown] = useState(false);
 
   const canRunSql =
@@ -78,6 +87,33 @@ export default function NotebookCell({
     !!block.connectionId &&
     block.source.trim().length > 0 &&
     !running;
+
+  const canRunCode =
+    block.type === "code" &&
+    !!workspaceId &&
+    block.source.trim().length > 0 &&
+    !running;
+
+  // Run a Python cell: ensure the notebook's kernel session exists, then stream
+  // execution outputs into the cell as they arrive.
+  const runCode = async () => {
+    if (!workspaceId) return;
+    setRunning(true);
+    setError(null);
+    setKernelOutputs([]);
+    const collected: KernelOutput[] = [];
+    try {
+      await startKernelSession(workspaceId, notebookId);
+      await executeCode(workspaceId, notebookId, block.source, output => {
+        collected.push(output);
+        setKernelOutputs([...collected]);
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Execution failed");
+    } finally {
+      setRunning(false);
+    }
+  };
 
   const runSql = async () => {
     if (!workspaceId || !block.connectionId) return;
@@ -258,6 +294,43 @@ export default function NotebookCell({
         </Box>
       )}
 
+      {/* Python run toolbar: execute on the notebook's GKE kernel. */}
+      {block.type === "code" && (
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+            px: 1,
+            py: 0.5,
+            borderBottom: 1,
+            borderColor: "divider",
+          }}
+        >
+          <Tooltip title="Run on the notebook kernel (Python)">
+            <span>
+              <Button
+                size="small"
+                variant="contained"
+                disableElevation
+                startIcon={
+                  running ? (
+                    <CircularProgress size={13} color="inherit" />
+                  ) : (
+                    <Play size={13} />
+                  )
+                }
+                disabled={!canRunCode}
+                onClick={() => void runCode()}
+                sx={{ textTransform: "none" }}
+              >
+                Run
+              </Button>
+            </span>
+          </Tooltip>
+        </Box>
+      )}
+
       {monacoLanguage ? (
         <Editor
           language={monacoLanguage}
@@ -324,6 +397,16 @@ export default function NotebookCell({
             </Box>
           )}
         </Box>
+      )}
+
+      {/* Python kernel outputs / error, inline under the cell. */}
+      {block.type === "code" && error && (
+        <Alert severity="error" sx={{ borderRadius: 0, fontSize: "0.8rem" }}>
+          {error}
+        </Alert>
+      )}
+      {block.type === "code" && !error && (
+        <KernelOutputView outputs={kernelOutputs} />
       )}
     </Box>
   );
