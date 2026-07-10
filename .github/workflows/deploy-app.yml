@@ -553,7 +553,10 @@ jobs:
         env:
           SERVICE_NAME: ${{ steps.pr-vars.outputs.SERVICE_NAME }}
         run: |
+          # --project is explicit because the auth action exports CLOUDSDK_CORE_PROJECT
+          # from the SA key's home project, which overrides setup-gcloud's project_id.
           gcloud run deploy ${SERVICE_NAME} \
+            --project ${GCP_PROJECT_ID} \
             --image ${{ steps.image.outputs.sha_tag }} \
             --region ${GCP_REGION} \
             --timeout=3600 \
@@ -624,7 +627,7 @@ jobs:
             --quiet
 
           # Get the Cloud Run URL
-          CLOUD_RUN_URL=$(gcloud run services describe ${SERVICE_NAME} --region ${GCP_REGION} --format='value(status.url)')
+          CLOUD_RUN_URL=$(gcloud run services describe ${SERVICE_NAME} --project ${GCP_PROJECT_ID} --region ${GCP_REGION} --format='value(status.url)')
           echo "cloud_run_url=${CLOUD_RUN_URL}" >> "$GITHUB_OUTPUT"
 
       - name: Sync Inngest branch environment
