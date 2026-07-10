@@ -60,6 +60,8 @@ These endpoints manage connections to user databases (PostgreSQL, MySQL, MongoDB
 | `POST`   | `/api/workspaces/:wid/databases/:id/test`             | Test an existing connection                                                |
 | `POST`   | `/api/workspaces/:wid/databases/demo`                 | Provision the demo Chinook database (onboarding)                           |
 
+Create and update accept an optional `verifyBeforeSave: true` flag: the connection is tested before persisting, a failing test refuses the write with a structured `connection_test_failed` result, and a passing test stamps `lastConnectedAt`. Without the flag the legacy save-without-testing behavior is kept for programmatic callers. The app UI always sets it (with a "Save anyways" escape hatch).
+
 ### MongoDB Collections & Views
 
 For MongoDB connections, collection and view management is exposed under the same workspace-scoped database routes. The legacy unauthenticated `/api/database/*` routes were removed in [#408](https://github.com/mako-ai/mako/pull/408) — all callers must use the endpoints below.
