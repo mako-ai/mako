@@ -197,12 +197,12 @@ jobs:
       VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
       VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
       DEMO_DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
-      # Notebook GKE kernel plane (see deploy/notebook-kernels). Endpoint + CA
-      # are public cluster config stored as repo variables; the runtime SA has
-      # roles/container.developer on the mako-notebooks cluster.
+      # Notebook GKE kernel plane — DEV cluster (mako-ai-dev), since previews
+      # deploy to that project. Endpoint + CA are public cluster config in repo
+      # variables; the dev runtime SA has roles/container.developer on it.
       KERNEL_PROVIDER: gke
-      KERNEL_GKE_ENDPOINT: ${{ vars.KERNEL_GKE_ENDPOINT }}
-      KERNEL_GKE_CA_CERT: ${{ vars.KERNEL_GKE_CA_CERT }}
+      KERNEL_GKE_ENDPOINT: ${{ vars.DEV_KERNEL_GKE_ENDPOINT }}
+      KERNEL_GKE_CA_CERT: ${{ vars.DEV_KERNEL_GKE_CA_CERT }}
       BILLING_ENABLED: "true"
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}
@@ -210,9 +210,9 @@ jobs:
       STRIPE_OVERAGE_PRICE_ID: ${{ secrets.STRIPE_TEST_OVERAGE_PRICE_ID }}
       STRIPE_METER_EVENT_NAME: llm_usage_usd
       DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/pr-${{ needs.detect-changes.outputs.pr_number }}
-      # Durable notebook document store (GCS). Prefix scopes per-PR so previews
-      # (seeded from prod, sharing workspace ids) never touch prod notebooks.
-      NOTEBOOK_GCS_BUCKET: ${{ vars.NOTEBOOK_GCS_BUCKET }}
+      # Durable notebook document store (GCS) — DEV bucket in mako-ai-dev.
+      # Prefix scopes per-PR so previews never collide with each other.
+      NOTEBOOK_GCS_BUCKET: ${{ vars.DEV_NOTEBOOK_GCS_BUCKET }}
       NOTEBOOK_GCS_PREFIX: notebooks/pr-${{ needs.detect-changes.outputs.pr_number }}
       SUPER_ADMIN_EMAILS: ${{ secrets.SUPER_ADMIN_EMAILS }}
       MAKO_GITHUB_APP_ID: ${{ vars.MAKO_GITHUB_APP_ID }}
