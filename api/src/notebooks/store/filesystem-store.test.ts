@@ -1,10 +1,11 @@
 /* eslint-disable no-console, no-process-exit */
 /**
- * Unit tests for the notebook working-tree store — create/list/get/update/
- * remove round-trip against a temp NOTEBOOK_WORKDIR, plus path-traversal and
- * workspace-isolation guards.
+ * Contract tests for the NotebookStore — create/list/get/update/remove
+ * round-trip, plus path-traversal and workspace-isolation guards. Exercised
+ * against the filesystem store (a temp NOTEBOOK_WORKDIR); the GCS store
+ * implements the same interface and is covered by the live preview check.
  *
- * Run with: tsx src/notebooks/notebook-workingtree.service.test.ts
+ * Run with: tsx src/notebooks/store/filesystem-store.test.ts
  */
 import assert from "node:assert/strict";
 import { promises as fs } from "fs";
@@ -15,9 +16,9 @@ import { randomUUID } from "crypto";
 const WORKDIR = path.join(os.tmpdir(), `mako-notebooks-test-${randomUUID()}`);
 process.env.NOTEBOOK_WORKDIR = WORKDIR;
 
-// Import AFTER setting the env — the service reads NOTEBOOK_WORKDIR lazily per
-// call, but keep this ordering explicit for clarity.
-import { notebookWorkingTreeService as svc } from "./notebook-workingtree.service";
+import { FilesystemNotebookStore } from "./filesystem-store";
+
+const svc = new FilesystemNotebookStore();
 
 const WS = "651234567890abcdef123456"; // ObjectId-shaped
 const WS2 = "651234567890abcdef999999";
@@ -85,7 +86,7 @@ async function main() {
     await testMissingAndBadIds();
     await testRemove();
     console.log(
-      "notebook-workingtree.service.test: OK — CRUD + isolation + guards",
+      "notebook store contract: OK — CRUD + isolation + guards",
     );
   } finally {
     await fs

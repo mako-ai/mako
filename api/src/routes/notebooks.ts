@@ -1,11 +1,11 @@
 /**
- * Notebook CRUD routes (working-tree backed).
+ * Notebook CRUD routes.
  *
  * `GET/POST/PATCH/DELETE /api/workspaces/:workspaceId/notebooks[/:id]` — the
  * document surface the app's notebook explorer + renderer use. Backed by the
- * filesystem working tree today; Git sync layers on top later. Distinct from
- * the singular `/notebook/read` data endpoint (that runs SQL, this manages the
- * document).
+ * durable notebook store (GCS objects in deployed envs, filesystem locally);
+ * GitHub sync can layer on later. Distinct from the singular `/notebook/read`
+ * data endpoint (that runs SQL, this manages the document).
  */
 import { createRoute, z } from "@hono/zod-openapi";
 
@@ -18,7 +18,7 @@ import {
   jsonBody,
   pathParam,
 } from "../openapi/core";
-import { notebookWorkingTreeService } from "../notebooks/notebook-workingtree.service";
+import { getNotebookStore } from "../notebooks/store";
 import type { NotebookBlock } from "../notebooks/types";
 import { loggers } from "../logging";
 import { publishRealtimeEvent } from "../services/realtime.service";
@@ -74,7 +74,7 @@ notebookRoutes.openapi(
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
-    const data = await notebookWorkingTreeService.list(workspaceId(c));
+    const data = await getNotebookStore().list(workspaceId(c));
     return c.json({ success: true, data });
   },
 );
@@ -95,7 +95,7 @@ notebookRoutes.openapi(
       name?: string;
       clientId?: string;
     };
-    const doc = await notebookWorkingTreeService.create(workspaceId(c), {
+    const doc = await getNotebookStore().create(workspaceId(c), {
       name: body.name,
     });
     logger.info("Created notebook", {
@@ -127,7 +127,7 @@ notebookRoutes.openapi(
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
-    const doc = await notebookWorkingTreeService.get(
+    const doc = await getNotebookStore().get(
       workspaceId(c),
       c.req.valid("param").id,
     );
@@ -155,7 +155,7 @@ notebookRoutes.openapi(
       blocks?: NotebookBlock[];
       clientId?: string;
     };
-    const doc = await notebookWorkingTreeService.update(
+    const doc = await getNotebookStore().update(
       workspaceId(c),
       c.req.valid("param").id,
       body,
@@ -188,7 +188,7 @@ notebookRoutes.openapi(
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
-    const ok = await notebookWorkingTreeService.remove(
+    const ok = await getNotebookStore().remove(
       workspaceId(c),
       c.req.valid("param").id,
     );

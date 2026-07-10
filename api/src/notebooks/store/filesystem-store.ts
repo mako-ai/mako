@@ -1,30 +1,26 @@
 /**
- * Notebook working-tree store (filesystem).
+ * Filesystem NotebookStore — local-development fallback when no GCS bucket is
+ * configured. Ephemeral on stateless Cloud Run (per-instance disk), which is
+ * exactly why GCS is the default in deployed environments.
  *
- * Notebooks live in Git as the system of record (one repo per workspace, under
- * `jupyter/`). This service is the *working-tree* layer of that model — the
- * live, on-disk copy the app reads/writes — mirroring how the dbt engine
- * materializes a project to a working dir before Git sync layers on top
- * (`api/src/dbt/dbt-working-tree.service.ts`).
- *
- * FOLLOW-UPS (rest of the Git-storage slice): commit/sync the working tree to
- * GitHub (generalize the dbt-github-git/sync services), switch the on-disk
- * format to `.deepnote` YAML via `@deepnote/convert`, and offload large block
- * outputs to GCS. On stateless Cloud Run the working tree is ephemeral and
- * re-seeded from Git; locally it persists under NOTEBOOK_WORKDIR.
+ * Layout: `<NOTEBOOK_WORKDIR>/<workspaceId>/jupyter/<id>.json` (the `jupyter/`
+ * folder mirrors where notebooks would live in a per-workspace repo).
  */
 import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
 import { randomUUID } from "crypto";
 
-import { loggers } from "../logging";
-import type { NotebookBlock, NotebookDoc, NotebookSummary } from "./types";
+import { loggers } from "../../logging";
+import type { NotebookBlock, NotebookDoc, NotebookSummary } from "../types";
+import {
+  ID_RE,
+  buildNewDoc,
+  mergePatch,
+  type NotebookStore,
+} from "./types";
 
 const logger = loggers.api("notebooks");
-
-/** Ids we generate (UUID) and Mongo workspace ids (hex) both match this. */
-const ID_RE = /^[a-zA-Z0-9-]+$/;
 
 function baseDir(): string {
   return (
@@ -32,7 +28,6 @@ function baseDir(): string {
   );
 }
 
-/** `<base>/<workspaceId>/jupyter` — the `jupyter/` folder of the workspace repo. */
 function workspaceDir(workspaceId: string): string {
   if (!ID_RE.test(workspaceId)) {
     throw new Error("Invalid workspaceId");
@@ -44,11 +39,9 @@ function notebookPath(workspaceId: string, id: string): string {
   return path.join(workspaceDir(workspaceId), `${id}.json`);
 }
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
+export class FilesystemNotebookStore implements NotebookStore {
+  readonly kind = "filesystem" as const;
 
-class NotebookWorkingTreeService {
   async list(workspaceId: string): Promise<NotebookSummary[]> {
     const dir = workspaceDir(workspaceId);
     let files: string[];
@@ -66,16 +59,11 @@ class NotebookWorkingTreeService {
         const doc = JSON.parse(
           await fs.readFile(path.join(dir, file), "utf8"),
         ) as NotebookDoc;
-        summaries.push({
-          id: doc.id,
-          name: doc.name,
-          updatedAt: doc.updatedAt,
-        });
+        summaries.push({ id: doc.id, name: doc.name, updatedAt: doc.updatedAt });
       } catch (err) {
         logger.warn("Skipping unreadable notebook file", { file, error: err });
       }
     }
-    // Newest first.
     return summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
@@ -94,16 +82,7 @@ class NotebookWorkingTreeService {
     workspaceId: string,
     input: { name?: string },
   ): Promise<NotebookDoc> {
-    const ts = nowIso();
-    const name = (input.name || "").trim() || "Untitled notebook";
-    const doc: NotebookDoc = {
-      id: randomUUID(),
-      name,
-      blocks: [],
-      version: 1,
-      createdAt: ts,
-      updatedAt: ts,
-    };
+    const doc = buildNewDoc(input);
     await this.write(workspaceId, doc);
     return doc;
   }
@@ -115,16 +94,7 @@ class NotebookWorkingTreeService {
   ): Promise<NotebookDoc | null> {
     const existing = await this.get(workspaceId, id);
     if (!existing) return null;
-    const next: NotebookDoc = {
-      ...existing,
-      name:
-        patch.name !== undefined
-          ? patch.name.trim() || existing.name
-          : existing.name,
-      blocks: patch.blocks !== undefined ? patch.blocks : existing.blocks,
-      version: (existing.version ?? 0) + 1,
-      updatedAt: nowIso(),
-    };
+    const next = mergePatch(existing, patch);
     await this.write(workspaceId, next);
     return next;
   }
@@ -144,12 +114,9 @@ class NotebookWorkingTreeService {
     const dir = workspaceDir(workspaceId);
     await fs.mkdir(dir, { recursive: true });
     const file = notebookPath(workspaceId, doc.id);
-    // Write to a temp file then rename so a crash mid-write never leaves a
-    // half-written notebook on disk.
+    // Temp-file + rename so a crash mid-write never leaves a half-written file.
     const tmp = `${file}.${randomUUID()}.tmp`;
     await fs.writeFile(tmp, JSON.stringify(doc, null, 2), "utf8");
     await fs.rename(tmp, file);
   }
 }
-
-export const notebookWorkingTreeService = new NotebookWorkingTreeService();
