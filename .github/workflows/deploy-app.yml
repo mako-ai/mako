@@ -210,6 +210,10 @@ jobs:
       STRIPE_OVERAGE_PRICE_ID: ${{ secrets.STRIPE_TEST_OVERAGE_PRICE_ID }}
       STRIPE_METER_EVENT_NAME: llm_usage_usd
       DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/pr-${{ needs.detect-changes.outputs.pr_number }}
+      # Durable notebook document store (GCS). Prefix scopes per-PR so previews
+      # (seeded from prod, sharing workspace ids) never touch prod notebooks.
+      NOTEBOOK_GCS_BUCKET: ${{ vars.NOTEBOOK_GCS_BUCKET }}
+      NOTEBOOK_GCS_PREFIX: notebooks/pr-${{ needs.detect-changes.outputs.pr_number }}
       SUPER_ADMIN_EMAILS: ${{ secrets.SUPER_ADMIN_EMAILS }}
       MAKO_GITHUB_APP_ID: ${{ vars.MAKO_GITHUB_APP_ID }}
       MAKO_GITHUB_APP_SLUG: ${{ vars.MAKO_GITHUB_APP_SLUG }}
@@ -623,6 +627,8 @@ jobs:
             --set-env-vars "^|^GITHUB_APP_CLIENT_SECRET=${MAKO_GITHUB_APP_CLIENT_SECRET}" \
             --set-env-vars "^|^GITHUB_APP_PRIVATE_KEY=${MAKO_GITHUB_APP_PRIVATE_KEY}" \
             --set-env-vars "^|^SUPER_ADMIN_EMAILS=${SUPER_ADMIN_EMAILS}" \
+            --set-env-vars NOTEBOOK_GCS_BUCKET=${NOTEBOOK_GCS_BUCKET} \
+            --set-env-vars NOTEBOOK_GCS_PREFIX=${NOTEBOOK_GCS_PREFIX} \
             --set-env-vars KERNEL_PROVIDER=${KERNEL_PROVIDER} \
             --set-env-vars KERNEL_GKE_ENDPOINT=${KERNEL_GKE_ENDPOINT} \
             --set-env-vars KERNEL_GKE_CA_CERT=${KERNEL_GKE_CA_CERT} \
@@ -851,6 +857,9 @@ jobs:
       STRIPE_OVERAGE_PRICE_ID: ${{ secrets.STRIPE_OVERAGE_PRICE_ID }}
       STRIPE_METER_EVENT_NAME: llm_usage_usd
       DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/prod
+      # Durable notebook document store (GCS).
+      NOTEBOOK_GCS_BUCKET: ${{ vars.NOTEBOOK_GCS_BUCKET }}
+      NOTEBOOK_GCS_PREFIX: notebooks/prod
       SUPER_ADMIN_EMAILS: ${{ secrets.SUPER_ADMIN_EMAILS }}
       MAKO_GITHUB_APP_ID: ${{ vars.MAKO_GITHUB_APP_ID }}
       MAKO_GITHUB_APP_SLUG: ${{ vars.MAKO_GITHUB_APP_SLUG }}
@@ -1015,6 +1024,8 @@ jobs:
             --set-env-vars "^|^GITHUB_APP_CLIENT_SECRET=${MAKO_GITHUB_APP_CLIENT_SECRET}" \
             --set-env-vars "^|^GITHUB_APP_PRIVATE_KEY=${MAKO_GITHUB_APP_PRIVATE_KEY}" \
             --set-env-vars "^|^SUPER_ADMIN_EMAILS=${SUPER_ADMIN_EMAILS}" \
+            --set-env-vars NOTEBOOK_GCS_BUCKET=${NOTEBOOK_GCS_BUCKET} \
+            --set-env-vars NOTEBOOK_GCS_PREFIX=${NOTEBOOK_GCS_PREFIX} \
             --set-env-vars KERNEL_PROVIDER=${KERNEL_PROVIDER} \
             --set-env-vars KERNEL_GKE_ENDPOINT=${KERNEL_GKE_ENDPOINT} \
             --set-env-vars KERNEL_GKE_CA_CERT=${KERNEL_GKE_CA_CERT} \
