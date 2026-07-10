@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import { apiClient } from "../lib/api-client";
 import { useUIStore } from "./uiStore";
+import { realtimeClientId } from "../lib/realtime-client-id";
 
 /**
  * Notebook store — talks to the working-tree CRUD API
@@ -24,6 +25,8 @@ export interface NotebookDoc {
   id: string;
   name: string;
   blocks: NotebookBlock[];
+  /** Server version, bumped on each save (drives realtime poke-then-pull). */
+  version: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -81,6 +84,8 @@ interface NotebookStore {
   ) => void;
   deleteCell: (id: string, cellId: string) => void;
   moveCell: (id: string, index: number, direction: -1 | 1) => void;
+  /** Pull a fresh copy of an open notebook (realtime poke-then-pull). */
+  reloadOpenNotebook: (id: string) => Promise<void>;
 }
 
 export const useNotebookStore = create<NotebookStore>((set, get) => {
@@ -150,7 +155,7 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
       try {
         const res = await apiClient.post<{ data: NotebookDoc }>(
           `/workspaces/${ws}/notebooks`,
-          { name },
+          { name, clientId: realtimeClientId },
         );
         await get().loadNotebooks();
         return res.data ?? null;
@@ -194,7 +199,7 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
       try {
         const res = await apiClient.patch<{ data: NotebookDoc }>(
           `/workspaces/${ws}/notebooks/${id}`,
-          patch,
+          { ...patch, clientId: realtimeClientId },
         );
         const doc = res.data ?? null;
         // Reflect a rename in the explorer list without a reload storm.
@@ -218,6 +223,20 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
 
     openNotebook: async id => {
       if (get().openNotebooks[id]) return;
+      const doc = await get().getNotebook(id);
+      if (doc) {
+        set(s => ({
+          openNotebooks: { ...s.openNotebooks, [id]: doc },
+          saveState: { ...s.saveState, [id]: "idle" },
+        }));
+      }
+    },
+
+    reloadOpenNotebook: async id => {
+      // Only for open notebooks; never clobber an in-flight local edit (the
+      // next poke / focus reconciles).
+      if (!get().openNotebooks[id]) return;
+      if (get().saveState[id] === "saving") return;
       const doc = await get().getNotebook(id);
       if (doc) {
         set(s => ({

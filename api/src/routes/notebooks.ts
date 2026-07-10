@@ -21,6 +21,7 @@ import {
 import { notebookWorkingTreeService } from "../notebooks/notebook-workingtree.service";
 import type { NotebookBlock } from "../notebooks/types";
 import { loggers } from "../logging";
+import { publishRealtimeEvent } from "../services/realtime.service";
 
 const logger = loggers.api("notebooks");
 
@@ -40,18 +41,25 @@ const BlockSchema = z.object({
 });
 
 const CreateNotebookSchema = z
-  .object({ name: z.string().optional() })
+  .object({ name: z.string().optional(), clientId: z.string().optional() })
   .openapi("CreateNotebookRequest");
 
 const UpdateNotebookSchema = z
   .object({
     name: z.string().optional(),
     blocks: z.array(BlockSchema).optional(),
+    clientId: z.string().optional(),
   })
   .openapi("UpdateNotebookRequest");
 
 function workspaceId(c: { get: (k: "workspace") => { _id: unknown } }): string {
   return String(c.get("workspace")._id);
+}
+
+function editorUserId(c: {
+  get: (k: "user") => { id?: unknown } | undefined;
+}): string {
+  return String(c.get("user")?.id ?? "system");
 }
 
 // GET / — list notebooks
@@ -83,13 +91,25 @@ notebookRoutes.openapi(
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
-    const body = (await c.req.json().catch(() => ({}))) as { name?: string };
+    const body = (await c.req.json().catch(() => ({}))) as {
+      name?: string;
+      clientId?: string;
+    };
     const doc = await notebookWorkingTreeService.create(workspaceId(c), {
       name: body.name,
     });
     logger.info("Created notebook", {
       workspaceId: workspaceId(c),
       notebookId: doc.id,
+    });
+    // Poke other clients so their explorer list picks up the new notebook.
+    publishRealtimeEvent(workspaceId(c), {
+      type: "notebook.updated",
+      notebookId: doc.id,
+      version: doc.version,
+      updatedBy: editorUserId(c),
+      clientId: typeof body.clientId === "string" ? body.clientId : undefined,
+      origin: "save",
     });
     return c.json({ success: true, data: doc }, 201);
   },
@@ -111,8 +131,9 @@ notebookRoutes.openapi(
       workspaceId(c),
       c.req.valid("param").id,
     );
-    if (!doc)
+    if (!doc) {
       return c.json({ success: false, error: "Notebook not found" }, 404);
+    }
     return c.json({ success: true, data: doc });
   },
 );
@@ -132,14 +153,25 @@ notebookRoutes.openapi(
     const body = (await c.req.json().catch(() => ({}))) as {
       name?: string;
       blocks?: NotebookBlock[];
+      clientId?: string;
     };
     const doc = await notebookWorkingTreeService.update(
       workspaceId(c),
       c.req.valid("param").id,
       body,
     );
-    if (!doc)
+    if (!doc) {
       return c.json({ success: false, error: "Notebook not found" }, 404);
+    }
+    // Poke open tabs on other clients to pull the updated notebook.
+    publishRealtimeEvent(workspaceId(c), {
+      type: "notebook.updated",
+      notebookId: doc.id,
+      version: doc.version,
+      updatedBy: editorUserId(c),
+      clientId: typeof body.clientId === "string" ? body.clientId : undefined,
+      origin: "save",
+    });
     return c.json({ success: true, data: doc });
   },
 );
@@ -160,8 +192,9 @@ notebookRoutes.openapi(
       workspaceId(c),
       c.req.valid("param").id,
     );
-    if (!ok)
+    if (!ok) {
       return c.json({ success: false, error: "Notebook not found" }, 404);
+    }
     return c.json({ success: true });
   },
 );

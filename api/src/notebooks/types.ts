@@ -22,6 +22,8 @@ export interface NotebookDoc {
   id: string;
   name: string;
   blocks: NotebookBlock[];
+  /** Monotonic version, bumped on every save. Drives realtime poke-then-pull. */
+  version: number;
   createdAt: string;
   updatedAt: string;
 }

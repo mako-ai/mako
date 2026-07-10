@@ -100,6 +100,7 @@ class NotebookWorkingTreeService {
       id: randomUUID(),
       name,
       blocks: [],
+      version: 1,
       createdAt: ts,
       updatedAt: ts,
     };
@@ -121,6 +122,7 @@ class NotebookWorkingTreeService {
           ? patch.name.trim() || existing.name
           : existing.name,
       blocks: patch.blocks !== undefined ? patch.blocks : existing.blocks,
+      version: (existing.version ?? 0) + 1,
       updatedAt: nowIso(),
     };
     await this.write(workspaceId, next);

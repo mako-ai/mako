@@ -26,6 +26,7 @@ import {
 import { useAppStore } from "./appStore";
 import { useDashboardStore } from "./dashboardStore";
 import { useDbtStore } from "./dbtStore";
+import { useNotebookStore } from "./notebookStore";
 import { computeDashboardStateHash } from "../utils/stateHash";
 import { decideRemoteApply } from "./lib/remoteApplyGate";
 import { useConsoleTreeStore } from "./consoleTreeStore";
@@ -104,6 +105,14 @@ export type RealtimeEvent =
   | {
       type: "dashboard.updated";
       dashboardId: string;
+      version: number;
+      updatedBy: string;
+      clientId?: string;
+      origin: "agent" | "save";
+    }
+  | {
+      type: "notebook.updated";
+      notebookId: string;
       version: number;
       updatedBy: string;
       clientId?: string;
@@ -558,6 +567,25 @@ export const useRealtimeStore = create<RealtimeStore>()(
       void ds.reloadDashboard(workspaceId, event.dashboardId);
     };
 
+    // Notebook document changed (human or agent save): pull the authoritative
+    // notebook for an OPEN notebook when its version advances (a tab that is
+    // mid-save is skipped so it never stomps an in-flight local edit); if the
+    // notebook isn't open here, refresh the explorer list so new notebooks
+    // appear. Echo-suppressed by clientId.
+    const handleNotebookUpdated = (
+      event: Extract<RealtimeEvent, { type: "notebook.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      const nb = useNotebookStore.getState();
+      const open = nb.openNotebooks[event.notebookId];
+      if (!open) {
+        void nb.loadNotebooks();
+        return;
+      }
+      if ((open.version ?? 0) >= event.version) return; // stale / own echo
+      void nb.reloadOpenNotebook(event.notebookId);
+    };
+
     const handleEvent = (event: RealtimeEvent) => {
       switch (event.type) {
         case "console.updated":
@@ -568,6 +596,9 @@ export const useRealtimeStore = create<RealtimeStore>()(
           break;
         case "dashboard.updated":
           handleDashboardUpdated(event);
+          break;
+        case "notebook.updated":
+          handleNotebookUpdated(event);
           break;
         case "dbt.file.updated":
           handleDbtFileUpdated(event);
