@@ -146,6 +146,13 @@ export async function renderAppPreview(input: {
         // Keep the machine markers + anything that looks like a problem;
         // drop the firehose of debug logging from app dependencies.
         const text = message.text();
+        // The unauthenticated preview shell probes /api/auth/me on boot (with
+        // retries), so its 401s are expected. Surfacing them sends the
+        // calling agent chasing phantom auth failures.
+        const sourceUrl = message.location()?.url ?? "";
+        if (/\/api\/auth\//.test(sourceUrl) && /401|Unauthorized/i.test(text)) {
+          return;
+        }
         if (
           type === "error" ||
           type === "warning" ||

@@ -47,16 +47,23 @@ async function exchange(
 }
 
 async function main() {
-  // 1. Legacy keys receive the safe default; unknown scopes fail closed.
+  // 1. Legacy keys receive the safe default; unknown scopes cannot be
+  //    granted, and stored unknown scopes (e.g. since-removed ones) are
+  //    dropped without killing the key's remaining grants.
   assert.deepEqual(parseWorkspaceApiKeyScopes(undefined), [
     "mcp",
     "query:read",
   ]);
   assert.deepEqual(resolveWorkspaceApiKeyScopes(undefined), []);
   assert.equal(restQueryAccessFromStoredScopes(undefined), "write");
-  assert.deepEqual(resolveWorkspaceApiKeyScopes(["mcp", "unknown"]), []);
+  assert.deepEqual(resolveWorkspaceApiKeyScopes(["mcp", "unknown"]), ["mcp"]);
   assert.throws(
     () => parseWorkspaceApiKeyScopes(["mcp", "unknown"]),
+    /Unsupported API key scope/,
+  );
+  // MCP is read-only by design: query:write is not a grantable scope.
+  assert.throws(
+    () => parseWorkspaceApiKeyScopes(["mcp", "query:write"]),
     /Unsupported API key scope/,
   );
   assert.equal(
@@ -208,24 +215,17 @@ async function main() {
     );
   }
 
-  // 4. query:write explicitly enables arbitrary MongoDB query execution.
+  // 4. Arbitrary MongoDB JavaScript execution is never bridged over MCP.
   {
     const [res] = await exchange(
       [{ jsonrpc: "2.0", id: 3, method: "tools/list" }],
-      ["mcp", "query:write"],
+      ["mcp", "query:read"],
     );
-    const { tools } = res.result as {
-      tools: {
-        name: string;
-        annotations?: { readOnlyHint?: boolean };
-      }[];
-    };
-    assert.ok(tools.some(tool => tool.name === "mongo_execute_query"));
+    const { tools } = res.result as { tools: { name: string }[] };
     assert.equal(
-      tools.find(tool => tool.name === "sql_execute_query")?.annotations
-        ?.readOnlyHint,
+      tools.some(tool => tool.name === "mongo_execute_query"),
       false,
-      "a query:write key must not advertise sql_execute_query as read-only",
+      "mongo_execute_query must not be exposed over MCP",
     );
   }
 
@@ -246,7 +246,7 @@ async function main() {
       },
     ]);
     const result = res.result as { content: { text: string }[] };
-    assert.match(result.content[0].text, /query:read access/);
+    assert.match(result.content[0].text, /read-only/);
     assert.match(result.content[0].text, /UPDATE/);
   }
 

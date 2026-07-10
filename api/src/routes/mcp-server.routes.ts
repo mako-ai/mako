@@ -77,7 +77,21 @@ mcpProtocolRoutes.post(
     }
     const scopes = resolveWorkspaceApiKeyScopes(apiKey?.scopes);
     if (!hasWorkspaceApiKeyScope(scopes, "mcp")) {
-      return c.json({ error: "API key is missing the mcp scope" }, 403);
+      // Agents relay this verbatim to the user, so the error is the docs:
+      // say why AND how to fix it.
+      const isLegacyKey = apiKey?.scopes === undefined;
+      return c.json(
+        {
+          error: isLegacyKey
+            ? "This API key was created before MCP scopes existed and cannot " +
+              "use MCP. Create a new key under Workspace Settings → API keys " +
+              "(new keys include read-only MCP access by default) and update " +
+              "your MCP client configuration with it."
+            : "This API key does not include the mcp scope. Create a new key " +
+              "under Workspace Settings → API keys and use that for MCP.",
+        },
+        403,
+      );
     }
 
     let body: unknown;

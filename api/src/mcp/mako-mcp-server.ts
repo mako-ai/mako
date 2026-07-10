@@ -149,13 +149,13 @@ export function buildMakoMcpToolset(
     ...(queryAccess !== "none"
       ? { sql_execute_query: sqlTools.sql_execute_query }
       : {}),
+    // Arbitrary MongoDB JavaScript (mongo_execute_query) is deliberately NOT
+    // bridged: MCP data access is read-only and Mongo has no reliable
+    // per-query read-only mode.
     mongo_list_connections: mongoTools.list_connections,
     mongo_list_databases: mongoTools.list_databases,
     mongo_list_collections: mongoTools.list_collections,
     mongo_inspect_collection: mongoTools.inspect_collection,
-    ...(queryAccess === "write"
-      ? { mongo_execute_query: mongoTools.execute_query }
-      : {}),
     // Reuse existing validated queries as binding sources
     // (app_create_data_binding accepts a consoleId to seed from).
     search_consoles: consoleSearchTools.search_consoles,
@@ -214,7 +214,6 @@ const DESTRUCTIVE_TOOLS = new Set([
   "app_delete_file",
   "app_delete_data_binding",
   "app_remove_dependency",
-  "mongo_execute_query",
 ]);
 
 function toolAnnotations(

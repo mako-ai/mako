@@ -32,6 +32,37 @@ function clientBaseUrl(): string {
   );
 }
 
+/**
+ * Fail fast when the frontend base URL is misconfigured. Without this a bad
+ * CLIENT_URL surfaces as an opaque render timeout (or a wall of 5xx resource
+ * errors) and the calling agent burns many turns diagnosing it.
+ */
+async function previewBaseUnreachableError(
+  baseUrl: string,
+): Promise<string | null> {
+  try {
+    const response = await fetch(baseUrl, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (response.status >= 500) {
+      return (
+        `Preview base URL ${baseUrl} responded with HTTP ${response.status}. ` +
+        "Check the CLIENT_URL / PUBLIC_URL configuration on the API server — " +
+        "render_app loads the app frontend from there."
+      );
+    }
+    return null;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return (
+      `Preview base URL ${baseUrl} is unreachable from the API server ` +
+      `(${detail}). Check the CLIENT_URL / PUBLIC_URL configuration on the ` +
+      "API server — render_app loads the app frontend from there."
+    );
+  }
+}
+
 const renderAppSchema = z.object({
   appId: z.string().describe("The app whose DRAFT should be rendered"),
   width: z.number().int().min(320).max(1920).optional(),
@@ -144,6 +175,16 @@ export function createMcpPreviewTools(context: MakoMcpContext) {
           };
         }
 
+        const baseUrl = clientBaseUrl();
+        if (isAppRenderEnabled()) {
+          // Probe only when we will actually render (renderAppPreview
+          // reports its own "rendering disabled" message otherwise).
+          const unreachable = await previewBaseUnreachableError(baseUrl);
+          if (unreachable) {
+            return { success: false, error: unreachable };
+          }
+        }
+
         // Short-lived token minted per render; never returned to the caller.
         const { token } = mintAppPreviewToken({
           appId,
@@ -151,7 +192,7 @@ export function createMcpPreviewTools(context: MakoMcpContext) {
           ttlSeconds: 300,
         });
         const result = await renderAppPreview({
-          url: `${clientBaseUrl()}/preview/${token}`,
+          url: `${baseUrl}/preview/${token}`,
           width,
           height,
           timeoutMs,

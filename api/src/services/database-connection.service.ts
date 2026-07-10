@@ -517,7 +517,7 @@ export class DatabaseConnectionService {
         ) {
           return {
             success: false,
-            error: `Read-only execution is not supported for ${database.type}; use credentials restricted to read access or an explicit query:write key`,
+            error: `Read-only execution is not supported for ${database.type}; connect it with database credentials restricted to read access`,
           };
         }
       }

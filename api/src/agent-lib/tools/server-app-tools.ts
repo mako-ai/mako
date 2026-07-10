@@ -157,7 +157,7 @@ export function createServerAppTools({
     connectionId: unknown,
   ): Promise<string | null> => {
     // In-product agents keep their existing behavior. MCP data bindings are
-    // always read-only, even for a query:write key: a binding is a data source,
+    // always read-only: a binding is a data source,
     // not an arbitrary command channel.
     if (queryAccess === undefined) return null;
     if (queryAccess === "none") {
