@@ -18,6 +18,7 @@ import type { NotebookBlock, NotebookBlockType } from "../store/notebookStore";
 import type { Connection } from "../store/schemaStore";
 import { useConsoleStore } from "../store/consoleStore";
 import ResultsTable from "./ResultsTable";
+import { StreamingMarkdown } from "./StreamingMarkdown";
 
 const MONACO_LANGUAGE: Record<NotebookBlockType, string | null> = {
   code: "python",
@@ -69,6 +70,7 @@ export default function NotebookCell({
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CellResult | null>(null);
+  const [editingMarkdown, setEditingMarkdown] = useState(false);
 
   const canRunSql =
     block.type === "sql" &&
@@ -275,11 +277,13 @@ export default function NotebookCell({
             padding: { top: 8, bottom: 8 },
           }}
         />
-      ) : (
+      ) : editingMarkdown || !block.source.trim() ? (
         <TextField
           value={block.source}
           onChange={e => onChange({ source: e.target.value })}
-          placeholder="Markdown…"
+          onBlur={() => setEditingMarkdown(false)}
+          placeholder="Markdown… (**bold**, # headings, lists, `code`)"
+          autoFocus={editingMarkdown}
           multiline
           fullWidth
           minRows={2}
@@ -289,6 +293,19 @@ export default function NotebookCell({
             sx: { fontSize: "0.85rem", p: 1, alignItems: "flex-start" },
           }}
         />
+      ) : (
+        <Box
+          onClick={() => setEditingMarkdown(true)}
+          sx={{
+            p: 1,
+            cursor: "text",
+            fontSize: "0.9rem",
+            "& > :first-of-type": { mt: 0 },
+            "& > :last-child": { mb: 0 },
+          }}
+        >
+          <StreamingMarkdown>{block.source}</StreamingMarkdown>
+        </Box>
       )}
 
       {/* SQL results / error, inline under the cell. */}
