@@ -40,6 +40,11 @@ import {
   startDetachedConsoleRun,
   cancelDetachedConsoleRun,
 } from "../../services/console-execution.service";
+import {
+  MONGO_QUERY_WRITE_SCOPE_REQUIRED,
+  sqlReadOnlyAccessError,
+} from "../../services/read-only-query.service";
+import type { QueryAccess } from "../../auth/api-key-scopes";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import {
   QUERY_SOFT_TIMEOUT_MS,
@@ -75,6 +80,8 @@ export interface ServerConsoleToolsOptions {
   executionContext?: AgentToolExecutionContext;
   /** Chat driving this turn — used as the realtime echo-suppression id. */
   chatId?: string;
+  /** Database capability granted by the calling API key. */
+  queryAccess?: QueryAccess;
 }
 
 interface LoadedConsole {
@@ -108,6 +115,7 @@ export function createServerConsoleTools({
   userId,
   executionContext,
   chatId,
+  queryAccess = "write",
 }: ServerConsoleToolsOptions) {
   const agentClientId = `agent:${chatId ?? "unknown"}`;
 
@@ -563,6 +571,34 @@ export function createServerConsoleTools({
               "Console has no database connection. Use set_console_connection to attach one first.",
           };
         }
+        if (queryAccess === "none") {
+          return {
+            success: false,
+            error: "This API key does not have query access.",
+          };
+        }
+        if (queryAccess === "read") {
+          const connection = await DatabaseConnection.findOne({
+            _id: doc.connectionId,
+            workspaceId: new Types.ObjectId(workspaceId),
+          }).select("type");
+          if (!connection) {
+            return {
+              success: false,
+              error: "Console database connection was not found.",
+            };
+          }
+          if (connection.type === "mongodb" || doc.language !== "sql") {
+            return {
+              success: false,
+              error: MONGO_QUERY_WRITE_SCOPE_REQUIRED,
+            };
+          }
+          const accessError = sqlReadOnlyAccessError(doc.code);
+          if (accessError) {
+            return { success: false, error: accessError };
+          }
+        }
 
         // Register with the turn's execution registry so an explicit Stop (or
         // turn abort) during THIS turn cancels the query. We deliberately do
@@ -583,6 +619,7 @@ export function createServerConsoleTools({
             source: "agent",
             executionId,
             signal: executionContext?.signal,
+            readOnly: queryAccess === "read",
           });
         } catch (error) {
           executionContext?.releaseExecution(executionId);

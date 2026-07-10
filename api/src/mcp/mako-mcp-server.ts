@@ -34,6 +34,11 @@ import {
   getSystemSkillIndex,
   getSystemSkillFullText,
 } from "../agent-lib/skills/system-skills";
+import {
+  queryAccessFromScopes,
+  resolveWorkspaceApiKeyScopes,
+  type WorkspaceApiKeyScope,
+} from "../auth/api-key-scopes";
 import { loggers } from "../logging";
 
 const logger = loggers.api("mcp-server");
@@ -50,6 +55,8 @@ export interface MakoMcpContext {
   workspaceId: string;
   /** Acting user (the API key's creator). */
   userId?: string;
+  /** Capabilities granted to the authenticated workspace API key. */
+  scopes?: readonly WorkspaceApiKeyScope[];
 }
 
 type BridgeableTool = Pick<AiTool, "description" | "inputSchema" | "execute">;
@@ -63,12 +70,19 @@ export function buildMakoMcpToolset(
   context: MakoMcpContext,
 ): Record<string, BridgeableTool> {
   const { workspaceId, userId } = context;
+  const scopes = resolveWorkspaceApiKeyScopes(context.scopes);
+  const queryAccess = queryAccessFromScopes(scopes);
 
   // The chatId feeds realtime echo-suppression (`agent:<chatId>`); a fresh
   // id per exchange means no open browser tab suppresses these events, so
   // tabs live-reload on every MCP-driven mutation.
   const chatId = `mcp-${nanoid(10)}`;
-  const appTools = createServerAppTools({ workspaceId, userId, chatId });
+  const appTools = createServerAppTools({
+    workspaceId,
+    userId,
+    chatId,
+    queryAccess,
+  });
 
   // Long-running query escape hatch: sql_execute_query enforces a short
   // exploration timeout and points at the resumable console path
@@ -80,9 +94,17 @@ export function buildMakoMcpToolset(
     workspaceId,
     userId,
     chatId,
+    queryAccess,
   });
 
-  const sqlTools = createSqlToolsV2(workspaceId, [], undefined, userId);
+  const sqlTools = createSqlToolsV2(
+    workspaceId,
+    [],
+    undefined,
+    userId,
+    undefined,
+    queryAccess,
+  );
   const mongoTools = createMongoToolsV2(workspaceId, [], undefined, userId);
   // Cross-database discovery: one call that spans SQL + MongoDB connections
   // (the same entry point the in-product app mode starts from).
@@ -107,12 +129,16 @@ export function buildMakoMcpToolset(
     sql_list_databases: sqlTools.sql_list_databases,
     sql_list_tables: sqlTools.sql_list_tables,
     sql_inspect_table: sqlTools.sql_inspect_table,
-    sql_execute_query: sqlTools.sql_execute_query,
+    ...(queryAccess !== "none"
+      ? { sql_execute_query: sqlTools.sql_execute_query }
+      : {}),
     mongo_list_connections: mongoTools.list_connections,
     mongo_list_databases: mongoTools.list_databases,
     mongo_list_collections: mongoTools.list_collections,
     mongo_inspect_collection: mongoTools.inspect_collection,
-    mongo_execute_query: mongoTools.execute_query,
+    ...(queryAccess === "write"
+      ? { mongo_execute_query: mongoTools.execute_query }
+      : {}),
     // Reuse existing validated queries as binding sources
     // (app_create_data_binding accepts a consoleId to seed from).
     search_consoles: consoleSearchTools.search_consoles,
@@ -120,9 +146,13 @@ export function buildMakoMcpToolset(
     create_console: consoleTools.create_console,
     modify_console: consoleTools.modify_console,
     set_console_connection: consoleTools.set_console_connection,
-    run_console: consoleTools.run_console,
-    check_query_status: consoleTools.check_query_status,
-    cancel_query: consoleTools.cancel_query,
+    ...(queryAccess !== "none"
+      ? {
+          run_console: consoleTools.run_console,
+          check_query_status: consoleTools.check_query_status,
+          cancel_query: consoleTools.cancel_query,
+        }
+      : {}),
     // Version history: app_restore_version needs these to be discoverable.
     browse_version_history: versionHistoryTools.browse_version_history,
     get_version_snapshot: versionHistoryTools.get_version_snapshot,

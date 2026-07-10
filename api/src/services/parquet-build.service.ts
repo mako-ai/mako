@@ -115,7 +115,7 @@ export async function buildQueryParquetFile(
       await databaseConnectionService.getStreamingQueryFields(
         connection,
         executableQuery,
-        { databaseId, databaseName },
+        { databaseId, databaseName, readOnly: true },
       );
     if (schemaResult.success && schemaResult.fields) {
       fields = schemaResult.fields;
@@ -150,6 +150,7 @@ export async function buildQueryParquetFile(
             databaseId,
             databaseName,
             onBatch: insertBatch,
+            readOnly: true,
           },
         );
       // A mid-stream failure must fail the build — otherwise a silently

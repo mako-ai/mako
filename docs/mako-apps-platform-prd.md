@@ -4,9 +4,16 @@
 
 ## 0. Implemented vertical slice (this branch)
 
-The full headless iteration loop, on existing unscoped `revops_` keys (Phase 0 hardening still pending — do not expose externally before scopes + rate limiting land):
+The full headless iteration loop on scoped `revops_` keys. MCP access now
+resolves `mcp`, `query:read`, and `query:write` scopes; newly created keys
+default to `mcp` + `query:read`. Legacy unscoped keys retain REST compatibility
+but cannot access MCP and must be rotated. Scoped MCP keys are rejected outside
+`POST /api/mcp`, preventing REST endpoints from bypassing MCP query policy.
+The broader Phase 0 hardening (expiry, resource filters, and rate limiting) is
+still pending:
 
-- **`POST /api/mcp`** — Mako as a stateless MCP server (Streamable HTTP, JSON mode). Bearer workspace API key required. Bridges the existing server-side agent tools: all app tools (`create_app`, `app_write_file`, bindings, versions, …), `sql_*` (5), `mongo_*` (5). System skills exposed as `mako://skills/*` resources. Files: `api/src/mcp/`, `api/src/routes/mcp-server.routes.ts`.
+- **`POST /api/mcp`** — Mako as a stateless MCP server (Streamable HTTP, JSON mode). Bearer workspace API key with `mcp` scope required. Bridges the existing server-side agent tools: all app tools (`create_app`, `app_write_file`, bindings, versions, …), read-only SQL query execution, and MongoDB discovery/inspection. Arbitrary direct SQL writes and MongoDB JavaScript require explicit `query:write`; app bindings/materializations remain read-only regardless of scope. System skills exposed as `mako://skills/*` resources. Files: `api/src/mcp/`, `api/src/routes/mcp-server.routes.ts`.
+- **Read-only execution boundary** — PostgreSQL/Cloud SQL/Redshift use read-only transactions, MySQL uses `START TRANSACTION READ ONLY`, and ClickHouse uses its `readonly=2` query setting. Engines without a reliable per-query read-only mode (currently BigQuery, MSSQL, D1/KV, and raw MongoDB JavaScript) fail closed for `query:read`; use restricted database credentials or an explicitly granted `query:write` key.
 - **Signed draft previews** — `create_preview_token` MCP tool mints `mpt_*` HMAC tokens (60s–30min TTL, single app); `/api/preview/:token` serves the draft definition and `/api/preview/:token/binding/:id/execute` runs draft bindings through the same read-only/row-cap/timeout/rate-limit envelope as public shares. Frontend `/preview/:token` renders the draft and publishes machine-observable state (`window.__MAKO_PREVIEW_STATE__`, `[mako-preview-ready|error]` console markers).
 - **`render_app` MCP tool** — pooled server-side headless Chromium (env-gated via `RENDER_APP_BROWSER_PATH`, graceful degradation) renders the draft and returns status + errors + console + JPEG screenshot as MCP image content.
 
@@ -50,7 +57,7 @@ Almost everything needed already exists inside the product; what's missing is th
 | **App definition contract** | `packages/schemas/src/app.schema.ts` (`AppDefinitionSchema`: `title`, `template`, `runtime`, `entrypoint`, `files[]`, `dependencies{}`, `dataBindings[]`) | ✅ Canonical, shared API↔frontend |
 | **Headless app authoring tools** | `api/src/agent-lib/tools/server-app-tools.ts` (`create_app`, `app_write_file`, `app_edit_file`, `app_add_dependency`, `app_create_data_binding`, `app_save_version`, …) | ✅ All server-side, work without a browser |
 | **Draft → publish snapshots + version history** | `api/src/services/app-version.service.ts`, `EntityVersion` | ✅ |
-| **Workspace API keys** | `IWorkspaceApiKey` on `Workspace`, `revops_` Bearer tokens, SHA-256 hashed, `unifiedAuthMiddleware` | ✅ Exists — but **no scopes, no expiry**, all-or-nothing |
+| **Workspace API keys** | `IWorkspaceApiKey` on `Workspace`, `revops_` Bearer tokens, SHA-256 hashed, `unifiedAuthMiddleware` | 🟡 MCP scopes (`mcp`, `query:read`, `query:write`) implemented; expiry and route-wide enforcement pending |
 | **Git → Mako sync precedent** | dbt: `IDbtRepoBinding` + GitHub App webhooks (`api/src/routes/github.routes.ts` → `dbt-ci.service.ts`) | ✅ Proven pattern, dbt-only |
 | **Public data serving for published apps** | `api/src/services/public-live-query.service.ts` (serves `app.published` snapshot bindings via share token) | ✅ Token-gated, read-only |
 | **MCP infrastructure** | `api/src/services/mcp-client.service.ts`, risk tiers (`read`/`write_safe`/`write_destructive`), tool restriction model | ✅ **Client only** — Mako does not expose an MCP *server* |

@@ -18,14 +18,22 @@ process.env.ENCRYPTION_KEY =
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { buildMakoMcpServer } from "./mako-mcp-server";
 import { StatelessMcpTransport } from "./stateless-transport";
+import {
+  parseWorkspaceApiKeyScopes,
+  restQueryAccessFromStoredScopes,
+  resolveWorkspaceApiKeyScopes,
+  type WorkspaceApiKeyScope,
+} from "../auth/api-key-scopes";
+import { sqlReadOnlyAccessError } from "../services/read-only-query.service";
 
 const WORKSPACE_ID = new Types.ObjectId().toString();
 
 /** One stateless HTTP exchange: fresh server + transport per call. */
 async function exchange(
   messages: Record<string, unknown>[],
+  scopes: WorkspaceApiKeyScope[] = ["mcp", "query:read"],
 ): Promise<Record<string, unknown>[]> {
-  const server = buildMakoMcpServer({ workspaceId: WORKSPACE_ID });
+  const server = buildMakoMcpServer({ workspaceId: WORKSPACE_ID, scopes });
   const transport = new StatelessMcpTransport();
   await server.connect(transport);
   try {
@@ -39,7 +47,47 @@ async function exchange(
 }
 
 async function main() {
-  // 1. initialize handshake identifies the server.
+  // 1. Legacy keys receive the safe default; unknown scopes fail closed.
+  assert.deepEqual(parseWorkspaceApiKeyScopes(undefined), [
+    "mcp",
+    "query:read",
+  ]);
+  assert.deepEqual(resolveWorkspaceApiKeyScopes(undefined), []);
+  assert.equal(restQueryAccessFromStoredScopes(undefined), "write");
+  assert.deepEqual(resolveWorkspaceApiKeyScopes(["mcp", "unknown"]), []);
+  assert.throws(
+    () => parseWorkspaceApiKeyScopes(["mcp", "unknown"]),
+    /Unsupported API key scope/,
+  );
+  assert.equal(
+    sqlReadOnlyAccessError("SELECT 'UPDATE is text' AS value"),
+    null,
+  );
+  assert.equal(
+    sqlReadOnlyAccessError("SELECT system, settings FROM metrics"),
+    null,
+  );
+  assert.equal(
+    sqlReadOnlyAccessError("SELECT nextval('invoice_sequence')"),
+    null,
+  );
+  assert.equal(
+    sqlReadOnlyAccessError(
+      "WITH active AS (SELECT id FROM users) SELECT * FROM active",
+    ),
+    null,
+  );
+  for (const query of [
+    "UPDATE customers SET plan = 'free'",
+    "WITH active AS (SELECT id FROM users) DELETE FROM users",
+    "SELECT * INTO archived_customers FROM customers",
+    "SELECT 1; DROP TABLE customers",
+    "SELECT 1 /*!50000 INTO OUTFILE '/tmp/customers.csv' */",
+  ]) {
+    assert.ok(sqlReadOnlyAccessError(query), `unsafe query accepted: ${query}`);
+  }
+
+  // 2. initialize handshake identifies the server.
   {
     const [res] = await exchange([
       {
@@ -62,7 +110,7 @@ async function main() {
     assert.ok(result.capabilities.resources);
   }
 
-  // 2. Stateless: tools/list works on a fresh exchange WITHOUT initialize
+  // 3. Stateless: tools/list works on a fresh exchange WITHOUT initialize
   //    (each HTTP POST builds a new Server; clients only initialize once).
   {
     const [res] = await exchange([
@@ -91,7 +139,6 @@ async function main() {
       "sql_inspect_table",
       "sql_execute_query",
       "mongo_list_connections",
-      "mongo_execute_query",
       "search_consoles",
       "read_console",
       "create_console",
@@ -112,14 +159,50 @@ async function main() {
         `tool ${tool.name} should expose an object JSON Schema`,
       );
     }
+    assert.equal(
+      names.has("mongo_execute_query"),
+      false,
+      "read-only keys must not expose arbitrary MongoDB JavaScript execution",
+    );
   }
 
-  // 3. Unknown tool → in-band tool error, not a protocol error.
+  // 4. query:write explicitly enables arbitrary MongoDB query execution.
+  {
+    const [res] = await exchange(
+      [{ jsonrpc: "2.0", id: 3, method: "tools/list" }],
+      ["mcp", "query:write"],
+    );
+    const { tools } = res.result as { tools: { name: string }[] };
+    assert.ok(tools.some(tool => tool.name === "mongo_execute_query"));
+  }
+
+  // 5. Unsafe SQL is rejected before any database lookup/execution.
   {
     const [res] = await exchange([
       {
         jsonrpc: "2.0",
-        id: 3,
+        id: 4,
+        method: "tools/call",
+        params: {
+          name: "sql_execute_query",
+          arguments: {
+            connectionId: new Types.ObjectId().toString(),
+            query: "UPDATE customers SET plan = 'free'",
+          },
+        },
+      },
+    ]);
+    const result = res.result as { content: { text: string }[] };
+    assert.match(result.content[0].text, /query:read access/);
+    assert.match(result.content[0].text, /UPDATE/);
+  }
+
+  // 6. Unknown tool → in-band tool error, not a protocol error.
+  {
+    const [res] = await exchange([
+      {
+        jsonrpc: "2.0",
+        id: 5,
         method: "tools/call",
         params: { name: "does_not_exist", arguments: {} },
       },
@@ -128,12 +211,12 @@ async function main() {
     assert.equal(result.isError, true);
   }
 
-  // 4. Invalid arguments are rejected by the bridged zod schema.
+  // 7. Invalid arguments are rejected by the bridged zod schema.
   {
     const [res] = await exchange([
       {
         jsonrpc: "2.0",
-        id: 4,
+        id: 6,
         method: "tools/call",
         params: { name: "app_write_file", arguments: { appId: 42 } },
       },
@@ -146,10 +229,10 @@ async function main() {
     assert.match(result.content[0].text, /Invalid arguments/);
   }
 
-  // 5. System skills are exposed as resources; the apps playbook reads back.
+  // 8. System skills are exposed as resources; the apps playbook reads back.
   {
     const [listRes] = await exchange([
-      { jsonrpc: "2.0", id: 5, method: "resources/list" },
+      { jsonrpc: "2.0", id: 7, method: "resources/list" },
     ]);
     const { resources } = listRes.result as { resources: { uri: string }[] };
     const uris = new Set(resources.map(r => r.uri));
@@ -158,7 +241,7 @@ async function main() {
     const [readRes] = await exchange([
       {
         jsonrpc: "2.0",
-        id: 6,
+        id: 8,
         method: "resources/read",
         params: { uri: "mako://skills/apps" },
       },
@@ -173,7 +256,7 @@ async function main() {
     );
   }
 
-  // 6. Notification-only exchange produces no responses (HTTP layer → 202).
+  // 9. Notification-only exchange produces no responses (HTTP layer → 202).
   {
     const responses = await exchange([
       { jsonrpc: "2.0", method: "notifications/initialized" },

@@ -1,5 +1,13 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import {
+  isSessionAuth,
+  unifiedAuthMiddleware,
+} from "../auth/unified-auth.middleware";
+import {
+  parseWorkspaceApiKeyScopes,
+  resolveWorkspaceApiKeyScopes,
+  type WorkspaceApiKeyScope,
+} from "../auth/api-key-scopes";
 import { workspaceService } from "../services/workspace.service";
 import {
   requireWorkspace,
@@ -1302,6 +1310,15 @@ workspaceRoutes.openapi(
   }),
   async c => {
     try {
+      if (!isSessionAuth(c)) {
+        return c.json(
+          {
+            success: false,
+            error: "API key management requires a browser session",
+          },
+          403,
+        );
+      }
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");
 
@@ -1318,6 +1335,7 @@ workspaceRoutes.openapi(
           createdAt: key.createdAt,
           lastUsedAt: key.lastUsedAt,
           createdBy: key.createdBy,
+          scopes: resolveWorkspaceApiKeyScopes(key.scopes),
         })) || [];
 
       return c.json({
@@ -1356,11 +1374,20 @@ workspaceRoutes.openapi(
   }),
   async c => {
     try {
+      if (!isSessionAuth(c)) {
+        return c.json(
+          {
+            success: false,
+            error: "API key management requires a browser session",
+          },
+          403,
+        );
+      }
       const workspace = c.get("workspace");
       const user = c.get("user");
       const workspaceId = c.req.param("id");
       const body = await c.req.json();
-      const { name } = body;
+      const { name, scopes: rawScopes } = body;
 
       if (workspaceId !== workspace._id.toString()) {
         return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
@@ -1377,6 +1404,20 @@ workspaceRoutes.openapi(
         return c.json({ success: false, error: "Unauthorized" }, 401);
       }
 
+      let scopes: WorkspaceApiKeyScope[];
+      try {
+        scopes = parseWorkspaceApiKeyScopes(rawScopes);
+      } catch (error) {
+        return c.json(
+          {
+            success: false,
+            error:
+              error instanceof Error ? error.message : "Invalid API key scopes",
+          },
+          400,
+        );
+      }
+
       // Import the generateApiKey function
       const { generateApiKey } = await import("../auth/api-key.middleware");
 
@@ -1388,6 +1429,7 @@ workspaceRoutes.openapi(
         name: name.trim(),
         keyHash: hash,
         prefix,
+        scopes,
         createdAt: new Date(),
         createdBy: user.id,
       };
@@ -1410,6 +1452,7 @@ workspaceRoutes.openapi(
           name: createdKey?.name,
           prefix: createdKey?.prefix,
           createdAt: createdKey?.createdAt,
+          scopes: resolveWorkspaceApiKeyScopes(createdKey?.scopes),
         },
         key, // Only return the full key once, during creation
         message:
@@ -1447,6 +1490,15 @@ workspaceRoutes.openapi(
   }),
   async c => {
     try {
+      if (!isSessionAuth(c)) {
+        return c.json(
+          {
+            success: false,
+            error: "API key management requires a browser session",
+          },
+          403,
+        );
+      }
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");
       const keyId = c.req.param("keyId");

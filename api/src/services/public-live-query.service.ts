@@ -318,6 +318,7 @@ async function executeAppBindingCore(input: {
         databaseName: binding.databaseName,
         signal: controller.signal,
         executionId,
+        readOnly: true,
       },
     );
   } finally {

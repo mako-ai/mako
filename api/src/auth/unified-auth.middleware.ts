@@ -42,6 +42,18 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
             });
             return c.json({ error: "Invalid API key" }, 401);
           }
+          if (
+            workspaceApiKey.scopes !== undefined &&
+            !/^\/api\/mcp\/?$/.test(c.req.path)
+          ) {
+            return c.json(
+              {
+                error:
+                  "This scoped API key is restricted to the Mako MCP endpoint",
+              },
+              403,
+            );
+          }
 
           const creator = await User.findById(workspaceApiKey.createdBy).lean();
           if (!creator) {
