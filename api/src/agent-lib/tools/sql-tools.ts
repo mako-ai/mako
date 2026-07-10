@@ -859,6 +859,20 @@ async function inspectTableInner(
 // ============================================================================
 // sql_execute_query
 // ============================================================================
+
+/**
+ * Driver field metadata trimmed to what an agent needs. The raw pg/mysql
+ * shape (tableID, columnID, dataTypeID, dataTypeModifier, …) is pure token
+ * noise in a tool result.
+ */
+function compactQueryFields(fields: unknown): unknown {
+  if (!Array.isArray(fields)) return fields;
+  return fields.map(field => {
+    const { name, type } = field as { name?: unknown; type?: unknown };
+    return { name, ...(type !== undefined ? { type } : {}) };
+  });
+}
+
 async function executeQueryImpl(
   connectionId: string,
   requestedDatabase: string | undefined,
@@ -1002,10 +1016,19 @@ async function executeQueryImpl(
 
     if (result && result.success && result.data) {
       const truncatedData = truncateQueryResults(result.data);
-      return { ...result, data: truncatedData, sqlDialect: dialect };
+      return {
+        ...result,
+        data: truncatedData,
+        fields: compactQueryFields(result.fields),
+        sqlDialect: dialect,
+      };
     }
 
-    return { ...result, sqlDialect: dialect };
+    return {
+      ...result,
+      fields: compactQueryFields(result.fields),
+      sqlDialect: dialect,
+    };
   } catch (err: unknown) {
     if (isAgentToolAbortError(err)) {
       return {

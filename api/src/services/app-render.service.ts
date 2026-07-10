@@ -153,6 +153,12 @@ export async function renderAppPreview(input: {
         if (/\/api\/auth\//.test(sourceUrl) && /401|Unauthorized/i.test(text)) {
           return;
         }
+        // Known-benign framework warnings from the preview shell itself (not
+        // the user's app) — they appear on every render and only distract
+        // the calling agent from real problems.
+        if (/React Router Future Flag Warning/.test(text)) {
+          return;
+        }
         if (
           type === "error" ||
           type === "warning" ||
