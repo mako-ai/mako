@@ -192,6 +192,8 @@ The answer to *"how does the app reflect the latest files, committed or uncommit
 - The Mako API only, using a **short-lived scoped session token** minted per session (workspace-scoped, TTL ≈ sandbox lifetime, revoked on session end). Injected as `MAKO_TOKEN` env var; the preinstalled `mako` CLI and `@mako/sdk` use it.
 - Database access is **always proxied** through `POST /workspaces/:id/execute` with that token. Raw connection credentials never enter the sandbox. Egress: default-open for `npm install` etc. in v2 (documented risk), with an allowlist tightening as fast-follow.
 
+**The cloud sandbox is one of two substrates.** The session layer is designed as an executor seam: the agent's `bash`/file tools dispatch to a *session executor*, of which there are two implementations — the E2B sandbox (web app, headless jobs) and the **user's own machine** (a local checkout driven via the `mako` CLI or the desktop app's local agent, see 4.8). Everything above the seam — the agent, the tool contract, draft-ref durability, git as truth, credential proxying — is identical in both. Users working locally or in the desktop app therefore don't consume cloud sandbox compute at all: their filesystem is the working copy and their machine runs the shell, while data tools stay server-side. This mirrors a pattern the product already has for database connections, where the frontend routes `local_`-prefixed connections to the local agent at `127.0.0.1:41720` instead of the cloud execute API.
+
 ### 4.6 Agent tools v2
 
 The unified agent (`api/src/agents/unified/index.ts`, `app` mode in `modes/registry.ts`) swaps the bespoke suite for:
@@ -244,7 +246,13 @@ mako agent          # ...or vibe with the Mako agent itself, right in the termin
 - **Safety:** local commands run with user permissions, so `mako agent` gets the standard harness treatment — per-command approval prompts with an allowlist, and a `--yolo` flag for the brave. Database credentials still never touch the machine (execute-API proxy, unchanged).
 - **Cost shape:** terminal sessions consume zero sandbox compute (the laptop is the sandbox); users pay only Mako-side model tokens. This is complementary to (a)/(b), not competing: users who want their Claude/Codex subscription quota use those harnesses over MCP; users who want Mako's full data-aware toolchain in a terminal use `mako agent`. A headless mode (`mako agent -p "add a churn cohort filter"`) makes it usable from CI and scripts.
 
-**(d) Desktop extension slot.** The desktop app (`packages/desktop`) gains a right-panel "coding agent" slot that can host Claude Code / Codex (their CLIs speak a well-documented stdio/ACP protocol) against either a local checkout or a cloud sandbox terminal. `mako agent` speaks the same protocol and becomes the slot's first-party occupant, which also makes it the reference implementation to test the slot against. The local agent (`packages/local-agent`) is extended with two capabilities, both opt-in and scoped: a PTY endpoint (shell restricted to the checked-out repo directory) and repo file access. Its existing loopback + CORS trust model carries over. This is the last phase and can ship independently.
+**(d) Desktop: local-first sessions + extension slot.** The desktop app (`packages/desktop`) gets two things.
+
+*Local-first sessions.* On desktop, even the regular Mako chat doesn't need a cloud sandbox: the desktop app keeps a managed local checkout of the workspace repo (e.g. `~/Mako/<workspace>/`), and the agent's `bash`/file tools dispatch to the **local executor** (4.5) via the local agent instead of E2B. `vite dev` runs on the laptop and the preview iframes `localhost` — the same routing trick the app already uses for `local_` database connections. Draft-ref flushes still push to the workspace repo on the same cadence, so the web explorer, collaborators, and durability guarantees are unaffected by where the shell happens to run. Result: faster (no clone/boot), free (no sandbox billing), and offline-tolerant for everything except data queries — with cloud sandboxes remaining the default for browser users and the only option for headless jobs.
+
+*Extension slot.* A right-panel "coding agent" slot that can host Claude Code / Codex (their CLIs speak a well-documented stdio/ACP protocol) against either the managed local checkout or a cloud sandbox terminal. `mako agent` speaks the same protocol and becomes the slot's first-party occupant, which also makes it the reference implementation to test the slot against.
+
+To support both, the local agent (`packages/local-agent`) is extended with two capabilities, both opt-in and scoped: a PTY endpoint (shell restricted to the managed checkout directory) and repo file access. Its existing loopback + CORS trust model carries over. This is the last phase and can ship independently.
 
 ### 4.9 Scripts & scheduled jobs (bridge to the "ad-hoc data manipulation" future)
 
@@ -271,7 +279,7 @@ An Inngest function (same pattern as `dbt-run.ts` / `app-binding-materialize.ts`
 2. **Phase 2 — Sandbox sessions + agent v2.** E2B template, session service, scoped tokens, `bash`/file tools in `app` mode, draft-ref flush loop, `commit_app`. Chat can build an app end-to-end in the sandbox. *De-risks: E2B integration, flush durability, tool ergonomics.*
 3. **Phase 3 — Preview & hosting.** `@mako/app-sdk` as real package + Vite scaffold; dev-preview iframe via sandbox URL; publish pipeline (build sandbox → bucket → apps-router Worker); binding-as-files reconciliation + materialization rewire.
 4. **Phase 4 — Open editing.** MCP server, `mako` CLI (`login`/`dev`/`deploy`, then `mako agent` reusing the Phase 2 tool contract with a local executor), PATs with scopes, repo scaffold docs for third-party harnesses.
-5. **Phase 5 — Desktop extension slot + jobs.** Local-agent PTY/file capabilities, right-panel harness hosting (with `mako agent` as first-party occupant); `mako.json` scheduled jobs; bulk v1 migration + CDN runtime deprecation.
+5. **Phase 5 — Desktop local-first + extension slot + jobs.** Local-agent PTY/file capabilities; desktop-managed workspace checkout with local executor sessions (Mako chat with zero cloud sandbox); right-panel harness hosting (with `mako agent` as first-party occupant); `mako.json` scheduled jobs; bulk v1 migration + CDN runtime deprecation.
 
 Each phase ships behind a flag and is independently valuable (Phase 1 alone gives apps real history + local read-only clones).
 
