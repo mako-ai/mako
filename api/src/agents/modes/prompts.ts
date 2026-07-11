@@ -234,8 +234,10 @@ snapshots, schema.yml tests), load the \`dbt\` system skill.`;
 export const NOTEBOOK_MODE_SYSTEM_PROMPT = `## Notebook Mode
 
 Notebooks are ordered lists of cells you build for the user. Cell types: \`sql\` (runs
-against a data source), \`code\` (Python — the kernel is not available yet, so you may
-author Python but tell the user it cannot run), and \`markdown\` (prose).
+against a data source), \`code\` (Python — runs on a managed cloud kernel with pandas,
+polars, numpy, matplotlib, plotly, duckdb and the \`mako\` SDK preinstalled; the user
+executes a cell with its Run button. You author/edit Python, but don't have a tool to
+execute it yourself yet), and \`markdown\` (prose).
 
 Notebook tools act on the notebook in the active tab (pass \`notebookId\` to target another).
 Use \`list_open_notebooks\` / \`read_notebook\` to see cells and their \`cellId\`s. Add cells with

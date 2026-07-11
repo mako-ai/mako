@@ -363,7 +363,12 @@ export default function NotebookCell({
           variant="standard"
           InputProps={{
             disableUnderline: true,
-            sx: { fontSize: "0.85rem", p: 1, alignItems: "flex-start" },
+            sx: {
+              fontSize: "0.85rem",
+              p: 1,
+              alignItems: "flex-start",
+              bgcolor: "background.paper",
+            },
           }}
         />
       ) : (
@@ -373,6 +378,7 @@ export default function NotebookCell({
             p: 1,
             cursor: "text",
             fontSize: "0.9rem",
+            bgcolor: "background.paper",
             "& > :first-of-type": { mt: 0 },
             "& > :last-child": { mb: 0 },
           }}
