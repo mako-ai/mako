@@ -70,6 +70,8 @@ import DashboardCanvas from "./DashboardCanvas";
 import AppRenderer from "./AppRenderer";
 import AppFileEditor from "./AppFileEditor";
 import AppBindingEditor from "./AppBindingEditor";
+import AppV2ProjectView from "./AppV2ProjectView";
+import AppV2FileEditor from "./AppV2FileEditor";
 import PlanDocumentTab from "./PlanDocumentTab";
 import DbtFileEditor from "./DbtFileEditor";
 import DbtJobView from "./DbtJobView";
@@ -93,6 +95,8 @@ import { SaveCommentDialog } from "./SaveCommentDialog";
 import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
 import { useConsoleStore, selectConsoleTabs } from "../store/consoleStore";
+import { appV2FileKey, useAppV2Store } from "../store/appV2Store";
+import { confirmAppV2FileTabClose } from "../apps-v2-runtime/close-guard";
 import { useShallow } from "zustand/react/shallow";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useUIStore } from "../store/uiStore";
@@ -1008,6 +1012,35 @@ function Editor({
 
   const closeConsole = (id: string) => {
     const closingTab = tabs[id];
+    const appV2ProjectId =
+      closingTab?.kind === "app-v2-file"
+        ? (closingTab.metadata?.projectId as string | undefined)
+        : undefined;
+    const appV2Path =
+      closingTab?.kind === "app-v2-file"
+        ? (closingTab.metadata?.path as string | undefined)
+        : undefined;
+    const appV2Buffer =
+      appV2ProjectId && appV2Path
+        ? useAppV2Store.getState().editorBuffersByKey[
+            appV2FileKey(appV2ProjectId, appV2Path)
+          ]
+        : undefined;
+    if (
+      !confirmAppV2FileTabClose(
+        closingTab && appV2Buffer?.dirty
+          ? { ...closingTab, isDirty: true }
+          : closingTab,
+        message => window.confirm(message),
+      )
+    ) {
+      return;
+    }
+    if (closingTab?.kind === "app-v2-file") {
+      if (appV2ProjectId && appV2Path) {
+        useAppV2Store.getState().closeEditorBuffer(appV2ProjectId, appV2Path);
+      }
+    }
     if (closingTab?.kind === "dashboard") {
       const dbId = closingTab.metadata?.dashboardId as string | undefined;
       if (dbId) {
@@ -2342,7 +2375,7 @@ function Editor({
                   aria-label={`Close ${tab.title}`}
                   onClick={e => {
                     e.stopPropagation();
-                    cleanupTab(tab.id);
+                    closeConsole(tab.id);
                   }}
                   sx={{ ml: 1 }}
                 >
@@ -2374,6 +2407,7 @@ function Editor({
             const rendersOwnBreadcrumbs =
               activeTab.kind === "table-data" ||
               activeTab.kind === "app-file" ||
+              activeTab.kind === "app-v2-file" ||
               activeTab.kind === "app-binding" ||
               activeTab.kind === "dashboard-data-source" ||
               activeTab.kind === "dbt-file" ||
@@ -2742,6 +2776,17 @@ function Editor({
                     <AppFileEditor
                       tabId={tab.id}
                       appId={tab.metadata?.appId as string}
+                      path={tab.metadata?.path as string}
+                    />
+                  ) : tab.kind === "app-v2" ? (
+                    <AppV2ProjectView
+                      tabId={tab.id}
+                      projectId={tab.metadata?.projectId as string}
+                    />
+                  ) : tab.kind === "app-v2-file" ? (
+                    <AppV2FileEditor
+                      tabId={tab.id}
+                      projectId={tab.metadata?.projectId as string}
                       path={tab.metadata?.path as string}
                     />
                   ) : tab.kind === "app-binding" ? (

@@ -29,6 +29,11 @@ import {
   tabUrlPath,
 } from "../lib/tab-routing";
 import { appLocationFromHostSearch } from "../app-runtime/app-location";
+import { useAppV2Store } from "../store/appV2Store";
+import {
+  focusAppV2FileTab,
+  focusAppV2ProjectTab,
+} from "../apps-v2-runtime/shell";
 
 /**
  * UrlSync component
@@ -103,6 +108,8 @@ export function UrlSync() {
     const appFileMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-file"]);
     const appBindingMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-binding"]);
     const appMatch = path.match(TAB_DEEP_LINK_PATTERNS.app);
+    const appV2FileMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-v2-file"]);
+    const appV2Match = path.match(TAB_DEEP_LINK_PATTERNS["app-v2"]);
     const dbtFileMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-file"]);
     const dbtJobMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-job"]);
     const dbtRunsMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-runs"]);
@@ -231,6 +238,31 @@ export function UrlSync() {
         });
         setActiveTab(id);
       }
+    } else if (appV2FileMatch) {
+      // /v2/a/:projectId/file/:path — match before the project route.
+      const projectId = appV2FileMatch[1];
+      const filePath = decodePathSegments(appV2FileMatch[2]);
+      setLeftPane("apps-v2");
+      void useAppV2Store
+        .getState()
+        .fetchStatus(currentWorkspace.id)
+        .then(enabled => {
+          if (enabled) focusAppV2FileTab(projectId, filePath);
+        });
+    } else if (appV2Match) {
+      // /v2/a/:projectId
+      const projectId = appV2Match[1];
+      setLeftPane("apps-v2");
+      void useAppV2Store
+        .getState()
+        .fetchStatus(currentWorkspace.id)
+        .then(async enabled => {
+          if (!enabled) return;
+          const project = await useAppV2Store
+            .getState()
+            .getProject(currentWorkspace.id, projectId);
+          focusAppV2ProjectTab(projectId, project?.title);
+        });
     } else if (appFileMatch) {
       // /a/:appId/file/:path
       const appId = appFileMatch[1];

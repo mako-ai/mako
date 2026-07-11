@@ -50,7 +50,7 @@ assert.equal(
 );
 assert.equal(AppV2LeaseRotateSchema.safeParse(validState).success, true);
 
-async function verifyDisabledRoute(): Promise<void> {
+async function verifyDisabledRouteStillRequiresAuthentication(): Promise<void> {
   const previous = process.env.APPS_V2_ENABLED;
   process.env.APPS_V2_ENABLED = "false";
   try {
@@ -59,10 +59,9 @@ async function verifyDisabledRoute(): Promise<void> {
     const response = await app.request(
       "/api/workspaces/507f1f77bcf86cd799439011/apps-v2",
     );
-    assert.equal(response.status, 404);
+    assert.equal(response.status, 401);
     assert.deepEqual(await response.json(), {
-      success: false,
-      error: "Apps v2 feature is unavailable",
+      error: "Unauthorized",
     });
   } finally {
     if (previous === undefined) delete process.env.APPS_V2_ENABLED;
@@ -70,7 +69,7 @@ async function verifyDisabledRoute(): Promise<void> {
   }
 }
 
-void verifyDisabledRoute().catch(error => {
+void verifyDisabledRouteStillRequiresAuthentication().catch(error => {
   process.stderr.write(
     `${error instanceof Error ? error.stack : String(error)}\n`,
   );

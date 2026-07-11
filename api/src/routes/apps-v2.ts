@@ -25,10 +25,20 @@ import {
   requireWorkspace,
   type AuthenticatedContext,
 } from "../middleware/workspace.middleware";
-import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import {
+  AUTH_SECURITY,
+  OPEN_RESPONSES,
+  createRouter,
+  jsonContent,
+  zDateTime,
+} from "../openapi/core";
 import { publishRealtimeEvent } from "../services/realtime.service";
-import { AppV2ProjectService } from "../apps-v2/app-project.service";
+import {
+  AppV2ProjectService,
+  type AppV2Actor,
+} from "../apps-v2/app-project.service";
 import { getAppV2ProjectEventAudience } from "../apps-v2/event-visibility";
+import { resolveResourceRole } from "../utils/resource-acl";
 import { APP_V2_MAX_REQUEST_BYTES, isAppsV2Enabled } from "../apps-v2/config";
 import {
   AppV2ConflictError,
@@ -84,6 +94,139 @@ const CommitListQuery = z.object({
     .openapi({ param: { name: "limit", in: "query" } }),
 });
 
+const AppV2StatusResponseSchema = z
+  .object({ enabled: z.boolean() })
+  .openapi("AppV2StatusResponse");
+const AppV2ProjectSchema = z
+  .object({
+    id: z.string(),
+    workspaceId: z.string(),
+    title: z.string(),
+    description: z.string().optional(),
+    access: z.enum(["private", "workspace"]),
+    workspaceRole: z.enum(["viewer", "editor"]),
+    sharedWith: z.array(
+      z.object({
+        userId: z.string(),
+        role: z.enum(["viewer", "editor"]),
+        addedAt: zDateTime().optional(),
+      }),
+    ),
+    ownerId: z.string(),
+    effectiveRole: z.enum(["owner", "editor", "viewer"]),
+    readOnly: z.boolean(),
+    repositoryProvider: z.literal("mako-git"),
+    repositoryId: z.string(),
+    defaultBranch: z.string(),
+    headSha: z.string(),
+    createdAt: zDateTime(),
+    updatedAt: zDateTime(),
+  })
+  .openapi("AppV2Project");
+const AppV2WorktreeSchema = z
+  .object({
+    id: z.string(),
+    projectId: z.string(),
+    actorId: z.string(),
+    branch: z.string(),
+    baseSha: z.string(),
+    wipOid: z.string(),
+    revision: z.number().int(),
+    leaseEpoch: z.number().int(),
+    status: z.enum(["active", "discarded", "fenced"]),
+    createdAt: zDateTime(),
+    updatedAt: zDateTime(),
+  })
+  .openapi("AppV2Worktree");
+const AppV2TreeEntrySchema = z
+  .object({
+    path: z.string(),
+    oid: z.string(),
+    size: z.number().int(),
+    mode: z.enum(["regular", "executable"]),
+  })
+  .openapi("AppV2TreeEntry");
+const AppV2ChangeSchema = z
+  .object({
+    path: z.string(),
+    previousPath: z.string().optional(),
+    status: z.string(),
+  })
+  .openapi("AppV2Change");
+const AppV2CommitMetadataSchema = z
+  .object({
+    sha: z.string(),
+    treeSha: z.string(),
+    parentShas: z.array(z.string()),
+    authorName: z.string(),
+    authorEmail: z.string(),
+    authoredAt: zDateTime(),
+    message: z.string(),
+    stats: z.object({
+      filesChanged: z.number().int(),
+      additions: z.number().int(),
+      deletions: z.number().int(),
+    }),
+  })
+  .openapi("AppV2CommitMetadata");
+const AppV2ProjectResponseSchema = z
+  .object({ success: z.literal(true), project: AppV2ProjectSchema })
+  .openapi("AppV2ProjectResponse");
+const AppV2ProjectListResponseSchema = z
+  .object({ success: z.literal(true), projects: z.array(AppV2ProjectSchema) })
+  .openapi("AppV2ProjectListResponse");
+const AppV2WorktreeResponseSchema = z
+  .object({ success: z.literal(true), worktree: AppV2WorktreeSchema })
+  .openapi("AppV2WorktreeResponse");
+const AppV2TreeResponseSchema = z
+  .object({
+    success: z.literal(true),
+    worktree: AppV2WorktreeSchema,
+    entries: z.array(AppV2TreeEntrySchema),
+  })
+  .openapi("AppV2TreeResponse");
+const AppV2FileResponseSchema = z
+  .object({
+    success: z.literal(true),
+    path: z.string(),
+    oid: z.string(),
+    mode: z.enum(["regular", "executable"]),
+    content: z.string(),
+    worktree: AppV2WorktreeSchema,
+  })
+  .openapi("AppV2FileResponse");
+const AppV2WorktreeStatusResponseSchema = z
+  .object({
+    success: z.literal(true),
+    worktree: AppV2WorktreeSchema,
+    clean: z.boolean(),
+    changes: z.array(AppV2ChangeSchema),
+  })
+  .openapi("AppV2WorktreeStatusResponse");
+const AppV2CommitResponseSchema = AppV2WorktreeResponseSchema.extend({
+  sha: z.string(),
+}).openapi("AppV2CommitResponse");
+const AppV2CommitListResponseSchema = z
+  .object({
+    success: z.literal(true),
+    commits: z.array(AppV2CommitMetadataSchema),
+  })
+  .openapi("AppV2CommitListResponse");
+const AppV2CommitDetailResponseSchema = z
+  .object({
+    success: z.literal(true),
+    commit: AppV2CommitMetadataSchema,
+  })
+  .openapi("AppV2CommitDetailResponse");
+const AppV2AckResponseSchema = z
+  .object({ success: z.literal(true) })
+  .openapi("AppV2AckResponse");
+
+const okResponse = (schema: z.ZodType, description: string) => ({
+  ...OPEN_RESPONSES,
+  200: jsonContent(schema, description),
+});
+
 function services(): {
   projects: AppV2ProjectService;
   worktrees: AppV2WorktreeService;
@@ -99,7 +242,13 @@ function actor(c: AuthenticatedContext) {
   return { userId, memberRole: c.get("memberRole") };
 }
 
-function projectJson(project: IAppV2Project) {
+function projectJson(project: IAppV2Project, requestActor: AppV2Actor) {
+  const effectiveRole =
+    resolveResourceRole(
+      project,
+      requestActor.userId,
+      requestActor.memberRole,
+    ) ?? "viewer";
   return {
     id: project._id.toString(),
     workspaceId: project.workspaceId.toString(),
@@ -109,6 +258,8 @@ function projectJson(project: IAppV2Project) {
     workspaceRole: project.workspaceRole,
     sharedWith: project.sharedWith,
     ownerId: project.owner_id,
+    effectiveRole,
+    readOnly: effectiveRole === "viewer",
     repositoryProvider: project.repositoryProvider,
     repositoryId: project.repositoryId,
     defaultBranch: project.defaultBranch,
@@ -165,6 +316,28 @@ function errorResponse(c: AuthenticatedContext, error: unknown) {
   return c.json({ success: false, error: "Apps v2 request failed" }, 500);
 }
 
+routes.use("*", unifiedAuthMiddleware);
+routes.use("*", requireWorkspace);
+
+routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/status",
+    tags: ["Apps v2"],
+    summary: "Get Apps v2 feature availability",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParams },
+    responses: {
+      ...OPEN_RESPONSES,
+      200: jsonContent(
+        AppV2StatusResponseSchema,
+        "Apps v2 feature availability",
+      ),
+    },
+  }),
+  c => c.json({ enabled: isAppsV2Enabled() }),
+);
+
 routes.use("*", async (c, next) => {
   if (!isAppsV2Enabled()) {
     return c.json(
@@ -174,8 +347,6 @@ routes.use("*", async (c, next) => {
   }
   await next();
 });
-routes.use("*", unifiedAuthMiddleware);
-routes.use("*", requireWorkspace);
 routes.use(
   "*",
   bodyLimit({
@@ -196,15 +367,22 @@ routes.openapi(
     summary: "List accessible Apps v2 projects",
     security: AUTH_SECURITY,
     request: { params: WorkspaceParams },
-    responses: OPEN_RESPONSES,
+    responses: okResponse(
+      AppV2ProjectListResponseSchema,
+      "Accessible Apps v2 projects",
+    ),
   }),
   async c => {
     try {
       const { workspaceId } = c.req.valid("param");
-      const projects = await services().projects.list(workspaceId, actor(c));
+      const requestActor = actor(c);
+      const projects = await services().projects.list(
+        workspaceId,
+        requestActor,
+      );
       return c.json({
         success: true,
-        projects: projects.map(projectJson),
+        projects: projects.map(project => projectJson(project, requestActor)),
       });
     } catch (error) {
       return errorResponse(c, error);
@@ -226,7 +404,10 @@ routes.openapi(
         content: { "application/json": { schema: AppV2ProjectCreateSchema } },
       },
     },
-    responses: OPEN_RESPONSES,
+    responses: {
+      ...OPEN_RESPONSES,
+      201: jsonContent(AppV2ProjectResponseSchema, "Created Apps v2 project"),
+    },
   }),
   async c => {
     try {
@@ -240,9 +421,12 @@ routes.openapi(
       publishRealtimeEvent(workspaceId, {
         type: "app-v2.project.updated",
         projectId: project._id.toString(),
-        ...getAppV2ProjectEventAudience(project.access, requestActor.userId),
+        ...getAppV2ProjectEventAudience(project),
       });
-      return c.json({ success: true, project: projectJson(project) }, 201);
+      return c.json(
+        { success: true, project: projectJson(project, requestActor) },
+        201,
+      );
     } catch (error) {
       return errorResponse(c, error);
     }
@@ -257,17 +441,21 @@ routes.openapi(
     summary: "Get an Apps v2 project",
     security: AUTH_SECURITY,
     request: { params: ProjectParams },
-    responses: OPEN_RESPONSES,
+    responses: okResponse(AppV2ProjectResponseSchema, "Apps v2 project"),
   }),
   async c => {
     try {
       const { workspaceId, projectId } = c.req.valid("param");
+      const requestActor = actor(c);
       const project = await services().projects.getReadable(
         workspaceId,
         projectId,
-        actor(c),
+        requestActor,
       );
-      return c.json({ success: true, project: projectJson(project) });
+      return c.json({
+        success: true,
+        project: projectJson(project, requestActor),
+      });
     } catch (error) {
       return errorResponse(c, error);
     }
@@ -282,7 +470,7 @@ routes.openapi(
     summary: "Delete an Apps v2 project",
     security: AUTH_SECURITY,
     request: { params: ProjectParams },
-    responses: OPEN_RESPONSES,
+    responses: okResponse(AppV2AckResponseSchema, "Project deleted"),
   }),
   async c => {
     try {
@@ -296,10 +484,7 @@ routes.openapi(
       publishRealtimeEvent(workspaceId, {
         type: "app-v2.project.deleted",
         projectId,
-        ...getAppV2ProjectEventAudience(
-          deletedProject.access,
-          requestActor.userId,
-        ),
+        ...getAppV2ProjectEventAudience(deletedProject),
       });
       return c.json({ success: true });
     } catch (error) {
@@ -320,24 +505,20 @@ for (const method of ["get", "post"] as const) {
           : "Create or get the actor's Apps v2 worktree",
       security: AUTH_SECURITY,
       request: { params: ProjectParams },
-      responses: OPEN_RESPONSES,
+      responses: okResponse(
+        AppV2WorktreeResponseSchema,
+        "Personal Apps v2 worktree",
+      ),
     }),
     async c => {
       try {
         const requestActor = actor(c);
         const { workspaceId, projectId } = c.req.valid("param");
-        const project =
-          method === "post"
-            ? await services().projects.getWritable(
-                workspaceId,
-                projectId,
-                requestActor,
-              )
-            : await services().projects.getReadable(
-                workspaceId,
-                projectId,
-                requestActor,
-              );
+        const project = await services().projects.getReadable(
+          workspaceId,
+          projectId,
+          requestActor,
+        );
         const worktree =
           method === "post"
             ? await services().worktrees.getOrCreate(project, requestActor)
@@ -370,7 +551,10 @@ routes.openapi(
         content: { "application/json": { schema: AppV2LeaseRotateSchema } },
       },
     },
-    responses: OPEN_RESPONSES,
+    responses: okResponse(
+      AppV2WorktreeResponseSchema,
+      "Rotated personal worktree lease",
+    ),
   }),
   async c => {
     try {
@@ -406,7 +590,7 @@ routes.openapi(
     summary: "Read a durable worktree tree",
     security: AUTH_SECURITY,
     request: { params: WorktreeParams },
-    responses: OPEN_RESPONSES,
+    responses: okResponse(AppV2TreeResponseSchema, "Worktree file tree"),
   }),
   async c => {
     try {
@@ -442,7 +626,7 @@ routes.openapi(
     summary: "Read a UTF-8 worktree file",
     security: AUTH_SECURITY,
     request: { params: WorktreeParams, query: FileQuery },
-    responses: OPEN_RESPONSES,
+    responses: okResponse(AppV2FileResponseSchema, "UTF-8 worktree file"),
   }),
   async c => {
     try {
@@ -491,7 +675,7 @@ routes.openapi(
         content: { "application/json": { schema: AppV2WriteFileSchema } },
       },
     },
-    responses: OPEN_RESPONSES,
+    responses: okResponse(AppV2WorktreeResponseSchema, "Updated worktree"),
   }),
   async c => {
     try {
@@ -538,7 +722,7 @@ routes.openapi(
         content: { "application/json": { schema: AppV2DeleteFileSchema } },
       },
     },
-    responses: OPEN_RESPONSES,
+    responses: okResponse(AppV2WorktreeResponseSchema, "Updated worktree"),
   }),
   async c => {
     try {
@@ -583,7 +767,7 @@ routes.openapi(
         content: { "application/json": { schema: AppV2MoveFileSchema } },
       },
     },
-    responses: OPEN_RESPONSES,
+    responses: okResponse(AppV2WorktreeResponseSchema, "Updated worktree"),
   }),
   async c => {
     try {
@@ -623,7 +807,10 @@ routes.openapi(
     summary: "Get durable Git worktree status",
     security: AUTH_SECURITY,
     request: { params: WorktreeParams },
-    responses: OPEN_RESPONSES,
+    responses: okResponse(
+      AppV2WorktreeStatusResponseSchema,
+      "Durable Git worktree status",
+    ),
   }),
   async c => {
     try {
@@ -665,7 +852,7 @@ routes.openapi(
         content: { "application/json": { schema: AppV2DiscardSchema } },
       },
     },
-    responses: OPEN_RESPONSES,
+    responses: okResponse(AppV2WorktreeResponseSchema, "Discarded worktree"),
   }),
   async c => {
     try {
@@ -708,7 +895,7 @@ routes.openapi(
         content: { "application/json": { schema: AppV2CommitSchema } },
       },
     },
-    responses: OPEN_RESPONSES,
+    responses: okResponse(AppV2CommitResponseSchema, "Created Git commit"),
   }),
   async c => {
     try {
@@ -738,10 +925,7 @@ routes.openapi(
         projectId: project._id.toString(),
         worktreeId: result.worktree._id.toString(),
         sha: result.sha,
-        ...getAppV2ProjectEventAudience(
-          project.access,
-          result.worktree.actorId,
-        ),
+        ...getAppV2ProjectEventAudience(project),
       });
       return c.json({
         success: true,
@@ -762,7 +946,10 @@ routes.openapi(
     summary: "List Apps v2 Git commits",
     security: AUTH_SECURITY,
     request: { params: ProjectParams, query: CommitListQuery },
-    responses: OPEN_RESPONSES,
+    responses: okResponse(
+      AppV2CommitListResponseSchema,
+      "Apps v2 Git commit history",
+    ),
   }),
   async c => {
     try {
@@ -792,7 +979,10 @@ routes.openapi(
     summary: "Get Apps v2 Git commit metadata",
     security: AUTH_SECURITY,
     request: { params: CommitParams },
-    responses: OPEN_RESPONSES,
+    responses: okResponse(
+      AppV2CommitDetailResponseSchema,
+      "Apps v2 Git commit metadata",
+    ),
   }),
   async c => {
     try {

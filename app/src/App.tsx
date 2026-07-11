@@ -73,6 +73,7 @@ const loadDashboardsExplorer = () => import("./components/DashboardsExplorer");
 const DashboardsExplorer = lazy(loadDashboardsExplorer);
 const loadAppsExplorer = () => import("./components/AppsExplorer");
 const AppsExplorer = lazy(loadAppsExplorer);
+const AppsV2Explorer = lazy(() => import("./components/AppsV2Explorer"));
 const PublicSharePage = lazy(() => import("./pages/PublicSharePage"));
 const loadDbtExplorer = () => import("./components/DbtExplorer");
 const DbtExplorer = lazy(loadDbtExplorer);
@@ -92,6 +93,7 @@ import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { useAuth } from "./contexts/auth-context";
 import { OnboardingFlow } from "./components/OnboardingFlow";
 import { UpdateNotification } from "./components/UpdateNotification";
+import { useAppV2Store } from "./store/appV2Store";
 
 // Draggable divider between a side pane and the flexible center. A real
 // react-resizable-panels handle so it participates in the library's global
@@ -202,6 +204,12 @@ function MainApp() {
   const leftPaneWidthPx = useUIStore(state => state.leftPaneWidthPx);
   const rightPaneWidthPx = useUIStore(state => state.rightPaneWidthPx);
   const setPaneWidths = useUIStore(state => state.setPaneWidths);
+  const currentWorkspaceId = useUIStore(state => state.currentWorkspaceId);
+  const appsV2Enabled = useAppV2Store(state =>
+    currentWorkspaceId
+      ? state.availabilityByWorkspace[currentWorkspaceId]?.enabled === true
+      : false,
+  );
 
   // Mobile (< md) shell state. Desktop ignores these entirely.
   const isMobile = useIsMobile();
@@ -562,6 +570,8 @@ function MainApp() {
         return <DashboardsExplorer />;
       case "apps":
         return <AppsExplorer />;
+      case "apps-v2":
+        return appsV2Enabled ? <AppsV2Explorer /> : null;
       case "dbt":
         return <DbtExplorer />;
       case "settings":
@@ -569,7 +579,12 @@ function MainApp() {
       default:
         return null;
     }
-  }, [activeView, handleDatabaseCollectionClick, handleConsoleSelect]);
+  }, [
+    activeView,
+    appsV2Enabled,
+    handleDatabaseCollectionClick,
+    handleConsoleSelect,
+  ]);
 
   // Stable elements for the heavy center/right panes. All props are refs, so
   // these never need to be re-created; identical element references let React

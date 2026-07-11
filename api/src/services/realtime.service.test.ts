@@ -72,6 +72,7 @@ async function testWorkspaceIsolation() {
 async function testUserTargetedFiltering() {
   const receivedUser1: RealtimeEvent[] = [];
   const receivedUser2: RealtimeEvent[] = [];
+  const receivedUser3: RealtimeEvent[] = [];
   const receivedUnscoped: RealtimeEvent[] = [];
   const disposeUser1 = await subscribeToWorkspaceEvents(
     WS_A,
@@ -82,6 +83,11 @@ async function testUserTargetedFiltering() {
     WS_A,
     event => receivedUser2.push(event),
     { userId: "user-2" },
+  );
+  const disposeUser3 = await subscribeToWorkspaceEvents(
+    WS_A,
+    event => receivedUser3.push(event),
+    { userId: "user-3" },
   );
   const disposeUnscoped = await subscribeToWorkspaceEvents(WS_A, event =>
     receivedUnscoped.push(event),
@@ -109,15 +115,17 @@ async function testUserTargetedFiltering() {
     projectId: "private-project",
     worktreeId: "worktree-2",
     sha: "a".repeat(40),
-    forUserId: "user-2",
+    forUserIds: ["user-2", "user-3"],
   });
   await delay(10);
 
   assert.equal(receivedUser1.length, 2, "workspace event broadcasts");
-  assert.equal(receivedUser2.length, 2, "target receives private commit");
+  assert.equal(receivedUser2.length, 2, "owner receives private commit");
+  assert.equal(receivedUser3.length, 2, "collaborator receives private commit");
   assert.equal(receivedUnscoped.length, 1, "unscoped sees only broadcast");
   await disposeUser1();
   await disposeUser2();
+  await disposeUser3();
   await disposeUnscoped();
 }
 

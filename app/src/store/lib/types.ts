@@ -20,6 +20,8 @@ export type TabKind =
   | "app"
   | "app-file"
   | "app-binding"
+  | "app-v2"
+  | "app-v2-file"
   | "plan"
   | "dbt-file"
   | "dbt-job"
@@ -179,6 +181,7 @@ export type LeftPaneView =
   | "flows"
   | "dashboards"
   | "apps"
+  | "apps-v2"
   | "dbt"
   | "settings";
 

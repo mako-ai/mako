@@ -53,6 +53,14 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
     kind: "app-binding",
     metadata: { appId: "app-1", bindingId: "binding_1" },
   }),
+  "app-v2": baseTab({
+    kind: "app-v2",
+    metadata: { projectId: "project-1" },
+  }),
+  "app-v2-file": baseTab({
+    kind: "app-v2-file",
+    metadata: { projectId: "project-1", path: "src/App.tsx" },
+  }),
   plan: baseTab({ kind: "plan", metadata: { chatId: "chat-1" } }),
   settings: baseTab({ kind: "settings", settingsSection: "models" }),
   members: baseTab({ kind: "members" }),
@@ -108,6 +116,9 @@ describe("tab-routing", () => {
     expect(fileUrl).not.toMatch(TAB_DEEP_LINK_PATTERNS.app);
     expect(bindingUrl).not.toMatch(TAB_DEEP_LINK_PATTERNS.app);
 
+    const appV2FileUrl = tabUrlPath("t", FIXTURES["app-v2-file"]) as string;
+    expect(appV2FileUrl).not.toMatch(TAB_DEEP_LINK_PATTERNS["app-v2"]);
+
     // /x/:id/file|job|runs must not be captured by the bare console pattern.
     const dbtFileUrl = tabUrlPath("t", FIXTURES["dbt-file"]) as string;
     const dbtJobUrl = tabUrlPath("t", FIXTURES["dbt-job"]) as string;
@@ -120,6 +131,14 @@ describe("tab-routing", () => {
   it("encodes nested dbt file paths in their URL", () => {
     const url = tabUrlPath("t", FIXTURES["dbt-file"]) as string;
     expect(url).toBe("/x/proj-1/file/models/stg.sql");
+  });
+
+  it("keeps Apps v1 and Apps v2 in separate URL namespaces", () => {
+    expect(tabUrlPath("t", FIXTURES.app)).toBe("/a/app-1");
+    expect(tabUrlPath("t", FIXTURES["app-v2"])).toBe("/v2/a/project-1");
+    expect(tabUrlPath("t", FIXTURES["app-v2-file"])).toBe(
+      "/v2/a/project-1/file/src/App.tsx",
+    );
   });
 
   it("tabs missing their identifiers produce no URL instead of a broken one", () => {

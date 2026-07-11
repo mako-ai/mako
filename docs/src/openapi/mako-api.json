@@ -999,6 +999,505 @@
           "createdBy"
         ]
       },
+      "AppV2StatusResponse": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
+      "AppV2ProjectListResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppV2Project"
+            }
+          }
+        },
+        "required": [
+          "success",
+          "projects"
+        ]
+      },
+      "AppV2Project": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "access": {
+            "type": "string",
+            "enum": [
+              "private",
+              "workspace"
+            ]
+          },
+          "workspaceRole": {
+            "type": "string",
+            "enum": [
+              "viewer",
+              "editor"
+            ]
+          },
+          "sharedWith": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "userId": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "viewer",
+                    "editor"
+                  ]
+                },
+                "addedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "userId",
+                "role"
+              ]
+            }
+          },
+          "ownerId": {
+            "type": "string"
+          },
+          "effectiveRole": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "editor",
+              "viewer"
+            ]
+          },
+          "readOnly": {
+            "type": "boolean"
+          },
+          "repositoryProvider": {
+            "type": "string",
+            "enum": [
+              "mako-git"
+            ]
+          },
+          "repositoryId": {
+            "type": "string"
+          },
+          "defaultBranch": {
+            "type": "string"
+          },
+          "headSha": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "workspaceId",
+          "title",
+          "access",
+          "workspaceRole",
+          "sharedWith",
+          "ownerId",
+          "effectiveRole",
+          "readOnly",
+          "repositoryProvider",
+          "repositoryId",
+          "defaultBranch",
+          "headSha"
+        ]
+      },
+      "AppV2ProjectResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "project": {
+            "$ref": "#/components/schemas/AppV2Project"
+          }
+        },
+        "required": [
+          "success",
+          "project"
+        ]
+      },
+      "AppV2AckResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        },
+        "required": [
+          "success"
+        ]
+      },
+      "AppV2WorktreeResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "worktree": {
+            "$ref": "#/components/schemas/AppV2Worktree"
+          }
+        },
+        "required": [
+          "success",
+          "worktree"
+        ]
+      },
+      "AppV2Worktree": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "actorId": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "baseSha": {
+            "type": "string"
+          },
+          "wipOid": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "leaseEpoch": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "discarded",
+              "fenced"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "projectId",
+          "actorId",
+          "branch",
+          "baseSha",
+          "wipOid",
+          "revision",
+          "leaseEpoch",
+          "status"
+        ]
+      },
+      "AppV2TreeResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "worktree": {
+            "$ref": "#/components/schemas/AppV2Worktree"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppV2TreeEntry"
+            }
+          }
+        },
+        "required": [
+          "success",
+          "worktree",
+          "entries"
+        ]
+      },
+      "AppV2TreeEntry": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "oid": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "regular",
+              "executable"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "oid",
+          "size",
+          "mode"
+        ]
+      },
+      "AppV2FileResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "oid": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "regular",
+              "executable"
+            ]
+          },
+          "content": {
+            "type": "string"
+          },
+          "worktree": {
+            "$ref": "#/components/schemas/AppV2Worktree"
+          }
+        },
+        "required": [
+          "success",
+          "path",
+          "oid",
+          "mode",
+          "content",
+          "worktree"
+        ]
+      },
+      "AppV2WorktreeStatusResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "worktree": {
+            "$ref": "#/components/schemas/AppV2Worktree"
+          },
+          "clean": {
+            "type": "boolean"
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppV2Change"
+            }
+          }
+        },
+        "required": [
+          "success",
+          "worktree",
+          "clean",
+          "changes"
+        ]
+      },
+      "AppV2Change": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "previousPath": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "status"
+        ]
+      },
+      "AppV2CommitResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AppV2WorktreeResponse"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "sha": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sha"
+            ]
+          }
+        ]
+      },
+      "AppV2CommitListResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "commits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppV2CommitMetadata"
+            }
+          }
+        },
+        "required": [
+          "success",
+          "commits"
+        ]
+      },
+      "AppV2CommitMetadata": {
+        "type": "object",
+        "properties": {
+          "sha": {
+            "type": "string"
+          },
+          "treeSha": {
+            "type": "string"
+          },
+          "parentShas": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "authorName": {
+            "type": "string"
+          },
+          "authorEmail": {
+            "type": "string"
+          },
+          "authoredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "message": {
+            "type": "string"
+          },
+          "stats": {
+            "type": "object",
+            "properties": {
+              "filesChanged": {
+                "type": "integer"
+              },
+              "additions": {
+                "type": "integer"
+              },
+              "deletions": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filesChanged",
+              "additions",
+              "deletions"
+            ]
+          }
+        },
+        "required": [
+          "sha",
+          "treeSha",
+          "parentShas",
+          "authorName",
+          "authorEmail",
+          "message",
+          "stats"
+        ]
+      },
+      "AppV2CommitDetailResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "commit": {
+            "$ref": "#/components/schemas/AppV2CommitMetadata"
+          }
+        },
+        "required": [
+          "success",
+          "commit"
+        ]
+      },
       "ConnectorMetadata": {
         "type": "object",
         "properties": {
@@ -21049,6 +21548,66 @@
         "operationId": "get_api_workspaces_workspaceId_apps_id_public_share_password"
       }
     },
+    "/api/workspaces/{workspaceId}/apps-v2/status": {
+      "get": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Get Apps v2 feature availability",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Apps v2 feature availability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppV2StatusResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_v2_status"
+      }
+    },
     "/api/workspaces/{workspaceId}/apps-v2": {
       "get": {
         "tags": [
@@ -21075,22 +21634,12 @@
           }
         ],
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "Accessible Apps v2 projects",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/AppV2ProjectListResponse"
                 }
               }
             }
@@ -21262,22 +21811,12 @@
           }
         ],
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "Apps v2 project",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/AppV2ProjectResponse"
                 }
               }
             }
@@ -21339,22 +21878,12 @@
           }
         ],
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "Project deleted",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/AppV2AckResponse"
                 }
               }
             }
@@ -21418,22 +21947,12 @@
           }
         ],
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "Personal Apps v2 worktree",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/AppV2WorktreeResponse"
                 }
               }
             }
@@ -21495,22 +22014,12 @@
           }
         ],
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "Personal Apps v2 worktree",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/AppV2WorktreeResponse"
                 }
               }
             }
@@ -21603,22 +22112,12 @@
           }
         },
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "Rotated personal worktree lease",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/AppV2WorktreeResponse"
                 }
               }
             }
@@ -21691,22 +22190,12 @@
           }
         ],
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "Worktree file tree",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/AppV2TreeResponse"
                 }
               }
             }
@@ -21789,22 +22278,12 @@
           }
         ],
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "UTF-8 worktree file",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/AppV2FileResponse"
                 }
               }
             }
@@ -21919,22 +22398,12 @@
           }
         },
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "Updated worktree",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/AppV2WorktreeResponse"
                 }
               }
             }
@@ -22040,22 +22509,12 @@
           }
         },
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "Updated worktree",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/AppV2WorktreeResponse"
                 }
               }
             }
@@ -22169,22 +22628,12 @@
           }
         },
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "Updated worktree",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/AppV2WorktreeResponse"
                 }
               }
             }
@@ -22257,22 +22706,12 @@
           }
         ],
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "Durable Git worktree status",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/AppV2WorktreeStatusResponse"
                 }
               }
             }
@@ -22374,22 +22813,12 @@
           }
         },
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "Discarded worktree",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/AppV2WorktreeResponse"
                 }
               }
             }
@@ -22497,22 +22926,12 @@
           }
         },
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "Created Git commit",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/AppV2CommitResponse"
                 }
               }
             }
@@ -22587,22 +23006,12 @@
           }
         ],
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "Apps v2 Git commit history",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/AppV2CommitListResponse"
                 }
               }
             }
@@ -22675,22 +23084,12 @@
           }
         ],
         "responses": {
-          "2XX": {
-            "description": "Successful response",
+          "200": {
+            "description": "Apps v2 Git commit metadata",
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
+                  "$ref": "#/components/schemas/AppV2CommitDetailResponse"
                 }
               }
             }

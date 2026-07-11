@@ -23,6 +23,7 @@ import { useChatStore } from "../store/chatStore";
 import { useExplorerStore } from "../store/explorerStore";
 import { trackEvent, resetIdentity } from "../lib/analytics";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { useAppV2Status } from "../hooks/useAppV2Status";
 
 const NavButton = styled(Button, {
   shouldForwardProp: prop => prop !== "isActive",
@@ -52,6 +53,7 @@ type NavigationView =
   | "flows"
   | "dashboards"
   | "apps"
+  | "apps-v2"
   | "dbt"
   | "settings"
   | "views";
@@ -68,6 +70,11 @@ const topNavigationItems: {
   { view: "connectors", icon: EXPLORER_ICONS.connectors, label: "Connectors" },
   { view: "dashboards", icon: EXPLORER_ICONS.dashboards, label: "Dashboards" },
   { view: "apps", icon: EXPLORER_ICONS.apps, label: "Apps" },
+  {
+    view: "apps-v2",
+    icon: EXPLORER_ICONS["apps-v2"],
+    label: "App Projects",
+  },
 ];
 
 const bottomNavigationItems: {
@@ -198,11 +205,14 @@ export function SidebarUserMenu({
  * App.tsx).
  */
 export function SidebarMobileExplorerNav() {
+  const { enabled: appsV2Enabled } = useAppV2Status();
   const activeExplorer = useUIStore(selectActiveExplorer);
   const setLeftPane = useUIStore(state => state.setLeftPane);
   const openLeftPane = useUIStore(state => state.openLeftPane);
 
-  const items = [...topNavigationItems, ...bottomNavigationItems];
+  const items = [...topNavigationItems, ...bottomNavigationItems].filter(
+    item => item.view !== "apps-v2" || appsV2Enabled,
+  );
 
   return (
     <Box
@@ -266,6 +276,7 @@ export function SidebarMobileExplorerNav() {
 }
 
 function Sidebar() {
+  const { enabled: appsV2Enabled } = useAppV2Status();
   // `activeExplorer` is the explorer that's actually visible on the left
   // (null when the pane is collapsed). Use this — not `leftPane`, which is
   // the last-selected view retained across collapse — to decide which icon
@@ -289,6 +300,7 @@ function Sidebar() {
       view === "flows" ||
       view === "dashboards" ||
       view === "apps" ||
+      view === "apps-v2" ||
       view === "dbt" ||
       view === "settings"
     ) {
@@ -301,6 +313,7 @@ function Sidebar() {
             | "flows"
             | "dashboards"
             | "apps"
+            | "apps-v2"
             | "dbt"
             | "settings",
         );
@@ -348,36 +361,40 @@ function Sidebar() {
             alignItems: "center",
           }}
         >
-          {topNavigationItems.map(item => {
-            const Icon = item.icon;
-            const isActive = activeExplorer === item.view;
+          {topNavigationItems
+            .filter(item => item.view !== "apps-v2" || appsV2Enabled)
+            .map(item => {
+              const Icon = item.icon;
+              const isActive = activeExplorer === item.view;
 
-            return (
-              <Tooltip key={item.view} title={item.label} placement="right">
-                <NavButton
-                  isActive={isActive}
-                  onClick={() => handleNavigation(item.view as NavigationView)}
-                  onMouseEnter={
-                    item.view === "dashboards"
-                      ? preloadDashboardsExplorer
-                      : undefined
-                  }
-                  onFocus={
-                    item.view === "dashboards"
-                      ? preloadDashboardsExplorer
-                      : undefined
-                  }
-                  onTouchStart={
-                    item.view === "dashboards"
-                      ? preloadDashboardsExplorer
-                      : undefined
-                  }
-                >
-                  <Icon size={24} strokeWidth={1.5} />
-                </NavButton>
-              </Tooltip>
-            );
-          })}
+              return (
+                <Tooltip key={item.view} title={item.label} placement="right">
+                  <NavButton
+                    isActive={isActive}
+                    onClick={() =>
+                      handleNavigation(item.view as NavigationView)
+                    }
+                    onMouseEnter={
+                      item.view === "dashboards"
+                        ? preloadDashboardsExplorer
+                        : undefined
+                    }
+                    onFocus={
+                      item.view === "dashboards"
+                        ? preloadDashboardsExplorer
+                        : undefined
+                    }
+                    onTouchStart={
+                      item.view === "dashboards"
+                        ? preloadDashboardsExplorer
+                        : undefined
+                    }
+                  >
+                    <Icon size={24} strokeWidth={1.5} />
+                  </NavButton>
+                </Tooltip>
+              );
+            })}
 
           {!rightPaneOpen && (
             <Tooltip title="Open Chat" placement="right">

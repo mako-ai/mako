@@ -20,6 +20,8 @@ import type { ConsoleTab, TabKind } from "../store/lib/types";
 export const APP_FILE_SEP = "::file::";
 export const APP_DIR_SEP = "::dir::";
 export const APP_BINDING_SEP = "::binding::";
+export const APP_V2_FILE_SEP = "::v2-file::";
+export const APP_V2_DIR_SEP = "::v2-dir::";
 export const DASHBOARD_DATA_SOURCE_SEP = "::dashboard-data-source::";
 
 // dbt (Transforms) ResourceTree node-id encoding (kept in sync with
@@ -36,6 +38,7 @@ export type RevealExplorer =
   | "consoles"
   | "dashboards"
   | "apps"
+  | "apps-v2"
   | "connectors"
   | "flows"
   | "dbt";
@@ -94,6 +97,20 @@ export function tabRevealTarget(
       const bindingId = meta.bindingId as string | undefined;
       return appId && bindingId
         ? { explorer: "apps", nodeId: `${appId}${APP_BINDING_SEP}${bindingId}` }
+        : null;
+    }
+    case "app-v2": {
+      const projectId = meta.projectId as string | undefined;
+      return projectId ? { explorer: "apps-v2", nodeId: projectId } : null;
+    }
+    case "app-v2-file": {
+      const projectId = meta.projectId as string | undefined;
+      const path = meta.path as string | undefined;
+      return projectId && path
+        ? {
+            explorer: "apps-v2",
+            nodeId: `${projectId}${APP_V2_FILE_SEP}${path}`,
+          }
         : null;
     }
     case "connectors": {

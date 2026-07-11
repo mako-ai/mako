@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   APP_BINDING_SEP,
   APP_FILE_SEP,
+  APP_V2_FILE_SEP,
   DASHBOARD_DATA_SOURCE_SEP,
   tabRevealTarget,
 } from "./explorer-reveal";
@@ -71,6 +72,25 @@ describe("tabRevealTarget", () => {
         }),
       ),
     ).toEqual({ explorer: "apps", nodeId: `a1${APP_BINDING_SEP}b1` });
+  });
+
+  it("maps Apps v2 projects and files to their isolated explorer", () => {
+    expect(
+      tabRevealTarget(
+        makeTab({ kind: "app-v2", metadata: { projectId: "p1" } }),
+      ),
+    ).toEqual({ explorer: "apps-v2", nodeId: "p1" });
+    expect(
+      tabRevealTarget(
+        makeTab({
+          kind: "app-v2-file",
+          metadata: { projectId: "p1", path: "src/App.tsx" },
+        }),
+      ),
+    ).toEqual({
+      explorer: "apps-v2",
+      nodeId: `p1${APP_V2_FILE_SEP}src/App.tsx`,
+    });
   });
 
   it("maps connectors by their content id", () => {

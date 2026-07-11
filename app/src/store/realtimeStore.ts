@@ -24,6 +24,7 @@ import {
   hasPendingAgentReview,
 } from "./consoleStore";
 import { useAppStore } from "./appStore";
+import { useAppV2Store } from "./appV2Store";
 import { useDashboardStore } from "./dashboardStore";
 import { useDbtStore } from "./dbtStore";
 import { computeDashboardStateHash } from "../utils/stateHash";
@@ -65,6 +66,33 @@ export type RealtimeEvent =
       updatedBy: string;
       clientId?: string;
       origin: "agent" | "save";
+    }
+  | {
+      type: "app-v2.project.updated";
+      projectId?: string;
+      forUserId?: string;
+      forUserIds?: string[];
+    }
+  | {
+      type: "app-v2.project.deleted";
+      projectId: string;
+      forUserId?: string;
+      forUserIds?: string[];
+    }
+  | {
+      type: "app-v2.worktree.updated";
+      projectId: string;
+      worktreeId: string;
+      revision: number;
+      forUserId: string;
+    }
+  | {
+      type: "app-v2.commit.created";
+      projectId: string;
+      worktreeId: string;
+      sha: string;
+      forUserId?: string;
+      forUserIds?: string[];
     }
   | {
       type: "dbt.file.updated";
@@ -419,8 +447,34 @@ export const useRealtimeStore = create<RealtimeStore>()(
     // User-scoped dbt events (drafts, checkouts) carry forUserId: they only
     // concern the acting user's windows — a draft is invisible to everyone
     // else, so other users must not react (or even refetch).
-    const isForAnotherUser = (forUserId?: string): boolean =>
-      Boolean(forUserId && forUserId !== get().currentUserId);
+    const isForAnotherUser = (
+      forUserId?: string,
+      forUserIds?: string[],
+    ): boolean =>
+      Boolean(
+        (forUserId && forUserId !== get().currentUserId) ||
+          (forUserIds && !forUserIds.includes(get().currentUserId ?? "")),
+      );
+
+    const handleAppV2Event = (
+      event: Extract<RealtimeEvent, { type: `app-v2.${string}` }>,
+    ) => {
+      const forUserIds = "forUserIds" in event ? event.forUserIds : undefined;
+      if (isForAnotherUser(event.forUserId, forUserIds)) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      const appV2 = useAppV2Store.getState();
+      if (appV2.projectsByWorkspace[workspaceId]) {
+        void appV2.listProjects(workspaceId);
+      }
+      if (
+        event.projectId &&
+        (appV2.projectsById[event.projectId] ||
+          appV2.worktreesByProject[event.projectId])
+      ) {
+        void appV2.refreshProject(workspaceId, event.projectId);
+      }
+    };
 
     // Server-executed dbt file mutation tools: pull the fresh file content (or
     // drop a deleted file) for OPEN dbt projects. Echo-suppressed by clientId;
@@ -565,6 +619,12 @@ export const useRealtimeStore = create<RealtimeStore>()(
           break;
         case "app.updated":
           handleAppUpdated(event);
+          break;
+        case "app-v2.project.updated":
+        case "app-v2.project.deleted":
+        case "app-v2.worktree.updated":
+        case "app-v2.commit.created":
+          handleAppV2Event(event);
           break;
         case "dashboard.updated":
           handleDashboardUpdated(event);

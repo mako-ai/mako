@@ -119,6 +119,18 @@ function testTightenedModulesHaveTypedResponses() {
     ["get", "/api/workspaces/{workspaceId}/usage/summary"],
     ["get", "/api/workspaces/{workspaceId}/custom-prompt"],
     ["get", "/api/workspaces/{workspaceId}/dashboards/{id}"],
+    ["get", "/api/workspaces/{workspaceId}/apps-v2/status"],
+    ["get", "/api/workspaces/{workspaceId}/apps-v2"],
+    ["get", "/api/workspaces/{workspaceId}/apps-v2/{projectId}"],
+    [
+      "get",
+      "/api/workspaces/{workspaceId}/apps-v2/{projectId}/worktrees/{worktreeId}/file",
+    ],
+    [
+      "get",
+      "/api/workspaces/{workspaceId}/apps-v2/{projectId}/worktrees/{worktreeId}/status",
+    ],
+    ["get", "/api/workspaces/{workspaceId}/apps-v2/{projectId}/commits"],
   ];
   for (const [method, path] of tightened) {
     const op = doc.paths[path]?.[method] as AnyObj | undefined;
@@ -151,6 +163,12 @@ function testErrorSchemaComponentExists() {
     "GenericJsonResponse schema component must be registered",
   );
   assert.ok(schemas.Dashboard, "Dashboard schema component must be registered");
+  assert.ok(schemas.AppV2Project, "AppV2Project schema must be registered");
+  assert.ok(schemas.AppV2Worktree, "AppV2Worktree schema must be registered");
+  assert.ok(
+    schemas.AppV2FileResponse,
+    "AppV2FileResponse schema must be registered",
+  );
 }
 
 function testErrorResponsesAreTyped() {

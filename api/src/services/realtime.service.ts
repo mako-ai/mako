@@ -132,11 +132,13 @@ export type RealtimeEvent =
       type: "app-v2.project.updated";
       projectId?: string;
       forUserId?: string;
+      forUserIds?: string[];
     }
   | {
       type: "app-v2.project.deleted";
       projectId: string;
       forUserId?: string;
+      forUserIds?: string[];
     }
   | {
       type: "app-v2.worktree.updated";
@@ -151,6 +153,7 @@ export type RealtimeEvent =
       worktreeId: string;
       sha: string;
       forUserId?: string;
+      forUserIds?: string[];
     };
 
 function channelFor(workspaceId: string): string {
@@ -251,6 +254,13 @@ export async function subscribeToWorkspaceEvents(
           "forUserId" in event &&
           event.forUserId !== undefined &&
           event.forUserId !== subscriberUserId
+        ) {
+          continue;
+        }
+        if (
+          "forUserIds" in event &&
+          event.forUserIds !== undefined &&
+          !event.forUserIds.includes(subscriberUserId ?? "")
         ) {
           continue;
         }

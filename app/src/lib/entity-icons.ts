@@ -58,6 +58,7 @@ export const EXPLORER_ICONS = {
   connectors: Plug,
   dashboards: ChartPie,
   apps: AppWindow,
+  "apps-v2": GitBranch,
   settings: Settings,
 } as const satisfies Record<LeftPaneView, LucideIcon>;
 
@@ -81,6 +82,8 @@ export const TAB_KIND_ICONS = {
   app: AppWindow,
   "app-file": FileCode,
   "app-binding": Database,
+  "app-v2": GitBranch,
+  "app-v2-file": FileCode,
   plan: ClipboardList,
   "dbt-file": FileCode,
   "dbt-job": CalendarClock,

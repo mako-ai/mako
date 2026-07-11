@@ -44,6 +44,8 @@ export const TAB_DEEP_LINK_PATTERNS = {
   app: /^\/a\/([a-zA-Z0-9-]+)\/?$/,
   "app-file": /^\/a\/([a-zA-Z0-9-]+)\/file\/(.+)$/,
   "app-binding": /^\/a\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9_-]+)/,
+  "app-v2": /^\/v2\/a\/([a-zA-Z0-9-]+)\/?$/,
+  "app-v2-file": /^\/v2\/a\/([a-zA-Z0-9-]+)\/file\/(.+)$/,
   plan: /^\/p\/([a-zA-Z0-9-]+)/,
   settings: /^\/settings\/([a-z-]+)$/,
   // Legacy tab kind superseded by the settings "members" section.
@@ -116,6 +118,17 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
       const appId = tab.metadata?.appId as string | undefined;
       const bindingId = tab.metadata?.bindingId as string | undefined;
       return appId && bindingId ? `/a/${appId}/data/${bindingId}` : null;
+    }
+    case "app-v2": {
+      const projectId = tab.metadata?.projectId as string | undefined;
+      return projectId ? `/v2/a/${projectId}` : null;
+    }
+    case "app-v2-file": {
+      const projectId = tab.metadata?.projectId as string | undefined;
+      const path = tab.metadata?.path as string | undefined;
+      return projectId && path
+        ? `/v2/a/${projectId}/file/${encodePathSegments(path)}`
+        : null;
     }
     case "plan": {
       const chatId = tab.metadata?.chatId as string | undefined;

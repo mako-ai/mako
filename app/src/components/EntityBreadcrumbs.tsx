@@ -6,6 +6,7 @@ import { useSchemaStore } from "../store/schemaStore";
 import { useAppStore } from "../store/appStore";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useDbtStore } from "../store/dbtStore";
+import { useAppV2Store } from "../store/appV2Store";
 import { useUIStore } from "../store/uiStore";
 import { useExplorerRevealStore } from "../store/explorerRevealStore";
 import { tabRevealTarget } from "../lib/explorer-reveal";
@@ -27,6 +28,7 @@ interface EntityContext {
   dashboardDataSourceName?: string;
   appTitle?: string;
   appBindingName?: string;
+  appV2ProjectTitle?: string;
   dbtProjectName?: string;
 }
 
@@ -105,6 +107,16 @@ function segmentsForTab(
         "Data sources",
         ctx.appBindingName || tab.title,
       ]);
+    case "app-v2":
+      return plain(["App Projects", ctx.appV2ProjectTitle || tab.title]);
+    case "app-v2-file": {
+      const path = (tab.metadata?.path as string | undefined) || "";
+      return plain([
+        "App Projects",
+        ctx.appV2ProjectTitle,
+        ...path.split("/").filter(Boolean),
+      ]);
+    }
     case "connectors":
       return plain(["Connectors", tab.title || "New connector"]);
     case "flow-editor":
@@ -199,6 +211,11 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
       : undefined,
   );
 
+  const appV2ProjectId = tab?.metadata?.projectId as string | undefined;
+  const appV2ProjectTitle = useAppV2Store(s =>
+    appV2ProjectId ? s.projectsById[appV2ProjectId]?.title : undefined,
+  );
+
   const dbtProjectId = tab?.metadata?.projectId as string | undefined;
   const isDbtTab =
     tab?.kind === "dbt-file" ||
@@ -233,6 +250,7 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
     dashboardDataSourceName,
     appTitle,
     appBindingName,
+    appV2ProjectTitle,
     dbtProjectName,
   });
 

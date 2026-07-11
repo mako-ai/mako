@@ -54,7 +54,7 @@ const project = {
   title: "Private app",
   access: "private",
   workspaceRole: "viewer",
-  sharedWith: [],
+  sharedWith: [{ userId: "viewer", role: "viewer" }],
   owner_id: "owner",
   repositoryProvider: "mako-git",
   repositoryId: projectId.toString(),
@@ -89,7 +89,7 @@ vi.mock("../apps-v2/app-project.service", async () => {
         return context.userId === "owner" ? [project] : [];
       }
       async getReadable() {
-        if (context.userId !== "owner") {
+        if (context.userId !== "owner" && context.userId !== "viewer") {
           throw new AppV2NotFoundError("Project not found");
         }
         return project;
@@ -109,6 +109,9 @@ vi.mock("../apps-v2/worktree.service", async () => {
     await vi.importActual<typeof import("./errors")>("./errors");
   return {
     AppV2WorktreeService: class {
+      async getOrCreate() {
+        return worktree;
+      }
       async getById() {
         return worktree;
       }
@@ -157,8 +160,52 @@ describe("Apps v2 route isolation", () => {
   });
 
   beforeEach(() => {
+    process.env.APPS_V2_ENABLED = "true";
     context.userId = "owner";
     context.workspaceAllowed = true;
+  });
+
+  it("reports feature availability after authentication and workspace scoping", async () => {
+    const enabledResponse = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/status`,
+    );
+    expect(enabledResponse.status).toBe(200);
+    expect(await enabledResponse.json()).toEqual({ enabled: true });
+
+    process.env.APPS_V2_ENABLED = "false";
+    const disabledResponse = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/status`,
+    );
+    expect(disabledResponse.status).toBe(200);
+    expect(await disabledResponse.json()).toEqual({ enabled: false });
+  });
+
+  it("authenticates and scopes status before disclosing feature availability", async () => {
+    process.env.APPS_V2_ENABLED = "false";
+    context.userId = "";
+    const unauthenticated = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/status`,
+    );
+    expect(unauthenticated.status).toBe(401);
+
+    context.userId = "owner";
+    context.workspaceAllowed = false;
+    const wrongWorkspace = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/status`,
+    );
+    expect(wrongWorkspace.status).toBe(404);
+  });
+
+  it("keeps non-status routes unavailable when the feature is disabled", async () => {
+    process.env.APPS_V2_ENABLED = "false";
+    const response = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2`,
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: "Apps v2 feature is unavailable",
+    });
   });
 
   it("does not disclose a private project to another workspace member", async () => {
@@ -171,6 +218,44 @@ describe("Apps v2 route isolation", () => {
       success: false,
       error: "Project not found",
     });
+  });
+
+  it("allows a viewer to create a personal read-only worktree", async () => {
+    context.userId = "viewer";
+    const projectResponse = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}`,
+    );
+    expect(projectResponse.status).toBe(200);
+    expect(await projectResponse.json()).toMatchObject({
+      project: { effectiveRole: "viewer", readOnly: true },
+    });
+
+    const worktreeResponse = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}/worktree`,
+      { method: "POST" },
+    );
+    expect(worktreeResponse.status).toBe(200);
+    expect(await worktreeResponse.json()).toMatchObject({
+      success: true,
+      worktree: { id: worktreeId.toString() },
+    });
+
+    const writeResponse = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}/worktrees/${worktreeId.toString()}/file`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ifRevision: 0,
+          expectedWipOid: oid,
+          leaseEpoch: 1,
+          path: "src/App.tsx",
+          content: "viewer write",
+          executable: false,
+        }),
+      },
+    );
+    expect(writeResponse.status).toBe(404);
   });
 
   it("maps stale mutation state to 409", async () => {
