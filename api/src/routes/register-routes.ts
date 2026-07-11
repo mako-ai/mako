@@ -41,6 +41,8 @@ import { mcpPresetRoutes, mcpRoutes } from "./mcp.routes";
 import { mcpProtocolRoutes } from "./mcp-server.routes";
 import { mcpOAuthRoutes } from "./mcp-oauth.routes";
 import { appPreviewRoutes } from "./app-preview.routes";
+import { appsV2Routes } from "./apps-v2";
+import { isAppsV2Enabled } from "../apps-v2/config";
 
 /**
  * Mounts every REST router onto the provided Hono app.
@@ -98,6 +100,10 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   app.route("/api/workspaces/:workspaceId/notebook", notebookDataRoutes);
   app.route("/api/workspaces/:workspaceId/notebooks", notebookRoutes);
   app.route("/api/workspaces/:workspaceId/notebooks", notebookSessionRoutes);
+  // Apps v2 (experimental, git-backed) — parallel to v1, flag-gated.
+  if (isAppsV2Enabled()) {
+    app.route("/api/workspaces/:workspaceId/apps-v2", appsV2Routes);
+  }
   app.route(
     "/api/workspaces/:workspaceId/data-sources",
     resourceDataSourceRoutes,

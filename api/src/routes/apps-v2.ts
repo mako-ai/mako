@@ -1,0 +1,551 @@
+/**
+ * Apps v2 routes — experimental git-backed apps (see apps-v2.md).
+ *
+ * Classification: Authenticated + workspace-scoped
+ * (`unifiedAuthMiddleware` + workspace verification).
+ *
+ * Runs in PARALLEL with the v1 `/apps` routes: separate collections, separate
+ * storage (bare git repos), separate tools. Registration is gated on
+ * `APPS_V2_ENABLED` in register-routes.ts.
+ *
+ * File reads resolve through the durable worktree layer (bare repo + private
+ * WIP refs) — never a session directory — so responses are identical whether
+ * a sandbox session is alive or not.
+ */
+import { createRoute, z } from "@hono/zod-openapi";
+import { Types } from "mongoose";
+import {
+  AppProjectV2,
+  type IAppProjectV2,
+} from "../database/workspace-schema";
+import { loggers, enrichContextWithWorkspace } from "../logging";
+import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import { workspaceService } from "../services/workspace.service";
+import { AuthenticatedContext } from "../middleware/workspace.middleware";
+import { canReadResource, canWriteResource } from "../utils/resource-acl";
+import {
+  WorktreeConflictError,
+  commitWorktree,
+  createProject,
+  deleteProject,
+  discardWorktree,
+  ensureWorktree,
+  execInWorktree,
+  listFiles,
+  projectHistory,
+  readFile,
+  worktreeStatus,
+  writeFile,
+} from "../apps-v2/worktree.service";
+import {
+  APPS_V2_EXEC_MAX_TIMEOUT_MS,
+} from "../apps-v2/config";
+import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+
+const logger = loggers.api("apps-v2");
+
+export const appsV2Routes = createRouter();
+
+const WorkspaceParam = z.object({
+  workspaceId: z
+    .string()
+    .openapi({ param: { name: "workspaceId", in: "path" } }),
+});
+const ProjectParam = WorkspaceParam.extend({
+  id: z.string().openapi({ param: { name: "id", in: "path" } }),
+});
+
+appsV2Routes.use("*", unifiedAuthMiddleware);
+
+appsV2Routes.use("*", async (c: AuthenticatedContext, next) => {
+  const workspaceId = c.req.param("workspaceId");
+  if (workspaceId) {
+    const user = c.get("user");
+    const workspace = c.get("workspace");
+    if (workspace) {
+      if (workspace._id.toString() !== workspaceId) {
+        return c.json(
+          { success: false, error: "API key not authorized for this workspace" },
+          403,
+        );
+      }
+    } else if (user) {
+      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
+      if (!hasAccess) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+    } else {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+    enrichContextWithWorkspace(workspaceId);
+  }
+  await next();
+});
+
+function actingUserId(c: AuthenticatedContext): string | undefined {
+  return c.get("user")?.id;
+}
+
+async function memberRoleFor(
+  workspaceId: string,
+  userId: string | undefined,
+): Promise<string | undefined> {
+  if (!userId) return undefined;
+  const member = await workspaceService.getMember(workspaceId, userId);
+  return member?.role;
+}
+
+async function loadProject(
+  c: AuthenticatedContext,
+  opts: { write: boolean },
+): Promise<
+  | { project: IAppProjectV2; userId?: string }
+  | { errorResponse: Response }
+> {
+  const workspaceId = c.req.param("workspaceId");
+  const id = c.req.param("id");
+  if (!id || !Types.ObjectId.isValid(id)) {
+    return {
+      errorResponse: c.json({ success: false, error: "Invalid app id" }, 400),
+    };
+  }
+  const project = await AppProjectV2.findOne({
+    _id: new Types.ObjectId(id),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+  if (!project) {
+    return {
+      errorResponse: c.json({ success: false, error: "App not found" }, 404),
+    };
+  }
+  const userId = actingUserId(c);
+  if (userId) {
+    const role = await memberRoleFor(workspaceId, userId);
+    const allowed = opts.write
+      ? canWriteResource(project, userId, role)
+      : canReadResource(project, userId, role);
+    if (!allowed) {
+      return {
+        errorResponse: c.json({ success: false, error: "App not found" }, 404),
+      };
+    }
+  }
+  return { project, userId };
+}
+
+function toProjectJson(p: IAppProjectV2) {
+  return {
+    id: p._id.toString(),
+    title: p.title,
+    description: p.description,
+    access: p.access,
+    owner_id: p.owner_id,
+    defaultBranch: p.defaultBranch,
+    publishedSha: p.publishedSha,
+    createdAt: p.createdAt,
+    updatedAt: p.updatedAt,
+  };
+}
+
+function handleError(c: AuthenticatedContext, error: unknown) {
+  if (error instanceof WorktreeConflictError) {
+    return c.json({ success: false, error: error.message }, 409);
+  }
+  logger.error("Apps v2 route error", { error });
+  return c.json(
+    {
+      success: false,
+      error: error instanceof Error ? error.message : "Internal error",
+    },
+    500,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/",
+    tags: ["Apps v2"],
+    summary: "List Apps v2 projects",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const userId = actingUserId(c);
+      const role = await memberRoleFor(workspaceId, userId);
+      const docs = await AppProjectV2.find({
+        workspaceId: new Types.ObjectId(workspaceId),
+      }).sort({ updatedAt: -1 });
+      const visible = docs.filter(
+        d => !userId || canReadResource(d, userId, role),
+      );
+      return c.json(
+        { success: true as const, apps: visible.map(toProjectJson) },
+        200,
+      );
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/",
+    tags: ["Apps v2"],
+    summary: "Create an Apps v2 project",
+    description:
+      "Creates the project record and its Mako-managed bare git repository seeded with a Vite + React scaffold.",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              title: z.string().min(1),
+              description: z.string().optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { title, description } = c.req.valid("json");
+      const userId = actingUserId(c);
+      const project = await createProject({
+        workspaceId,
+        title,
+        description,
+        userId,
+      });
+      return c.json(
+        { success: true as const, app: toProjectJson(project) },
+        200,
+      );
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/:id",
+    tags: ["Apps v2"],
+    summary: "Get an Apps v2 project",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      return c.json(
+        { success: true as const, app: toProjectJson(loaded.project) },
+        200,
+      );
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/:id",
+    tags: ["Apps v2"],
+    summary: "Delete an Apps v2 project (repo included)",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      await deleteProject(loaded.project);
+      return c.json({ success: true as const }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Files (durable reads; writes go through the actor's worktree)
+// ---------------------------------------------------------------------------
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/:id/files",
+    tags: ["Apps v2"],
+    summary: "List files (committed + uncommitted, sandbox-independent)",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { ref, entries } = await listFiles(loaded.project, loaded.userId);
+      return c.json({ success: true as const, ref, files: entries }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/:id/file",
+    tags: ["Apps v2"],
+    summary: "Read a file at the actor's latest durable state",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      query: z.object({ path: z.string().min(1) }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { path: relPath } = c.req.valid("query");
+      try {
+        const file = await readFile(loaded.project, relPath, loaded.userId);
+        return c.json({ success: true as const, file }, 200);
+      } catch {
+        return c.json({ success: false, error: "File not found" }, 404);
+      }
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "put",
+    path: "/:id/file",
+    tags: ["Apps v2"],
+    summary: "Write a file through the actor's worktree (flushes WIP ref)",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              path: z.string().min(1),
+              contents: z.string(),
+            }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const userId = loaded.userId ?? "api-key";
+      const { path: relPath, contents } = c.req.valid("json");
+      const handle = await ensureWorktree(loaded.project, userId);
+      const flush = await writeFile(handle, relPath, contents);
+      return c.json({ success: true as const, flush }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Shell execution
+// ---------------------------------------------------------------------------
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/:id/exec",
+    tags: ["Apps v2"],
+    summary: "Run a shell command in the actor's sandbox session",
+    description:
+      "Executes in the session working tree via the configured sandbox provider, then flushes the working tree to the durable WIP ref.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              command: z.string().min(1),
+              cwd: z.string().optional(),
+              timeoutMs: z
+                .number()
+                .int()
+                .positive()
+                .max(APPS_V2_EXEC_MAX_TIMEOUT_MS)
+                .optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const userId = loaded.userId ?? "api-key";
+      const { command, cwd, timeoutMs } = c.req.valid("json");
+      const handle = await ensureWorktree(loaded.project, userId);
+      const result = await execInWorktree(handle, command, { cwd, timeoutMs });
+      return c.json({ success: true as const, result }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Status / history / commit / discard
+// ---------------------------------------------------------------------------
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/:id/status",
+    tags: ["Apps v2"],
+    summary: "Worktree status (base, WIP, changed files)",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const userId = loaded.userId ?? "api-key";
+      const status = await worktreeStatus(loaded.project, userId);
+      return c.json({ success: true as const, status }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/:id/history",
+    tags: ["Apps v2"],
+    summary: "Commit history of the default branch",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      query: z.object({
+        limit: z.coerce.number().int().positive().max(200).optional(),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { limit } = c.req.valid("query");
+      const commits = await projectHistory(loaded.project, limit ?? 20);
+      return c.json({ success: true as const, commits }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/:id/commit",
+    tags: ["Apps v2"],
+    summary: "Commit the actor's WIP onto the branch (CAS)",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({ message: z.string().min(1) }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const userId = loaded.userId ?? "api-key";
+      const { message } = c.req.valid("json");
+      const user = c.get("user");
+      const handle = await ensureWorktree(loaded.project, userId);
+      const result = await commitWorktree(
+        handle,
+        message,
+        user?.email ? { name: user.email, email: user.email } : undefined,
+      );
+      return c.json({ success: true as const, result }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/:id/discard",
+    tags: ["Apps v2"],
+    summary: "Discard all uncommitted work and re-base on branch head",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const userId = loaded.userId ?? "api-key";
+      const handle = await ensureWorktree(loaded.project, userId);
+      const result = await discardWorktree(handle);
+      return c.json({ success: true as const, result }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);

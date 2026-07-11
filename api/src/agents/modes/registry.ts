@@ -191,6 +191,16 @@ const FLOW_MODE_TOOL_NAMES: string[] = [
 ];
 
 const APP_MODE_TOOL_NAMES: string[] = [
+  // Apps v2 (experimental, git-backed — tools exist only when APPS_V2_ENABLED;
+  // listing them here is inert otherwise because the tool set is empty).
+  "app2_list_apps",
+  "app2_create_app",
+  "app2_bash",
+  "app2_read_file",
+  "app2_write_file",
+  "app2_edit_file",
+  "app2_status",
+  "app2_commit",
   // Client app tools
   "list_open_apps",
   "open_app",

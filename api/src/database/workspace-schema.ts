@@ -5600,3 +5600,126 @@ export const McpToolGrant = mongoose.model<IMcpToolGrant>(
   "McpToolGrant",
   McpToolGrantSchema,
 );
+
+// ---------------------------------------------------------------------------
+// Apps v2 (experimental, flag-gated — see apps-v2.md)
+//
+// Runs in PARALLEL with apps v1 (`MakoApp` above): new collections, no shared
+// fields, no migrations of existing data. Source files live in a Mako-managed
+// bare git repository per project (api/src/apps-v2/repository.service.ts);
+// these documents hold only control-plane metadata.
+// ---------------------------------------------------------------------------
+
+/**
+ * An Apps v2 project: control-plane record for one git-backed app.
+ * One bare repo per project (per-app ACLs make the repo the authorization
+ * boundary); source contents are never stored in Mongo.
+ */
+export interface IAppProjectV2 extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  title: string;
+  description?: string;
+  /** Same Google-style ACL model as v1 apps (utils/resource-acl.ts). */
+  access: "private" | "workspace";
+  workspaceRole?: "viewer" | "editor";
+  sharedWith?: IResourceShareEntry[];
+  owner_id?: string;
+  createdBy: string;
+  defaultBranch: string;
+  /** Commit SHA of the last published deployment (Phase 3). */
+  publishedSha?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const AppProjectV2Schema = new Schema<IAppProjectV2>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    title: { type: String, required: true, trim: true },
+    description: { type: String },
+    access: {
+      type: String,
+      enum: ["private", "workspace"],
+      default: "private",
+    },
+    workspaceRole: { type: String, enum: ["viewer", "editor"] },
+    sharedWith: { type: [ResourceShareEntrySchema], default: undefined },
+    owner_id: { type: String, index: true },
+    createdBy: { type: String, required: true },
+    defaultBranch: { type: String, default: "main" },
+    publishedSha: { type: String },
+  },
+  { collection: "app_projects_v2", timestamps: true },
+);
+
+AppProjectV2Schema.index({ workspaceId: 1, updatedAt: -1 });
+
+export const AppProjectV2 = mongoose.model<IAppProjectV2>(
+  "AppProjectV2",
+  AppProjectV2Schema,
+);
+
+/**
+ * A per-actor durable worktree on an Apps v2 project (apps-v2.md §4.4).
+ *
+ * Uncommitted work is snapshotted as a shadow commit on a private WIP ref
+ * (`refs/mako/worktrees/<worktreeId>`) advanced only by compare-and-swap.
+ * `wipOid` / `revision` here are repairable projections of that ref — the
+ * ref itself is the transaction authority. `leaseEpoch` fences stale
+ * sessions: it increments whenever the session working tree is
+ * re-materialized, so a zombie sandbox flush cannot clobber newer state.
+ */
+export interface IAppWorktreeV2 extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  userId: string;
+  branch: string;
+  /** Commit the worktree is based on (branch head at materialize time). */
+  baseSha: string;
+  /** Latest WIP snapshot commit, absent when the worktree is clean. */
+  wipOid?: string;
+  /** Monotonic flush counter (projection of WIP ref advances). */
+  revision: number;
+  /** Fencing token for the active session materialization. */
+  leaseEpoch: number;
+  lastFlushAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const AppWorktreeV2Schema = new Schema<IAppWorktreeV2>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "AppProjectV2",
+      required: true,
+    },
+    userId: { type: String, required: true },
+    branch: { type: String, required: true, default: "main" },
+    baseSha: { type: String, required: true },
+    wipOid: { type: String },
+    revision: { type: Number, default: 0 },
+    leaseEpoch: { type: Number, default: 1 },
+    lastFlushAt: { type: Date },
+  },
+  { collection: "app_worktrees_v2", timestamps: true },
+);
+
+AppWorktreeV2Schema.index({ projectId: 1, userId: 1 }, { unique: true });
+AppWorktreeV2Schema.index({ workspaceId: 1, userId: 1 });
+
+export const AppWorktreeV2 = mongoose.model<IAppWorktreeV2>(
+  "AppWorktreeV2",
+  AppWorktreeV2Schema,
+);
