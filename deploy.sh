@@ -5,6 +5,13 @@ set -e
 
 source .env
 
+# Project-local .env values remain the default. Operators can target a
+# different environment without editing .env by supplying MAKO_DEPLOY_*.
+PROJECT_ID="${MAKO_DEPLOY_PROJECT_ID:-${PROJECT_ID}}"
+REGION="${MAKO_DEPLOY_REGION:-${REGION}}"
+REPO="${MAKO_DEPLOY_REPOSITORY:-${REPO}}"
+RUNTIME_SERVICE_ACCOUNT="${MAKO_DEPLOY_RUNTIME_SERVICE_ACCOUNT:-}"
+
 # Use a different port for testing to avoid conflicts with local dev server
 TEST_PORT=8090
 
@@ -13,7 +20,7 @@ export BASE_URL="https://app.mako.ai"
 export CLIENT_URL="https://app.mako.ai"  
 export VITE_API_URL="https://app.mako.ai/api"
 export DASHBOARD_ARTIFACT_STORE="gcs"
-export GCS_DASHBOARD_BUCKET="revops-462013-dashboard-artifacts"
+export GCS_DASHBOARD_BUCKET="${MAKO_DEPLOY_DASHBOARD_BUCKET:-${PROJECT_ID}-dashboard-artifacts}"
 export DASHBOARD_ARTIFACT_PREFIX="dashboard-artifacts/prod"
 export INNGEST_SERVE_ORIGIN="$BASE_URL"
 export DISABLE_SCHEDULED_SYNC="false"
@@ -203,9 +210,16 @@ docker push $REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE_NAME:latest
 } > env.yaml
 
 # Update Cloud Run service (3600s: Inngest bulk Parquet → BigQuery can exceed 10m)
+SERVICE_ACCOUNT_ARGS=()
+if [ -n "${RUNTIME_SERVICE_ACCOUNT}" ]; then
+  SERVICE_ACCOUNT_ARGS+=(--service-account="${RUNTIME_SERVICE_ACCOUNT}")
+fi
+
 gcloud run deploy mako \
+  --project $PROJECT_ID \
   --image $REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE_NAME:latest \
   --region $REGION \
+  "${SERVICE_ACCOUNT_ARGS[@]}" \
   --env-vars-file env.yaml \
   --min-instances=1 \
   --timeout=3600 \
