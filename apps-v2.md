@@ -41,7 +41,8 @@ Both properties must survive — and both must extend to users editing from outs
 - **R7** — Users can edit apps with external harnesses:
   - via a **Mako MCP server** (Claude Desktop, Claude Code, Codex, Cursor get schema + query + app tools),
   - via a **local clone** (`git clone` + Claude Code in the repo, with data access through an authenticated CLI/SDK),
-  - via a **desktop extension slot** that hosts a third-party coding agent in the right panel in lieu of Mako chat.
+  - via the **`mako` CLI's own terminal agent** (`mako agent` — the Mako agent driving the local checkout, Claude Code-style),
+  - via a **desktop extension slot** that hosts a coding agent (third-party or `mako agent`) in the right panel in lieu of Mako chat.
 - **R8** — Existing v1 apps migrate without data loss; the v1 CDN renderer remains available until migration completes.
 
 ### Non-functional
@@ -228,6 +229,7 @@ git clone https://api.mako.ai/git/acme.git && cd acme/apps/revenue-dashboard
 mako login          # device-code flow → PAT stored in ~/.mako (or paste an API key)
 mako dev            # runs vite dev; @mako/sdk proxies useQuery → cloud execute API
 claude              # Claude Code, with Mako MCP in .mcp.json (scaffolded into the repo)
+mako agent          # ...or vibe with the Mako agent itself, right in the terminal (see (c))
 ```
 
 - **Auth:** workspace API keys (`revops_*`) work day one via the existing `unifiedAuthMiddleware`. Fast-follow: user-scoped PATs with scopes (read:schema, execute:query, write:repo) so a leaked local token isn't a workspace-admin key, plus the `mako login` device flow.
@@ -235,7 +237,14 @@ claude              # Claude Code, with Mako MCP in .mcp.json (scaffolded into t
 - **Publish from local:** `mako deploy` = push + call Deploy API. USP #2 intact.
 - The repo scaffold includes `.mcp.json` and `AGENTS.md`/`CLAUDE.md` describing the layout and the SDK, so third-party harnesses are effective immediately after clone.
 
-**(c) Desktop extension slot.** The desktop app (`packages/desktop`) gains a right-panel "coding agent" slot that can host Claude Code / Codex (their CLIs speak a well-documented stdio/ACP protocol) against either a local checkout or a cloud sandbox terminal. The local agent (`packages/local-agent`) is extended with two capabilities, both opt-in and scoped: a PTY endpoint (shell restricted to the checked-out repo directory) and repo file access. Its existing loopback + CORS trust model carries over. This is the last phase and can ship independently.
+**(c) The `mako` CLI — plumbing *and* a terminal agent.** The commands above imply a real CLI product (`@mako/cli`, installed via `npm i -g mako` or a curl script), not just glue. Beyond `login` / `clone` / `dev` / `deploy` / `run <job>`, it ships **`mako agent`: the Mako agent as a terminal harness**, so users can vibe-code an app from their shell the way they would with Claude Code — except this agent natively knows their workspace.
+
+- **It is a thin client, not a second agent.** `POST /api/agent/chat` already accepts `revops_*` API keys through `unifiedAuthMiddleware`, so streaming, chat persistence, model selection, skills, modes, and MCP tools all come from the existing server for free. The CLI renders the stream and handles tool round-trips.
+- **Tool execution split reuses the existing client/server pattern.** The codebase already splits tools into server-executed and client-executed (`app/src/agent-runtime/client-tool-manifest.ts` + `useClientToolDispatch`); the CLI simply becomes an alternative "client" surface. Data tools (`sql_*`, `mongo_*`, bindings, materialization, publish) keep running server-side; the v2 `bash`/`read_file`/`write_file`/`edit_file`/`glob`/`grep` tools execute **locally against the user's checkout** instead of an E2B sandbox. Same tool contract, two interchangeable executors: cloud sandbox when driven from the web app, local filesystem when driven from the terminal. One brain, two pairs of hands.
+- **Safety:** local commands run with user permissions, so `mako agent` gets the standard harness treatment — per-command approval prompts with an allowlist, and a `--yolo` flag for the brave. Database credentials still never touch the machine (execute-API proxy, unchanged).
+- **Cost shape:** terminal sessions consume zero sandbox compute (the laptop is the sandbox); users pay only Mako-side model tokens. This is complementary to (a)/(b), not competing: users who want their Claude/Codex subscription quota use those harnesses over MCP; users who want Mako's full data-aware toolchain in a terminal use `mako agent`. A headless mode (`mako agent -p "add a churn cohort filter"`) makes it usable from CI and scripts.
+
+**(d) Desktop extension slot.** The desktop app (`packages/desktop`) gains a right-panel "coding agent" slot that can host Claude Code / Codex (their CLIs speak a well-documented stdio/ACP protocol) against either a local checkout or a cloud sandbox terminal. `mako agent` speaks the same protocol and becomes the slot's first-party occupant, which also makes it the reference implementation to test the slot against. The local agent (`packages/local-agent`) is extended with two capabilities, both opt-in and scoped: a PTY endpoint (shell restricted to the checked-out repo directory) and repo file access. Its existing loopback + CORS trust model carries over. This is the last phase and can ship independently.
 
 ### 4.9 Scripts & scheduled jobs (bridge to the "ad-hoc data manipulation" future)
 
@@ -261,8 +270,8 @@ An Inngest function (same pattern as `dbt-run.ts` / `app-binding-materialize.ts`
 1. **Phase 1 — Git substrate.** Mako-hosted bare repos + smart-HTTP with API-key auth; workspace repo provisioning; Files API (tree/read from a ref); migration tool writing v1 apps into the repo. Explorer reads from Files API behind a flag. *De-risks: git hosting, the read model.*
 2. **Phase 2 — Sandbox sessions + agent v2.** E2B template, session service, scoped tokens, `bash`/file tools in `app` mode, draft-ref flush loop, `commit_app`. Chat can build an app end-to-end in the sandbox. *De-risks: E2B integration, flush durability, tool ergonomics.*
 3. **Phase 3 — Preview & hosting.** `@mako/app-sdk` as real package + Vite scaffold; dev-preview iframe via sandbox URL; publish pipeline (build sandbox → bucket → apps-router Worker); binding-as-files reconciliation + materialization rewire.
-4. **Phase 4 — Open editing.** MCP server, `mako` CLI (`login`/`dev`/`deploy`), PATs with scopes, repo scaffold docs for third-party harnesses.
-5. **Phase 5 — Desktop extension slot + jobs.** Local-agent PTY/file capabilities, right-panel harness hosting; `mako.json` scheduled jobs; bulk v1 migration + CDN runtime deprecation.
+4. **Phase 4 — Open editing.** MCP server, `mako` CLI (`login`/`dev`/`deploy`, then `mako agent` reusing the Phase 2 tool contract with a local executor), PATs with scopes, repo scaffold docs for third-party harnesses.
+5. **Phase 5 — Desktop extension slot + jobs.** Local-agent PTY/file capabilities, right-panel harness hosting (with `mako agent` as first-party occupant); `mako.json` scheduled jobs; bulk v1 migration + CDN runtime deprecation.
 
 Each phase ships behind a flag and is independently valuable (Phase 1 alone gives apps real history + local read-only clones).
 
