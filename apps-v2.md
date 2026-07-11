@@ -1,6 +1,9 @@
 # Apps v2: Git-native projects, real development environments, and instant deployment
 
-- **Status:** Proposed
+- **Status:** Proposed; initial Git-native backend slice implemented behind
+  `APPS_V2_ENABLED=false` by default
+- **Production gate:** enabling also requires a durable non-temporary Git root
+  and `APPS_V2_GIT_DURABILITY_CONFIRMED=true`
 - **Audience:** Product, application platform, agent, data platform, security, and desktop teams
 - **Last updated:** 2026-07-11
 - **Scope:** Mako Apps authoring, storage, preview, deployment, and external coding-tool access
@@ -324,6 +327,10 @@ A new Apps v2 project should use a familiar Vite-compatible scaffold:
 - `dev`, `build`, `typecheck`, and `lint` scripts;
 - `@mako/app-sdk` as a normal dependency; and
 - React/Vite dependencies owned by the project rather than injected by the host.
+
+The initial backend scaffold intentionally omits `@mako/app-sdk` until that
+package is published; adding a nonexistent dependency would make generated
+projects impossible to install. The SDK is added when its package is available.
 
 `.mako/app.yaml` is checked in and contains non-secret deployment and data-binding configuration:
 

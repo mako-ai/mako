@@ -4100,6 +4100,216 @@ MakoAppSchema.index({ "publicShare.token": 1 }, { unique: true, sparse: true });
 export const MakoApp = mongoose.model<IMakoApp>("MakoApp", MakoAppSchema);
 
 /**
+ * Apps v2 control-plane metadata. Source bytes live exclusively in Git
+ * objects/refs; these collections contain no file contents.
+ */
+export interface IAppV2Project extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  title: string;
+  description?: string;
+  access: "private" | "workspace";
+  workspaceRole: ResourceShareRole;
+  sharedWith: IResourceShareEntry[];
+  owner_id: string;
+  createdBy: string;
+  repositoryProvider: "mako-git";
+  repositoryId: string;
+  defaultBranch: string;
+  headSha: string;
+  mutationRevision: number;
+  deletionStatus: "active" | "deleting" | "deleted";
+  deletedAt?: Date;
+  deletedBy?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IAppV2Worktree extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  actorId: string;
+  branch: string;
+  baseSha: string;
+  wipRef: string;
+  wipOid: string;
+  leaseRef: string;
+  leaseOid: string;
+  revision: number;
+  leaseEpoch: number;
+  status: "active" | "discarded" | "fenced";
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IAppV2Commit extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  sha: string;
+  treeSha: string;
+  parentShas: string[];
+  message: string;
+  authorName: string;
+  authorEmail: string;
+  authoredAt: Date;
+  stats: {
+    filesChanged: number;
+    additions: number;
+    deletions: number;
+  };
+  createdBy: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const AppV2ProjectSchema = new Schema<IAppV2Project>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    title: { type: String, required: true, trim: true },
+    description: { type: String },
+    access: {
+      type: String,
+      enum: ["private", "workspace"],
+      default: "private",
+      required: true,
+    },
+    workspaceRole: {
+      type: String,
+      enum: ["viewer", "editor"],
+      default: "viewer",
+      required: true,
+    },
+    sharedWith: { type: [ResourceShareEntrySchema], default: [] },
+    owner_id: { type: String, required: true, ref: "User" },
+    createdBy: { type: String, required: true, ref: "User" },
+    repositoryProvider: {
+      type: String,
+      enum: ["mako-git"],
+      required: true,
+    },
+    repositoryId: { type: String, required: true },
+    defaultBranch: { type: String, required: true, default: "main" },
+    headSha: { type: String, required: true },
+    mutationRevision: { type: Number, required: true, default: 0 },
+    deletionStatus: {
+      type: String,
+      enum: ["active", "deleting", "deleted"],
+      default: "active",
+      required: true,
+    },
+    deletedAt: { type: Date },
+    deletedBy: { type: String },
+  },
+  {
+    collection: "app_v2_projects",
+    timestamps: true,
+  },
+);
+
+AppV2ProjectSchema.index({ workspaceId: 1, updatedAt: -1 });
+AppV2ProjectSchema.index({
+  workspaceId: 1,
+  deletionStatus: 1,
+  updatedAt: -1,
+});
+AppV2ProjectSchema.index({ workspaceId: 1, owner_id: 1 });
+AppV2ProjectSchema.index({ workspaceId: 1, "sharedWith.userId": 1 });
+AppV2ProjectSchema.index({ repositoryId: 1 }, { unique: true });
+
+const AppV2WorktreeSchema = new Schema<IAppV2Worktree>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "AppV2Project",
+      required: true,
+    },
+    actorId: { type: String, required: true },
+    branch: { type: String, required: true },
+    baseSha: { type: String, required: true },
+    wipRef: { type: String, required: true },
+    wipOid: { type: String, required: true },
+    leaseRef: { type: String, required: true },
+    leaseOid: { type: String, required: true },
+    revision: { type: Number, required: true, default: 0 },
+    leaseEpoch: { type: Number, required: true, default: 1 },
+    status: {
+      type: String,
+      enum: ["active", "discarded", "fenced"],
+      default: "active",
+      required: true,
+    },
+  },
+  {
+    collection: "app_v2_worktrees",
+    timestamps: true,
+  },
+);
+
+AppV2WorktreeSchema.index({ projectId: 1, actorId: 1 }, { unique: true });
+AppV2WorktreeSchema.index({ workspaceId: 1, projectId: 1 });
+AppV2WorktreeSchema.index({ wipRef: 1 }, { unique: true });
+AppV2WorktreeSchema.index({ leaseRef: 1 }, { unique: true });
+
+const AppV2CommitSchema = new Schema<IAppV2Commit>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "AppV2Project",
+      required: true,
+    },
+    sha: { type: String, required: true },
+    treeSha: { type: String, required: true },
+    parentShas: { type: [String], default: [] },
+    message: { type: String, required: true },
+    authorName: { type: String, required: true },
+    authorEmail: { type: String, required: true },
+    authoredAt: { type: Date, required: true },
+    stats: {
+      filesChanged: { type: Number, required: true, default: 0 },
+      additions: { type: Number, required: true, default: 0 },
+      deletions: { type: Number, required: true, default: 0 },
+    },
+    createdBy: { type: String, required: true },
+  },
+  {
+    collection: "app_v2_commits",
+    timestamps: true,
+  },
+);
+
+AppV2CommitSchema.index({ projectId: 1, sha: 1 }, { unique: true });
+AppV2CommitSchema.index({ workspaceId: 1, projectId: 1, authoredAt: -1 });
+
+export const AppV2Project = mongoose.model<IAppV2Project>(
+  "AppV2Project",
+  AppV2ProjectSchema,
+);
+export const AppV2Worktree = mongoose.model<IAppV2Worktree>(
+  "AppV2Worktree",
+  AppV2WorktreeSchema,
+);
+export const AppV2Commit = mongoose.model<IAppV2Commit>(
+  "AppV2Commit",
+  AppV2CommitSchema,
+);
+
+/**
  * Skill — workspace-scoped knowledge + procedure primitive.
  *
  * See GitHub issue #365. A skill is a named, conditional playbook with:

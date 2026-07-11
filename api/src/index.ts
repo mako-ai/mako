@@ -30,6 +30,7 @@ import { checkPubSubBackendHealth } from "./services/pubsub.service";
 import { warmPricingCache } from "./services/gateway-pricing.service";
 import { warmCatalog } from "./services/model-catalog.service";
 import { discoverSystemSkills } from "./agent-lib/skills/system-skills";
+import { validateAppsV2StartupConfiguration } from "./apps-v2/config";
 
 import { getCdcEventStoreConfig } from "./sync-cdc/event-store";
 import {
@@ -43,6 +44,10 @@ const envPath = path.resolve(__dirname, "../../.env");
 if (fs.existsSync(envPath)) {
   dotenv.config({ path: envPath });
 }
+
+// Fail startup before accepting traffic if the enabled production Apps v2
+// slice has no durable Git root configured.
+validateAppsV2StartupConfiguration();
 
 // Initialize Langfuse tracing AFTER env vars are loaded but before the server
 // handles any request. Registers the OpenTelemetry provider that the Vercel AI

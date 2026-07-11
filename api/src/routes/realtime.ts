@@ -120,6 +120,7 @@ realtimeRoutes.openapi(
               .writeSSE({ event: "message", data: JSON.stringify(event) })
               .catch(() => void cleanup());
           },
+          { userId: user.id },
         );
 
         // Presence: lets the agent pipeline know a browser is attached (used

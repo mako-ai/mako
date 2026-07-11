@@ -14,10 +14,7 @@ import {
   subscribeToWorkspaceEvents,
   type RealtimeEvent,
 } from "./realtime.service";
-import {
-  getPubSubBackendKind,
-  createPubSubPublisher,
-} from "./pubsub.service";
+import { getPubSubBackendKind, createPubSubPublisher } from "./pubsub.service";
 
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
@@ -37,9 +34,7 @@ function consoleUpdated(consoleId: string, draftRevision: number) {
 /** Publish must reach a subscriber on the same workspace channel. */
 async function testPublishReachesSubscriber() {
   const received: RealtimeEvent[] = [];
-  const dispose = await subscribeToWorkspaceEvents(WS_A, e =>
-    received.push(e),
-  );
+  const dispose = await subscribeToWorkspaceEvents(WS_A, e => received.push(e));
 
   publishRealtimeEvent(WS_A, consoleUpdated("c1", 2));
   await delay(10);
@@ -71,6 +66,59 @@ async function testWorkspaceIsolation() {
   );
   await disposeA();
   await disposeB();
+}
+
+/** User-targeted events are filtered before callbacks, including anonymous subscribers. */
+async function testUserTargetedFiltering() {
+  const receivedUser1: RealtimeEvent[] = [];
+  const receivedUser2: RealtimeEvent[] = [];
+  const receivedUnscoped: RealtimeEvent[] = [];
+  const disposeUser1 = await subscribeToWorkspaceEvents(
+    WS_A,
+    event => receivedUser1.push(event),
+    { userId: "user-1" },
+  );
+  const disposeUser2 = await subscribeToWorkspaceEvents(
+    WS_A,
+    event => receivedUser2.push(event),
+    { userId: "user-2" },
+  );
+  const disposeUnscoped = await subscribeToWorkspaceEvents(WS_A, event =>
+    receivedUnscoped.push(event),
+  );
+
+  publishRealtimeEvent(WS_A, {
+    type: "dbt.checkout.updated",
+    projectId: "project-1",
+    branch: "main",
+    forUserId: "user-1",
+    updatedBy: "user-1",
+  });
+  await delay(10);
+
+  assert.equal(receivedUser1.length, 1);
+  assert.equal(receivedUser2.length, 0);
+  assert.equal(receivedUnscoped.length, 0);
+
+  publishRealtimeEvent(WS_A, {
+    type: "app-v2.project.updated",
+    projectId: "workspace-project",
+  });
+  publishRealtimeEvent(WS_A, {
+    type: "app-v2.commit.created",
+    projectId: "private-project",
+    worktreeId: "worktree-2",
+    sha: "a".repeat(40),
+    forUserId: "user-2",
+  });
+  await delay(10);
+
+  assert.equal(receivedUser1.length, 2, "workspace event broadcasts");
+  assert.equal(receivedUser2.length, 2, "target receives private commit");
+  assert.equal(receivedUnscoped.length, 1, "unscoped sees only broadcast");
+  await disposeUser1();
+  await disposeUser2();
+  await disposeUnscoped();
 }
 
 /** Multiple listeners on one workspace all receive events; disposal is per-listener. */
@@ -107,15 +155,14 @@ async function testRefCountedListeners() {
 /** Malformed JSON on the channel is dropped without breaking the listener. */
 async function testMalformedEventDropped() {
   const received: RealtimeEvent[] = [];
-  const dispose = await subscribeToWorkspaceEvents(WS_A, e =>
-    received.push(e),
-  );
+  const dispose = await subscribeToWorkspaceEvents(WS_A, e => received.push(e));
 
   // Publish raw garbage straight through the backend.
   await createPubSubPublisher().publish(
     `mako:realtime:ws:${WS_A}`,
     "{not json",
   );
+  await createPubSubPublisher().publish(`mako:realtime:ws:${WS_A}`, "null");
   publishRealtimeEvent(WS_A, consoleUpdated("c4", 9));
   await delay(10);
 
@@ -158,6 +205,7 @@ async function main() {
   );
   await testPublishReachesSubscriber();
   await testWorkspaceIsolation();
+  await testUserTargetedFiltering();
   await testRefCountedListeners();
   await testMalformedEventDropped();
   await testThrowingListenerIsolated();

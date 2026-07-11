@@ -1,0 +1,5 @@
+schemaVersion: 1
+build:
+  command: pnpm build
+  outputDirectory: dist
+bindings: []

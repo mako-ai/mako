@@ -62,4 +62,29 @@ export {
 
 export { DEFAULT_APP_SCAFFOLD, createAppScaffold } from "./app-scaffold";
 
+export {
+  AppV2AccessSchema,
+  AppV2WorkspaceRoleSchema,
+  AppV2ProjectCreateSchema,
+  AppV2MutationStateSchema,
+  AppV2WriteFileSchema,
+  AppV2DeleteFileSchema,
+  AppV2MoveFileSchema,
+  AppV2CommitSchema,
+  AppV2DiscardSchema,
+  AppV2LeaseRotateSchema,
+  AppV2MaxPathCharacters,
+  AppV2MaxFileContentCharacters,
+  type AppV2Access,
+  type AppV2WorkspaceRole,
+  type AppV2ProjectCreate,
+  type AppV2MutationState,
+} from "./app-v2.schema";
+
+export {
+  AppV2ScaffoldFiles,
+  createAppV2Scaffold,
+  type AppV2ScaffoldFile,
+} from "./app-v2-scaffold.generated";
+
 export * from "./db-flow-form.schema";

@@ -127,6 +127,30 @@ export type RealtimeEvent =
       updatedBy: string;
       clientId?: string;
       origin: "agent" | "save";
+    }
+  | {
+      type: "app-v2.project.updated";
+      projectId?: string;
+      forUserId?: string;
+    }
+  | {
+      type: "app-v2.project.deleted";
+      projectId: string;
+      forUserId?: string;
+    }
+  | {
+      type: "app-v2.worktree.updated";
+      projectId: string;
+      worktreeId: string;
+      revision: number;
+      forUserId: string;
+    }
+  | {
+      type: "app-v2.commit.created";
+      projectId: string;
+      worktreeId: string;
+      sha: string;
+      forUserId?: string;
     };
 
 function channelFor(workspaceId: string): string {
@@ -139,7 +163,7 @@ let publisher: Publisher | null = null;
 let subscriber: Subscriber | null = null;
 
 interface ChannelListeners {
-  callbacks: Set<(event: RealtimeEvent) => void>;
+  callbacks: Map<(event: RealtimeEvent) => void, string | undefined>;
 }
 
 const channelListeners = new Map<string, ChannelListeners>();
@@ -196,23 +220,40 @@ export function publishRealtimeEvent(
 export async function subscribeToWorkspaceEvents(
   workspaceId: string,
   callback: (event: RealtimeEvent) => void,
+  options?: { userId?: string },
 ): Promise<() => Promise<void>> {
   const channel = channelFor(workspaceId);
   let listeners = channelListeners.get(channel);
 
   if (!listeners) {
-    listeners = { callbacks: new Set() };
+    listeners = { callbacks: new Map() };
     channelListeners.set(channel, listeners);
     const entry = listeners;
     await getSubscriber().subscribe(channel, (message: string) => {
       let event: RealtimeEvent;
       try {
-        event = JSON.parse(message) as RealtimeEvent;
+        const parsed = JSON.parse(message) as unknown;
+        if (
+          typeof parsed !== "object" ||
+          parsed === null ||
+          Array.isArray(parsed) ||
+          typeof (parsed as { type?: unknown }).type !== "string"
+        ) {
+          throw new Error("Realtime event must be an object with a type");
+        }
+        event = parsed as RealtimeEvent;
       } catch (error) {
         logger.warn("Dropping malformed realtime event", { error, channel });
         return;
       }
-      for (const cb of entry.callbacks) {
+      for (const [cb, subscriberUserId] of entry.callbacks) {
+        if (
+          "forUserId" in event &&
+          event.forUserId !== undefined &&
+          event.forUserId !== subscriberUserId
+        ) {
+          continue;
+        }
         try {
           cb(event);
         } catch (error) {
@@ -222,7 +263,7 @@ export async function subscribeToWorkspaceEvents(
     });
   }
 
-  listeners.callbacks.add(callback);
+  listeners.callbacks.set(callback, options?.userId);
 
   let disposed = false;
   return async () => {
