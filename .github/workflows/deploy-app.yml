@@ -966,6 +966,7 @@ jobs:
             --concurrency=80 \
             --min-instances=1 \
             --max-instances=15 \
+            --allow-unauthenticated \
             --network=mako-vpc \
             --subnet=mako-subnet \
             --vpc-egress=all-traffic \
