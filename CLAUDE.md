@@ -72,7 +72,11 @@ pnpm migrate create "name" # Create a new migration file with timestamp
 
 ```bash
 pnpm cf:login              # Login to Cloudflare
-pnpm cf:deploy             # Deploy to Cloudflare Workers
+pnpm cf:deploy             # Deploy the PR preview router Worker
+pnpm cf:app:test           # Test the production app router Worker (app.mako.ai)
+pnpm cf:app:check          # Dry-run deploy of the production app router
+pnpm cf:app:deploy         # Deploy the production app router (see cloudflare/app-router/README.md)
+pnpm cf:app:deploy:canary  # Deploy the canary app router (app-canary.mako.ai)
 pnpm preview-db:*          # Manage preview databases (create, destroy, list, seed)
 ```
 

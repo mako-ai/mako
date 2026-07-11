@@ -3,7 +3,7 @@
 This repo runs dashboard materialization in three different environments:
 
 - `local`: app on `http://localhost:5173`, API on `http://localhost:8080`, Inngest dev server on `http://localhost:8288`
-- `pr`: preview deploys on `https://pr-<number>.mako.ai`
+- `pr`: preview deploys on `https://pr-<number>.mako.ai` (deployed to the dedicated `mako-ai-dev` GCP project, using bucket `mako-ai-dev-dashboard-artifacts`)
 - `production`: `https://app.mako.ai`
 
 ## Inngest
@@ -144,5 +144,5 @@ lower `CDC_MATERIALIZE_CONCURRENCY_PER_FLOW` instead of the global cap.
 | -------------- | -------------- | --------------------------------------- | ------------------------- | ---------------------- |
 | Local default  | filesystem     | n/a                                     | local dev server          | disabled by `NODE_ENV` |
 | Local with GCS | gcs            | `dashboard-artifacts/local-<your-name>` | local dev server          | disabled by `NODE_ENV` |
-| PR preview     | gcs            | `dashboard-artifacts/pr-<number>`       | `INNGEST_ENV=pr-<number>` | disabled               |
+| PR preview     | gcs (dev bucket) | `dashboard-artifacts/pr-<number>`     | `INNGEST_ENV=pr-<number>` | disabled               |
 | Production     | gcs            | `dashboard-artifacts/prod`              | default environment       | enabled                |

@@ -53,6 +53,21 @@ The script:
 5. Builds Docker image and pushes to Google Artifact Registry
 6. Deploys to Cloud Run
 
+By default the script targets the project configured in `.env`. Operators can
+point a deploy at a different environment without editing `.env` by setting
+`MAKO_DEPLOY_*` overrides:
+
+```bash
+MAKO_DEPLOY_PROJECT_ID=mako-ai-prod \
+MAKO_DEPLOY_REGION=europe-west1 \
+MAKO_DEPLOY_REPOSITORY=mako \
+MAKO_DEPLOY_RUNTIME_SERVICE_ACCOUNT=runtime-sa@mako-ai-prod.iam.gserviceaccount.com \
+./deploy.sh
+```
+
+The dashboard artifact bucket defaults to `<project-id>-dashboard-artifacts`
+and can be overridden with `MAKO_DEPLOY_DASHBOARD_BUCKET`.
+
 ### Environment Variables
 
 Set these in Cloud Run's environment configuration (or via `cloud-run-env.yaml`):
@@ -195,9 +210,14 @@ artifacts, delete stale artifacts, and generate signed read URLs.
 - If `DASHBOARD_ARTIFACT_STORE` is not set, Mako falls back to `filesystem`.
 - Your deploy workflow must also pass the artifact storage env vars to Cloud
   Run, or later deploys can revert the backend to local disk.
-- Preview environments should use a unique prefix such as
-  `dashboard-artifacts/pr-123` so all previews can safely share the same
-  bucket.
+- PR previews deploy to the dedicated dev project (`mako-ai-dev`), with their
+  own Artifact Registry repo and dashboard bucket
+  (`mako-ai-dev-dashboard-artifacts`); production is untouched by preview
+  deploys. Each preview still uses a unique prefix such as
+  `dashboard-artifacts/pr-123` so previews can safely share the dev bucket.
+- Previews do not get `REDIS_URL`: the production Memorystore instance is only
+  reachable inside the prod VPC, so preview APIs fall back to in-process
+  pub/sub.
 
 ## Billing (Optional)
 
@@ -230,4 +250,26 @@ Stripe promotion codes/coupons can be applied at checkout. The Stripe Checkout U
 
 ## Cloudflare Workers
 
-The `cloudflare/` directory contains Cloudflare Workers configuration for edge routing and proxy functionality.
+The `cloudflare/` directory contains two Workers:
+
+- **PR preview router** (`cloudflare/`): routes `pr-<number>.mako.ai` to the
+  corresponding Cloud Run preview deployment. See `cloudflare/README.md`.
+- **Production app router** (`cloudflare/app-router/`): keeps `app.mako.ai`
+  independent of any single Cloud Run project. It proxies request/response
+  streams without buffering, supports a maintenance mode that keeps accepting
+  external webhooks, and serves a separate `app-canary.mako.ai` route so a new
+  production origin can be rehearsed and rolled back without touching CDC
+  code. Cutover and rollback are KV route-object updates. See
+  `cloudflare/app-router/README.md` for cutover controls.
+
+Useful scripts:
+
+```bash
+pnpm cf:deploy             # Deploy the PR preview router
+pnpm cf:app:test           # Run app-router unit tests
+pnpm cf:app:check          # Dry-run deploy of the production app router
+pnpm cf:app:check:canary   # Dry-run deploy of the canary app router
+pnpm cf:app:deploy         # Deploy the production app router
+pnpm cf:app:deploy:canary  # Deploy the canary app router
+pnpm cf:app:tail           # Tail production app-router logs
+```
