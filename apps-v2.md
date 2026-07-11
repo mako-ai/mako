@@ -271,6 +271,32 @@ The API, repository authorization, worktree coordinator, data capability service
 
 The trusted control plane must never execute a user-provided command. It sends an argv/process request to an isolated compute plane and receives structured results.
 
+### Session executor seam
+
+Apps v2 must not equate "development session" with "cloud sandbox." A
+provider-neutral `SessionExecutor` sits above `SandboxProvider` and exposes the
+same worktree-aware contract to every harness:
+
+- `prepare` and `applyRevision`;
+- `exec`, `spawn`, `stdin`, `signal`, and `logs`;
+- `captureEligibleState` and `flush`;
+- `exposePreview`; and
+- `close`.
+
+Each request carries app, worktree, lease epoch, durable revision, purpose
+(`interactive`, `build`, or future `job`), policy profile, and cancellation.
+Implementations are:
+
+- `CloudSessionExecutor`, backed by the selected isolated sandbox provider;
+- `LocalSessionExecutor`, implemented later by the CLI/Desktop local agent
+  against an explicitly linked checkout; and
+- `FakeSessionExecutor`, used by conformance and agent-tool tests.
+
+The Worktree service remains the durability authority in every case. This gives
+browser users safe cloud compute while allowing Desktop and terminal users to
+run on their own machine without consuming sandbox minutes or creating a second
+storage model.
+
 ### Project layout
 
 A new Apps v2 project should use a familiar Vite-compatible scaffold:
@@ -929,6 +955,28 @@ The proposed Desktop right-panel coding agent should use the same APIs as the we
 
 The extension is a client, not a separate execution architecture.
 
+After authenticated pairing exists, Desktop may select `LocalSessionExecutor`
+for a managed per-app checkout. Its preview runs on loopback, while source
+flushes still advance the same private WIP state and data tools remain
+server-side. Cloud sandboxes remain available for browser and headless work.
+
+### First-party terminal agent
+
+A later `mako agent` command should be a thin terminal client for the existing
+server agent, not a fork of agent logic. Server-side schema/query/binding tools
+remain in Mako; file and shell tools dispatch through `LocalSessionExecutor`.
+Command approvals are on by default. This complements, rather than replaces,
+Claude Code and Codex: users may choose their subscription-backed harness over
+MCP, or Mako's own data-aware agent over the same checkout.
+
+### Future jobs and data scripts
+
+Scheduled scripts are deliberately not part of the first Apps v2 launch, but
+the manifest and executor contracts reserve `purpose: job`. A future schema
+version may declare commands and schedules. Inngest would start a fresh
+short-lived executor from an immutable commit with a job-specific capability,
+never reuse an interactive session, and retain bounded logs and run status.
+
 ## Security model
 
 ### Source and supply chain
@@ -1059,6 +1107,26 @@ Track:
 - sandbox/provider errors separated from user-code errors.
 
 Logs from untrusted processes must be size-limited and secret-redacted. Structured platform logs include workspace/app/worktree/build/deployment IDs only after authorization.
+
+### Provisional launch gates
+
+These are measurable targets, not unverified vendor promises:
+
+- Worktree tree/file reads: p95 at or below 200 ms for 1,000 files,
+  independent of executor state.
+- Warm executor attach: p95 at or below 1 second.
+- Cold preview ready with a dependency-cache hit: p95 at or below 15 seconds;
+  cache misses are reported separately.
+- Finite-command durability: zero acknowledged eligible-state loss.
+- Interactive/background durability: recovery point at or below 2 seconds.
+- Published static availability: 99.95%; Apps v2 control plane: 99.9%.
+- Baseline compute target: at or below $0.15 per active executor-hour and zero
+  paused compute, validated against provider invoices.
+- Auto-pause after 10 idle minutes, a hard session lifetime, monthly workspace
+  budgets, and fail-closed admission after budget exhaustion.
+
+Production enablement requires measured conformance or an explicit revision of
+these gates.
 
 ## API and service boundaries
 
