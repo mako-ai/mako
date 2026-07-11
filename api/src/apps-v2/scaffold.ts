@@ -136,6 +136,14 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
 dist
 *.local
 .env
+# Tool state that must never enter durable snapshots
+.npm
+.cache
+.config
+.local
+.pnpm-store
+.vite
+tsconfig.tsbuildinfo
 `,
     "README.md": `# ${safeTitle}
 

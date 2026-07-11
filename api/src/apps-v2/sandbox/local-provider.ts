@@ -9,6 +9,7 @@
  * in addition to the config-level provider selection).
  */
 import { spawn } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import {
   APPS_V2_EXEC_DEFAULT_TIMEOUT_MS,
@@ -28,6 +29,10 @@ function sandboxEnv(
   rootDir: string,
   extra?: Record<string, string>,
 ): Record<string, string> {
+  // Tool caches must NOT live under HOME (= the session working tree):
+  // anything written there would be swept into the durable WIP snapshot.
+  // A shared per-host cache dir also makes repeat installs fast.
+  const cacheRoot = path.join(os.tmpdir(), "mako-apps-v2-cache");
   return {
     PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
     HOME: rootDir,
@@ -37,6 +42,8 @@ function sandboxEnv(
     // Keep package managers from prompting or phoning home interactively.
     npm_config_yes: "true",
     NO_UPDATE_NOTIFIER: "1",
+    npm_config_cache: path.join(cacheRoot, "npm"),
+    XDG_CACHE_HOME: path.join(cacheRoot, "xdg"),
     ...(extra ?? {}),
   };
 }

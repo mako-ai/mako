@@ -198,23 +198,24 @@ export async function ensureWorktree(
     throw new Error("Project repository is missing");
   }
 
-  let doc = await AppWorktreeV2.findOne({
-    projectId: project._id,
-    userId,
-  });
-  if (!doc) {
-    const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
-    if (!head) throw new Error("Project branch is missing");
-    doc = await AppWorktreeV2.create({
-      workspaceId: project.workspaceId,
-      projectId: project._id,
-      userId,
-      branch: DEFAULT_BRANCH,
-      baseSha: head,
-      revision: 0,
-      leaseEpoch: 1,
-    });
-  }
+  const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+  if (!head) throw new Error("Project branch is missing");
+  // Atomic find-or-create: the agent routinely fires tool calls in parallel
+  // right after app creation, so a findOne+create pair races itself into
+  // E11000 on the (projectId, userId) unique index.
+  const doc = await AppWorktreeV2.findOneAndUpdate(
+    { projectId: project._id, userId },
+    {
+      $setOnInsert: {
+        workspaceId: project.workspaceId,
+        branch: DEFAULT_BRANCH,
+        baseSha: head,
+        revision: 0,
+        leaseEpoch: 1,
+      },
+    },
+    { new: true, upsert: true },
+  );
 
   const worktreeId = doc._id.toString();
   return withWorktreeLock(worktreeId, async () => {
