@@ -5,6 +5,7 @@ import {
   useAppV2Store,
   type AppV2EditorBuffer,
   type AppV2File,
+  type AppV2Project,
   type AppV2Worktree,
 } from "./appV2Store";
 
@@ -429,6 +430,130 @@ describe("appV2Store conflict handling", () => {
 
     expect(refreshProject).toHaveBeenCalledOnce();
     expect(refreshProject).toHaveBeenCalledWith("workspace-1", "project-1");
+  });
+
+  it("merges a conversation branch and refreshes views without losing dirty buffers", async () => {
+    const branch = "mako/chat/64b7f0f0f0f0f0f0f0f0f0f0";
+    const mergedSha = "d".repeat(40);
+    const mergedProject = {
+      id: worktree.projectId,
+      workspaceId: "workspace-1",
+      title: "Project",
+      headSha: mergedSha,
+    } as unknown as AppV2Project;
+    const initialProject = {
+      ...mergedProject,
+      headSha: worktree.baseSha,
+    };
+    const advancedWorktree = {
+      ...worktree,
+      baseSha: mergedSha,
+      wipOid: mergedSha,
+      revision: worktree.revision + 1,
+    };
+    const mergedEntry = {
+      path: "src/merged.ts",
+      oid: "e".repeat(40),
+      size: 28,
+      mode: "regular" as const,
+    };
+    useAppV2Store.setState(state => ({
+      ...state,
+      projectsById: { [worktree.projectId]: initialProject },
+      conversationBranchesByProject: {
+        [worktree.projectId]: [],
+      },
+    }));
+    const post = vi.spyOn(apiClient, "postWithStatus").mockResolvedValue({
+      status: 200,
+      body: {
+        success: true,
+        project: mergedProject,
+        result: {
+          branch,
+          branchHeadSha: "c".repeat(40),
+          mergedSha,
+          fastForward: true,
+        },
+      },
+    });
+    vi.spyOn(apiClient, "get").mockImplementation(async path => {
+      if (path.endsWith("/conversation-branches")) {
+        return { success: true, branches: [] };
+      }
+      if (path.endsWith("/worktree")) {
+        return { success: true, worktree: advancedWorktree };
+      }
+      if (path.endsWith("/tree")) {
+        return {
+          success: true,
+          worktree: advancedWorktree,
+          entries: [mergedEntry],
+        };
+      }
+      if (path.endsWith("/status")) {
+        return {
+          success: true,
+          worktree: advancedWorktree,
+          clean: true,
+          changes: [],
+        };
+      }
+      return { success: true, project: mergedProject };
+    });
+
+    expect(
+      await useAppV2Store
+        .getState()
+        .mergeConversationBranch("workspace-1", worktree.projectId, branch),
+    ).toBe("saved");
+    expect(post).toHaveBeenCalledWith(
+      "/workspaces/workspace-1/apps-v2/project-1/conversation-branches/merge",
+      { branch },
+      { alsoOk: [409] },
+    );
+    const key = appV2FileKey(worktree.projectId, file.path);
+    expect(useAppV2Store.getState().editorBuffersByKey[key]).toMatchObject({
+      content: "local edits",
+      dirty: true,
+    });
+    expect(useAppV2Store.getState().projectsById[worktree.projectId]).toBe(
+      mergedProject,
+    );
+    expect(
+      useAppV2Store.getState().worktreesByProject[worktree.projectId],
+    ).toEqual(advancedWorktree);
+    expect(useAppV2Store.getState().treesByProject[worktree.projectId]).toEqual(
+      [mergedEntry],
+    );
+    expect(
+      useAppV2Store.getState().statusByProject[worktree.projectId],
+    ).toEqual({ clean: true, changes: [] });
+  });
+
+  it("surfaces a conversation merge conflict without refreshing local state", async () => {
+    const branch = "mako/chat/64b7f0f0f0f0f0f0f0f0f0f0";
+    vi.spyOn(apiClient, "postWithStatus").mockResolvedValue({
+      status: 409,
+      body: {
+        success: false,
+        code: "merge_conflict",
+        error: "Conversation branch conflicts with main",
+      },
+    });
+    const get = vi.spyOn(apiClient, "get");
+
+    expect(
+      await useAppV2Store
+        .getState()
+        .mergeConversationBranch("workspace-1", worktree.projectId, branch),
+    ).toBe("conflict");
+    expect(get).not.toHaveBeenCalled();
+    expect(
+      useAppV2Store.getState().conflictsByKey[
+        `merge:${worktree.projectId}:${branch}`
+      ]?.message,
+    ).toBe("Conversation branch conflicts with main");
   });
 });
 

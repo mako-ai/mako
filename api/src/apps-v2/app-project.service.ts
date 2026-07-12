@@ -9,11 +9,17 @@ import {
 } from "../database/workspace-schema";
 import { canReadResource, canWriteResource } from "../utils/resource-acl";
 import { getAppsV2GitRoot } from "./config";
-import { AppV2ConflictError, AppV2NotFoundError } from "./errors";
+import {
+  AppV2ConflictError,
+  AppV2NotFoundError,
+  AppV2ValidationError,
+} from "./errors";
 import {
   AppV2GitProvider,
+  type AppV2GitBranch,
   type AppV2GitCommit,
 } from "./providers/git-provider";
+import { appV2ConversationBranch } from "./conversation-branch";
 import {
   AppV2ProjectSessionCleanupService,
   type AppV2ProjectSessionCleanup,
@@ -22,6 +28,12 @@ import {
 export interface AppV2Actor {
   userId: string;
   memberRole?: string;
+}
+
+export interface AppV2ConversationBranchMetadata {
+  worktree: IAppV2Worktree;
+  git: AppV2GitBranch;
+  dirty: boolean;
 }
 
 export class AppV2ProjectService {
@@ -118,6 +130,123 @@ export class AppV2ProjectService {
       throw new AppV2NotFoundError("Project not found");
     }
     return project;
+  }
+
+  async listConversationBranches(
+    project: IAppV2Project,
+    actor: AppV2Actor,
+  ): Promise<AppV2ConversationBranchMetadata[]> {
+    const worktrees = await AppV2Worktree.find({
+      workspaceId: project.workspaceId,
+      projectId: project._id,
+      actorId: actor.userId,
+      kind: "agent",
+    })
+      .sort({ updatedAt: -1 })
+      .select(
+        "chatId branch baseSha wipOid lastAgentCommitSha status updatedAt",
+      );
+    const branches = await this.git.listBranches(
+      project.repositoryId,
+      project.defaultBranch,
+    );
+    const gitByName = new Map(
+      branches
+        .filter(branch => !branch.isDefault)
+        .map(branch => [branch.name, branch]),
+    );
+    return worktrees.flatMap(worktree => {
+      if (
+        !worktree.chatId ||
+        worktree.branch !== appV2ConversationBranch(worktree.chatId)
+      ) {
+        return [];
+      }
+      const git = gitByName.get(worktree.branch);
+      if (!git) return [];
+      return [{ worktree, git, dirty: worktree.wipOid !== git.headSha }];
+    });
+  }
+
+  async mergeConversationBranchToDefault(
+    project: IAppV2Project,
+    branch: string,
+    actor: AppV2Actor,
+  ): Promise<{
+    project: IAppV2Project;
+    branch: string;
+    branchHeadSha: string;
+    mergedSha: string;
+    fastForward: boolean;
+  }> {
+    const worktree = await AppV2Worktree.findOne({
+      workspaceId: project.workspaceId,
+      projectId: project._id,
+      actorId: actor.userId,
+      kind: "agent",
+      branch,
+    });
+    if (
+      !worktree?.chatId ||
+      worktree.branch !== appV2ConversationBranch(worktree.chatId)
+    ) {
+      throw new AppV2NotFoundError("Conversation branch not found");
+    }
+    if (!worktree.lastAgentCommitSha) {
+      throw new AppV2ValidationError(
+        "Conversation branch has no committed turn to merge",
+      );
+    }
+
+    const result = await this.git.mergeConversationBranchToDefault(
+      project.repositoryId,
+      project.defaultBranch,
+      branch,
+      project.headSha,
+      worktree.lastAgentCommitSha,
+      {
+        name: `Mako user ${actor.userId}`,
+        email: `${actor.userId}@users.mako.local`,
+      },
+    );
+    let updated = await AppV2Project.findOneAndUpdate(
+      {
+        _id: project._id,
+        workspaceId: project.workspaceId,
+        deletionStatus: "active",
+        headSha: result.previousDefaultHeadSha,
+      },
+      {
+        $set: { headSha: result.mergedSha },
+        $inc: { mutationRevision: 1 },
+      },
+      { new: true },
+    );
+    if (!updated) {
+      updated = await AppV2Project.findOne({
+        _id: project._id,
+        workspaceId: project.workspaceId,
+        deletionStatus: "active",
+        headSha: result.mergedSha,
+      });
+    }
+    if (!updated) {
+      throw new AppV2ConflictError(
+        "Project head projection changed concurrently",
+      );
+    }
+    const commit = await this.git.getCommit(
+      project.repositoryId,
+      result.mergedSha,
+    );
+    await this.recordCommit(updated, commit, actor.userId);
+    return {
+      project: updated,
+      branch,
+      branchHeadSha: result.branchHeadSha,
+      mergedSha: result.mergedSha,
+      fastForward: result.fastForward,
+    };
   }
 
   async delete(

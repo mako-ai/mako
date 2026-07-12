@@ -10,7 +10,12 @@ import {
   Typography,
 } from "@mui/material";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useAppV2Store, type AppV2TreeEntry } from "../store/appV2Store";
+import {
+  useAppV2Store,
+  type AppV2ConversationBranch,
+  type AppV2Project,
+  type AppV2TreeEntry,
+} from "../store/appV2Store";
 import { useConsoleStore } from "../store/consoleStore";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import { buildAppV2FileNodes } from "../apps-v2-runtime/tree";
@@ -29,6 +34,133 @@ const AppV2FileIcon = TAB_KIND_ICONS["app-v2-file"];
 
 function fileIcon(_node: ResourceTreeNode) {
   return <AppV2FileIcon size={16} strokeWidth={1.5} />;
+}
+
+export function AppV2ConversationBranchesPanel({
+  workspaceId,
+  project,
+  branches,
+}: {
+  workspaceId: string;
+  project: AppV2Project;
+  branches: AppV2ConversationBranch[];
+}) {
+  const mergeConversationBranch = useAppV2Store(
+    state => state.mergeConversationBranch,
+  );
+  const loadingByKey = useAppV2Store(state => state.loadingByKey);
+  const conflictsByKey = useAppV2Store(state => state.conflictsByKey);
+  const errorsByKey = useAppV2Store(state => state.errorsByKey);
+  const [mergedBranch, setMergedBranch] = useState<string | null>(null);
+  const [failedBranch, setFailedBranch] = useState<string | null>(null);
+  const busy = branches.some(
+    branch => loadingByKey[`merge:${project.id}:${branch.branch}`],
+  );
+  const failureKey = failedBranch
+    ? `merge:${project.id}:${failedBranch}`
+    : null;
+  const failure = failureKey
+    ? (conflictsByKey[failureKey]?.message ?? errorsByKey[failureKey])
+    : null;
+
+  const handleMerge = useCallback(
+    async (branch: AppV2ConversationBranch) => {
+      if (
+        !window.confirm(
+          `Merge the committed head of ${branch.branch} into ${project.defaultBranch}? Uncommitted WIP will not be included.`,
+        )
+      ) {
+        return;
+      }
+      setMergedBranch(null);
+      setFailedBranch(null);
+      const result = await mergeConversationBranch(
+        workspaceId,
+        project.id,
+        branch.branch,
+      );
+      if (result === "saved") setMergedBranch(branch.branch);
+      else setFailedBranch(branch.branch);
+    },
+    [mergeConversationBranch, project.defaultBranch, project.id, workspaceId],
+  );
+
+  return (
+    <Paper variant="outlined" sx={{ p: 1.5 }}>
+      <Typography variant="subtitle2" gutterBottom>
+        Conversation branches
+      </Typography>
+      {mergedBranch ? (
+        <Alert severity="success" sx={{ mb: 1 }}>
+          Merged {mergedBranch} into {project.defaultBranch}.
+        </Alert>
+      ) : null}
+      {failure ? (
+        <Alert severity="error" sx={{ mb: 1 }}>
+          {failure}
+        </Alert>
+      ) : null}
+      {branches.length > 0 ? (
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75 }}>
+          {branches.map(branch => {
+            const merging =
+              loadingByKey[`merge:${project.id}:${branch.branch}`];
+            const disabled =
+              project.readOnly ||
+              busy ||
+              branch.dirty ||
+              branch.aheadBy === 0 ||
+              branch.status === "conflict" ||
+              Boolean(conflictsByKey[`merge:${project.id}:${branch.branch}`]) ||
+              !branch.lastCommitSha;
+            return (
+              <Box
+                key={branch.chatId}
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns:
+                    "minmax(180px, 1fr) minmax(160px, auto) minmax(140px, auto)",
+                  gap: 1,
+                  alignItems: "center",
+                }}
+              >
+                <Box>
+                  <Typography variant="body2">{branch.branch}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {branch.aheadBy} ahead, {branch.behindBy} behind
+                  </Typography>
+                </Box>
+                <Box>
+                  <Typography variant="body2" color="text.secondary">
+                    {branch.lastCommitSha
+                      ? `Commit ${branch.lastCommitSha.slice(0, 10)}`
+                      : "No committed turn"}
+                  </Typography>
+                  {branch.dirty ? (
+                    <Typography variant="caption" color="warning.main">
+                      Uncommitted WIP
+                    </Typography>
+                  ) : null}
+                </Box>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  disabled={disabled}
+                  onClick={() => void handleMerge(branch)}
+                >
+                  {merging ? "Merging…" : `Merge into ${project.defaultBranch}`}
+                </Button>
+              </Box>
+            );
+          })}
+        </Box>
+      ) : (
+        <Typography variant="body2" color="text.secondary">
+          No agent conversation branches yet.
+        </Typography>
+      )}
+    </Paper>
+  );
 }
 
 export default function AppV2ProjectView({
@@ -214,40 +346,13 @@ export default function AppV2ProjectView({
         )}
       </Paper>
 
-      <Paper variant="outlined" sx={{ p: 1.5 }}>
-        <Typography variant="subtitle2" gutterBottom>
-          Conversation branches
-        </Typography>
-        {conversationBranches.length > 0 ? (
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75 }}>
-            {conversationBranches.map(branch => (
-              <Box
-                key={branch.chatId}
-                sx={{
-                  display: "grid",
-                  gridTemplateColumns:
-                    "minmax(180px, 1fr) minmax(100px, auto) minmax(100px, auto)",
-                  gap: 1,
-                }}
-              >
-                <Typography variant="body2">{branch.branch}</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {branch.lastCommitSha
-                    ? `Commit ${branch.lastCommitSha.slice(0, 10)}`
-                    : `WIP ${branch.wipOid.slice(0, 10)}`}
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {branch.status}
-                </Typography>
-              </Box>
-            ))}
-          </Box>
-        ) : (
-          <Typography variant="body2" color="text.secondary">
-            No agent conversation branches yet.
-          </Typography>
-        )}
-      </Paper>
+      {workspaceId ? (
+        <AppV2ConversationBranchesPanel
+          workspaceId={workspaceId}
+          project={project}
+          branches={conversationBranches}
+        />
+      ) : null}
 
       {workspaceId ? (
         <AppV2GitHubSection

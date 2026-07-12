@@ -32,6 +32,10 @@
   metadata-firewall, argv-literal, pnpm, filesystem-only quiesce, source
   capture, package-install, excluded-`node_modules`, deny-all-reset, and
   sandbox-destruction checks.
+- **Implementation note (2026-07-12):** conversation branches can be promoted
+  to the default branch through a committed-head-only, compare-and-swap merge.
+  The same-API-origin, process-local preview grant explored on
+  `cursor/apps-v2-rfc-848c` is explicitly rejected and was not ported.
 - **Audience:** Product, application platform, agent, data platform, security, and desktop teams
 - **Last updated:** 2026-07-12
 - **Scope:** Mako Apps authoring, storage, preview, deployment, and external coding-tool access
@@ -520,10 +524,12 @@ creation, a scoped owner CAS promotes the successor; a lost CAS abandons that
 metadata and never installs a turn that did not start.
 Only after no active/finalizing prior turn owns an orphaned dirty WIP may a new
 turn atomically adopt it. Flush errors and recovery refs remain failed or
-recoverable; finalization never commits the older pre-flush WIP. The session-only
-conversation-branches endpoint and project view expose branch/base/WIP/last
-commit/status metadata read-only; they do not promote conversation commits to
-main.
+recoverable; finalization never commits the older pre-flush WIP. The
+session-only conversation-branches endpoint and project view expose
+branch/base/WIP/last-commit/ahead/behind metadata. A write-authorized user may
+explicitly promote a committed conversation head to the default branch.
+Promotion never includes private WIP: it fast-forwards when possible or creates
+a true two-parent merge commit, and leaves refs unchanged on conflicts.
 
 Running sandboxes are reused hot and paused sandboxes are resumed. Unsynced
 sessions run durable recovery before reuse. A missing or dead
@@ -799,6 +805,20 @@ Requirements:
 - automatic wake/rebuild if the sandbox has stopped.
 
 The current `PREVIEW_MESSAGE` theme, location, screenshot, and data concepts can be retained as a versioned bridge while `@mako/app-sdk` becomes a real package.
+
+#### Rejected alternative: same-API-origin process-local preview grants
+
+Do not serve tenant preview assets from the Mako API origin under a
+process-local random grant. That design loses authorization state across
+instances and restarts, cannot provide distributed revocation or audience
+binding, and places untrusted tenant content on the control-plane origin. It is
+not a safe production shortcut, even when the URL is unguessable or the iframe
+is sandboxed.
+
+Production preview remains separate-origin and capability-gated work as
+specified above. Until that plane exists, Apps v2 keeps its current command
+panel and file-tab authoring surfaces and does not adopt the rejected preview
+route or renderer.
 
 ### Preview source of truth
 

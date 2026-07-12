@@ -41,6 +41,16 @@ const branches = [
     baseSha: "a".repeat(40),
     wipOid: "b".repeat(40),
     lastCommitSha: "c".repeat(40),
+    headSha: "c".repeat(40),
+    aheadBy: 1,
+    behindBy: 0,
+    dirty: true,
+    lastCommit: {
+      sha: "c".repeat(40),
+      authorName: "Mako Agent",
+      authoredAt: "2026-01-01T00:00:00.000Z",
+      message: "Agent turn",
+    },
     status: "conflict",
     remote: {
       branch: "mako/chat/chat-1",
@@ -54,6 +64,16 @@ const branches = [
     baseSha: "a".repeat(40),
     wipOid: "d".repeat(40),
     lastCommitSha: "e".repeat(40),
+    headSha: "e".repeat(40),
+    aheadBy: 1,
+    behindBy: 0,
+    dirty: false,
+    lastCommit: {
+      sha: "e".repeat(40),
+      authorName: "Mako Agent",
+      authoredAt: "2026-01-01T00:00:00.000Z",
+      message: "Agent turn",
+    },
     status: "clean",
   },
 ];

@@ -20,6 +20,9 @@ const context = vi.hoisted(() => ({
   authType: "session" as "session" | "apiKey",
   workspaceAllowed: true,
   workspaceChecks: 0,
+  mergeConflict: false,
+  listedBranchActor: "",
+  mergedBranchActor: "",
 }));
 
 vi.mock("../auth/unified-auth.middleware", () => ({
@@ -96,7 +99,7 @@ const worktree = {
 } as unknown as IAppV2Worktree;
 
 vi.mock("../apps-v2/app-project.service", async () => {
-  const { AppV2NotFoundError } =
+  const { AppV2MergeConflictError, AppV2NotFoundError } =
     await vi.importActual<typeof import("./errors")>("./errors");
   return {
     AppV2ProjectService: class {
@@ -114,6 +117,62 @@ vi.mock("../apps-v2/app-project.service", async () => {
           throw new AppV2NotFoundError("Project not found");
         }
         return project;
+      }
+      async listConversationBranches(
+        _project: unknown,
+        actor: { userId: string },
+      ) {
+        context.listedBranchActor = actor.userId;
+        return [
+          {
+            worktree: {
+              chatId: "64b7f0f0f0f0f0f0f0f0f0f0",
+              branch: "mako/chat/64b7f0f0f0f0f0f0f0f0f0f0",
+              baseSha: oid,
+              wipOid: "b".repeat(40),
+              status: "active",
+            },
+            git: {
+              name: "mako/chat/64b7f0f0f0f0f0f0f0f0f0f0",
+              headSha: "c".repeat(40),
+              isDefault: false,
+              aheadBy: 1,
+              behindBy: 0,
+              lastCommit: {
+                sha: "c".repeat(40),
+                treeSha: "d".repeat(40),
+                parentShas: [oid],
+                authorName: "Mako Agent",
+                authorEmail: "agent@mako.local",
+                authoredAt: new Date("2026-01-01T00:00:00.000Z"),
+                message: "Agent turn",
+                stats: { filesChanged: 1, additions: 1, deletions: 0 },
+              },
+            },
+            dirty: true,
+          },
+        ];
+      }
+      async mergeConversationBranchToDefault(
+        _project: unknown,
+        branch: string,
+        actor: { userId: string },
+      ) {
+        context.mergedBranchActor = actor.userId;
+        if (context.mergeConflict) {
+          throw new AppV2MergeConflictError(
+            "Conversation branch conflicts with main",
+            branch,
+            "main",
+          );
+        }
+        return {
+          project: { ...project, headSha: "e".repeat(40) },
+          branch,
+          branchHeadSha: "c".repeat(40),
+          mergedSha: "e".repeat(40),
+          fastForward: false,
+        };
       }
     },
   };
@@ -189,6 +248,9 @@ describe("Apps v2 route isolation", () => {
     context.authType = "session";
     context.workspaceAllowed = true;
     context.workspaceChecks = 0;
+    context.mergeConflict = false;
+    context.listedBranchActor = "";
+    context.mergedBranchActor = "";
   });
 
   afterEach(() => {
@@ -361,22 +423,6 @@ describe("Apps v2 route isolation", () => {
   });
 
   it("lists only the caller's read-only conversation branch metadata", async () => {
-    const { AppV2Worktree } = await import("../database/workspace-schema");
-    const select = vi.fn(async () => [
-      {
-        chatId: "64b7f0f0f0f0f0f0f0f0f0f0",
-        branch: "mako/chat/64b7f0f0f0f0f0f0f0f0f0f0",
-        baseSha: oid,
-        wipOid: "b".repeat(40),
-        lastAgentCommitSha: "c".repeat(40),
-        status: "active",
-      },
-    ]);
-    const sort = vi.fn(() => ({ select }));
-    const find = vi.spyOn(AppV2Worktree, "find").mockReturnValue({
-      sort,
-    } as never);
-
     const response = await app.request(
       `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}/conversation-branches`,
     );
@@ -389,17 +435,69 @@ describe("Apps v2 route isolation", () => {
           chatId: "64b7f0f0f0f0f0f0f0f0f0f0",
           branch: "mako/chat/64b7f0f0f0f0f0f0f0f0f0f0",
           lastCommitSha: "c".repeat(40),
+          headSha: "c".repeat(40),
+          aheadBy: 1,
+          behindBy: 0,
+          dirty: true,
+          lastCommit: { message: "Agent turn" },
           status: "active",
         },
       ],
     });
-    expect(find).toHaveBeenCalledWith(
-      expect.objectContaining({
-        projectId,
-        actorId: "owner",
-        kind: "agent",
-      }),
+    expect(context.listedBranchActor).toBe("owner");
+  });
+
+  it("requires write access and returns structured merge conflicts", async () => {
+    const branch = "mako/chat/64b7f0f0f0f0f0f0f0f0f0f0";
+    const path = `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}/conversation-branches/merge`;
+    context.userId = "viewer";
+    const denied = await app.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ branch }),
+    });
+    expect(denied.status).toBe(404);
+    expect(context.mergedBranchActor).toBe("");
+
+    context.userId = "owner";
+    context.mergeConflict = true;
+    const conflict = await app.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ branch }),
+    });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({
+      success: false,
+      error: "Conversation branch conflicts with main",
+      code: "merge_conflict",
+      branch,
+      defaultBranch: "main",
+    });
+  });
+
+  it("merges an owned conversation branch and returns the new project head", async () => {
+    const branch = "mako/chat/64b7f0f0f0f0f0f0f0f0f0f0";
+    const response = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}/conversation-branches/merge`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ branch }),
+      },
     );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      success: true,
+      project: { headSha: "e".repeat(40) },
+      result: {
+        branch,
+        branchHeadSha: "c".repeat(40),
+        mergedSha: "e".repeat(40),
+        fastForward: false,
+      },
+    });
+    expect(context.mergedBranchActor).toBe("owner");
   });
 
   it("allows a viewer to create a personal read-only worktree", async () => {

@@ -12,7 +12,6 @@ import {
   AppV2NotFoundError,
   AppV2ValidationError,
 } from "./errors";
-import { deriveAppV2ProjectionRepair } from "./projection-repair";
 import type { AppV2ReplacementFile } from "./providers/git-provider";
 import { appV2ConversationBranch } from "./conversation-branch";
 
@@ -697,15 +696,40 @@ export class AppV2WorktreeService {
           }
         }
       } else {
-        const repair = deriveAppV2ProjectionRepair({
-          projectHeadSha: repairedProject.headSha,
-          worktreeBaseSha: current.baseSha,
-          worktreeWipOid: current.wipOid,
-          actualHeadSha: repairedProject.headSha,
-          actualWipOid,
-        });
-        repairedBaseSha = repair.worktreeBaseSha;
-        repairedWipOid = repair.worktreeWipOid;
+        const isAlreadyFastForwarded = actualWipOid === repairedProject.headSha;
+        const changes = isAlreadyFastForwarded
+          ? []
+          : await this.projects.git.status(
+              repairedProject.repositoryId,
+              current.baseSha,
+              actualWipOid,
+            );
+        if (isAlreadyFastForwarded || changes.length === 0) {
+          if (actualWipOid !== repairedProject.headSha) {
+            try {
+              repairedWipOid = await this.projects.git.fastForwardCleanWorktree(
+                repairedProject.repositoryId,
+                current.branch,
+                repairedProject.headSha,
+                current.wipRef,
+                actualWipOid,
+                current.leaseRef,
+                actualLease.oid,
+              );
+            } catch (error) {
+              if (!(error instanceof AppV2ConflictError)) throw error;
+              current = await this.reloadProjectionWorktree(
+                repairedProject,
+                current,
+              );
+              continue;
+            }
+          }
+          repairedBaseSha = repairedProject.headSha;
+          repairedStatus = "active";
+        } else if (current.baseSha !== repairedProject.headSha) {
+          repairedStatus = "conflict";
+        }
       }
       const leaseChanged =
         current.leaseOid !== actualLease.oid ||
@@ -751,5 +775,19 @@ export class AppV2WorktreeService {
       current = latest;
     }
     throw new AppV2ConflictError("Worktree projection is changing");
+  }
+
+  private async reloadProjectionWorktree(
+    project: IAppV2Project,
+    worktree: IAppV2Worktree,
+  ): Promise<IAppV2Worktree> {
+    const latest = await AppV2Worktree.findOne({
+      _id: worktree._id,
+      workspaceId: project.workspaceId,
+      projectId: project._id,
+      actorId: worktree.actorId,
+    });
+    if (!latest) throw new AppV2NotFoundError("Worktree not found");
+    return latest;
   }
 }

@@ -74,6 +74,16 @@ export interface AppV2ConversationBranch {
   baseSha: string;
   wipOid: string;
   lastCommitSha?: string;
+  headSha: string;
+  aheadBy: number;
+  behindBy: number;
+  dirty: boolean;
+  lastCommit: {
+    sha: string;
+    authorName: string;
+    authoredAt: string;
+    message: string;
+  };
   status: string;
   remote?: {
     branch: string;
@@ -272,6 +282,11 @@ interface AppV2Actions {
     workspaceId: string,
     projectId: string,
   ) => Promise<AppV2ConversationBranch[]>;
+  mergeConversationBranch: (
+    workspaceId: string,
+    projectId: string,
+    branch: string,
+  ) => Promise<MutationResult>;
   fetchGitHubStatus: (workspaceId: string) => Promise<AppV2GitHubStatus | null>;
   fetchGitHubRepos: (
     workspaceId: string,
@@ -1047,6 +1062,62 @@ export const useAppV2Store = create<AppV2Store>()(
         } catch (error) {
           recordError(key, error, "Unable to load conversation branches");
           return [];
+        }
+      },
+
+      mergeConversationBranch: async (workspaceId, projectId, branch) => {
+        const key = `merge:${projectId}:${branch}`;
+        if (get().loadingByKey[key]) return "error";
+        setLoading(key, true);
+        try {
+          const response = await apiClient.postWithStatus<{
+            success: boolean;
+            error?: string;
+            code?: "merge_conflict";
+            project?: AppV2Project;
+            result?: {
+              branch: string;
+              branchHeadSha: string;
+              mergedSha: string;
+              fastForward: boolean;
+            };
+          }>(
+            `${projectPath(workspaceId, projectId)}/conversation-branches/merge`,
+            { branch },
+            { alsoOk: [409] },
+          );
+          if (
+            response.status === 409 ||
+            !response.body.success ||
+            !response.body.project
+          ) {
+            recordConflict(
+              key,
+              response.body.error ??
+                "The conversation branch could not be merged.",
+            );
+            return "conflict";
+          }
+          set(state => {
+            state.projectsById[projectId] = response.body
+              .project as AppV2Project;
+            state.errorsByKey[key] = null;
+            delete state.conflictsByKey[key];
+          });
+          await Promise.all([
+            get().getProject(workspaceId, projectId),
+            get().getWorktree(workspaceId, projectId),
+            get().listConversationBranches(workspaceId, projectId),
+          ]);
+          if (get().worktreesByProject[projectId]) {
+            await refreshWorktreeViews(workspaceId, projectId);
+          }
+          return "saved";
+        } catch (error) {
+          recordError(key, error, "Unable to merge conversation branch");
+          return "error";
+        } finally {
+          setLoading(key, false);
         }
       },
 

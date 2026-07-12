@@ -53,6 +53,7 @@ import {
 import {
   AppV2ConflictError,
   AppV2LimitError,
+  AppV2MergeConflictError,
   AppV2NotFoundError,
   AppV2OperationConflictError,
   AppV2ProviderUnavailableError,
@@ -305,6 +306,11 @@ const AppV2ConversationBranchSchema = z.object({
   baseSha: z.string(),
   wipOid: z.string(),
   lastCommitSha: z.string().optional(),
+  headSha: z.string(),
+  aheadBy: z.number().int().nonnegative(),
+  behindBy: z.number().int().nonnegative(),
+  dirty: z.boolean(),
+  lastCommit: AppV2CommitMetadataSchema,
   status: z.enum(["active", "discarded", "fenced", "conflict"]),
   remote: z
     .object({
@@ -370,6 +376,24 @@ const AppV2ConversationBranchListResponseSchema = z
     branches: z.array(AppV2ConversationBranchSchema),
   })
   .openapi("AppV2ConversationBranchListResponse");
+const AppV2ConversationBranchMergeInputSchema = z
+  .object({
+    branch: z.string().regex(/^mako\/chat\/[0-9a-f]{24}$/),
+  })
+  .strict()
+  .openapi("AppV2ConversationBranchMergeInput");
+const AppV2ConversationBranchMergeResponseSchema = z
+  .object({
+    success: z.literal(true),
+    project: AppV2ProjectSchema,
+    result: z.object({
+      branch: z.string(),
+      branchHeadSha: z.string(),
+      mergedSha: z.string(),
+      fastForward: z.boolean(),
+    }),
+  })
+  .openapi("AppV2ConversationBranchMergeResponse");
 const AppV2TreeResponseSchema = z
   .object({
     success: z.literal(true),
@@ -647,6 +671,18 @@ function errorResponse(c: AuthenticatedContext, error: unknown) {
       409,
     );
   }
+  if (error instanceof AppV2MergeConflictError) {
+    return c.json(
+      {
+        success: false as const,
+        error: error.message,
+        code: "merge_conflict" as const,
+        branch: error.branch,
+        defaultBranch: error.defaultBranch,
+      },
+      409,
+    );
+  }
   if (error instanceof AppV2ConflictError) {
     return c.json({ success: false, error: error.message }, 409);
   }
@@ -779,14 +815,10 @@ routes.openapi(
         projectId,
         requestActor,
       );
-      const worktrees = await AppV2Worktree.find({
-        workspaceId: project.workspaceId,
-        projectId: project._id,
-        actorId: requestActor.userId,
-        kind: "agent",
-      })
-        .sort({ updatedAt: -1 })
-        .select("chatId branch baseSha wipOid lastAgentCommitSha status");
+      const branches = await services().projects.listConversationBranches(
+        project,
+        requestActor,
+      );
       const remotes = isAppsV2GitHubPushEnabled()
         ? await AppV2ChatRemote.find({
             workspaceId: project.workspaceId,
@@ -799,7 +831,7 @@ routes.openapi(
       );
       return c.json({
         success: true as const,
-        branches: worktrees.flatMap(worktree =>
+        branches: branches.flatMap(({ worktree, git, dirty }) =>
           worktree.chatId
             ? [
                 {
@@ -807,7 +839,12 @@ routes.openapi(
                   branch: worktree.branch,
                   baseSha: worktree.baseSha,
                   wipOid: worktree.wipOid,
-                  lastCommitSha: worktree.lastAgentCommitSha,
+                  lastCommitSha: git.headSha,
+                  headSha: git.headSha,
+                  aheadBy: git.aheadBy,
+                  behindBy: git.behindBy,
+                  dirty,
+                  lastCommit: git.lastCommit,
                   status: worktree.status,
                   remote: remoteByChat.has(worktree.chatId)
                     ? {
@@ -829,6 +866,70 @@ routes.openapi(
               ]
             : [],
         ),
+      });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  },
+);
+
+routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{projectId}/conversation-branches/merge",
+    tags: ["Apps v2"],
+    summary: "Merge a committed conversation branch into the default branch",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParams,
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: AppV2ConversationBranchMergeInputSchema,
+          },
+        },
+      },
+    },
+    responses: okResponse(
+      AppV2ConversationBranchMergeResponseSchema,
+      "Conversation branch merged",
+    ),
+  }),
+  async c => {
+    if (!isAppsV2Enabled()) {
+      return c.json(
+        { success: false, error: "Apps v2 feature is unavailable" },
+        404,
+      );
+    }
+    try {
+      const { workspaceId, projectId } = c.req.valid("param");
+      const requestActor = actor(c);
+      const project = await services().projects.getWritable(
+        workspaceId,
+        projectId,
+        requestActor,
+      );
+      const result = await services().projects.mergeConversationBranchToDefault(
+        project,
+        c.req.valid("json").branch,
+        requestActor,
+      );
+      publishRealtimeEvent(workspaceId, {
+        type: "app-v2.project.updated",
+        projectId,
+        ...getAppV2ProjectEventAudience(result.project),
+      });
+      return c.json({
+        success: true as const,
+        project: projectJson(result.project, requestActor),
+        result: {
+          branch: result.branch,
+          branchHeadSha: result.branchHeadSha,
+          mergedSha: result.mergedSha,
+          fastForward: result.fastForward,
+        },
       });
     } catch (error) {
       return errorResponse(c, error);

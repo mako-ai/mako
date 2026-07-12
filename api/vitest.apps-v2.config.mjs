@@ -8,6 +8,7 @@ export default defineConfig({
       "src/apps-v2/chat-turn-finalizer.test.ts",
       "src/apps-v2/chat-turn.service.test.ts",
       "src/apps-v2/conversation-worktrees.test.ts",
+      "src/apps-v2/manual-worktree-merge-recovery.test.ts",
       "src/apps-v2/github-delivery.service.test.ts",
       "src/apps-v2/github-push.service.test.ts",
       "src/apps-v2/service-factory.test.ts",

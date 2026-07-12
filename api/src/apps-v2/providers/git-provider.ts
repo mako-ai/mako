@@ -24,6 +24,7 @@ import {
 import {
   AppV2ConflictError,
   AppV2LimitError,
+  AppV2MergeConflictError,
   AppV2NotFoundError,
   AppV2RecoveryConflictError,
   AppV2ValidationError,
@@ -109,6 +110,7 @@ function terminateProcess(
 interface GitResult {
   stdout: Buffer;
   stderr: Buffer;
+  exitCode: number;
 }
 
 export interface AppV2TreeEntry {
@@ -159,6 +161,27 @@ export interface AppV2GitBundle {
   wipOid: string;
 }
 
+export interface AppV2GitBranch {
+  name: string;
+  headSha: string;
+  isDefault: boolean;
+  aheadBy: number;
+  behindBy: number;
+  lastCommit: AppV2GitCommit;
+}
+
+export interface AppV2GitMergeResult {
+  mergedSha: string;
+  previousDefaultHeadSha: string;
+  branchHeadSha: string;
+  fastForward: boolean;
+}
+
+export interface AppV2GitActor {
+  name: string;
+  email: string;
+}
+
 export function validateAppV2GitBranch(branch: string): string {
   if (
     !branch ||
@@ -193,6 +216,7 @@ async function runGit(
   input?: Buffer | string,
   extraEnvironment: NodeJS.ProcessEnv = {},
   signal?: AbortSignal,
+  acceptedExitCodes: readonly number[] = [0],
 ): Promise<GitResult> {
   const release = await gitCommandSemaphore.acquire(signal);
   try {
@@ -283,12 +307,13 @@ async function runGit(
         const result = {
           stdout: Buffer.concat(stdout),
           stderr: Buffer.concat(stderr),
+          exitCode: code ?? -1,
         };
         if (forcedError) {
           reject(forcedError);
           return;
         }
-        if (code === 0) {
+        if (code !== null && acceptedExitCodes.includes(code)) {
           resolve(result);
           return;
         }
@@ -581,6 +606,172 @@ export class AppV2GitProvider {
       if (concurrentlyCreated) return concurrentlyCreated;
       throw new AppV2ConflictError("Branch changed concurrently");
     }
+  }
+
+  async listBranches(
+    repositoryId: string,
+    defaultBranch: string,
+  ): Promise<AppV2GitBranch[]> {
+    const repositoryPath = this.repositoryPath(repositoryId);
+    const validatedDefault = validateAppV2GitBranch(defaultBranch);
+    const result = await runGit(repositoryPath, [
+      "for-each-ref",
+      "--format=%(refname:short)%00%(objectname)",
+      "refs/heads/",
+    ]);
+    const branchRows = result.stdout
+      .toString("utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map(row => {
+        const [name, headSha] = row.split("\0");
+        return { name, headSha };
+      })
+      .filter(
+        branch =>
+          branch.name === validatedDefault ||
+          /^mako\/chat\/[0-9a-f]{24}$/.test(branch.name),
+      );
+    const branches = await Promise.all(
+      branchRows.map(async branch => {
+        const isDefault = branch.name === validatedDefault;
+        let aheadBy = 0;
+        let behindBy = 0;
+        if (!isDefault) {
+          const counts = await runGit(repositoryPath, [
+            "rev-list",
+            "--left-right",
+            "--count",
+            `${this.branchRef(validatedDefault)}...${this.branchRef(branch.name)}`,
+          ]);
+          const [defaultOnly, branchOnly] = counts.stdout
+            .toString("utf8")
+            .trim()
+            .split(/\s+/)
+            .map(Number);
+          behindBy = defaultOnly || 0;
+          aheadBy = branchOnly || 0;
+        }
+        return {
+          name: branch.name,
+          headSha: validateAppV2GitOid(branch.headSha),
+          isDefault,
+          aheadBy,
+          behindBy,
+          lastCommit: await this.getCommit(repositoryId, branch.headSha),
+        };
+      }),
+    );
+    return branches.sort((left, right) => {
+      if (left.isDefault !== right.isDefault) return left.isDefault ? -1 : 1;
+      return (
+        right.lastCommit.authoredAt.getTime() -
+        left.lastCommit.authoredAt.getTime()
+      );
+    });
+  }
+
+  async mergeConversationBranchToDefault(
+    repositoryId: string,
+    defaultBranch: string,
+    branch: string,
+    expectedDefaultHeadSha: string,
+    expectedBranchHeadSha: string,
+    actor: AppV2GitActor,
+  ): Promise<AppV2GitMergeResult> {
+    const repositoryPath = this.repositoryPath(repositoryId);
+    const validatedDefault = validateAppV2GitBranch(defaultBranch);
+    if (!/^mako\/chat\/[0-9a-f]{24}$/.test(branch)) {
+      throw new AppV2ValidationError(
+        "Only managed Apps v2 conversation branches can be merged",
+      );
+    }
+    validateAppV2GitOid(expectedDefaultHeadSha);
+    validateAppV2GitOid(expectedBranchHeadSha);
+    const defaultRef = this.branchRef(validatedDefault);
+    const branchRef = this.branchRef(branch);
+    const [defaultHeadSha, branchHeadSha] = await Promise.all([
+      this.resolveRef(repositoryId, defaultRef),
+      this.resolveRef(repositoryId, branchRef),
+    ]);
+    if (
+      defaultHeadSha !== expectedDefaultHeadSha ||
+      branchHeadSha !== expectedBranchHeadSha
+    ) {
+      throw new AppV2ConflictError(
+        "Default or conversation branch changed concurrently",
+      );
+    }
+    if (
+      branchHeadSha === defaultHeadSha ||
+      (await this.isAncestor(repositoryId, branchHeadSha, defaultRef))
+    ) {
+      throw new AppV2ConflictError(
+        "Conversation branch is already merged into the default branch",
+      );
+    }
+
+    const fastForward = await this.isAncestor(
+      repositoryId,
+      defaultHeadSha,
+      branchRef,
+    );
+    let mergedSha = branchHeadSha;
+    if (!fastForward) {
+      const merged = await runGit(
+        repositoryPath,
+        [
+          "merge-tree",
+          "--write-tree",
+          "--messages",
+          defaultHeadSha,
+          branchHeadSha,
+        ],
+        undefined,
+        {},
+        undefined,
+        [0, 1],
+      );
+      if (merged.exitCode === 1) {
+        throw new AppV2MergeConflictError(
+          `Conversation branch ${branch} conflicts with ${validatedDefault}`,
+          branch,
+          validatedDefault,
+        );
+      }
+      const treeSha = merged.stdout.toString("utf8").split("\n", 1)[0].trim();
+      validateAppV2GitOid(treeSha);
+      mergedSha = await this.createCommitObject(
+        repositoryPath,
+        treeSha,
+        [defaultHeadSha, branchHeadSha],
+        `Merge ${branch} into ${validatedDefault}`,
+        actor,
+      );
+    }
+
+    const transaction = [
+      "start",
+      `verify ${branchRef} ${branchHeadSha}`,
+      `update ${defaultRef} ${mergedSha} ${defaultHeadSha}`,
+      "prepare",
+      "commit",
+      "",
+    ].join("\n");
+    try {
+      await runGit(repositoryPath, ["update-ref", "--stdin"], transaction);
+    } catch {
+      throw new AppV2ConflictError(
+        "Default or conversation branch changed concurrently",
+      );
+    }
+    await this.runScheduledMaintenance(repositoryId);
+    return {
+      mergedSha,
+      previousDefaultHeadSha: defaultHeadSha,
+      branchHeadSha,
+      fastForward,
+    };
   }
 
   async createWorktreeRef(
@@ -1470,6 +1661,10 @@ export class AppV2GitProvider {
     treeSha: string,
     parentShas: readonly string[],
     message: string,
+    actor: AppV2GitActor = {
+      name: "Mako Apps v2",
+      email: "apps-v2@mako.local",
+    },
   ): Promise<string> {
     const parentArgs = parentShas.flatMap(parent => ["-p", parent]);
     const result = await runGit(
@@ -1477,8 +1672,8 @@ export class AppV2GitProvider {
       ["commit-tree", treeSha, ...parentArgs, "-F", "-"],
       `${message.trim()}\n`,
       {
-        GIT_AUTHOR_NAME: "Mako Apps v2",
-        GIT_AUTHOR_EMAIL: "apps-v2@mako.local",
+        GIT_AUTHOR_NAME: actor.name,
+        GIT_AUTHOR_EMAIL: actor.email,
         GIT_COMMITTER_NAME: "Mako Apps v2",
         GIT_COMMITTER_EMAIL: "apps-v2@mako.local",
       },
