@@ -19,6 +19,7 @@ import {
 import { useConsoleStore } from "../store/consoleStore";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import { buildAppV2FileNodes } from "../apps-v2-runtime/tree";
+import { selectAppV2ConversationBranches } from "../apps-v2-runtime/selectors";
 import { APP_V2_FILE_SEP, APP_V2_DIR_SEP } from "../lib/explorer-reveal";
 import { focusAppV2FileTab } from "../apps-v2-runtime/shell";
 import EntityLoadErrorState, {
@@ -178,8 +179,8 @@ export default function AppV2ProjectView({
     state => state.treesByProject[projectId] ?? EMPTY_ENTRIES,
   );
   const gitStatus = useAppV2Store(state => state.statusByProject[projectId]);
-  const conversationBranches = useAppV2Store(
-    state => state.conversationBranchesByProject[projectId] ?? [],
+  const conversationBranches = useAppV2Store(state =>
+    selectAppV2ConversationBranches(state, projectId),
   );
   const projectError = useAppV2Store(
     state => state.errorsByKey[`project:${projectId}`],

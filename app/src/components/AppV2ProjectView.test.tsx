@@ -7,6 +7,7 @@ import {
   type AppV2ConversationBranch,
   type AppV2Project,
 } from "../store/appV2Store";
+import { selectAppV2ConversationBranches } from "../apps-v2-runtime/selectors";
 import { AppV2ConversationBranchesPanel } from "./AppV2ProjectView";
 
 const project: AppV2Project = {
@@ -47,6 +48,16 @@ const branch: AppV2ConversationBranch = {
   },
   status: "active",
 };
+
+describe("selectAppV2ConversationBranches", () => {
+  it("returns a stable empty snapshot while branches are loading", () => {
+    const state = { conversationBranchesByProject: {} };
+
+    expect(selectAppV2ConversationBranches(state, project.id)).toBe(
+      selectAppV2ConversationBranches(state, project.id),
+    );
+  });
+});
 
 describe("AppV2ConversationBranchesPanel", () => {
   beforeEach(() => {
