@@ -1,25 +1,44 @@
 /**
- * Apps v2 routes — experimental git-backed apps (see apps-v2.md).
+ * Apps v2 routes — git-backed apps (see apps-v2.md).
  *
  * Classification: Authenticated + workspace-scoped
  * (`unifiedAuthMiddleware` + workspace verification).
  *
- * Runs in PARALLEL with the v1 `/apps` routes: separate collections, separate
- * storage (bare git repos), separate tools. Registration is gated on
- * `APPS_V2_ENABLED` in register-routes.ts.
- *
- * File reads resolve through the durable worktree layer (bare repo + private
- * WIP refs) — never a session directory — so responses are identical whether
- * a sandbox session is alive or not.
+ * Runs in PARALLEL with the v1 `/apps` routes. The durable store is the
+ * workspace's linked GitHub repo (see /link, repo-binding.service); apps are
+ * subdirectories in it, worked on inside E2B sandboxes. Always available (no
+ * feature flag).
  */
 import { createRoute, z } from "@hono/zod-openapi";
 import { Types } from "mongoose";
-import { AppProjectV2, type IAppProjectV2 } from "../database/workspace-schema";
+import {
+  AppProjectV2,
+  GitHubInstallation,
+  type IAppProjectV2,
+} from "../database/workspace-schema";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { canReadResource, canWriteResource } from "../utils/resource-acl";
+import {
+  getGitHubAppSlug,
+  getGitHubDevToken,
+  isGitHubAppConfigured,
+} from "../integrations/github/config";
+import {
+  getInstallationToken,
+  resolveRepoToken,
+} from "../integrations/github/app-auth";
+import {
+  getRepoInfo,
+  listInstallationRepos,
+} from "../integrations/github/github-api";
+import {
+  getAppsRepoBinding,
+  linkAppsRepo,
+  unlinkAppsRepo,
+} from "../apps-v2/repo-binding.service";
 import {
   WorktreeConflictError,
   commitWorktree,
@@ -182,7 +201,187 @@ appsV2Routes.openapi(
     responses: OPEN_RESPONSES,
   }),
   async c => {
-    return c.json({ success: true as const, enabled: true }, 200);
+    const { workspaceId } = c.req.valid("param");
+    const binding = await getAppsRepoBinding(workspaceId);
+    return c.json(
+      {
+        success: true as const,
+        enabled: true,
+        linked: Boolean(binding),
+        repo: binding
+          ? {
+              owner: binding.owner,
+              repo: binding.repo,
+              defaultBranch: binding.defaultBranch,
+              subdirectory: binding.subdirectory,
+            }
+          : null,
+      },
+      200,
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Repo linking — reuses the dbt GitHub App integration (installations, token
+// minting, repo listing). A workspace must link a GitHub repo before creating
+// apps; apps then live as subdirectories in it.
+// ---------------------------------------------------------------------------
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/github-status",
+    tags: ["Apps v2"],
+    summary: "GitHub connectivity + current apps repo link",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    const { workspaceId } = c.req.valid("param");
+    const installations = await GitHubInstallation.find({
+      workspaceId: new Types.ObjectId(workspaceId),
+    })
+      .select("installationId accountLogin accountType repositorySelection")
+      .lean();
+    const binding = await getAppsRepoBinding(workspaceId);
+    return c.json(
+      {
+        success: true as const,
+        appConfigured: isGitHubAppConfigured(),
+        appSlug: getGitHubAppSlug() ?? null,
+        devTokenAvailable: Boolean(getGitHubDevToken()),
+        installations,
+        linkedRepo: binding ?? null,
+      },
+      200,
+    );
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/github-repos",
+    tags: ["Apps v2"],
+    summary: "Repos an installation can access (for the link picker)",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      query: z.object({ installationId: z.coerce.number().int() }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const { installationId } = c.req.valid("query");
+      const installation = await GitHubInstallation.findOne({
+        workspaceId: new Types.ObjectId(workspaceId),
+        installationId,
+      });
+      if (!installation) {
+        return c.json({ success: false, error: "Installation not found" }, 404);
+      }
+      const token = await getInstallationToken(installationId);
+      const repos = await listInstallationRepos(token);
+      return c.json({ success: true as const, repos }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/link",
+    tags: ["Apps v2"],
+    summary: "Link a GitHub repo for this workspace's apps",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              owner: z.string().min(1),
+              repo: z.string().min(1),
+              defaultBranch: z.string().optional(),
+              subdirectory: z.string().optional(),
+              installationId: z.number().int().optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const user = c.get("user");
+      // Linking is a workspace-config mutation → admin/owner only (matches
+      // the dbt GitHub connect policy).
+      if (user && !(await workspaceService.isAdmin(workspaceId, user.id))) {
+        return c.json(
+          {
+            success: false,
+            error: "Linking a repo requires the admin or owner role",
+          },
+          403,
+        );
+      }
+      const body = c.req.valid("json");
+      // Validate the repo is reachable + resolve its default branch when the
+      // caller didn't pin one (reuses the dbt token resolver).
+      const token = await resolveRepoToken(body.installationId);
+      const info = await getRepoInfo(body.owner, body.repo, token);
+      const binding = await linkAppsRepo({
+        workspaceId,
+        owner: body.owner,
+        repo: body.repo,
+        defaultBranch: body.defaultBranch || info.defaultBranch || "main",
+        subdirectory: body.subdirectory,
+        installationId: body.installationId,
+        linkedBy: user?.id ?? "api-key",
+      });
+      return c.json({ success: true as const, repo: binding }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/unlink",
+    tags: ["Apps v2"],
+    summary: "Unlink the workspace's apps repo",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const user = c.get("user");
+      if (user && !(await workspaceService.isAdmin(workspaceId, user.id))) {
+        return c.json(
+          {
+            success: false,
+            error: "Unlinking a repo requires the admin or owner role",
+          },
+          403,
+        );
+      }
+      await unlinkAppsRepo(workspaceId);
+      return c.json({ success: true as const }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
   },
 );
 
@@ -250,6 +449,19 @@ appsV2Routes.openapi(
       const { workspaceId } = c.req.valid("param");
       const { title, description } = c.req.valid("json");
       const userId = actingUserId(c);
+      // Apps live in the linked GitHub repo — refuse until one is linked so
+      // the failure is actionable ("link a repo") rather than a git error.
+      const binding = await getAppsRepoBinding(workspaceId);
+      if (!binding) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "No GitHub repo is linked for this workspace. Link one first (Apps v2 → Link a GitHub repo).",
+          },
+          409,
+        );
+      }
       const project = await createProject({
         workspaceId,
         title,

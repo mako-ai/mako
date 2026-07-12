@@ -77,9 +77,33 @@ export interface AppV2Preview {
   builtAt?: number;
 }
 
+export interface AppV2RepoBinding {
+  owner: string;
+  repo: string;
+  defaultBranch: string;
+  subdirectory: string;
+}
+
+export interface AppV2GithubRepo {
+  owner: string;
+  name: string;
+  fullName: string;
+  defaultBranch: string;
+  private: boolean;
+}
+
+export interface AppV2GithubInstallation {
+  installationId: number;
+  accountLogin: string;
+  accountType?: string;
+}
+
 interface AppsV2Store {
   /** undefined = probe pending; false = hidden; true = show the rail. */
   enabled: boolean | undefined;
+  /** undefined = unknown; whether a GitHub repo is linked for this workspace. */
+  linked: boolean | undefined;
+  linkedRepo: AppV2RepoBinding | null;
   apps: AppV2Meta[];
   appsLoading: boolean;
   error: string | null;
@@ -96,6 +120,25 @@ interface AppsV2Store {
   viewMode: Record<string, "code" | "preview">;
 
   probeEnabled: (workspaceId: string) => Promise<void>;
+  fetchGithubStatus: (workspaceId: string) => Promise<{
+    installations: AppV2GithubInstallation[];
+    appSlug: string | null;
+  }>;
+  fetchGithubRepos: (
+    workspaceId: string,
+    installationId: number,
+  ) => Promise<AppV2GithubRepo[]>;
+  linkRepo: (
+    workspaceId: string,
+    input: {
+      owner: string;
+      repo: string;
+      defaultBranch?: string;
+      subdirectory?: string;
+      installationId?: number;
+    },
+  ) => Promise<{ ok: boolean; error?: string }>;
+  unlinkRepo: (workspaceId: string) => Promise<void>;
   fetchApps: (workspaceId: string) => Promise<void>;
   createApp: (
     workspaceId: string,
@@ -145,6 +188,8 @@ function message(e: unknown, fallback: string): string {
 export const useAppsV2Store = create<AppsV2Store>()(
   immer((set, get) => ({
     enabled: undefined,
+    linked: undefined,
+    linkedRepo: null,
     apps: [],
     appsLoading: false,
     error: null,
@@ -165,14 +210,104 @@ export const useAppsV2Store = create<AppsV2Store>()(
           await api.GET("/api/workspaces/{workspaceId}/apps-v2/status-probe", {
             params: { path: { workspaceId } },
           }),
-        ) as { enabled?: boolean };
+        ) as {
+          enabled?: boolean;
+          linked?: boolean;
+          repo?: AppV2RepoBinding | null;
+        };
         set(s => {
           s.enabled = Boolean(body?.enabled);
+          s.linked = Boolean(body?.linked);
+          s.linkedRepo = body?.repo ?? null;
         });
       } catch {
         // Older backend without the route (or transient failure): hide.
         set(s => {
           s.enabled = false;
+        });
+      }
+    },
+
+    fetchGithubStatus: async workspaceId => {
+      try {
+        const body = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/apps-v2/github-status", {
+            params: { path: { workspaceId } },
+          }),
+        ) as {
+          installations?: AppV2GithubInstallation[];
+          appSlug?: string | null;
+          linkedRepo?: AppV2RepoBinding | null;
+        };
+        set(s => {
+          s.linked = Boolean(body.linkedRepo);
+          s.linkedRepo = body.linkedRepo ?? null;
+        });
+        return {
+          installations: body.installations ?? [],
+          appSlug: body.appSlug ?? null,
+        };
+      } catch (e) {
+        set(s => {
+          s.error = message(e, "Failed to load GitHub status");
+        });
+        return { installations: [], appSlug: null };
+      }
+    },
+
+    fetchGithubRepos: async (workspaceId, installationId) => {
+      try {
+        const body = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/apps-v2/github-repos", {
+            params: {
+              path: { workspaceId },
+              query: { installationId },
+            },
+          }),
+        ) as { repos?: AppV2GithubRepo[] };
+        return body.repos ?? [];
+      } catch (e) {
+        set(s => {
+          s.error = message(e, "Failed to list repositories");
+        });
+        return [];
+      }
+    },
+
+    linkRepo: async (workspaceId, input) => {
+      try {
+        const body = unwrapBody(
+          await api.POST("/api/workspaces/{workspaceId}/apps-v2/link", {
+            params: { path: { workspaceId } },
+            body: input,
+          }),
+        ) as { repo?: AppV2RepoBinding };
+        set(s => {
+          s.linked = true;
+          s.linkedRepo = body.repo ?? null;
+        });
+        void get().fetchApps(workspaceId);
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: message(e, "Failed to link repo") };
+      }
+    },
+
+    unlinkRepo: async workspaceId => {
+      try {
+        unwrapBody(
+          await api.POST("/api/workspaces/{workspaceId}/apps-v2/unlink", {
+            params: { path: { workspaceId } },
+          }),
+        );
+        set(s => {
+          s.linked = false;
+          s.linkedRepo = null;
+          s.apps = [];
+        });
+      } catch (e) {
+        set(s => {
+          s.error = message(e, "Failed to unlink repo");
         });
       }
     },

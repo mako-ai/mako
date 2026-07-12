@@ -177,6 +177,27 @@ export interface IWorkspace extends Document {
   billing: IWorkspaceBilling;
   selfDirective?: string;
   apiKeys?: IWorkspaceApiKey[];
+  /**
+   * Apps v2 GitHub repo binding. Apps v2 stores nothing in Mongo except this
+   * link: the repo itself is the durable store (files/history/branches live in
+   * GitHub, working copies in E2B sandboxes). Same shape/spirit as
+   * `DbtProject.repo` and reuses the same GitHub App installation.
+   */
+  appsV2Repo?: IAppsV2RepoBinding;
+}
+
+export interface IAppsV2RepoBinding {
+  provider: "github";
+  /** GitHub App installation granting repo access (omit for public repos). */
+  installationId?: number;
+  owner: string;
+  repo: string;
+  /** Default/main branch conversations fork from and publish merges into. */
+  defaultBranch: string;
+  /** Root under which apps live, e.g. "apps" → apps/<slug>/. */
+  subdirectory: string;
+  linkedBy?: string;
+  linkedAt?: Date;
 }
 
 /**
@@ -1305,6 +1326,20 @@ Add any specific instructions for how the AI should interpret your data or respo
       type: String,
       default: "",
       maxlength: 10000,
+    },
+    appsV2Repo: {
+      type: {
+        provider: { type: String, enum: ["github"], default: "github" },
+        installationId: { type: Number },
+        owner: { type: String, required: true, trim: true },
+        repo: { type: String, required: true, trim: true },
+        defaultBranch: { type: String, required: true, default: "main" },
+        subdirectory: { type: String, required: true, default: "apps" },
+        linkedBy: { type: String },
+        linkedAt: { type: Date },
+      },
+      default: undefined,
+      _id: false,
     },
     apiKeys: [
       {

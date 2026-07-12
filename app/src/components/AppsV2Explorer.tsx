@@ -6,6 +6,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Box,
   Button,
   Dialog,
   DialogActions,
@@ -20,9 +21,11 @@ import {
 } from "@mui/material";
 import {
   Plus as AddIcon,
+  Github as LinkIcon,
   RefreshCw as RefreshIcon,
   Trash2 as DeleteIcon,
 } from "lucide-react";
+import AppsV2LinkRepoDialog from "./AppsV2LinkRepoDialog";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { useAppsV2Store, type AppV2FileEntry } from "../store/appsV2Store";
@@ -108,11 +111,15 @@ export default function AppsV2Explorer() {
   const loading = useAppsV2Store(s => s.appsLoading);
   const error = useAppsV2Store(s => s.error);
   const clearError = useAppsV2Store(s => s.clearError);
+  const linked = useAppsV2Store(s => s.linked);
+  const linkedRepo = useAppsV2Store(s => s.linkedRepo);
+  const probeEnabled = useAppsV2Store(s => s.probeEnabled);
   const filesByApp = useAppsV2Store(s => s.filesByApp);
   const fetchApps = useAppsV2Store(s => s.fetchApps);
   const fetchFiles = useAppsV2Store(s => s.fetchFiles);
   const createApp = useAppsV2Store(s => s.createApp);
   const deleteApp = useAppsV2Store(s => s.deleteApp);
+  const [linkOpen, setLinkOpen] = useState(false);
 
   const activeTab = useConsoleStore(s =>
     s.activeTabId ? s.tabs[s.activeTabId] : undefined,
@@ -138,8 +145,13 @@ export default function AppsV2Explorer() {
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
-    if (workspaceId) void fetchApps(workspaceId);
-  }, [workspaceId, fetchApps]);
+    if (!workspaceId) return;
+    void probeEnabled(workspaceId);
+  }, [workspaceId, probeEnabled]);
+
+  useEffect(() => {
+    if (workspaceId && linked) void fetchApps(workspaceId);
+  }, [workspaceId, linked, fetchApps]);
 
   // App rows are directories whose children are the file tree — `undefined`
   // until fetched so ResourceTree shows the loading skeleton and fires
@@ -253,10 +265,16 @@ export default function AppsV2Explorer() {
 
   const actions = (
     <>
-      <Tooltip title="New app">
-        <IconButton size="small" onClick={() => setCreateOpen(true)}>
-          <AddIcon size={20} strokeWidth={2} />
-        </IconButton>
+      <Tooltip title={linked ? "New app" : "Link a GitHub repo first"}>
+        <span>
+          <IconButton
+            size="small"
+            disabled={!linked}
+            onClick={() => setCreateOpen(true)}
+          >
+            <AddIcon size={20} strokeWidth={2} />
+          </IconButton>
+        </span>
       </Tooltip>
       <Tooltip title="Refresh">
         <IconButton
@@ -267,6 +285,15 @@ export default function AppsV2Explorer() {
           <RefreshIcon size={20} strokeWidth={2} />
         </IconButton>
       </Tooltip>
+      {linked && (
+        <Tooltip
+          title={`Linked: ${linkedRepo?.owner}/${linkedRepo?.repo} — manage`}
+        >
+          <IconButton size="small" onClick={() => setLinkOpen(true)}>
+            <LinkIcon size={18} strokeWidth={2} />
+          </IconButton>
+        </Tooltip>
+      )}
     </>
   );
 
@@ -281,7 +308,25 @@ export default function AppsV2Explorer() {
         loading={loading && apps.length === 0}
       >
         {({ searchQuery }) =>
-          apps.length === 0 && !loading ? (
+          linked === false ? (
+            <Box sx={{ p: 2 }}>
+              <Typography variant="body2" color="text.secondary" gutterBottom>
+                Apps v2 apps live in a GitHub repository. Link one to get
+                started — each app is a folder in the repo, each conversation
+                works on its own branch, and publishing merges back to the
+                default branch.
+              </Typography>
+              <Button
+                variant="contained"
+                size="small"
+                startIcon={<LinkIcon size={16} />}
+                sx={{ mt: 1 }}
+                onClick={() => setLinkOpen(true)}
+              >
+                Link a GitHub repo
+              </Button>
+            </Box>
+          ) : apps.length === 0 && !loading ? (
             <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
               No apps yet. Create one, or ask the agent to build one (Apps v2
               tools).
@@ -344,8 +389,8 @@ export default function AppsV2Explorer() {
             disabled={creating}
           />
           <Typography variant="caption" color="text.secondary">
-            Creates a real Vite + React project in a Mako-managed git
-            repository.
+            Creates a real Vite + React project as a folder in the linked GitHub
+            repo{linkedRepo ? ` (${linkedRepo.owner}/${linkedRepo.repo})` : ""}.
           </Typography>
         </DialogContent>
         <DialogActions>
@@ -361,6 +406,14 @@ export default function AppsV2Explorer() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {workspaceId && (
+        <AppsV2LinkRepoDialog
+          open={linkOpen}
+          workspaceId={workspaceId}
+          onClose={() => setLinkOpen(false)}
+        />
+      )}
     </>
   );
 }
