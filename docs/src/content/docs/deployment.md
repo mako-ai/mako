@@ -68,6 +68,15 @@ MAKO_DEPLOY_RUNTIME_SERVICE_ACCOUNT=runtime-sa@mako-ai-prod.iam.gserviceaccount.
 The dashboard artifact bucket defaults to `<project-id>-dashboard-artifacts`
 and can be overridden with `MAKO_DEPLOY_DASHBOARD_BUCKET`.
 
+### Service authentication
+
+Production Cloud Run services are deployed with `--allow-unauthenticated`:
+authentication happens at the application layer (sessions and `revops_*` API
+keys), not Cloud Run IAM. Public ingress is required because Inngest registers
+against the service's direct `*.run.app/api/inngest` endpoint rather than
+going through the Cloudflare app router, so a newly created production
+service must accept unauthenticated traffic before the Inngest sync runs.
+
 ### Environment Variables
 
 Set these in Cloud Run's environment configuration (or via `cloud-run-env.yaml`):
