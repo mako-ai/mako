@@ -832,8 +832,9 @@ export class AppV2GitHubPushService {
       }
       return { ...head, conflict: false };
     } catch (error) {
-      if (!(error instanceof GitHubApiError) || error.status !== 404)
+      if (!(error instanceof GitHubApiError) || error.status !== 404) {
         throw error;
+      }
       const baseSha = await this.retry(() =>
         this.client.getBranchHeadSha(
           binding.owner,
@@ -1279,8 +1280,9 @@ export class AppV2GitHubPushService {
       try {
         return await operation();
       } catch (error) {
-        if (!isTransient(error) || attempt >= RETRY_DELAYS_MS.length)
+        if (!isTransient(error) || attempt >= RETRY_DELAYS_MS.length) {
           throw error;
+        }
         await this.wait(RETRY_DELAYS_MS[attempt]);
       }
     }
