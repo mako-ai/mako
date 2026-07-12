@@ -141,4 +141,67 @@ describe("buildChatRequestBody", () => {
       { id: baseDashboard._id, title: baseDashboard.title, isActive: true },
     ]);
   });
+
+  it("includes Apps v1 appId and Apps v2 projectId in open tabs", () => {
+    const requestBody = buildChatRequestBody({
+      messages: [],
+      workspaceId: "ws_1",
+      tabs: [
+        {
+          id: "app_1",
+          title: "Legacy App",
+          content: "",
+          kind: "app",
+          metadata: { appId: "legacy_1" },
+        },
+        {
+          id: "app_v2_1",
+          title: "Git App",
+          content: "",
+          kind: "app-v2",
+          metadata: { projectId: "project_1" },
+        },
+      ] as any,
+      activeTabId: "app_v2_1",
+      activeTab: {
+        id: "app_v2_1",
+        title: "Git App",
+        content: "",
+        kind: "app-v2",
+        metadata: { projectId: "project_1" },
+      } as any,
+      activeView: "app",
+      activeExplorer: "apps",
+      workspaceConnections: [],
+    });
+
+    expect(requestBody.openTabs).toEqual([
+      expect.objectContaining({ appId: "legacy_1", projectId: undefined }),
+      expect.objectContaining({ appId: undefined, projectId: "project_1" }),
+    ]);
+  });
+
+  it.each([
+    ["apps-v2", "App Projects rail"],
+    ["apps", "Apps rail"],
+  ] as const)(
+    "includes %s when only the %s is visible",
+    (activeExplorer, _rail) => {
+      const requestBody = buildChatRequestBody({
+        messages: [],
+        workspaceId: "ws_1",
+        tabs: [],
+        activeView: "empty",
+        activeExplorer,
+        workspaceConnections: [],
+      });
+
+      expect(requestBody).toMatchObject({
+        activeView: "empty",
+        activeExplorer,
+        tabKind: undefined,
+        openTabs: [],
+      });
+    },
+  );
 });

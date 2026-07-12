@@ -1,8 +1,9 @@
 /**
  * Apps v2 Git-native project and private worktree routes.
  *
- * Classification: authenticated + workspace-scoped. This router is entirely
- * separate from Apps v1 and is hidden behind APPS_V2_ENABLED.
+ * Classification: session-authenticated + workspace-scoped. Workspace API
+ * keys are rejected before workspace lookup. This router is entirely separate
+ * from Apps v1 and is hidden behind APPS_V2_ENABLED.
  */
 import { createRoute, z } from "@hono/zod-openapi";
 import { bodyLimit } from "hono/body-limit";
@@ -26,17 +27,13 @@ import {
   type AuthenticatedContext,
 } from "../middleware/workspace.middleware";
 import {
-  AUTH_SECURITY,
   OPEN_RESPONSES,
   createRouter,
   jsonContent,
   zDateTime,
 } from "../openapi/core";
 import { publishRealtimeEvent } from "../services/realtime.service";
-import {
-  AppV2ProjectService,
-  type AppV2Actor,
-} from "../apps-v2/app-project.service";
+import type { AppV2Actor } from "../apps-v2/app-project.service";
 import { getAppV2ProjectEventAudience } from "../apps-v2/event-visibility";
 import { resolveResourceRole } from "../utils/resource-acl";
 import {
@@ -59,18 +56,15 @@ import {
   AppV2RecoveryConflictError,
   AppV2ValidationError,
 } from "../apps-v2/errors";
-import { AppV2WorktreeService } from "../apps-v2/worktree.service";
-import { CloudSessionExecutor } from "../apps-v2/cloud-session-executor";
 import { AppV2SessionService } from "../apps-v2/session.service";
-import { createAppsV2SandboxProvider } from "../apps-v2/providers/sandbox-provider-factory";
+import { getAppV2Services as services } from "../apps-v2/service-factory";
 import { APP_V2_MAX_PATH_SEGMENTS } from "../apps-v2/path-validation";
 import { isAppV2RegistryPackageSpec } from "../apps-v2/package-spec";
 
 const logger = loggers.api("apps-v2");
 const routes = createRouter();
-let projectService: AppV2ProjectService | undefined;
-let worktreeService: AppV2WorktreeService | undefined;
-let sessionService: AppV2SessionService | undefined;
+/** Apps v2 projects are user-private resources and require a browser session. */
+const AUTH_SECURITY: Array<Record<string, string[]>> = [{ cookieAuth: [] }];
 
 const WorkspaceParams = z.object({
   workspaceId: z
@@ -396,34 +390,6 @@ const okResponse = (schema: z.ZodType, description: string) => ({
   200: jsonContent(schema, description),
 });
 
-function services(): {
-  projects: AppV2ProjectService;
-  worktrees: AppV2WorktreeService;
-} {
-  projectService ??= new AppV2ProjectService();
-  worktreeService ??= new AppV2WorktreeService(projectService);
-  return { projects: projectService, worktrees: worktreeService };
-}
-
-function sessions(): AppV2SessionService | undefined {
-  const configuration = getAppsV2SandboxConfiguration();
-  if (!configuration.available) return undefined;
-  if (!sessionService) {
-    const provider = createAppsV2SandboxProvider();
-    if (!provider) return undefined;
-    sessionService = new AppV2SessionService(
-      provider.name,
-      new CloudSessionExecutor(
-        provider,
-        services().projects,
-        services().worktrees,
-      ),
-      services().worktrees,
-    );
-  }
-  return sessionService;
-}
-
 function actor(c: AuthenticatedContext) {
   const userId = c.get("user")?.id;
   if (!userId) throw new AppV2NotFoundError("Project not found");
@@ -565,6 +531,18 @@ function errorResponse(c: AuthenticatedContext, error: unknown) {
 }
 
 routes.use("*", unifiedAuthMiddleware);
+routes.use("*", async (c, next) => {
+  if (c.get("authType") !== "session") {
+    return c.json(
+      {
+        success: false as const,
+        error: "Apps v2 requires session authentication",
+      },
+      403,
+    );
+  }
+  await next();
+});
 routes.use("*", requireWorkspace);
 
 routes.openapi(
@@ -600,7 +578,7 @@ routes.openapi(
         404,
       );
     }
-    const sessionController = sessions();
+    const sessionController = services().sessions;
     if (!sessionController) return unavailableProvider(c);
     try {
       const requestActor = actor(c);
@@ -939,7 +917,7 @@ routes.openapi(
     },
   }),
   async c => {
-    const sessionController = sessions();
+    const sessionController = services().sessions;
     if (!sessionController) return unavailableProvider(c);
     try {
       const requestActor = actor(c);
@@ -986,7 +964,7 @@ routes.openapi(
     },
   }),
   async c => {
-    const sessionController = sessions();
+    const sessionController = services().sessions;
     if (!sessionController) return unavailableProvider(c);
     try {
       const requestActor = actor(c);
@@ -1004,6 +982,7 @@ routes.openapi(
         project,
         worktree,
         requestActor,
+        c.req.raw.signal,
       );
       mutationPoke(workspaceId, projectId, ensured.worktree);
       return c.json({
@@ -1047,7 +1026,7 @@ routes.openapi(
     },
   }),
   async c => {
-    const sessionController = sessions();
+    const sessionController = services().sessions;
     if (!sessionController) return unavailableProvider(c);
     try {
       const requestActor = actor(c);
@@ -1130,7 +1109,7 @@ routes.openapi(
     },
   }),
   async c => {
-    const sessionController = sessions();
+    const sessionController = services().sessions;
     if (!sessionController) return unavailableProvider(c);
     try {
       const requestActor = actor(c);
@@ -1201,7 +1180,7 @@ routes.openapi(
     },
   }),
   async c => {
-    const sessionController = sessions();
+    const sessionController = services().sessions;
     if (!sessionController) return unavailableProvider(c);
     try {
       const requestActor = actor(c);
@@ -1260,7 +1239,7 @@ routes.openapi(
     },
   }),
   async c => {
-    const sessionController = sessions();
+    const sessionController = services().sessions;
     if (!sessionController) return unavailableProvider(c);
     try {
       const requestActor = actor(c);

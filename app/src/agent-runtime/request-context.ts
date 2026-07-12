@@ -4,7 +4,12 @@ import type { ActiveExplorer } from "../store/uiStore";
 import { getDashboardStateSnapshot } from "../dashboard-runtime/commands";
 import { useDashboardStore } from "../store/dashboardStore";
 
-export type ChatActiveView = "console" | "dashboard" | "flow-editor" | "empty";
+export type ChatActiveView =
+  | "console"
+  | "dashboard"
+  | "flow-editor"
+  | "app"
+  | "empty";
 
 export interface ActiveConsoleResultsContext {
   viewMode: "table" | "json" | "chart";
@@ -77,6 +82,16 @@ function buildOpenTabs(tabs: ConsoleTab[], activeTabId?: string | null) {
     flowId:
       tab.kind === "flow-editor"
         ? (tab.metadata?.flowId as string | undefined)
+        : undefined,
+    appId:
+      tab.kind === "app" ||
+      tab.kind === "app-file" ||
+      tab.kind === "app-binding"
+        ? (tab.metadata?.appId as string | undefined)
+        : undefined,
+    projectId:
+      tab.kind === "app-v2" || tab.kind === "app-v2-file"
+        ? (tab.metadata?.projectId as string | undefined)
         : undefined,
     connectionId:
       tab.kind === "console" || !tab.kind ? tab.connectionId : undefined,

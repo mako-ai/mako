@@ -153,7 +153,18 @@ describe("appV2Store conflict handling", () => {
     });
     vi.spyOn(apiClient, "get").mockImplementation(async path => {
       if (path.endsWith("/tree")) {
-        return { success: true, worktree: discardedWorktree, entries: [] };
+        return {
+          success: true,
+          worktree: discardedWorktree,
+          entries: [
+            {
+              path: pristinePath,
+              oid: "f".repeat(40),
+              size: 13,
+              mode: "regular",
+            },
+          ],
+        };
       }
       if (path.endsWith("/status")) {
         return {
@@ -193,6 +204,129 @@ describe("appV2Store conflict handling", () => {
           revision: 8,
           wipOid: "e".repeat(40),
           leaseEpoch: 3,
+        },
+      },
+    );
+  });
+
+  it("refreshes clean buffers, removes deleted clean files, and preserves dirty buffers", async () => {
+    const cleanPath = "src/clean.ts";
+    const deletedPath = "src/deleted.ts";
+    const dirtyKey = appV2FileKey(worktree.projectId, file.path);
+    const cleanKey = appV2FileKey(worktree.projectId, cleanPath);
+    const deletedKey = appV2FileKey(worktree.projectId, deletedPath);
+    useAppV2Store.setState(state => ({
+      ...state,
+      projectsById: {
+        [worktree.projectId]: {
+          id: worktree.projectId,
+          workspaceId: "workspace-1",
+          title: "Project",
+        } as never,
+      },
+      filesByKey: {
+        ...state.filesByKey,
+        [cleanKey]: { ...file, path: cleanPath, content: "clean before" },
+        [deletedKey]: { ...file, path: deletedPath, content: "deleted before" },
+      },
+      editorBuffersByKey: {
+        ...state.editorBuffersByKey,
+        [cleanKey]: {
+          ...buffer,
+          path: cleanPath,
+          content: "clean before",
+          dirty: false,
+        },
+        [deletedKey]: {
+          ...buffer,
+          path: deletedPath,
+          content: "deleted before",
+          dirty: false,
+        },
+      },
+    }));
+    const advancedWorktree = {
+      ...worktree,
+      revision: 8,
+      wipOid: "d".repeat(40),
+      leaseEpoch: 4,
+    };
+    vi.spyOn(apiClient, "get").mockImplementation(async (path, query) => {
+      if (path.endsWith("/apps-v2/project-1")) {
+        return {
+          success: true,
+          project: useAppV2Store.getState().projectsById[worktree.projectId],
+        };
+      }
+      if (path.endsWith("/tree")) {
+        return {
+          success: true,
+          worktree: advancedWorktree,
+          entries: [
+            {
+              path: cleanPath,
+              oid: "e".repeat(40),
+              size: 11,
+              mode: "regular",
+            },
+            {
+              path: file.path,
+              oid: file.oid,
+              size: file.content.length,
+              mode: "regular",
+            },
+          ],
+        };
+      }
+      if (path.endsWith("/status")) {
+        return {
+          success: true,
+          worktree: advancedWorktree,
+          clean: false,
+          changes: [],
+        };
+      }
+      expect(query).toEqual({ path: cleanPath });
+      return {
+        success: true,
+        worktree: advancedWorktree,
+        path: cleanPath,
+        oid: "e".repeat(40),
+        mode: "regular",
+        content: "clean after",
+      };
+    });
+
+    await useAppV2Store
+      .getState()
+      .refreshProject("workspace-1", worktree.projectId);
+
+    expect(useAppV2Store.getState().editorBuffersByKey[cleanKey]).toMatchObject(
+      {
+        content: "clean after",
+        dirty: false,
+        baseRevision: 8,
+        baseWipOid: "d".repeat(40),
+        baseLeaseEpoch: 4,
+        remoteUpdate: null,
+      },
+    );
+    expect(
+      useAppV2Store.getState().editorBuffersByKey[deletedKey],
+    ).toBeUndefined();
+    expect(useAppV2Store.getState().filesByKey[deletedKey]).toBeUndefined();
+    expect(
+      useAppV2Store.getState().errorsByKey[`file:${deletedKey}`],
+    ).toContain("no longer exists");
+    expect(useAppV2Store.getState().editorBuffersByKey[dirtyKey]).toMatchObject(
+      {
+        content: "local edits",
+        dirty: true,
+        baseRevision: 7,
+        remoteUpdate: {
+          revision: 8,
+          wipOid: "d".repeat(40),
+          leaseEpoch: 4,
         },
       },
     );
@@ -262,6 +396,37 @@ describe("appV2Store conflict handling", () => {
       error: null,
     });
     expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes only loaded projects in the active workspace", async () => {
+    const refreshProject = vi.fn(async () => undefined);
+    useAppV2Store.setState(state => ({
+      ...state,
+      projectsById: {
+        "project-1": {
+          id: "project-1",
+          workspaceId: "workspace-1",
+        } as never,
+        "project-2": {
+          id: "project-2",
+          workspaceId: "workspace-2",
+        } as never,
+        "project-not-loaded": {
+          id: "project-not-loaded",
+          workspaceId: "workspace-1",
+        } as never,
+      },
+      worktreesByProject: {
+        "project-1": worktree,
+        "project-2": { ...worktree, projectId: "project-2" },
+      },
+      refreshProject,
+    }));
+
+    await useAppV2Store.getState().refreshLoadedProjects("workspace-1");
+
+    expect(refreshProject).toHaveBeenCalledOnce();
+    expect(refreshProject).toHaveBeenCalledWith("workspace-1", "project-1");
   });
 });
 

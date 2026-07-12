@@ -1304,6 +1304,55 @@ async function run(): Promise<void> {
     assert.equal(heldExecutor.prepared.length, 0);
     assert.equal(heldExecutor.killed.length, 0);
 
+    class AbortablePrepareExecutor extends FakeSessionExecutor {
+      readonly started = new Promise<void>(resolve => {
+        this.resolveStarted = resolve;
+      });
+      seenSignal?: AbortSignal;
+      private resolveStarted!: () => void;
+
+      override async prepare(
+        target: Parameters<FakeSessionExecutor["prepare"]>[0],
+        options: Parameters<FakeSessionExecutor["prepare"]>[1],
+      ): ReturnType<FakeSessionExecutor["prepare"]> {
+        this.seenSignal = options.signal;
+        this.resolveStarted();
+        await new Promise<void>(resolve => {
+          if (options.signal.aborted) return resolve();
+          options.signal.addEventListener("abort", () => resolve(), {
+            once: true,
+          });
+        });
+        options.signal.throwIfAborted();
+        return super.prepare(target, options);
+      }
+    }
+
+    const cancelledPrepareStore = new MemorySessionStore();
+    const cancelledPrepareExecutor = new AbortablePrepareExecutor();
+    const cancelledPrepareService = new AppV2SessionService(
+      "fake",
+      cancelledPrepareExecutor,
+      worktrees,
+      cancelledPrepareStore,
+      new AppV2KeyedMutex(),
+    );
+    const prepareAbort = new AbortController();
+    const cancelledEnsure = cancelledPrepareService.ensure(
+      project,
+      worktree,
+      { userId: "cancelled-actor" },
+      prepareAbort.signal,
+    );
+    await cancelledPrepareExecutor.started;
+    prepareAbort.abort();
+    await assert.rejects(cancelledEnsure, error => {
+      return error instanceof Error && error.name === "AbortError";
+    });
+    assert.equal(cancelledPrepareExecutor.seenSignal?.aborted, true);
+    assert.equal(cancelledPrepareStore.record?.status, "provisioning");
+    assert.equal(cancelledPrepareStore.record?.operationId, undefined);
+
     class BlockingExecExecutor extends FakeSessionExecutor {
       readonly started = new Promise<void>(resolve => {
         this.resolveStarted = resolve;

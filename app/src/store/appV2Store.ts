@@ -254,6 +254,7 @@ interface AppV2Actions {
   ) => Promise<MutationResult>;
   discard: (workspaceId: string, projectId: string) => Promise<MutationResult>;
   refreshProject: (workspaceId: string, projectId: string) => Promise<void>;
+  refreshLoadedProjects: (workspaceId: string) => Promise<void>;
   clearConflict: (key: string) => void;
 }
 
@@ -419,6 +420,7 @@ export const useAppV2Store = create<AppV2Store>()(
         for (const buffer of Object.values(state.editorBuffersByKey)) {
           if (
             buffer.projectId === projectId &&
+            buffer.dirty &&
             (buffer.baseRevision !== worktree.revision ||
               buffer.baseWipOid !== worktree.wipOid ||
               buffer.baseLeaseEpoch !== worktree.leaseEpoch)
@@ -438,6 +440,7 @@ export const useAppV2Store = create<AppV2Store>()(
       projectId: string,
       path: string,
       force: boolean,
+      preserveDirty = false,
     ): Promise<AppV2File | null> => {
       const bufferKey = appV2FileKey(projectId, path);
       if (!force && get().editorBuffersByKey[bufferKey]) {
@@ -469,6 +472,16 @@ export const useAppV2Store = create<AppV2Store>()(
           latestWorktree.leaseEpoch !== response.worktree.leaseEpoch;
         set(state => {
           state.filesByKey[bufferKey] = file;
+          const currentBuffer = state.editorBuffersByKey[bufferKey];
+          if (preserveDirty && currentBuffer?.dirty) {
+            currentBuffer.remoteUpdate = {
+              revision: response.worktree.revision,
+              wipOid: response.worktree.wipOid,
+              leaseEpoch: response.worktree.leaseEpoch,
+            };
+            state.errorsByKey[loadingKey] = null;
+            return;
+          }
           state.editorBuffersByKey[bufferKey] = {
             projectId,
             path,
@@ -505,6 +518,36 @@ export const useAppV2Store = create<AppV2Store>()(
         get().loadTree(workspaceId, projectId),
         get().loadStatus(workspaceId, projectId),
       ]);
+      const worktree = get().worktreesByProject[projectId];
+      if (!worktree) return;
+      const remotePaths = new Set(
+        (get().treesByProject[projectId] ?? []).map(entry => entry.path),
+      );
+      const candidates = Object.entries(get().editorBuffersByKey).filter(
+        ([, buffer]) =>
+          buffer.projectId === projectId &&
+          !buffer.dirty &&
+          (buffer.baseRevision !== worktree.revision ||
+            buffer.baseWipOid !== worktree.wipOid ||
+            buffer.baseLeaseEpoch !== worktree.leaseEpoch),
+      );
+      await Promise.all(
+        candidates.map(async ([bufferKey, buffer]) => {
+          if (!remotePaths.has(buffer.path)) {
+            set(state => {
+              const current = state.editorBuffersByKey[bufferKey];
+              if (!current || current.dirty) return;
+              delete state.editorBuffersByKey[bufferKey];
+              delete state.filesByKey[bufferKey];
+              delete state.conflictsByKey[bufferKey];
+              state.errorsByKey[`file:${bufferKey}`] =
+                "File no longer exists in this worktree";
+            });
+            return;
+          }
+          await fetchFile(workspaceId, projectId, buffer.path, true, true);
+        }),
+      );
     };
 
     const runSessionCommand = async (
@@ -1086,9 +1129,6 @@ export const useAppV2Store = create<AppV2Store>()(
       discard: async (workspaceId, projectId) => {
         const mutation = mutationState(projectId);
         if (!mutation) return "error";
-        const pristinePaths = Object.values(get().editorBuffersByKey)
-          .filter(buffer => buffer.projectId === projectId && !buffer.dirty)
-          .map(buffer => buffer.path);
         try {
           const response = await apiClient.postWithStatus<{
             success: boolean;
@@ -1112,11 +1152,6 @@ export const useAppV2Store = create<AppV2Store>()(
             delete state.conflictsByKey[projectId];
           });
           await refreshWorktreeViews(workspaceId, projectId);
-          await Promise.all(
-            pristinePaths.map(path =>
-              get().reloadFile(workspaceId, projectId, path),
-            ),
-          );
           return "saved";
         } catch (error) {
           recordError(
@@ -1136,6 +1171,19 @@ export const useAppV2Store = create<AppV2Store>()(
         if (get().worktreesByProject[projectId]) {
           await refreshWorktreeViews(workspaceId, projectId);
         }
+      },
+
+      refreshLoadedProjects: async workspaceId => {
+        const state = get();
+        const projectIds = Object.keys(state.worktreesByProject).filter(
+          projectId =>
+            state.projectsById[projectId]?.workspaceId === workspaceId,
+        );
+        await Promise.allSettled(
+          projectIds.map(projectId =>
+            get().refreshProject(workspaceId, projectId),
+          ),
+        );
       },
 
       clearConflict: key => {

@@ -269,6 +269,12 @@ export const useRealtimeStore = create<RealtimeStore>()(
       void useDbtStore.getState().reconcileRemoteGitState(workspaceId);
     };
 
+    const syncAppV2State = () => {
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      void useAppV2Store.getState().refreshLoadedProjects(workspaceId);
+    };
+
     /**
      * A remote update was deferred (banner) only because the user was
      * mid-typing — re-run the sync once the recency window has passed so a
@@ -742,6 +748,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
         // window has open against current server revisions.
         void get().syncRevisions();
         syncDbtGitState();
+        syncAppV2State();
       };
 
       source.addEventListener("message", (e: MessageEvent) => {
@@ -795,6 +802,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
         // were backgrounded (throttled timers) — reconcile.
         void get().syncRevisions();
         syncDbtGitState();
+        syncAppV2State();
       } else {
         // Stream missing, mid-backoff, or silent past ~1.5 heartbeats.
         // `status === "open"` is NOT trustworthy here: Chrome freezes

@@ -123,8 +123,21 @@ const FLOW_MODE_TOOL_NAMES: string[] = [
   "sql_inspect_table",
 ];
 
-const APP_MODE_TOOL_NAMES: string[] = [
-  // Client app tools
+export const APP_V2_ONLY_TOOL_NAMES = new Set<string>([
+  "app2_list_apps",
+  "app2_create_app",
+  "app2_read_file",
+  "app2_write_file",
+  "app2_edit_file",
+  "app2_delete_file",
+  "app2_move_file",
+  "app2_status",
+  "app2_commit",
+  "app2_bash",
+  "app2_install_packages",
+]);
+
+export const APP_V1_ONLY_TOOL_NAMES = new Set<string>([
   "list_open_apps",
   "open_app",
   "create_app",
@@ -146,6 +159,35 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "materialize_binding",
   "run_app",
   "app_set_preview_environment",
+]);
+
+export function isolateAppToolFamily(
+  activeTools: string[],
+  tabKind: string | undefined,
+  activeExplorer?: AgentContext["activeExplorer"],
+): string[] {
+  const isAppV2Tab = tabKind === "app-v2" || tabKind === "app-v2-file";
+  const isAppV1Tab =
+    tabKind === "app" || tabKind === "app-file" || tabKind === "app-binding";
+  const excluded = isAppV2Tab
+    ? APP_V1_ONLY_TOOL_NAMES
+    : isAppV1Tab
+      ? APP_V2_ONLY_TOOL_NAMES
+      : activeExplorer === "apps-v2"
+        ? APP_V1_ONLY_TOOL_NAMES
+        : activeExplorer === "apps"
+          ? APP_V2_ONLY_TOOL_NAMES
+          : undefined;
+  return excluded
+    ? activeTools.filter(toolName => !excluded.has(toolName))
+    : activeTools;
+}
+
+const APP_MODE_TOOL_NAMES: string[] = [
+  // Apps v1 and v2 share expertise guidance, but runtime tab-family
+  // isolation ensures only one generation of app tools can execute.
+  ...APP_V2_ONLY_TOOL_NAMES,
+  ...APP_V1_ONLY_TOOL_NAMES,
   // Shared surface-scoped data-source primitives (apps + dashboards)
   "list_data_sources",
   "inspect_data_source",
@@ -348,15 +390,33 @@ export function resolveExpertiseModeId(
  * router with a zero-cost heuristic; a model router can be layered on later.
  */
 export function defaultExpertiseMode(
-  context: Pick<AgentContext, "activeView">,
+  context: Pick<AgentContext, "activeView" | "activeExplorer">,
   tabKind?: string,
 ): ExpertiseModeId {
+  if (tabKind === "dashboard") return "dashboard";
+  if (tabKind === "flow-editor") return "flow";
+  if (
+    tabKind === "app" ||
+    tabKind === "app-file" ||
+    tabKind === "app-binding" ||
+    tabKind === "app-v2" ||
+    tabKind === "app-v2-file"
+  ) {
+    return "app";
+  }
+  if (tabKind === "dbt-file" || tabKind === "dbt-job") return "transform";
+  if (tabKind === "console") return "query";
+
   const view = context.activeView;
-  if (view === "dashboard" || tabKind === "dashboard") return "dashboard";
-  if (view === "flow-editor" || tabKind === "flow-editor") return "flow";
-  if (view === "app" || tabKind === "app") return "app";
-  if (view === "dbt" || tabKind === "dbt-file" || tabKind === "dbt-job") {
-    return "transform";
+  if (view === "dashboard") return "dashboard";
+  if (view === "flow-editor") return "flow";
+  if (view === "app") return "app";
+  if (view === "dbt") return "transform";
+  if (
+    context.activeExplorer === "apps" ||
+    context.activeExplorer === "apps-v2"
+  ) {
+    return "app";
   }
   return "query";
 }

@@ -26,6 +26,7 @@ import {
   defaultExpertiseMode,
   toolNamesForModes,
   resolveExpertiseModeId,
+  isolateAppToolFamily,
 } from "./registry";
 import {
   BASE_SYSTEM_PROMPT,
@@ -228,7 +229,11 @@ export function buildUnifiedModeRuntime(params: {
   };
 
   const prepareStep = () => ({
-    activeTools: computeActiveTools(modeState, allToolNames, mcpAllowlist),
+    activeTools: isolateAppToolFamily(
+      computeActiveTools(modeState, allToolNames, mcpAllowlist),
+      tabKind,
+      context.activeExplorer,
+    ),
     system: buildModeSystem(context, modeState),
   });
 

@@ -67,6 +67,20 @@ function testSecuritySchemes() {
   assert.ok(schemes.bearerAuth, "bearerAuth scheme registered");
 }
 
+function testAppsV2RequiresCookieSession() {
+  const appsV2Operations = operations().filter(({ path }) =>
+    path.includes("/apps-v2"),
+  );
+  assert.ok(appsV2Operations.length > 0, "Apps v2 operations registered");
+  for (const { path, method, op } of appsV2Operations) {
+    assert.deepEqual(
+      op.security,
+      [{ cookieAuth: [] }],
+      `${method.toUpperCase()} ${path} must reject workspace API keys`,
+    );
+  }
+}
+
 function testHasManyPaths() {
   const ops = operations();
   assert.ok(
@@ -211,6 +225,7 @@ function testNoPlaceholderStatusExplosion() {
 function main() {
   testDocumentEnvelope();
   testSecuritySchemes();
+  testAppsV2RequiresCookieSession();
   testHasManyPaths();
   testEveryOperationHasResponsesAndMetadata();
   testPathParamsAreDeclared();

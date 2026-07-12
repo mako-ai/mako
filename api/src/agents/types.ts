@@ -46,6 +46,8 @@ export interface AgentMeta {
 export interface AgentContext {
   /** Current workspace ID */
   workspaceId: string;
+  /** Authentication mechanism for this request. */
+  authType: "session" | "apiKey";
   /**
    * Chat driving this turn. Server-side console tools use it as the
    * realtime echo-suppression clientId (`agent:<chatId>`) and to address
@@ -72,8 +74,12 @@ export interface AgentContext {
     | "connectors"
     | "flows"
     | "dashboards"
+    | "apps"
+    | "apps-v2"
+    | "dbt"
+    | "settings"
     | null;
-  /** Current user ID (if session auth) */
+  /** Chat/history actor ID; only a user principal when authType is session. */
   userId?: string;
   /** Open console tabs (for console agent) */
   consoles?: ConsoleDataV2[];
@@ -87,6 +93,8 @@ export interface AgentContext {
     isActive: boolean;
     dashboardId?: string;
     flowId?: string;
+    appId?: string;
+    projectId?: string;
     connectionId?: string;
     databaseName?: string;
   }>;

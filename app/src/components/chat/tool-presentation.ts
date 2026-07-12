@@ -65,6 +65,15 @@ export const APP_SERVER_MUTATION_TOOLS = new Set<string>([
   "app_set_binding_schedule",
   "app_restore_version",
 ]);
+export const APP_V2_SERVER_MUTATION_TOOLS = new Set<string>([
+  "app2_write_file",
+  "app2_edit_file",
+  "app2_delete_file",
+  "app2_move_file",
+  "app2_bash",
+  "app2_install_packages",
+  "app2_commit",
+]);
 export const DBT_SERVER_MUTATION_TOOLS = new Set<string>([
   "create_dbt_file",
   "modify_dbt_file",

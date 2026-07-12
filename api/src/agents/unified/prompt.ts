@@ -328,11 +328,29 @@ function buildTabSummary(context: AgentContext): string[] {
       detail = ` (id: ${tab.dashboardId})`;
     } else if (tab.kind === "flow-editor" && tab.flowId) {
       detail = ` (flow: ${tab.flowId})`;
+    } else if (
+      (tab.kind === "app" ||
+        tab.kind === "app-file" ||
+        tab.kind === "app-binding") &&
+      tab.appId
+    ) {
+      detail = ` (app id: ${tab.appId})`;
+    } else if (
+      (tab.kind === "app-v2" || tab.kind === "app-v2-file") &&
+      tab.projectId
+    ) {
+      detail = ` (project id: ${tab.projectId})`;
     }
     const kindLabel =
       tab.kind === "flow-editor"
         ? "Flow"
-        : tab.kind.charAt(0).toUpperCase() + tab.kind.slice(1);
+        : tab.kind === "app-v2" || tab.kind === "app-v2-file"
+          ? "App Project"
+          : tab.kind === "app" ||
+              tab.kind === "app-file" ||
+              tab.kind === "app-binding"
+            ? "App"
+            : tab.kind.charAt(0).toUpperCase() + tab.kind.slice(1);
     parts.push(
       `${index + 1}. ${activeMarker}${kindLabel} "${tab.title}"${detail}`,
     );
@@ -343,7 +361,13 @@ function buildTabSummary(context: AgentContext): string[] {
     const kindLabel =
       activeTab.kind === "flow-editor"
         ? "Flow"
-        : activeTab.kind.charAt(0).toUpperCase() + activeTab.kind.slice(1);
+        : activeTab.kind === "app-v2" || activeTab.kind === "app-v2-file"
+          ? "App Project"
+          : activeTab.kind === "app" ||
+              activeTab.kind === "app-file" ||
+              activeTab.kind === "app-binding"
+            ? "App"
+            : activeTab.kind.charAt(0).toUpperCase() + activeTab.kind.slice(1);
     parts.push("");
     parts.push(
       `The user is currently viewing: ${kindLabel} "${activeTab.title}".`,
@@ -370,6 +394,27 @@ function buildConnectionsContext(context: AgentContext): string[] {
   return parts;
 }
 
+function visibleExplorerLabel(
+  explorer: AgentContext["activeExplorer"],
+): string {
+  if (!explorer) return "None (left pane collapsed)";
+  const labels: Record<
+    Exclude<AgentContext["activeExplorer"], null | undefined>,
+    string
+  > = {
+    databases: "Databases",
+    consoles: "Consoles",
+    connectors: "Connectors",
+    flows: "Flows",
+    dashboards: "Dashboards",
+    apps: "Apps",
+    "apps-v2": "App Projects",
+    dbt: "Transforms",
+    settings: "Settings",
+  };
+  return `${labels[explorer]} (${explorer})`;
+}
+
 export function buildCurrentScreenContext(context: AgentContext): string {
   const sections: string[] = [];
 
@@ -389,6 +434,10 @@ export function buildCurrentScreenContext(context: AgentContext): string {
       day: "numeric",
       timeZone: "UTC",
     })} (UTC)`,
+  );
+  sections.push("");
+  sections.push(
+    `Visible explorer: ${visibleExplorerLabel(context.activeExplorer)}`,
   );
   sections.push("");
 

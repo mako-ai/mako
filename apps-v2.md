@@ -1,7 +1,8 @@
 # Apps v2: Git-native projects, real development environments, and instant deployment
 
-- **Status:** Proposed; initial Git-native backend slice implemented behind
-  `APPS_V2_ENABLED=false` by default
+- **Status:** Git-native project/worktree/session services, the independent UI,
+  and secure agent tools are implemented behind `APPS_V2_ENABLED=false` by
+  default; deployment and external harness phases remain proposed
 - **Production gate:** enabling also requires a durable non-temporary Git root
   and `APPS_V2_GIT_DURABILITY_CONFIRMED=true`
 - **Sandbox gate:** execution defaults to
@@ -47,7 +48,13 @@ The central architectural decision is to keep three concerns separate:
 
 This separation is necessary even when the selected sandbox vendor offers pause/resume or persistent disks. Vendor persistence is useful for warm starts and dependency caches, not as the system of record.
 
-The recommended v1 topology is **one Mako-managed repository per app**, under a workspace namespace. This preserves app-level access control, makes cloning and deployment understandable, and limits blast radius. Customer-owned monorepositories require a later RFC because a subdirectory is not an authorization boundary. Existing dbt repositories remain separate.
+The initial Apps v2 topology is **one Mako-managed repository per app**, under a workspace namespace. This preserves app-level access control, makes cloning and deployment understandable, and limits blast radius. Customer-owned monorepositories require a later RFC because a subdirectory is not an authorization boundary. Existing dbt repositories remain separate.
+
+Apps v1 and Apps v2 are independent products while v2 reaches parity. They have
+separate rail icons, routes, collections, stores, tools, URLs, and renderers.
+Creating or editing an Apps v2 project never reads or mutates an Apps v1
+document, and no dual-write bridge exists. Once v2 satisfies the retirement
+criteria, v1 is removed as a separate cleanup project.
 
 The first production runtime should remain deliberately narrow: Apps v2 builds static client applications with Vite-compatible tooling and deploys immutable assets to a dedicated app origin. Arbitrary scripts may run during development and builds, but Apps v2 does not initially host arbitrary long-running backend processes.
 
@@ -63,7 +70,7 @@ The first production runtime should remain deliberately narrow: Apps v2 builds s
 | How are apps hosted?                                       | Clean build in a fresh sandbox; immutable static output in object storage/CDN; an origin on a registrable domain unrelated to `mako.ai`; deployment points to a commit SHA and artifact digest. |
 | How does a local checkout reach Mako data?                 | `@mako/app-sdk` plus `mako dev`, authenticated by OAuth 2.1 Authorization Code + PKCE. The local proxy holds tokens; app code receives only short-lived capabilities and query results.         |
 | How do Claude Code and Codex use Mako's data intelligence? | A remote, OAuth-protected Mako MCP server for schema discovery and read-only query tools, plus ordinary Git and local filesystem access.                                                        |
-| How many repositories?                                     | One Mako-managed repository per app in v1. Do not put all workspace apps, dbt projects, and consoles in one repository. External monorepos require a later, separately approved design.         |
+| How many repositories?                                     | One Mako-managed repository per app in the initial v2 release. Do not put all workspace apps, dbt projects, and consoles in one repository. External monorepos require a later, separately approved design. |
 | What remains in MongoDB?                                   | Product metadata, ACLs, repo/worktree/deployment records, binding projections, build status, and audit events—not source file contents.                                                         |
 
 ## Product thesis and USP
@@ -100,7 +107,9 @@ That model has the following limits:
 - the agent can edit headlessly, but rendered preview inspection and runtime-error feedback require an attached browser;
 - application source, mutable product metadata, and deployment state are coupled in one MongoDB document.
 
-The current CDN runtime is useful for zero-install prototypes and should be retained temporarily as a migration/fallback renderer. It is not the foundation for Apps v2.
+The current CDN runtime remains exclusively available to Apps v1 while both
+rail destinations operate in parallel. It is not a fallback renderer or source
+for Apps v2.
 
 ### Problems this RFC does not attribute to MongoDB alone
 
@@ -125,7 +134,11 @@ The current flow is:
 
 Server-authoritative mutations emit realtime invalidations so open clients refetch current state. Apps v2 should preserve that poke-then-pull pattern while replacing the Mongo document with revisioned Worktree state.
 
-The schema contains a planned `webcontainer` runtime enum, but no WebContainer executor exists; preview always uses the CDN path. Apps v2 supersedes that in-browser plan with cloud-isolated Linux sandboxes because local Git, external harnesses, server-controlled recovery, and build parity are requirements. The legacy enum remains migration-only and should eventually be removed.
+The Apps v1 schema contains a planned `webcontainer` runtime enum, but no
+WebContainer executor exists; preview always uses the CDN path. Apps v2 does
+not reuse or extend that enum. It uses separate cloud-isolated Linux sandboxes
+because local Git, external harnesses, server-controlled recovery, and build
+parity are requirements.
 
 Important behavior to preserve:
 
@@ -814,15 +827,16 @@ This preserves the current security property: source sees results, not credentia
 
 Runtime artifact and refresh keys include app ID, deployment SHA/WIP OID, manifest digest, resolved query hash, environment, and connection revision. A deployment never joins mutable cache state by binding ID alone.
 
-Compatibility in v1:
+Binding support in the initial Apps v2 release:
 
 | Binding language | Authenticated preview/deployment                 | Public live                          | Parquet |
 | ---------------- | ------------------------------------------------ | ------------------------------------ | ------- |
 | SQL              | Yes                                              | Opt-in, connector-enforced read-only | Yes     |
 | MongoDB          | Yes                                              | No                                   | Yes     |
-| JavaScript       | Legacy migration only until separately sandboxed | No                                   | No      |
+| JavaScript       | No                                                | No                                   | No      |
 
-Unsupported legacy JavaScript bindings remain on the v1 renderer or must be converted before migration.
+Apps v1 JavaScript bindings continue to run only in Apps v1. Apps v2 does not
+read or execute them.
 
 ### Runtime capability service
 
@@ -1070,7 +1084,7 @@ MongoDB remains appropriate for control-plane documents:
 - repository provider, repository ID/URL, root subdirectory;
 - default branch;
 - active deployment ID;
-- migration state and legacy app ID.
+- lifecycle/retirement state.
 
 ### `AppWorktree`
 
@@ -1182,7 +1196,7 @@ packages/
 
 Keep provider clients behind services. Routes and agent tools call Mako domain services, never vendor SDKs directly.
 
-## Migration plan
+## Implementation plan
 
 ### Phase 0: contracts and instrumentation
 
@@ -1198,8 +1212,8 @@ Keep provider clients behind services. Routes and agent tools call Mako domain s
 - Generate the standard scaffold and lockfile.
 - Implement private WIP state, ref CAS, fenced leases, crash recovery, and conformance tests before acknowledging any Apps v2 write.
 - Add personal branch/status/commit UI and Worktree API.
-- Continue rendering through a one-way compatibility projection: Git/WIP is the only write authority, each projection is revision-keyed/idempotent, and a failed projection blocks preview rather than falling back to stale Mongo source.
-- Add import/export for a legacy `MakoApp`.
+- Add the independent, feature-gated App Projects rail destination. Git/WIP is
+  its only write authority; it never projects to or from `MakoApp`.
 
 ### Phase 2: sandbox development
 
@@ -1207,13 +1221,15 @@ Keep provider clients behind services. Routes and agent tools call Mako domain s
 - Add shell/process tools and terminal UI.
 - Run `pnpm install`, tests, build, and Vite dev preview.
 - Attach the protected sidecar and verify reconstruction through forced eviction.
-- Make the in-product agent use filesystem/shell tools.
+- Implement the in-product `app2_*` filesystem, Git, secure shell, and
+  registry-only package tools through the same service graph as the routes.
+  **Implemented.**
 
 ### Phase 3: immutable deployment
 
 - Add clean build jobs, artifact storage/CDN, dedicated app origins, deployment policy, and rollback.
 - Replace public-share rendering with deployment serving.
-- Keep the legacy published snapshot available for rollback during migration.
+- Leave Apps v1 publishing and public shares unchanged.
 
 ### Phase 4: local and external harnesses
 
@@ -1223,23 +1239,13 @@ Keep provider clients behind services. Routes and agent tools call Mako domain s
 
 External repository/monorepo linking is a later RFC, not part of this rollout.
 
-### Phase 5: legacy migration
+### Phase 5: Apps v1 retirement
 
-For each legacy app:
-
-1. create a repository and Apps v2 scaffold;
-2. convert the current `published` snapshot into the initial release commit/deployment, preserving ACL/public-share policy;
-3. import the current top-level draft into a separate personal WIP state, never the active deployment;
-4. generate `package.json` from each snapshot's dependency map;
-5. write stable binding IDs/query files and `.mako/app.yaml`, with environment mappings in control-plane records;
-6. regenerate revision-pinned materialized artifacts from the published binding definitions;
-7. run install and produce a lockfile;
-8. build and compare preview behavior;
-9. retain legacy IDs/URLs through redirects;
-10. migrate version snapshots with a compatible scaffold/manifest/lockfile into buildable tags where possible, and label any incomplete archival refs explicitly non-buildable; and
-11. mark Mongo source fields read-only before eventual removal.
-
-Migration must be per-app and reversible until the Apps v2 deployment is validated.
+Retire Apps v1 only after Apps v2 independently supports the required
+authoring, data, preview, deployment, sharing, and external-harness flows. The
+retirement change removes the v1 rail item, routes, Mongo source model, tools,
+CDN renderer, and documentation in one explicit cleanup. Existing v1 data
+remains untouched until the product chooses its archival/deletion policy.
 
 ## Acceptance criteria
 
@@ -1292,7 +1298,7 @@ Migration must be per-app and reversible until the Apps v2 deployment is validat
 | App data is exfiltrated by malicious dependencies | This risk already exists once results reach app code; isolate origins, restrict egress where possible, expose owner-visible network policy, and never expose credentials |
 | One repo per app creates management overhead      | Hide repository mechanics by default; workspace namespace and bulk policy                                                                                                |
 | Mako and local edits diverge                      | Explicit branches/worktrees, compare-and-swap refs, webhook reconciliation, optional WIP sync                                                                            |
-| Migration changes rendering behavior              | Dual preview, per-app opt-in, build comparison, reversible deployment pointer                                                                                            |
+| Users confuse Apps v1 and Apps v2 behavior         | Separate rail items, routes, stores, tabs, prompts, tool names, and product documentation                                                                                 |
 
 ## Open product decisions
 

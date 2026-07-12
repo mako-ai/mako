@@ -577,6 +577,7 @@ export class AppV2SessionService {
     project: IAppV2Project,
     initialWorktree: IAppV2Worktree,
     actor: AppV2Actor,
+    requestSignal?: AbortSignal,
   ): Promise<EnsuredAppV2Session> {
     return this.locked(project, initialWorktree, actor, async () => {
       const existing = await this.find(project, initialWorktree, actor);
@@ -603,7 +604,13 @@ export class AppV2SessionService {
           this.operationLeaseMs,
         );
         return this.runOwnedOperation(reservation, operationId, context =>
-          this.prepareAndInstall(project, initialWorktree, actor, context),
+          this.prepareAndInstall(
+            project,
+            initialWorktree,
+            actor,
+            context,
+            requestSignal,
+          ),
         );
       }
       return this.withOperation(existing, async context => {
@@ -621,20 +628,34 @@ export class AppV2SessionService {
         if (context.record.status === "provisioning") {
           await this.cleanupReservation(context);
           await this.beginProvisioning(context, worktree.leaseEpoch);
-          return this.prepareAndInstall(project, worktree, actor, context);
+          return this.prepareAndInstall(
+            project,
+            worktree,
+            actor,
+            context,
+            requestSignal,
+          );
         }
         if (
           context.record.status === "destroyed" ||
           context.record.status === "revoked"
         ) {
           await this.beginProvisioning(context, worktree.leaseEpoch);
-          return this.prepareAndInstall(project, worktree, actor, context);
+          return this.prepareAndInstall(
+            project,
+            worktree,
+            actor,
+            context,
+            requestSignal,
+          );
         }
 
+        const signal = this.combineSignals(requestSignal, context.signal);
         const status = await this.executor.status(
           this.target(project, worktree, actor, context.record),
-          context.signal,
+          signal,
         );
+        signal.throwIfAborted();
         context.assertHealthy();
         if (
           status !== "missing" &&
@@ -661,7 +682,13 @@ export class AppV2SessionService {
           .catch(() => undefined);
         context.assertHealthy();
         await this.beginProvisioning(context, worktree.leaseEpoch);
-        return this.prepareAndInstall(project, worktree, actor, context);
+        return this.prepareAndInstall(
+          project,
+          worktree,
+          actor,
+          context,
+          requestSignal,
+        );
       });
     });
   }
@@ -967,36 +994,41 @@ export class AppV2SessionService {
     worktree: IAppV2Worktree,
     actor: AppV2Actor,
     context: OperationContext,
+    requestSignal?: AbortSignal,
   ): Promise<EnsuredAppV2Session> {
     let provisionedSandboxId: string | undefined;
-    const prepared = await this.executor.prepare(
-      {
-        workspaceId: project.workspaceId.toString(),
-        projectId: project._id.toString(),
-        worktreeId: worktree._id.toString(),
-        actorId: actor.userId,
-        memberRole: actor.memberRole,
-        purpose: "dev",
-        leaseEpoch: worktree.leaseEpoch,
-        durableRevision: {
-          wipOid: worktree.wipOid,
-          revision: worktree.revision,
-        },
-      },
-      {
-        reservationId: context.record.reservationId,
-        signal: context.signal,
-        onProvisioned: async sandboxId => {
-          provisionedSandboxId = sandboxId;
-          context.assertHealthy();
-          await this.write(context, {
-            sandboxId,
-            lastActiveAt: new Date(),
-          });
-        },
-      },
-    );
+    let prepared: Awaited<ReturnType<SessionExecutor["prepare"]>> | undefined;
+    const signal = this.combineSignals(requestSignal, context.signal);
     try {
+      prepared = await this.executor.prepare(
+        {
+          workspaceId: project.workspaceId.toString(),
+          projectId: project._id.toString(),
+          worktreeId: worktree._id.toString(),
+          actorId: actor.userId,
+          memberRole: actor.memberRole,
+          purpose: "dev",
+          leaseEpoch: worktree.leaseEpoch,
+          durableRevision: {
+            wipOid: worktree.wipOid,
+            revision: worktree.revision,
+          },
+        },
+        {
+          reservationId: context.record.reservationId,
+          signal,
+          onProvisioned: async sandboxId => {
+            provisionedSandboxId = sandboxId;
+            signal.throwIfAborted();
+            context.assertHealthy();
+            await this.write(context, {
+              sandboxId,
+              lastActiveAt: new Date(),
+            });
+          },
+        },
+      );
+      signal.throwIfAborted();
       context.assertHealthy();
       context.record = await this.store.install(
         {
@@ -1019,24 +1051,26 @@ export class AppV2SessionService {
       context.assertHealthy();
       return { session: context.record, worktree };
     } catch (error) {
-      const sandboxId = provisionedSandboxId ?? prepared.sandboxId;
-      await this.executor
-        .kill({
-          workspaceId: project.workspaceId.toString(),
-          projectId: project._id.toString(),
-          worktreeId: worktree._id.toString(),
-          actorId: actor.userId,
-          memberRole: actor.memberRole,
-          purpose: "dev",
-          sandboxId,
-          leaseEpoch: worktree.leaseEpoch,
-          durableRevision: {
-            wipOid: worktree.wipOid,
-            revision: worktree.revision,
-          },
-          appliedWipOid: prepared.appliedRevision.wipOid,
-        })
-        .catch(() => undefined);
+      const sandboxId = provisionedSandboxId ?? prepared?.sandboxId;
+      if (sandboxId) {
+        await this.executor
+          .kill({
+            workspaceId: project.workspaceId.toString(),
+            projectId: project._id.toString(),
+            worktreeId: worktree._id.toString(),
+            actorId: actor.userId,
+            memberRole: actor.memberRole,
+            purpose: "dev",
+            sandboxId,
+            leaseEpoch: worktree.leaseEpoch,
+            durableRevision: {
+              wipOid: worktree.wipOid,
+              revision: worktree.revision,
+            },
+            appliedWipOid: prepared?.appliedRevision.wipOid,
+          })
+          .catch(() => undefined);
+      }
       throw error;
     }
   }

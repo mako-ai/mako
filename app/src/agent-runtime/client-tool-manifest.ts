@@ -415,7 +415,105 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "clock",
   },
-  // Full-server apps: list/create/read/inspect/materialize execute SERVER-SIDE
+  // Apps v2 is a separate Git-backed product surface. Keep "Apps v2" in every
+  // label so its tool cards cannot be mistaken for Apps v1 mutations.
+  app2_list_apps: {
+    domain: "app",
+    execution: "server",
+    getLabel: () => "Apps v2 · Listing App Projects",
+    icon: "list",
+  },
+  app2_create_app: {
+    domain: "app",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const title = (input as Record<string, unknown>)?.title;
+      return title
+        ? `Apps v2 · Creating App Project "${title}"`
+        : "Apps v2 · Creating App Project";
+    },
+    icon: "plus",
+  },
+  app2_read_file: {
+    domain: "app",
+    execution: "server",
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path
+        ? `Apps v2 · Reading ${path}`
+        : "Apps v2 · Reading project file";
+    },
+    icon: "eye",
+  },
+  app2_write_file: {
+    domain: "app",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path
+        ? `Apps v2 · Writing ${path}`
+        : "Apps v2 · Writing project file";
+    },
+    icon: "pencil",
+    preview: { field: "contents", language: "typescript" },
+  },
+  app2_edit_file: {
+    domain: "app",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path
+        ? `Apps v2 · Editing ${path}`
+        : "Apps v2 · Editing project file";
+    },
+    icon: "pencil",
+    preview: { field: "newString", language: "typescript" },
+  },
+  app2_delete_file: {
+    domain: "app",
+    execution: "server",
+    getLabel: () => "Apps v2 · Deleting project file",
+    icon: "trash",
+  },
+  app2_move_file: {
+    domain: "app",
+    execution: "server",
+    getLabel: () => "Apps v2 · Moving project file",
+    icon: "pencil",
+  },
+  app2_status: {
+    domain: "app",
+    execution: "server",
+    getLabel: () => "Apps v2 · Checking Git status",
+    icon: "eye",
+  },
+  app2_commit: {
+    domain: "app",
+    execution: "server",
+    longRunning: true,
+    getLabel: () => "Apps v2 · Committing durable worktree",
+    icon: "clock",
+  },
+  app2_bash: {
+    domain: "app",
+    execution: "server",
+    longRunning: true,
+    getLabel: () => "Apps v2 · Running secure Bash command",
+    icon: "play",
+    preview: { field: "command", language: "bash" },
+  },
+  app2_install_packages: {
+    domain: "app",
+    execution: "server",
+    longRunning: true,
+    getLabel: () => "Apps v2 · Installing registry packages",
+    icon: "download",
+  },
+
+  // Full-server Apps v1: list/create/read/inspect/materialize execute SERVER-SIDE
   // (see api/src/agent-lib/tools/server-app-tools.ts). Entries kept for tool-card
   // labels/icons. Only open_app and run_app remain browser-executed.
   list_open_apps: {

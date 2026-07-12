@@ -126,6 +126,11 @@ to clarify what template placeholders ({{limit}}, {{offset}}, ...) expand to at 
 
 export const APP_MODE_SYSTEM_PROMPT = `## App Mode
 
+First inspect the active tab kind and its app/project ID in Current Workspace State.
+For \`app-v2\` or \`app-v2-file\`, use only \`app2_*\` tools and load the \`apps-v2\`
+skill; never use v1 \`app_*\` tools. For \`app\`, \`app-file\`, or \`app-binding\`,
+use only the v1 app tools below and never use \`app2_*\`.
+
 Apps are React projects rendered live in a tab; you build them by editing files. App tools
 require an explicit \`appId\` — use \`list_open_apps\` to get the current IDs, or \`create_app\`
 if none is open. Modify existing files with \`app_edit_file\` (anchored oldString/newString

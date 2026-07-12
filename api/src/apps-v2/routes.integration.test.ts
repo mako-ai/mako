@@ -9,7 +9,9 @@ import type { AuthEnv } from "../openapi/core";
 
 const context = vi.hoisted(() => ({
   userId: "owner",
+  authType: "session" as "session" | "apiKey",
   workspaceAllowed: true,
+  workspaceChecks: 0,
 }));
 
 vi.mock("../auth/unified-auth.middleware", () => ({
@@ -24,6 +26,7 @@ vi.mock("../auth/unified-auth.middleware", () => ({
       return c.json({ success: false, error: "Unauthorized" }, 401);
     }
     c.set("user", { id: context.userId });
+    c.set("authType", context.authType);
     await next();
   },
 }));
@@ -36,6 +39,7 @@ vi.mock("../middleware/workspace.middleware", () => ({
     },
     next: () => Promise<void>,
   ) => {
+    context.workspaceChecks += 1;
     if (!context.workspaceAllowed) {
       return c.json({ success: false, error: "Workspace not found" }, 404);
     }
@@ -163,7 +167,9 @@ describe("Apps v2 route isolation", () => {
     process.env.APPS_V2_ENABLED = "true";
     process.env.APPS_V2_SANDBOX_PROVIDER = "off";
     context.userId = "owner";
+    context.authType = "session";
     context.workspaceAllowed = true;
+    context.workspaceChecks = 0;
   });
 
   it("reports feature availability after authentication and workspace scoping", async () => {
@@ -203,6 +209,52 @@ describe("Apps v2 route isolation", () => {
       `/api/workspaces/${workspaceId.toString()}/apps-v2/status`,
     );
     expect(wrongWorkspace.status).toBe(404);
+  });
+
+  it("rejects API-key auth before workspace or Apps v2 operations", async () => {
+    context.authType = "apiKey";
+    const base = `/api/workspaces/${workspaceId.toString()}/apps-v2`;
+    const requests: Array<Promise<Response>> = [
+      app.request(`${base}/status`),
+      app.request(base),
+      app.request(base, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "Must not be created" }),
+      }),
+      app.request(
+        `${base}/${projectId.toString()}/worktrees/${worktreeId.toString()}/file`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ifRevision: 0,
+            expectedWipOid: oid,
+            leaseEpoch: 1,
+            path: "src/blocked.ts",
+            content: "blocked",
+            executable: false,
+          }),
+        },
+      ),
+      app.request(`${base}/${projectId.toString()}/session`, {
+        method: "POST",
+      }),
+    ];
+
+    for (const response of await Promise.all(requests)) {
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({
+        success: false,
+        error: "Apps v2 requires session authentication",
+      });
+    }
+    expect(context.workspaceChecks).toBe(0);
+
+    context.authType = "session";
+    const sessionStatus = await app.request(`${base}/status`);
+    expect(sessionStatus.status).toBe(200);
+    expect(context.workspaceChecks).toBe(1);
   });
 
   it("keeps non-status routes unavailable when the feature is disabled", async () => {

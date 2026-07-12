@@ -17,6 +17,7 @@ vi.mock("../auth/unified-auth.middleware", () => ({
     next: () => Promise<void>,
   ) => {
     c.set("user", { id: "actor" });
+    c.set("authType", "session");
     await next();
   },
 }));

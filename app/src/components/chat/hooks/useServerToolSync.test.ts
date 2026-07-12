@@ -27,6 +27,8 @@ const stores = vi.hoisted(() => {
     consoleState: { tabs: {}, openConsoleFromServer: vi.fn() },
     realtimeState: { syncRevisions: vi.fn() },
     appState: { openApps: {}, fetchApp: vi.fn(), bumpPreview: vi.fn() },
+    appV2State: { refreshProject: vi.fn() },
+    focusAppV2ProjectTab: vi.fn(),
   };
 });
 
@@ -41,6 +43,12 @@ vi.mock("../../../store/realtimeStore", () => ({
 }));
 vi.mock("../../../store/appStore", () => ({
   useAppStore: { getState: () => stores.appState },
+}));
+vi.mock("../../../store/appV2Store", () => ({
+  useAppV2Store: { getState: () => stores.appV2State },
+}));
+vi.mock("../../../apps-v2-runtime/shell", () => ({
+  focusAppV2ProjectTab: stores.focusAppV2ProjectTab,
 }));
 
 import { useServerToolSync } from "./useServerToolSync";
@@ -204,5 +212,79 @@ describe("dbt file mutation tools", () => {
     );
     expect(stores.dbtState.applyRemoteFileUpdate).toHaveBeenCalled();
     expect(stores.dbtState.fetchGitStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe("Apps v2 server tools", () => {
+  it("opens the created App Project tab from the chat stream result", () => {
+    render(
+      toolMessage(
+        "app2_create_app",
+        {
+          success: true,
+          projectId: PROJECT,
+          appId: PROJECT,
+          title: "Agent Project",
+        },
+        { input: {} },
+      ),
+    );
+
+    expect(stores.focusAppV2ProjectTab).toHaveBeenCalledWith(
+      PROJECT,
+      "Agent Project",
+    );
+  });
+
+  it("opens a replayed create even when console history seeded the same call id", () => {
+    const { result, rerender } = render([]);
+    result.current.handledConsoleOpenToolCallIdsRef.current.add("call-create");
+
+    rerender({
+      messages: toolMessage(
+        "app2_create_app",
+        {
+          success: true,
+          projectId: PROJECT,
+          title: "Reattached Project",
+        },
+        { toolCallId: "call-create", input: {} },
+      ),
+    });
+
+    expect(stores.focusAppV2ProjectTab).toHaveBeenCalledWith(
+      PROJECT,
+      "Reattached Project",
+    );
+  });
+
+  it("refreshes only the Apps v2 project after a v2 mutation", () => {
+    render(
+      toolMessage("app2_edit_file", {
+        success: true,
+        projectId: PROJECT,
+        appId: PROJECT,
+      }),
+    );
+
+    expect(stores.appV2State.refreshProject).toHaveBeenCalledWith(WS, PROJECT);
+    expect(stores.appState.fetchApp).not.toHaveBeenCalled();
+    expect(stores.appState.bumpPreview).not.toHaveBeenCalled();
+  });
+
+  it("refreshes after a failed command when its source flush is durable", () => {
+    render(
+      toolMessage("app2_bash", {
+        success: false,
+        projectId: PROJECT,
+        sourceFlush: {
+          status: "durable",
+          revision: { revision: 8, wipOid: "d".repeat(40) },
+        },
+      }),
+    );
+
+    expect(stores.appV2State.refreshProject).toHaveBeenCalledWith(WS, PROJECT);
+    expect(stores.appState.fetchApp).not.toHaveBeenCalled();
   });
 });

@@ -4,9 +4,12 @@ import type { UIMessage } from "ai";
 import { useConsoleStore } from "../../../store/consoleStore";
 import { useRealtimeStore } from "../../../store/realtimeStore";
 import { useAppStore } from "../../../store/appStore";
+import { useAppV2Store } from "../../../store/appV2Store";
 import { useDbtStore } from "../../../store/dbtStore";
+import { focusAppV2ProjectTab } from "../../../apps-v2-runtime/shell";
 import {
   APP_SERVER_MUTATION_TOOLS,
+  APP_V2_SERVER_MUTATION_TOOLS,
   DBT_CHECKOUT_MUTATION_TOOLS,
   DBT_GIT_MUTATION_TOOLS,
   DBT_SERVER_MUTATION_TOOLS,
@@ -62,8 +65,10 @@ export function useServerToolSync({
   handledConsoleOpenToolCallIdsRef: MutableRefObject<Set<string>>;
 } {
   const handledConsoleOpenToolCallIdsRef = useRef<Set<string>>(new Set());
+  const handledAppV2CreateToolCallIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     handledConsoleOpenToolCallIdsRef.current = new Set();
+    handledAppV2CreateToolCallIdsRef.current = new Set();
   }, [chatId]);
   useEffect(() => {
     if (!workspaceId) return;
@@ -75,7 +80,13 @@ export function useServerToolSync({
         toolName?: string;
         state?: string;
         toolCallId?: string;
-        output?: { success?: boolean; consoleId?: string };
+        output?: {
+          success?: boolean;
+          consoleId?: string;
+          projectId?: string;
+          appId?: string;
+          title?: string;
+        };
       };
       const toolName =
         p.type === "dynamic-tool"
@@ -85,6 +96,7 @@ export function useServerToolSync({
             : undefined;
       const opensTab =
         toolName === "create_console" || toolName === "open_console";
+      const createsAppV2 = toolName === "app2_create_app";
       // Server console writes whose only client delivery is the realtime poke.
       // run_console bumps the draft revision AND persists a run artifact
       // (tab.lastRun); the revision sync refreshes both, and Editor.tsx
@@ -95,15 +107,25 @@ export function useServerToolSync({
         toolName === "modify_console" ||
         toolName === "set_console_connection" ||
         toolName === "run_console";
-      if (!opensTab && !editsConsole) continue;
+      if (!opensTab && !editsConsole && !createsAppV2) continue;
       if (p.state !== "output-available") continue;
       if (!p.toolCallId || !p.output?.success) continue;
       // Opening needs a consoleId; an edit reconciles all open tabs so it
       // does not. Don't burn the dedupe slot on an opener that lacks an id.
       if (opensTab && !p.output?.consoleId) continue;
-      if (handledConsoleOpenToolCallIdsRef.current.has(p.toolCallId)) continue;
-      handledConsoleOpenToolCallIdsRef.current.add(p.toolCallId);
-      if (opensTab) {
+      const createdProjectId = p.output?.projectId ?? p.output?.appId;
+      if (createsAppV2 && !createdProjectId) continue;
+      const handledIds = createsAppV2
+        ? handledAppV2CreateToolCallIdsRef.current
+        : handledConsoleOpenToolCallIdsRef.current;
+      if (handledIds.has(p.toolCallId)) continue;
+      handledIds.add(p.toolCallId);
+      if (createsAppV2) {
+        focusAppV2ProjectTab(
+          createdProjectId as string,
+          p.output?.title ?? "App Project",
+        );
+      } else if (opensTab) {
         const consoleId = p.output.consoleId as string;
         void (async () => {
           await useConsoleStore
@@ -136,7 +158,13 @@ export function useServerToolSync({
         state?: string;
         toolCallId?: string;
         input?: { appId?: string; projectId?: string; path?: string };
-        output?: { success?: boolean; branch?: string };
+        output?: {
+          success?: boolean;
+          branch?: string;
+          projectId?: string;
+          appId?: string;
+          sourceFlush?: { status?: string };
+        };
       };
       const toolName =
         p.type === "dynamic-tool"
@@ -145,24 +173,40 @@ export function useServerToolSync({
             ? p.type.slice("tool-".length)
             : undefined;
       if (!toolName) continue;
+      const isAppV2Edit = APP_V2_SERVER_MUTATION_TOOLS.has(toolName);
       const isAppEdit = APP_SERVER_MUTATION_TOOLS.has(toolName);
       const isDbtEdit = DBT_SERVER_MUTATION_TOOLS.has(toolName);
       const isDbtCheckoutMove = DBT_CHECKOUT_MUTATION_TOOLS.has(toolName);
       const isDbtGitMutation = DBT_GIT_MUTATION_TOOLS.has(toolName);
-      if (!isAppEdit && !isDbtEdit && !isDbtCheckoutMove && !isDbtGitMutation) {
+      if (
+        !isAppV2Edit &&
+        !isAppEdit &&
+        !isDbtEdit &&
+        !isDbtCheckoutMove &&
+        !isDbtGitMutation
+      ) {
         continue;
       }
+      const hasDurableAppV2Flush =
+        isAppV2Edit && p.output?.sourceFlush?.status === "durable";
       if (
         p.state !== "output-available" ||
         !p.toolCallId ||
-        !p.output?.success
+        !p.output ||
+        (!p.output?.success && !hasDurableAppV2Flush)
       ) {
         continue;
       }
       if (handledEntitySyncToolCallIdsRef.current.has(p.toolCallId)) continue;
       handledEntitySyncToolCallIdsRef.current.add(p.toolCallId);
 
-      if (isAppEdit) {
+      if (isAppV2Edit) {
+        const projectId =
+          p.input?.projectId ?? p.output?.projectId ?? p.output?.appId;
+        if (projectId) {
+          void useAppV2Store.getState().refreshProject(workspaceId, projectId);
+        }
+      } else if (isAppEdit) {
         const appId = p.input?.appId;
         // Only reconcile a tab that is actually open here (mirrors the
         // realtime handler); fetchApp + bumpPreview rebuilds the preview.

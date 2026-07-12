@@ -21942,9 +21942,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -22011,9 +22008,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -22071,9 +22065,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -22129,9 +22120,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -22239,9 +22227,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -22306,9 +22291,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -22375,9 +22357,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -22442,9 +22421,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -22511,9 +22487,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -22609,9 +22582,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -22676,9 +22646,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -22743,9 +22710,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -22812,9 +22776,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -22891,9 +22852,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -22970,9 +22928,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -23039,9 +22994,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -23117,9 +23069,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -23203,9 +23152,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -23323,9 +23269,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -23436,9 +23379,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -23555,9 +23495,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -23633,9 +23570,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -23740,9 +23674,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -23853,9 +23784,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [
@@ -23933,9 +23861,6 @@
         "security": [
           {
             "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
           }
         ],
         "parameters": [

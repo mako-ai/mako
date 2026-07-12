@@ -34,6 +34,38 @@ async function run(): Promise<void> {
     }
   }
 
+  const appsV2ToolSource = await readFile(
+    path.resolve(appsV2Root, "../agent-lib/tools/apps-v2-tools.ts"),
+    "utf8",
+  );
+  for (const forbidden of [
+    ["Mako", "App"].join(""),
+    "server-app-tools",
+    "services/app-version",
+    "services/app-binding",
+  ]) {
+    assert.equal(
+      appsV2ToolSource.includes(forbidden),
+      false,
+      `Apps v2 tools import or reference Apps v1 (${forbidden})`,
+    );
+  }
+
+  const appsV1ToolSource = await readFile(
+    path.resolve(appsV2Root, "../agent-lib/tools/server-app-tools.ts"),
+    "utf8",
+  );
+  assert.equal(
+    appsV1ToolSource.includes("apps-v2"),
+    false,
+    "Apps v1 tools must remain independent from Apps v2",
+  );
+  assert.equal(
+    appsV1ToolSource.includes("app2_"),
+    false,
+    "Apps v1 tools must not dispatch Apps v2 operations",
+  );
+
   const scaffoldRoot = path.resolve(
     __dirname,
     "../../../packages/schemas/app-v2-scaffold",

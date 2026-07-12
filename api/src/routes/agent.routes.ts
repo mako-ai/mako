@@ -247,6 +247,7 @@ agentRoutes.openapi(
     const user = c.get("user");
     const workspace = c.get("workspace");
     const apiKey = c.get("apiKey");
+    const authType: AgentContext["authType"] = apiKey ? "apiKey" : "session";
 
     // Allow both session auth (user) and API key auth (workspace)
     // Actor ID: user ID for session, API key creator for programmatic access
@@ -304,6 +305,8 @@ agentRoutes.openapi(
       isActive: boolean;
       dashboardId?: string;
       flowId?: string;
+      appId?: string;
+      projectId?: string;
       connectionId?: string;
       databaseName?: string;
     }
@@ -344,13 +347,17 @@ agentRoutes.openapi(
       modelId?: string;
       activeConsoleResults?: ActiveConsoleResults;
       agentId?: string;
-      activeView?: "console" | "dashboard" | "flow-editor" | "empty";
+      activeView?: "console" | "dashboard" | "flow-editor" | "app" | "empty";
       activeExplorer?:
         | "databases"
         | "consoles"
         | "connectors"
         | "flows"
         | "dashboards"
+        | "apps"
+        | "apps-v2"
+        | "dbt"
+        | "settings"
         | null;
       tabKind?: string;
       flowType?: string;
@@ -694,6 +701,7 @@ agentRoutes.openapi(
     // Build agent context
     const agentContext: AgentContext = {
       workspaceId,
+      authType,
       chatId,
       activeView,
       activeExplorer,
