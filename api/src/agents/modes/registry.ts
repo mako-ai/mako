@@ -202,6 +202,8 @@ export const APP_V2_ONLY_TOOL_NAMES = new Set<string>([
   "app2_create_app",
   "app2_bash",
   "app2_read_file",
+  "app2_glob",
+  "app2_grep",
   "app2_write_file",
   "app2_edit_file",
   "app2_status",

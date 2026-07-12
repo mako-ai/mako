@@ -13,6 +13,8 @@ import {
   DEFAULT_BRANCH,
   commitTree,
   diffNameStatus,
+  globTree,
+  grepTree,
   initRepo,
   listTree,
   log,
@@ -88,7 +90,10 @@ describe("initRepo + reads", () => {
 
 describe("snapshotDirToTree", () => {
   it("captures a work dir into a tree, respecting .gitignore", async () => {
-    await initRepo(repoDir, { "a.txt": "one\n", ".gitignore": "node_modules\n" });
+    await initRepo(repoDir, {
+      "a.txt": "one\n",
+      ".gitignore": "node_modules\n",
+    });
 
     const work = path.join(tmpRoot, "work");
     await fs.mkdir(path.join(work, "node_modules", "junk"), {
@@ -141,6 +146,44 @@ describe("updateRefCas", () => {
     // Stale writer (expects c1) must lose.
     expect(await updateRefCas(repoDir, ref, c1, c1)).toBe(false);
     expect(await resolveCommit(repoDir, ref)).toBe(c2);
+  });
+});
+
+describe("grepTree + globTree (sandbox-free search)", () => {
+  it("greps contents and globs paths straight from the object db", async () => {
+    await initRepo(repoDir, {
+      "src/App.tsx":
+        "export default function App() {\n  return <h1>Hi</h1>;\n}\n",
+      "src/util.ts": "export const answer = 42;\n",
+      "src/nested/deep.tsx": "export const Deep = () => null;\n",
+      "README.md": "# hello\n",
+    });
+
+    const grep = await grepTree(
+      repoDir,
+      DEFAULT_BRANCH,
+      "export (default|const)",
+    );
+    const grepPaths = grep.map(m => m.path).sort();
+    expect(grepPaths).toContain("src/App.tsx");
+    expect(grepPaths).toContain("src/util.ts");
+    expect(grepPaths).not.toContain("README.md");
+    // Line numbers + text are captured.
+    const answerHit = grep.find(m => m.text.includes("answer"));
+    expect(answerHit?.line).toBe(1);
+
+    // No matches -> empty (git grep exits 1, not an error).
+    expect(await grepTree(repoDir, DEFAULT_BRANCH, "nonexistent_zzz")).toEqual(
+      [],
+    );
+
+    // Glob: ** crosses directories, * does not.
+    const tsx = await globTree(repoDir, DEFAULT_BRANCH, "src/**/*.tsx");
+    expect(tsx.sort()).toEqual(["src/App.tsx", "src/nested/deep.tsx"]);
+    const topTs = await globTree(repoDir, DEFAULT_BRANCH, "src/*.ts");
+    expect(topTs).toEqual(["src/util.ts"]);
+    const all = await globTree(repoDir, DEFAULT_BRANCH, "**/*.md");
+    expect(all).toEqual(["README.md"]);
   });
 });
 

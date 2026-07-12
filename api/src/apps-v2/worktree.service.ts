@@ -37,6 +37,8 @@ import {
   commitTree,
   deleteRefCas,
   diffNameStatus,
+  globTree,
+  grepTree,
   initRepo,
   listTree,
   log as repoLog,
@@ -49,6 +51,7 @@ import {
   updateRefCas,
   type ChangedFile,
   type GitAuthor,
+  type GrepMatch,
   type TreeEntry,
 } from "./repository.service";
 import { createAppsV2Scaffold } from "./scaffold";
@@ -516,6 +519,36 @@ export async function readFile(
   const ref = await readRefFor(project, userId, repoDir);
   const blob = await readBlob(repoDir, ref, safe);
   return { path: safe, ...blob };
+}
+
+/** Search file contents at an actor's latest state (sandbox-free). */
+export async function grepFiles(
+  project: IAppProjectV2,
+  pattern: string,
+  userId: string | undefined,
+  options?: { ignoreCase?: boolean; pathspec?: string; maxMatches?: number },
+): Promise<GrepMatch[]> {
+  const repoDir = repoDirFor(
+    project.workspaceId.toString(),
+    project._id.toString(),
+  );
+  const ref = await readRefFor(project, userId, repoDir);
+  return grepTree(repoDir, ref, pattern, options);
+}
+
+/** List paths matching a glob at an actor's latest state (sandbox-free). */
+export async function globFiles(
+  project: IAppProjectV2,
+  glob: string,
+  userId?: string,
+  limit?: number,
+): Promise<string[]> {
+  const repoDir = repoDirFor(
+    project.workspaceId.toString(),
+    project._id.toString(),
+  );
+  const ref = await readRefFor(project, userId, repoDir);
+  return globTree(repoDir, ref, glob, limit);
 }
 
 // ---------------------------------------------------------------------------

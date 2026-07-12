@@ -67,7 +67,10 @@ function authorEnv(author?: GitAuthor): Record<string, string> {
 
 /** Absolute path of a project's bare repo. Ids are validated as hex. */
 export function repoDirFor(workspaceId: string, projectId: string): string {
-  if (!/^[0-9a-f]{24}$/i.test(workspaceId) || !/^[0-9a-f]{24}$/i.test(projectId)) {
+  if (
+    !/^[0-9a-f]{24}$/i.test(workspaceId) ||
+    !/^[0-9a-f]{24}$/i.test(projectId)
+  ) {
     throw new Error("Invalid workspace/project id");
   }
   return path.join(appsV2ReposRoot(), workspaceId, `${projectId}.git`);
@@ -120,7 +123,12 @@ export async function initRepo(
       message: options.message ?? "Initial scaffold",
       author: options.author,
     });
-    await updateRefCas(repoDir, `refs/heads/${DEFAULT_BRANCH}`, commitOid, ZERO_OID);
+    await updateRefCas(
+      repoDir,
+      `refs/heads/${DEFAULT_BRANCH}`,
+      commitOid,
+      ZERO_OID,
+    );
     return { commitOid };
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
@@ -277,6 +285,111 @@ export async function listTree(
   return entries;
 }
 
+export interface GrepMatch {
+  path: string;
+  line: number;
+  text: string;
+}
+
+/**
+ * Content search over a tree-ish, straight from the object database — no
+ * working tree, so it runs even when the app's sandbox is paused or dead
+ * (Claude Code keeps grep as a first-class tool for exactly this ergonomic
+ * reliability; here it is also sandbox-independent).
+ */
+export async function grepTree(
+  repoDir: string,
+  refOrOid: string,
+  pattern: string,
+  options: {
+    ignoreCase?: boolean;
+    pathspec?: string;
+    maxMatches?: number;
+  } = {},
+): Promise<GrepMatch[]> {
+  const args = [
+    "-C",
+    repoDir,
+    "grep",
+    "--no-color",
+    "-n", // line numbers
+    "-I", // skip binary files
+    "-E", // extended regex
+  ];
+  if (options.ignoreCase) args.push("-i");
+  args.push("-e", pattern, refOrOid);
+  if (options.pathspec) args.push("--", options.pathspec);
+
+  let stdout = "";
+  try {
+    ({ stdout } = await runGit(args, { maxBufferBytes: 16 * 1024 * 1024 }));
+  } catch (error) {
+    // `git grep` exits 1 when there are simply no matches — not an error.
+    if (error instanceof GitError && error.exitCode === 1) return [];
+    throw error;
+  }
+
+  const max = options.maxMatches ?? 200;
+  const matches: GrepMatch[] = [];
+  for (const raw of stdout.split("\n")) {
+    if (!raw) continue;
+    // Format: "<ref>:<path>:<lineno>:<text>"
+    const afterRef = raw.slice(refOrOid.length + 1);
+    const firstColon = afterRef.indexOf(":");
+    const secondColon = afterRef.indexOf(":", firstColon + 1);
+    if (firstColon < 0 || secondColon < 0) continue;
+    const path = afterRef.slice(0, firstColon);
+    const line = Number(afterRef.slice(firstColon + 1, secondColon));
+    const text = afterRef.slice(secondColon + 1);
+    matches.push({ path, line, text: text.slice(0, 500) });
+    if (matches.length >= max) break;
+  }
+  return matches;
+}
+
+/** Translate a glob (`**`, `*`, `?`) into an anchored regex. */
+function globToRegExp(glob: string): RegExp {
+  let re = "^";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") {
+      if (glob[i + 1] === "*") {
+        // `**` matches across path separators; consume an optional trailing `/`.
+        re += ".*";
+        i++;
+        if (glob[i + 1] === "/") i++;
+      } else {
+        re += "[^/]*";
+      }
+    } else if (c === "?") {
+      re += "[^/]";
+    } else if ("\\^$.|+()[]{}".includes(c)) {
+      re += `\\${c}`;
+    } else {
+      re += c;
+    }
+  }
+  return new RegExp(re + "$");
+}
+
+/**
+ * List file paths in a tree-ish matching a glob (also sandbox-free). Mirrors
+ * Claude Code's Glob tool contract.
+ */
+export async function globTree(
+  repoDir: string,
+  refOrOid: string,
+  glob: string,
+  limit = 200,
+): Promise<string[]> {
+  const entries = await listTree(repoDir, refOrOid);
+  const matcher = globToRegExp(glob);
+  const matched = entries
+    .map(e => e.path)
+    .filter(p => matcher.test(p) || matcher.test(`/${p}`));
+  return matched.slice(0, limit);
+}
+
 export interface BlobContent {
   contents: string;
   isBinary: boolean;
@@ -290,7 +403,12 @@ export async function readBlob(
   relPath: string,
 ): Promise<BlobContent> {
   const safe = assertSafeRelPath(relPath);
-  const buf = await runGitBuffer(["-C", repoDir, "show", `${refOrOid}:${safe}`]);
+  const buf = await runGitBuffer([
+    "-C",
+    repoDir,
+    "show",
+    `${refOrOid}:${safe}`,
+  ]);
   const isBinary = buf.includes(0);
   return {
     contents: isBinary ? buf.toString("base64") : buf.toString("utf8"),

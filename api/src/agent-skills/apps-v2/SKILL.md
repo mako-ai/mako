@@ -32,8 +32,11 @@ only `app2_*` tools. Never read or mutate the project with v1 `app_*`,
 
 1. `app2_list_apps` to resolve the app id, or `app2_create_app` for a new
    private project (full scaffold: package.json, vite.config.ts, src/).
-2. Inspect with `app2_status` (branch, uncommitted changes) and
-   `app2_read_file`; explore with `app2_bash` (`ls`, `grep -r`, `cat`).
+2. Inspect with `app2_status` (branch, uncommitted changes). Locate code with
+   `app2_glob` (paths, e.g. `src/**/*.tsx`) and `app2_grep` (contents, regex) —
+   both read straight from git so they work even when the sandbox is paused or
+   dead. Read files with `app2_read_file` (line-numbered by default, so you can
+   anchor edits precisely). `app2_bash` also works for ad-hoc exploration.
 3. Edit with `app2_edit_file` (anchored oldString/newString; re-read after a
    failed anchor) or `app2_write_file` for new files / full rewrites. Deletes
    and renames go through `app2_bash` (`rm`, `mv`) — the flush picks them up.

@@ -40,6 +40,8 @@ import {
   createProject,
   ensureWorktree,
   execInWorktree,
+  globFiles,
+  grepFiles,
   listBranches,
   listFiles,
   mergeBranchToMain,
@@ -76,6 +78,17 @@ export function createAppsV2Tools({
   const actorBranch = chatId ? chatBranchFor(chatId) : undefined;
   const ensureActorWorktree = (project: IAppProjectV2) =>
     ensureWorktree(project, actorId, { branch: actorBranch });
+
+  // Read-before-edit freshness tracking (a Claude Code reliability hallmark):
+  // the agent must read a file before a blind full-rewrite, so it never
+  // clobbers content it hasn't seen this turn. Anchored edits are inherently
+  // safe (they fail on a bad anchor) so they don't require a prior read.
+  // Scoped to this tool-factory instance = the current turn.
+  const readThisTurn = new Set<string>();
+  const markRead = (appId: string, path: string) =>
+    readThisTurn.add(`${appId}\u0000${path}`);
+  const wasRead = (appId: string, path: string) =>
+    readThisTurn.has(`${appId}\u0000${path}`);
 
   let cachedRole: string | undefined | null = null;
   const memberRole = async (): Promise<string | undefined> => {
@@ -221,15 +234,19 @@ export function createAppsV2Tools({
 
     app2_read_file: tool({
       description:
-        "Read a file from an Apps v2 project at the latest durable state (committed + uncommitted). Prefer this over `app2_bash cat` for single files.",
+        "Read a file from an Apps v2 project at the latest durable state (committed + uncommitted). Prefer this over `app2_bash cat` for single files. Returns line-numbered content by default so you can make precise anchored edits.",
       inputSchema: z.object({
         appId: z.string(),
         path: z
           .string()
           .min(1)
           .describe("Repo-relative path, e.g. src/App.tsx"),
+        withLineNumbers: z
+          .boolean()
+          .optional()
+          .describe("Prefix each line with its 1-based number (default true)"),
       }),
-      execute: async ({ appId, path: relPath }) => {
+      execute: async ({ appId, path: relPath, withLineNumbers }) => {
         const loaded = await loadProject(appId, { write: false });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
@@ -240,7 +257,66 @@ export function createAppsV2Tools({
               error: `${relPath} is binary (${file.size} bytes)`,
             };
           }
-          return { success: true, path: file.path, contents: file.contents };
+          markRead(appId, file.path);
+          const numbered = withLineNumbers !== false;
+          const contents = numbered
+            ? file.contents
+                .split("\n")
+                .map((l, i) => `${String(i + 1).padStart(5)}\u2502${l}`)
+                .join("\n")
+            : file.contents;
+          return {
+            success: true,
+            path: file.path,
+            contents,
+            lineNumbered: numbered,
+          };
+        } catch (error) {
+          return { success: false, error: errorMessage(error) };
+        }
+      },
+    }),
+
+    app2_glob: tool({
+      description:
+        "Find files by glob pattern in an Apps v2 project (e.g. `src/**/*.tsx`, `**/*.css`). Reads from git, so it works even when the sandbox is paused or dead. Fast way to locate files before reading/editing.",
+      inputSchema: z.object({
+        appId: z.string(),
+        pattern: z.string().min(1).describe("Glob, e.g. src/**/*.ts"),
+      }),
+      execute: async ({ appId, pattern }) => {
+        const loaded = await loadProject(appId, { write: false });
+        if ("error" in loaded) return { success: false, error: loaded.error };
+        try {
+          const paths = await globFiles(loaded.project, pattern, actorId);
+          return { success: true, count: paths.length, paths };
+        } catch (error) {
+          return { success: false, error: errorMessage(error) };
+        }
+      },
+    }),
+
+    app2_grep: tool({
+      description:
+        "Search file contents in an Apps v2 project with a regex (extended). Returns path:line:text matches. Reads from git (sandbox-independent). Prefer this over `app2_bash grep` for codebase search.",
+      inputSchema: z.object({
+        appId: z.string(),
+        pattern: z.string().min(1).describe("Extended-regex pattern"),
+        ignoreCase: z.boolean().optional(),
+        pathspec: z
+          .string()
+          .optional()
+          .describe("Limit to a path glob, e.g. 'src/'"),
+      }),
+      execute: async ({ appId, pattern, ignoreCase, pathspec }) => {
+        const loaded = await loadProject(appId, { write: false });
+        if ("error" in loaded) return { success: false, error: loaded.error };
+        try {
+          const matches = await grepFiles(loaded.project, pattern, actorId, {
+            ignoreCase,
+            pathspec,
+          });
+          return { success: true, count: matches.length, matches };
         } catch (error) {
           return { success: false, error: errorMessage(error) };
         }
@@ -259,8 +335,28 @@ export function createAppsV2Tools({
         const loaded = await loadProject(appId, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
+          // Read-before-overwrite guard (Claude Code hallmark): a full rewrite
+          // of an EXISTING file it hasn't read this turn risks clobbering
+          // content blindly. Creating a new file is fine. Anchored edits are
+          // exempt (they fail safely on a bad anchor).
+          if (!wasRead(appId, relPath)) {
+            let exists = false;
+            try {
+              await readFile(loaded.project, relPath, actorId);
+              exists = true;
+            } catch {
+              exists = false;
+            }
+            if (exists) {
+              return {
+                success: false,
+                error: `${relPath} already exists and was not read this turn. Read it first (app2_read_file) so you don't overwrite content blindly, or use app2_edit_file for a targeted change.`,
+              };
+            }
+          }
           const handle = await ensureActorWorktree(loaded.project);
           const flush = await writeFile(handle, relPath, contents);
+          markRead(appId, relPath);
           return {
             success: true,
             path: relPath,
