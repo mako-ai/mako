@@ -35,6 +35,10 @@ const WORKSPACE_ROOT = "/workspace";
 const INSTALL_EGRESS = ["registry.npmjs.org"];
 const MAX_CAPTURE_PATHS = APP_V2_MAX_FILES * 4;
 const CLEAN_PATH = "/usr/local/bin:/usr/bin:/bin";
+const CLEAN_ROOT_PATH = `${CLEAN_PATH}:/usr/local/sbin:/usr/sbin:/sbin`;
+const RUNTIME_ISOLATION_SCRIPT = String.raw`set -eu
+iptables -C OUTPUT -d 169.254.169.254/32 -j REJECT 2>/dev/null || iptables -I OUTPUT -d 169.254.169.254/32 -j REJECT
+iptables -C OUTPUT -d 169.254.169.254/32 -j REJECT`;
 const CONFORMANCE_SCRIPT = String.raw`set -eu
 test "$(id -u)" -ne 0
 if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then exit 71; fi
@@ -185,11 +189,12 @@ export function e2bCommandForArgv(
   user: string,
 ): string {
   if (argv.length === 0) throw new Error("Command argv may not be empty");
-  const home = `/home/${user}`;
+  const home = user === "root" ? "/root" : `/home/${user}`;
+  const commandPath = user === "root" ? CLEAN_ROOT_PATH : CLEAN_PATH;
   return [
     "exec env -i",
     `HOME=${quoteShellArgument(home)}`,
-    `PATH=${quoteShellArgument(CLEAN_PATH)}`,
+    `PATH=${quoteShellArgument(commandPath)}`,
     `BASH_ENV=${quoteShellArgument("/dev/null")}`,
     "setsid --wait --",
     argv.map(quoteShellArgument).join(" "),
@@ -256,28 +261,15 @@ export class E2BSandboxProvider implements SandboxProvider {
       },
     });
     try {
+      await this.applyRuntimeIsolation(sandbox, spec.signal);
+      await this.assertConformance(sandbox, spec.signal);
       await spec.onProvisioned(sandbox.sandboxId);
-      const handle = await sandbox.commands.run(
-        `exec setsid --wait -- /bin/sh -c ${quoteShellArgument(CONFORMANCE_SCRIPT)}`,
-        {
-          background: true,
-          timeoutMs: 10_000,
-          signal: spec.signal,
-          user: this.user,
-          envs: {
-            HOME: `/home/${this.user}`,
-            PATH: CLEAN_PATH,
-            BASH_ENV: "/dev/null",
-          },
-        },
-      );
-      await handle.wait();
     } catch (error) {
       await this.factory
         .kill(sandbox.sandboxId, { apiKey: this.apiKey })
         .catch(() => undefined);
       throw new AppV2ValidationError(
-        `E2B template failed Apps v2 conformance: ${
+        `E2B sandbox failed Apps v2 conformance/runtime isolation: ${
           error instanceof Error ? error.message : "unknown failure"
         }`,
       );
@@ -315,10 +307,7 @@ export class E2BSandboxProvider implements SandboxProvider {
     files: readonly SandboxFile[],
     signal?: AbortSignal,
   ): Promise<void> {
-    const sandbox = await this.factory.connect(sandboxId, {
-      apiKey: this.apiKey,
-      signal,
-    });
+    const sandbox = await this.secureConnect(sandboxId, signal);
     const fileOptions = { signal, user: this.user };
     if (await sandbox.files.exists(WORKSPACE_ROOT, fileOptions)) {
       await sandbox.files.remove(WORKSPACE_ROOT, fileOptions);
@@ -358,10 +347,7 @@ export class E2BSandboxProvider implements SandboxProvider {
     sandboxId: string,
     signal?: AbortSignal,
   ): Promise<SandboxCapture> {
-    const sandbox = await this.factory.connect(sandboxId, {
-      apiKey: this.apiKey,
-      signal,
-    });
+    const sandbox = await this.secureConnect(sandboxId, signal);
     const captureManifest = await this.completeCaptureManifest(sandbox, signal);
     const files: SandboxFile[] = [];
     const excludedPaths = [...captureManifest.excludedPaths];
@@ -491,10 +477,7 @@ export class E2BSandboxProvider implements SandboxProvider {
     sandboxId: string,
     spec: SandboxExecSpec,
   ): Promise<SandboxExecResult> {
-    const sandbox = await this.factory.connect(sandboxId, {
-      apiKey: this.apiKey,
-      signal: spec.signal,
-    });
+    const sandbox = await this.secureConnect(sandboxId, spec.signal);
     let stdout = "";
     let stderr = "";
     let outputBytes = 0;
@@ -588,12 +571,73 @@ export class E2BSandboxProvider implements SandboxProvider {
     }
   }
 
-  private cleanEnvironment(): Record<string, string> {
+  private cleanEnvironment(user = this.user): Record<string, string> {
     return {
-      HOME: `/home/${this.user}`,
-      PATH: CLEAN_PATH,
+      HOME: user === "root" ? "/root" : `/home/${user}`,
+      PATH: user === "root" ? CLEAN_ROOT_PATH : CLEAN_PATH,
       BASH_ENV: "/dev/null",
     };
+  }
+
+  private async secureConnect(
+    sandboxId: string,
+    signal?: AbortSignal,
+  ): Promise<E2BSandboxClient> {
+    const sandbox = await this.factory.connect(sandboxId, {
+      apiKey: this.apiKey,
+      signal,
+    });
+    try {
+      await this.applyRuntimeIsolation(sandbox, signal);
+      await this.assertConformance(sandbox, signal);
+    } catch (error) {
+      // A resumed sandbox is never left running when its firewall or tenant
+      // conformance cannot be proven. Do not reuse the caller's possibly
+      // aborted signal for fail-closed cleanup.
+      await this.factory
+        .kill(sandboxId, { apiKey: this.apiKey })
+        .catch(() => undefined);
+      throw new AppV2ValidationError(
+        `E2B sandbox failed Apps v2 conformance/runtime isolation: ${
+          error instanceof Error ? error.message : "unknown failure"
+        }`,
+      );
+    }
+    return sandbox;
+  }
+
+  private async applyRuntimeIsolation(
+    sandbox: E2BSandboxClient,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const handle = await sandbox.commands.run(
+      e2bCommandForArgv(["/bin/sh", "-c", RUNTIME_ISOLATION_SCRIPT], "root"),
+      {
+        background: true,
+        timeoutMs: 10_000,
+        signal,
+        user: "root",
+        envs: this.cleanEnvironment("root"),
+      },
+    );
+    await handle.wait();
+  }
+
+  private async assertConformance(
+    sandbox: E2BSandboxClient,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const handle = await sandbox.commands.run(
+      e2bCommandForArgv(["/bin/sh", "-c", CONFORMANCE_SCRIPT], this.user),
+      {
+        background: true,
+        timeoutMs: 10_000,
+        signal,
+        user: this.user,
+        envs: this.cleanEnvironment(),
+      },
+    );
+    await handle.wait();
   }
 
   private async terminateProcessGroup(
@@ -623,10 +667,7 @@ export class E2BSandboxProvider implements SandboxProvider {
     phase: AppV2NetworkPhase,
     signal?: AbortSignal,
   ): Promise<void> {
-    const sandbox = await this.factory.connect(sandboxId, {
-      apiKey: this.apiKey,
-      signal,
-    });
+    const sandbox = await this.secureConnect(sandboxId, signal);
     await sandbox.updateNetwork(
       {
         allowOut: phase === "install" ? INSTALL_EGRESS : [],
@@ -651,10 +692,7 @@ export class E2BSandboxProvider implements SandboxProvider {
       keepMemory: false,
       signal,
     });
-    await this.factory.connect(sandboxId, {
-      apiKey: this.apiKey,
-      signal,
-    });
+    await this.secureConnect(sandboxId, signal);
   }
 
   async kill(sandboxId: string, signal?: AbortSignal): Promise<void> {

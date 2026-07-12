@@ -34,6 +34,31 @@ async function run(): Promise<void> {
     }
   }
 
+  const e2bTemplateSource = await readFile(
+    path.join(appsV2Root, "e2b-template.ts"),
+    "utf8",
+  );
+  assert.equal(e2bTemplateSource.includes("waitForFile"), false);
+  assert.equal(e2bTemplateSource.includes("setStartCmd"), false);
+  assert.equal(e2bTemplateSource.includes('.setUser("mako")'), true);
+  assert.equal(e2bTemplateSource.includes("set -eux"), true);
+  assert.equal(
+    e2bTemplateSource.includes(
+      "apt-get install -y --no-install-recommends iptables",
+    ),
+    true,
+  );
+
+  const e2bProviderSource = await readFile(
+    path.join(appsV2Root, "providers/e2b-sandbox-provider.ts"),
+    "utf8",
+  );
+  assert.equal(
+    e2bProviderSource.match(/this\.factory\.connect\(/g)?.length,
+    1,
+    "only secureConnect may call the E2B connect factory",
+  );
+
   const appsV2ToolSource = await readFile(
     path.resolve(appsV2Root, "../agent-lib/tools/apps-v2-tools.ts"),
     "utf8",

@@ -538,7 +538,22 @@ async function run(): Promise<void> {
   assert.equal(createOptions.network.allowPublicTraffic, false);
   assert.equal(createOptions.lifecycle.onTimeout.action, "pause");
   assert.equal(createOptions.lifecycle.autoResume, false);
-  const conformance = capturedE2BCommands[0];
+  const runtimeIsolation = capturedE2BCommands[0];
+  assert.match(
+    runtimeIsolation.command,
+    /iptables -I OUTPUT -d 169\.254\.169\.254\/32 -j REJECT/,
+  );
+  assert.match(
+    runtimeIsolation.command,
+    /iptables -C OUTPUT -d 169\.254\.169\.254\/32 -j REJECT/,
+  );
+  assert.equal(runtimeIsolation.options.user, "root");
+  assert.deepEqual(runtimeIsolation.options.envs, {
+    HOME: "/root",
+    PATH: "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
+    BASH_ENV: "/dev/null",
+  });
+  const conformance = capturedE2BCommands[1];
   assert.match(conformance.command, /id -u/);
   assert.match(conformance.command, /169\.254\.169\.254/);
   assert.equal(conformance.options.user, "mako");
@@ -567,7 +582,7 @@ async function run(): Promise<void> {
       labels: {},
       async onProvisioned() {},
     }),
-    /failed Apps v2 conformance/,
+    /failed Apps v2 conformance\/runtime isolation/,
   );
   assert.equal(e2bKillCalls, 1);
   failConformance = false;

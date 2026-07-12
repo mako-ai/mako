@@ -14,7 +14,9 @@
   `/bin/sh`, and Python 3; configure the named user as non-root with no
   passwordless sudo or Linux capabilities, no service credentials, and no
   cloud metadata reachability. Creation runs fixed conformance checks and
-  destroys a sandbox that fails.
+  destroys a sandbox that fails. Build the repository-owned template with
+  `pnpm --filter api run e2b:build-template` and configure the immutable
+  `templateId` emitted by the build.
 - **Session safety:** Mongo-server-time operation leases heartbeat while
   provider calls run and abort on renewal loss. Pre-capture recovery intents
   record the expected WIP and map deterministically to private conflict and
@@ -25,6 +27,11 @@
   project deletion also reconciles labeled orphans. A callable stale-
   provisioning sweep exists for a future Inngest schedule, but no recurring
   schedule is wired yet.
+- **Live E2B validation (2026-07-12):** the repository-owned template passed
+  the provider's unprivileged-user, no-sudo/capabilities, clean-environment,
+  metadata-firewall, argv-literal, pnpm, filesystem-only quiesce, source
+  capture, package-install, excluded-`node_modules`, deny-all-reset, and
+  sandbox-destruction checks.
 - **Audience:** Product, application platform, agent, data platform, security, and desktop teams
 - **Last updated:** 2026-07-11
 - **Scope:** Mako Apps authoring, storage, preview, deployment, and external coding-tool access
@@ -60,18 +67,18 @@ The first production runtime should remain deliberately narrow: Apps v2 builds s
 
 ## Decision summary
 
-| Question                                                   | Decision                                                                                                                                                                                        |
-| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| How does the agent get a filesystem and shell?             | A provider-abstracted, hardware-isolated Linux sandbox per active worktree. Start with an E2B proof of concept, but do not couple persistence or APIs to E2B.                                   |
-| What survives a sandbox loss?                              | Git commits plus private, compare-and-swap WIP state in the Mako repository service. Sandboxes and `node_modules` are reconstructible caches.                                                   |
-| What does the file explorer read?                          | A Mako Worktree API backed by the durable WIP revision, never a sandbox filesystem directly.                                                                                                    |
-| Can a persistent filesystem be mounted?                    | Yes, as an optimization. It must not replace Git/WIP snapshots, and `node_modules`/build caches should be separate from source.                                                                 |
-| How are dependencies installed?                            | `pnpm install` in the sandbox, with `package.json`, `pnpm-lock.yaml`, a pinned package manager, quotas, and controlled egress.                                                                  |
-| How are apps hosted?                                       | Clean build in a fresh sandbox; immutable static output in object storage/CDN; an origin on a registrable domain unrelated to `mako.ai`; deployment points to a commit SHA and artifact digest. |
-| How does a local checkout reach Mako data?                 | `@mako/app-sdk` plus `mako dev`, authenticated by OAuth 2.1 Authorization Code + PKCE. The local proxy holds tokens; app code receives only short-lived capabilities and query results.         |
-| How do Claude Code and Codex use Mako's data intelligence? | A remote, OAuth-protected Mako MCP server for schema discovery and read-only query tools, plus ordinary Git and local filesystem access.                                                        |
+| Question                                                   | Decision                                                                                                                                                                                                    |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| How does the agent get a filesystem and shell?             | A provider-abstracted, hardware-isolated Linux sandbox per active worktree. Start with an E2B proof of concept, but do not couple persistence or APIs to E2B.                                               |
+| What survives a sandbox loss?                              | Git commits plus private, compare-and-swap WIP state in the Mako repository service. Sandboxes and `node_modules` are reconstructible caches.                                                               |
+| What does the file explorer read?                          | A Mako Worktree API backed by the durable WIP revision, never a sandbox filesystem directly.                                                                                                                |
+| Can a persistent filesystem be mounted?                    | Yes, as an optimization. It must not replace Git/WIP snapshots, and `node_modules`/build caches should be separate from source.                                                                             |
+| How are dependencies installed?                            | `pnpm install` in the sandbox, with `package.json`, `pnpm-lock.yaml`, a pinned package manager, quotas, and controlled egress.                                                                              |
+| How are apps hosted?                                       | Clean build in a fresh sandbox; immutable static output in object storage/CDN; an origin on a registrable domain unrelated to `mako.ai`; deployment points to a commit SHA and artifact digest.             |
+| How does a local checkout reach Mako data?                 | `@mako/app-sdk` plus `mako dev`, authenticated by OAuth 2.1 Authorization Code + PKCE. The local proxy holds tokens; app code receives only short-lived capabilities and query results.                     |
+| How do Claude Code and Codex use Mako's data intelligence? | A remote, OAuth-protected Mako MCP server for schema discovery and read-only query tools, plus ordinary Git and local filesystem access.                                                                    |
 | How many repositories?                                     | One Mako-managed repository per app in the initial v2 release. Do not put all workspace apps, dbt projects, and consoles in one repository. External monorepos require a later, separately approved design. |
-| What remains in MongoDB?                                   | Product metadata, ACLs, repo/worktree/deployment records, binding projections, build status, and audit events—not source file contents.                                                         |
+| What remains in MongoDB?                                   | Product metadata, ACLs, repo/worktree/deployment records, binding projections, build status, and audit events—not source file contents.                                                                     |
 
 ## Product thesis and USP
 
@@ -829,11 +836,11 @@ Runtime artifact and refresh keys include app ID, deployment SHA/WIP OID, manife
 
 Binding support in the initial Apps v2 release:
 
-| Binding language | Authenticated preview/deployment                 | Public live                          | Parquet |
-| ---------------- | ------------------------------------------------ | ------------------------------------ | ------- |
-| SQL              | Yes                                              | Opt-in, connector-enforced read-only | Yes     |
-| MongoDB          | Yes                                              | No                                   | Yes     |
-| JavaScript       | No                                                | No                                   | No      |
+| Binding language | Authenticated preview/deployment | Public live                          | Parquet |
+| ---------------- | -------------------------------- | ------------------------------------ | ------- |
+| SQL              | Yes                              | Opt-in, connector-enforced read-only | Yes     |
+| MongoDB          | Yes                              | No                                   | Yes     |
+| JavaScript       | No                               | No                                   | No      |
 
 Apps v1 JavaScript bindings continue to run only in Apps v1. Apps v2 does not
 read or execute them.
@@ -1298,7 +1305,7 @@ remains untouched until the product chooses its archival/deletion policy.
 | App data is exfiltrated by malicious dependencies | This risk already exists once results reach app code; isolate origins, restrict egress where possible, expose owner-visible network policy, and never expose credentials |
 | One repo per app creates management overhead      | Hide repository mechanics by default; workspace namespace and bulk policy                                                                                                |
 | Mako and local edits diverge                      | Explicit branches/worktrees, compare-and-swap refs, webhook reconciliation, optional WIP sync                                                                            |
-| Users confuse Apps v1 and Apps v2 behavior         | Separate rail items, routes, stores, tabs, prompts, tool names, and product documentation                                                                                 |
+| Users confuse Apps v1 and Apps v2 behavior        | Separate rail items, routes, stores, tabs, prompts, tool names, and product documentation                                                                                |
 
 ## Open product decisions
 
