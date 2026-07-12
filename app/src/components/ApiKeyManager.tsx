@@ -22,6 +22,8 @@ import {
   Skeleton,
   Snackbar,
   Stack,
+  Tab,
+  Tabs,
 } from "@mui/material";
 import {
   Add as AddIcon,
@@ -36,78 +38,165 @@ import { trackEvent } from "../lib/analytics";
 import { useApiKeyStore } from "../store/apiKeyStore";
 import type { ApiKeyCreateResponse } from "../lib/api-types";
 
+const MCP_STARTER_PROMPT =
+  "Using the mako tools, explore my data and build an app showing revenue " +
+  "by month, then give me a preview link.";
+
 /**
- * Copy-paste MCP client setup, shown the one time the full key is visible.
- * Base URL is this deployment's origin (the Vite dev server proxies /api).
+ * Per-client MCP setup shown the one time the full key is visible: pick your
+ * client, see only your path. Base URL is this deployment's origin (the Vite
+ * dev server proxies /api). Cursor additionally gets a one-click install
+ * deeplink (cursor.com/docs/mcp/install-links).
  */
-function buildMcpSnippets(key: string) {
+function buildMcpClientSetups(key: string) {
   const endpoint = `${window.location.origin}/api/mcp`;
+  const cursorConfig = {
+    url: endpoint,
+    headers: { Authorization: `Bearer ${key}` },
+  };
+  const cursorDeeplink =
+    "cursor://anysphere.cursor-deeplink/mcp/install?name=mako&config=" +
+    encodeURIComponent(btoa(JSON.stringify(cursorConfig)));
   return [
     {
       client: "Claude Code",
+      instruction:
+        "Run this in your terminal, then verify with `claude mcp list`:",
       snippet: `claude mcp add --transport http mako ${endpoint} \\\n  --header "Authorization: Bearer ${key}"`,
     },
     {
-      client: "Cursor (.cursor/mcp.json)",
-      snippet: JSON.stringify(
-        {
-          mcpServers: {
-            mako: {
-              url: endpoint,
-              headers: { Authorization: `Bearer ${key}` },
-            },
-          },
-        },
-        null,
-        2,
-      ),
+      client: "Cursor",
+      instruction:
+        "One click below — Cursor opens and asks to install. Or paste the JSON into .cursor/mcp.json:",
+      snippet: JSON.stringify({ mcpServers: { mako: cursorConfig } }, null, 2),
+      deeplink: cursorDeeplink,
     },
     {
-      client: "Codex (~/.codex/config.toml)",
+      client: "Codex",
+      instruction: `Add this to ~/.codex/config.toml, then export MAKO_API_KEY="${key.slice(0, 14)}..." in your shell:`,
       snippet: `[mcp_servers.mako]\nurl = "${endpoint}"\nbearer_token_env_var = "MAKO_API_KEY"\n\n# then: export MAKO_API_KEY="${key}"`,
+    },
+    {
+      client: "Other",
+      instruction:
+        "Any MCP client that speaks Streamable HTTP works — one endpoint, one Bearer header:",
+      snippet: `URL     ${endpoint}\nHeader  Authorization: Bearer ${key}`,
     },
   ];
 }
 
-function McpSetupSnippet({
-  client,
-  snippet,
+function McpConnectSection({
+  apiKey,
   onCopy,
 }: {
-  client: string;
-  snippet: string;
+  apiKey: string;
   onCopy: (text: string) => void;
 }) {
+  const [tab, setTab] = useState(0);
+  const setups = buildMcpClientSetups(apiKey);
+  const active = setups[tab] ?? setups[0];
+
   return (
-    <Box sx={{ mb: 1.5 }}>
-      <Stack direction="row" alignItems="center" spacing={0.5}>
-        <Typography variant="caption" sx={{ fontWeight: 600 }}>
-          {client}
-        </Typography>
-        <Tooltip title={`Copy ${client} setup`}>
+    <Box sx={{ mt: 3 }}>
+      <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
+        Connect an AI agent (MCP)
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+        Let Claude Code, Cursor, or Codex explore your data and build Mako apps
+        — read-only by design. Pick your client; the key is already filled in.{" "}
+        <a
+          href="https://docs.mako.ai/mcp-server/"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Full guide
+        </a>
+      </Typography>
+      <Tabs
+        value={tab}
+        onChange={(_e, value: number) => setTab(value)}
+        variant="scrollable"
+        allowScrollButtonsMobile
+        sx={{ minHeight: 36, mb: 1.5, borderBottom: 1, borderColor: "divider" }}
+      >
+        {setups.map(setup => (
+          <Tab
+            key={setup.client}
+            label={setup.client}
+            sx={{ minHeight: 36, py: 0.5, textTransform: "none" }}
+          />
+        ))}
+      </Tabs>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+        {active.instruction}
+      </Typography>
+      {active.deeplink && (
+        <Button
+          variant="contained"
+          size="small"
+          href={active.deeplink}
+          sx={{ mb: 1.5, textTransform: "none" }}
+        >
+          Add to Cursor
+        </Button>
+      )}
+      <Box sx={{ position: "relative" }}>
+        <Box
+          component="pre"
+          sx={{
+            m: 0,
+            p: 1.5,
+            pr: 6,
+            bgcolor: "grey.100",
+            borderRadius: 1,
+            fontSize: "0.7rem",
+            overflow: "auto",
+            whiteSpace: "pre",
+          }}
+        >
+          {active.snippet}
+        </Box>
+        <Tooltip title={`Copy ${active.client} setup`}>
           <IconButton
             size="small"
-            onClick={() => onCopy(snippet)}
-            aria-label={`Copy ${client} setup`}
+            onClick={() => onCopy(active.snippet)}
+            aria-label={`Copy ${active.client} setup`}
+            sx={{ position: "absolute", top: 6, right: 6 }}
           >
-            <CopyIcon sx={{ fontSize: 14 }} />
+            <CopyIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      </Box>
+      <Typography
+        variant="body2"
+        color="text.secondary"
+        sx={{ mt: 2, mb: 0.5 }}
+      >
+        Then ask it something:
+      </Typography>
+      <Stack direction="row" alignItems="flex-start" spacing={0.5}>
+        <Box
+          sx={{
+            flex: 1,
+            p: 1.5,
+            bgcolor: "grey.100",
+            borderRadius: 1,
+            fontStyle: "italic",
+            fontSize: "0.8rem",
+          }}
+        >
+          &quot;{MCP_STARTER_PROMPT}&quot;
+        </Box>
+        <Tooltip title="Copy starter prompt">
+          <IconButton
+            size="small"
+            onClick={() => onCopy(MCP_STARTER_PROMPT)}
+            aria-label="Copy starter prompt"
+          >
+            <CopyIcon fontSize="small" />
           </IconButton>
         </Tooltip>
       </Stack>
-      <Box
-        component="pre"
-        sx={{
-          m: 0,
-          p: 1.5,
-          bgcolor: "grey.100",
-          borderRadius: 1,
-          fontSize: "0.7rem",
-          overflow: "auto",
-          whiteSpace: "pre",
-        }}
-      >
-        {snippet}
-      </Box>
     </Box>
   );
 }
@@ -505,39 +594,10 @@ export function ApiKeyManager() {
             </Box>
           </Box>
           {newApiKey?.key && (
-            <Box sx={{ mt: 3 }}>
-              <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-                Connect an AI agent (MCP)
-              </Typography>
-              <Typography
-                variant="body2"
-                color="text.secondary"
-                sx={{ mb: 1.5 }}
-              >
-                Let Claude Code, Cursor, or Codex explore your data and build
-                Mako apps — read-only by design. Pick your client (the key is
-                already filled in), then ask it something like{" "}
-                <Box component="em">
-                  &quot;Using the mako tools, build an app showing revenue by
-                  month.&quot;
-                </Box>{" "}
-                <a
-                  href="https://docs.mako.ai/mcp-server/"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Full guide
-                </a>
-              </Typography>
-              {buildMcpSnippets(newApiKey.key).map(({ client, snippet }) => (
-                <McpSetupSnippet
-                  key={client}
-                  client={client}
-                  snippet={snippet}
-                  onCopy={copyToClipboard}
-                />
-              ))}
-            </Box>
+            <McpConnectSection
+              apiKey={newApiKey.key}
+              onCopy={copyToClipboard}
+            />
           )}
           <Box sx={{ mt: 3 }}>
             <Typography variant="body2" color="text.secondary">
