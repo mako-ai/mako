@@ -34,7 +34,8 @@ const NavButton = styled(Button, {
   padding: 0,
   borderRadius: 8,
   backgroundColor: isActive ? theme.palette.action.selected : "transparent",
-  color: isActive ? theme.palette.text.primary : theme.palette.text.secondary,
+  color: isActive ? theme.palette.primary.main : theme.palette.text.secondary,
+  boxShadow: isActive ? `inset 3px 0 0 ${theme.palette.primary.main}` : "none",
   "&:hover": {
     backgroundColor: isActive
       ? theme.palette.action.selected
@@ -232,6 +233,7 @@ export function SidebarMobileExplorerNav() {
         return (
           <Button
             key={item.view}
+            aria-current={isActive ? "page" : undefined}
             onClick={() => {
               startTransition(() => {
                 setLeftPane(item.view as Exclude<NavigationView, "views">);
@@ -371,6 +373,7 @@ function Sidebar() {
                 <Tooltip key={item.view} title={item.label} placement="right">
                   <NavButton
                     isActive={isActive}
+                    aria-current={isActive ? "page" : undefined}
                     onClick={() =>
                       handleNavigation(item.view as NavigationView)
                     }

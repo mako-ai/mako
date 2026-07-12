@@ -143,8 +143,8 @@ export interface E2BSandboxFactory {
         allowPublicTraffic: false;
       };
       lifecycle: {
-        onTimeout: { action: "pause"; keepMemory: false };
-        autoResume: false;
+        onTimeout: "pause";
+        autoResume: true;
       };
     },
   ): Promise<E2BSandboxClient>;
@@ -158,7 +158,7 @@ export interface E2BSandboxFactory {
   ): Promise<SandboxInfo>;
   pause(
     sandboxId: string,
-    options: { apiKey: string; keepMemory: false; signal?: AbortSignal },
+    options: { apiKey: string; keepMemory: boolean; signal?: AbortSignal },
   ): Promise<boolean>;
   kill(
     sandboxId: string,
@@ -256,8 +256,8 @@ export class E2BSandboxProvider implements SandboxProvider {
         allowPublicTraffic: false,
       },
       lifecycle: {
-        onTimeout: { action: "pause", keepMemory: false },
-        autoResume: false,
+        onTimeout: "pause",
+        autoResume: true,
       },
     });
     try {
@@ -681,17 +681,31 @@ export class E2BSandboxProvider implements SandboxProvider {
   async pause(sandboxId: string, signal?: AbortSignal): Promise<void> {
     await this.factory.pause(sandboxId, {
       apiKey: this.apiKey,
-      keepMemory: false,
+      keepMemory: true,
       signal,
     });
   }
 
   async quiesce(sandboxId: string, signal?: AbortSignal): Promise<void> {
-    await this.factory.pause(sandboxId, {
+    const status = await this.status(sandboxId, signal);
+    if (status === "missing") {
+      throw new AppV2ValidationError("Cannot quiesce a missing E2B sandbox");
+    }
+    if (status === "paused") {
+      // E2B full-memory auto-pause must be resumed before it can be converted
+      // to a filesystem-only checkpoint.
+      await this.secureConnect(sandboxId, signal);
+    }
+    const paused = await this.factory.pause(sandboxId, {
       apiKey: this.apiKey,
       keepMemory: false,
       signal,
     });
+    if (!paused) {
+      throw new AppV2ValidationError(
+        "E2B did not confirm filesystem-only pause",
+      );
+    }
     await this.secureConnect(sandboxId, signal);
   }
 

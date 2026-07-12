@@ -21,6 +21,7 @@ import EntityLoadErrorState, {
 } from "./EntityLoadErrorState";
 import { TAB_KIND_ICONS } from "../lib/entity-icons";
 import AppV2CommandPanel from "./AppV2CommandPanel";
+import AppV2GitHubSection from "./AppV2GitHubSection";
 
 const EMPTY_ENTRIES: AppV2TreeEntry[] = [];
 const AppV2ProjectIcon = TAB_KIND_ICONS["app-v2"];
@@ -45,12 +46,18 @@ export default function AppV2ProjectView({
     state => state.treesByProject[projectId] ?? EMPTY_ENTRIES,
   );
   const gitStatus = useAppV2Store(state => state.statusByProject[projectId]);
+  const conversationBranches = useAppV2Store(
+    state => state.conversationBranchesByProject[projectId] ?? [],
+  );
   const projectError = useAppV2Store(
     state => state.errorsByKey[`project:${projectId}`],
   );
   const conflict = useAppV2Store(state => state.conflictsByKey[projectId]);
   const getProject = useAppV2Store(state => state.getProject);
   const getOrCreateWorktree = useAppV2Store(state => state.getOrCreateWorktree);
+  const listConversationBranches = useAppV2Store(
+    state => state.listConversationBranches,
+  );
   const loadTree = useAppV2Store(state => state.loadTree);
   const loadStatus = useAppV2Store(state => state.loadStatus);
   const commit = useAppV2Store(state => state.commit);
@@ -72,6 +79,7 @@ export default function AppV2ProjectView({
         snapshot.worktreesByProject[projectId]
           ? Promise.resolve(snapshot.worktreesByProject[projectId])
           : getOrCreateWorktree(workspaceId, projectId),
+        listConversationBranches(workspaceId, projectId),
       ]);
       if (loadedProject && !cancelled) {
         useConsoleStore.getState().updateTitle(tabId, loadedProject.title);
@@ -91,6 +99,7 @@ export default function AppV2ProjectView({
     getProject,
     loadStatus,
     loadTree,
+    listConversationBranches,
     projectId,
     tabId,
     workspaceId,
@@ -204,6 +213,49 @@ export default function AppV2ProjectView({
           </Typography>
         )}
       </Paper>
+
+      <Paper variant="outlined" sx={{ p: 1.5 }}>
+        <Typography variant="subtitle2" gutterBottom>
+          Conversation branches
+        </Typography>
+        {conversationBranches.length > 0 ? (
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75 }}>
+            {conversationBranches.map(branch => (
+              <Box
+                key={branch.chatId}
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns:
+                    "minmax(180px, 1fr) minmax(100px, auto) minmax(100px, auto)",
+                  gap: 1,
+                }}
+              >
+                <Typography variant="body2">{branch.branch}</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {branch.lastCommitSha
+                    ? `Commit ${branch.lastCommitSha.slice(0, 10)}`
+                    : `WIP ${branch.wipOid.slice(0, 10)}`}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {branch.status}
+                </Typography>
+              </Box>
+            ))}
+          </Box>
+        ) : (
+          <Typography variant="body2" color="text.secondary">
+            No agent conversation branches yet.
+          </Typography>
+        )}
+      </Paper>
+
+      {workspaceId ? (
+        <AppV2GitHubSection
+          workspaceId={workspaceId}
+          project={project}
+          branches={conversationBranches}
+        />
+      ) : null}
 
       <Box
         sx={{

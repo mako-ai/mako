@@ -17,9 +17,11 @@ import {
   AppV2WriteFileSchema,
 } from "@mako/schemas";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import type {
-  IAppV2Project,
-  IAppV2Worktree,
+import {
+  AppV2Worktree,
+  AppV2ChatRemote,
+  type IAppV2Project,
+  type IAppV2Worktree,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import {
@@ -35,7 +37,7 @@ import {
 import { publishRealtimeEvent } from "../services/realtime.service";
 import type { AppV2Actor } from "../apps-v2/app-project.service";
 import { getAppV2ProjectEventAudience } from "../apps-v2/event-visibility";
-import { resolveResourceRole } from "../utils/resource-acl";
+import { canManageSharing, resolveResourceRole } from "../utils/resource-acl";
 import {
   APP_V2_MAX_REQUEST_BYTES,
   APP_V2_SESSION_DEFAULT_TIMEOUT_MS,
@@ -46,6 +48,7 @@ import {
   APP_V2_SESSION_MAX_TIMEOUT_MS,
   getAppsV2SandboxConfiguration,
   isAppsV2Enabled,
+  isAppsV2GitHubPushEnabled,
 } from "../apps-v2/config";
 import {
   AppV2ConflictError,
@@ -60,9 +63,20 @@ import { AppV2SessionService } from "../apps-v2/session.service";
 import { getAppV2Services as services } from "../apps-v2/service-factory";
 import { APP_V2_MAX_PATH_SEGMENTS } from "../apps-v2/path-validation";
 import { isAppV2RegistryPackageSpec } from "../apps-v2/package-spec";
+import {
+  AppV2GitHubPushService,
+  type AppV2GitHubBindingInput,
+} from "../apps-v2/github-push.service";
+import {
+  normalizeGitHubSubdirectory,
+  validateGitHubOwner,
+  validateGitHubRef,
+  validateGitHubRepository,
+} from "../apps-v2/github-validation";
 
 const logger = loggers.api("apps-v2");
 const routes = createRouter();
+const githubPushService = new AppV2GitHubPushService();
 /** Apps v2 projects are user-private resources and require a browser session. */
 const AUTH_SECURITY: Array<Record<string, string[]>> = [{ cookieAuth: [] }];
 
@@ -174,6 +188,7 @@ const AppV2StatusResponseSchema = z
     enabled: z.boolean(),
     sandboxAvailable: z.boolean(),
     sandboxProvider: z.enum(["e2b", "off"]),
+    githubPushAvailable: z.boolean(),
   })
   .openapi("AppV2StatusResponse");
 const AppV2ProjectSchema = z
@@ -198,6 +213,21 @@ const AppV2ProjectSchema = z
     repositoryId: z.string(),
     defaultBranch: z.string(),
     headSha: z.string(),
+    githubPushAvailable: z.boolean(),
+    githubCanManage: z.boolean(),
+    github: z
+      .object({
+        installationId: z.number().int(),
+        owner: z.string(),
+        repo: z.string(),
+        baseBranch: z.string(),
+        subdirectory: z.string().optional(),
+        autoPushOnTurnEnd: z.boolean(),
+        generation: z.number().int().nonnegative(),
+        boundAt: zDateTime(),
+        boundBy: z.string(),
+      })
+      .optional(),
     createdAt: zDateTime(),
     updatedAt: zDateTime(),
   })
@@ -207,12 +237,14 @@ const AppV2WorktreeSchema = z
     id: z.string(),
     projectId: z.string(),
     actorId: z.string(),
+    kind: z.literal("manual"),
+    contextKey: z.literal("manual"),
     branch: z.string(),
     baseSha: z.string(),
     wipOid: z.string(),
     revision: z.number().int(),
     leaseEpoch: z.number().int(),
-    status: z.enum(["active", "discarded", "fenced"]),
+    status: z.enum(["active", "discarded", "fenced", "conflict"]),
     createdAt: zDateTime(),
     updatedAt: zDateTime(),
   })
@@ -251,12 +283,93 @@ const AppV2CommitMetadataSchema = z
 const AppV2ProjectResponseSchema = z
   .object({ success: z.literal(true), project: AppV2ProjectSchema })
   .openapi("AppV2ProjectResponse");
+const AppV2GitHubPushResponseSchema = z
+  .object({
+    success: z.boolean(),
+    status: z.enum(["local_only", "pushed", "remote_failed", "conflict"]),
+    remoteBranch: z.string().optional(),
+    remoteSha: z.string().optional(),
+    error: z.string().optional(),
+    skipped: z.boolean().optional(),
+  })
+  .openapi("AppV2GitHubPushResponse");
 const AppV2ProjectListResponseSchema = z
   .object({ success: z.literal(true), projects: z.array(AppV2ProjectSchema) })
   .openapi("AppV2ProjectListResponse");
 const AppV2WorktreeResponseSchema = z
   .object({ success: z.literal(true), worktree: AppV2WorktreeSchema })
   .openapi("AppV2WorktreeResponse");
+const AppV2ConversationBranchSchema = z.object({
+  chatId: z.string(),
+  branch: z.string(),
+  baseSha: z.string(),
+  wipOid: z.string(),
+  lastCommitSha: z.string().optional(),
+  status: z.enum(["active", "discarded", "fenced", "conflict"]),
+  remote: z
+    .object({
+      branch: z.string(),
+      status: z.enum(["pending", "pushed", "failed", "conflict"]),
+      lastPushedLocalSha: z.string().optional(),
+      lastPushedRemoteSha: z.string().optional(),
+      error: z.string().optional(),
+      lastPushAt: zDateTime().optional(),
+    })
+    .optional(),
+});
+function passesValidation<T>(
+  value: T,
+  validate: (candidate: T) => unknown,
+): boolean {
+  try {
+    validate(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const AppV2GitHubBindingInputSchema = z
+  .object({
+    installationId: z.number().int().positive(),
+    owner: z
+      .string()
+      .trim()
+      .min(1)
+      .max(39)
+      .refine(value => passesValidation(value, validateGitHubOwner)),
+    repo: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .refine(value => passesValidation(value, validateGitHubRepository)),
+    baseBranch: z
+      .string()
+      .trim()
+      .min(1)
+      .max(255)
+      .refine(value => passesValidation(value, validateGitHubRef)),
+    subdirectory: z
+      .string()
+      .trim()
+      .max(512)
+      .optional()
+      .refine(value => passesValidation(value, normalizeGitHubSubdirectory)),
+    autoPushOnTurnEnd: z.boolean().default(false),
+  })
+  .strict()
+  .openapi("AppV2GitHubBindingInput");
+const AppV2GitHubPushInputSchema = z
+  .object({ chatId: z.string().min(1).max(128) })
+  .strict()
+  .openapi("AppV2GitHubPushInput");
+const AppV2ConversationBranchListResponseSchema = z
+  .object({
+    success: z.literal(true),
+    branches: z.array(AppV2ConversationBranchSchema),
+  })
+  .openapi("AppV2ConversationBranchListResponse");
 const AppV2TreeResponseSchema = z
   .object({
     success: z.literal(true),
@@ -418,6 +531,24 @@ function projectJson(project: IAppV2Project, requestActor: AppV2Actor) {
     repositoryId: project.repositoryId,
     defaultBranch: project.defaultBranch,
     headSha: project.headSha,
+    githubPushAvailable: isAppsV2GitHubPushEnabled(),
+    githubCanManage:
+      (requestActor.memberRole === "owner" ||
+        requestActor.memberRole === "admin") &&
+      canManageSharing(project, requestActor.userId, requestActor.memberRole),
+    github: project.github
+      ? {
+          installationId: project.github.installationId,
+          owner: project.github.owner,
+          repo: project.github.repo,
+          baseBranch: project.github.baseBranch,
+          subdirectory: project.github.subdirectory,
+          autoPushOnTurnEnd: project.github.autoPushOnTurnEnd,
+          generation: project.githubBindingGeneration,
+          boundAt: project.github.boundAt,
+          boundBy: project.github.boundBy,
+        }
+      : undefined,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
   };
@@ -428,6 +559,8 @@ function worktreeJson(worktree: IAppV2Worktree) {
     id: worktree._id.toString(),
     projectId: worktree.projectId.toString(),
     actorId: worktree.actorId,
+    kind: "manual" as const,
+    contextKey: "manual" as const,
     branch: worktree.branch,
     baseSha: worktree.baseSha,
     wipOid: worktree.wipOid,
@@ -621,6 +754,91 @@ routes.openapi(
 routes.openapi(
   createRoute({
     method: "get",
+    path: "/{projectId}/conversation-branches",
+    tags: ["Apps v2"],
+    summary: "List the actor's Apps v2 conversation branches",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParams },
+    responses: okResponse(
+      AppV2ConversationBranchListResponseSchema,
+      "Read-only conversation branch metadata",
+    ),
+  }),
+  async c => {
+    if (!isAppsV2Enabled()) {
+      return c.json(
+        { success: false, error: "Apps v2 feature is unavailable" },
+        404,
+      );
+    }
+    try {
+      const { workspaceId, projectId } = c.req.valid("param");
+      const requestActor = actor(c);
+      const project = await services().projects.getReadable(
+        workspaceId,
+        projectId,
+        requestActor,
+      );
+      const worktrees = await AppV2Worktree.find({
+        workspaceId: project.workspaceId,
+        projectId: project._id,
+        actorId: requestActor.userId,
+        kind: "agent",
+      })
+        .sort({ updatedAt: -1 })
+        .select("chatId branch baseSha wipOid lastAgentCommitSha status");
+      const remotes = isAppsV2GitHubPushEnabled()
+        ? await AppV2ChatRemote.find({
+            workspaceId: project.workspaceId,
+            projectId: project._id,
+            actorId: requestActor.userId,
+          }).lean()
+        : [];
+      const remoteByChat = new Map(
+        remotes.map(remote => [remote.chatId, remote]),
+      );
+      return c.json({
+        success: true as const,
+        branches: worktrees.flatMap(worktree =>
+          worktree.chatId
+            ? [
+                {
+                  chatId: worktree.chatId,
+                  branch: worktree.branch,
+                  baseSha: worktree.baseSha,
+                  wipOid: worktree.wipOid,
+                  lastCommitSha: worktree.lastAgentCommitSha,
+                  status: worktree.status,
+                  remote: remoteByChat.has(worktree.chatId)
+                    ? {
+                        branch:
+                          remoteByChat.get(worktree.chatId)?.remoteBranch ?? "",
+                        status:
+                          remoteByChat.get(worktree.chatId)?.pushStatus ??
+                          "pending",
+                        lastPushedLocalSha: remoteByChat.get(worktree.chatId)
+                          ?.lastPushedLocalSha,
+                        lastPushedRemoteSha: remoteByChat.get(worktree.chatId)
+                          ?.lastPushedRemoteSha,
+                        error: remoteByChat.get(worktree.chatId)?.pushError,
+                        lastPushAt: remoteByChat.get(worktree.chatId)
+                          ?.lastPushAt,
+                      }
+                    : undefined,
+                },
+              ]
+            : [],
+        ),
+      });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  },
+);
+
+routes.openapi(
+  createRoute({
+    method: "get",
     path: "/status",
     tags: ["Apps v2"],
     summary: "Get Apps v2 feature availability",
@@ -642,6 +860,7 @@ routes.openapi(
       enabled,
       sandboxAvailable,
       sandboxProvider: sandboxAvailable ? sandbox.provider : ("off" as const),
+      githubPushAvailable: enabled && isAppsV2GitHubPushEnabled(),
     });
   },
 );
@@ -764,6 +983,166 @@ routes.openapi(
         success: true,
         project: projectJson(project, requestActor),
       });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  },
+);
+
+for (const method of ["get", "delete"] as const) {
+  routes.openapi(
+    createRoute({
+      method,
+      path: "/{projectId}/github",
+      tags: ["Apps v2"],
+      summary:
+        method === "get"
+          ? "Get the Apps v2 GitHub binding"
+          : "Remove the Apps v2 GitHub binding",
+      security: AUTH_SECURITY,
+      request: { params: ProjectParams },
+      responses: okResponse(
+        AppV2ProjectResponseSchema,
+        "Apps v2 project GitHub binding",
+      ),
+    }),
+    async c => {
+      if (!isAppsV2GitHubPushEnabled()) {
+        return c.json(
+          { success: false, error: "Apps v2 GitHub push is unavailable" },
+          404,
+        );
+      }
+      try {
+        const { workspaceId, projectId } = c.req.valid("param");
+        const requestActor = actor(c);
+        const project =
+          method === "get"
+            ? await services().projects.getReadable(
+                workspaceId,
+                projectId,
+                requestActor,
+              )
+            : await githubPushService.unbind(
+                workspaceId,
+                projectId,
+                requestActor,
+              );
+        return c.json({
+          success: true as const,
+          project: projectJson(project, requestActor),
+        });
+      } catch (error) {
+        return errorResponse(c, error);
+      }
+    },
+  );
+}
+
+routes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{projectId}/github",
+    tags: ["Apps v2"],
+    summary: "Bind an Apps v2 project to GitHub",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParams,
+      body: {
+        required: true,
+        content: {
+          "application/json": { schema: AppV2GitHubBindingInputSchema },
+        },
+      },
+    },
+    responses: okResponse(
+      AppV2ProjectResponseSchema,
+      "Apps v2 project GitHub binding",
+    ),
+  }),
+  async c => {
+    if (!isAppsV2GitHubPushEnabled()) {
+      return c.json(
+        { success: false, error: "Apps v2 GitHub push is unavailable" },
+        404,
+      );
+    }
+    try {
+      const { workspaceId, projectId } = c.req.valid("param");
+      const requestActor = actor(c);
+      const project = await githubPushService.bind(
+        workspaceId,
+        projectId,
+        requestActor,
+        c.req.valid("json") as AppV2GitHubBindingInput,
+      );
+      return c.json({
+        success: true as const,
+        project: projectJson(project, requestActor),
+      });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  },
+);
+
+routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{projectId}/github/push",
+    tags: ["Apps v2"],
+    summary: "Push a committed Apps v2 conversation branch to GitHub",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParams,
+      body: {
+        required: true,
+        content: { "application/json": { schema: AppV2GitHubPushInputSchema } },
+      },
+    },
+    responses: okResponse(
+      AppV2GitHubPushResponseSchema,
+      "Apps v2 GitHub push result",
+    ),
+  }),
+  async c => {
+    if (!isAppsV2GitHubPushEnabled()) {
+      return c.json(
+        { success: false, error: "Apps v2 GitHub push is unavailable" },
+        404,
+      );
+    }
+    try {
+      const { workspaceId, projectId } = c.req.valid("param");
+      const requestActor = actor(c);
+      const { chatId } = c.req.valid("json");
+      const project = await services().projects.getWritable(
+        workspaceId,
+        projectId,
+        requestActor,
+      );
+      const worktree = await AppV2Worktree.findOne({
+        workspaceId: project.workspaceId,
+        projectId: project._id,
+        actorId: requestActor.userId,
+        kind: "agent",
+        chatId,
+      });
+      if (!worktree?.lastAgentCommitSha) {
+        throw new AppV2ValidationError(
+          "Conversation branch has no committed local turn to push",
+        );
+      }
+      const result = await githubPushService.pushConversation({
+        workspaceId,
+        projectId,
+        chatId,
+        actor: requestActor,
+        localSha: worktree.lastAgentCommitSha,
+        wipOid: worktree.wipOid,
+        requireAutoPush: false,
+      });
+      return c.json({ success: result.status === "pushed", ...result });
     } catch (error) {
       return errorResponse(c, error);
     }
@@ -1299,7 +1678,7 @@ routes.openapi(
         projectId,
         requestActor,
       );
-      const worktree = await services().worktrees.getById(
+      const worktree = await services().worktrees.getManualById(
         project,
         worktreeId,
         requestActor,
@@ -1335,7 +1714,7 @@ routes.openapi(
         projectId,
         requestActor,
       );
-      const worktree = await services().worktrees.getById(
+      const worktree = await services().worktrees.getManualById(
         project,
         worktreeId,
         requestActor,
@@ -1384,7 +1763,7 @@ routes.openapi(
         projectId,
         requestActor,
       );
-      const worktree = await services().worktrees.getById(
+      const worktree = await services().worktrees.getManualById(
         project,
         worktreeId,
         requestActor,
@@ -1431,7 +1810,7 @@ routes.openapi(
         projectId,
         requestActor,
       );
-      const worktree = await services().worktrees.getById(
+      const worktree = await services().worktrees.getManualById(
         project,
         worktreeId,
         requestActor,
@@ -1476,7 +1855,7 @@ routes.openapi(
         projectId,
         requestActor,
       );
-      const worktree = await services().worktrees.getById(
+      const worktree = await services().worktrees.getManualById(
         project,
         worktreeId,
         requestActor,
@@ -1519,7 +1898,7 @@ routes.openapi(
         projectId,
         requestActor,
       );
-      const worktree = await services().worktrees.getById(
+      const worktree = await services().worktrees.getManualById(
         project,
         worktreeId,
         requestActor,
@@ -1561,7 +1940,7 @@ routes.openapi(
         projectId,
         requestActor,
       );
-      const worktree = await services().worktrees.getById(
+      const worktree = await services().worktrees.getManualById(
         project,
         worktreeId,
         requestActor,
@@ -1604,7 +1983,7 @@ routes.openapi(
         projectId,
         requestActor,
       );
-      const worktree = await services().worktrees.getById(
+      const worktree = await services().worktrees.getManualById(
         project,
         worktreeId,
         requestActor,

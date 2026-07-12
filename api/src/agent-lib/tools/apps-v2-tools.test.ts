@@ -5,6 +5,7 @@ import type {
   IAppV2Worktree,
 } from "../../database/workspace-schema";
 import { AppV2NotFoundError } from "../../apps-v2/errors";
+import { publishRealtimeEvent } from "../../services/realtime.service";
 import { createAppsV2Tools } from "./apps-v2-tools";
 
 vi.mock("../../services/workspace.service", () => ({
@@ -19,7 +20,11 @@ vi.mock("../../services/realtime.service", () => ({
 const workspaceId = new Types.ObjectId();
 const projectId = new Types.ObjectId();
 const worktreeId = new Types.ObjectId();
+const chatId = new Types.ObjectId().toString();
+const turnId = "turn-test";
 const initialOid = "a".repeat(40);
+const touchProject = vi.fn(async () => undefined);
+const assertOwnership = vi.fn(async () => undefined);
 
 function project(): IAppV2Project {
   return {
@@ -123,6 +128,7 @@ function createMockServices(options?: {
       worktree: worktree(3, "d".repeat(40)),
       sha: "e".repeat(40),
     })),
+    getOrCreateAgent: vi.fn(async () => currentWorktree),
   };
   return {
     calls,
@@ -134,7 +140,7 @@ function createMockServices(options?: {
         getWritable: calls.getWritable,
       },
       worktrees: {
-        getOrCreate: vi.fn(async () => currentWorktree),
+        getOrCreateAgent: calls.getOrCreateAgent,
         tree: vi.fn(async () => [
           {
             path: "src/App.tsx",
@@ -196,12 +202,30 @@ describe("Apps v2 agent tools", () => {
         workspaceId: workspaceId.toString(),
         authType: "session",
         userId: "user-1",
+        chatId,
+        turnId,
+        touchProject,
+        assertOwnership,
         services,
       }),
     );
     expect(names.every(name => name.startsWith("app2_"))).toBe(true);
     expect(names).not.toContain("create_app");
     expect(names).not.toContain("app_write_file");
+    expect(
+      Object.keys(
+        createAppsV2Tools({
+          workspaceId: workspaceId.toString(),
+          authType: "session",
+          userId: "user-1",
+          chatId: "../main",
+          turnId,
+          touchProject,
+          assertOwnership,
+          services,
+        }),
+      ),
+    ).toEqual([]);
   });
 
   it("delegates hidden-project ACL checks to the project service", async () => {
@@ -210,6 +234,10 @@ describe("Apps v2 agent tools", () => {
       workspaceId: workspaceId.toString(),
       authType: "session",
       userId: "user-1",
+      chatId,
+      turnId,
+      touchProject,
+      assertOwnership,
       services,
     });
 
@@ -226,12 +254,58 @@ describe("Apps v2 agent tools", () => {
     });
   });
 
+  it("fences an older tool factory when a newer turn takes ownership", async () => {
+    const { services, calls } = createMockServices();
+    let activeTurnId = "turn-a";
+    const durableOwnership = vi.fn(async (identity: { turnId: string }) => {
+      if (identity.turnId !== activeTurnId) {
+        throw new Error("A newer chat turn superseded this Apps v2 operation");
+      }
+    });
+    const createTurnTools = (factoryTurnId: string) =>
+      createAppsV2Tools({
+        workspaceId: workspaceId.toString(),
+        authType: "session",
+        userId: "user-1",
+        chatId,
+        turnId: factoryTurnId,
+        touchProject,
+        assertOwnership: durableOwnership,
+        services,
+      });
+    const olderTools = createTurnTools("turn-a");
+    const newerTools = createTurnTools("turn-b");
+
+    activeTurnId = "turn-b";
+    const stale = await execute(olderTools, "app2_write_file", {
+      projectId: projectId.toString(),
+      path: "src/App.tsx",
+      contents: "stale",
+    });
+    const current = await execute(newerTools, "app2_write_file", {
+      projectId: projectId.toString(),
+      path: "src/App.tsx",
+      contents: "current",
+    });
+
+    expect(stale).toMatchObject({
+      success: false,
+      error: expect.stringContaining("newer chat turn superseded"),
+    });
+    expect(current).toMatchObject({ success: true });
+    expect(calls.write).toHaveBeenCalledOnce();
+  });
+
   it("creates, writes, anchored-edits, and commits through secure services", async () => {
     const { services, calls } = createMockServices();
     const tools = createAppsV2Tools({
       workspaceId: workspaceId.toString(),
       authType: "session",
       userId: "user-1",
+      chatId,
+      turnId,
+      touchProject,
+      assertOwnership,
       services,
     });
 
@@ -288,6 +362,18 @@ describe("Apps v2 agent tools", () => {
       appId: projectId.toString(),
     });
     expect(calls.commit).toHaveBeenCalledOnce();
+    expect(publishRealtimeEvent).toHaveBeenCalledWith(
+      workspaceId.toString(),
+      expect.objectContaining({
+        type: "app-v2.commit.created",
+        forUserId: "user-1",
+      }),
+    );
+    expect(calls.getOrCreateAgent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ userId: "user-1" }),
+      chatId,
+    );
   });
 
   it("returns provider unavailable for bash while Git/file tools stay active", async () => {
@@ -296,6 +382,10 @@ describe("Apps v2 agent tools", () => {
       workspaceId: workspaceId.toString(),
       authType: "session",
       userId: "user-1",
+      chatId,
+      turnId,
+      touchProject,
+      assertOwnership,
       services,
     });
 
@@ -340,6 +430,10 @@ describe("Apps v2 agent tools", () => {
       workspaceId: workspaceId.toString(),
       authType: "session",
       userId: "user-1",
+      chatId,
+      turnId,
+      touchProject,
+      assertOwnership,
       services,
     });
 
@@ -379,6 +473,61 @@ describe("Apps v2 agent tools", () => {
     expect(session.exec).toHaveBeenCalledOnce();
   });
 
+  it("rechecks ownership after a long sandbox operation before acknowledging", async () => {
+    let activeTurnId = "turn-a";
+    const durableOwnership = vi.fn(async (identity: { turnId: string }) => {
+      if (identity.turnId !== activeTurnId) {
+        throw new Error("A newer chat turn superseded this Apps v2 operation");
+      }
+    });
+    const durableResult = {
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      timedOut: false,
+      cancelled: false,
+      outputTruncated: false,
+      excludedPaths: [],
+      durability: {
+        status: "durable" as const,
+        revision: { wipOid: "f".repeat(40), revision: 4 },
+      },
+    };
+    const session = {
+      ensure: vi.fn(async () => ({
+        session: { status: "active" },
+        worktree: worktree(),
+      })),
+      exec: vi.fn(async () => {
+        activeTurnId = "turn-b";
+        return durableResult;
+      }),
+      install: vi.fn(),
+    };
+    const { services } = createMockServices({ sessions: session });
+    const tools = createAppsV2Tools({
+      workspaceId: workspaceId.toString(),
+      authType: "session",
+      userId: "user-1",
+      chatId,
+      turnId: "turn-a",
+      touchProject,
+      assertOwnership: durableOwnership,
+      services,
+    });
+
+    const output = await execute(tools, "app2_bash", {
+      projectId: projectId.toString(),
+      command: "npm run build",
+    });
+
+    expect(session.exec).toHaveBeenCalledOnce();
+    expect(output).toMatchObject({
+      success: false,
+      error: expect.stringContaining("newer chat turn superseded"),
+    });
+  });
+
   it("propagates chat cancellation through ensure and provider operations", async () => {
     const session = {
       ensure: vi.fn(async () => ({
@@ -407,6 +556,10 @@ describe("Apps v2 agent tools", () => {
       workspaceId: workspaceId.toString(),
       authType: "session",
       userId: "user-1",
+      chatId,
+      turnId,
+      touchProject,
+      assertOwnership,
       executionContext: {
         signal: chatAbort.signal,
         createExecutionId: vi.fn(() => "execution-1"),

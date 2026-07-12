@@ -3,16 +3,20 @@ import { AppV2WorktreeService } from "./worktree.service";
 import { AppV2SessionService } from "./session.service";
 import { CloudSessionExecutor } from "./cloud-session-executor";
 import { createAppsV2SandboxProvider } from "./providers/sandbox-provider-factory";
+import type { SessionExecutor } from "./session-executor";
 
 export interface AppV2Services {
-  projects: AppV2ProjectService;
-  worktrees: AppV2WorktreeService;
-  sessions: AppV2SessionService | undefined;
+  readonly projects: AppV2ProjectService;
+  readonly worktrees: AppV2WorktreeService;
+  readonly sessions: AppV2SessionService | undefined;
+  readonly sessionExecutor: SessionExecutor | undefined;
 }
 
 let projectService: AppV2ProjectService | undefined;
 let worktreeService: AppV2WorktreeService | undefined;
 let sessionService: AppV2SessionService | undefined;
+let sessionExecutor: SessionExecutor | undefined;
+let sandboxServicesInitialized = false;
 
 /**
  * Shared Apps v2 service graph for HTTP routes and agent tools. Sandbox
@@ -23,20 +27,27 @@ export function getAppV2Services(): AppV2Services {
   projectService ??= new AppV2ProjectService();
   worktreeService ??= new AppV2WorktreeService(projectService);
 
-  if (!sessionService) {
+  if (!sandboxServicesInitialized) {
     const provider = createAppsV2SandboxProvider();
     if (provider) {
+      sessionExecutor = new CloudSessionExecutor(
+        provider,
+        projectService,
+        worktreeService,
+      );
       sessionService = new AppV2SessionService(
         provider.name,
-        new CloudSessionExecutor(provider, projectService, worktreeService),
+        sessionExecutor,
         worktreeService,
       );
     }
+    sandboxServicesInitialized = true;
   }
 
   return {
     projects: projectService,
     worktrees: worktreeService,
     sessions: sessionService,
+    sessionExecutor,
   };
 }

@@ -121,11 +121,8 @@ async function run(): Promise<void> {
   };
   const store = new SweepStore(record);
   const executor = new FakeSessionExecutor();
-  const result = await new AppV2ProvisioningReconcileService(
-    executor,
-    store,
-    30,
-  ).sweep();
+  const reconciler = new AppV2ProvisioningReconcileService(executor, store, 30);
+  const result = await reconciler.sweep();
   assert.deepEqual(result, { examined: 1, cleaned: 1 });
   assert.equal(executor.cleanedReservations.length, 1);
   assert.equal(
@@ -134,6 +131,10 @@ async function run(): Promise<void> {
   );
   assert.equal(record.status, "error");
   assert.equal(record.operationId, undefined);
+
+  const repeated = await reconciler.sweep();
+  assert.deepEqual(repeated, { examined: 0, cleaned: 0 });
+  assert.equal(executor.cleanedReservations.length, 1);
 }
 
 void run();

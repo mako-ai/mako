@@ -29,6 +29,7 @@ import {
   isGitHubAppUserAuthConfigured,
 } from "../integrations/github/config";
 import { handlePullRequestEvent, handlePushEvent } from "../dbt/dbt-ci.service";
+import { enqueueAppsV2GitHubPushDelivery } from "../apps-v2/github-delivery.service";
 import { workspaceService } from "../services/workspace.service";
 import { loggers } from "../logging";
 
@@ -116,7 +117,40 @@ githubRoutes.post("/webhook", async (c: Context) => {
 
   if (event === "ping") return c.json({ ok: true, pong: true });
 
-  // Detach the actual work — syncing/CI can outlast the delivery window.
+  const deliveryId = c.req.header("x-github-delivery");
+  if (event === "push") {
+    const p = payload as PushPayload;
+    const owner = p.repository?.owner?.login;
+    const name = p.repository?.name;
+    const ref = p.ref ?? "";
+    const installationId = p.installation?.id;
+    if (
+      owner &&
+      name &&
+      ref.startsWith("refs/heads/") &&
+      installationId &&
+      deliveryId
+    ) {
+      try {
+        await enqueueAppsV2GitHubPushDelivery({
+          deliveryId,
+          installationId,
+          owner,
+          repo: name,
+          branch: ref.slice("refs/heads/".length),
+          after: p.after,
+        });
+      } catch (error) {
+        logger.error("Failed to enqueue Apps v2 GitHub delivery", {
+          deliveryId,
+          error: String(error),
+        });
+        return c.json({ ok: false, error: "delivery enqueue failed" }, 503);
+      }
+    }
+  }
+
+  // Existing dbt/CI work remains detached for compatibility.
   void (async () => {
     try {
       if (event === "push") {
@@ -125,12 +159,13 @@ githubRoutes.post("/webhook", async (c: Context) => {
         const name = p.repository?.name;
         const ref = p.ref ?? "";
         if (owner && name && ref.startsWith("refs/heads/")) {
-          await handlePushEvent({
+          const push = {
             owner,
             repo: name,
             branch: ref.slice("refs/heads/".length),
             installationId: p.installation?.id,
-          });
+          };
+          await handlePushEvent(push);
         }
       } else if (event === "pull_request") {
         const p = payload as PullRequestPayload;

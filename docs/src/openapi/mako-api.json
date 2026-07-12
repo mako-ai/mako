@@ -1157,6 +1157,18 @@
           "actorId": {
             "type": "string"
           },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "manual"
+            ]
+          },
+          "contextKey": {
+            "type": "string",
+            "enum": [
+              "manual"
+            ]
+          },
           "branch": {
             "type": "string"
           },
@@ -1177,7 +1189,8 @@
             "enum": [
               "active",
               "discarded",
-              "fenced"
+              "fenced",
+              "conflict"
             ]
           },
           "createdAt": {
@@ -1193,6 +1206,8 @@
           "id",
           "projectId",
           "actorId",
+          "kind",
+          "contextKey",
           "branch",
           "baseSha",
           "wipOid",
@@ -1250,6 +1265,94 @@
           "code"
         ]
       },
+      "AppV2ConversationBranchListResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "branches": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "chatId": {
+                  "type": "string"
+                },
+                "branch": {
+                  "type": "string"
+                },
+                "baseSha": {
+                  "type": "string"
+                },
+                "wipOid": {
+                  "type": "string"
+                },
+                "lastCommitSha": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "discarded",
+                    "fenced",
+                    "conflict"
+                  ]
+                },
+                "remote": {
+                  "type": "object",
+                  "properties": {
+                    "branch": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "pushed",
+                        "failed",
+                        "conflict"
+                      ]
+                    },
+                    "lastPushedLocalSha": {
+                      "type": "string"
+                    },
+                    "lastPushedRemoteSha": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "lastPushAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "branch",
+                    "status"
+                  ]
+                }
+              },
+              "required": [
+                "chatId",
+                "branch",
+                "baseSha",
+                "wipOid",
+                "status"
+              ]
+            }
+          }
+        },
+        "required": [
+          "success",
+          "branches"
+        ]
+      },
       "AppV2StatusResponse": {
         "type": "object",
         "properties": {
@@ -1265,12 +1368,16 @@
               "e2b",
               "off"
             ]
+          },
+          "githubPushAvailable": {
+            "type": "boolean"
           }
         },
         "required": [
           "enabled",
           "sandboxAvailable",
-          "sandboxProvider"
+          "sandboxProvider",
+          "githubPushAvailable"
         ]
       },
       "AppV2ProjectListResponse": {
@@ -1378,6 +1485,55 @@
           "headSha": {
             "type": "string"
           },
+          "githubPushAvailable": {
+            "type": "boolean"
+          },
+          "githubCanManage": {
+            "type": "boolean"
+          },
+          "github": {
+            "type": "object",
+            "properties": {
+              "installationId": {
+                "type": "integer"
+              },
+              "owner": {
+                "type": "string"
+              },
+              "repo": {
+                "type": "string"
+              },
+              "baseBranch": {
+                "type": "string"
+              },
+              "subdirectory": {
+                "type": "string"
+              },
+              "autoPushOnTurnEnd": {
+                "type": "boolean"
+              },
+              "generation": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "boundAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "boundBy": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "installationId",
+              "owner",
+              "repo",
+              "baseBranch",
+              "autoPushOnTurnEnd",
+              "generation",
+              "boundBy"
+            ]
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -1400,7 +1556,9 @@
           "repositoryProvider",
           "repositoryId",
           "defaultBranch",
-          "headSha"
+          "headSha",
+          "githubPushAvailable",
+          "githubCanManage"
         ]
       },
       "AppV2ProjectResponse": {
@@ -1420,6 +1578,92 @@
           "success",
           "project"
         ]
+      },
+      "AppV2GitHubBindingInput": {
+        "type": "object",
+        "properties": {
+          "installationId": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 39
+          },
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "baseBranch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "subdirectory": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "autoPushOnTurnEnd": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "installationId",
+          "owner",
+          "repo",
+          "baseBranch"
+        ],
+        "additionalProperties": false
+      },
+      "AppV2GitHubPushResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "local_only",
+              "pushed",
+              "remote_failed",
+              "conflict"
+            ]
+          },
+          "remoteBranch": {
+            "type": "string"
+          },
+          "remoteSha": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "skipped": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success",
+          "status"
+        ]
+      },
+      "AppV2GitHubPushInput": {
+        "type": "object",
+        "properties": {
+          "chatId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "chatId"
+        ],
+        "additionalProperties": false
       },
       "AppV2AckResponse": {
         "type": "object",
@@ -21999,6 +22243,72 @@
         "operationId": "post_api_workspaces_workspaceId_apps_v2_projectId_session_flush"
       }
     },
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/conversation-branches": {
+      "get": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "List the actor's Apps v2 conversation branches",
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read-only conversation branch metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppV2ConversationBranchListResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_v2_projectId_conversation_branches"
+      }
+    },
     "/api/workspaces/{workspaceId}/apps-v2/status": {
       "get": {
         "tags": [
@@ -22346,6 +22656,286 @@
           }
         },
         "operationId": "delete_api_workspaces_workspaceId_apps_v2_projectId"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/github": {
+      "get": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Get the Apps v2 GitHub binding",
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Apps v2 project GitHub binding",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppV2ProjectResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_v2_projectId_github"
+      },
+      "delete": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Remove the Apps v2 GitHub binding",
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Apps v2 project GitHub binding",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppV2ProjectResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "delete_api_workspaces_workspaceId_apps_v2_projectId_github"
+      },
+      "put": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Bind an Apps v2 project to GitHub",
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppV2GitHubBindingInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Apps v2 project GitHub binding",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppV2ProjectResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "put_api_workspaces_workspaceId_apps_v2_projectId_github"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/github/push": {
+      "post": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Push a committed Apps v2 conversation branch to GitHub",
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppV2GitHubPushInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Apps v2 GitHub push result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppV2GitHubPushResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_v2_projectId_github_push"
       }
     },
     "/api/workspaces/{workspaceId}/apps-v2/{projectId}/worktree": {

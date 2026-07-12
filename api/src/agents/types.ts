@@ -54,6 +54,8 @@ export interface AgentContext {
    * chat.ui-intent events at windows viewing this chat.
    */
   chatId?: string;
+  /** Unique durable identity for this outer agent turn and its continuations. */
+  turnId?: string;
   /** What the user is currently looking at (the active editor tab's kind) */
   activeView?:
     | "console"

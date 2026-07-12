@@ -385,12 +385,39 @@ export class AppV2GitProvider {
   }
 
   async resolveRef(repositoryId: string, ref: string): Promise<string> {
+    this.assertManagedRef(ref);
     const result = await runGit(this.repositoryPath(repositoryId), [
       "rev-parse",
       "--verify",
       ref,
     ]);
     return oidFrom(result);
+  }
+
+  async resolveBranch(repositoryId: string, branch: string): Promise<string> {
+    return this.resolveRef(repositoryId, this.branchRef(branch));
+  }
+
+  async ensureBranch(
+    repositoryId: string,
+    branch: string,
+    startSha: string,
+  ): Promise<string> {
+    const repositoryPath = this.repositoryPath(repositoryId);
+    const ref = this.branchRef(branch);
+    const existing = await this.resolveRefByPath(repositoryPath, ref);
+    if (existing) return existing;
+    try {
+      await runGit(repositoryPath, ["update-ref", ref, startSha, ZERO_OID]);
+      return startSha;
+    } catch {
+      const concurrentlyCreated = await this.resolveRefByPath(
+        repositoryPath,
+        ref,
+      );
+      if (concurrentlyCreated) return concurrentlyCreated;
+      throw new AppV2ConflictError("Branch changed concurrently");
+    }
   }
 
   async createWorktreeRef(
@@ -432,6 +459,7 @@ export class AppV2GitProvider {
     leaseRef: string,
   ): Promise<AppV2GitLease> {
     const repositoryPath = this.repositoryPath(repositoryId);
+    this.assertLeaseRef(leaseRef);
     const oid = await this.resolveRef(repositoryId, leaseRef);
     const result = await runGit(repositoryPath, ["cat-file", "blob", oid]);
     let parsed: unknown;
@@ -468,6 +496,7 @@ export class AppV2GitProvider {
     expectedLeaseOid: string,
     nextEpoch: number,
   ): Promise<AppV2GitLease> {
+    this.assertWorktreeAndLeaseRefs(wipRef, leaseRef);
     return this.advanceLease(
       repositoryId,
       leaseRef,
@@ -818,7 +847,7 @@ export class AppV2GitProvider {
 
   async discard(
     repositoryId: string,
-    branchRef: string,
+    branch: string,
     expectedBranchOid: string,
     wipRef: string,
     expectedWipOid: string,
@@ -826,6 +855,8 @@ export class AppV2GitProvider {
     expectedLeaseOid: string,
   ): Promise<AppV2MutationResult> {
     const repositoryPath = this.repositoryPath(repositoryId);
+    const branchRef = this.branchRef(branch);
+    this.assertWorktreeAndLeaseRefs(wipRef, leaseRef);
     const transaction = [
       "start",
       `verify ${branchRef} ${expectedBranchOid}`,
@@ -852,6 +883,36 @@ export class AppV2GitProvider {
     return { wipOid: expectedBranchOid, treeSha };
   }
 
+  async fastForwardCleanWorktree(
+    repositoryId: string,
+    branch: string,
+    expectedBranchOid: string,
+    wipRef: string,
+    expectedWipOid: string,
+    leaseRef: string,
+    expectedLeaseOid: string,
+  ): Promise<string> {
+    const repositoryPath = this.repositoryPath(repositoryId);
+    this.assertWorktreeAndLeaseRefs(wipRef, leaseRef);
+    const transaction = [
+      "start",
+      `verify ${this.branchRef(branch)} ${expectedBranchOid}`,
+      `verify ${leaseRef} ${expectedLeaseOid}`,
+      `update ${wipRef} ${expectedBranchOid} ${expectedWipOid}`,
+      "prepare",
+      "commit",
+      "",
+    ].join("\n");
+    try {
+      await runGit(repositoryPath, ["update-ref", "--stdin"], transaction);
+    } catch {
+      throw new AppV2ConflictError(
+        "Branch, lease, or worktree changed concurrently",
+      );
+    }
+    return expectedBranchOid;
+  }
+
   async commit(
     repositoryId: string,
     branch: string,
@@ -863,6 +924,8 @@ export class AppV2GitProvider {
     message: string,
   ): Promise<AppV2GitCommit> {
     const repositoryPath = this.repositoryPath(repositoryId);
+    const branchRef = this.branchRef(branch);
+    this.assertWorktreeAndLeaseRefs(wipRef, leaseRef);
     await this.assertRepositoryQuota(repositoryPath);
     const treeSha = oidFrom(
       await runGit(repositoryPath, ["rev-parse", `${expectedWipOid}^{tree}`]),
@@ -877,7 +940,7 @@ export class AppV2GitProvider {
     const transaction = [
       "start",
       `verify ${leaseRef} ${expectedLeaseOid}`,
-      `update refs/heads/${branch} ${commitSha} ${expectedBranchOid}`,
+      `update ${branchRef} ${commitSha} ${expectedBranchOid}`,
       `update ${wipRef} ${commitSha} ${expectedWipOid}`,
       "prepare",
       "commit",
@@ -972,6 +1035,7 @@ export class AppV2GitProvider {
     if (!Number.isSafeInteger(nextEpoch) || nextEpoch < 1) {
       throw new AppV2ValidationError("Invalid Apps v2 lease epoch");
     }
+    this.assertLeaseRef(leaseRef);
     const repositoryPath = this.repositoryPath(repositoryId);
     const leaseOid = await this.createLeaseObject(
       repositoryPath,
@@ -1007,6 +1071,7 @@ export class AppV2GitProvider {
     recoveryWorktreeId?: string,
     recoveryId?: string,
   ): Promise<AppV2MutationResult> {
+    this.assertWorktreeAndLeaseRefs(wipRef, leaseRef);
     const repositoryPath = this.repositoryPath(repositoryId);
     await this.assertRepositoryQuota(repositoryPath);
     const entries = await this.tree(repositoryId, treeSha);
@@ -1056,6 +1121,62 @@ export class AppV2GitProvider {
     const match = /^refs\/mako\/worktrees\/([a-zA-Z0-9_-]+)$/.exec(wipRef);
     if (!match) throw new AppV2ValidationError("Invalid Apps v2 worktree ref");
     return match[1];
+  }
+
+  private assertWorktreeAndLeaseRefs(wipRef: string, leaseRef: string): void {
+    if (!/^refs\/mako\/worktrees\/[a-zA-Z0-9_-]+$/.test(wipRef)) {
+      throw new AppV2ValidationError("Invalid Apps v2 worktree ref");
+    }
+    this.assertLeaseRef(leaseRef);
+    if (
+      wipRef.slice("refs/mako/worktrees/".length) !==
+      leaseRef.slice("refs/mako/leases/".length)
+    ) {
+      throw new AppV2ValidationError("Apps v2 worktree refs do not match");
+    }
+  }
+
+  private assertLeaseRef(leaseRef: string): void {
+    if (!/^refs\/mako\/leases\/[a-zA-Z0-9_-]+$/.test(leaseRef)) {
+      throw new AppV2ValidationError("Invalid Apps v2 lease ref");
+    }
+  }
+
+  private assertManagedRef(ref: string): void {
+    if (ref.startsWith("refs/heads/")) {
+      const branch = ref.slice("refs/heads/".length);
+      if (this.branchRef(branch) === ref) return;
+    }
+    if (
+      /^refs\/mako\/(?:worktrees|leases)\/[a-zA-Z0-9_-]+$/.test(ref) ||
+      /^refs\/mako\/(?:recovery|session-success)\/[a-zA-Z0-9_-]+\/[a-f0-9]{64}$/.test(
+        ref,
+      )
+    ) {
+      return;
+    }
+    throw new AppV2ValidationError("Invalid Apps v2 Git ref");
+  }
+
+  private branchRef(branch: string): string {
+    if (
+      !branch ||
+      branch.startsWith("/") ||
+      branch.endsWith("/") ||
+      branch.startsWith(".") ||
+      branch.endsWith(".") ||
+      branch.includes("..") ||
+      branch.includes("@{") ||
+      branch.includes("//") ||
+      branch.split("/").some(part => !part || part.endsWith(".lock")) ||
+      Array.from(branch).some(character => {
+        const code = character.charCodeAt(0);
+        return code <= 32 || code === 127 || "~^:?*[\\".includes(character);
+      })
+    ) {
+      throw new AppV2ValidationError("Invalid Apps v2 branch");
+    }
+    return `refs/heads/${branch}`;
   }
 
   private async createRecoveryRef(
@@ -1146,6 +1267,7 @@ export class AppV2GitProvider {
     repositoryPath: string,
     ref: string,
   ): Promise<string | null> {
+    this.assertManagedRef(ref);
     try {
       return oidFrom(
         await runGit(repositoryPath, ["show-ref", "--verify", "--hash", ref]),

@@ -381,6 +381,7 @@ describe("appV2Store conflict handling", () => {
         enabled: true,
         sandboxAvailable: true,
         sandboxProvider: "e2b",
+        githubPushAvailable: true,
       });
 
     expect(
@@ -393,6 +394,7 @@ describe("appV2Store conflict handling", () => {
       enabled: true,
       sandboxAvailable: true,
       sandboxProvider: "e2b",
+      githubPushAvailable: true,
       error: null,
     });
     expect(get).toHaveBeenCalledTimes(2);
@@ -450,6 +452,7 @@ describe("appV2Store sandbox session API", () => {
           enabled: true,
           sandboxAvailable: true,
           sandboxProvider: "e2b",
+          githubPushAvailable: false,
           loaded: true,
           loading: false,
           error: null,
@@ -658,5 +661,136 @@ describe("appV2Store sandbox session API", () => {
     expect(
       useAppV2Store.getState().sessionFlushesByProject[worktree.projectId],
     ).toEqual(flush);
+  });
+});
+
+describe("appV2Store GitHub mirror API", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useAppV2Store.setState({
+      availabilityByWorkspace: {},
+      projectsByWorkspace: {},
+      projectsById: {},
+      worktreesByProject: {},
+      conversationBranchesByProject: {},
+      treesByProject: {},
+      filesByKey: {},
+      editorBuffersByKey: {},
+      statusByProject: {},
+      sessionsByProject: {},
+      sessionCommandsByProject: {},
+      sessionFlushesByProject: {},
+      sessionIssuesByProject: {},
+      loadingByKey: {},
+      errorsByKey: {},
+      conflictsByKey: {},
+    });
+  });
+
+  it("reuses dbt discovery endpoints and stores a safe binding", async () => {
+    const binding = {
+      installationId: 42,
+      owner: "mako",
+      repo: "app",
+      baseBranch: "main",
+      autoPushOnTurnEnd: true,
+    };
+    const project = {
+      id: "project-1",
+      workspaceId: "workspace-1",
+      github: { ...binding, boundAt: "2026-01-01", boundBy: "owner" },
+    } as never;
+    const get = vi.spyOn(apiClient, "get").mockImplementation(async path => {
+      if (path.endsWith("/status")) {
+        return { success: true, appConfigured: true, installations: [] };
+      }
+      if (path.endsWith("/repos")) return { success: true, repos: [] };
+      return { success: true, branches: ["main"] };
+    });
+    const put = vi
+      .spyOn(apiClient, "put")
+      .mockResolvedValue({ success: true, project });
+
+    await useAppV2Store.getState().fetchGitHubStatus("workspace-1");
+    await useAppV2Store.getState().fetchGitHubRepos("workspace-1", 42);
+    await useAppV2Store.getState().fetchGitHubBranches("workspace-1", {
+      installationId: 42,
+      owner: "mako",
+      repo: "app",
+    });
+    await useAppV2Store
+      .getState()
+      .bindGitHub("workspace-1", "project-1", binding);
+
+    expect(get.mock.calls.map(call => call[0])).toEqual([
+      "/workspaces/workspace-1/dbt/github/status",
+      "/workspaces/workspace-1/dbt/github/repos",
+      "/workspaces/workspace-1/dbt/github/branches",
+    ]);
+    expect(put).toHaveBeenCalledWith(
+      "/workspaces/workspace-1/apps-v2/project-1/github",
+      binding,
+    );
+    expect(useAppV2Store.getState().projectsById["project-1"]).toBe(project);
+  });
+
+  it("unbinds and manually pushes a committed conversation branch", async () => {
+    const unbound = {
+      id: "project-1",
+      workspaceId: "workspace-1",
+    } as never;
+    const remove = vi
+      .spyOn(apiClient, "delete")
+      .mockResolvedValue({ success: true, project: unbound });
+    const post = vi.spyOn(apiClient, "post").mockResolvedValue({
+      success: true,
+      status: "pushed",
+    });
+    vi.spyOn(apiClient, "get").mockResolvedValue({
+      success: true,
+      branches: [],
+    });
+
+    await useAppV2Store.getState().unbindGitHub("workspace-1", "project-1");
+    await expect(
+      useAppV2Store
+        .getState()
+        .pushGitHubConversation("workspace-1", "project-1", "chat-1"),
+    ).resolves.toBe(true);
+    expect(remove).toHaveBeenCalledWith(
+      "/workspaces/workspace-1/apps-v2/project-1/github",
+    );
+    expect(post).toHaveBeenCalledWith(
+      "/workspaces/workspace-1/apps-v2/project-1/github/push",
+      { chatId: "chat-1" },
+    );
+  });
+
+  it("suppresses duplicate mutations only for their exact loading keys", async () => {
+    const put = vi.spyOn(apiClient, "put");
+    const remove = vi.spyOn(apiClient, "delete");
+    const post = vi.spyOn(apiClient, "post");
+    useAppV2Store.setState({
+      loadingByKey: {
+        "github-binding:project-1": true,
+        "github-push:project-1:chat-1": true,
+      },
+    });
+
+    await useAppV2Store.getState().bindGitHub("workspace-1", "project-1", {
+      installationId: 42,
+      owner: "mako",
+      repo: "app",
+      baseBranch: "main",
+      autoPushOnTurnEnd: true,
+    });
+    await useAppV2Store.getState().unbindGitHub("workspace-1", "project-1");
+    await useAppV2Store
+      .getState()
+      .pushGitHubConversation("workspace-1", "project-1", "chat-1");
+
+    expect(put).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
   });
 });

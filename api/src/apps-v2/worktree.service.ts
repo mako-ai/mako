@@ -14,6 +14,7 @@ import {
 } from "./errors";
 import { deriveAppV2ProjectionRepair } from "./projection-repair";
 import type { AppV2ReplacementFile } from "./providers/git-provider";
+import { appV2ConversationBranch } from "./conversation-branch";
 
 export class AppV2WorktreeService {
   constructor(private readonly projects = new AppV2ProjectService()) {}
@@ -22,18 +23,102 @@ export class AppV2WorktreeService {
     project: IAppV2Project,
     actor: AppV2Actor,
   ): Promise<IAppV2Worktree> {
+    return this.getOrCreateManual(project, actor);
+  }
+
+  async getOrCreateManual(
+    project: IAppV2Project,
+    actor: AppV2Actor,
+  ): Promise<IAppV2Worktree> {
     const existing = await AppV2Worktree.findOne({
       workspaceId: project.workspaceId,
       projectId: project._id,
       actorId: actor.userId,
+      kind: "manual",
+      contextKey: "manual",
     });
     if (existing) return this.recoverProjection(project, existing);
+    try {
+      return await this.createWorktree(project, actor, {
+        kind: "manual",
+        contextKey: "manual",
+        branch: project.defaultBranch,
+        baseSha: project.headSha,
+      });
+    } catch (error) {
+      if ((error as { code?: number }).code !== 11000) throw error;
+      const concurrent = await AppV2Worktree.findOne({
+        workspaceId: project.workspaceId,
+        projectId: project._id,
+        actorId: actor.userId,
+        kind: "manual",
+        contextKey: "manual",
+      });
+      if (!concurrent) throw error;
+      return this.recoverProjection(project, concurrent);
+    }
+  }
 
+  async getOrCreateAgent(
+    project: IAppV2Project,
+    actor: AppV2Actor,
+    chatId: string,
+  ): Promise<IAppV2Worktree> {
+    const branch = appV2ConversationBranch(chatId);
+    const contextKey = `chat:${chatId}`;
+    const existing = await AppV2Worktree.findOne({
+      workspaceId: project.workspaceId,
+      projectId: project._id,
+      actorId: actor.userId,
+      kind: "agent",
+      contextKey,
+      chatId,
+    });
+    if (existing) return this.recoverProjection(project, existing);
+    const baseSha = await this.projects.git.ensureBranch(
+      project.repositoryId,
+      branch,
+      project.headSha,
+    );
+    try {
+      return await this.createWorktree(project, actor, {
+        kind: "agent",
+        contextKey,
+        chatId,
+        branch,
+        baseSha,
+      });
+    } catch (error) {
+      if ((error as { code?: number }).code !== 11000) throw error;
+      const concurrent = await AppV2Worktree.findOne({
+        workspaceId: project.workspaceId,
+        projectId: project._id,
+        actorId: actor.userId,
+        kind: "agent",
+        contextKey,
+        chatId,
+      });
+      if (!concurrent) throw error;
+      return this.recoverProjection(project, concurrent);
+    }
+  }
+
+  private async createWorktree(
+    project: IAppV2Project,
+    actor: AppV2Actor,
+    context: {
+      kind: IAppV2Worktree["kind"];
+      contextKey: string;
+      chatId?: string;
+      branch: string;
+      baseSha: string;
+    },
+  ): Promise<IAppV2Worktree> {
     const worktreeId = new Types.ObjectId();
     const privateRef = await this.projects.git.createWorktreeRef(
       project.repositoryId,
       worktreeId.toString(),
-      project.headSha,
+      context.baseSha,
     );
     // If projection fails, refs are intentionally retained so a reconciler can
     // recover interrupted Mongo state from Git authority.
@@ -60,8 +145,11 @@ export class AppV2WorktreeService {
               workspaceId: project.workspaceId,
               projectId: project._id,
               actorId: actor.userId,
-              branch: project.defaultBranch,
-              baseSha: project.headSha,
+              kind: context.kind,
+              contextKey: context.contextKey,
+              chatId: context.chatId,
+              branch: context.branch,
+              baseSha: context.baseSha,
               wipRef: privateRef.wipRef,
               wipOid: privateRef.wipOid,
               leaseRef: privateRef.leaseRef,
@@ -91,6 +179,8 @@ export class AppV2WorktreeService {
       workspaceId: project.workspaceId,
       projectId: project._id,
       actorId: actor.userId,
+      kind: "manual",
+      contextKey: "manual",
     });
     if (!worktree) throw new AppV2NotFoundError("Worktree not found");
     return this.recoverProjection(project, worktree);
@@ -109,6 +199,26 @@ export class AppV2WorktreeService {
       workspaceId: project.workspaceId,
       projectId: project._id,
       actorId: actor.userId,
+    });
+    if (!worktree) throw new AppV2NotFoundError("Worktree not found");
+    return this.recoverProjection(project, worktree);
+  }
+
+  async getManualById(
+    project: IAppV2Project,
+    worktreeId: string,
+    actor: AppV2Actor,
+  ): Promise<IAppV2Worktree> {
+    if (!Types.ObjectId.isValid(worktreeId)) {
+      throw new AppV2NotFoundError("Worktree not found");
+    }
+    const worktree = await AppV2Worktree.findOne({
+      _id: new Types.ObjectId(worktreeId),
+      workspaceId: project.workspaceId,
+      projectId: project._id,
+      actorId: actor.userId,
+      kind: "manual",
+      contextKey: "manual",
     });
     if (!worktree) throw new AppV2NotFoundError("Worktree not found");
     return this.recoverProjection(project, worktree);
@@ -239,13 +349,13 @@ export class AppV2WorktreeService {
     state: AppV2MutationState,
   ): Promise<IAppV2Worktree> {
     await this.assertMutationState(project, worktree, state);
-    const branchHeadSha = await this.projects.git.resolveRef(
+    const branchHeadSha = await this.projects.git.resolveBranch(
       project.repositoryId,
-      `refs/heads/${worktree.branch}`,
+      worktree.branch,
     );
     const result = await this.projects.git.discard(
       project.repositoryId,
-      `refs/heads/${worktree.branch}`,
+      worktree.branch,
       branchHeadSha,
       worktree.wipRef,
       state.expectedWipOid,
@@ -285,7 +395,12 @@ export class AppV2WorktreeService {
       state,
       commit.sha,
       commit.sha,
-      { expectedHeadSha: worktree.baseSha, headSha: commit.sha },
+      worktree.kind === "manual"
+        ? { expectedHeadSha: worktree.baseSha, headSha: commit.sha }
+        : undefined,
+      worktree.kind === "agent"
+        ? { lastAgentCommitSha: commit.sha }
+        : undefined,
     );
     await this.projects.recordCommit(project, commit, actor.userId);
     return { worktree: updated, sha: commit.sha };
@@ -321,6 +436,40 @@ export class AppV2WorktreeService {
         $inc: { revision: 1 },
       },
     );
+  }
+
+  async fenceAgentWorktreesForChat(
+    workspaceId: string,
+    chatId: string,
+    actor: AppV2Actor,
+  ): Promise<IAppV2Worktree[]> {
+    const worktrees = await AppV2Worktree.find({
+      workspaceId: new Types.ObjectId(workspaceId),
+      actorId: actor.userId,
+      kind: "agent",
+      chatId,
+    }).sort({ _id: 1 });
+    const fenced: IAppV2Worktree[] = [];
+    for (const worktree of worktrees) {
+      const project = await this.projects.getWritable(
+        workspaceId,
+        worktree.projectId.toString(),
+        actor,
+      );
+      const current = await this.getById(
+        project,
+        worktree._id.toString(),
+        actor,
+      );
+      fenced.push(
+        await this.rotateLease(project, current, {
+          ifRevision: current.revision,
+          expectedWipOid: current.wipOid,
+          leaseEpoch: current.leaseEpoch,
+        }),
+      );
+    }
+    return fenced;
   }
 
   async listCommits(project: IAppV2Project, limit: number) {
@@ -418,6 +567,9 @@ export class AppV2WorktreeService {
     wipOid: string,
     baseSha?: string,
     projectHead?: { expectedHeadSha: string; headSha: string },
+    worktreeFields?: Partial<
+      Pick<IAppV2Worktree, "lastAgentCommitSha" | "status">
+    >,
   ): Promise<IAppV2Worktree> {
     return this.persistActiveWorktree(
       project,
@@ -435,6 +587,7 @@ export class AppV2WorktreeService {
           wipOid,
           status: "active",
           ...(baseSha ? { baseSha } : {}),
+          ...worktreeFields,
         },
         $inc: { revision: 1 },
       },
@@ -505,17 +658,64 @@ export class AppV2WorktreeService {
         repairedProject.repositoryId,
         current.leaseRef,
       );
-      const repair = deriveAppV2ProjectionRepair({
-        projectHeadSha: repairedProject.headSha,
-        worktreeBaseSha: current.baseSha,
-        worktreeWipOid: current.wipOid,
-        actualHeadSha: repairedProject.headSha,
-        actualWipOid,
-      });
+      let repairedBaseSha = current.baseSha;
+      let repairedWipOid = actualWipOid;
+      let repairedStatus = current.status;
+      let repairedLastAgentCommitSha = current.lastAgentCommitSha;
+      if (current.kind === "agent") {
+        const branchHead = await this.projects.git.ensureBranch(
+          repairedProject.repositoryId,
+          current.branch,
+          current.lastAgentCommitSha ?? current.baseSha,
+        );
+        if (branchHead !== current.baseSha) {
+          const isAlreadyFastForwarded = actualWipOid === branchHead;
+          const changes = isAlreadyFastForwarded
+            ? []
+            : await this.projects.git.status(
+                repairedProject.repositoryId,
+                current.baseSha,
+                actualWipOid,
+              );
+          if (isAlreadyFastForwarded || changes.length === 0) {
+            if (actualWipOid !== branchHead) {
+              repairedWipOid = await this.projects.git.fastForwardCleanWorktree(
+                repairedProject.repositoryId,
+                current.branch,
+                branchHead,
+                current.wipRef,
+                actualWipOid,
+                current.leaseRef,
+                actualLease.oid,
+              );
+            }
+            repairedBaseSha = branchHead;
+            repairedLastAgentCommitSha = branchHead;
+            repairedStatus = "active";
+          } else {
+            repairedStatus = "conflict";
+          }
+        }
+      } else {
+        const repair = deriveAppV2ProjectionRepair({
+          projectHeadSha: repairedProject.headSha,
+          worktreeBaseSha: current.baseSha,
+          worktreeWipOid: current.wipOid,
+          actualHeadSha: repairedProject.headSha,
+          actualWipOid,
+        });
+        repairedBaseSha = repair.worktreeBaseSha;
+        repairedWipOid = repair.worktreeWipOid;
+      }
       const leaseChanged =
         current.leaseOid !== actualLease.oid ||
         current.leaseEpoch !== actualLease.epoch;
-      if (!repair.worktreeChanged && !leaseChanged) return current;
+      const worktreeChanged =
+        current.wipOid !== repairedWipOid ||
+        current.baseSha !== repairedBaseSha ||
+        current.lastAgentCommitSha !== repairedLastAgentCommitSha ||
+        current.status !== repairedStatus;
+      if (!worktreeChanged && !leaseChanged) return current;
       const recovered = await AppV2Worktree.findOneAndUpdate(
         {
           _id: current._id,
@@ -529,8 +729,10 @@ export class AppV2WorktreeService {
         },
         {
           $set: {
-            wipOid: repair.worktreeWipOid,
-            baseSha: repair.worktreeBaseSha,
+            wipOid: repairedWipOid,
+            baseSha: repairedBaseSha,
+            lastAgentCommitSha: repairedLastAgentCommitSha,
+            status: repairedStatus,
             leaseOid: actualLease.oid,
             leaseEpoch: actualLease.epoch,
           },

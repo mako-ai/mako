@@ -26,12 +26,29 @@ only `app2_*` tools. Never read or mutate the project with v1 `app_*`,
    `bash -lc` semantics in the secure sandbox and flushes captured source back
    to the durable worktree. If the provider is unavailable, file and Git tools
    still work.
-6. Check `app2_status` after changes. Call `app2_commit` only when the user
-   asks for a durable branch checkpoint.
+6. Check `app2_status` after changes. Each outer chat turn automatically
+   commits dirty projects to that chat's `mako/chat/<chat-id>` branch. Call
+   `app2_commit` only when the user explicitly asks for an earlier checkpoint.
+   When the project has an automatic GitHub mirror, turn finalization pushes
+   that exact local commit after it is durable. A mirror failure never rolls
+   back or replaces the mako-git commit and can be retried separately.
 
-The personal WIP ref is durable after each successful mutation. Every write,
-shell capture, install, and commit uses revision/WIP/lease compare-and-swap.
+Each chat has a separate agent worktree and branch per project; the manual UI
+worktree remains separate. A next turn reuses a running or paused sandbox. If
+the sandbox is gone, it is recreated from the approved template and the
+conversation branch/private WIP snapshot. The personal WIP ref is durable after
+each successful mutation. Every write, shell capture, install, and commit uses
+revision/WIP/lease compare-and-swap.
+GitHub credentials stay in the control plane. Never request, print, persist, or
+copy an installation token into the sandbox.
 Never work around a conflict by overwriting current state; re-read and retry.
 A shell/install result may report a recovery ref when source capture succeeded
 but the WIP flush conflicted. Report that recovery state instead of claiming
 the source was committed.
+
+Outer turns durably own the exact worktree revision they touch. If a prior turn
+still owns dirty WIP, stop and report the retryable conflict; do not bypass the
+fence. Turn finalization retries unsynced/error session recovery before commit
+and never commits an older revision after a failed or conflicting flush. A
+crash-orphaned WIP can be adopted only after durable metadata proves no active
+prior turn owns it.

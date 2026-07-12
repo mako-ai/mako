@@ -6,12 +6,14 @@ import {
   getAppsV2MaxRepositoryBytes,
   getAppsV2SandboxConfiguration,
   isAppsV2Enabled,
+  isAppsV2GitHubPushEnabled,
   validateAppsV2StartupConfiguration,
 } from "./config";
 
 const previousNodeEnvironment = process.env.NODE_ENV;
 const previousGitRoot = process.env.APPS_V2_GIT_ROOT;
 const previousEnabled = process.env.APPS_V2_ENABLED;
+const previousGitHubPushEnabled = process.env.APPS_V2_GITHUB_PUSH_ENABLED;
 const previousCloudRunService = process.env.K_SERVICE;
 const previousMaxRepositoryBytes = process.env.APPS_V2_MAX_REPOSITORY_BYTES;
 const previousDurabilityConfirmed =
@@ -30,6 +32,10 @@ try {
   assert.equal(isAppsV2Enabled(), false);
   process.env.APPS_V2_ENABLED = "true";
   assert.equal(isAppsV2Enabled(), true);
+  delete process.env.APPS_V2_GITHUB_PUSH_ENABLED;
+  assert.equal(isAppsV2GitHubPushEnabled(), false);
+  process.env.APPS_V2_GITHUB_PUSH_ENABLED = "true";
+  assert.equal(isAppsV2GitHubPushEnabled(), true);
 
   process.env.NODE_ENV = "production";
   process.env.APPS_V2_ENABLED = "false";
@@ -99,6 +105,11 @@ try {
   else process.env.APPS_V2_GIT_ROOT = previousGitRoot;
   if (previousEnabled === undefined) delete process.env.APPS_V2_ENABLED;
   else process.env.APPS_V2_ENABLED = previousEnabled;
+  if (previousGitHubPushEnabled === undefined) {
+    delete process.env.APPS_V2_GITHUB_PUSH_ENABLED;
+  } else {
+    process.env.APPS_V2_GITHUB_PUSH_ENABLED = previousGitHubPushEnabled;
+  }
   if (previousCloudRunService === undefined) delete process.env.K_SERVICE;
   else process.env.K_SERVICE = previousCloudRunService;
   if (previousMaxRepositoryBytes === undefined) {

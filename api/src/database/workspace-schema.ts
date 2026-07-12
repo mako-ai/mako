@@ -683,6 +683,9 @@ export interface IChat extends Document {
   // Resume pointer for in-flight turns: the resumable-stream ID clients can
   // reattach to via GET /api/agent/chat/:chatId/stream. Null when idle.
   activeStreamId?: string | null;
+  activeTurnId?: string | null;
+  appsV2ActiveTurnId?: string | null;
+  continuationGeneration: number;
   systemPrompt?: string; // System prompt used for this conversation
   workspacePrompt?: string; // Workspace custom prompt appended to system prompt
   usage?: IChatUsage; // Token usage tracking for billing
@@ -1914,6 +1917,19 @@ const ChatSchema = new Schema<IChat>(
     activeStreamId: {
       type: String,
       default: null,
+    },
+    activeTurnId: {
+      type: String,
+      default: null,
+    },
+    appsV2ActiveTurnId: {
+      type: String,
+      default: null,
+    },
+    continuationGeneration: {
+      type: Number,
+      default: 0,
+      required: true,
     },
     systemPrompt: {
       type: String,
@@ -4117,6 +4133,25 @@ export interface IAppV2Project extends Document {
   repositoryId: string;
   defaultBranch: string;
   headSha: string;
+  github?: {
+    installationId: number;
+    owner: string;
+    repo: string;
+    baseBranch: string;
+    bindingFingerprint: string;
+    subdirectory?: string;
+    autoPushOnTurnEnd: boolean;
+    boundAt: Date;
+    boundBy: string;
+    baseBranchHeadSha?: string;
+    baseBranchUpdatedAt?: Date;
+  };
+  githubBindingGeneration: number;
+  githubPushLease?: {
+    operationId: string;
+    bindingGeneration: number;
+    expiresAt: Date;
+  };
   mutationRevision: number;
   deletionStatus: "active" | "deleting" | "deleted";
   deletedAt?: Date;
@@ -4130,15 +4165,74 @@ export interface IAppV2Worktree extends Document {
   workspaceId: Types.ObjectId;
   projectId: Types.ObjectId;
   actorId: string;
+  kind: "manual" | "agent";
+  contextKey: string;
+  chatId?: string;
   branch: string;
   baseSha: string;
   wipRef: string;
   wipOid: string;
   leaseRef: string;
   leaseOid: string;
+  activeTurnId?: string;
+  lastAgentCommitSha?: string;
   revision: number;
   leaseEpoch: number;
-  status: "active" | "discarded" | "fenced";
+  status: "active" | "discarded" | "fenced" | "conflict";
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type AppV2ChatTurnProjectStatus =
+  | "pending"
+  | "clean"
+  | "committed"
+  | "superseded"
+  | "failed"
+  | "recoverable";
+
+export interface IAppV2ChatTurnProject {
+  projectId: Types.ObjectId;
+  worktreeId: Types.ObjectId;
+  expectedRevision: number;
+  status: AppV2ChatTurnProjectStatus;
+  commitIntent?: {
+    turnId: string;
+    expectedRevision: number;
+    expectedWipOid: string;
+    expectedBaseSha: string;
+    marker: string;
+  };
+  sha?: string;
+  localOutcome?: "committed_local";
+  remoteStatus?: "local_only" | "pushed" | "remote_failed" | "conflict";
+  remoteError?: string;
+  error?: string;
+  recoveryRef?: string;
+}
+
+export interface IAppV2ChatTurn extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  chatId: string;
+  turnId: string;
+  actorId: string;
+  status:
+    | "active"
+    | "finalizing"
+    | "completed"
+    | "superseded"
+    | "failed"
+    | "recoverable"
+    | "remote_failed";
+  touchedProjects: IAppV2ChatTurnProject[];
+  isAborted: boolean;
+  attemptCount: number;
+  heartbeatAt: Date;
+  retryLeaseId?: string;
+  retryLeaseExpiresAt?: Date;
+  finalizingAt?: Date;
+  finalizedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -4160,6 +4254,57 @@ export interface IAppV2Commit extends Document {
     deletions: number;
   };
   createdBy: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IAppV2ChatRemote extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  chatId: string;
+  actorId: string;
+  remoteBranch: string;
+  lastPushedLocalSha?: string;
+  lastPushedWipOid?: string;
+  lastPushedRemoteSha?: string;
+  pushStatus: "pending" | "pushed" | "failed" | "conflict";
+  pushError?: string;
+  lastPushAt?: Date;
+  generation: number;
+  bindingGeneration: number;
+  bindingFingerprint: string;
+  operationId?: string;
+  operationExpiresAt?: Date;
+  operationBindingGeneration?: number;
+  expectedRemoteSha?: string;
+  intendedRemoteSha?: string;
+  intendedRemoteParentSha?: string;
+  targetLocalSha?: string;
+  targetWipOid?: string;
+  observedRemoteShas: string[];
+  lastSupersededLocalSha?: string;
+  lastSupersededAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IAppV2GitHubDelivery extends Document {
+  _id: Types.ObjectId;
+  deliveryId: string;
+  event: "push";
+  installationId: number;
+  owner: string;
+  repo: string;
+  branch: string;
+  after?: string;
+  status: "pending" | "processing" | "completed" | "failed";
+  attempts: number;
+  leaseToken?: string;
+  expiresAt?: Date;
+  error?: string;
+  receivedAt: Date;
+  processedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -4232,6 +4377,37 @@ const AppV2ProjectSchema = new Schema<IAppV2Project>(
     repositoryId: { type: String, required: true },
     defaultBranch: { type: String, required: true, default: "main" },
     headSha: { type: String, required: true },
+    github: {
+      type: new Schema(
+        {
+          installationId: { type: Number, required: true },
+          owner: { type: String, required: true, trim: true },
+          repo: { type: String, required: true, trim: true },
+          baseBranch: { type: String, required: true, trim: true },
+          bindingFingerprint: { type: String, required: true },
+          subdirectory: { type: String, trim: true },
+          autoPushOnTurnEnd: { type: Boolean, required: true, default: false },
+          boundAt: { type: Date, required: true },
+          boundBy: { type: String, required: true },
+          baseBranchHeadSha: { type: String },
+          baseBranchUpdatedAt: { type: Date },
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
+    githubBindingGeneration: { type: Number, required: true, default: 0 },
+    githubPushLease: {
+      type: new Schema(
+        {
+          operationId: { type: String, required: true },
+          bindingGeneration: { type: Number, required: true },
+          expiresAt: { type: Date, required: true },
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
     mutationRevision: { type: Number, required: true, default: 0 },
     deletionStatus: {
       type: String,
@@ -4271,17 +4447,27 @@ const AppV2WorktreeSchema = new Schema<IAppV2Worktree>(
       required: true,
     },
     actorId: { type: String, required: true },
+    kind: {
+      type: String,
+      enum: ["manual", "agent"],
+      required: true,
+      default: "manual",
+    },
+    contextKey: { type: String, required: true, default: "manual" },
+    chatId: { type: String },
     branch: { type: String, required: true },
     baseSha: { type: String, required: true },
     wipRef: { type: String, required: true },
     wipOid: { type: String, required: true },
     leaseRef: { type: String, required: true },
     leaseOid: { type: String, required: true },
+    activeTurnId: { type: String },
+    lastAgentCommitSha: { type: String },
     revision: { type: Number, required: true, default: 0 },
     leaseEpoch: { type: Number, required: true, default: 1 },
     status: {
       type: String,
-      enum: ["active", "discarded", "fenced"],
+      enum: ["active", "discarded", "fenced", "conflict"],
       default: "active",
       required: true,
     },
@@ -4292,10 +4478,202 @@ const AppV2WorktreeSchema = new Schema<IAppV2Worktree>(
   },
 );
 
-AppV2WorktreeSchema.index({ projectId: 1, actorId: 1 }, { unique: true });
+AppV2WorktreeSchema.index(
+  { projectId: 1, actorId: 1, contextKey: 1 },
+  { unique: true },
+);
 AppV2WorktreeSchema.index({ workspaceId: 1, projectId: 1 });
+AppV2WorktreeSchema.index({ workspaceId: 1, chatId: 1, kind: 1 });
 AppV2WorktreeSchema.index({ wipRef: 1 }, { unique: true });
 AppV2WorktreeSchema.index({ leaseRef: 1 }, { unique: true });
+
+const AppV2ChatTurnProjectSchema = new Schema<IAppV2ChatTurnProject>(
+  {
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "AppV2Project",
+      required: true,
+    },
+    worktreeId: {
+      type: Schema.Types.ObjectId,
+      ref: "AppV2Worktree",
+      required: true,
+    },
+    expectedRevision: { type: Number, required: true },
+    status: {
+      type: String,
+      enum: [
+        "pending",
+        "clean",
+        "committed",
+        "superseded",
+        "failed",
+        "recoverable",
+      ],
+      required: true,
+      default: "pending",
+    },
+    commitIntent: {
+      type: new Schema(
+        {
+          turnId: { type: String, required: true },
+          expectedRevision: { type: Number, required: true },
+          expectedWipOid: { type: String, required: true },
+          expectedBaseSha: { type: String, required: true },
+          marker: { type: String, required: true },
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
+    sha: { type: String },
+    localOutcome: { type: String, enum: ["committed_local"] },
+    remoteStatus: {
+      type: String,
+      enum: ["local_only", "pushed", "remote_failed", "conflict"],
+    },
+    remoteError: { type: String },
+    error: { type: String },
+    recoveryRef: { type: String },
+  },
+  { _id: false },
+);
+
+const AppV2ChatTurnSchema = new Schema<IAppV2ChatTurn>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    chatId: { type: String, required: true },
+    turnId: { type: String, required: true },
+    actorId: { type: String, required: true },
+    status: {
+      type: String,
+      enum: [
+        "active",
+        "finalizing",
+        "completed",
+        "superseded",
+        "failed",
+        "recoverable",
+        "remote_failed",
+      ],
+      required: true,
+      default: "active",
+    },
+    touchedProjects: {
+      type: [AppV2ChatTurnProjectSchema],
+      required: true,
+      default: [],
+    },
+    isAborted: { type: Boolean, required: true, default: false },
+    attemptCount: { type: Number, required: true, default: 0 },
+    heartbeatAt: { type: Date, required: true, default: Date.now },
+    retryLeaseId: { type: String },
+    retryLeaseExpiresAt: { type: Date },
+    finalizingAt: { type: Date },
+    finalizedAt: { type: Date },
+  },
+  {
+    collection: "app_v2_chat_turns",
+    timestamps: true,
+  },
+);
+
+AppV2ChatTurnSchema.index(
+  { workspaceId: 1, chatId: 1, turnId: 1, actorId: 1 },
+  { unique: true },
+);
+AppV2ChatTurnSchema.index({
+  status: 1,
+  heartbeatAt: 1,
+  retryLeaseExpiresAt: 1,
+});
+
+const AppV2ChatRemoteSchema = new Schema<IAppV2ChatRemote>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "AppV2Project",
+      required: true,
+    },
+    chatId: { type: String, required: true },
+    actorId: { type: String, required: true },
+    remoteBranch: { type: String, required: true },
+    lastPushedLocalSha: { type: String },
+    lastPushedWipOid: { type: String },
+    lastPushedRemoteSha: { type: String },
+    pushStatus: {
+      type: String,
+      enum: ["pending", "pushed", "failed", "conflict"],
+      required: true,
+      default: "pending",
+    },
+    pushError: { type: String },
+    lastPushAt: { type: Date },
+    generation: { type: Number, required: true, default: 0 },
+    bindingGeneration: { type: Number, required: true },
+    bindingFingerprint: { type: String, required: true },
+    operationId: { type: String },
+    operationExpiresAt: { type: Date },
+    operationBindingGeneration: { type: Number },
+    expectedRemoteSha: { type: String },
+    intendedRemoteSha: { type: String },
+    intendedRemoteParentSha: { type: String },
+    targetLocalSha: { type: String },
+    targetWipOid: { type: String },
+    observedRemoteShas: { type: [String], required: true, default: [] },
+    lastSupersededLocalSha: { type: String },
+    lastSupersededAt: { type: Date },
+  },
+  { collection: "app_v2_chat_remotes", timestamps: true },
+);
+
+AppV2ChatRemoteSchema.index({ projectId: 1, chatId: 1 }, { unique: true });
+AppV2ChatRemoteSchema.index({ workspaceId: 1, projectId: 1, updatedAt: -1 });
+AppV2ChatRemoteSchema.index({ remoteBranch: 1, pushStatus: 1 });
+AppV2ChatRemoteSchema.index({ operationId: 1, generation: 1 });
+
+const AppV2GitHubDeliverySchema = new Schema<IAppV2GitHubDelivery>(
+  {
+    deliveryId: { type: String, required: true },
+    event: { type: String, enum: ["push"], required: true },
+    installationId: { type: Number, required: true },
+    owner: { type: String, required: true },
+    repo: { type: String, required: true },
+    branch: { type: String, required: true },
+    after: { type: String },
+    status: {
+      type: String,
+      enum: ["pending", "processing", "completed", "failed"],
+      required: true,
+      default: "pending",
+    },
+    attempts: { type: Number, required: true, default: 0 },
+    leaseToken: { type: String },
+    expiresAt: { type: Date },
+    error: { type: String },
+    receivedAt: { type: Date, required: true, default: Date.now },
+    processedAt: { type: Date },
+  },
+  { collection: "app_v2_github_deliveries", timestamps: true },
+);
+
+AppV2GitHubDeliverySchema.index({ deliveryId: 1 }, { unique: true });
+AppV2GitHubDeliverySchema.index({ status: 1, expiresAt: 1 });
+
+AppV2ChatTurnSchema.index({
+  workspaceId: 1,
+  "touchedProjects.worktreeId": 1,
+  status: 1,
+});
 
 const AppV2CommitSchema = new Schema<IAppV2Commit>(
   {
@@ -4409,6 +4787,18 @@ export const AppV2Project = mongoose.model<IAppV2Project>(
 export const AppV2Worktree = mongoose.model<IAppV2Worktree>(
   "AppV2Worktree",
   AppV2WorktreeSchema,
+);
+export const AppV2ChatTurn = mongoose.model<IAppV2ChatTurn>(
+  "AppV2ChatTurn",
+  AppV2ChatTurnSchema,
+);
+export const AppV2ChatRemote = mongoose.model<IAppV2ChatRemote>(
+  "AppV2ChatRemote",
+  AppV2ChatRemoteSchema,
+);
+export const AppV2GitHubDelivery = mongoose.model<IAppV2GitHubDelivery>(
+  "AppV2GitHubDelivery",
+  AppV2GitHubDeliverySchema,
 );
 export const AppV2Commit = mongoose.model<IAppV2Commit>(
   "AppV2Commit",

@@ -154,6 +154,13 @@ export type RealtimeEvent =
       sha: string;
       forUserId?: string;
       forUserIds?: string[];
+    }
+  | {
+      type: "app-v2.github.conflict";
+      projectId: string;
+      chatId: string;
+      remoteBranch: string;
+      forUserId: string;
     };
 
 function channelFor(workspaceId: string): string {

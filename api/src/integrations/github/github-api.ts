@@ -15,6 +15,10 @@ function githubApiBase(): string {
   return process.env.GITHUB_API_BASE_URL ?? "https://api.github.com";
 }
 
+function githubRepoApiPath(owner: string, repo: string): string {
+  return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+}
+
 export interface GitHubRepoInfo {
   fullName: string;
   owner: string;
@@ -28,6 +32,7 @@ export interface GitTreeEntry {
   /** "blob" (file) or "tree" (directory). */
   type: "blob" | "tree" | "commit";
   sha: string;
+  mode?: "100644" | "100755" | "040000" | "160000" | "120000";
   size?: number;
 }
 
@@ -46,6 +51,16 @@ function authHeaders(token?: string): Record<string, string> {
   };
   if (token) headers.Authorization = `Bearer ${token}`;
   return headers;
+}
+
+export class GitHubApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GitHubApiError";
+  }
 }
 
 async function ghFetch(
@@ -75,7 +90,8 @@ async function ghFetch(
               : res.status === 422
                 ? " (validation failed — branch may already exist or be non-fast-forward)"
                 : "";
-    throw new Error(
+    throw new GitHubApiError(
+      res.status,
       `GitHub ${res.status} on ${path}${hint}: ${body.slice(0, 200)}`,
     );
   }
@@ -87,7 +103,7 @@ export async function getRepoInfo(
   repo: string,
   token?: string,
 ): Promise<GitHubRepoInfo> {
-  const res = await ghFetch(`/repos/${owner}/${repo}`, token);
+  const res = await ghFetch(githubRepoApiPath(owner, repo), token);
   const json = (await res.json()) as {
     full_name: string;
     name: string;
@@ -122,7 +138,7 @@ export async function fileExistsAtRef(
 ): Promise<boolean> {
   const encoded = encodeRepoPath(path);
   const res = await fetch(
-    `${githubApiBase()}/repos/${owner}/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`,
+    `${githubApiBase()}${githubRepoApiPath(owner, repo)}/contents/${encoded}?ref=${encodeURIComponent(ref)}`,
     { headers: authHeaders(token) },
   );
   return res.ok;
@@ -156,7 +172,7 @@ export async function listDbtProjectSubdirectories(
   }
 
   const res = await ghFetch(
-    `/repos/${owner}/${repo}/contents?ref=${encodeURIComponent(ref)}`,
+    `${githubRepoApiPath(owner, repo)}/contents?ref=${encodeURIComponent(ref)}`,
     token,
   );
   const entries = (await res.json()) as Array<{
@@ -192,7 +208,7 @@ export async function getBranchHeadSha(
   token?: string,
 ): Promise<string> {
   const res = await ghFetch(
-    `/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}`,
+    `${githubRepoApiPath(owner, repo)}/branches/${encodeURIComponent(branch)}`,
     token,
   );
   const json = (await res.json()) as { commit: { sha: string } };
@@ -211,7 +227,7 @@ export async function getRepoTree(
   token?: string,
 ): Promise<RepoTree> {
   const res = await ghFetch(
-    `/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
+    `${githubRepoApiPath(owner, repo)}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
     token,
   );
   const json = (await res.json()) as {
@@ -229,7 +245,10 @@ export async function getBlobContent(
   sha: string,
   token?: string,
 ): Promise<string> {
-  const res = await ghFetch(`/repos/${owner}/${repo}/git/blobs/${sha}`, token);
+  const res = await ghFetch(
+    `${githubRepoApiPath(owner, repo)}/git/blobs/${sha}`,
+    token,
+  );
   const json = (await res.json()) as { content: string; encoding: string };
   if (json.encoding === "base64") {
     return Buffer.from(json.content, "base64").toString("utf8");
@@ -257,12 +276,12 @@ export async function getRefCommit(
   token?: string,
 ): Promise<{ commitSha: string; treeSha: string }> {
   const refRes = await ghFetch(
-    `/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(branch)}`,
+    `${githubRepoApiPath(owner, repo)}/git/ref/heads/${encodeURIComponent(branch)}`,
     token,
   );
   const ref = (await refRes.json()) as { object: { sha: string } };
   const commitRes = await ghFetch(
-    `/repos/${owner}/${repo}/git/commits/${ref.object.sha}`,
+    `${githubRepoApiPath(owner, repo)}/git/commits/${ref.object.sha}`,
     token,
   );
   const commit = (await commitRes.json()) as { tree: { sha: string } };
@@ -272,45 +291,81 @@ export async function getRefCommit(
 export interface TreeChange {
   /** Repo-root-relative path. */
   path: string;
-  /** New content (upsert), or null to delete the path. */
-  content: string | null;
+  /** New UTF-8 content (upsert), or null to delete the path. */
+  content?: string | null;
+  /** Pre-created blob SHA, used for binary-safe writes. */
+  sha?: string | null;
+  /** Git tree mode. Existing text callers default to a regular file. */
+  mode?: "100644" | "100755";
+}
+
+/** Create a binary-safe Git blob from base64 data and return its SHA. */
+export async function createBlob(
+  owner: string,
+  repo: string,
+  base64: string,
+  token?: string,
+): Promise<string> {
+  const res = await ghFetch(
+    `${githubRepoApiPath(owner, repo)}/git/blobs`,
+    token,
+    {
+      method: "POST",
+      body: { content: base64, encoding: "base64" },
+    },
+  );
+  return ((await res.json()) as { sha: string }).sha;
+}
+
+export interface PrepareCommitParams {
+  parentSha: string;
+  baseTreeSha: string;
+  message: string;
+  changes: TreeChange[];
 }
 
 /**
- * Create a new tree from a base tree applying the given changes, create a
- * commit on top of `parentSha`, and fast-forward the branch ref to it.
- * Returns the new commit SHA.
+ * Creates the immutable tree and commit objects without moving a branch ref.
+ * Callers can durably persist the returned SHA before attempting the ref CAS.
  */
-export async function commitChanges(
+export async function prepareCommit(
   owner: string,
   repo: string,
-  params: {
-    branch: string;
-    parentSha: string;
-    baseTreeSha: string;
-    message: string;
-    changes: TreeChange[];
-  },
+  params: PrepareCommitParams,
   token?: string,
 ): Promise<string> {
-  const tree = params.changes.map(change =>
-    change.content === null
-      ? { path: change.path, mode: "100644", type: "blob", sha: null }
-      : {
-          path: change.path,
-          mode: "100644",
-          type: "blob",
-          content: change.content,
-        },
-  );
-  const treeRes = await ghFetch(`/repos/${owner}/${repo}/git/trees`, token, {
-    method: "POST",
-    body: { base_tree: params.baseTreeSha, tree },
+  const tree = params.changes.map(change => {
+    const mode = change.mode ?? "100644";
+    if (change.content === null || change.sha === null) {
+      return { path: change.path, mode, type: "blob", sha: null };
+    }
+    if (change.sha) {
+      return { path: change.path, mode, type: "blob", sha: change.sha };
+    }
+    if (change.content !== undefined) {
+      return {
+        path: change.path,
+        mode,
+        type: "blob",
+        content: change.content,
+      };
+    }
+    throw new Error(
+      `Tree change for ${change.path} has no content or blob SHA`,
+    );
   });
+  const treeRes = await ghFetch(
+    `${githubRepoApiPath(owner, repo)}/git/trees`,
+    token,
+    {
+      method: "POST",
+      body: { base_tree: params.baseTreeSha, tree },
+    },
+  );
   const newTree = (await treeRes.json()) as { sha: string };
 
   const commitRes = await ghFetch(
-    `/repos/${owner}/${repo}/git/commits`,
+    `${githubRepoApiPath(owner, repo)}/git/commits`,
     token,
     {
       method: "POST",
@@ -322,13 +377,37 @@ export async function commitChanges(
     },
   );
   const newCommit = (await commitRes.json()) as { sha: string };
-
-  await ghFetch(
-    `/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(params.branch)}`,
-    token,
-    { method: "PATCH", body: { sha: newCommit.sha, force: false } },
-  );
   return newCommit.sha;
+}
+
+/** Fast-forwards a branch ref to a pre-created commit without forcing. */
+export async function updateBranchRef(
+  owner: string,
+  repo: string,
+  branch: string,
+  commitSha: string,
+  token?: string,
+): Promise<void> {
+  await ghFetch(
+    `${githubRepoApiPath(owner, repo)}/git/refs/heads/${encodeURIComponent(branch)}`,
+    token,
+    { method: "PATCH", body: { sha: commitSha, force: false } },
+  );
+}
+
+/**
+ * Compatibility wrapper for existing callers that prepare and update in one
+ * call. Apps v2 uses the split operations to recover ambiguous ref updates.
+ */
+export async function commitChanges(
+  owner: string,
+  repo: string,
+  params: PrepareCommitParams & { branch: string },
+  token?: string,
+): Promise<string> {
+  const commitSha = await prepareCommit(owner, repo, params, token);
+  await updateBranchRef(owner, repo, params.branch, commitSha, token);
+  return commitSha;
 }
 
 export async function listBranches(
@@ -339,7 +418,7 @@ export async function listBranches(
   const names: string[] = [];
   for (let page = 1; page <= 10; page++) {
     const res = await ghFetch(
-      `/repos/${owner}/${repo}/branches?per_page=100&page=${page}`,
+      `${githubRepoApiPath(owner, repo)}/branches?per_page=100&page=${page}`,
       token,
     );
     const json = (await res.json()) as Array<{ name: string }>;
@@ -357,7 +436,7 @@ export async function createBranch(
   fromSha: string,
   token?: string,
 ): Promise<void> {
-  await ghFetch(`/repos/${owner}/${repo}/git/refs`, token, {
+  await ghFetch(`${githubRepoApiPath(owner, repo)}/git/refs`, token, {
     method: "POST",
     body: { ref: `refs/heads/${branch}`, sha: fromSha },
   });
@@ -376,7 +455,7 @@ export async function deleteBranch(
 ): Promise<void> {
   try {
     await ghFetch(
-      `/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch)}`,
+      `${githubRepoApiPath(owner, repo)}/git/refs/heads/${encodeURIComponent(branch)}`,
       token,
       { method: "DELETE" },
     );
@@ -402,7 +481,7 @@ export async function postCommitStatus(
   },
   token?: string,
 ): Promise<void> {
-  await ghFetch(`/repos/${owner}/${repo}/statuses/${sha}`, token, {
+  await ghFetch(`${githubRepoApiPath(owner, repo)}/statuses/${sha}`, token, {
     method: "POST",
     body: {
       state: params.state,
@@ -447,7 +526,7 @@ export async function compareRefs(
 ): Promise<CompareRefsResult> {
   const basehead = `${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
   const res = await ghFetch(
-    `/repos/${owner}/${repo}/compare/${basehead}?per_page=100`,
+    `${githubRepoApiPath(owner, repo)}/compare/${basehead}?per_page=100`,
     token,
   );
   const json = (await res.json()) as {
@@ -493,7 +572,7 @@ export async function getPullRequestFiles(
   const files: string[] = [];
   for (let page = 1; page <= 10; page++) {
     const res = await ghFetch(
-      `/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100&page=${page}`,
+      `${githubRepoApiPath(owner, repo)}/pulls/${prNumber}/files?per_page=100&page=${page}`,
       token,
     );
     const json = (await res.json()) as Array<{ filename: string }>;
@@ -509,7 +588,7 @@ export async function createPullRequest(
   params: { title: string; head: string; base: string; body?: string },
   token?: string,
 ): Promise<{ number: number; htmlUrl: string }> {
-  const res = await ghFetch(`/repos/${owner}/${repo}/pulls`, token, {
+  const res = await ghFetch(`${githubRepoApiPath(owner, repo)}/pulls`, token, {
     method: "POST",
     body: {
       title: params.title,
@@ -597,7 +676,7 @@ export async function listPullRequests(
   const prs: PullRequestSummary[] = [];
   for (let page = 1; page <= 10; page++) {
     const res = await ghFetch(
-      `/repos/${owner}/${repo}/pulls?state=${params.state}${headFilter}&sort=created&direction=desc&per_page=100&page=${page}`,
+      `${githubRepoApiPath(owner, repo)}/pulls?state=${params.state}${headFilter}&sort=created&direction=desc&per_page=100&page=${page}`,
       token,
     );
     const json = (await res.json()) as RawPullRequest[];
@@ -629,7 +708,7 @@ export async function updatePullRequest(
   if (params.base !== undefined) body.base = params.base;
   if (params.state !== undefined) body.state = params.state;
   const res = await ghFetch(
-    `/repos/${owner}/${repo}/pulls/${prNumber}`,
+    `${githubRepoApiPath(owner, repo)}/pulls/${prNumber}`,
     token,
     { method: "PATCH", body },
   );
@@ -643,7 +722,10 @@ export async function getPullRequest(
   prNumber: number,
   token?: string,
 ): Promise<PullRequestInfo> {
-  const res = await ghFetch(`/repos/${owner}/${repo}/pulls/${prNumber}`, token);
+  const res = await ghFetch(
+    `${githubRepoApiPath(owner, repo)}/pulls/${prNumber}`,
+    token,
+  );
   const json = (await res.json()) as {
     number: number;
     head: { ref: string };
@@ -683,7 +765,7 @@ export async function mergePullRequest(
   const headers = authHeaders(token);
   headers["Content-Type"] = "application/json";
   const res = await fetch(
-    `${githubApiBase()}/repos/${owner}/${repo}/pulls/${prNumber}/merge`,
+    `${githubApiBase()}${githubRepoApiPath(owner, repo)}/pulls/${prNumber}/merge`,
     {
       method: "PUT",
       headers,
@@ -710,7 +792,7 @@ export async function tryDeleteBranch(
 ): Promise<{ deleted: boolean; warning?: string }> {
   try {
     await ghFetch(
-      `/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch)}`,
+      `${githubRepoApiPath(owner, repo)}/git/refs/heads/${encodeURIComponent(branch)}`,
       token,
       { method: "DELETE" },
     );

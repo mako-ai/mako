@@ -6,6 +6,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { ObjectId } from "mongodb";
+import { randomUUID } from "node:crypto";
 import {
   streamText,
   convertToModelMessages,
@@ -88,6 +89,18 @@ import { hasAttachedClients } from "../services/realtime-presence.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { reportPubSubFailure } from "../services/pubsub.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import { finalizeAppsV2ChatTurn } from "../apps-v2/chat-turn-finalizer";
+import { isAppsV2Enabled } from "../apps-v2/config";
+import {
+  assignChatSegmentStream,
+  beginChatTurnOwnership,
+  claimChatContinuation,
+  clearChatTurnOwnership,
+} from "./chat-continuation-ownership";
+import {
+  APPS_V2_FAILED_HANDOFF_POLICY,
+  prepareAppsV2TurnHandoff,
+} from "./apps-v2-turn-handoff";
 import {
   buildScreenshotVisionModelMessage,
   resumeChatStream,
@@ -459,8 +472,20 @@ agentRoutes.openapi(
       );
     }
 
+    const chatOwnershipScope = { chatId, workspaceId, actorId };
+    const scopedChatQuery = {
+      _id: new ObjectId(chatId),
+      workspaceId: new ObjectId(workspaceId),
+      createdBy: actorId,
+    };
     // Check if this is a new chat (first message)
-    const existingChat = await Chat.findById(chatId);
+    const existingChat = await Chat.findOne(scopedChatQuery);
+    if (!existingChat && (await Chat.exists({ _id: new ObjectId(chatId) }))) {
+      return c.json({ error: "Chat is not accessible" }, 403);
+    }
+    if (!existingChat && messages.length === 0) {
+      return c.json({ error: "Chat not found" }, 404);
+    }
     const isNewChat = !existingChat;
 
     // For new chats: create chat document immediately, then fire-and-forget title generation
@@ -500,7 +525,7 @@ agentRoutes.openapi(
               userEmail: actorEmail,
             });
             await Chat.updateOne(
-              { _id: new ObjectId(chatId), titleGenerated: false },
+              { ...scopedChatQuery, titleGenerated: false },
               { title, titleGenerated: true },
             );
           } catch (err) {
@@ -556,6 +581,33 @@ agentRoutes.openapi(
     if (!agentFactory) {
       logger.error("Agent not found", { agentId: resolvedAgentId });
       return c.json({ error: `Agent '${resolvedAgentId}' not found` }, 404);
+    }
+
+    const turnId = randomUUID();
+    const appsV2TurnEnabled = authType === "session" && isAppsV2Enabled();
+    if (appsV2TurnEnabled) {
+      try {
+        await prepareAppsV2TurnHandoff({
+          workspaceId,
+          chatId,
+          turnId,
+          actorId,
+        });
+      } catch (error) {
+        logger.warn("Apps v2 turn handoff blocked successor startup", {
+          error,
+          chatId,
+          policy: APPS_V2_FAILED_HANDOFF_POLICY,
+        });
+        return c.json(
+          {
+            error: "Previous Apps v2 work is still finalizing; retry this turn",
+          },
+          409,
+        );
+      }
+    } else {
+      await beginChatTurnOwnership(chatOwnershipScope, turnId);
     }
 
     logger.info("Using agent", { agentId: resolvedAgentId, tabKind, flowType });
@@ -703,6 +755,7 @@ agentRoutes.openapi(
       workspaceId,
       authType,
       chatId,
+      turnId,
       activeView,
       activeExplorer,
       userId: actorId,
@@ -1105,14 +1158,22 @@ agentRoutes.openapi(
               const streamId = new ObjectId().toString();
               turnStreamId = streamId;
               try {
+                const ownsSegment = await assignChatSegmentStream(
+                  chatOwnershipScope,
+                  turnId,
+                  continuationDepth,
+                  streamId,
+                );
+                if (!ownsSegment) {
+                  turnAbortController.abort();
+                  throw new Error(
+                    "A newer chat turn replaced this generation segment",
+                  );
+                }
                 registerActiveGeneration(chatId, streamId, turnAbortController);
                 await getResumableStreamContext().createNewResumableStream(
                   streamId,
                   () => stream,
-                );
-                await Chat.updateOne(
-                  { _id: new ObjectId(chatId) },
-                  { $set: { activeStreamId: streamId } },
                 );
                 // Live activity indicators: open windows light up the chat in
                 // the history menu without polling.
@@ -1345,18 +1406,43 @@ agentRoutes.openapi(
                   });
                 }
 
+                if (!continued) {
+                  try {
+                    const appsV2Finalization = await finalizeAppsV2ChatTurn({
+                      workspaceId,
+                      chatId,
+                      turnId,
+                      actorId,
+                      isAborted,
+                    });
+                    const failures = appsV2Finalization.projects.filter(
+                      project => project.status === "failed",
+                    );
+                    if (failures.length > 0) {
+                      logger.warn(
+                        "Apps v2 turn finalization completed with failures",
+                        { chatId, failures },
+                      );
+                    }
+                  } catch (error) {
+                    logger.warn("Apps v2 turn finalization failed", {
+                      error,
+                      chatId,
+                    });
+                  }
+                }
+
                 // Turn is finalized: drop the resume pointer so reconnecting
                 // clients load the saved chat instead of reattaching. Guarded on
                 // the streamId so a newer turn's pointer is never clobbered.
                 if (!continued && turnStreamId) {
                   clearActiveGeneration(chatId, turnStreamId);
+                  let clearedTurnOwnership = false;
                   try {
-                    await Chat.updateOne(
-                      {
-                        _id: new ObjectId(chatId),
-                        activeStreamId: turnStreamId,
-                      },
-                      { $set: { activeStreamId: null } },
+                    clearedTurnOwnership = await clearChatTurnOwnership(
+                      chatOwnershipScope,
+                      turnId,
+                      turnStreamId,
                     );
                   } catch (error) {
                     logger.warn("Failed to clear activeStreamId", {
@@ -1364,11 +1450,13 @@ agentRoutes.openapi(
                       chatId,
                     });
                   }
-                  publishRealtimeEvent(workspaceId, {
-                    type: "chat.activity",
-                    chatId,
-                    state: "idle",
-                  });
+                  if (clearedTurnOwnership) {
+                    publishRealtimeEvent(workspaceId, {
+                      type: "chat.activity",
+                      chatId,
+                      state: "idle",
+                    });
+                  }
                 }
 
                 if (isDescriptionGenAvailable()) {
@@ -1500,10 +1588,17 @@ agentRoutes.openapi(
           if (turnSignal.aborted) return false;
           if (await hasAttachedClients(workspaceId)) return false;
 
-          // Confirm this segment still owns the turn (no newer turn or stop).
-          const freshChat =
-            await Chat.findById(chatId).select("activeStreamId");
-          if (!freshChat || freshChat.activeStreamId !== segmentStreamId) {
+          // Atomically claim the continuation generation. This fences a newer
+          // request that replaced either the turn or its active stream.
+          if (
+            !segmentStreamId ||
+            !(await claimChatContinuation(
+              chatOwnershipScope,
+              turnId,
+              segmentStreamId,
+              continuationDepth,
+            ))
+          ) {
             return false;
           }
 

@@ -28,6 +28,12 @@ import {
 import { getAppV2ProjectEventAudience } from "../../apps-v2/event-visibility";
 import { isAppV2RegistryPackageSpec } from "../../apps-v2/package-spec";
 import type { AgentToolExecutionContext } from "../../agents/types";
+import { isValidAppV2ChatId } from "../../apps-v2/conversation-branch";
+import {
+  assertTurnOwnership,
+  touchAppsV2ChatTurnProject,
+  type AppsV2ChatTurnIdentity,
+} from "../../apps-v2/chat-turn.service";
 
 const logger = loggers.agent();
 const PROVIDER_UNAVAILABLE_ERROR =
@@ -40,7 +46,7 @@ type AppV2ToolServices = {
   >;
   worktrees: Pick<
     AppV2WorktreeService,
-    | "getOrCreate"
+    | "getOrCreateAgent"
     | "read"
     | "tree"
     | "write"
@@ -60,8 +66,14 @@ export interface AppsV2ToolsOptions {
   authType: "session" | "apiKey";
   /** A real user principal when authType is session. */
   userId?: string;
+  /** Chat identity used to isolate the agent's conversation branch/worktree. */
+  chatId?: string;
+  /** Durable outer-turn identity used to fence conversation worktrees. */
+  turnId?: string;
   executionContext?: AgentToolExecutionContext;
   services?: () => AppV2ToolServices;
+  touchProject?: typeof touchAppsV2ChatTurnProject;
+  assertOwnership?: typeof assertTurnOwnership;
 }
 
 function asToolServices(services: AppV2Services): AppV2ToolServices {
@@ -127,10 +139,23 @@ export function createAppsV2Tools({
   workspaceId,
   authType,
   userId,
+  chatId,
+  turnId,
   executionContext,
   services = () => asToolServices(getAppV2Services()),
+  touchProject = touchAppsV2ChatTurnProject,
+  assertOwnership: assertOwnershipDependency = assertTurnOwnership,
 }: AppsV2ToolsOptions): ToolSet {
-  if (!isAppsV2Enabled() || authType !== "session" || !userId) return {};
+  if (
+    !isAppsV2Enabled() ||
+    authType !== "session" ||
+    !userId ||
+    !chatId ||
+    !turnId ||
+    !isValidAppV2ChatId(chatId)
+  ) {
+    return {};
+  }
 
   const requestSignal = (toolSignal?: AbortSignal): AbortSignal | undefined => {
     const chatSignal = executionContext?.signal;
@@ -141,6 +166,20 @@ export function createAppsV2Tools({
   };
 
   let cachedMemberRole: string | undefined | null = null;
+  const turnIdentity: AppsV2ChatTurnIdentity = {
+    workspaceId,
+    chatId,
+    turnId,
+    actorId: userId,
+  };
+  const touch = (projectId: string, worktree: IAppV2Worktree) =>
+    touchProject(
+      turnIdentity,
+      projectId,
+      worktree._id.toString(),
+      worktree.revision,
+    );
+  const assertOwnership = () => assertOwnershipDependency(turnIdentity);
   const actor = async (): Promise<AppV2Actor> => {
     if (cachedMemberRole === null) {
       const member = await workspaceService.getMember(workspaceId, userId);
@@ -175,6 +214,7 @@ export function createAppsV2Tools({
     requestActor: AppV2Actor;
     serviceGraph: AppV2ToolServices;
   }> => {
+    await assertOwnership();
     const requestActor = await actor();
     const serviceGraph = services();
     const project = writable
@@ -188,10 +228,14 @@ export function createAppsV2Tools({
           projectId,
           requestActor,
         );
-    const worktree = await serviceGraph.worktrees.getOrCreate(
+    await assertOwnership();
+    const worktree = await serviceGraph.worktrees.getOrCreateAgent(
       project,
       requestActor,
+      chatId,
     );
+    await assertOwnership();
+    await touch(projectId, worktree);
     return { project, worktree, requestActor, serviceGraph };
   };
 
@@ -239,8 +283,10 @@ export function createAppsV2Tools({
         .strict(),
       execute: async ({ title, description }) => {
         try {
+          await assertOwnership();
           const requestActor = await actor();
           const serviceGraph = services();
+          await assertOwnership();
           const project = await serviceGraph.projects.create(
             workspaceId,
             requestActor,
@@ -251,12 +297,17 @@ export function createAppsV2Tools({
               workspaceRole: "viewer",
             },
           );
+          await assertOwnership();
           const projectId = project._id.toString();
-          const worktree = await serviceGraph.worktrees.getOrCreate(
+          const worktree = await serviceGraph.worktrees.getOrCreateAgent(
             project,
             requestActor,
+            chatId,
           );
+          await assertOwnership();
+          await touch(projectId, worktree);
           const entries = await serviceGraph.worktrees.tree(project, worktree);
+          await assertOwnership();
           publishRealtimeEvent(workspaceId, {
             type: "app-v2.project.updated",
             projectId,
@@ -322,6 +373,7 @@ export function createAppsV2Tools({
             projectId,
             true,
           );
+          await assertOwnership();
           const updated = await serviceGraph.worktrees.write(
             project,
             worktree,
@@ -330,6 +382,8 @@ export function createAppsV2Tools({
             contents,
             executable,
           );
+          await assertOwnership();
+          await touch(projectId, updated);
           publishWorktreeMutation(workspaceId, projectId, updated);
           return {
             success: true,
@@ -386,6 +440,7 @@ export function createAppsV2Tools({
               error: replacement.error,
             };
           }
+          await assertOwnership();
           const updated = await serviceGraph.worktrees.write(
             project,
             worktree,
@@ -394,6 +449,8 @@ export function createAppsV2Tools({
             replacement.contents,
             file.entry.mode === "executable",
           );
+          await assertOwnership();
+          await touch(projectId, updated);
           publishWorktreeMutation(workspaceId, projectId, updated);
           return {
             success: true,
@@ -427,12 +484,15 @@ export function createAppsV2Tools({
             projectId,
             true,
           );
+          await assertOwnership();
           const updated = await serviceGraph.worktrees.delete(
             project,
             worktree,
             worktreeMutationState(worktree),
             path,
           );
+          await assertOwnership();
+          await touch(projectId, updated);
           publishWorktreeMutation(workspaceId, projectId, updated);
           return {
             success: true,
@@ -463,6 +523,7 @@ export function createAppsV2Tools({
             projectId,
             true,
           );
+          await assertOwnership();
           const updated = await serviceGraph.worktrees.move(
             project,
             worktree,
@@ -470,6 +531,8 @@ export function createAppsV2Tools({
             from,
             to,
           );
+          await assertOwnership();
+          await touch(projectId, updated);
           publishWorktreeMutation(workspaceId, projectId, updated);
           return {
             success: true,
@@ -524,6 +587,7 @@ export function createAppsV2Tools({
         try {
           const { project, worktree, requestActor, serviceGraph } =
             await loadWorktree(projectId, true);
+          await assertOwnership();
           const result = await serviceGraph.worktrees.commit(
             project,
             worktree,
@@ -531,13 +595,15 @@ export function createAppsV2Tools({
             message,
             requestActor,
           );
+          await assertOwnership();
+          await touch(projectId, result.worktree);
           publishWorktreeMutation(workspaceId, projectId, result.worktree);
           publishRealtimeEvent(workspaceId, {
             type: "app-v2.commit.created",
             projectId,
             worktreeId: result.worktree._id.toString(),
             sha: result.sha,
-            ...getAppV2ProjectEventAudience(project),
+            forUserId: userId,
           });
           return {
             success: true,
@@ -577,12 +643,14 @@ export function createAppsV2Tools({
           const signal = requestSignal(abortSignal);
           const loaded = await loadWorktree(projectId, true);
           if (!loaded.serviceGraph.sessions) return unavailable(projectId);
+          await assertOwnership();
           const ensured = await loaded.serviceGraph.sessions.ensure(
             loaded.project,
             loaded.worktree,
             loaded.requestActor,
             signal,
           );
+          await assertOwnership();
           const result = await loaded.serviceGraph.sessions.exec(
             loaded.project,
             ensured.worktree,
@@ -594,7 +662,14 @@ export function createAppsV2Tools({
               signal,
             },
           );
+          await assertOwnership();
           if (result.durability.status === "durable") {
+            await touchProject(
+              turnIdentity,
+              projectId,
+              ensured.worktree._id.toString(),
+              result.durability.revision.revision,
+            );
             publishRealtimeEvent(workspaceId, {
               type: "app-v2.worktree.updated",
               projectId,
@@ -642,19 +717,28 @@ export function createAppsV2Tools({
           const signal = requestSignal(abortSignal);
           const loaded = await loadWorktree(projectId, true);
           if (!loaded.serviceGraph.sessions) return unavailable(projectId);
+          await assertOwnership();
           const ensured = await loaded.serviceGraph.sessions.ensure(
             loaded.project,
             loaded.worktree,
             loaded.requestActor,
             signal,
           );
+          await assertOwnership();
           const result = await loaded.serviceGraph.sessions.install(
             loaded.project,
             ensured.worktree,
             loaded.requestActor,
             { packages, signal },
           );
+          await assertOwnership();
           if (result.durability.status === "durable") {
+            await touchProject(
+              turnIdentity,
+              projectId,
+              ensured.worktree._id.toString(),
+              result.durability.revision.revision,
+            );
             publishRealtimeEvent(workspaceId, {
               type: "app-v2.worktree.updated",
               projectId,

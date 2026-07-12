@@ -1,4 +1,12 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { Types } from "mongoose";
 import type {
@@ -51,6 +59,7 @@ vi.mock("../middleware/workspace.middleware", () => ({
 const workspaceId = new Types.ObjectId();
 const projectId = new Types.ObjectId();
 const worktreeId = new Types.ObjectId();
+const agentWorktreeId = new Types.ObjectId();
 const oid = "a".repeat(40);
 const project = {
   _id: projectId,
@@ -73,6 +82,8 @@ const worktree = {
   workspaceId,
   projectId,
   actorId: "owner",
+  kind: "manual",
+  contextKey: "manual",
   branch: "main",
   baseSha: oid,
   wipRef: `refs/mako/worktrees/${worktreeId.toString()}`,
@@ -109,7 +120,7 @@ vi.mock("../apps-v2/app-project.service", async () => {
 });
 
 vi.mock("../apps-v2/worktree.service", async () => {
-  const { AppV2ConflictError } =
+  const { AppV2ConflictError, AppV2NotFoundError } =
     await vi.importActual<typeof import("./errors")>("./errors");
   return {
     AppV2WorktreeService: class {
@@ -117,6 +128,12 @@ vi.mock("../apps-v2/worktree.service", async () => {
         return worktree;
       }
       async getById() {
+        return worktree;
+      }
+      async getManualById(_project: unknown, requestedWorktreeId: string) {
+        if (requestedWorktreeId === agentWorktreeId.toString()) {
+          throw new AppV2NotFoundError("Worktree not found");
+        }
         return worktree;
       }
       async getActorWorktree() {
@@ -158,6 +175,7 @@ describe("Apps v2 route isolation", () => {
 
   beforeAll(async () => {
     process.env.APPS_V2_ENABLED = "true";
+    process.env.APPS_V2_GITHUB_PUSH_ENABLED = "false";
     const { appsV2Routes } = await import("../routes/apps-v2");
     app = new OpenAPIHono<AuthEnv>();
     app.route("/api/workspaces/:workspaceId/apps-v2", appsV2Routes);
@@ -165,11 +183,16 @@ describe("Apps v2 route isolation", () => {
 
   beforeEach(() => {
     process.env.APPS_V2_ENABLED = "true";
+    process.env.APPS_V2_GITHUB_PUSH_ENABLED = "false";
     process.env.APPS_V2_SANDBOX_PROVIDER = "off";
     context.userId = "owner";
     context.authType = "session";
     context.workspaceAllowed = true;
     context.workspaceChecks = 0;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("reports feature availability after authentication and workspace scoping", async () => {
@@ -181,6 +204,7 @@ describe("Apps v2 route isolation", () => {
       enabled: true,
       sandboxAvailable: false,
       sandboxProvider: "off",
+      githubPushAvailable: false,
     });
 
     process.env.APPS_V2_ENABLED = "false";
@@ -192,6 +216,7 @@ describe("Apps v2 route isolation", () => {
       enabled: false,
       sandboxAvailable: false,
       sandboxProvider: "off",
+      githubPushAvailable: false,
     });
   });
 
@@ -278,6 +303,51 @@ describe("Apps v2 route isolation", () => {
     });
   });
 
+  it("keeps GitHub binding isolated behind its own disabled-by-default flag", async () => {
+    process.env.APPS_V2_ENABLED = "true";
+    process.env.APPS_V2_GITHUB_PUSH_ENABLED = "false";
+    const base = `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}`;
+
+    const githubResponse = await app.request(`${base}/github`);
+    expect(githubResponse.status).toBe(404);
+    expect(await githubResponse.json()).toEqual({
+      success: false,
+      error: "Apps v2 GitHub push is unavailable",
+    });
+
+    const projectResponse = await app.request(base);
+    expect(projectResponse.status).toBe(200);
+    expect(await projectResponse.json()).toMatchObject({
+      project: { githubCanManage: false },
+    });
+  });
+
+  it("rejects GitHub path and ref injection at the route boundary", async () => {
+    process.env.APPS_V2_GITHUB_PUSH_ENABLED = "true";
+    const path = `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}/github`;
+    const valid = {
+      installationId: 42,
+      owner: "mako",
+      repo: "app",
+      baseBranch: "main",
+      autoPushOnTurnEnd: true,
+    };
+    for (const body of [
+      { ...valid, owner: "../mako" },
+      { ...valid, repo: "app?ref=other" },
+      { ...valid, baseBranch: "../main" },
+      { ...valid, baseBranch: "main?x=1" },
+      { ...valid, subdirectory: "../secrets" },
+    ]) {
+      const response = await app.request(path, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+    }
+  });
+
   it("does not disclose a private project to another workspace member", async () => {
     context.userId = "other-member";
     const response = await app.request(
@@ -288,6 +358,48 @@ describe("Apps v2 route isolation", () => {
       success: false,
       error: "Project not found",
     });
+  });
+
+  it("lists only the caller's read-only conversation branch metadata", async () => {
+    const { AppV2Worktree } = await import("../database/workspace-schema");
+    const select = vi.fn(async () => [
+      {
+        chatId: "64b7f0f0f0f0f0f0f0f0f0f0",
+        branch: "mako/chat/64b7f0f0f0f0f0f0f0f0f0f0",
+        baseSha: oid,
+        wipOid: "b".repeat(40),
+        lastAgentCommitSha: "c".repeat(40),
+        status: "active",
+      },
+    ]);
+    const sort = vi.fn(() => ({ select }));
+    const find = vi.spyOn(AppV2Worktree, "find").mockReturnValue({
+      sort,
+    } as never);
+
+    const response = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}/conversation-branches`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      success: true,
+      branches: [
+        {
+          chatId: "64b7f0f0f0f0f0f0f0f0f0f0",
+          branch: "mako/chat/64b7f0f0f0f0f0f0f0f0f0f0",
+          lastCommitSha: "c".repeat(40),
+          status: "active",
+        },
+      ],
+    });
+    expect(find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId,
+        actorId: "owner",
+        kind: "agent",
+      }),
+    );
   });
 
   it("allows a viewer to create a personal read-only worktree", async () => {
@@ -345,6 +457,25 @@ describe("Apps v2 route isolation", () => {
       },
     );
     expect(response.status).toBe(409);
+  });
+
+  it("does not expose an agent conversation worktree through manual routes", async () => {
+    const response = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}/worktrees/${agentWorktreeId.toString()}/file`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ifRevision: 0,
+          expectedWipOid: oid,
+          leaseEpoch: 1,
+          path: "src/App.tsx",
+          content: "should not write",
+          executable: false,
+        }),
+      },
+    );
+    expect(response.status).toBe(404);
   });
 
   it("rotates the actor lease and advances its fencing state", async () => {

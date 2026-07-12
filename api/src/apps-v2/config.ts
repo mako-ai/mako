@@ -23,6 +23,10 @@ export function isAppsV2Enabled(): boolean {
   return process.env.APPS_V2_ENABLED === "true";
 }
 
+export function isAppsV2GitHubPushEnabled(): boolean {
+  return process.env.APPS_V2_GITHUB_PUSH_ENABLED === "true";
+}
+
 export function validateAppsV2StartupConfiguration(): void {
   if (isAppsV2Enabled()) getAppsV2GitRoot();
 }

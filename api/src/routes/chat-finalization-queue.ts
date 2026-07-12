@@ -59,7 +59,8 @@ export function scheduleChatFinalization(
 
 /**
  * Resolves when the currently-queued finalization work for `chatId` has
- * settled. Intended for tests; resolves immediately if nothing is queued.
+ * settled. New requests use this before replacing Apps v2 ownership; normal
+ * current-turn finalization remains fire-and-forget.
  */
 export function awaitChatFinalization(chatId: string): Promise<void> {
   return chatFinalizationChains.get(chatId) ?? Promise.resolve();

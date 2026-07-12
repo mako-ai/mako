@@ -86,6 +86,10 @@ export function registerActiveGeneration(
   streamId: string,
   abortController: AbortController,
 ): void {
+  const existing = activeGenerations.get(chatId);
+  if (existing && existing.abortController !== abortController) {
+    existing.abortController.abort();
+  }
   activeGenerations.set(chatId, { streamId, abortController });
 }
 

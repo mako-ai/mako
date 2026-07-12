@@ -18,8 +18,40 @@ export interface AppV2Project {
   repositoryId: string;
   defaultBranch: string;
   headSha: string;
+  githubPushAvailable: boolean;
+  githubCanManage: boolean;
+  github?: AppV2GitHubBinding;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AppV2GitHubBinding {
+  installationId: number;
+  owner: string;
+  repo: string;
+  baseBranch: string;
+  subdirectory?: string;
+  autoPushOnTurnEnd: boolean;
+  generation: number;
+  boundAt: string;
+  boundBy: string;
+}
+
+export interface AppV2GitHubStatus {
+  appConfigured: boolean;
+  installations: Array<{
+    installationId: number;
+    accountLogin: string;
+    accountType: "Organization" | "User";
+  }>;
+}
+
+export interface AppV2GitHubRepo {
+  owner: string;
+  name: string;
+  fullName: string;
+  defaultBranch: string;
+  private: boolean;
 }
 
 export interface AppV2Worktree {
@@ -34,6 +66,23 @@ export interface AppV2Worktree {
   status: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AppV2ConversationBranch {
+  chatId: string;
+  branch: string;
+  baseSha: string;
+  wipOid: string;
+  lastCommitSha?: string;
+  status: string;
+  remote?: {
+    branch: string;
+    status: "pending" | "pushed" | "failed" | "conflict";
+    lastPushedLocalSha?: string;
+    lastPushedRemoteSha?: string;
+    error?: string;
+    lastPushAt?: string;
+  };
 }
 
 export interface AppV2TreeEntry {
@@ -75,6 +124,7 @@ export interface AppV2Availability {
   enabled: boolean;
   sandboxAvailable: boolean;
   sandboxProvider: "e2b" | "off";
+  githubPushAvailable: boolean;
   loaded: boolean;
   loading: boolean;
   error: string | null;
@@ -149,6 +199,7 @@ interface AppV2State {
   projectsByWorkspace: Record<string, AppV2Project[]>;
   projectsById: Record<string, AppV2Project>;
   worktreesByProject: Record<string, AppV2Worktree>;
+  conversationBranchesByProject: Record<string, AppV2ConversationBranch[]>;
   treesByProject: Record<string, AppV2TreeEntry[]>;
   filesByKey: Record<string, AppV2File>;
   editorBuffersByKey: Record<string, AppV2EditorBuffer>;
@@ -217,6 +268,33 @@ interface AppV2Actions {
     workspaceId: string,
     projectId: string,
   ) => Promise<AppV2Worktree | null>;
+  listConversationBranches: (
+    workspaceId: string,
+    projectId: string,
+  ) => Promise<AppV2ConversationBranch[]>;
+  fetchGitHubStatus: (workspaceId: string) => Promise<AppV2GitHubStatus | null>;
+  fetchGitHubRepos: (
+    workspaceId: string,
+    installationId: number,
+  ) => Promise<AppV2GitHubRepo[]>;
+  fetchGitHubBranches: (
+    workspaceId: string,
+    input: { installationId: number; owner: string; repo: string },
+  ) => Promise<string[]>;
+  bindGitHub: (
+    workspaceId: string,
+    projectId: string,
+    binding: Omit<AppV2GitHubBinding, "boundAt" | "boundBy" | "generation">,
+  ) => Promise<AppV2Project | null>;
+  unbindGitHub: (
+    workspaceId: string,
+    projectId: string,
+  ) => Promise<AppV2Project | null>;
+  pushGitHubConversation: (
+    workspaceId: string,
+    projectId: string,
+    chatId: string,
+  ) => Promise<boolean>;
   loadTree: (
     workspaceId: string,
     projectId: string,
@@ -265,6 +343,7 @@ const initialState: AppV2State = {
   projectsByWorkspace: {},
   projectsById: {},
   worktreesByProject: {},
+  conversationBranchesByProject: {},
   treesByProject: {},
   filesByKey: {},
   editorBuffersByKey: {},
@@ -732,6 +811,7 @@ export const useAppV2Store = create<AppV2Store>()(
               enabled: false,
               sandboxAvailable: false,
               sandboxProvider: "off",
+              githubPushAvailable: false,
               loaded: false,
               loading: true,
               error: null,
@@ -742,12 +822,14 @@ export const useAppV2Store = create<AppV2Store>()(
               enabled: boolean;
               sandboxAvailable: boolean;
               sandboxProvider: "e2b" | "off";
+              githubPushAvailable: boolean;
             }>(`${projectPath(workspaceId)}/status`);
             set(state => {
               state.availabilityByWorkspace[workspaceId] = {
                 enabled: response.enabled,
                 sandboxAvailable: response.sandboxAvailable,
                 sandboxProvider: response.sandboxProvider,
+                githubPushAvailable: response.githubPushAvailable,
                 loaded: true,
                 loading: false,
                 error: null,
@@ -760,6 +842,7 @@ export const useAppV2Store = create<AppV2Store>()(
                 enabled: false,
                 sandboxAvailable: false,
                 sandboxProvider: "off",
+                githubPushAvailable: false,
                 loaded: false,
                 loading: false,
                 error: errorMessage(
@@ -944,6 +1027,166 @@ export const useAppV2Store = create<AppV2Store>()(
         } catch (error) {
           recordError(key, error, "Unable to create personal worktree");
           return null;
+        } finally {
+          setLoading(key, false);
+        }
+      },
+
+      listConversationBranches: async (workspaceId, projectId) => {
+        const key = `conversation-branches:${projectId}`;
+        try {
+          const response = await apiClient.get<{
+            success: true;
+            branches: AppV2ConversationBranch[];
+          }>(`${projectPath(workspaceId, projectId)}/conversation-branches`);
+          set(state => {
+            state.conversationBranchesByProject[projectId] = response.branches;
+            state.errorsByKey[key] = null;
+          });
+          return response.branches;
+        } catch (error) {
+          recordError(key, error, "Unable to load conversation branches");
+          return [];
+        }
+      },
+
+      fetchGitHubStatus: async workspaceId => {
+        const key = `github-status:${workspaceId}`;
+        if (get().loadingByKey[key]) return null;
+        setLoading(key, true);
+        try {
+          const response = await apiClient.get<
+            AppV2GitHubStatus & { success: true }
+          >(`/workspaces/${workspaceId}/dbt/github/status`);
+          set(state => {
+            state.errorsByKey[key] = null;
+          });
+          return response;
+        } catch (error) {
+          recordError(key, error, "Unable to load GitHub installations");
+          return null;
+        } finally {
+          setLoading(key, false);
+        }
+      },
+
+      fetchGitHubRepos: async (workspaceId, installationId) => {
+        const key = `github-repos:${installationId}`;
+        if (get().loadingByKey[key]) return [];
+        setLoading(key, true);
+        try {
+          const response = await apiClient.get<{
+            success: true;
+            repos: AppV2GitHubRepo[];
+          }>(`/workspaces/${workspaceId}/dbt/github/repos`, {
+            installationId: String(installationId),
+          });
+          set(state => {
+            state.errorsByKey[key] = null;
+          });
+          return response.repos;
+        } catch (error) {
+          recordError(key, error, "Unable to load GitHub repositories");
+          return [];
+        } finally {
+          setLoading(key, false);
+        }
+      },
+
+      fetchGitHubBranches: async (workspaceId, input) => {
+        const key = `github-branches:${input.owner}/${input.repo}`;
+        if (get().loadingByKey[key]) return [];
+        setLoading(key, true);
+        try {
+          const response = await apiClient.get<{
+            success: true;
+            branches: string[];
+          }>(`/workspaces/${workspaceId}/dbt/github/branches`, {
+            installationId: String(input.installationId),
+            owner: input.owner,
+            repo: input.repo,
+          });
+          set(state => {
+            state.errorsByKey[key] = null;
+          });
+          return response.branches;
+        } catch (error) {
+          recordError(key, error, "Unable to load GitHub branches");
+          return [];
+        } finally {
+          setLoading(key, false);
+        }
+      },
+
+      bindGitHub: async (workspaceId, projectId, binding) => {
+        const key = `github-binding:${projectId}`;
+        if (get().loadingByKey[key]) return null;
+        setLoading(key, true);
+        try {
+          const response = await apiClient.put<{
+            success: true;
+            project: AppV2Project;
+          }>(`${projectPath(workspaceId, projectId)}/github`, binding);
+          set(state => {
+            state.projectsById[projectId] = response.project;
+            state.errorsByKey[key] = null;
+          });
+          return response.project;
+        } catch (error) {
+          recordError(key, error, "Unable to bind GitHub repository");
+          return null;
+        } finally {
+          setLoading(key, false);
+        }
+      },
+
+      unbindGitHub: async (workspaceId, projectId) => {
+        const key = `github-binding:${projectId}`;
+        if (get().loadingByKey[key]) return null;
+        setLoading(key, true);
+        try {
+          const response = await apiClient.delete<{
+            success: true;
+            project: AppV2Project;
+          }>(`${projectPath(workspaceId, projectId)}/github`);
+          set(state => {
+            state.projectsById[projectId] = response.project;
+            state.errorsByKey[key] = null;
+          });
+          return response.project;
+        } catch (error) {
+          recordError(key, error, "Unable to remove GitHub binding");
+          return null;
+        } finally {
+          setLoading(key, false);
+        }
+      },
+
+      pushGitHubConversation: async (workspaceId, projectId, chatId) => {
+        const key = `github-push:${projectId}:${chatId}`;
+        if (get().loadingByKey[key]) return false;
+        setLoading(key, true);
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            status: "local_only" | "pushed" | "remote_failed" | "conflict";
+            error?: string;
+          }>(`${projectPath(workspaceId, projectId)}/github/push`, { chatId });
+          if (!response.success) {
+            set(state => {
+              state.errorsByKey[key] =
+                response.error ?? `GitHub push ${response.status}`;
+            });
+            return false;
+          }
+          await get().listConversationBranches(workspaceId, projectId);
+          set(state => {
+            state.errorsByKey[key] = null;
+          });
+          return true;
+        } catch (error) {
+          recordError(key, error, "Unable to push conversation branch");
+          return false;
         } finally {
           setLoading(key, false);
         }
@@ -1164,7 +1407,10 @@ export const useAppV2Store = create<AppV2Store>()(
       },
 
       refreshProject: async (workspaceId, projectId) => {
-        await get().getProject(workspaceId, projectId);
+        await Promise.all([
+          get().getProject(workspaceId, projectId),
+          get().listConversationBranches(workspaceId, projectId),
+        ]);
         if (!get().worktreesByProject[projectId]) {
           await get().getWorktree(workspaceId, projectId);
         }

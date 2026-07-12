@@ -14,8 +14,8 @@ export interface AppV2ProvisioningSweepResult {
 }
 
 /**
- * Callable stale-provisioning sweep. Scheduling is intentionally left to a
- * future Inngest function; ensure retries use the same reservation cleanup.
+ * Callable stale-provisioning sweep used by Apps v2 maintenance. Retries use
+ * the same reservation cleanup and operation-lease fencing as provisioning.
  */
 export class AppV2ProvisioningReconcileService {
   constructor(

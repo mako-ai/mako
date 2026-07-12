@@ -46,6 +46,21 @@ export async function up(db: Db): Promise<void> {
     },
   ]);
   let indexes = await collection.listIndexes().toArray();
+  const [replacementIdentity, ...remainingIndexes] = appV2SessionIndexes;
+  if (
+    !findCompatibleIndex(
+      indexes,
+      replacementIdentity.keys,
+      replacementIdentity.options,
+      collectionName,
+    )
+  ) {
+    await collection.createIndex(
+      replacementIdentity.keys,
+      replacementIdentity.options,
+    );
+    indexes = await collection.listIndexes().toArray();
+  }
   const obsoleteIdentity = findCompatibleIndex(
     indexes,
     { worktreeId: 1, actorId: 1 },
@@ -56,7 +71,7 @@ export async function up(db: Db): Promise<void> {
     await collection.dropIndex(obsoleteIdentity.name);
     indexes = await collection.listIndexes().toArray();
   }
-  for (const definition of appV2SessionIndexes) {
+  for (const definition of remainingIndexes) {
     if (
       findCompatibleIndex(
         indexes,

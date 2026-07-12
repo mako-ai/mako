@@ -205,6 +205,7 @@ describe("Apps v2 session routes", () => {
       enabled: true,
       sandboxAvailable: true,
       sandboxProvider: "e2b",
+      githubPushAvailable: false,
     });
     expect((await app.request(base, { method: "POST" })).status).toBe(200);
     expect((await app.request(base)).status).toBe(200);

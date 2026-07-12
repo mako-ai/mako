@@ -62,6 +62,8 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     workspaceId,
     authType: context.authType,
     userId,
+    chatId: context.chatId,
+    turnId: context.turnId,
     executionContext: context.toolExecutionContext,
   });
 

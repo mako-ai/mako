@@ -575,11 +575,16 @@ export class AppV2SessionService {
 
   ensure(
     project: IAppV2Project,
-    initialWorktree: IAppV2Worktree,
+    suppliedWorktree: IAppV2Worktree,
     actor: AppV2Actor,
     requestSignal?: AbortSignal,
   ): Promise<EnsuredAppV2Session> {
-    return this.locked(project, initialWorktree, actor, async () => {
+    return this.locked(project, suppliedWorktree, actor, async () => {
+      const initialWorktree = await this.worktrees.getById(
+        project,
+        suppliedWorktree._id.toString(),
+        actor,
+      );
       const existing = await this.find(project, initialWorktree, actor);
       if (existing?.recoveryRef) this.throwRecoveryConflict(existing);
       if (!existing) {
@@ -621,9 +626,6 @@ export class AppV2SessionService {
           context,
         );
         this.assertNoRecoveryConflict(context.record);
-        if (context.record.status === "unsynced") {
-          return { session: context.record, worktree };
-        }
 
         if (context.record.status === "provisioning") {
           await this.cleanupReservation(context);
@@ -661,6 +663,21 @@ export class AppV2SessionService {
           status !== "missing" &&
           context.record.leaseEpoch === worktree.leaseEpoch
         ) {
+          if (context.record.status === "unsynced") {
+            const reconciled = await this.flushOwned(
+              project,
+              worktree,
+              actor,
+              context,
+            );
+            if (reconciled.flush.durability.status === "conflict") {
+              this.throwRecoveryConflict(reconciled.session);
+            }
+            return {
+              session: reconciled.session,
+              worktree: reconciled.worktree,
+            };
+          }
           const metadataStatus = status === "running" ? "active" : "paused";
           const session =
             context.record.status === metadataStatus
@@ -1144,6 +1161,14 @@ export class AppV2SessionService {
       pendingSuccessRef: recoveryIdentity.successRef,
     });
     try {
+      if (context.record.appliedWipOid !== worktree.wipOid) {
+        await this.executor.applyRevision(recoveryTarget);
+        context.assertHealthy();
+        await this.write(context, {
+          appliedWipOid: worktree.wipOid,
+          lastActiveAt: new Date(),
+        });
+      }
       const flush = await this.executor.flush(recoveryTarget, context.signal);
       context.assertHealthy();
       await this.write(context, { pendingRecoveryCompleted: true });

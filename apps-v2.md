@@ -24,16 +24,16 @@
   post-CAS crash reconciles as durable rather than wedging. Provisioning
   reservations are embedded in immutable sandbox metadata; retries durably
   clean the old reservation before adopting a rotated worktree lease, and
-  project deletion also reconciles labeled orphans. A callable stale-
-  provisioning sweep exists for a future Inngest schedule, but no recurring
-  schedule is wired yet.
+  project deletion also reconciles labeled orphans. Production Inngest
+  maintenance runs every five minutes to reconcile stale provisioning and
+  pending chat-turn finalization.
 - **Live E2B validation (2026-07-12):** the repository-owned template passed
   the provider's unprivileged-user, no-sudo/capabilities, clean-environment,
   metadata-firewall, argv-literal, pnpm, filesystem-only quiesce, source
   capture, package-install, excluded-`node_modules`, deny-all-reset, and
   sandbox-destruction checks.
 - **Audience:** Product, application platform, agent, data platform, security, and desktop teams
-- **Last updated:** 2026-07-11
+- **Last updated:** 2026-07-12
 - **Scope:** Mako Apps authoring, storage, preview, deployment, and external coding-tool access
 
 ## Executive summary
@@ -475,6 +475,63 @@ AppWorktree
   lastSyncedAt
   status
 ```
+
+Manual UI editing uses the actor's `contextKey=manual` worktree on the selected
+manual branch. Agent editing uses one separate worktree per `(project, actor,
+chat)` and a durable `mako/chat/<chat-id>` conversation branch. At the end of
+each outer chat turn, after chat persistence and any internal continuation
+segments, every dirty touched project is committed once to its conversation
+branch. Durable changes from an aborted turn are also committed and labeled
+`(aborted)` so they are not stranded. Explicit agent commits remain available
+for requested checkpoints; a subsequent clean turn finalization is a no-op.
+
+`AppV2ChatTurn` is the durable turn fence. It stores no source bytes: only the
+workspace/chat/turn/actor identity, lifecycle status, attempts, and touched
+`{projectId, worktreeId, expectedRevision}` results. The outer turn claims each
+agent worktree before mutation and advances the recorded revision after every
+successful file mutation or durable shell/install flush. Finalization
+compare-and-swaps `active` to `finalizing` and commits only when both the
+worktree owner and revision still match. A newer revision is persisted as
+`superseded`, never committed as another turn's work. Completed, failed, and
+recoverable per-project outcomes are retained for audit and idempotent retry.
+The chat document's durable Apps v2 turn owner fences every mutating tool and
+the finalizer across API instances. Chat ownership reads and writes are scoped
+by chat ID, workspace, and session actor. A newer turn first finalizes the
+predecessor while it still owns the chat, rotates every conversation-worktree
+Git lease, and only then compare-and-swaps ownership. Older tool factories
+re-check before mutation and after sandbox operations; an operation that passed
+its first check still fails the stale Git lease CAS after handoff.
+
+If a process dies after advancing durable WIP but before recording the new
+revision, that turn still owns the worktree and a later turn fails closed. The
+callable pending-turn reconciler retries the owner through session recovery.
+It selects failed/recoverable turns plus only active/finalizing turns whose
+heartbeat is stale, and acquires an expiring CAS retry lease before work. A new
+request invokes this bounded reconciliation during durable ownership handoff.
+Production maintenance also invokes the bounded reconciler every five minutes.
+On the same API instance, a new request first drains that chat's background
+finalization queue. A predecessor seen only through MongoDB is synchronously
+finalized from its recorded revisions before successor tools are created.
+Superseded turns are retryable only while they retain
+pending/failed/recoverable projects. Failed or recoverable reconciliation blocks
+successor promotion and preserves predecessor ownership plus WIP/recovery refs.
+After successful finalization, lease rotation and successor turn metadata
+creation, a scoped owner CAS promotes the successor; a lost CAS abandons that
+metadata and never installs a turn that did not start.
+Only after no active/finalizing prior turn owns an orphaned dirty WIP may a new
+turn atomically adopt it. Flush errors and recovery refs remain failed or
+recoverable; finalization never commits the older pre-flush WIP. The session-only
+conversation-branches endpoint and project view expose branch/base/WIP/last
+commit/status metadata read-only; they do not promote conversation commits to
+main.
+
+Running sandboxes are reused hot and paused sandboxes are resumed. Unsynced
+sessions run durable recovery before reuse. A missing or dead
+sandbox is recreated from the approved template and the latest conversation
+branch/private WIP snapshot. Clean worktrees fast-forward when their
+conversation branch moves; dirty WIP is preserved as conflict state instead of
+being overwritten. Turn finalization does not manually pause a sandbox; the
+provider's idle auto-pause policy owns that transition.
 
 `wipRef` is a private service ref such as:
 
@@ -1070,7 +1127,8 @@ never reuse an interactive session, and retain bounded logs and run status.
 
 Apps v2 should use **per-user or per-agent worktrees**, not one mutable shared directory.
 
-- The Mako editor and its chat agent attach to the same selected worktree.
+- The Mako editor uses a manual worktree, while each chat agent uses a separate
+  conversation worktree and `mako/chat/<chat-id>` branch.
 - Another user receives a separate worktree/branch by default.
 - Realtime events indicate remote branch movement and WIP revisions.
 - Committing checks that the branch ref still matches the expected SHA.

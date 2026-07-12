@@ -519,7 +519,7 @@ async function run(): Promise<void> {
       denyOut: string[];
       allowPublicTraffic: boolean;
     };
-    lifecycle: { onTimeout: { action: string }; autoResume: boolean };
+    lifecycle: { onTimeout: string; autoResume: boolean };
   };
   assert.equal(createOptions.apiKey, "control-plane-secret");
   assert.equal(
@@ -536,8 +536,8 @@ async function run(): Promise<void> {
   assert.deepEqual(createOptions.network.allowOut, []);
   assert.deepEqual(createOptions.network.denyOut, ["0.0.0.0/0"]);
   assert.equal(createOptions.network.allowPublicTraffic, false);
-  assert.equal(createOptions.lifecycle.onTimeout.action, "pause");
-  assert.equal(createOptions.lifecycle.autoResume, false);
+  assert.equal(createOptions.lifecycle.onTimeout, "pause");
+  assert.equal(createOptions.lifecycle.autoResume, true);
   const runtimeIsolation = capturedE2BCommands[0];
   assert.match(
     runtimeIsolation.command,
@@ -1235,7 +1235,7 @@ async function run(): Promise<void> {
       generation: 0,
       leaseEpoch: conflictTarget.leaseEpoch,
       appliedWipOid: conflictTarget.durableRevision.wipOid,
-      status: "active",
+      status: "error",
       lastActiveAt: new Date(),
     };
     const fakeExecutor = new FakeSessionExecutor();
@@ -1258,6 +1258,57 @@ async function run(): Promise<void> {
       fakeExecutor.prepared[0].leaseEpoch,
       beforeReplacementEpoch + 1,
     );
+    const pausedStore = new MemorySessionStore();
+    pausedStore.record = {
+      ...(sessionStore.record as AppV2SessionRecord),
+      id: new Types.ObjectId().toString(),
+      actorId: "paused-actor",
+      sandboxId: "paused-sandbox",
+      reservationId: "paused-reservation",
+      leaseEpoch: ensured.worktree.leaseEpoch,
+      appliedWipOid: ensured.worktree.wipOid,
+      status: "paused",
+    };
+    const pausedExecutor = new FakeSessionExecutor();
+    pausedExecutor.statuses.set("paused-sandbox", "paused");
+    const pausedService = new AppV2SessionService(
+      "fake",
+      pausedExecutor,
+      worktrees,
+      pausedStore,
+    );
+    const reusedPaused = await pausedService.ensure(project, ensured.worktree, {
+      userId: "paused-actor",
+    });
+    assert.equal(reusedPaused.session.sandboxId, "paused-sandbox");
+    assert.equal(reusedPaused.session.status, "paused");
+    assert.equal(pausedExecutor.prepared.length, 0);
+
+    const unsyncedStore = new MemorySessionStore();
+    unsyncedStore.record = {
+      ...(pausedStore.record as AppV2SessionRecord),
+      id: new Types.ObjectId().toString(),
+      actorId: "unsynced-actor",
+      sandboxId: "unsynced-sandbox",
+      reservationId: "unsynced-reservation",
+      status: "unsynced",
+    };
+    const unsyncedExecutor = new FakeSessionExecutor();
+    unsyncedExecutor.statuses.set("unsynced-sandbox", "running");
+    const unsyncedService = new AppV2SessionService(
+      "fake",
+      unsyncedExecutor,
+      worktrees,
+      unsyncedStore,
+    );
+    const reconciledUnsynced = await unsyncedService.ensure(
+      project,
+      ensured.worktree,
+      { userId: "unsynced-actor" },
+    );
+    assert.equal(reconciledUnsynced.session.status, "active");
+    assert.equal(unsyncedExecutor.flushed.length, 1);
+    assert.equal(unsyncedExecutor.prepared.length, 0);
     await assert.rejects(
       git.replaceWorktreeTree(
         project.repositoryId,

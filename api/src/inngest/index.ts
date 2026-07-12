@@ -39,6 +39,8 @@ import {
   dbtSchedulerFunction,
   dbtRunSweeperFunction,
 } from "./functions/dbt-run";
+import { appsV2GitHubDeliveryFunction } from "./functions/apps-v2-github-delivery";
+import { appsV2MaintenanceFunction } from "./functions/apps-v2-maintenance";
 import { loggers } from "../logging";
 
 const baseFunctions = [
@@ -59,6 +61,7 @@ const baseFunctions = [
   dbtRunExecutorFunction,
   dbtRunCancelFunction,
   dbtRunSweeperFunction,
+  appsV2GitHubDeliveryFunction,
 ];
 
 const allWebhookFunctions = [
@@ -95,6 +98,7 @@ export function getFunctions() {
         appBindingSchedulerFunction,
         scheduledQuerySchedulerFunction,
         dbtSchedulerFunction,
+        appsV2MaintenanceFunction,
       ];
 
   return _functions;
@@ -151,4 +155,6 @@ export {
   dbtRunCancelFunction,
   dbtSchedulerFunction,
   dbtRunSweeperFunction,
+  appsV2GitHubDeliveryFunction,
+  appsV2MaintenanceFunction,
 };

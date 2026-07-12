@@ -13,6 +13,7 @@ import {
   AppV2GitProvider,
   getAppV2ProcessTerminationTarget,
 } from "./git-provider";
+import { appV2ConversationBranch } from "../conversation-branch";
 
 function runTestGit(
   repositoryPath: string,
@@ -46,6 +47,26 @@ async function run(): Promise<void> {
     assert.equal(
       await provider.resolveRef("project", "refs/heads/main"),
       initial.sha,
+    );
+    const chatOne = "64b7f0f0f0f0f0f0f0f0f0f0";
+    const chatTwo = "64b7f0f0f0f0f0f0f0f0f0f1";
+    const chatOneBranch = appV2ConversationBranch(chatOne);
+    const chatTwoBranch = appV2ConversationBranch(chatTwo);
+    assert.equal(
+      await provider.ensureBranch("project", chatOneBranch, initial.sha),
+      initial.sha,
+    );
+    assert.equal(
+      await provider.ensureBranch("project", chatTwoBranch, initial.sha),
+      initial.sha,
+    );
+    assert.equal(
+      await provider.resolveBranch("project", chatOneBranch),
+      initial.sha,
+    );
+    await assert.rejects(
+      provider.ensureBranch("project", "../danger", initial.sha),
+      AppV2ValidationError,
     );
     const initialTree = await provider.tree("project", initial.sha);
     assert(initialTree.some(entry => entry.path === "pnpm-lock.yaml"));
@@ -97,6 +118,20 @@ async function run(): Promise<void> {
       "project",
       "worktree",
       initial.sha,
+    );
+    const chatOneRef = await provider.createWorktreeRef(
+      "project",
+      "chat-one",
+      await provider.resolveBranch("project", chatOneBranch),
+    );
+    const chatTwoRef = await provider.createWorktreeRef(
+      "project",
+      "chat-two",
+      await provider.resolveBranch("project", chatTwoBranch),
+    );
+    assert.equal(
+      new Set([privateRef.wipRef, chatOneRef.wipRef, chatTwoRef.wipRef]).size,
+      3,
     );
     assert.equal(
       await provider.resolveRef("project", privateRef.wipRef),
@@ -331,11 +366,7 @@ async function run(): Promise<void> {
     assert.equal(commit.message, "Add verification script");
     assert(commit.stats.filesChanged >= 1);
     assert.equal(
-      await recoveredProvider.isAncestor(
-        "project",
-        commit.sha,
-        "refs/heads/main",
-      ),
+      await recoveredProvider.isAncestor("project", commit.sha, "main"),
       true,
     );
     await assert.rejects(
@@ -374,7 +405,7 @@ async function run(): Promise<void> {
     await assert.rejects(
       recoveredProvider.discard(
         "project",
-        "refs/heads/main",
+        "main",
         initial.sha,
         privateRef.wipRef,
         postCommitWrite.wipOid,
@@ -399,9 +430,34 @@ async function run(): Promise<void> {
       await recoveredProvider.resolveRef("project", privateRef.wipRef),
       postCommitWrite.wipOid,
     );
+    await assert.rejects(
+      recoveredProvider.discard(
+        "project",
+        "../main",
+        commit.sha,
+        privateRef.wipRef,
+        postCommitWrite.wipOid,
+        privateRef.leaseRef,
+        rotatedLease.oid,
+      ),
+      AppV2ValidationError,
+    );
+    await assert.rejects(
+      recoveredProvider.commit(
+        "project",
+        "main",
+        "refs/mako/worktrees/unsafe\nref",
+        postCommitWrite.wipOid,
+        commit.sha,
+        privateRef.leaseRef,
+        rotatedLease.oid,
+        "Unsafe ref",
+      ),
+      AppV2ValidationError,
+    );
     const discarded = await recoveredProvider.discard(
       "project",
-      "refs/heads/main",
+      "main",
       commit.sha,
       privateRef.wipRef,
       postCommitWrite.wipOid,

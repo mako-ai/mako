@@ -13,6 +13,8 @@ async function run(): Promise<void> {
   let failureStage: FailureStage | undefined;
   let conformanceCount = 0;
   let nextPid = 100;
+  let sandboxState: "running" | "paused" = "running";
+  let pauseResult = true;
 
   const sandbox: E2BSandboxClient = {
     sandboxId: "sandbox-test",
@@ -94,11 +96,11 @@ async function run(): Promise<void> {
       return sandbox;
     },
     async getInfo(): Promise<SandboxInfo> {
-      return { state: "running" } as SandboxInfo;
+      return { state: sandboxState } as SandboxInfo;
     },
     async pause() {
       events.push("pause");
-      return true;
+      return pauseResult;
     },
     async kill() {
       events.push("kill");
@@ -188,6 +190,29 @@ async function run(): Promise<void> {
   await provider.quiesce("sandbox-test");
   assert.deepEqual(events, ["pause", "connect", "isolation", "conformance"]);
   assert.equal(conformanceCount, conformanceBeforeResume + 1);
+
+  sandboxState = "paused";
+  events.length = 0;
+  await provider.quiesce("sandbox-test");
+  assert.deepEqual(events, [
+    "connect",
+    "isolation",
+    "conformance",
+    "pause",
+    "connect",
+    "isolation",
+    "conformance",
+  ]);
+
+  sandboxState = "running";
+  pauseResult = false;
+  events.length = 0;
+  await assert.rejects(
+    provider.quiesce("sandbox-test"),
+    /did not confirm filesystem-only pause/,
+  );
+  assert.deepEqual(events, ["pause"]);
+  pauseResult = true;
 
   failureStage = "isolation";
   events.length = 0;

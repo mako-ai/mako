@@ -673,6 +673,14 @@ export const saveChat = async (
   usage?: ChatUsageData,
 ): Promise<typeof Chat.prototype | null> => {
   const now = new Date();
+  const chatScope = {
+    _id: new ObjectId(chatId),
+    workspaceId: new ObjectId(workspaceId),
+    createdBy: userId,
+  };
+  if (!(await Chat.exists(chatScope))) {
+    throw new Error("Chat not found or not owned by this workspace user");
+  }
 
   // Move inline base64 image attachments out to object storage and replace them
   // with authenticated proxy URLs. This keeps the chat document small (the old
@@ -753,14 +761,6 @@ export const saveChat = async (
       messages: storedMessages,
       updatedAt: now,
     },
-    $setOnInsert: {
-      workspaceId: new ObjectId(workspaceId),
-      createdBy: userId,
-      title: "New Chat",
-      titleGenerated: false,
-      threadId: uuidv4(),
-      createdAt: now,
-    },
   };
 
   if (usage && usage.totalTokens > 0) {
@@ -790,11 +790,12 @@ export const saveChat = async (
     };
   }
 
-  const result = await Chat.findOneAndUpdate(
-    { _id: new ObjectId(chatId) },
-    updateOp,
-    { upsert: true, new: true },
-  );
+  const result = await Chat.findOneAndUpdate(chatScope, updateOp, {
+    new: true,
+  });
+  if (!result) {
+    throw new Error("Chat ownership changed before persistence");
+  }
 
   return result;
 };
