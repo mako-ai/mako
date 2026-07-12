@@ -71,12 +71,17 @@ WORKDIR /app
 
 # Install build tools needed for native modules (+ venv for the dbt runner).
 # This layer is stable and should stay cached across app deploys.
+# `git` is required by Apps v2: the API keeps a local clone of each linked
+# GitHub repo as an ephemeral read cache for the file explorer (the sandbox
+# does its own in-VM git for pushing). node:20-slim ships without git, so the
+# missing binary surfaced as `spawn git ENOENT` on app creation.
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-venv \
     python3-pip \
     make \
     g++ \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Bake a pinned dbt Core venv with the supported warehouse adapters.
