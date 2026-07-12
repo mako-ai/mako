@@ -36,6 +36,82 @@ import { trackEvent } from "../lib/analytics";
 import { useApiKeyStore } from "../store/apiKeyStore";
 import type { ApiKeyCreateResponse } from "../lib/api-types";
 
+/**
+ * Copy-paste MCP client setup, shown the one time the full key is visible.
+ * Base URL is this deployment's origin (the Vite dev server proxies /api).
+ */
+function buildMcpSnippets(key: string) {
+  const endpoint = `${window.location.origin}/api/mcp`;
+  return [
+    {
+      client: "Claude Code",
+      snippet: `claude mcp add --transport http mako ${endpoint} \\\n  --header "Authorization: Bearer ${key}"`,
+    },
+    {
+      client: "Cursor (.cursor/mcp.json)",
+      snippet: JSON.stringify(
+        {
+          mcpServers: {
+            mako: {
+              url: endpoint,
+              headers: { Authorization: `Bearer ${key}` },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      client: "Codex (~/.codex/config.toml)",
+      snippet: `[mcp_servers.mako]\nurl = "${endpoint}"\nbearer_token_env_var = "MAKO_API_KEY"\n\n# then: export MAKO_API_KEY="${key}"`,
+    },
+  ];
+}
+
+function McpSetupSnippet({
+  client,
+  snippet,
+  onCopy,
+}: {
+  client: string;
+  snippet: string;
+  onCopy: (text: string) => void;
+}) {
+  return (
+    <Box sx={{ mb: 1.5 }}>
+      <Stack direction="row" alignItems="center" spacing={0.5}>
+        <Typography variant="caption" sx={{ fontWeight: 600 }}>
+          {client}
+        </Typography>
+        <Tooltip title={`Copy ${client} setup`}>
+          <IconButton
+            size="small"
+            onClick={() => onCopy(snippet)}
+            aria-label={`Copy ${client} setup`}
+          >
+            <CopyIcon sx={{ fontSize: 14 }} />
+          </IconButton>
+        </Tooltip>
+      </Stack>
+      <Box
+        component="pre"
+        sx={{
+          m: 0,
+          p: 1.5,
+          bgcolor: "grey.100",
+          borderRadius: 1,
+          fontSize: "0.7rem",
+          overflow: "auto",
+          whiteSpace: "pre",
+        }}
+      >
+        {snippet}
+      </Box>
+    </Box>
+  );
+}
+
 export function ApiKeyManager() {
   const { currentWorkspace, loading: workspaceLoading } = useWorkspace();
   const { keys, loading, fetchKeys, createKey, deleteKey } = useApiKeyStore();
@@ -223,8 +299,8 @@ export function ApiKeyManager() {
         </Box>
       ) : apiKeys.length === 0 ? (
         <Alert severity="info">
-          No API keys found. Create one to enable API access for third-party
-          applications.
+          No API keys yet. Create one to connect AI agents like Claude Code,
+          Cursor, or Codex via MCP (read-only), or to call the REST API.
         </Alert>
       ) : (
         <TableContainer component={Paper} variant="outlined">
@@ -233,6 +309,7 @@ export function ApiKeyManager() {
               <TableRow>
                 <TableCell>Name</TableCell>
                 <TableCell>Key Prefix</TableCell>
+                <TableCell>Access</TableCell>
                 <TableCell>Created</TableCell>
                 <TableCell>Last Used</TableCell>
                 <TableCell align="right">Actions</TableCell>
@@ -249,6 +326,19 @@ export function ApiKeyManager() {
                       variant="outlined"
                       sx={{ fontFamily: "monospace" }}
                     />
+                  </TableCell>
+                  <TableCell>
+                    {key.scopes && key.scopes.length > 0 ? (
+                      <Stack direction="row" spacing={0.5}>
+                        {key.scopes.map(scope => (
+                          <Chip key={scope} label={scope} size="small" />
+                        ))}
+                      </Stack>
+                    ) : (
+                      <Tooltip title="Created before scopes existed. Works for the REST API but cannot connect MCP clients (Claude Code, Cursor, Codex) — create a new key for that.">
+                        <Chip label="legacy" size="small" color="warning" />
+                      </Tooltip>
+                    )}
                   </TableCell>
                   <TableCell>
                     {formatDistanceToNow(new Date(key.createdAt), {
@@ -324,7 +414,7 @@ export function ApiKeyManager() {
       <Dialog
         open={!!newApiKey}
         onClose={() => setNewApiKey(null)}
-        maxWidth="sm"
+        maxWidth="md"
         fullWidth
       >
         <DialogTitle>API Key Created Successfully</DialogTitle>
@@ -414,9 +504,44 @@ export function ApiKeyManager() {
               </IconButton>
             </Box>
           </Box>
+          {newApiKey?.key && (
+            <Box sx={{ mt: 3 }}>
+              <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
+                Connect an AI agent (MCP)
+              </Typography>
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{ mb: 1.5 }}
+              >
+                Let Claude Code, Cursor, or Codex explore your data and build
+                Mako apps — read-only by design. Pick your client (the key is
+                already filled in), then ask it something like{" "}
+                <Box component="em">
+                  &quot;Using the mako tools, build an app showing revenue by
+                  month.&quot;
+                </Box>{" "}
+                <a
+                  href="https://docs.mako.ai/mcp-server/"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Full guide
+                </a>
+              </Typography>
+              {buildMcpSnippets(newApiKey.key).map(({ client, snippet }) => (
+                <McpSetupSnippet
+                  key={client}
+                  client={client}
+                  snippet={snippet}
+                  onCopy={copyToClipboard}
+                />
+              ))}
+            </Box>
+          )}
           <Box sx={{ mt: 3 }}>
             <Typography variant="body2" color="text.secondary">
-              Use this API key in your requests:
+              Or use it against the REST API directly:
             </Typography>
             <Box
               component="pre"
