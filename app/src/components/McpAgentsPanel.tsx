@@ -186,15 +186,22 @@ export function McpAgentConnectCard({
               {...(active.deeplink.startsWith("https://")
                 ? { target: "_blank", rel: "noreferrer" }
                 : {})}
-              sx={{
+              sx={theme => ({
                 mb: 1,
                 textTransform: "none",
                 // Explicit: rendered as an <a>, so global anchor resets /
                 // browser quirks can otherwise swallow the inherited label
                 // color and leave an unreadable blue-on-blue button.
+                // -webkit-text-fill-color beats any inherited `color`
+                // (Safari applies it over `color` when set anywhere up the
+                // tree, e.g. by autofill/preflight resets).
                 color: "primary.contrastText",
-                "&:hover": { color: "primary.contrastText" },
-              }}
+                WebkitTextFillColor: theme.palette.primary.contrastText,
+                "&:hover": {
+                  color: "primary.contrastText",
+                  WebkitTextFillColor: theme.palette.primary.contrastText,
+                },
+              })}
             >
               {active.deeplinkLabel}
             </Button>
