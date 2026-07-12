@@ -49,6 +49,12 @@ export default defineConfig(({ mode }) => {
           target: process.env.VITE_API_PROXY_TARGET || "http://localhost:8080",
           changeOrigin: true,
         },
+        // OAuth discovery documents for the MCP endpoint (RFC 9728/8414):
+        // MCP clients fetch these from the same origin as /api/mcp.
+        "/.well-known": {
+          target: process.env.VITE_API_PROXY_TARGET || "http://localhost:8080",
+          changeOrigin: true,
+        },
       },
     },
   };

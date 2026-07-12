@@ -1,6 +1,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Db } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import { restQueryAccessFromStoredScopes } from "../auth/api-key-scopes";
 import {
   requireWorkspace,
   requireWorkspaceRole,
@@ -209,6 +210,7 @@ async function createAdHocParquetResponse(options: {
     {
       databaseId: options.queryDefinition.databaseId,
       databaseName: options.queryDefinition.databaseName,
+      readOnly: true,
     },
   );
 
@@ -1043,8 +1045,18 @@ workspaceDatabaseRoutes.openapi(
   async c => {
     try {
       const workspace = c.get("workspace");
+      const apiKey = c.get("apiKey");
       const databaseId = c.req.param("id");
       const body = await c.req.json();
+      const queryAccess = apiKey
+        ? restQueryAccessFromStoredScopes(apiKey.scopes)
+        : "write";
+      if (queryAccess === "none") {
+        return c.json(
+          { success: false, error: "API key does not have query access" },
+          403,
+        );
+      }
 
       if (!Types.ObjectId.isValid(databaseId)) {
         return c.json({ success: false, error: "Invalid database ID" }, 400);
@@ -1066,7 +1078,7 @@ workspaceDatabaseRoutes.openapi(
       const result = await databaseConnectionService.executeQuery(
         database,
         body.query,
-        body.options,
+        { ...body.options, readOnly: queryAccess === "read" },
       );
 
       return c.json(result);
@@ -1900,6 +1912,15 @@ workspaceExecuteRoutes.openapi(
       const user = c.get("user");
       const apiKey = c.get("apiKey");
       const body = await parseRequestBody(c);
+      const queryAccess = apiKey
+        ? restQueryAccessFromStoredScopes(apiKey.scopes)
+        : "write";
+      if (queryAccess === "none") {
+        return c.json(
+          { success: false, error: "API key does not have query access" },
+          403,
+        );
+      }
 
       const queryDefinition = resolveQueryDefinition(body);
       const {
@@ -1969,6 +1990,7 @@ workspaceExecuteRoutes.openapi(
         databaseId: effectiveQueryDefinition.databaseId || databaseId,
         databaseName: effectiveQueryDefinition.databaseName || databaseName,
         executionId,
+        readOnly: queryAccess === "read",
       };
 
       const isPreviewMode = mode === "preview";
@@ -1995,7 +2017,7 @@ workspaceExecuteRoutes.openapi(
               400,
             );
           }
-          if (!user?.id) {
+          if (c.get("authType") !== "session" || !user?.id) {
             return c.json(
               {
                 success: false,
@@ -2326,6 +2348,7 @@ workspaceExecuteRoutes.openapi(
               : 1000,
         executionId: typeof executionId === "string" ? executionId : undefined,
         signal: c.req.raw.signal,
+        readOnly: true,
       };
 
       if (normalizedFormat === "parquet") {

@@ -43,6 +43,8 @@ export interface ExecuteSavedConsoleInput {
   /** Cancellation: pre-registered execution id + abort signal. */
   executionId?: string;
   signal?: AbortSignal;
+  /** Enforce read-only execution at the database connection layer. */
+  readOnly?: boolean;
 }
 
 export interface ExecuteSavedConsoleResult {
@@ -211,6 +213,7 @@ async function runResolvedConsole(args: {
     executionId: input.executionId,
     signal: input.signal,
     bigQueryJobMaxWaitMs: args.bigQueryJobMaxWaitMs,
+    readOnly: input.readOnly,
   };
 
   let result: {

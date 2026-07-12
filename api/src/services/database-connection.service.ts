@@ -83,6 +83,11 @@ export interface QueryExecuteOptions {
   /** Execution ID for job tracking (enables cancellation) */
   executionId?: string;
   /**
+   * Enforce read-only execution at the database/session layer. Unsupported
+   * engines fail closed instead of falling back to lexical SQL checks.
+   */
+  readOnly?: boolean;
+  /**
    * BigQuery only: max time to poll jobs.query until jobComplete (default 5m).
    * Large MERGE/DML jobs need a higher value or we return a false timeout while BQ keeps running.
    */
@@ -491,6 +496,32 @@ export class DatabaseConnectionService {
     options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
     try {
+      if (options?.readOnly) {
+        if (typeof query !== "string") {
+          return {
+            success: false,
+            error:
+              "Read-only execution only supports SQL strings; arbitrary MongoDB execution is disabled",
+          };
+        }
+        const safety = checkPreviewQuerySafety(query);
+        if (!safety.safe) {
+          return { success: false, error: safety.errors.join(" ") };
+        }
+        if (
+          database.type === "mongodb" ||
+          database.type === "bigquery" ||
+          database.type === "mssql" ||
+          database.type === "cloudflare-d1" ||
+          database.type === "cloudflare-kv"
+        ) {
+          return {
+            success: false,
+            error: `Read-only execution is not supported for ${database.type}; connect it with database credentials restricted to read access`,
+          };
+        }
+      }
+
       switch (database.type) {
         case "mongodb":
           return await this.executeMongoDBQuery(database, query, options);
@@ -552,7 +583,11 @@ export class DatabaseConnectionService {
     options?: QueryPreviewOptions,
   ): Promise<QueryPreviewResult> {
     try {
-      if (database.type === "bigquery" && typeof query === "string") {
+      if (
+        !options?.readOnly &&
+        database.type === "bigquery" &&
+        typeof query === "string"
+      ) {
         return await this.executeBigQueryPreviewQuery(database, query, options);
       }
 
@@ -609,6 +644,7 @@ export class DatabaseConnectionService {
           databaseId: options?.databaseId,
           executionId: options?.executionId,
           signal: options?.signal,
+          readOnly: options?.readOnly,
         },
       );
 
@@ -652,12 +688,20 @@ export class DatabaseConnectionService {
     query: any,
     options: StreamingQueryOptions & QueryExecuteOptions,
   ): Promise<{ success: boolean; totalRows: number; error?: string }> {
-    if (database.type === "bigquery" && typeof query === "string") {
+    if (
+      !options.readOnly &&
+      database.type === "bigquery" &&
+      typeof query === "string"
+    ) {
       return await this.executeBigQueryStreamingQuery(database, query, options);
     }
 
     const driver = databaseRegistry.getDriver(database.type);
-    if (typeof query === "string" && driver?.executeStreamingQuery) {
+    if (
+      !options.readOnly &&
+      typeof query === "string" &&
+      driver?.executeStreamingQuery
+    ) {
       return await driver.executeStreamingQuery(database, query, options);
     }
 
@@ -703,6 +747,7 @@ export class DatabaseConnectionService {
           databaseId: options.databaseId,
           executionId: options.executionId,
           signal: options.signal,
+          readOnly: options.readOnly,
         });
 
         if (!result.success) {
@@ -753,7 +798,7 @@ export class DatabaseConnectionService {
       };
     }
 
-    if (typeof query === "string") {
+    if (typeof query === "string" && !options.readOnly) {
       const driver = databaseRegistry.getDriver(database.type);
       if (driver?.getQuerySchema) {
         const result = await driver.getQuerySchema(database, query, {
@@ -787,6 +832,7 @@ export class DatabaseConnectionService {
       databaseId: options.databaseId,
       databaseName: options.databaseName,
       signal: options.signal,
+      readOnly: options.readOnly,
     });
 
     if (!probe.success) {
@@ -3649,6 +3695,7 @@ export class DatabaseConnectionService {
         signal,
       });
 
+      let readOnlyTransactionStarted = false;
       try {
         // Get backend PID for cancellation support
         if (executionId) {
@@ -3664,7 +3711,15 @@ export class DatabaseConnectionService {
           return { success: false, error: "Query cancelled" };
         }
 
+        if (options?.readOnly) {
+          await client.query("BEGIN TRANSACTION READ ONLY");
+          readOnlyTransactionStarted = true;
+        }
         const result = await client.query(query);
+        if (readOnlyTransactionStarted) {
+          await client.query("COMMIT");
+          readOnlyTransactionStarted = false;
+        }
         const fields = normalizePostgresFields(result.fields);
         const rows = normalizePostgresRows(
           result.rows as Record<string, unknown>[],
@@ -3677,6 +3732,9 @@ export class DatabaseConnectionService {
           fields,
         };
       } finally {
+        if (readOnlyTransactionStarted) {
+          await client.query("ROLLBACK").catch(() => undefined);
+        }
         // Always release the client back to the pool
         client.release();
         if (executionId) {
@@ -4064,12 +4122,21 @@ export class DatabaseConnectionService {
         signal,
       });
 
+      let readOnlyTransactionStarted = false;
       try {
         if (signal?.aborted) {
           return { success: false, error: "Query cancelled" };
         }
 
+        if (options?.readOnly) {
+          await connection.query("START TRANSACTION READ ONLY");
+          readOnlyTransactionStarted = true;
+        }
         const [rows, fields] = await connection.execute(query);
+        if (readOnlyTransactionStarted) {
+          await connection.commit();
+          readOnlyTransactionStarted = false;
+        }
         const normalizedRows = Array.isArray(rows)
           ? rows.map(row => this.normalizeMySQLValue(row))
           : rows;
@@ -4097,6 +4164,9 @@ export class DatabaseConnectionService {
           fields: normalizedFields,
         };
       } finally {
+        if (readOnlyTransactionStarted) {
+          await connection.rollback().catch(() => undefined);
+        }
         connection.release();
       }
     } catch (error) {
@@ -4430,6 +4500,7 @@ export class DatabaseConnectionService {
           clickhouse_settings: {
             // Allow query to be cancelled
             cancel_http_readonly_queries_on_client_close: 1,
+            ...(options?.readOnly ? { readonly: "2" } : {}),
           },
           abort_signal: abortController.signal,
         });

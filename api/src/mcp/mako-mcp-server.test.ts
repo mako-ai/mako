@@ -1,0 +1,332 @@
+/**
+ * Mako MCP server tests.
+ *
+ * Pure-logic coverage of the stateless JSON-RPC exchange: initialize
+ * handshake, tools/list bridging (AI SDK zod schemas → JSON Schema),
+ * unknown-tool errors, skill resources, and notification-only exchanges.
+ * Tool *execution* is DB-backed and covered by route-level usage, not here.
+ *
+ * Run: tsx src/mcp/mako-mcp-server.test.ts
+ */
+import assert from "node:assert/strict";
+import { Types } from "mongoose";
+
+process.env.ENCRYPTION_KEY =
+  process.env.ENCRYPTION_KEY ??
+  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import { buildMakoMcpServer } from "./mako-mcp-server";
+import { StatelessMcpTransport } from "./stateless-transport";
+import {
+  parseWorkspaceApiKeyScopes,
+  restQueryAccessFromStoredScopes,
+  resolveWorkspaceApiKeyScopes,
+  type WorkspaceApiKeyScope,
+} from "../auth/api-key-scopes";
+import { sqlReadOnlyAccessError } from "../services/read-only-query.service";
+
+const WORKSPACE_ID = new Types.ObjectId().toString();
+
+/** One stateless HTTP exchange: fresh server + transport per call. */
+async function exchange(
+  messages: Record<string, unknown>[],
+  scopes: WorkspaceApiKeyScope[] = ["mcp", "query:read"],
+): Promise<Record<string, unknown>[]> {
+  const server = buildMakoMcpServer({ workspaceId: WORKSPACE_ID, scopes });
+  const transport = new StatelessMcpTransport();
+  await server.connect(transport);
+  try {
+    return (await transport.handle(
+      messages as unknown as JSONRPCMessage[],
+      5_000,
+    )) as unknown as Record<string, unknown>[];
+  } finally {
+    await server.close();
+  }
+}
+
+async function main() {
+  // 1. Legacy keys receive the safe default; unknown scopes cannot be
+  //    granted, and stored unknown scopes (e.g. since-removed ones) are
+  //    dropped without killing the key's remaining grants.
+  assert.deepEqual(parseWorkspaceApiKeyScopes(undefined), [
+    "mcp",
+    "query:read",
+  ]);
+  assert.deepEqual(resolveWorkspaceApiKeyScopes(undefined), []);
+  assert.equal(restQueryAccessFromStoredScopes(undefined), "write");
+  assert.deepEqual(resolveWorkspaceApiKeyScopes(["mcp", "unknown"]), ["mcp"]);
+  assert.throws(
+    () => parseWorkspaceApiKeyScopes(["mcp", "unknown"]),
+    /Unsupported API key scope/,
+  );
+  // MCP is read-only by design: query:write is not a grantable scope.
+  assert.throws(
+    () => parseWorkspaceApiKeyScopes(["mcp", "query:write"]),
+    /Unsupported API key scope/,
+  );
+  assert.equal(
+    sqlReadOnlyAccessError("SELECT 'UPDATE is text' AS value"),
+    null,
+  );
+  assert.equal(
+    sqlReadOnlyAccessError("SELECT system, settings FROM metrics"),
+    null,
+  );
+  assert.equal(
+    sqlReadOnlyAccessError("SELECT nextval('invoice_sequence')"),
+    null,
+  );
+  assert.equal(
+    sqlReadOnlyAccessError(
+      "WITH active AS (SELECT id FROM users) SELECT * FROM active",
+    ),
+    null,
+  );
+  for (const query of [
+    "UPDATE customers SET plan = 'free'",
+    "WITH active AS (SELECT id FROM users) DELETE FROM users",
+    "SELECT * INTO archived_customers FROM customers",
+    "SELECT 1; DROP TABLE customers",
+    "SELECT 1 /*!50000 INTO OUTFILE '/tmp/customers.csv' */",
+  ]) {
+    assert.ok(sqlReadOnlyAccessError(query), `unsafe query accepted: ${query}`);
+  }
+
+  // 2. initialize handshake identifies the server.
+  {
+    const [res] = await exchange([
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "test", version: "0.0.0" },
+        },
+      },
+    ]);
+    const result = res.result as {
+      serverInfo: { name: string };
+      capabilities: Record<string, unknown>;
+      instructions?: string;
+    };
+    assert.equal(result.serverInfo.name, "mako");
+    assert.ok(result.capabilities.tools);
+    assert.ok(result.capabilities.resources);
+    assert.match(
+      result.instructions ?? "",
+      /render_app/,
+      "initialize should ship the workflow instructions",
+    );
+  }
+
+  // 3. Stateless: tools/list works on a fresh exchange WITHOUT initialize
+  //    (each HTTP POST builds a new Server; clients only initialize once).
+  {
+    const [res] = await exchange([
+      { jsonrpc: "2.0", id: 2, method: "tools/list" },
+    ]);
+    const { tools } = res.result as {
+      tools: {
+        name: string;
+        inputSchema: { type?: string };
+        annotations?: {
+          readOnlyHint?: boolean;
+          destructiveHint?: boolean;
+        };
+      }[];
+    };
+    const names = new Set(tools.map(t => t.name));
+    const byName = new Map(tools.map(t => [t.name, t]));
+
+    // Annotations drive client-side auto-approval: pure reads must say so,
+    // and under a query:read key the enforced-read-only query loop too.
+    for (const readOnlyTool of [
+      "sql_list_tables",
+      "sql_inspect_table",
+      "sql_execute_query",
+      "run_console",
+      "read_console",
+    ]) {
+      assert.equal(
+        byName.get(readOnlyTool)?.annotations?.readOnlyHint,
+        true,
+        `${readOnlyTool} should be annotated read-only for a query:read key`,
+      );
+    }
+    assert.equal(
+      byName.get("app_write_file")?.annotations?.readOnlyHint,
+      false,
+    );
+    assert.equal(
+      byName.get("app_write_file")?.annotations?.destructiveHint,
+      false,
+    );
+    assert.equal(
+      byName.get("app_delete_file")?.annotations?.destructiveHint,
+      true,
+    );
+    for (const expected of [
+      "create_app",
+      "get_app_state",
+      "app_read_file",
+      "app_write_file",
+      "app_edit_file",
+      "app_add_dependency",
+      "app_create_data_binding",
+      "app_update_data_binding",
+      "materialize_binding",
+      "app_save_version",
+      "app_restore_version",
+      "list_connections",
+      "sql_list_connections",
+      "sql_list_databases",
+      "sql_list_tables",
+      "sql_inspect_table",
+      "sql_execute_query",
+      "mongo_list_connections",
+      "search_consoles",
+      "read_console",
+      "create_console",
+      "run_console",
+      "check_query_status",
+      "cancel_query",
+      "browse_version_history",
+      "get_version_snapshot",
+      "load_skill",
+      "read_skill_resource",
+    ]) {
+      assert.ok(names.has(expected), `missing tool: ${expected}`);
+    }
+    for (const tool of tools) {
+      assert.equal(
+        tool.inputSchema.type,
+        "object",
+        `tool ${tool.name} should expose an object JSON Schema`,
+      );
+    }
+    assert.equal(
+      names.has("mongo_execute_query"),
+      false,
+      "read-only keys must not expose arbitrary MongoDB JavaScript execution",
+    );
+  }
+
+  // 4. Arbitrary MongoDB JavaScript execution is never bridged over MCP.
+  {
+    const [res] = await exchange(
+      [{ jsonrpc: "2.0", id: 3, method: "tools/list" }],
+      ["mcp", "query:read"],
+    );
+    const { tools } = res.result as { tools: { name: string }[] };
+    assert.equal(
+      tools.some(tool => tool.name === "mongo_execute_query"),
+      false,
+      "mongo_execute_query must not be exposed over MCP",
+    );
+  }
+
+  // 5. Unsafe SQL is rejected before any database lookup/execution.
+  {
+    const [res] = await exchange([
+      {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: {
+          name: "sql_execute_query",
+          arguments: {
+            connectionId: new Types.ObjectId().toString(),
+            query: "UPDATE customers SET plan = 'free'",
+          },
+        },
+      },
+    ]);
+    const result = res.result as { content: { text: string }[] };
+    assert.match(result.content[0].text, /read-only/);
+    assert.match(result.content[0].text, /UPDATE/);
+  }
+
+  // 6. Unknown tool → in-band tool error, not a protocol error.
+  {
+    const [res] = await exchange([
+      {
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/call",
+        params: { name: "does_not_exist", arguments: {} },
+      },
+    ]);
+    const result = res.result as { isError?: boolean };
+    assert.equal(result.isError, true);
+  }
+
+  // 7. Invalid arguments are rejected by the bridged zod schema.
+  {
+    const [res] = await exchange([
+      {
+        jsonrpc: "2.0",
+        id: 6,
+        method: "tools/call",
+        params: { name: "app_write_file", arguments: { appId: 42 } },
+      },
+    ]);
+    const result = res.result as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /Invalid arguments/);
+  }
+
+  // 8. System skills are exposed as resources; the apps playbook reads back.
+  {
+    const [listRes] = await exchange([
+      { jsonrpc: "2.0", id: 7, method: "resources/list" },
+    ]);
+    const { resources } = listRes.result as { resources: { uri: string }[] };
+    const uris = new Set(resources.map(r => r.uri));
+    assert.ok(uris.has("mako://skills/apps"), "apps skill resource missing");
+
+    const [readRes] = await exchange([
+      {
+        jsonrpc: "2.0",
+        id: 8,
+        method: "resources/read",
+        params: { uri: "mako://skills/apps" },
+      },
+    ]);
+    const { contents } = readRes.result as {
+      contents: { mimeType: string; text: string }[];
+    };
+    assert.equal(contents[0].mimeType, "text/markdown");
+    assert.ok(
+      contents[0].text.length > 500,
+      "skill body should be substantial",
+    );
+  }
+
+  // 9. Notification-only exchange produces no responses (HTTP layer → 202).
+  {
+    const responses = await exchange([
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+    ]);
+    assert.equal(responses.length, 0);
+  }
+
+  // eslint-disable-next-line no-console
+  console.log("mako-mcp-server tests passed");
+  // Imported tool modules hold live handles (driver pools/timers); an
+  // explicit exit keeps the tsx test chain moving.
+  // eslint-disable-next-line no-process-exit
+  process.exit(0);
+}
+
+main().catch(err => {
+  console.error(err);
+  // eslint-disable-next-line no-process-exit
+  process.exit(1);
+});

@@ -72,6 +72,11 @@ import {
 } from "../../services/app-version.service";
 import { canReadResource, canWriteResource } from "../../utils/resource-acl";
 import { loggers } from "../../logging";
+import {
+  MONGO_QUERY_WRITE_SCOPE_REQUIRED,
+  sqlReadOnlyAccessError,
+} from "../../services/read-only-query.service";
+import type { QueryAccess } from "../../auth/api-key-scopes";
 
 const logger = loggers.agent();
 
@@ -81,6 +86,8 @@ export interface ServerAppToolsOptions {
   userId?: string;
   /** Chat driving this turn — used as the realtime echo-suppression id. */
   chatId?: string;
+  /** Database capability granted by the calling API key. */
+  queryAccess?: QueryAccess;
 }
 
 type LoadResult = { doc: IMakoApp } | { error: string };
@@ -93,6 +100,7 @@ export function createServerAppTools({
   workspaceId,
   userId,
   chatId,
+  queryAccess,
 }: ServerAppToolsOptions) {
   const agentClientId = `agent:${chatId ?? "unknown"}`;
 
@@ -141,6 +149,39 @@ export function createServerAppTools({
   const canWrite = async (doc: IMakoApp): Promise<boolean> => {
     if (!userId) return true; // workspace-scoped API-key automation
     return canWriteResource(doc, userId, await memberRole());
+  };
+
+  const bindingQueryAccessError = async (
+    language: unknown,
+    code: unknown,
+    connectionId: unknown,
+  ): Promise<string | null> => {
+    // In-product agents keep their existing behavior. MCP data bindings are
+    // always read-only: a binding is a data source,
+    // not an arbitrary command channel.
+    if (queryAccess === undefined) return null;
+    if (queryAccess === "none") {
+      return "This API key does not have query access.";
+    }
+    if (
+      typeof connectionId !== "string" ||
+      !Types.ObjectId.isValid(connectionId)
+    ) {
+      return "Data binding connection is invalid.";
+    }
+    const connection = await DatabaseConnection.findOne({
+      _id: new Types.ObjectId(connectionId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    }).select("type");
+    if (!connection) return "Data binding connection is invalid.";
+    if (
+      connection.type === "mongodb" ||
+      language === "javascript" ||
+      language === "mongodb"
+    ) {
+      return MONGO_QUERY_WRITE_SCOPE_REQUIRED;
+    }
+    return sqlReadOnlyAccessError(typeof code === "string" ? code : "");
   };
 
   // Display name stamped on version checkpoints the agent creates.
@@ -444,6 +485,12 @@ export function createServerAppTools({
           if (!binding) {
             return { success: false, error: `No data binding named "${name}"` };
           }
+          const accessError = await bindingQueryAccessError(
+            binding.language,
+            binding.code,
+            binding.connectionId,
+          );
+          if (accessError) return { success: false, error: accessError };
           if (binding.materialization !== "parquet") {
             return {
               success: false,
@@ -730,6 +777,12 @@ export function createServerAppTools({
                 "Either consoleId, or both connectionId and code, are required.",
             };
           }
+          const accessError = await bindingQueryAccessError(
+            language,
+            code,
+            connectionId,
+          );
+          if (accessError) return { success: false, error: accessError };
 
           // Same-name "replace" used to silently recreate the binding with a
           // new id — orphaning its artifact and dropping its schedule (the
@@ -884,6 +937,13 @@ export function createServerAppTools({
               return { success: false, error: dbtCheck.error };
             }
           }
+          const nextLanguage = input.language ?? binding.language ?? "sql";
+          const accessError = await bindingQueryAccessError(
+            nextLanguage,
+            nextCode,
+            input.connectionId ?? binding.connectionId,
+          );
+          if (accessError) return { success: false, error: accessError };
 
           const nextDbtProjectId =
             input.dbtProjectId === undefined
@@ -990,6 +1050,14 @@ export function createServerAppTools({
                 "refreshes. Do not delete/recreate it.",
             };
           }
+          if (enabled) {
+            const accessError = await bindingQueryAccessError(
+              binding.language,
+              binding.code,
+              binding.connectionId,
+            );
+            if (accessError) return { success: false, error: accessError };
+          }
           let schedule;
           try {
             schedule = validateDashboardMaterializationSchedule({
@@ -1069,6 +1137,14 @@ export function createServerAppTools({
           } else if (next === "live" && schedule?.enabled) {
             // Turning materialization off implicitly disables any schedule.
             schedule = { ...schedule, enabled: false };
+          }
+          if (next === "parquet") {
+            const accessError = await bindingQueryAccessError(
+              binding.language,
+              binding.code,
+              binding.connectionId,
+            );
+            if (accessError) return { success: false, error: accessError };
           }
           binding.materialization = next;
           binding.materializationSchedule = schedule;
@@ -1174,7 +1250,16 @@ export function createServerAppTools({
           if (!old) {
             return { success: false, error: `Version ${version} not found` };
           }
-          applyAppSnapshot(doc, old.snapshot as unknown as AppSnapshot);
+          const snapshot = old.snapshot as unknown as AppSnapshot;
+          for (const binding of snapshot.dataBindings ?? []) {
+            const accessError = await bindingQueryAccessError(
+              binding.language,
+              binding.code,
+              binding.connectionId,
+            );
+            if (accessError) return { success: false, error: accessError };
+          }
+          applyAppSnapshot(doc, snapshot);
           const newVersion = await saveAndPublish(doc);
           await createVersion({
             entityType: "app",
