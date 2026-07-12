@@ -3270,6 +3270,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/conversation-branches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the actor's Apps v2 conversation branches */
+        get: operations["get_api_workspaces_workspaceId_apps_v2_projectId_conversation_branches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/conversation-branches/merge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Merge a committed conversation branch into the default branch */
+        post: operations["post_api_workspaces_workspaceId_apps_v2_projectId_conversation_branches_merge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/apps-v2/status": {
         parameters: {
             query?: never;
@@ -3318,6 +3352,42 @@ export interface paths {
         post?: never;
         /** Delete an Apps v2 project */
         delete: operations["delete_api_workspaces_workspaceId_apps_v2_projectId"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/github": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get the Apps v2 GitHub binding */
+        get: operations["get_api_workspaces_workspaceId_apps_v2_projectId_github"];
+        /** Bind an Apps v2 project to GitHub */
+        put: operations["put_api_workspaces_workspaceId_apps_v2_projectId_github"];
+        post?: never;
+        /** Remove the Apps v2 GitHub binding */
+        delete: operations["delete_api_workspaces_workspaceId_apps_v2_projectId_github"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/github/push": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Push a committed Apps v2 conversation branch to GitHub */
+        post: operations["post_api_workspaces_workspaceId_apps_v2_projectId_github_push"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -4647,13 +4717,17 @@ export interface components {
             id: string;
             projectId: string;
             actorId: string;
+            /** @enum {string} */
+            kind: "manual";
+            /** @enum {string} */
+            contextKey: "manual";
             branch: string;
             baseSha: string;
             wipOid: string;
             revision: number;
             leaseEpoch: number;
             /** @enum {string} */
-            status: "active" | "discarded" | "fenced";
+            status: "active" | "discarded" | "fenced" | "conflict";
             /** Format: date-time */
             createdAt?: string;
             /** Format: date-time */
@@ -4673,16 +4747,59 @@ export interface components {
             /** @enum {string} */
             code: "provider_unavailable";
         };
-        AppV2StatusResponse: {
-            enabled: boolean;
-            sandboxAvailable: boolean;
-            /** @enum {string} */
-            sandboxProvider: "e2b" | "off";
-        };
-        AppV2ProjectListResponse: {
+        AppV2ConversationBranchListResponse: {
             /** @enum {boolean} */
             success: true;
-            projects: components["schemas"]["AppV2Project"][];
+            branches: {
+                chatId: string;
+                branch: string;
+                baseSha: string;
+                wipOid: string;
+                lastCommitSha?: string;
+                headSha: string;
+                aheadBy: number;
+                behindBy: number;
+                dirty: boolean;
+                lastCommit: components["schemas"]["AppV2CommitMetadata"];
+                /** @enum {string} */
+                status: "active" | "discarded" | "fenced" | "conflict";
+                remote?: {
+                    branch: string;
+                    /** @enum {string} */
+                    status: "pending" | "pushed" | "failed" | "conflict";
+                    lastPushedLocalSha?: string;
+                    lastPushedRemoteSha?: string;
+                    error?: string;
+                    /** Format: date-time */
+                    lastPushAt?: string;
+                };
+            }[];
+        };
+        AppV2CommitMetadata: {
+            sha: string;
+            treeSha: string;
+            parentShas: string[];
+            authorName: string;
+            authorEmail: string;
+            /** Format: date-time */
+            authoredAt?: string;
+            message: string;
+            stats: {
+                filesChanged: number;
+                additions: number;
+                deletions: number;
+            };
+        };
+        AppV2ConversationBranchMergeResponse: {
+            /** @enum {boolean} */
+            success: true;
+            project: components["schemas"]["AppV2Project"];
+            result: {
+                branch: string;
+                branchHeadSha: string;
+                mergedSha: string;
+                fastForward: boolean;
+            };
         };
         AppV2Project: {
             id: string;
@@ -4709,15 +4826,65 @@ export interface components {
             repositoryId: string;
             defaultBranch: string;
             headSha: string;
+            githubPushAvailable: boolean;
+            githubCanManage: boolean;
+            github?: {
+                installationId: number;
+                owner: string;
+                repo: string;
+                baseBranch: string;
+                subdirectory?: string;
+                autoPushOnTurnEnd: boolean;
+                generation: number;
+                /** Format: date-time */
+                boundAt?: string;
+                boundBy: string;
+            };
             /** Format: date-time */
             createdAt?: string;
             /** Format: date-time */
             updatedAt?: string;
         };
+        AppV2ConversationBranchMergeInput: {
+            branch: string;
+        };
+        AppV2StatusResponse: {
+            enabled: boolean;
+            sandboxAvailable: boolean;
+            /** @enum {string} */
+            sandboxProvider: "e2b" | "off";
+            githubPushAvailable: boolean;
+        };
+        AppV2ProjectListResponse: {
+            /** @enum {boolean} */
+            success: true;
+            projects: components["schemas"]["AppV2Project"][];
+        };
         AppV2ProjectResponse: {
             /** @enum {boolean} */
             success: true;
             project: components["schemas"]["AppV2Project"];
+        };
+        AppV2GitHubBindingInput: {
+            installationId: number;
+            owner: string;
+            repo: string;
+            baseBranch: string;
+            subdirectory?: string;
+            /** @default false */
+            autoPushOnTurnEnd: boolean;
+        };
+        AppV2GitHubPushResponse: {
+            success: boolean;
+            /** @enum {string} */
+            status: "local_only" | "pushed" | "remote_failed" | "conflict";
+            remoteBranch?: string;
+            remoteSha?: string;
+            error?: string;
+            skipped?: boolean;
+        };
+        AppV2GitHubPushInput: {
+            chatId: string;
         };
         AppV2AckResponse: {
             /** @enum {boolean} */
@@ -4811,21 +4978,6 @@ export interface components {
             /** @enum {boolean} */
             success: true;
             commits: components["schemas"]["AppV2CommitMetadata"][];
-        };
-        AppV2CommitMetadata: {
-            sha: string;
-            treeSha: string;
-            parentShas: string[];
-            authorName: string;
-            authorEmail: string;
-            /** Format: date-time */
-            authoredAt?: string;
-            message: string;
-            stats: {
-                filesChanged: number;
-                additions: number;
-                deletions: number;
-            };
         };
         AppV2CommitDetailResponse: {
             /** @enum {boolean} */
@@ -15919,6 +16071,92 @@ export interface operations {
             };
         };
     };
+    get_api_workspaces_workspaceId_apps_v2_projectId_conversation_branches: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Read-only conversation branch metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppV2ConversationBranchListResponse"];
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_apps_v2_projectId_conversation_branches_merge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AppV2ConversationBranchMergeInput"];
+            };
+        };
+        responses: {
+            /** @description Conversation branch merged */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppV2ConversationBranchMergeResponse"];
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     get_api_workspaces_workspaceId_apps_v2_status: {
         parameters: {
             query?: never;
@@ -16116,6 +16354,178 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AppV2AckResponse"];
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_v2_projectId_github: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Apps v2 project GitHub binding */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppV2ProjectResponse"];
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    put_api_workspaces_workspaceId_apps_v2_projectId_github: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AppV2GitHubBindingInput"];
+            };
+        };
+        responses: {
+            /** @description Apps v2 project GitHub binding */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppV2ProjectResponse"];
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    delete_api_workspaces_workspaceId_apps_v2_projectId_github: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Apps v2 project GitHub binding */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppV2ProjectResponse"];
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_apps_v2_projectId_github_push: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AppV2GitHubPushInput"];
+            };
+        };
+        responses: {
+            /** @description Apps v2 GitHub push result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppV2GitHubPushResponse"];
                 };
             };
             /** @description Invalid request */

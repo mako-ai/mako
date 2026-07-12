@@ -1294,6 +1294,23 @@
                 "lastCommitSha": {
                   "type": "string"
                 },
+                "headSha": {
+                  "type": "string"
+                },
+                "aheadBy": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "behindBy": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "dirty": {
+                  "type": "boolean"
+                },
+                "lastCommit": {
+                  "$ref": "#/components/schemas/AppV2CommitMetadata"
+                },
                 "status": {
                   "type": "string",
                   "enum": [
@@ -1343,6 +1360,11 @@
                 "branch",
                 "baseSha",
                 "wipOid",
+                "headSha",
+                "aheadBy",
+                "behindBy",
+                "dirty",
+                "lastCommit",
                 "status"
               ]
             }
@@ -1353,34 +1375,65 @@
           "branches"
         ]
       },
-      "AppV2StatusResponse": {
+      "AppV2CommitMetadata": {
         "type": "object",
         "properties": {
-          "enabled": {
-            "type": "boolean"
+          "sha": {
+            "type": "string"
           },
-          "sandboxAvailable": {
-            "type": "boolean"
+          "treeSha": {
+            "type": "string"
           },
-          "sandboxProvider": {
+          "parentShas": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "authorName": {
+            "type": "string"
+          },
+          "authorEmail": {
+            "type": "string"
+          },
+          "authoredAt": {
             "type": "string",
-            "enum": [
-              "e2b",
-              "off"
-            ]
+            "format": "date-time"
           },
-          "githubPushAvailable": {
-            "type": "boolean"
+          "message": {
+            "type": "string"
+          },
+          "stats": {
+            "type": "object",
+            "properties": {
+              "filesChanged": {
+                "type": "integer"
+              },
+              "additions": {
+                "type": "integer"
+              },
+              "deletions": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filesChanged",
+              "additions",
+              "deletions"
+            ]
           }
         },
         "required": [
-          "enabled",
-          "sandboxAvailable",
-          "sandboxProvider",
-          "githubPushAvailable"
+          "sha",
+          "treeSha",
+          "parentShas",
+          "authorName",
+          "authorEmail",
+          "message",
+          "stats"
         ]
       },
-      "AppV2ProjectListResponse": {
+      "AppV2ConversationBranchMergeResponse": {
         "type": "object",
         "properties": {
           "success": {
@@ -1389,16 +1442,37 @@
               true
             ]
           },
-          "projects": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/AppV2Project"
-            }
+          "project": {
+            "$ref": "#/components/schemas/AppV2Project"
+          },
+          "result": {
+            "type": "object",
+            "properties": {
+              "branch": {
+                "type": "string"
+              },
+              "branchHeadSha": {
+                "type": "string"
+              },
+              "mergedSha": {
+                "type": "string"
+              },
+              "fastForward": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "branch",
+              "branchHeadSha",
+              "mergedSha",
+              "fastForward"
+            ]
           }
         },
         "required": [
           "success",
-          "projects"
+          "project",
+          "result"
         ]
       },
       "AppV2Project": {
@@ -1559,6 +1633,67 @@
           "headSha",
           "githubPushAvailable",
           "githubCanManage"
+        ]
+      },
+      "AppV2ConversationBranchMergeInput": {
+        "type": "object",
+        "properties": {
+          "branch": {
+            "type": "string",
+            "pattern": "^mako\\/chat\\/[0-9a-f]{24}$"
+          }
+        },
+        "required": [
+          "branch"
+        ],
+        "additionalProperties": false
+      },
+      "AppV2StatusResponse": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "sandboxAvailable": {
+            "type": "boolean"
+          },
+          "sandboxProvider": {
+            "type": "string",
+            "enum": [
+              "e2b",
+              "off"
+            ]
+          },
+          "githubPushAvailable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled",
+          "sandboxAvailable",
+          "sandboxProvider",
+          "githubPushAvailable"
+        ]
+      },
+      "AppV2ProjectListResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppV2Project"
+            }
+          }
+        },
+        "required": [
+          "success",
+          "projects"
         ]
       },
       "AppV2ProjectResponse": {
@@ -2049,64 +2184,6 @@
         "required": [
           "success",
           "commits"
-        ]
-      },
-      "AppV2CommitMetadata": {
-        "type": "object",
-        "properties": {
-          "sha": {
-            "type": "string"
-          },
-          "treeSha": {
-            "type": "string"
-          },
-          "parentShas": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "authorName": {
-            "type": "string"
-          },
-          "authorEmail": {
-            "type": "string"
-          },
-          "authoredAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "message": {
-            "type": "string"
-          },
-          "stats": {
-            "type": "object",
-            "properties": {
-              "filesChanged": {
-                "type": "integer"
-              },
-              "additions": {
-                "type": "integer"
-              },
-              "deletions": {
-                "type": "integer"
-              }
-            },
-            "required": [
-              "filesChanged",
-              "additions",
-              "deletions"
-            ]
-          }
-        },
-        "required": [
-          "sha",
-          "treeSha",
-          "parentShas",
-          "authorName",
-          "authorEmail",
-          "message",
-          "stats"
         ]
       },
       "AppV2CommitDetailResponse": {
@@ -22307,6 +22384,82 @@
           }
         },
         "operationId": "get_api_workspaces_workspaceId_apps_v2_projectId_conversation_branches"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/conversation-branches/merge": {
+      "post": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Merge a committed conversation branch into the default branch",
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppV2ConversationBranchMergeInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Conversation branch merged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppV2ConversationBranchMergeResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_v2_projectId_conversation_branches_merge"
       }
     },
     "/api/workspaces/{workspaceId}/apps-v2/status": {
