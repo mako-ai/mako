@@ -1,15 +1,15 @@
 /**
  * Mako's own MCP endpoint (Streamable HTTP, stateless JSON mode).
  *
- * POST /api/mcp — one JSON-RPC exchange per request; authenticated with a
- * workspace API key (`Authorization: Bearer revops_...`). Sessions and SSE
- * resumption are intentionally not supported: every request builds a fresh
- * Server bound to the key's workspace and acting user, which keeps the
- * endpoint horizontally scalable and auditable.
+ * POST /api/mcp — one JSON-RPC exchange per request; authenticated with the
+ * OAuth sign-in flow (see mcp-oauth.routes.ts) or a workspace API key
+ * (`Authorization: Bearer revops_...`). Sessions and SSE resumption are
+ * intentionally not supported: every request builds a fresh Server bound to
+ * the credential's workspace and acting user, which keeps the endpoint
+ * horizontally scalable and auditable.
  *
- * Client setup:
- *   claude mcp add --transport http mako https://<host>/api/mcp \
- *     --header "Authorization: Bearer revops_..."
+ * Client setup (OAuth — the client opens a browser to sign in):
+ *   claude mcp add --transport http mako https://<host>/api/mcp
  *
  * Not documented in the OpenAPI surface (JSON-RPC, not REST); mounted next
  * to the public MCP preset routes in register-routes.ts.
@@ -20,7 +20,9 @@ import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import {
   unifiedAuthMiddleware,
   isApiKeyAuth,
+  isMcpOAuthAuth,
 } from "../auth/unified-auth.middleware";
+import { mcpResourceMetadataUrl } from "./mcp-oauth.routes";
 import { requireWorkspace } from "../middleware/workspace.middleware";
 import {
   hasWorkspaceApiKeyScope,
@@ -51,19 +53,37 @@ function looksLikeJsonRpc(value: unknown): value is Record<string, unknown> {
 
 export const mcpProtocolRoutes = new Hono<AuthEnv>();
 
+/**
+ * RFC 9728 challenge: any 401 from this endpoint advertises the protected
+ * resource metadata so OAuth-capable MCP clients (Claude, Cursor, Codex)
+ * can discover the sign-in flow instead of demanding a pre-shared key.
+ */
+mcpProtocolRoutes.use("/", async (c, next) => {
+  await next();
+  if (c.res.status === 401) {
+    c.res.headers.set(
+      "WWW-Authenticate",
+      `Bearer resource_metadata="${mcpResourceMetadataUrl(c)}"`,
+    );
+  }
+});
+
 mcpProtocolRoutes.post(
   "/",
   unifiedAuthMiddleware,
   requireWorkspace,
   async c => {
     // Session cookies are for the browser app; external MCP clients must
-    // present a workspace API key so the workspace binding is unambiguous.
-    if (!isApiKeyAuth(c)) {
+    // authenticate with either the OAuth sign-in flow or a workspace API key
+    // so the workspace binding is unambiguous.
+    if (!isApiKeyAuth(c) && !isMcpOAuthAuth(c)) {
       return c.json(
         {
           error:
-            "The MCP endpoint requires a workspace API key: " +
-            "Authorization: Bearer revops_... (create one under Workspace Settings → API keys)",
+            "The MCP endpoint requires OAuth (connect this URL from your MCP " +
+            "client and sign in) or a workspace API key " +
+            "(Authorization: Bearer revops_..., created under Workspace " +
+            "Settings → API keys).",
         },
         401,
       );
@@ -73,9 +93,11 @@ mcpProtocolRoutes.post(
     const user = c.get("user");
     const apiKey = c.get("apiKey");
     if (!workspaceId) {
-      return c.json({ error: "API key is not bound to a workspace" }, 401);
+      return c.json({ error: "Credential is not bound to a workspace" }, 401);
     }
-    const scopes = resolveWorkspaceApiKeyScopes(apiKey?.scopes);
+    const scopes = isMcpOAuthAuth(c)
+      ? resolveWorkspaceApiKeyScopes(c.get("mcpOAuthScopes"))
+      : resolveWorkspaceApiKeyScopes(apiKey?.scopes);
     if (!hasWorkspaceApiKeyScope(scopes, "mcp")) {
       // Agents relay this verbatim to the user, so the error is the docs:
       // say why AND how to fix it.

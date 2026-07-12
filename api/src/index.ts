@@ -9,6 +9,7 @@ import fs from "fs";
 import path from "path";
 import { connectDatabase } from "./database/schema";
 import { registerApiRoutes } from "./routes/register-routes";
+import { mcpOAuthWellKnownRoutes } from "./routes/mcp-oauth.routes";
 import { getOpenApiDocument } from "./openapi";
 import type { AuthEnv } from "./openapi/core";
 import { databaseRegistry } from "./databases/registry";
@@ -107,6 +108,10 @@ app.notFound(c => c.json({ success: false, error: "Not Found" }, 404));
 app.get("/health", c => {
   return c.json({ status: "ok", timestamp: new Date().toISOString() });
 });
+
+// OAuth discovery for the Mako MCP endpoint (RFC 9728 + RFC 8414). Root-level
+// well-known documents, so registered here rather than in register-routes.ts.
+app.route("/", mcpOAuthWellKnownRoutes);
 
 // Frontend build version - public, used by long-lived clients (especially the
 // desktop app) to detect that their loaded bundle is stale and prompt a

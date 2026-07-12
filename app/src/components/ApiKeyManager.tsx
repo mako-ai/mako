@@ -43,6 +43,216 @@ const MCP_STARTER_PROMPT =
   "by month, then give me a preview link.";
 
 /**
+ * OAuth-first agent setup (no API key): give the client the MCP URL and it
+ * discovers the sign-in flow itself (RFC 9728). One entry per client tab.
+ */
+function buildMcpOAuthSetups() {
+  const endpoint = `${window.location.origin}/api/mcp`;
+  const cursorDeeplink =
+    "cursor://anysphere.cursor-deeplink/mcp/install?name=mako&config=" +
+    encodeURIComponent(btoa(JSON.stringify({ url: endpoint })));
+  return {
+    endpoint,
+    clients: [
+      {
+        client: "Claude Code",
+        instruction:
+          "Run this, then type /mcp inside a session to sign in with your browser:",
+        snippet: `claude mcp add --transport http mako ${endpoint}`,
+      },
+      {
+        client: "Claude (web)",
+        instruction:
+          "Open Settings → Connectors → Add custom connector, name it mako, and paste the URL from step 1. Click Connect and sign in.",
+        snippet: endpoint,
+      },
+      {
+        client: "Cursor",
+        instruction:
+          "One click below — Cursor opens, installs the server, and prompts you to sign in. Or paste into .cursor/mcp.json:",
+        snippet: JSON.stringify(
+          { mcpServers: { mako: { url: endpoint } } },
+          null,
+          2,
+        ),
+        deeplink: cursorDeeplink,
+      },
+      {
+        client: "Codex",
+        instruction:
+          "Add this to ~/.codex/config.toml — Codex opens your browser to sign in on first use:",
+        snippet: `[mcp_servers.mako]\nurl = "${endpoint}"`,
+      },
+      {
+        client: "Other",
+        instruction:
+          "Any MCP client that supports OAuth discovers the sign-in flow from the URL alone. Key-based clients can send a Bearer API key instead.",
+        snippet: endpoint,
+      },
+    ],
+  };
+}
+
+/**
+ * The primary "connect an AI agent" card: copy URL → add to client → sign
+ * in. No API key involved; the OAuth consent page asks which workspace to
+ * grant (read-only) access to.
+ */
+function McpAgentConnectCard({ onCopy }: { onCopy: (text: string) => void }) {
+  const [tab, setTab] = useState(0);
+  const { endpoint, clients } = buildMcpOAuthSetups();
+  const active = clients[tab] ?? clients[0];
+
+  return (
+    <Paper variant="outlined" sx={{ p: 2.5, mb: 3 }}>
+      <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+        Connect an AI agent (MCP)
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+        No API key needed — your agent signs in with your Mako account and you
+        pick which workspace it can read.{" "}
+        <a
+          href="https://docs.mako.ai/mcp-server/"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Full guide
+        </a>
+      </Typography>
+
+      <Tabs
+        value={tab}
+        onChange={(_e, value: number) => setTab(value)}
+        variant="scrollable"
+        allowScrollButtonsMobile
+        sx={{ minHeight: 36, mb: 2, borderBottom: 1, borderColor: "divider" }}
+      >
+        {clients.map(setup => (
+          <Tab
+            key={setup.client}
+            label={setup.client}
+            sx={{ minHeight: 36, py: 0.5, textTransform: "none" }}
+          />
+        ))}
+      </Tabs>
+
+      <Stack spacing={2}>
+        <Box>
+          <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
+            1 · Copy the Mako MCP URL
+          </Typography>
+          <Stack direction="row" alignItems="center" spacing={0.5}>
+            <Box
+              component="code"
+              sx={{
+                flex: 1,
+                minWidth: 0,
+                p: 1,
+                borderRadius: 1,
+                bgcolor: "action.hover",
+                fontFamily: "monospace",
+                fontSize: "0.8rem",
+                wordBreak: "break-all",
+              }}
+            >
+              {endpoint}
+            </Box>
+            <Tooltip title="Copy MCP URL">
+              <IconButton
+                size="small"
+                onClick={() => onCopy(endpoint)}
+                aria-label="Copy MCP URL"
+              >
+                <CopyIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </Stack>
+        </Box>
+
+        <Box>
+          <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
+            2 · Add it to {active.client}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            {active.instruction}
+          </Typography>
+          {active.deeplink && (
+            <Button
+              variant="contained"
+              size="small"
+              href={active.deeplink}
+              sx={{ mb: 1, textTransform: "none" }}
+            >
+              Add to Cursor
+            </Button>
+          )}
+          <Box sx={{ position: "relative" }}>
+            <Box
+              component="pre"
+              sx={{
+                m: 0,
+                p: 1.5,
+                pr: 6,
+                bgcolor: "grey.100",
+                borderRadius: 1,
+                fontSize: "0.7rem",
+                overflow: "auto",
+                whiteSpace: "pre",
+              }}
+            >
+              {active.snippet}
+            </Box>
+            <Tooltip title={`Copy ${active.client} setup`}>
+              <IconButton
+                size="small"
+                onClick={() => onCopy(active.snippet)}
+                aria-label={`Copy ${active.client} setup`}
+                sx={{ position: "absolute", top: 6, right: 6 }}
+              >
+                <CopyIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </Box>
+        </Box>
+
+        <Box>
+          <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
+            3 · Sign in and ask it something
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            Your browser opens once to approve read-only access for a workspace.
+            Then:
+          </Typography>
+          <Stack direction="row" alignItems="flex-start" spacing={0.5}>
+            <Box
+              sx={{
+                flex: 1,
+                p: 1.5,
+                bgcolor: "grey.100",
+                borderRadius: 1,
+                fontStyle: "italic",
+                fontSize: "0.8rem",
+              }}
+            >
+              &quot;{MCP_STARTER_PROMPT}&quot;
+            </Box>
+            <Tooltip title="Copy starter prompt">
+              <IconButton
+                size="small"
+                onClick={() => onCopy(MCP_STARTER_PROMPT)}
+                aria-label="Copy starter prompt"
+              >
+                <CopyIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </Stack>
+        </Box>
+      </Stack>
+    </Paper>
+  );
+}
+
+/**
  * Per-client MCP setup shown the one time the full key is visible: pick your
  * client, see only your path. Base URL is this deployment's origin (the Vite
  * dev server proxies /api). Cursor additionally gets a one-click install
@@ -99,11 +309,13 @@ function McpConnectSection({
   return (
     <Box sx={{ mt: 3 }}>
       <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-        Connect an AI agent (MCP)
+        Use this key with MCP (headless / CI)
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-        Let Claude Code, Cursor, or Codex explore your data and build Mako apps
-        — read-only by design. Pick your client; the key is already filled in.{" "}
+        Interactive agents can connect without a key — see &quot;Connect an AI
+        agent&quot; on the API Keys page (they sign in instead). Use these
+        key-based setups where a browser sign-in isn&apos;t possible. The key is
+        already filled in.{" "}
         <a
           href="https://docs.mako.ai/mcp-server/"
           target="_blank"
@@ -315,6 +527,8 @@ export function ApiKeyManager() {
 
   return (
     <Box>
+      <McpAgentConnectCard onCopy={copyToClipboard} />
+
       {workspaceId && (
         <Alert severity="info" sx={{ mb: 3 }}>
           <Typography variant="subtitle2" gutterBottom sx={{ fontWeight: 600 }}>
@@ -388,8 +602,8 @@ export function ApiKeyManager() {
         </Box>
       ) : apiKeys.length === 0 ? (
         <Alert severity="info">
-          No API keys yet. Create one to connect AI agents like Claude Code,
-          Cursor, or Codex via MCP (read-only), or to call the REST API.
+          No API keys yet. AI agents connect via MCP without one (see above) —
+          create a key for the REST API or headless MCP use (CI, servers).
         </Alert>
       ) : (
         <TableContainer component={Paper} variant="outlined">

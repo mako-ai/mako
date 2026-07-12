@@ -903,6 +903,19 @@ function LoadingScreen() {
   );
 }
 
+/**
+ * Same-origin post-login destination, e.g. the MCP OAuth consent page
+ * (/api/oauth/mcp/authorize?...) sends users here with ?returnTo=<path>.
+ * Only relative paths are honored so the parameter can't redirect off-site.
+ */
+function safeReturnTo(): string | null {
+  const returnTo = new URLSearchParams(window.location.search).get("returnTo");
+  if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+    return returnTo;
+  }
+  return null;
+}
+
 // Auth route wrapper - redirects to "/" if already authenticated
 function AuthRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -911,11 +924,17 @@ function AuthRoute({ children }: { children: React.ReactNode }) {
     return <LoadingScreen />;
   }
 
-  // If already authenticated, resume a pending desktop sign-in handoff or
-  // redirect to the main app
+  // If already authenticated, resume a pending desktop sign-in handoff,
+  // honor a same-origin returnTo (OAuth consent), or go to the main app
   if (user) {
     if (hasPendingDesktopAuth()) {
       return <Navigate to="/desktop-auth" replace />;
+    }
+    const returnTo = safeReturnTo();
+    if (returnTo) {
+      // Full navigation: the target may be an API-served page, not a route.
+      window.location.replace(returnTo);
+      return <LoadingScreen />;
     }
     return <Navigate to="/" replace />;
   }

@@ -9,21 +9,44 @@ Where [MCP Connectors](/mcp-connectors/) let Mako's agent use *other* systems' t
 
 **Data access over MCP is read-only by design.** Agents can never write to your databases through Mako — there is no scope or setting that enables it.
 
-## Setup in two steps
+## Connect by signing in (no API key)
 
-### 1. Create an API key
-
-Go to **Workspace Settings → API Keys → Create API Key**. New keys automatically carry the `mcp` and `query:read` scopes — nothing to configure. The key is shown **once**, together with ready-to-paste setup snippets for each client.
-
-:::note[Older keys]
-Keys created before scopes existed keep working for the REST API but cannot connect MCP clients (they'd carry more privilege than MCP allows). They're marked **Legacy** in the key list — create a new key for MCP.
-:::
-
-### 2. Connect your client
-
-Replace `https://your-mako-host` with your Mako URL and `revops_...` with your key. The key-created dialog shows these exact snippets pre-filled.
+Give your client one URL — `https://your-mako-host/api/mcp` — and it discovers the OAuth sign-in flow itself. Your browser opens once: sign in with your Mako account, pick a workspace, approve **read-only** access. Done.
 
 **Claude Code**
+
+```bash
+claude mcp add --transport http mako https://your-mako-host/api/mcp
+```
+
+Then type `/mcp` inside a session to trigger the sign-in.
+
+**Claude (web / desktop)** — **Settings → Connectors → Add custom connector**, name it `mako`, paste the URL, click **Connect** and sign in.
+
+**Cursor** — add to `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global); Cursor prompts you to sign in on first use. The in-app API Keys page also has a one-click **Add to Cursor** button.
+
+```json
+{
+  "mcpServers": {
+    "mako": { "url": "https://your-mako-host/api/mcp" }
+  }
+}
+```
+
+**Codex** — add to `~/.codex/config.toml`; Codex opens your browser to sign in on first use:
+
+```toml
+[mcp_servers.mako]
+url = "https://your-mako-host/api/mcp"
+```
+
+Verify the connection (Claude Code): `claude mcp list` should show `mako … ✓ Connected`.
+
+Under the hood this is standard OAuth 2.1 for MCP: RFC 9728 protected-resource discovery, dynamic client registration, PKCE, and rotating refresh tokens. Grants are always scoped to the read-only MCP set — an OAuth token can never do more than a fresh MCP API key.
+
+## Headless / CI: API keys
+
+Where a browser sign-in isn't possible, use a workspace API key instead. Go to **Workspace Settings → API Keys → Create API Key** — new keys carry the `mcp` and `query:read` scopes and the key-created dialog shows ready-to-paste per-client snippets with the key filled in:
 
 ```bash
 claude mcp add --transport http mako https://your-mako-host/api/mcp \
@@ -44,34 +67,9 @@ Or team-shared via `.mcp.json` in your repo (key kept in an env var):
 }
 ```
 
-**Cursor** — add to `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global):
-
-```json
-{
-  "mcpServers": {
-    "mako": {
-      "url": "https://your-mako-host/api/mcp",
-      "headers": { "Authorization": "Bearer revops_..." }
-    }
-  }
-}
-```
-
-**Codex** — add to `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.mako]
-url = "https://your-mako-host/api/mcp"
-bearer_token_env_var = "MAKO_API_KEY"
-```
-
-```bash
-export MAKO_API_KEY="revops_..."
-```
-
-**Any other MCP client** — Streamable HTTP (JSON mode, stateless), endpoint `POST /api/mcp`, `Authorization: Bearer` header. No OAuth, no sessions.
-
-Verify the connection (Claude Code): `claude mcp list` should show `mako … ✓ Connected`.
+:::note[Older keys]
+Keys created before scopes existed keep working for the REST API but cannot connect MCP clients (they'd carry more privilege than MCP allows). They're marked **Legacy** in the key list — sign in via OAuth or create a new key.
+:::
 
 ## What your agent can do
 
@@ -91,7 +89,8 @@ Read-only tools are annotated per the MCP spec (`readOnlyHint`), so well-behaved
 
 - **Read-only, no exceptions.** SQL must be a single `SELECT`/`WITH` statement; enforcement also happens *inside the database* where supported (PostgreSQL/Cloud SQL/Redshift read-only transactions, MySQL `START TRANSACTION READ ONLY`, ClickHouse `readonly=2`). Arbitrary MongoDB JavaScript is not exposed at all — Mongo is discovery/inspection only.
 - **Engines without a reliable per-query read-only mode fail closed** (BigQuery, MSSQL, Cloudflare D1/KV): queries over MCP are refused unless the connection itself uses read-restricted database credentials.
-- **Scoped keys are MCP-only.** A key with scopes is rejected on every other API endpoint, so an MCP key can never be replayed against REST mutation routes.
+- **MCP credentials are MCP-only.** OAuth access tokens and scoped keys are rejected on every other API endpoint, so an MCP credential can never be replayed against REST mutation routes.
+- **OAuth grants are least-privilege by construction**: public clients with mandatory PKCE, single-use authorization codes, rotating refresh tokens, hashed at rest, always scoped to the read-only MCP set, and bound to the one workspace chosen at consent.
 - **Key management requires a browser session** — API keys cannot create or delete other API keys.
 - App data bindings and materializations are always read-only, and preview tokens are signed, single-app, and short-lived (60 s – 30 min).
 
@@ -109,10 +108,12 @@ To keep agent context lean, agents can pass `includeScreenshot: false` to `rende
 
 | Symptom | Cause / fix |
 | --- | --- |
-| `403 … created before MCP scopes existed` | Legacy key. Create a new key under Workspace Settings → API Keys. |
+| Client never opens the sign-in browser | The client predates MCP OAuth support — update it, or fall back to an API key header. |
+| `401 Invalid or expired MCP access token` | The OAuth grant was revoked or fully expired — reconnect the server in your client (it re-runs the sign-in). |
+| `403 … created before MCP scopes existed` | Legacy key. Sign in via OAuth or create a new key under Workspace Settings → API Keys. |
 | `403 … does not include the mcp scope` | Key was created without the `mcp` scope — create a new key. |
 | `Mako MCP access is read-only: the query was rejected…` | The agent attempted a write (`UPDATE`/`INSERT`/DDL). Expected — run writes with your own database tooling. |
 | `Read-only execution is not supported for bigquery…` | Fail-closed engine. Connect it with read-restricted database credentials. |
 | `Server-side rendering is not configured` | The deployment has no `RENDER_APP_BROWSER_PATH` (headless Chromium). Agents fall back to `create_preview_token` — open the URL in any browser. |
 | `Preview base URL … is unreachable` | `CLIENT_URL`/`PUBLIC_URL` on the API server is wrong — it must point at the Mako frontend. |
-| Client shows the server but tools error with 401 | The `Authorization: Bearer` header is missing or the key was revoked. |
+| Client shows the server but tools error with 401 | The OAuth token or `Authorization: Bearer` key is missing/revoked — reconnect or rotate. |

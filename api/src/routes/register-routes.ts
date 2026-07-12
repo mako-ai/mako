@@ -36,6 +36,7 @@ import { devEmailPreviewRoutes } from "./dev-email-preview.routes";
 import { webhookRoutes } from "./webhooks";
 import { mcpPresetRoutes, mcpRoutes } from "./mcp.routes";
 import { mcpProtocolRoutes } from "./mcp-server.routes";
+import { mcpOAuthRoutes } from "./mcp-oauth.routes";
 import { appPreviewRoutes } from "./app-preview.routes";
 
 /**
@@ -79,6 +80,9 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   app.route("/api/mcp", mcpPresetRoutes);
   // Mako's own MCP endpoint (POST /api/mcp, API-key authed, JSON-RPC not REST).
   app.route("/api/mcp", mcpProtocolRoutes);
+  // OAuth 2.1 AS so MCP clients can connect with just the URL (sign-in flow);
+  // the /.well-known discovery documents are mounted at root in src/index.ts.
+  app.route("/api/oauth/mcp", mcpOAuthRoutes);
 
   if (process.env.NODE_ENV !== "production") {
     app.route("/api/dev/email-preview", devEmailPreviewRoutes);
