@@ -372,11 +372,14 @@ mcpOAuthRoutes.post("/authorize", async c => {
   }
 
   const user = await sessionUser(c);
-  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  if (!user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
 
   const redirect = new URL(parsed.value.redirectUri);
-  if (parsed.value.state)
+  if (parsed.value.state) {
     redirect.searchParams.set("state", parsed.value.state);
+  }
 
   if (form.decision !== "allow") {
     redirect.searchParams.set("error", "access_denied");
