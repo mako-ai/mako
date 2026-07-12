@@ -185,8 +185,16 @@ app.on(
 app.use("*", async (c, next) => {
   const requestPath = c.req.path;
 
-  // Skip API routes and health check - let them continue to their handlers
-  if (requestPath.startsWith("/api/") || requestPath === "/health") {
+  // Skip API routes, health check, and well-known documents - let them
+  // continue to their handlers. /.well-known/* must never fall through to
+  // the SPA: a 200 text/html "discovery document" breaks OAuth/MCP clients,
+  // which treat it as found and fail to parse instead of trying the next
+  // well-known variant. Unregistered ones must 404.
+  if (
+    requestPath.startsWith("/api/") ||
+    requestPath.startsWith("/.well-known/") ||
+    requestPath === "/health"
+  ) {
     await next();
     return;
   }

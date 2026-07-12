@@ -85,7 +85,7 @@ mcpOAuthWellKnownRoutes.get(
   protectedResourceMetadata,
 );
 
-mcpOAuthWellKnownRoutes.get("/.well-known/oauth-authorization-server", c => {
+function authorizationServerMetadata(c: Context) {
   const base = publicBaseUrl(c);
   return c.json({
     issuer: base,
@@ -98,7 +98,26 @@ mcpOAuthWellKnownRoutes.get("/.well-known/oauth-authorization-server", c => {
     token_endpoint_auth_methods_supported: ["none"],
     scopes_supported: ["mcp", "query:read"],
   });
-});
+}
+
+/**
+ * RFC 8414 §3.1 / MCP auth spec: clients try the path-inserted variants
+ * (…/oauth-authorization-server/api/mcp) before the root document, plus the
+ * OIDC-discovery spellings. Serve the same metadata on all of them — a miss
+ * would fall through to the SPA fallback, which returns index.html with 200
+ * and poisons the client's discovery (it never retries the next variant).
+ */
+const AS_METADATA_PATHS = [
+  "/.well-known/oauth-authorization-server",
+  "/.well-known/oauth-authorization-server/api/mcp",
+  "/.well-known/openid-configuration",
+  "/.well-known/openid-configuration/api/mcp",
+  "/api/mcp/.well-known/openid-configuration",
+  "/api/mcp/.well-known/oauth-authorization-server",
+];
+for (const path of AS_METADATA_PATHS) {
+  mcpOAuthWellKnownRoutes.get(path, authorizationServerMetadata);
+}
 
 // ---------------------------------------------------------------------------
 // AS endpoints (mounted at /api/oauth/mcp)
