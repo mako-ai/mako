@@ -13,7 +13,7 @@
   },
   "scripts": {
     "build": "node generate-app-v2-scaffold.cjs && tsc",
-    "prepare": "node generate-app-v2-scaffold.cjs && node prepare.js"
+    "prepare": "node prepare.js"
   },
   "dependencies": {
     "nanoid": "^5.1.7",
