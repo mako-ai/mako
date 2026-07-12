@@ -34,8 +34,7 @@ const NavButton = styled(Button, {
   padding: 0,
   borderRadius: 8,
   backgroundColor: isActive ? theme.palette.action.selected : "transparent",
-  color: isActive ? theme.palette.primary.main : theme.palette.text.secondary,
-  boxShadow: isActive ? `inset 3px 0 0 ${theme.palette.primary.main}` : "none",
+  color: isActive ? theme.palette.text.primary : theme.palette.text.secondary,
   "&:hover": {
     backgroundColor: isActive
       ? theme.palette.action.selected

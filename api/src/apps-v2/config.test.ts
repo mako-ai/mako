@@ -18,6 +18,9 @@ const previousCloudRunService = process.env.K_SERVICE;
 const previousMaxRepositoryBytes = process.env.APPS_V2_MAX_REPOSITORY_BYTES;
 const previousDurabilityConfirmed =
   process.env.APPS_V2_GIT_DURABILITY_CONFIRMED;
+const previousEphemeralGit = process.env.APPS_V2_ALLOW_EPHEMERAL_GIT;
+const previousInngestEnvironment = process.env.INNGEST_ENV;
+const previousBaseUrl = process.env.BASE_URL;
 const previousSandboxProvider = process.env.APPS_V2_SANDBOX_PROVIDER;
 const previousE2BApiKey = process.env.E2B_API_KEY;
 const previousE2BTemplateId = process.env.E2B_TEMPLATE_ID;
@@ -54,6 +57,19 @@ try {
   assert.throws(() => getAppsV2GitRoot(), /temporary storage/);
   process.env.APPS_V2_GIT_ROOT = "/var/lib/mako/apps-v2";
   assert.equal(getAppsV2GitRoot(), "/var/lib/mako/apps-v2");
+  delete process.env.APPS_V2_GIT_DURABILITY_CONFIRMED;
+  process.env.APPS_V2_ALLOW_EPHEMERAL_GIT = "true";
+  process.env.INNGEST_ENV = "pr-698";
+  process.env.BASE_URL = "https://pr-698.mako.ai";
+  process.env.APPS_V2_GIT_ROOT = "/tmp/mako-apps-v2-git";
+  assert.equal(getAppsV2GitRoot(), "/tmp/mako-apps-v2-git");
+  process.env.BASE_URL = "https://app.mako.ai";
+  assert.throws(() => getAppsV2GitRoot(), /DURABILITY_CONFIRMED=true/);
+  delete process.env.APPS_V2_ALLOW_EPHEMERAL_GIT;
+  delete process.env.INNGEST_ENV;
+  delete process.env.BASE_URL;
+  process.env.APPS_V2_GIT_DURABILITY_CONFIRMED = "true";
+  process.env.APPS_V2_GIT_ROOT = "/var/lib/mako/apps-v2";
 
   process.env.NODE_ENV = "development";
   process.env.K_SERVICE = "mako-api";
@@ -121,6 +137,21 @@ try {
     delete process.env.APPS_V2_GIT_DURABILITY_CONFIRMED;
   } else {
     process.env.APPS_V2_GIT_DURABILITY_CONFIRMED = previousDurabilityConfirmed;
+  }
+  if (previousEphemeralGit === undefined) {
+    delete process.env.APPS_V2_ALLOW_EPHEMERAL_GIT;
+  } else {
+    process.env.APPS_V2_ALLOW_EPHEMERAL_GIT = previousEphemeralGit;
+  }
+  if (previousInngestEnvironment === undefined) {
+    delete process.env.INNGEST_ENV;
+  } else {
+    process.env.INNGEST_ENV = previousInngestEnvironment;
+  }
+  if (previousBaseUrl === undefined) {
+    delete process.env.BASE_URL;
+  } else {
+    process.env.BASE_URL = previousBaseUrl;
   }
   if (previousSandboxProvider === undefined) {
     delete process.env.APPS_V2_SANDBOX_PROVIDER;

@@ -90,6 +90,20 @@ export function getAppsV2GitRoot(): string {
   const productionRuntime =
     process.env.NODE_ENV === "production" || Boolean(process.env.K_SERVICE);
   if (productionRuntime) {
+    const previewEnvironment = process.env.INNGEST_ENV?.trim() ?? "";
+    const previewBaseUrl = process.env.BASE_URL?.trim() ?? "";
+    const explicitEphemeralPreview =
+      process.env.APPS_V2_ALLOW_EPHEMERAL_GIT === "true" &&
+      /^pr-\d+$/.test(previewEnvironment) &&
+      /^https:\/\/pr-\d+\.mako\.ai$/.test(previewBaseUrl);
+    if (explicitEphemeralPreview) {
+      if (!configured || !path.isAbsolute(configured)) {
+        throw new Error(
+          "APPS_V2_GIT_ROOT must be an absolute path for ephemeral previews",
+        );
+      }
+      return path.resolve(configured);
+    }
     if (process.env.APPS_V2_GIT_DURABILITY_CONFIRMED !== "true") {
       throw new Error(
         "APPS_V2_GIT_DURABILITY_CONFIRMED=true is required in production",
