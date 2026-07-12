@@ -686,6 +686,28 @@ workspaceDatabaseRoutes.openapi(
         return c.json({ success: false, error: "Unauthorized" }, 401);
       }
 
+      // Optionally verify the connection before persisting. When requested and
+      // the test fails, do NOT create the record — return a structured result
+      // so the client can offer "edit" vs "save anyways". Absent flag keeps the
+      // legacy behavior (save without testing) for programmatic callers.
+      const verifyBeforeSave = body.verifyBeforeSave === true;
+      if (verifyBeforeSave) {
+        const tempDatabase = {
+          _id: new Types.ObjectId(),
+          type: body.type,
+          connection: body.connection || {},
+        } as IDatabaseConnection;
+        const test =
+          await databaseConnectionService.testConnection(tempDatabase);
+        if (!test.success) {
+          return c.json({
+            success: false,
+            code: "connection_test_failed",
+            error: test.error || "Connection test failed",
+          });
+        }
+      }
+
       // Create database connection
       const database = new DatabaseConnection({
         workspaceId: workspace._id,
@@ -697,11 +719,17 @@ workspaceDatabaseRoutes.openapi(
         updatedAt: new Date(),
       });
 
+      // A successful pre-save test is the authoritative "reachable" signal.
+      if (verifyBeforeSave) {
+        database.lastConnectedAt = new Date();
+      }
+
       await database.save();
 
       return c.json(
         {
           success: true,
+          verified: verifyBeforeSave,
           data: {
             id: database._id,
             name: database.name,
@@ -776,6 +804,8 @@ workspaceDatabaseRoutes.openapi(
         return c.json({ success: false, error: "Database not found" }, 404);
       }
 
+      const verifyBeforeSave = body.verifyBeforeSave === true;
+
       // Update fields
       if (body.name) database.name = body.name;
       if (body.connection) {
@@ -784,14 +814,36 @@ workspaceDatabaseRoutes.openapi(
           (database.toObject({ getters: true }) as any).connection || {};
         const candidate = { ...previous, ...body.connection };
 
+        // Optionally verify the candidate before persisting the change.
+        if (verifyBeforeSave) {
+          const tempDatabase = {
+            _id: new Types.ObjectId(),
+            type: database.type,
+            connection: candidate,
+          } as IDatabaseConnection;
+          const test =
+            await databaseConnectionService.testConnection(tempDatabase);
+          if (!test.success) {
+            return c.json({
+              success: false,
+              code: "connection_test_failed",
+              error: test.error || "Connection test failed",
+            });
+          }
+        }
+
         database.connection = candidate as any;
       }
 
       database.updatedAt = new Date();
+      if (verifyBeforeSave) {
+        database.lastConnectedAt = new Date();
+      }
       await database.save();
 
       return c.json({
         success: true,
+        verified: verifyBeforeSave,
         data: {
           id: database._id,
           name: database.name,
