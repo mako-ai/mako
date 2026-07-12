@@ -39,6 +39,7 @@ const EXPLORER_VIEWS: Array<{ view: LeftPaneView; label: string }> = [
   { view: "consoles", label: "Consoles" },
   { view: "dashboards", label: "Dashboards" },
   { view: "apps", label: "Apps" },
+  { view: "apps-v2", label: "App Projects" },
   { view: "dbt", label: "Transforms" },
   { view: "flows", label: "Flows" },
   { view: "connectors", label: "Connectors" },
@@ -63,6 +64,7 @@ function openSettingsSection(section: SettingsSection): void {
 
 export function buildCommands(options: {
   isSuperAdmin: boolean;
+  appsV2Enabled: boolean;
 }): PaletteCommand[] {
   const consoleState = useConsoleStore.getState();
   const activeTab = consoleState.activeTabId
@@ -86,6 +88,7 @@ export function buildCommands(options: {
   });
 
   for (const { view, label } of EXPLORER_VIEWS) {
+    if (view === "apps-v2" && !options.appsV2Enabled) continue;
     commands.push({
       id: `view.explorer.${view}`,
       title: `Go to ${label}`,

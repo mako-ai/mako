@@ -33,6 +33,7 @@ import {
   type PaletteRunContext,
 } from "../lib/command-palette/types";
 import { useAppStore } from "../store/appStore";
+import { useAppV2Store } from "../store/appV2Store";
 import { useCommandPaletteStore } from "../store/commandPaletteStore";
 import { useDashboardTreeStore } from "../store/dashboardTreeStore";
 import { useDbtStore } from "../store/dbtStore";
@@ -63,6 +64,11 @@ export default function CommandPalette() {
   const consoleResults = useCommandPaletteStore(state => state.consoleResults);
   const searching = useCommandPaletteStore(state => state.searching);
   const workspaceId = useUIStore(state => state.currentWorkspaceId);
+  const appsV2Enabled = useAppV2Store(state =>
+    workspaceId
+      ? state.availabilityByWorkspace[workspaceId]?.enabled === true
+      : false,
+  );
   const { user } = useAuth();
   const { setMode } = useAppTheme();
 
@@ -103,6 +109,7 @@ export default function CommandPalette() {
     const swallow = () => undefined;
     void useDashboardTreeStore.getState().fetchTree(workspaceId).catch(swallow);
     void useAppStore.getState().fetchList(workspaceId).catch(swallow);
+    void useAppV2Store.getState().fetchStatusWithRetry(workspaceId);
     void useDbtStore.getState().fetchProjects(workspaceId).catch(swallow);
     void useFlowStore.getState().fetchFlows(workspaceId).catch(swallow);
   }, [open, workspaceId]);
@@ -125,7 +132,7 @@ export default function CommandPalette() {
   const items = useMemo<PaletteItem[]>(() => {
     if (!open || !workspaceId) return [];
 
-    const commands = buildCommands({ isSuperAdmin });
+    const commands = buildCommands({ isSuperAdmin, appsV2Enabled });
     const scoredCommands = commands
       .map(command => ({
         command,
@@ -153,6 +160,7 @@ export default function CommandPalette() {
       ...searchFlows(workspaceId, effectiveQuery),
     ];
   }, [
+    appsV2Enabled,
     open,
     workspaceId,
     commandMode,
