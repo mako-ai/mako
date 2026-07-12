@@ -21,7 +21,11 @@ claude mcp add --transport http mako https://your-mako-host/api/mcp
 
 Then type `/mcp` inside a session to trigger the sign-in.
 
-**Claude (web / desktop)** — **Settings → Connectors → Add custom connector**, name it `mako`, paste the URL, click **Connect** and sign in.
+**Claude (web / desktop)** — the in-app API Keys page has a one-click **Add to Claude** button that opens claude.ai with the connector prefilled (you review and confirm, then click **Connect** and sign in). Manually: **Settings → Connectors → Add custom connector**, name it `mako`, paste the URL. The install-link format, if you want to share it, is:
+
+```text
+https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=mako&connectorUrl=<percent-encoded MCP URL>
+```
 
 **Cursor** — add to `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global); Cursor prompts you to sign in on first use. The in-app API Keys page also has a one-click **Add to Cursor** button.
 

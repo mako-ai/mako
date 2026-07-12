@@ -51,6 +51,11 @@ function buildMcpOAuthSetups() {
   const cursorDeeplink =
     "cursor://anysphere.cursor-deeplink/mcp/install?name=mako&config=" +
     encodeURIComponent(btoa(JSON.stringify({ url: endpoint })));
+  // claude.ai deep-link that opens the "Add custom connector" dialog with
+  // name + URL prefilled (docs: connectors/building/directory-vs-custom).
+  const claudeDeeplink =
+    "https://claude.ai/customize/connectors?modal=add-custom-connector" +
+    `&connectorName=mako&connectorUrl=${encodeURIComponent(endpoint)}`;
   return {
     endpoint,
     clients: [
@@ -63,8 +68,10 @@ function buildMcpOAuthSetups() {
       {
         client: "Claude (web)",
         instruction:
-          "Open Settings → Connectors → Add custom connector, name it mako, and paste the URL from step 1. Click Connect and sign in.",
+          "One click below — claude.ai opens with the connector prefilled. Click Add, then Connect and sign in. Or manually: Settings → Connectors → Add custom connector, paste the URL from step 1.",
         snippet: endpoint,
+        deeplink: claudeDeeplink,
+        deeplinkLabel: "Add to Claude",
       },
       {
         client: "Cursor",
@@ -76,6 +83,7 @@ function buildMcpOAuthSetups() {
           2,
         ),
         deeplink: cursorDeeplink,
+        deeplinkLabel: "Add to Cursor",
       },
       {
         client: "Codex",
@@ -181,9 +189,12 @@ function McpAgentConnectCard({ onCopy }: { onCopy: (text: string) => void }) {
               variant="contained"
               size="small"
               href={active.deeplink}
+              {...(active.deeplink.startsWith("https://")
+                ? { target: "_blank", rel: "noreferrer" }
+                : {})}
               sx={{ mb: 1, textTransform: "none" }}
             >
-              Add to Cursor
+              {active.deeplinkLabel}
             </Button>
           )}
           <Box sx={{ position: "relative" }}>
