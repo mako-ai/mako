@@ -18,8 +18,8 @@
  * mutation ends with a flush to the private WIP ref — that flush IS the
  * durability watermark.
  *
- * All tools are inert (absent) unless APPS_V2_ENABLED is set; apps v1 tools
- * are untouched and the two suites coexist.
+ * Apps v1 tools are untouched and the two suites coexist (tool-family
+ * isolation keeps a turn on one system's tools; see modes/registry.ts).
  */
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
@@ -31,7 +31,6 @@ import {
 } from "../../database/workspace-schema";
 import { workspaceService } from "../../services/workspace.service";
 import { canReadResource, canWriteResource } from "../../utils/resource-acl";
-import { isAppsV2Enabled } from "../../apps-v2/config";
 import {
   WorktreeConflictError,
   chatActorFor,
@@ -67,8 +66,6 @@ export function createAppsV2Tools({
   userId,
   chatId,
 }: AppsV2ToolsOptions): ToolSet {
-  if (!isAppsV2Enabled()) return {};
-
   // Cursor-cloud model: each chat conversation is its own actor working on
   // its own `chat/<chatId>` branch (forked off main on first touch). The
   // chat-finalization hook commits the accumulated WIP at the end of every

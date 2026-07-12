@@ -48,7 +48,6 @@ let tmpRoot: string;
 // beforeAll — after module import but before any service call — is safe.
 beforeAll(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "apps-v2-wt-test-"));
-  process.env.APPS_V2_ENABLED = "1";
   process.env.APPS_V2_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_V2_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_V2_SANDBOX_PROVIDER = "local";

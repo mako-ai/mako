@@ -100,10 +100,7 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   app.route("/api/workspaces/:workspaceId/notebook", notebookDataRoutes);
   app.route("/api/workspaces/:workspaceId/notebooks", notebookRoutes);
   app.route("/api/workspaces/:workspaceId/notebooks", notebookSessionRoutes);
-  // Apps v2 (experimental, git-backed) — parallel to v1. Always registered so
-  // the OpenAPI document (and the generated frontend client types) are stable;
-  // the routers themselves refuse with 404 unless APPS_V2_ENABLED is set,
-  // except the /status probe the UI uses to decide whether to show the rail.
+  // Apps v2 (git-backed) — parallel to v1, always available (no feature flag).
   app.route("/api/workspaces/:workspaceId/apps-v2", appsV2Routes);
   app.route("/api/apps-v2-preview", appsV2PreviewRoutes);
   app.route(

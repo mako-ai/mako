@@ -191,8 +191,7 @@ function testNoPlaceholderStatusExplosion() {
 }
 
 function testAppsV2OperationsRegisteredAndSecured() {
-  // Apps v2 is always registered (handlers gate on APPS_V2_ENABLED) so the
-  // spec and the generated frontend client types never drift with the flag.
+  // Apps v2 is always registered and always available (no feature flag).
   // Unlike the parallel-branch draft, API keys are deliberately ALLOWED —
   // external harnesses (CLI/MCP, see apps-v2.md §4.8) authenticate with them —
   // so every operation must carry auth security, not cookie-only security.

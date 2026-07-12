@@ -33,7 +33,6 @@ const USER = "e2b-user";
 beforeAll(async () => {
   if (!HAS_KEY) return;
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "apps-v2-e2b-test-"));
-  process.env.APPS_V2_ENABLED = "1";
   process.env.APPS_V2_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_V2_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_V2_SANDBOX_PROVIDER = "e2b";

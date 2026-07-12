@@ -36,10 +36,7 @@ import {
   worktreeStatus,
   writeFile,
 } from "../apps-v2/worktree.service";
-import {
-  APPS_V2_EXEC_MAX_TIMEOUT_MS,
-  isAppsV2Enabled,
-} from "../apps-v2/config";
+import { APPS_V2_EXEC_MAX_TIMEOUT_MS } from "../apps-v2/config";
 import { mintPreviewGrant } from "../apps-v2/preview.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
@@ -57,15 +54,6 @@ const ProjectParam = WorkspaceParam.extend({
 });
 
 appsV2Routes.use("*", unifiedAuthMiddleware);
-
-// Feature gate: everything 404s while Apps v2 is disabled, EXCEPT the
-// /status probe the sidebar uses to decide whether to show the rail icon.
-appsV2Routes.use("*", async (c, next) => {
-  if (!isAppsV2Enabled() && !c.req.path.endsWith("/status-probe")) {
-    return c.json({ success: false, error: "Not found" }, 404);
-  }
-  await next();
-});
 
 appsV2Routes.use("*", async (c: AuthenticatedContext, next) => {
   const workspaceId = c.req.param("workspaceId");
@@ -177,9 +165,10 @@ function handleError(c: AuthenticatedContext, error: unknown) {
 }
 
 // ---------------------------------------------------------------------------
-// Status probe (works even while the feature is disabled — drives rail
-// visibility in the frontend). Registered before /:id so it can't be
-// shadowed by the param route.
+// Status probe — Apps v2 is always available (no feature flag). The frontend
+// still calls this to learn readiness (later: whether the workspace has a
+// GitHub repo linked). Registered before /:id so the param route can't shadow
+// it.
 // ---------------------------------------------------------------------------
 
 appsV2Routes.openapi(
@@ -187,13 +176,13 @@ appsV2Routes.openapi(
     method: "get",
     path: "/status-probe",
     tags: ["Apps v2"],
-    summary: "Whether Apps v2 is enabled on this deployment",
+    summary: "Apps v2 availability for this workspace",
     security: AUTH_SECURITY,
     request: { params: WorkspaceParam },
     responses: OPEN_RESPONSES,
   }),
   async c => {
-    return c.json({ success: true as const, enabled: isAppsV2Enabled() }, 200);
+    return c.json({ success: true as const, enabled: true }, 200);
   },
 );
 

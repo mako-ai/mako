@@ -84,7 +84,6 @@ import {
 } from "../services/resumable-stream.service";
 import { hasAttachedClients } from "../services/realtime-presence.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
-import { isAppsV2Enabled } from "../apps-v2/config";
 import { commitChatTurn } from "../apps-v2/worktree.service";
 import { reportPubSubFailure } from "../services/pubsub.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
@@ -1177,9 +1176,9 @@ agentRoutes.openapi(
 
                 // Apps v2 (Cursor-cloud model): turn any WIP the agent
                 // accumulated on this conversation's app branches into one
-                // commit per turn. No-op unless APPS_V2_ENABLED and the turn
-                // touched an Apps v2 worktree; never throws.
-                if (isAppsV2Enabled() && !isAborted) {
+                // commit per turn. No-op unless the turn touched an Apps v2
+                // worktree; never throws.
+                if (!isAborted) {
                   try {
                     const lastUserText = [...allMessages]
                       .reverse()

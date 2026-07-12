@@ -5,14 +5,12 @@
  * short-lived preview token minted by POST /apps-v2/:id/preview is the sole
  * credential — no cookies, no session — so the previewed app can run in a
  * sandboxed (opaque-origin) iframe without any Mako credentials in scope.
- * 404 unless APPS_V2_ENABLED.
  *
  * Plain Hono routes (NOT .openapi()): the asset path spans slashes, which
  * zod-openapi's `{param}` syntax cannot express. Static asset serving does
  * not belong in the API reference anyway.
  */
 import type { Context } from "hono";
-import { isAppsV2Enabled } from "../apps-v2/config";
 import {
   readPreviewAsset,
   resolvePreviewGrant,
@@ -20,13 +18,6 @@ import {
 import { createRouter } from "../openapi/core";
 
 export const appsV2PreviewRoutes = createRouter();
-
-appsV2PreviewRoutes.use("*", async (c, next) => {
-  if (!isAppsV2Enabled()) {
-    return c.json({ success: false, error: "Not found" }, 404);
-  }
-  await next();
-});
 
 async function serveAsset(c: Context): Promise<Response> {
   const token = c.req.param("token");

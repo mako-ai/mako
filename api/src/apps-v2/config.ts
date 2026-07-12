@@ -1,18 +1,13 @@
 /**
  * Apps v2 configuration (see apps-v2.md at the repo root).
  *
- * Apps v2 is an experimental, parallel implementation of the apps module:
- * git-backed storage, per-actor durable worktrees, and a sandboxed shell for
- * the agent. It is fully flag-gated and shares no code paths with apps v1.
+ * Apps v2 is the git-backed apps module: the customer's linked GitHub repo is
+ * the durable store, an E2B sandbox is the ephemeral working copy, and the
+ * agent has a real shell. It runs in parallel with apps v1 and is always
+ * available (no feature flag).
  */
 import os from "node:os";
 import path from "node:path";
-
-/** Master switch — routes and agent tools are inert unless enabled. */
-export function isAppsV2Enabled(): boolean {
-  const v = (process.env.APPS_V2_ENABLED ?? "").trim().toLowerCase();
-  return v === "1" || v === "true";
-}
 
 /** Root directory holding the bare git repos (one per app project). */
 export function appsV2ReposRoot(): string {

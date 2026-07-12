@@ -265,8 +265,7 @@ export function isolateAppToolFamily(
 }
 
 const APP_MODE_TOOL_NAMES: string[] = [
-  // Apps v2 (experimental, git-backed — tools exist only when APPS_V2_ENABLED;
-  // listing them here is inert otherwise because the tool set is empty).
+  // Apps v2 (git-backed). Tool-family isolation picks v1 vs v2 per turn.
   ...APP_V2_ONLY_TOOL_NAMES,
   // Client app tools
   "list_open_apps",
