@@ -181,7 +181,14 @@ function McpConnectSection({
           variant="contained"
           size="small"
           href={active.deeplink}
-          sx={{ mb: 1.5, textTransform: "none" }}
+          sx={{
+            mb: 1.5,
+            textTransform: "none",
+            // Rendered as an <a>: keep the label readable even under global
+            // anchor color resets (see McpAgentsPanel).
+            color: "primary.contrastText",
+            "&:hover": { color: "primary.contrastText" },
+          }}
         >
           Add to Cursor
         </Button>

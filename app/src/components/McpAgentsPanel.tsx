@@ -186,7 +186,15 @@ export function McpAgentConnectCard({
               {...(active.deeplink.startsWith("https://")
                 ? { target: "_blank", rel: "noreferrer" }
                 : {})}
-              sx={{ mb: 1, textTransform: "none" }}
+              sx={{
+                mb: 1,
+                textTransform: "none",
+                // Explicit: rendered as an <a>, so global anchor resets /
+                // browser quirks can otherwise swallow the inherited label
+                // color and leave an unreadable blue-on-blue button.
+                color: "primary.contrastText",
+                "&:hover": { color: "primary.contrastText" },
+              }}
             >
               {active.deeplinkLabel}
             </Button>
