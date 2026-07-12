@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import {
+  APP_V2_SESSION_MAX_TIMEOUT_MS,
+  APP_V2_SESSION_OPERATION_LEASE_MS,
   getAppsV2GitRoot,
   getAppsV2MaxRepositoryBytes,
+  getAppsV2SandboxConfiguration,
   isAppsV2Enabled,
   validateAppsV2StartupConfiguration,
 } from "./config";
@@ -13,8 +16,16 @@ const previousCloudRunService = process.env.K_SERVICE;
 const previousMaxRepositoryBytes = process.env.APPS_V2_MAX_REPOSITORY_BYTES;
 const previousDurabilityConfirmed =
   process.env.APPS_V2_GIT_DURABILITY_CONFIRMED;
+const previousSandboxProvider = process.env.APPS_V2_SANDBOX_PROVIDER;
+const previousE2BApiKey = process.env.E2B_API_KEY;
+const previousE2BTemplateId = process.env.E2B_TEMPLATE_ID;
+const previousE2BUser = process.env.APPS_V2_E2B_USER;
 
 try {
+  assert(
+    APP_V2_SESSION_OPERATION_LEASE_MS > APP_V2_SESSION_MAX_TIMEOUT_MS,
+    "default operation lease must cover the configured command maximum",
+  );
   process.env.APPS_V2_ENABLED = "false";
   assert.equal(isAppsV2Enabled(), false);
   process.env.APPS_V2_ENABLED = "true";
@@ -52,6 +63,35 @@ try {
   assert.equal(getAppsV2MaxRepositoryBytes(), 12345);
   process.env.APPS_V2_MAX_REPOSITORY_BYTES = "not-a-size";
   assert.throws(() => getAppsV2MaxRepositoryBytes(), /positive integer/);
+
+  delete process.env.APPS_V2_SANDBOX_PROVIDER;
+  delete process.env.E2B_API_KEY;
+  delete process.env.E2B_TEMPLATE_ID;
+  delete process.env.APPS_V2_E2B_USER;
+  assert.deepEqual(getAppsV2SandboxConfiguration(), {
+    available: false,
+    provider: "off",
+    reason: "off",
+  });
+  process.env.APPS_V2_SANDBOX_PROVIDER = "e2b";
+  assert.equal(getAppsV2SandboxConfiguration().available, false);
+  process.env.E2B_API_KEY = "control-only";
+  process.env.E2B_TEMPLATE_ID = "pinned-template";
+  assert.equal(getAppsV2SandboxConfiguration().available, false);
+  process.env.APPS_V2_E2B_USER = "mako";
+  assert.deepEqual(getAppsV2SandboxConfiguration(), {
+    available: true,
+    provider: "e2b",
+    apiKey: "control-only",
+    templateId: "pinned-template",
+    user: "mako",
+  });
+  process.env.APPS_V2_SANDBOX_PROVIDER = "local";
+  assert.deepEqual(getAppsV2SandboxConfiguration(), {
+    available: false,
+    provider: "off",
+    reason: "unsupported_provider",
+  });
 } finally {
   if (previousNodeEnvironment === undefined) delete process.env.NODE_ENV;
   else process.env.NODE_ENV = previousNodeEnvironment;
@@ -71,4 +111,15 @@ try {
   } else {
     process.env.APPS_V2_GIT_DURABILITY_CONFIRMED = previousDurabilityConfirmed;
   }
+  if (previousSandboxProvider === undefined) {
+    delete process.env.APPS_V2_SANDBOX_PROVIDER;
+  } else {
+    process.env.APPS_V2_SANDBOX_PROVIDER = previousSandboxProvider;
+  }
+  if (previousE2BApiKey === undefined) delete process.env.E2B_API_KEY;
+  else process.env.E2B_API_KEY = previousE2BApiKey;
+  if (previousE2BTemplateId === undefined) delete process.env.E2B_TEMPLATE_ID;
+  else process.env.E2B_TEMPLATE_ID = previousE2BTemplateId;
+  if (previousE2BUser === undefined) delete process.env.APPS_V2_E2B_USER;
+  else process.env.APPS_V2_E2B_USER = previousE2BUser;
 }

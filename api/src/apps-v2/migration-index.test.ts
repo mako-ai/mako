@@ -1,5 +1,18 @@
 import assert from "node:assert/strict";
 import { findCompatibleIndex } from "../migrations/2026-07-11-201825_create_apps_v2_metadata_indexes";
+import { appV2SessionIndexes } from "../migrations/2026-07-11-221500_create_app_v2_sessions";
+
+assert.deepEqual(appV2SessionIndexes, [
+  {
+    keys: { worktreeId: 1, actorId: 1, purpose: 1 },
+    options: { unique: true },
+  },
+  { keys: { workspaceId: 1, projectId: 1 } },
+  { keys: { sandboxId: 1 }, options: { unique: true } },
+  { keys: { status: 1, lastActiveAt: 1 } },
+  { keys: { operationExpiresAt: 1 } },
+  { keys: { status: 1, operationExpiresAt: 1 } },
+]);
 
 const keys = { projectId: 1 as const, actorId: 1 as const };
 assert.equal(

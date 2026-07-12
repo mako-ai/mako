@@ -14,6 +14,10 @@ import {
   AppV2GitProvider,
   type AppV2GitCommit,
 } from "./providers/git-provider";
+import {
+  AppV2ProjectSessionCleanupService,
+  type AppV2ProjectSessionCleanup,
+} from "./project-session-cleanup";
 
 export interface AppV2Actor {
   userId: string;
@@ -23,7 +27,10 @@ export interface AppV2Actor {
 export class AppV2ProjectService {
   readonly git: AppV2GitProvider;
 
-  constructor(git = new AppV2GitProvider(getAppsV2GitRoot())) {
+  constructor(
+    git = new AppV2GitProvider(getAppsV2GitRoot()),
+    private readonly sessionCleanup: AppV2ProjectSessionCleanup = new AppV2ProjectSessionCleanupService(),
+  ) {
     this.git = git;
   }
 
@@ -139,6 +146,10 @@ export class AppV2ProjectService {
         transitioning ??
         (await this.findForDeletion(workspaceId, projectId, actor));
     }
+    await this.sessionCleanup.revokeAndKill(
+      project.workspaceId.toString(),
+      project._id.toString(),
+    );
     const worktrees = await AppV2Worktree.find({
       workspaceId: project.workspaceId,
       projectId: project._id,

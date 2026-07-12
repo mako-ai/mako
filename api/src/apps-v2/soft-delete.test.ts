@@ -8,6 +8,7 @@ import {
 } from "../database/workspace-schema";
 import { appsV2IndexesByCollection } from "../migrations/2026-07-11-201825_create_apps_v2_metadata_indexes";
 import { AppV2ProjectService } from "./app-project.service";
+import { AppV2ProviderUnavailableError } from "./errors";
 import type { AppV2GitLease, AppV2GitProvider } from "./providers/git-provider";
 
 const workspaceId = new Types.ObjectId();
@@ -48,6 +49,8 @@ let failFence = true;
 let fenceLeaseCalls = 0;
 let recursiveDeleteCalls = 0;
 let listFilter: unknown;
+let cleanupCalls = 0;
+let failCleanup = true;
 
 const fakeGit = {
   deleteRepository: async () => {
@@ -66,7 +69,16 @@ const fakeGit = {
     return currentLease;
   },
 } as unknown as AppV2GitProvider;
-const service = new AppV2ProjectService(fakeGit);
+const service = new AppV2ProjectService(fakeGit, {
+  async revokeAndKill() {
+    cleanupCalls += 1;
+    if (failCleanup) {
+      throw new AppV2ProviderUnavailableError(
+        "injected transient sandbox cleanup failure",
+      );
+    }
+  },
+});
 
 const originalProjectFind = AppV2Project.find;
 const originalProjectFindOne = AppV2Project.findOne;
@@ -125,9 +137,29 @@ async function run(): Promise<void> {
       service.delete(workspaceId.toString(), projectId.toString(), {
         userId: "user-1",
       }),
+      /injected transient sandbox cleanup failure/,
+    );
+    assert.equal(deletionStatus, "deleting");
+    assert.equal(cleanupCalls, 1);
+    assert.equal(fenceLeaseCalls, 0);
+
+    await assert.rejects(
+      service.delete(workspaceId.toString(), projectId.toString(), {
+        userId: "user-2",
+      }),
+      /Project not found/,
+    );
+    assert.equal(cleanupCalls, 1);
+
+    failCleanup = false;
+    await assert.rejects(
+      service.delete(workspaceId.toString(), projectId.toString(), {
+        userId: "user-1",
+      }),
       /injected transient fencing failure/,
     );
     assert.equal(deletionStatus, "deleting");
+    assert.equal(cleanupCalls, 2);
     assert.equal(fenceLeaseCalls, 1);
 
     await assert.rejects(
@@ -146,6 +178,7 @@ async function run(): Promise<void> {
     );
     assert.equal(deleted.deletionStatus, "deleted");
     assert.equal(deletionStatus, "deleted");
+    assert.equal(cleanupCalls, 3);
     assert.equal(fenceLeaseCalls, 2);
     assert.equal(worktree.status, "fenced");
     assert.equal(recursiveDeleteCalls, 0);

@@ -161,6 +161,7 @@ describe("Apps v2 route isolation", () => {
 
   beforeEach(() => {
     process.env.APPS_V2_ENABLED = "true";
+    process.env.APPS_V2_SANDBOX_PROVIDER = "off";
     context.userId = "owner";
     context.workspaceAllowed = true;
   });
@@ -203,6 +204,15 @@ describe("Apps v2 route isolation", () => {
     );
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({
+      success: false,
+      error: "Apps v2 feature is unavailable",
+    });
+    const flushResponse = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}/session/flush`,
+      { method: "POST" },
+    );
+    expect(flushResponse.status).toBe(404);
+    expect(await flushResponse.json()).toEqual({
       success: false,
       error: "Apps v2 feature is unavailable",
     });
@@ -295,6 +305,73 @@ describe("Apps v2 route isolation", () => {
       worktree: { revision: number; leaseEpoch: number };
     };
     expect(body.worktree).toMatchObject({ revision: 1, leaseEpoch: 2 });
+  });
+
+  it("returns provider_unavailable without affecting other Apps v2 APIs", async () => {
+    const response = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}/session`,
+      { method: "POST" },
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      success: false,
+      error: "Apps v2 sandbox provider is unavailable",
+      code: "provider_unavailable",
+    });
+    const flushResponse = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}/session/flush`,
+      { method: "POST" },
+    );
+    expect(flushResponse.status).toBe(503);
+
+    const projectResponse = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}`,
+    );
+    expect(projectResponse.status).toBe(200);
+  });
+
+  it("rejects shell execution inputs that escape the workspace", async () => {
+    const response = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}/session/exec`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          argv: ["echo", "safe"],
+          cwd: "../outside",
+          timeoutMs: 1_000,
+        }),
+      },
+    );
+    expect(response.status).toBe(400);
+
+    const excessiveTimeout = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}/session/exec`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          argv: ["echo", "safe"],
+          cwd: "",
+          timeoutMs: 10 * 60 * 1_000 + 1,
+        }),
+      },
+    );
+    expect(excessiveTimeout.status).toBe(400);
+
+    const excessiveDepth = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/${projectId.toString()}/session/exec`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          argv: ["echo", "safe"],
+          cwd: Array.from({ length: 65 }, () => "directory").join("/"),
+          timeoutMs: 1_000,
+        }),
+      },
+    );
+    expect(excessiveDepth.status).toBe(400);
   });
 
   it("does not authenticate a caller missing a user principal", async () => {

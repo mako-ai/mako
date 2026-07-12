@@ -17,6 +17,7 @@ import {
   AppV2ConflictError,
   AppV2LimitError,
   AppV2NotFoundError,
+  AppV2RecoveryConflictError,
   AppV2ValidationError,
 } from "../errors";
 import {
@@ -107,6 +108,12 @@ export interface AppV2GitCommit {
 export interface AppV2MutationResult {
   wipOid: string;
   treeSha: string;
+}
+
+export interface AppV2ReplacementFile {
+  path: string;
+  content: Buffer;
+  executable: boolean;
 }
 
 export interface AppV2GitLease {
@@ -597,6 +604,77 @@ export class AppV2GitProvider {
     );
   }
 
+  async replaceWorktreeTree(
+    repositoryId: string,
+    wipRef: string,
+    expectedWipOid: string,
+    baseSha: string,
+    leaseRef: string,
+    expectedLeaseOid: string,
+    files: readonly AppV2ReplacementFile[],
+    recoveryId?: string,
+  ): Promise<AppV2MutationResult> {
+    const paths = files.map(file => validateAppV2Path(file.path));
+    assertNoAppV2CaseCollisions(paths);
+    if (files.length > APP_V2_MAX_FILES) {
+      throw new AppV2LimitError("Project exceeds the Apps v2 file-count limit");
+    }
+    let totalBytes = 0;
+    for (const file of files) {
+      this.assertFileSize(file.content);
+      totalBytes += file.content.byteLength;
+    }
+    if (totalBytes > APP_V2_MAX_TOTAL_BYTES) {
+      throw new AppV2LimitError("Project exceeds the Apps v2 total-size limit");
+    }
+    const repositoryPath = this.repositoryPath(repositoryId);
+    await this.assertRepositoryQuota(repositoryPath, totalBytes);
+    const blobs = await Promise.all(
+      files.map(async (file, index) => ({
+        path: paths[index],
+        executable: file.executable,
+        oid: oidFrom(
+          await runGit(
+            repositoryPath,
+            ["hash-object", "-w", "--stdin"],
+            file.content,
+          ),
+        ),
+      })),
+    );
+    const treeSha = await this.createTree(repositoryPath, null, async index => {
+      for (const file of blobs) {
+        await runGit(
+          repositoryPath,
+          [
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            file.executable ? EXECUTABLE_MODE : REGULAR_MODE,
+            file.oid,
+            file.path,
+          ],
+          undefined,
+          indexEnvironment(index),
+        );
+      }
+    });
+    return this.advanceWip(
+      repositoryId,
+      wipRef,
+      expectedWipOid,
+      baseSha,
+      leaseRef,
+      expectedLeaseOid,
+      treeSha,
+      recoveryId
+        ? `WIP replace sandbox source tree (${recoveryId})`
+        : "WIP replace sandbox source tree",
+      this.worktreeIdFromRef(wipRef),
+      recoveryId,
+    );
+  }
+
   async deleteFile(
     repositoryId: string,
     wipRef: string,
@@ -926,6 +1004,8 @@ export class AppV2GitProvider {
     expectedLeaseOid: string,
     treeSha: string,
     message: string,
+    recoveryWorktreeId?: string,
+    recoveryId?: string,
   ): Promise<AppV2MutationResult> {
     const repositoryPath = this.repositoryPath(repositoryId);
     await this.assertRepositoryQuota(repositoryPath);
@@ -938,10 +1018,15 @@ export class AppV2GitProvider {
       message,
     );
     await this.assertRepositoryQuota(repositoryPath);
+    const successRef =
+      recoveryWorktreeId && recoveryId
+        ? this.successRefName(recoveryWorktreeId, recoveryId)
+        : undefined;
     const transaction = [
       "start",
       `verify ${leaseRef} ${expectedLeaseOid}`,
       `update ${wipRef} ${wipOid} ${expectedWipOid}`,
+      ...(successRef ? [`create ${successRef} ${wipOid}`] : []),
       "prepare",
       "commit",
       "",
@@ -949,10 +1034,133 @@ export class AppV2GitProvider {
     try {
       await runGit(repositoryPath, ["update-ref", "--stdin"], transaction);
     } catch {
+      if (recoveryWorktreeId && recoveryId) {
+        const recoveryRef = await this.createRecoveryRef(
+          repositoryPath,
+          recoveryWorktreeId,
+          recoveryId,
+          wipOid,
+        );
+        throw new AppV2RecoveryConflictError(
+          "Lease or worktree changed concurrently",
+          recoveryRef,
+        );
+      }
       throw new AppV2ConflictError("Lease or worktree changed concurrently");
     }
     await this.runScheduledMaintenance(repositoryId);
     return { wipOid, treeSha };
+  }
+
+  private worktreeIdFromRef(wipRef: string): string {
+    const match = /^refs\/mako\/worktrees\/([a-zA-Z0-9_-]+)$/.exec(wipRef);
+    if (!match) throw new AppV2ValidationError("Invalid Apps v2 worktree ref");
+    return match[1];
+  }
+
+  private async createRecoveryRef(
+    repositoryPath: string,
+    worktreeId: string,
+    recoveryId: string,
+    wipOid: string,
+  ): Promise<string> {
+    const recoveryRef = this.recoveryRefName(worktreeId, recoveryId);
+    try {
+      await runGit(repositoryPath, [
+        "update-ref",
+        recoveryRef,
+        wipOid,
+        ZERO_OID,
+      ]);
+      return recoveryRef;
+    } catch {
+      const existing = await this.resolveRefByPath(repositoryPath, recoveryRef);
+      if (existing === wipOid) return recoveryRef;
+      throw new Error("Failed to preserve sandbox capture recovery ref");
+    }
+  }
+
+  recoveryRefName(worktreeId: string, recoveryId: string): string {
+    if (
+      !/^[a-zA-Z0-9_-]+$/.test(worktreeId) ||
+      !/^[a-f0-9]{64}$/.test(recoveryId)
+    ) {
+      throw new AppV2ValidationError("Invalid Apps v2 recovery identity");
+    }
+    return `refs/mako/recovery/${worktreeId}/${recoveryId}`;
+  }
+
+  successRefName(worktreeId: string, recoveryId: string): string {
+    if (
+      !/^[a-zA-Z0-9_-]+$/.test(worktreeId) ||
+      !/^[a-f0-9]{64}$/.test(recoveryId)
+    ) {
+      throw new AppV2ValidationError("Invalid Apps v2 recovery identity");
+    }
+    return `refs/mako/session-success/${worktreeId}/${recoveryId}`;
+  }
+
+  async findRecoveryRef(
+    repositoryId: string,
+    worktreeId: string,
+    recoveryId: string,
+  ): Promise<string | null> {
+    const recoveryRef = this.recoveryRefName(worktreeId, recoveryId);
+    const oid = await this.resolveRefByPath(
+      this.repositoryPath(repositoryId),
+      recoveryRef,
+    );
+    return oid ? recoveryRef : null;
+  }
+
+  async findSuccessMarker(
+    repositoryId: string,
+    worktreeId: string,
+    recoveryId: string,
+  ): Promise<{ ref: string; oid: string } | null> {
+    const ref = this.successRefName(worktreeId, recoveryId);
+    const oid = await this.resolveRefByPath(
+      this.repositoryPath(repositoryId),
+      ref,
+    );
+    return oid ? { ref, oid } : null;
+  }
+
+  async deleteSuccessMarker(
+    repositoryId: string,
+    worktreeId: string,
+    recoveryId: string,
+    expectedWipOid: string,
+  ): Promise<void> {
+    const repositoryPath = this.repositoryPath(repositoryId);
+    const ref = this.successRefName(worktreeId, recoveryId);
+    const current = await this.resolveRefByPath(repositoryPath, ref);
+    if (!current) return;
+    if (current !== expectedWipOid) {
+      throw new AppV2ConflictError("Session success marker changed");
+    }
+    await runGit(repositoryPath, ["update-ref", "-d", ref, expectedWipOid]);
+  }
+
+  private async resolveRefByPath(
+    repositoryPath: string,
+    ref: string,
+  ): Promise<string | null> {
+    try {
+      return oidFrom(
+        await runGit(repositoryPath, ["show-ref", "--verify", "--hash", ref]),
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.startsWith("Git show-ref failed (1):") ||
+          (error.message.startsWith("Git show-ref failed (128):") &&
+            error.message.endsWith(" - not a valid ref")))
+      ) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   private async createTree(

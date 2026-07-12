@@ -13,6 +13,7 @@ import {
   AppV2ValidationError,
 } from "./errors";
 import { deriveAppV2ProjectionRepair } from "./projection-repair";
+import type { AppV2ReplacementFile } from "./providers/git-provider";
 
 export class AppV2WorktreeService {
   constructor(private readonly projects = new AppV2ProjectService()) {}
@@ -186,6 +187,27 @@ export class AppV2WorktreeService {
       worktree.leaseRef,
       worktree.leaseOid,
       filePath,
+    );
+    return this.persistAdvance(project, worktree, state, result.wipOid);
+  }
+
+  async replaceTree(
+    project: IAppV2Project,
+    worktree: IAppV2Worktree,
+    state: AppV2MutationState,
+    files: readonly AppV2ReplacementFile[],
+    recoveryId?: string,
+  ): Promise<IAppV2Worktree> {
+    await this.assertReplacementState(project, worktree, state);
+    const result = await this.projects.git.replaceWorktreeTree(
+      project.repositoryId,
+      worktree.wipRef,
+      state.expectedWipOid,
+      worktree.baseSha,
+      worktree.leaseRef,
+      worktree.leaseOid,
+      files,
+      recoveryId,
     );
     return this.persistAdvance(project, worktree, state, result.wipOid);
   }
@@ -364,6 +386,29 @@ export class AppV2WorktreeService {
       await this.recoverProjection(project, worktree);
       throw new AppV2ConflictError("Stale worktree lease");
     }
+  }
+
+  private async assertReplacementState(
+    project: IAppV2Project,
+    worktree: IAppV2Worktree,
+    state: AppV2MutationState,
+  ): Promise<void> {
+    if (
+      worktree.revision !== state.ifRevision ||
+      worktree.wipOid !== state.expectedWipOid ||
+      worktree.leaseEpoch !== state.leaseEpoch
+    ) {
+      throw new AppV2ConflictError("Stale worktree mutation state");
+    }
+    const activeProject = await AppV2Project.exists({
+      _id: project._id,
+      workspaceId: project.workspaceId,
+      deletionStatus: "active",
+    });
+    if (!activeProject) throw new AppV2NotFoundError("Project not found");
+    // replaceWorktreeTree performs the authoritative WIP + lease ref CAS. It
+    // must receive stale Git state so it can preserve the captured commit on a
+    // private recovery ref rather than dropping the capture at preflight.
   }
 
   private async persistAdvance(

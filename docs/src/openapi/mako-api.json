@@ -999,6 +999,257 @@
           "createdBy"
         ]
       },
+      "AppV2SessionLifecycleResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          },
+          "session": {
+            "$ref": "#/components/schemas/AppV2Session"
+          },
+          "worktree": {
+            "$ref": "#/components/schemas/AppV2Worktree"
+          },
+          "flush": {
+            "type": "object",
+            "properties": {
+              "excludedPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "durability": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "durable"
+                        ]
+                      },
+                      "revision": {
+                        "type": "object",
+                        "properties": {
+                          "wipOid": {
+                            "type": "string"
+                          },
+                          "revision": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "wipOid",
+                          "revision"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "revision"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "conflict"
+                        ]
+                      },
+                      "recoveryRef": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "recoveryRef"
+                    ]
+                  }
+                ]
+              }
+            },
+            "required": [
+              "excludedPaths",
+              "durability"
+            ]
+          }
+        },
+        "required": [
+          "success",
+          "session",
+          "worktree",
+          "flush"
+        ]
+      },
+      "AppV2Session": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "worktreeId": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "sandboxId": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "leaseEpoch": {
+            "type": "integer"
+          },
+          "appliedWipOid": {
+            "type": "string"
+          },
+          "recoveryRef": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "paused",
+              "unsynced",
+              "conflict",
+              "provisioning",
+              "revoked",
+              "destroyed",
+              "error"
+            ]
+          },
+          "lastActiveAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "worktreeId",
+          "provider",
+          "sandboxId",
+          "generation",
+          "leaseEpoch",
+          "appliedWipOid",
+          "status"
+        ]
+      },
+      "AppV2Worktree": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "actorId": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "baseSha": {
+            "type": "string"
+          },
+          "wipOid": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "leaseEpoch": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "discarded",
+              "fenced"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "projectId",
+          "actorId",
+          "branch",
+          "baseSha",
+          "wipOid",
+          "revision",
+          "leaseEpoch",
+          "status"
+        ]
+      },
+      "AppV2SessionConflictResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              false
+            ]
+          },
+          "error": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "recoveryRef": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "error"
+        ]
+      },
+      "AppV2ProviderUnavailableResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              false
+            ]
+          },
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "provider_unavailable"
+            ]
+          }
+        },
+        "required": [
+          "success",
+          "error",
+          "code"
+        ]
+      },
       "AppV2StatusResponse": {
         "type": "object",
         "properties": {
@@ -1190,60 +1441,163 @@
           "worktree"
         ]
       },
-      "AppV2Worktree": {
+      "AppV2SessionResponse": {
         "type": "object",
         "properties": {
-          "id": {
-            "type": "string"
-          },
-          "projectId": {
-            "type": "string"
-          },
-          "actorId": {
-            "type": "string"
-          },
-          "branch": {
-            "type": "string"
-          },
-          "baseSha": {
-            "type": "string"
-          },
-          "wipOid": {
-            "type": "string"
-          },
-          "revision": {
-            "type": "integer"
-          },
-          "leaseEpoch": {
-            "type": "integer"
-          },
-          "status": {
-            "type": "string",
+          "success": {
+            "type": "boolean",
             "enum": [
-              "active",
-              "discarded",
-              "fenced"
+              true
             ]
           },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
+          "session": {
+            "$ref": "#/components/schemas/AppV2Session"
           },
-          "updatedAt": {
-            "type": "string",
-            "format": "date-time"
+          "worktree": {
+            "$ref": "#/components/schemas/AppV2Worktree"
           }
         },
         "required": [
-          "id",
-          "projectId",
-          "actorId",
-          "branch",
-          "baseSha",
-          "wipOid",
-          "revision",
-          "leaseEpoch",
-          "status"
+          "success",
+          "session"
+        ]
+      },
+      "AppV2SessionExecResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          },
+          "result": {
+            "type": "object",
+            "properties": {
+              "exitCode": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "stdout": {
+                "type": "string"
+              },
+              "stderr": {
+                "type": "string"
+              },
+              "timedOut": {
+                "type": "boolean"
+              },
+              "cancelled": {
+                "type": "boolean"
+              },
+              "outputTruncated": {
+                "type": "boolean"
+              },
+              "excludedPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "durability": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "durable"
+                        ]
+                      },
+                      "revision": {
+                        "type": "object",
+                        "properties": {
+                          "wipOid": {
+                            "type": "string"
+                          },
+                          "revision": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "wipOid",
+                          "revision"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "revision"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "conflict"
+                        ]
+                      },
+                      "recoveryRef": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "recoveryRef"
+                    ]
+                  }
+                ]
+              }
+            },
+            "required": [
+              "exitCode",
+              "stdout",
+              "stderr",
+              "timedOut",
+              "cancelled",
+              "outputTruncated",
+              "excludedPaths",
+              "durability"
+            ]
+          }
+        },
+        "required": [
+          "success",
+          "result"
+        ]
+      },
+      "AppV2SessionExec": {
+        "type": "object",
+        "properties": {
+          "argv": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8192
+            },
+            "minItems": 1,
+            "maxItems": 64
+          },
+          "cwd": {
+            "type": "string",
+            "maxLength": 1024,
+            "default": ""
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 600000,
+            "default": 60000
+          }
+        },
+        "required": [
+          "argv"
         ]
       },
       "AppV2TreeResponse": {
@@ -21548,6 +21902,75 @@
         "operationId": "get_api_workspaces_workspaceId_apps_id_public_share_password"
       }
     },
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/session/flush": {
+      "post": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Flush the actor's Apps v2 sandbox session to durable WIP",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Durable sandbox session flush",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppV2SessionLifecycleResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_v2_projectId_session_flush"
+      }
+    },
     "/api/workspaces/{workspaceId}/apps-v2/status": {
       "get": {
         "tags": [
@@ -22144,6 +22567,357 @@
           }
         },
         "operationId": "post_api_workspaces_workspaceId_apps_v2_projectId_worktree_lease"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/session": {
+      "get": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Get the actor's Apps v2 sandbox session",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Apps v2 sandbox session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppV2SessionResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_v2_projectId_session"
+      },
+      "post": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Ensure the actor's Apps v2 sandbox session",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Apps v2 sandbox session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppV2SessionResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_v2_projectId_session"
+      },
+      "delete": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Destroy and fence the actor's Apps v2 sandbox session",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Destroyed sandbox session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppV2SessionLifecycleResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "delete_api_workspaces_workspaceId_apps_v2_projectId_session"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/session/exec": {
+      "post": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Run a finite argv command in an Apps v2 sandbox session",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppV2SessionExec"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Finite command result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppV2SessionExecResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_v2_projectId_session_exec"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/session/pause": {
+      "post": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Pause the actor's Apps v2 sandbox session",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paused sandbox session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppV2SessionLifecycleResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_v2_projectId_session_pause"
       }
     },
     "/api/workspaces/{workspaceId}/apps-v2/{projectId}/worktrees/{worktreeId}/tree": {

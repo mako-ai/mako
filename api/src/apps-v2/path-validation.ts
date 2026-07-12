@@ -1,6 +1,7 @@
 import { AppV2ValidationError } from "./errors";
 
 const GIT_SEGMENT = ".git";
+export const APP_V2_MAX_PATH_SEGMENTS = 64;
 
 export function validateAppV2Path(candidate: string): string {
   if (!candidate || candidate.includes("\0")) {
@@ -14,6 +15,11 @@ export function validateAppV2Path(candidate: string): string {
   }
 
   const segments = candidate.split("/");
+  if (segments.length > APP_V2_MAX_PATH_SEGMENTS) {
+    throw new AppV2ValidationError(
+      `Paths may not exceed ${APP_V2_MAX_PATH_SEGMENTS} segments`,
+    );
+  }
   if (
     segments.some(
       segment =>

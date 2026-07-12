@@ -4164,6 +4164,42 @@ export interface IAppV2Commit extends Document {
   updatedAt: Date;
 }
 
+export interface IAppV2Session extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  worktreeId: Types.ObjectId;
+  actorId: string;
+  purpose: "dev" | "build" | "job";
+  provider: string;
+  sandboxId: string;
+  reservationId: string;
+  reservationCleaned?: boolean;
+  generation: number;
+  operationId?: string;
+  operationExpiresAt?: Date;
+  leaseEpoch: number;
+  appliedWipOid: string;
+  pendingRecoveryId?: string;
+  pendingRecoveryCompleted?: boolean;
+  pendingExpectedWipOid?: string;
+  pendingExpectedRevision?: number;
+  pendingSuccessRef?: string;
+  recoveryRef?: string;
+  status:
+    | "active"
+    | "paused"
+    | "unsynced"
+    | "conflict"
+    | "provisioning"
+    | "revoked"
+    | "destroyed"
+    | "error";
+  lastActiveAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 const AppV2ProjectSchema = new Schema<IAppV2Project>(
   {
     workspaceId: {
@@ -4296,6 +4332,76 @@ const AppV2CommitSchema = new Schema<IAppV2Commit>(
 AppV2CommitSchema.index({ projectId: 1, sha: 1 }, { unique: true });
 AppV2CommitSchema.index({ workspaceId: 1, projectId: 1, authoredAt: -1 });
 
+const AppV2SessionSchema = new Schema<IAppV2Session>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "AppV2Project",
+      required: true,
+    },
+    worktreeId: {
+      type: Schema.Types.ObjectId,
+      ref: "AppV2Worktree",
+      required: true,
+    },
+    actorId: { type: String, required: true },
+    purpose: {
+      type: String,
+      enum: ["dev", "build", "job"],
+      required: true,
+    },
+    provider: { type: String, required: true },
+    sandboxId: { type: String, required: true },
+    reservationId: { type: String, required: true },
+    reservationCleaned: { type: Boolean, default: false },
+    generation: { type: Number, required: true, default: 0 },
+    operationId: { type: String },
+    operationExpiresAt: { type: Date },
+    leaseEpoch: { type: Number, required: true },
+    appliedWipOid: { type: String, required: true },
+    pendingRecoveryId: { type: String },
+    pendingRecoveryCompleted: { type: Boolean },
+    pendingExpectedWipOid: { type: String },
+    pendingExpectedRevision: { type: Number },
+    pendingSuccessRef: { type: String },
+    recoveryRef: { type: String },
+    status: {
+      type: String,
+      enum: [
+        "active",
+        "paused",
+        "unsynced",
+        "conflict",
+        "provisioning",
+        "revoked",
+        "destroyed",
+        "error",
+      ],
+      required: true,
+    },
+    lastActiveAt: { type: Date, required: true },
+  },
+  {
+    collection: "app_v2_sessions",
+    timestamps: true,
+  },
+);
+
+AppV2SessionSchema.index(
+  { worktreeId: 1, actorId: 1, purpose: 1 },
+  { unique: true },
+);
+AppV2SessionSchema.index({ workspaceId: 1, projectId: 1 });
+AppV2SessionSchema.index({ sandboxId: 1 }, { unique: true });
+AppV2SessionSchema.index({ status: 1, lastActiveAt: 1 });
+AppV2SessionSchema.index({ operationExpiresAt: 1 });
+AppV2SessionSchema.index({ status: 1, operationExpiresAt: 1 });
+
 export const AppV2Project = mongoose.model<IAppV2Project>(
   "AppV2Project",
   AppV2ProjectSchema,
@@ -4307,6 +4413,10 @@ export const AppV2Worktree = mongoose.model<IAppV2Worktree>(
 export const AppV2Commit = mongoose.model<IAppV2Commit>(
   "AppV2Commit",
   AppV2CommitSchema,
+);
+export const AppV2Session = mongoose.model<IAppV2Session>(
+  "AppV2Session",
+  AppV2SessionSchema,
 );
 
 /**

@@ -31,3 +31,15 @@ assert.throws(() =>
   assertNoAppV2CaseCollisions(["src/App.tsx", "SRC/app.tsx"]),
 );
 assert.throws(() => assertNoAppV2CaseCollisions(["public", "public/icon.svg"]));
+assert.doesNotThrow(() =>
+  validateAppV2Path(
+    [...Array.from({ length: 63 }, () => "directory"), "file.ts"].join("/"),
+  ),
+);
+assert.throws(
+  () =>
+    validateAppV2Path(
+      [...Array.from({ length: 64 }, () => "directory"), "file.ts"].join("/"),
+    ),
+  /64 segments/,
+);

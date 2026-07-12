@@ -4,6 +4,26 @@
   `APPS_V2_ENABLED=false` by default
 - **Production gate:** enabling also requires a durable non-temporary Git root
   and `APPS_V2_GIT_DURABILITY_CONFIRMED=true`
+- **Sandbox gate:** execution defaults to
+  `APPS_V2_SANDBOX_PROVIDER=off`; E2B is selected only with
+  `APPS_V2_SANDBOX_PROVIDER=e2b`, `E2B_API_KEY`, and a pinned
+  `E2B_TEMPLATE_ID`, plus the pinned template's unprivileged
+  `APPS_V2_E2B_USER`
+- **E2B template contract:** the custom template must provide `setsid`,
+  `/bin/sh`, and Python 3; configure the named user as non-root with no
+  passwordless sudo or Linux capabilities, no service credentials, and no
+  cloud metadata reachability. Creation runs fixed conformance checks and
+  destroys a sandbox that fails.
+- **Session safety:** Mongo-server-time operation leases heartbeat while
+  provider calls run and abort on renewal loss. Pre-capture recovery intents
+  record the expected WIP and map deterministically to private conflict and
+  success refs; the success ref is created atomically with the WIP CAS so a
+  post-CAS crash reconciles as durable rather than wedging. Provisioning
+  reservations are embedded in immutable sandbox metadata; retries durably
+  clean the old reservation before adopting a rotated worktree lease, and
+  project deletion also reconciles labeled orphans. A callable stale-
+  provisioning sweep exists for a future Inngest schedule, but no recurring
+  schedule is wired yet.
 - **Audience:** Product, application platform, agent, data platform, security, and desktop teams
 - **Last updated:** 2026-07-11
 - **Scope:** Mako Apps authoring, storage, preview, deployment, and external coding-tool access

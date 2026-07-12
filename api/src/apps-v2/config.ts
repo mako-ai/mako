@@ -9,6 +9,12 @@ export const APP_V2_GIT_TIMEOUT_MS = 15_000;
 export const APP_V2_GIT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 export const APP_V2_GIT_MAX_CONCURRENCY = 8;
 export const APP_V2_DEFAULT_MAX_REPOSITORY_BYTES = 100 * 1024 * 1024;
+export const APP_V2_SESSION_MAX_ARG_COUNT = 64;
+export const APP_V2_SESSION_MAX_ARG_CHARACTERS = 8_192;
+export const APP_V2_SESSION_DEFAULT_TIMEOUT_MS = 60_000;
+export const APP_V2_SESSION_MAX_TIMEOUT_MS = 10 * 60 * 1_000;
+export const APP_V2_SESSION_MAX_OUTPUT_BYTES = 1024 * 1024;
+export const APP_V2_SESSION_OPERATION_LEASE_MS = 15 * 60 * 1_000;
 
 export function isAppsV2Enabled(): boolean {
   return process.env.APPS_V2_ENABLED === "true";
@@ -16,6 +22,50 @@ export function isAppsV2Enabled(): boolean {
 
 export function validateAppsV2StartupConfiguration(): void {
   if (isAppsV2Enabled()) getAppsV2GitRoot();
+}
+
+export type AppsV2SandboxConfiguration =
+  | {
+      available: true;
+      provider: "e2b";
+      apiKey: string;
+      templateId: string;
+      user: string;
+    }
+  | {
+      available: false;
+      provider: "off";
+      reason: "off" | "unsupported_provider" | "missing_credentials";
+    };
+
+export function getAppsV2SandboxConfiguration(): AppsV2SandboxConfiguration {
+  const configured = process.env.APPS_V2_SANDBOX_PROVIDER?.trim() || "off";
+  if (configured === "off") {
+    return { available: false, provider: "off", reason: "off" };
+  }
+  if (configured !== "e2b") {
+    return {
+      available: false,
+      provider: "off",
+      reason: "unsupported_provider",
+    };
+  }
+  const apiKey = process.env.E2B_API_KEY?.trim();
+  const templateId = process.env.E2B_TEMPLATE_ID?.trim();
+  const user = process.env.APPS_V2_E2B_USER?.trim();
+  if (
+    !apiKey ||
+    !templateId ||
+    !user ||
+    !/^[a-z_][a-z0-9_-]{0,31}$/.test(user)
+  ) {
+    return {
+      available: false,
+      provider: "off",
+      reason: "missing_credentials",
+    };
+  }
+  return { available: true, provider: "e2b", apiKey, templateId, user };
 }
 
 export function getAppsV2MaxRepositoryBytes(): number {
