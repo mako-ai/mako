@@ -295,9 +295,15 @@ function consentPage(input: {
             font-size: 13px; color: #444; margin: 16px 0; }
   .actions { display: flex; gap: 8px; margin-top: 20px; }
   button { flex: 1; padding: 10px 16px; font-size: 14px; cursor: pointer;
-           border: 1px solid #1a1a1a; }
+           border: 1px solid #1a1a1a; display: inline-flex;
+           align-items: center; justify-content: center; gap: 8px; }
   .allow { background: #1a1a1a; color: #fff; }
   .deny { background: #fff; color: #1a1a1a; }
+  button[disabled] { cursor: default; opacity: 0.65; }
+  .spinner { width: 14px; height: 14px; border-radius: 50%; flex: none;
+             border: 2px solid currentColor; border-top-color: transparent;
+             animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -317,10 +323,32 @@ function consentPage(input: {
     </div>
     <div class="actions">
       <button class="deny" type="submit" name="decision" value="deny">Deny</button>
-      <button class="allow" type="submit" name="decision" value="allow">Allow</button>
+      <button class="allow" type="submit" name="decision" value="allow"><span class="label">Allow</span></button>
     </div>
   </form>
 </main>
+<script>
+  // Approving mints the code and round-trips back to the MCP client, which
+  // can take a moment — show a spinner and lock the form so the user knows
+  // the click registered and can't double-submit. The disable is deferred a
+  // tick so the clicked button's name/value is still serialized into the
+  // POST body (disabling synchronously would drop it in some browsers).
+  (function () {
+    var form = document.querySelector("form");
+    form.addEventListener("submit", function (e) {
+      var decision = e.submitter && e.submitter.value;
+      setTimeout(function () {
+        form.querySelectorAll("button").forEach(function (b) {
+          b.disabled = true;
+        });
+        if (decision === "allow") {
+          form.querySelector(".allow").innerHTML =
+            '<span class="spinner"></span><span>Connecting…</span>';
+        }
+      }, 0);
+    });
+  })();
+</script>
 </body>
 </html>`;
 }
