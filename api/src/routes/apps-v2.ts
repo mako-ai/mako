@@ -39,7 +39,9 @@ import {
 } from "../apps-v2/worktree.service";
 import {
   APPS_V2_EXEC_MAX_TIMEOUT_MS,
+  isAppsV2Enabled,
 } from "../apps-v2/config";
+import { mintPreviewGrant } from "../apps-v2/preview.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
 const logger = loggers.api("apps-v2");
@@ -56,6 +58,15 @@ const ProjectParam = WorkspaceParam.extend({
 });
 
 appsV2Routes.use("*", unifiedAuthMiddleware);
+
+// Feature gate: everything 404s while Apps v2 is disabled, EXCEPT the
+// /status probe the sidebar uses to decide whether to show the rail icon.
+appsV2Routes.use("*", async (c, next) => {
+  if (!isAppsV2Enabled() && !c.req.path.endsWith("/status-probe")) {
+    return c.json({ success: false, error: "Not found" }, 404);
+  }
+  await next();
+});
 
 appsV2Routes.use("*", async (c: AuthenticatedContext, next) => {
   const workspaceId = c.req.param("workspaceId");
@@ -165,6 +176,27 @@ function handleError(c: AuthenticatedContext, error: unknown) {
 }
 
 // ---------------------------------------------------------------------------
+// Status probe (works even while the feature is disabled — drives rail
+// visibility in the frontend). Registered before /:id so it can't be
+// shadowed by the param route.
+// ---------------------------------------------------------------------------
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/status-probe",
+    tags: ["Apps v2"],
+    summary: "Whether Apps v2 is enabled on this deployment",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    return c.json({ success: true as const, enabled: isAppsV2Enabled() }, 200);
+  },
+);
+
+// ---------------------------------------------------------------------------
 // Projects
 // ---------------------------------------------------------------------------
 
@@ -247,7 +279,7 @@ appsV2Routes.openapi(
 appsV2Routes.openapi(
   createRoute({
     method: "get",
-    path: "/:id",
+    path: "/{id}",
     tags: ["Apps v2"],
     summary: "Get an Apps v2 project",
     security: AUTH_SECURITY,
@@ -271,7 +303,7 @@ appsV2Routes.openapi(
 appsV2Routes.openapi(
   createRoute({
     method: "delete",
-    path: "/:id",
+    path: "/{id}",
     tags: ["Apps v2"],
     summary: "Delete an Apps v2 project (repo included)",
     security: AUTH_SECURITY,
@@ -297,7 +329,7 @@ appsV2Routes.openapi(
 appsV2Routes.openapi(
   createRoute({
     method: "get",
-    path: "/:id/files",
+    path: "/{id}/files",
     tags: ["Apps v2"],
     summary: "List files (committed + uncommitted, sandbox-independent)",
     security: AUTH_SECURITY,
@@ -319,7 +351,7 @@ appsV2Routes.openapi(
 appsV2Routes.openapi(
   createRoute({
     method: "get",
-    path: "/:id/file",
+    path: "/{id}/file",
     tags: ["Apps v2"],
     summary: "Read a file at the actor's latest durable state",
     security: AUTH_SECURITY,
@@ -349,7 +381,7 @@ appsV2Routes.openapi(
 appsV2Routes.openapi(
   createRoute({
     method: "put",
-    path: "/:id/file",
+    path: "/{id}/file",
     tags: ["Apps v2"],
     summary: "Write a file through the actor's worktree (flushes WIP ref)",
     security: AUTH_SECURITY,
@@ -390,7 +422,7 @@ appsV2Routes.openapi(
 appsV2Routes.openapi(
   createRoute({
     method: "post",
-    path: "/:id/exec",
+    path: "/{id}/exec",
     tags: ["Apps v2"],
     summary: "Run a shell command in the actor's sandbox session",
     description:
@@ -439,7 +471,7 @@ appsV2Routes.openapi(
 appsV2Routes.openapi(
   createRoute({
     method: "get",
-    path: "/:id/status",
+    path: "/{id}/status",
     tags: ["Apps v2"],
     summary: "Worktree status (base, WIP, changed files)",
     security: AUTH_SECURITY,
@@ -462,7 +494,7 @@ appsV2Routes.openapi(
 appsV2Routes.openapi(
   createRoute({
     method: "get",
-    path: "/:id/history",
+    path: "/{id}/history",
     tags: ["Apps v2"],
     summary: "Commit history of the default branch",
     security: AUTH_SECURITY,
@@ -490,7 +522,7 @@ appsV2Routes.openapi(
 appsV2Routes.openapi(
   createRoute({
     method: "post",
-    path: "/:id/commit",
+    path: "/{id}/commit",
     tags: ["Apps v2"],
     summary: "Commit the actor's WIP onto the branch (CAS)",
     security: AUTH_SECURITY,
@@ -529,7 +561,81 @@ appsV2Routes.openapi(
 appsV2Routes.openapi(
   createRoute({
     method: "post",
-    path: "/:id/discard",
+    path: "/{id}/preview",
+    tags: ["Apps v2"],
+    summary: "Build the app in its session and mint a preview link",
+    description:
+      "Runs `npm install` (when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe.",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const userId = loaded.userId ?? "api-key";
+      const handle = await ensureWorktree(loaded.project, userId);
+
+      const install = await execInWorktree(
+        handle,
+        // Install only when node_modules is missing/stale-empty — repeat
+        // previews stay fast on the warm session.
+        '[ -d node_modules ] || npm install --no-audit --no-fund',
+        { timeoutMs: 300_000 },
+      );
+      if (install.exitCode !== 0) {
+        return c.json(
+          {
+            success: false,
+            error: "npm install failed",
+            stdout: install.stdout.slice(-4000),
+            stderr: install.stderr.slice(-4000),
+          },
+          422,
+        );
+      }
+
+      const build = await execInWorktree(handle, "npm run build", {
+        timeoutMs: 300_000,
+      });
+      if (build.exitCode !== 0) {
+        return c.json(
+          {
+            success: false,
+            error: "Build failed",
+            stdout: build.stdout.slice(-4000),
+            stderr: build.stderr.slice(-4000),
+          },
+          422,
+        );
+      }
+
+      const grant = mintPreviewGrant({
+        workspaceId: loaded.project.workspaceId.toString(),
+        projectId: loaded.project._id.toString(),
+        rootDir: `${handle.sessionDir}/dist`,
+      });
+      return c.json(
+        {
+          success: true as const,
+          token: grant.token,
+          url: `/api/apps-v2-preview/${grant.token}/`,
+          expiresAt: grant.expiresAt,
+          buildOutput: build.stdout.slice(-2000),
+        },
+        200,
+      );
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/discard",
     tags: ["Apps v2"],
     summary: "Discard all uncommitted work and re-base on branch head",
     security: AUTH_SECURITY,

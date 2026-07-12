@@ -36,6 +36,7 @@ export type RevealExplorer =
   | "consoles"
   | "dashboards"
   | "apps"
+  | "apps-v2"
   | "connectors"
   | "flows"
   | "dbt"
@@ -96,6 +97,11 @@ export function tabRevealTarget(
       return appId && bindingId
         ? { explorer: "apps", nodeId: `${appId}${APP_BINDING_SEP}${bindingId}` }
         : null;
+    }
+    case "app-v2": {
+      // Apps v2 explorer rows are keyed by the project id (flat list).
+      const appId = meta.appV2Id as string | undefined;
+      return appId ? { explorer: "apps-v2", nodeId: appId } : null;
     }
     case "connectors": {
       // Connector explorer rows are keyed by connector id, stored in `content`.

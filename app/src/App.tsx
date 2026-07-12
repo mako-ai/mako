@@ -75,6 +75,8 @@ const loadAppsExplorer = () => import("./components/AppsExplorer");
 const AppsExplorer = lazy(loadAppsExplorer);
 const loadNotebooksExplorer = () => import("./components/NotebooksExplorer");
 const NotebooksExplorer = lazy(loadNotebooksExplorer);
+const loadAppsV2Explorer = () => import("./components/AppsV2Explorer");
+const AppsV2Explorer = lazy(loadAppsV2Explorer);
 const PublicSharePage = lazy(() => import("./pages/PublicSharePage"));
 const AppPreviewPage = lazy(() => import("./pages/AppPreviewPage"));
 const loadDbtExplorer = () => import("./components/DbtExplorer");
@@ -567,6 +569,8 @@ function MainApp() {
         return <AppsExplorer />;
       case "notebooks":
         return <NotebooksExplorer />;
+      case "apps-v2":
+        return <AppsV2Explorer />;
       case "dbt":
         return <DbtExplorer />;
       case "settings":

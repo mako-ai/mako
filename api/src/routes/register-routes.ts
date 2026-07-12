@@ -42,7 +42,7 @@ import { mcpProtocolRoutes } from "./mcp-server.routes";
 import { mcpOAuthRoutes } from "./mcp-oauth.routes";
 import { appPreviewRoutes } from "./app-preview.routes";
 import { appsV2Routes } from "./apps-v2";
-import { isAppsV2Enabled } from "../apps-v2/config";
+import { appsV2PreviewRoutes } from "./apps-v2-preview";
 
 /**
  * Mounts every REST router onto the provided Hono app.
@@ -100,10 +100,12 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   app.route("/api/workspaces/:workspaceId/notebook", notebookDataRoutes);
   app.route("/api/workspaces/:workspaceId/notebooks", notebookRoutes);
   app.route("/api/workspaces/:workspaceId/notebooks", notebookSessionRoutes);
-  // Apps v2 (experimental, git-backed) — parallel to v1, flag-gated.
-  if (isAppsV2Enabled()) {
-    app.route("/api/workspaces/:workspaceId/apps-v2", appsV2Routes);
-  }
+  // Apps v2 (experimental, git-backed) — parallel to v1. Always registered so
+  // the OpenAPI document (and the generated frontend client types) are stable;
+  // the routers themselves refuse with 404 unless APPS_V2_ENABLED is set,
+  // except the /status probe the UI uses to decide whether to show the rail.
+  app.route("/api/workspaces/:workspaceId/apps-v2", appsV2Routes);
+  app.route("/api/apps-v2-preview", appsV2PreviewRoutes);
   app.route(
     "/api/workspaces/:workspaceId/data-sources",
     resourceDataSourceRoutes,

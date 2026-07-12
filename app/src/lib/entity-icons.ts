@@ -17,6 +17,7 @@
 
 import {
   AppWindow,
+  AppWindowMac,
   ArrowLeftRight,
   BookOpen,
   Bot,
@@ -63,6 +64,7 @@ export const EXPLORER_ICONS = {
   dashboards: ChartPie,
   apps: AppWindow,
   notebooks: Notebook,
+  "apps-v2": AppWindowMac,
   settings: Settings,
 } as const satisfies Record<LeftPaneView, LucideIcon>;
 
@@ -86,6 +88,7 @@ export const TAB_KIND_ICONS = {
   app: AppWindow,
   "app-file": FileCode,
   "app-binding": Database,
+  "app-v2": AppWindowMac,
   plan: ClipboardList,
   "dbt-file": FileCode,
   "dbt-job": CalendarClock,

@@ -14,13 +14,15 @@ import { CHAT_ICON as ChatIcon, EXPLORER_ICONS } from "../lib/entity-icons";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useAuth } from "../contexts/auth-context";
-import { startTransition, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useConnectorStore } from "../store/connectorStore";
 import { useFlowStore } from "../store/flowStore";
 import { useChatStore } from "../store/chatStore";
 import { useExplorerStore } from "../store/explorerStore";
+import { useAppsV2Store } from "../store/appsV2Store";
+import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent, resetIdentity } from "../lib/analytics";
 import { useIsMobile } from "../hooks/useIsMobile";
 
@@ -53,6 +55,7 @@ type NavigationView =
   | "dashboards"
   | "apps"
   | "notebooks"
+  | "apps-v2"
   | "dbt"
   | "settings"
   | "views";
@@ -70,7 +73,27 @@ const topNavigationItems: {
   { view: "dashboards", icon: EXPLORER_ICONS.dashboards, label: "Dashboards" },
   { view: "apps", icon: EXPLORER_ICONS.apps, label: "Apps" },
   { view: "notebooks", icon: EXPLORER_ICONS.notebooks, label: "Notebooks" },
+  // Apps v2 (git-backed, experimental) — shown only when the server flag is
+  // on (useAppsV2Visible probes /apps-v2/status-probe per workspace).
+  { view: "apps-v2", icon: EXPLORER_ICONS["apps-v2"], label: "Apps v2" },
 ];
+
+/**
+ * Probe + report whether the Apps v2 rail entry should be visible. Both the
+ * desktop rail and the mobile drawer nav filter on this so v1 and v2 can run
+ * side by side while v2 is rolled out.
+ */
+function useAppsV2Visible(): boolean {
+  const { currentWorkspace } = useWorkspace();
+  const enabled = useAppsV2Store(state => state.enabled);
+  const probeEnabled = useAppsV2Store(state => state.probeEnabled);
+  useEffect(() => {
+    if (currentWorkspace?.id && enabled === undefined) {
+      void probeEnabled(currentWorkspace.id);
+    }
+  }, [currentWorkspace?.id, enabled, probeEnabled]);
+  return enabled === true;
+}
 
 const bottomNavigationItems: {
   view: NavigationView;
@@ -203,8 +226,11 @@ export function SidebarMobileExplorerNav() {
   const activeExplorer = useUIStore(selectActiveExplorer);
   const setLeftPane = useUIStore(state => state.setLeftPane);
   const openLeftPane = useUIStore(state => state.openLeftPane);
+  const appsV2Visible = useAppsV2Visible();
 
-  const items = [...topNavigationItems, ...bottomNavigationItems];
+  const items = [...topNavigationItems, ...bottomNavigationItems].filter(
+    item => item.view !== "apps-v2" || appsV2Visible,
+  );
 
   return (
     <Box
@@ -279,35 +305,15 @@ function Sidebar() {
   const openLeftPane = useUIStore(state => state.openLeftPane);
   const openRightPane = useUIStore(state => state.openRightPane);
   const isMobile = useIsMobile();
+  const appsV2Visible = useAppsV2Visible();
 
   const handleNavigation = (view: NavigationView) => {
     // Settings now behaves like any other explorer: clicking the cog opens
     // the SettingsExplorer panel in the left rail. A tab is only opened once
     // the user picks a specific sub-section from that panel.
-    if (
-      view === "databases" ||
-      view === "consoles" ||
-      view === "connectors" ||
-      view === "flows" ||
-      view === "dashboards" ||
-      view === "apps" ||
-      view === "notebooks" ||
-      view === "dbt" ||
-      view === "settings"
-    ) {
+    if (view !== "views") {
       startTransition(() => {
-        setLeftPane(
-          view as
-            | "databases"
-            | "consoles"
-            | "connectors"
-            | "flows"
-            | "dashboards"
-            | "apps"
-            | "notebooks"
-            | "dbt"
-            | "settings",
-        );
+        setLeftPane(view);
 
         if (!leftPaneOpen) {
           openLeftPane();
@@ -352,36 +358,40 @@ function Sidebar() {
             alignItems: "center",
           }}
         >
-          {topNavigationItems.map(item => {
-            const Icon = item.icon;
-            const isActive = activeExplorer === item.view;
+          {topNavigationItems
+            .filter(item => item.view !== "apps-v2" || appsV2Visible)
+            .map(item => {
+              const Icon = item.icon;
+              const isActive = activeExplorer === item.view;
 
-            return (
-              <Tooltip key={item.view} title={item.label} placement="right">
-                <NavButton
-                  isActive={isActive}
-                  onClick={() => handleNavigation(item.view as NavigationView)}
-                  onMouseEnter={
-                    item.view === "dashboards"
-                      ? preloadDashboardsExplorer
-                      : undefined
-                  }
-                  onFocus={
-                    item.view === "dashboards"
-                      ? preloadDashboardsExplorer
-                      : undefined
-                  }
-                  onTouchStart={
-                    item.view === "dashboards"
-                      ? preloadDashboardsExplorer
-                      : undefined
-                  }
-                >
-                  <Icon size={24} strokeWidth={1.5} />
-                </NavButton>
-              </Tooltip>
-            );
-          })}
+              return (
+                <Tooltip key={item.view} title={item.label} placement="right">
+                  <NavButton
+                    isActive={isActive}
+                    onClick={() =>
+                      handleNavigation(item.view as NavigationView)
+                    }
+                    onMouseEnter={
+                      item.view === "dashboards"
+                        ? preloadDashboardsExplorer
+                        : undefined
+                    }
+                    onFocus={
+                      item.view === "dashboards"
+                        ? preloadDashboardsExplorer
+                        : undefined
+                    }
+                    onTouchStart={
+                      item.view === "dashboards"
+                        ? preloadDashboardsExplorer
+                        : undefined
+                    }
+                  >
+                    <Icon size={24} strokeWidth={1.5} />
+                  </NavButton>
+                </Tooltip>
+              );
+            })}
 
           {!rightPaneOpen && (
             <Tooltip title="Open Chat" placement="right">

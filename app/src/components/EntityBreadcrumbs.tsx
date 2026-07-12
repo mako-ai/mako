@@ -105,6 +105,8 @@ function segmentsForTab(
         "Data sources",
         ctx.appBindingName || tab.title,
       ]);
+    case "app-v2":
+      return plain(["Apps v2", tab.title]);
     case "connectors":
       return plain(["Connectors", tab.title || "New connector"]);
     case "flow-editor":

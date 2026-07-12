@@ -6,6 +6,8 @@ import {
 } from "../store/consoleStore";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useAppStore } from "../store/appStore";
+import { useAppsV2Store } from "../store/appsV2Store";
+import { focusAppsV2Tab } from "../apps-v2-runtime/shell";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { SECTION_LABELS, isSettingsSection } from "../pages/settings/sections";
@@ -104,6 +106,7 @@ export function UrlSync() {
     const appFileMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-file"]);
     const appBindingMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-binding"]);
     const appMatch = path.match(TAB_DEEP_LINK_PATTERNS.app);
+    const appV2Match = path.match(TAB_DEEP_LINK_PATTERNS["app-v2"]);
     const dbtFileMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-file"]);
     const dbtJobMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-job"]);
     const dbtRunsMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-runs"]);
@@ -271,6 +274,15 @@ export function UrlSync() {
             focusAppTab(appId, app?.title || "App", appLocation);
           });
       }
+    } else if (appV2Match) {
+      // /a2/:appId — Apps v2 (git-backed, experimental)
+      const appId = appV2Match[1];
+      setLeftPane("apps-v2");
+      const store = useAppsV2Store.getState();
+      void store.fetchApps(currentWorkspace.id).then(() => {
+        const app = useAppsV2Store.getState().apps.find(a => a.id === appId);
+        focusAppsV2Tab(appId, app?.title || "App");
+      });
     } else if (dbtFileMatch) {
       // /x/:projectId/file/:path
       const projectId = dbtFileMatch[1];

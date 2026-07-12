@@ -999,226 +999,6 @@
           "createdBy"
         ]
       },
-      "NotebookReadRequest": {
-        "type": "object",
-        "properties": {
-          "connectionId": {
-            "type": "string",
-            "example": "507f1f77bcf86cd799439011"
-          },
-          "query": {
-            "type": "string",
-            "example": "select date, mrr from metrics.mrr"
-          },
-          "limit": {
-            "type": "integer",
-            "exclusiveMinimum": 0
-          },
-          "params": {
-            "type": "object",
-            "additionalProperties": {}
-          },
-          "format": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "connectionId",
-          "query"
-        ]
-      },
-      "CreateNotebookRequest": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "clientId": {
-            "type": "string"
-          },
-          "folderId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "access": {
-            "type": "string",
-            "enum": [
-              "private",
-              "workspace"
-            ]
-          }
-        }
-      },
-      "RestoreNotebookVersionRequest": {
-        "type": "object",
-        "properties": {
-          "clientId": {
-            "type": "string"
-          }
-        }
-      },
-      "UpdateNotebookRequest": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "blocks": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "type": {
-                  "type": "string",
-                  "enum": [
-                    "code",
-                    "sql",
-                    "markdown"
-                  ]
-                },
-                "source": {
-                  "type": "string"
-                },
-                "connectionId": {
-                  "type": "string"
-                },
-                "outputs": {
-                  "type": "array",
-                  "items": {}
-                },
-                "executionCount": {
-                  "type": "number"
-                },
-                "executedAt": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "id",
-                "type",
-                "source"
-              ]
-            }
-          },
-          "clientId": {
-            "type": "string"
-          },
-          "expectedVersion": {
-            "type": "integer",
-            "exclusiveMinimum": 0
-          }
-        }
-      },
-      "NotebookPresenceRequest": {
-        "type": "object",
-        "properties": {
-          "clientId": {
-            "type": "string"
-          },
-          "activeCellId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "gone": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "clientId"
-        ]
-      },
-      "MoveNotebookRequest": {
-        "type": "object",
-        "properties": {
-          "folderId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "access": {
-            "type": "string",
-            "enum": [
-              "private",
-              "workspace"
-            ]
-          }
-        }
-      },
-      "CreateNotebookFolderRequest": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "parentId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "access": {
-            "type": "string",
-            "enum": [
-              "private",
-              "workspace"
-            ]
-          }
-        },
-        "required": [
-          "name"
-        ]
-      },
-      "RenameNotebookFolderRequest": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ]
-      },
-      "MoveNotebookFolderRequest": {
-        "type": "object",
-        "properties": {
-          "parentId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "access": {
-            "type": "string",
-            "enum": [
-              "private",
-              "workspace"
-            ]
-          }
-        }
-      },
-      "NotebookExecuteRequest": {
-        "type": "object",
-        "properties": {
-          "code": {
-            "type": "string"
-          },
-          "blockId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "code"
-        ]
-      },
       "ConnectorMetadata": {
         "type": "object",
         "properties": {
@@ -1279,56 +1059,6 @@
               "supported",
               "provisioning"
             ]
-          },
-          "incremental": {
-            "type": "object",
-            "properties": {
-              "supported": {
-                "type": "boolean"
-              },
-              "mode": {
-                "type": "string",
-                "enum": [
-                  "native",
-                  "client-filter",
-                  "created-anchor",
-                  "none"
-                ]
-              },
-              "anchorField": {
-                "type": "string"
-              },
-              "perEntity": {
-                "type": "object",
-                "additionalProperties": {
-                  "type": "object",
-                  "properties": {
-                    "mode": {
-                      "type": "string",
-                      "enum": [
-                        "native",
-                        "client-filter",
-                        "created-anchor",
-                        "none"
-                      ]
-                    },
-                    "anchorField": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "mode"
-                  ]
-                }
-              },
-              "warning": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "supported",
-              "mode"
-            ]
           }
         },
         "required": [
@@ -1337,8 +1067,7 @@
           "version",
           "description",
           "supportedEntities",
-          "webhook",
-          "incremental"
+          "webhook"
         ]
       },
       "DatabaseType": {
@@ -3557,153 +3286,6 @@
         "operationId": "get_api_workspaces_id_settings_models"
       }
     },
-    "/api/workspaces/{id}/settings/limits": {
-      "get": {
-        "tags": [
-          "Workspaces"
-        ],
-        "summary": "Get workspace refresh concurrency limits",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_id_settings_limits"
-      },
-      "put": {
-        "tags": [
-          "Workspaces"
-        ],
-        "summary": "Update workspace refresh concurrency limits",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "put_api_workspaces_id_settings_limits"
-      }
-    },
     "/api/workspaces/{id}/switch": {
       "post": {
         "tags": [
@@ -4573,188 +4155,6 @@
           }
         },
         "operationId": "delete_api_workspaces_id_api_keys_keyId"
-      }
-    },
-    "/api/workspaces/{id}/mcp-access-token": {
-      "post": {
-        "tags": [
-          "Workspaces"
-        ],
-        "summary": "Mint a short-lived MCP access token for attaching Mako tools to a local ACP session",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_id_mcp_access_token"
-      }
-    },
-    "/api/workspaces/{id}/acp-plan-grant": {
-      "post": {
-        "tags": [
-          "Workspaces"
-        ],
-        "summary": "Apply a Desktop ACP plan decision",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "agentSessionId": {
-                    "type": "string",
-                    "format": "uuid"
-                  },
-                  "decision": {
-                    "type": "string",
-                    "enum": [
-                      "approve",
-                      "request_changes",
-                      "cancel"
-                    ]
-                  },
-                  "planMarkdown": {
-                    "type": "string",
-                    "maxLength": 100000
-                  },
-                  "grants": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "enum": [
-                        "artifact-write",
-                        "warehouse-write",
-                        "git-write",
-                        "schedule-write"
-                      ]
-                    }
-                  }
-                },
-                "required": [
-                  "agentSessionId",
-                  "decision"
-                ]
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_id_acp_plan_grant"
       }
     },
     "/api/workspaces/{id}/mcp-connections": {
@@ -8897,91 +8297,6 @@
         "operationId": "get_api_workspaces_workspaceId_consoles_list"
       }
     },
-    "/api/workspaces/{workspaceId}/consoles/{id}/executions": {
-      "get": {
-        "tags": [
-          "Consoles"
-        ],
-        "summary": "GET /{id}/executions",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "limit",
-            "in": "query"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_consoles_id_executions"
-      }
-    },
     "/api/workspaces/{workspaceId}/consoles/{id}/details": {
       "get": {
         "tags": [
@@ -9791,130 +9106,6 @@
         "operationId": "delete_api_workspaces_workspaceId_chats_id"
       }
     },
-    "/api/workspaces/{workspaceId}/chats/{id}/messages": {
-      "put": {
-        "tags": [
-          "Chats"
-        ],
-        "summary": "Upsert chat messages",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "messages": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "additionalProperties": {}
-                    }
-                  },
-                  "localAcp": {
-                    "type": [
-                      "object",
-                      "null"
-                    ],
-                    "properties": {
-                      "providerId": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "sessionId": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "modelId": {
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "required": [
-                      "providerId",
-                      "sessionId",
-                      "modelId"
-                    ]
-                  }
-                },
-                "required": [
-                  "messages"
-                ]
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "put_api_workspaces_workspaceId_chats_id_messages"
-      }
-    },
     "/api/workspaces/{workspaceId}/chat-images/{attachmentId}": {
       "get": {
         "tags": [
@@ -10027,9 +9218,6 @@
                       ]
                     },
                     "content": {
-                      "type": "string"
-                    },
-                    "selfDirective": {
                       "type": "string"
                     }
                   },
@@ -10173,121 +9361,6 @@
           }
         },
         "operationId": "put_api_workspaces_workspaceId_custom_prompt"
-      }
-    },
-    "/api/workspaces/{workspaceId}/custom-prompt/turn-guidance": {
-      "post": {
-        "tags": [
-          "Custom Prompt"
-        ],
-        "summary": "Prepare budgeted agent guidance for one turn",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "userText": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 100000
-                  },
-                  "includeDbtRules": {
-                    "type": "boolean",
-                    "default": false
-                  },
-                  "dbtProjectId": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "userText"
-                ]
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Prepared turn guidance.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "success": {
-                      "type": "boolean",
-                      "enum": [
-                        true
-                      ]
-                    },
-                    "skillsBlock": {
-                      "type": "string"
-                    },
-                    "dbtRulesBlock": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "success",
-                    "skillsBlock",
-                    "dbtRulesBlock"
-                  ]
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Access denied",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Failed to prepare guidance",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_custom_prompt_turn_guidance"
       }
     },
     "/api/workspaces/{workspaceId}/custom-prompt/reset": {
@@ -16164,107 +15237,6 @@
         "operationId": "put_api_workspaces_workspaceId_mcp_servers_id_credentials"
       }
     },
-    "/api/workspaces/{workspaceId}/mcp-servers/{id}/oauth/client": {
-      "put": {
-        "tags": [
-          "MCP"
-        ],
-        "summary": "Save a pre-registered OAuth app (client ID + secret) for an MCP server",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "clientId": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 200
-                  },
-                  "clientSecret": {
-                    "type": "string",
-                    "maxLength": 500
-                  }
-                },
-                "required": [
-                  "clientId"
-                ]
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "put_api_workspaces_workspaceId_mcp_servers_id_oauth_client"
-      }
-    },
     "/api/workspaces/{workspaceId}/mcp-servers/{id}/oauth/connect": {
       "post": {
         "tags": [
@@ -16801,48 +15773,6 @@
           }
         },
         "operationId": "get_api_mcp_presets"
-      }
-    },
-    "/api/mcp/presets/{type}/icon.svg": {
-      "get": {
-        "tags": [
-          "MCP"
-        ],
-        "summary": "Get MCP preset icon",
-        "security": [],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "type",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "SVG icon.",
-            "content": {
-              "image/svg+xml": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Icon not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_mcp_presets_type_icon_svg"
       }
     },
     "/api/mcp/oauth/callback": {
@@ -22273,11 +21203,12 @@
         "operationId": "get_api_workspaces_workspaceId_apps_id_public_share_password"
       }
     },
-    "/api/workspaces/{workspaceId}/notebook/sources": {
+    "/api/workspaces/{workspaceId}/apps-v2/status-probe": {
       "get": {
         "tags": [
-          "Notebooks"
+          "Apps v2"
         ],
+        "summary": "Whether Apps v2 is enabled on this deployment",
         "security": [
           {
             "cookieAuth": []
@@ -22338,92 +21269,15 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_notebook_sources"
+        "operationId": "get_api_workspaces_workspaceId_apps_v2_status_probe"
       }
     },
-    "/api/workspaces/{workspaceId}/notebook/read": {
-      "post": {
-        "tags": [
-          "Notebooks"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NotebookReadRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_notebook_read"
-      }
-    },
-    "/api/workspaces/{workspaceId}/notebooks": {
+    "/api/workspaces/{workspaceId}/apps-v2": {
       "get": {
         "tags": [
-          "Notebooks"
+          "Apps v2"
         ],
+        "summary": "List Apps v2 projects",
         "security": [
           {
             "cookieAuth": []
@@ -22484,12 +21338,14 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_notebooks"
+        "operationId": "get_api_workspaces_workspaceId_apps_v2"
       },
       "post": {
         "tags": [
-          "Notebooks"
+          "Apps v2"
         ],
+        "summary": "Create an Apps v2 project",
+        "description": "Creates the project record and its Mako-managed bare git repository seeded with a Vite + React scaffold.",
         "security": [
           {
             "cookieAuth": []
@@ -22509,11 +21365,22 @@
           }
         ],
         "requestBody": {
-          "required": false,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateNotebookRequest"
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "description": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title"
+                ]
               }
             }
           }
@@ -22560,14 +21427,15 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_notebooks"
+        "operationId": "post_api_workspaces_workspaceId_apps_v2"
       }
     },
-    "/api/workspaces/{workspaceId}/notebooks/{id}": {
+    "/api/workspaces/{workspaceId}/apps-v2/{id}": {
       "get": {
         "tags": [
-          "Notebooks"
+          "Apps v2"
         ],
+        "summary": "Get an Apps v2 project",
         "security": [
           {
             "cookieAuth": []
@@ -22636,96 +21504,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_notebooks_id"
-      },
-      "patch": {
-        "tags": [
-          "Notebooks"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateNotebookRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "patch_api_workspaces_workspaceId_notebooks_id"
+        "operationId": "get_api_workspaces_workspaceId_apps_v2_id"
       },
       "delete": {
         "tags": [
-          "Notebooks"
+          "Apps v2"
         ],
+        "summary": "Delete an Apps v2 project (repo included)",
         "security": [
           {
             "cookieAuth": []
@@ -22794,14 +21579,15 @@
             }
           }
         },
-        "operationId": "delete_api_workspaces_workspaceId_notebooks_id"
+        "operationId": "delete_api_workspaces_workspaceId_apps_v2_id"
       }
     },
-    "/api/workspaces/{workspaceId}/notebooks/{id}/artifacts/{artifactId}": {
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/files": {
       "get": {
         "tags": [
-          "Notebooks"
+          "Apps v2"
         ],
+        "summary": "List files (committed + uncommitted, sandbox-independent)",
         "security": [
           {
             "cookieAuth": []
@@ -22825,14 +21611,6 @@
             },
             "required": true,
             "name": "id",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "artifactId",
             "in": "path"
           }
         ],
@@ -22878,90 +21656,15 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_notebooks_id_artifacts_artifactId"
+        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_files"
       }
     },
-    "/api/workspaces/{workspaceId}/notebooks/{id}/versions": {
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/file": {
       "get": {
         "tags": [
-          "Notebooks"
+          "Apps v2"
         ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_notebooks_id_versions"
-      }
-    },
-    "/api/workspaces/{workspaceId}/notebooks/{id}/versions/{versionId}": {
-      "get": {
-        "tags": [
-          "Notebooks"
-        ],
+        "summary": "Read a file at the actor's latest durable state",
         "security": [
           {
             "cookieAuth": []
@@ -22989,11 +21692,12 @@
           },
           {
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             },
             "required": true,
-            "name": "versionId",
-            "in": "path"
+            "name": "path",
+            "in": "query"
           }
         ],
         "responses": {
@@ -23038,832 +21742,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_notebooks_id_versions_versionId"
-      }
-    },
-    "/api/workspaces/{workspaceId}/notebooks/{id}/versions/{versionId}/restore": {
-      "post": {
-        "tags": [
-          "Notebooks"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "versionId",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RestoreNotebookVersionRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_notebooks_id_versions_versionId_restore"
-      }
-    },
-    "/api/workspaces/{workspaceId}/notebooks/{id}/presence": {
-      "post": {
-        "tags": [
-          "Notebooks"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NotebookPresenceRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_notebooks_id_presence"
-      }
-    },
-    "/api/workspaces/{workspaceId}/notebooks/{id}/move": {
-      "patch": {
-        "tags": [
-          "Notebooks"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MoveNotebookRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "patch_api_workspaces_workspaceId_notebooks_id_move"
-      }
-    },
-    "/api/workspaces/{workspaceId}/notebooks/folders": {
-      "post": {
-        "tags": [
-          "Notebooks"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateNotebookFolderRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_notebooks_folders"
-      }
-    },
-    "/api/workspaces/{workspaceId}/notebooks/folders/{id}/rename": {
-      "patch": {
-        "tags": [
-          "Notebooks"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RenameNotebookFolderRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "patch_api_workspaces_workspaceId_notebooks_folders_id_rename"
-      }
-    },
-    "/api/workspaces/{workspaceId}/notebooks/folders/{id}": {
-      "delete": {
-        "tags": [
-          "Notebooks"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "delete_api_workspaces_workspaceId_notebooks_folders_id"
-      }
-    },
-    "/api/workspaces/{workspaceId}/notebooks/folders/{id}/move": {
-      "patch": {
-        "tags": [
-          "Notebooks"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MoveNotebookFolderRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "patch_api_workspaces_workspaceId_notebooks_folders_id_move"
-      }
-    },
-    "/api/workspaces/{workspaceId}/notebooks/{id}/sessions": {
-      "post": {
-        "tags": [
-          "Notebooks"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_notebooks_id_sessions"
-      }
-    },
-    "/api/workspaces/{workspaceId}/notebooks/{id}/sessions/current": {
-      "get": {
-        "tags": [
-          "Notebooks"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_api_workspaces_workspaceId_notebooks_id_sessions_current"
+        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_file"
       },
-      "delete": {
+      "put": {
         "tags": [
-          "Notebooks"
+          "Apps v2"
         ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "delete_api_workspaces_workspaceId_notebooks_id_sessions_current"
-      }
-    },
-    "/api/workspaces/{workspaceId}/notebooks/{id}/executions": {
-      "post": {
-        "tags": [
-          "Notebooks"
-        ],
+        "summary": "Write a file through the actor's worktree (flushes WIP ref)",
         "security": [
           {
             "cookieAuth": []
@@ -23891,11 +21776,23 @@
           }
         ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NotebookExecuteRequest"
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "contents": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "contents"
+                ]
               }
             }
           }
@@ -23942,7 +21839,595 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_notebooks_id_executions"
+        "operationId": "put_api_workspaces_workspaceId_apps_v2_id_file"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/exec": {
+      "post": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Run a shell command in the actor's sandbox session",
+        "description": "Executes in the session working tree via the configured sandbox provider, then flushes the working tree to the durable WIP ref.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "command": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "cwd": {
+                    "type": "string"
+                  },
+                  "timeoutMs": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 600000
+                  }
+                },
+                "required": [
+                  "command"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_exec"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/status": {
+      "get": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Worktree status (base, WIP, changed files)",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_status"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/history": {
+      "get": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Commit history of the default branch",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 200
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_history"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/commit": {
+      "post": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Commit the actor's WIP onto the branch (CAS)",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "message"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_commit"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/preview": {
+      "post": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Build the app in its session and mint a preview link",
+        "description": "Runs `npm install` (when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_preview"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/discard": {
+      "post": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Discard all uncommitted work and re-base on branch head",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_discard"
+      }
+    },
+    "/api/apps-v2-preview/:token/:assetPath{.*}": {
+      "get": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Serve a built preview asset (token-gated, cookie-free)",
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "token",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "assetPath",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_apps_v2_preview_token_assetPath"
       }
     },
     "/api/workspaces/{workspaceId}/data-sources/{resourceType}/{resourceId}": {

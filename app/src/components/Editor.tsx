@@ -71,6 +71,7 @@ import AppRenderer from "./AppRenderer";
 import NotebookRenderer from "./NotebookRenderer";
 import AppFileEditor from "./AppFileEditor";
 import AppBindingEditor from "./AppBindingEditor";
+import AppV2Workspace from "./AppV2Workspace";
 import PlanDocumentTab from "./PlanDocumentTab";
 import DbtFileEditor from "./DbtFileEditor";
 import DbtJobView from "./DbtJobView";
@@ -2861,6 +2862,11 @@ function Editor({
                       tabId={tab.id}
                       appId={tab.metadata?.appId as string}
                       bindingId={tab.metadata?.bindingId as string}
+                    />
+                  ) : tab.kind === "app-v2" ? (
+                    <AppV2Workspace
+                      tabId={tab.id}
+                      appId={tab.metadata?.appV2Id as string}
                     />
                   ) : tab.kind === "plan" ? (
                     <PlanDocumentTab
