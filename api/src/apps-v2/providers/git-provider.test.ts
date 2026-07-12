@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createAppV2Scaffold } from "@mako/schemas";
@@ -25,6 +25,16 @@ function runTestGit(
     input,
     encoding: "utf8",
     env: { ...process.env, ...environment },
+    shell: false,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
+
+function runGitInWorktree(repositoryPath: string, args: string[]): string {
+  const result = spawnSync("git", args, {
+    cwd: repositoryPath,
+    encoding: "utf8",
     shell: false,
   });
   assert.equal(result.status, 0, result.stderr);
@@ -289,6 +299,93 @@ async function run(): Promise<void> {
     assert.equal(
       await provider.isAncestor("project", deleted.wipOid, "refs/heads/main"),
       false,
+    );
+    const bundle = await provider.createBundle("project", {
+      branch: "main",
+      wipRef: privateRef.wipRef,
+    });
+    assert.equal(bundle.branchHead, initial.sha);
+    assert.equal(bundle.wipOid, deleted.wipOid);
+    const bundlePath = path.join(root, "worktree.bundle");
+    await writeFile(bundlePath, bundle.bytes);
+    const bundleHeads = runGitInWorktree(root, [
+      "bundle",
+      "list-heads",
+      bundlePath,
+    ])
+      .split("\n")
+      .map(line => line.split(" ")[1])
+      .sort();
+    assert.deepEqual(
+      bundleHeads,
+      ["refs/heads/main", privateRef.wipRef].sort(),
+    );
+    assert(!bundleHeads.includes(chatOneRef.wipRef));
+    assert(!bundleHeads.includes(chatTwoRef.wipRef));
+    assert(!bundleHeads.includes(privateRef.leaseRef));
+    const clonePath = path.join(root, "bundle-clone");
+    runGitInWorktree(root, [
+      "-c",
+      "protocol.file.allow=always",
+      "clone",
+      "--no-checkout",
+      "--",
+      bundlePath,
+      clonePath,
+    ]);
+    runGitInWorktree(clonePath, ["checkout", "-B", "main", bundle.branchHead]);
+    runGitInWorktree(clonePath, [
+      "read-tree",
+      "--reset",
+      "-u",
+      `${bundle.wipOid}^{tree}`,
+    ]);
+    assert.equal(
+      runGitInWorktree(clonePath, ["branch", "--show-current"]),
+      "main",
+    );
+    assert.equal(
+      runGitInWorktree(clonePath, ["rev-parse", "HEAD"]),
+      initial.sha,
+    );
+    assert.match(
+      runGitInWorktree(clonePath, ["status", "--short"]),
+      /scripts\/verify\.sh/,
+    );
+    assert.match(
+      runGitInWorktree(clonePath, ["diff", "--cached", "--name-status"]),
+      /scripts\/verify\.sh/,
+    );
+    assert.match(
+      runGitInWorktree(clonePath, ["log", "--oneline", "-1"]),
+      /Initial Mako Apps v2 scaffold/,
+    );
+    await assert.rejects(
+      provider.createBundle("project", {
+        branch: "../main",
+        wipRef: privateRef.wipRef,
+      }),
+      AppV2ValidationError,
+    );
+    await assert.rejects(
+      provider.createBundle("project", {
+        branch: "main",
+        wipRef: chatOneRef.leaseRef,
+      }),
+      AppV2ValidationError,
+    );
+    const cancelledBundle = new AbortController();
+    const cancellation = new AppV2ConflictError(
+      "Distributed operation lease lost",
+    );
+    cancelledBundle.abort(cancellation);
+    await assert.rejects(
+      provider.createBundle(
+        "project",
+        { branch: "main", wipRef: privateRef.wipRef },
+        cancelledBundle.signal,
+      ),
+      error => error === cancellation,
     );
 
     const recoveredProvider = new AppV2GitProvider(root);

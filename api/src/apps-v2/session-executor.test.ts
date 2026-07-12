@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -33,6 +34,22 @@ import {
 import { FakeSandboxProvider } from "./testing/fake-sandbox-provider";
 import { FakeSessionExecutor } from "./testing/fake-session-executor";
 import { AppV2WorktreeService } from "./worktree.service";
+
+function runSandboxGit(
+  repositoryPath: string,
+  args: readonly string[],
+): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync("git", args, {
+    cwd: repositoryPath,
+    encoding: "utf8",
+    shell: false,
+  });
+  return {
+    status: result.status,
+    stdout: result.stdout.trim(),
+    stderr: result.stderr.trim(),
+  };
+}
 
 class MemoryProjectService extends AppV2ProjectService {
   constructor(
@@ -595,7 +612,7 @@ async function run(): Promise<void> {
   });
   assert.equal(
     e2bCommandForArgv(["printf", "%s", "$(touch /pwned)", "a'b"], "mako"),
-    `exec env -i HOME='/home/mako' PATH='/usr/local/bin:/usr/bin:/bin' BASH_ENV='/dev/null' setsid --wait -- 'printf' '%s' '$(touch /pwned)' 'a'"'"'b'`,
+    `exec env -i HOME='/home/mako' PATH='/usr/local/bin:/usr/bin:/bin' BASH_ENV='/dev/null' GIT_CONFIG_GLOBAL='/dev/null' GIT_CONFIG_NOSYSTEM='1' GIT_TERMINAL_PROMPT='0' GCM_INTERACTIVE='never' GIT_ASKPASS='/bin/false' setsid --wait -- 'printf' '%s' '$(touch /pwned)' 'a'"'"'b'`,
   );
   const e2bExecution = await e2b.exec("e2b-fake", {
     argv: ["printf", "%s", "$(touch /pwned)", "a'b"],
@@ -606,7 +623,7 @@ async function run(): Promise<void> {
   assert.equal(
     capturedE2BCommands.find(entry => entry.command.includes("'printf'"))
       ?.command,
-    `exec env -i HOME='/home/mako' PATH='/usr/local/bin:/usr/bin:/bin' BASH_ENV='/dev/null' setsid --wait -- 'printf' '%s' '$(touch /pwned)' 'a'"'"'b'`,
+    `exec env -i HOME='/home/mako' PATH='/usr/local/bin:/usr/bin:/bin' BASH_ENV='/dev/null' GIT_CONFIG_GLOBAL='/dev/null' GIT_CONFIG_NOSYSTEM='1' GIT_TERMINAL_PROMPT='0' GCM_INTERACTIVE='never' GIT_ASKPASS='/bin/false' setsid --wait -- 'printf' '%s' '$(touch /pwned)' 'a'"'"'b'`,
   );
   const tenantCommand = capturedE2BCommands.find(entry =>
     entry.command.includes("'printf'"),
@@ -818,6 +835,9 @@ async function run(): Promise<void> {
       workspaceId: project.workspaceId.toString(),
       projectId: project._id.toString(),
       worktreeId: worktree._id.toString(),
+      repositoryId: project.repositoryId,
+      branch: worktree.branch,
+      wipRef: worktree.wipRef,
       actorId: "actor",
       purpose: "dev" as const,
       leaseEpoch: 1,
@@ -871,6 +891,31 @@ async function run(): Promise<void> {
         await git.readFile(project.repositoryId, worktree.wipOid, "src/App.tsx")
       ).content.toString(),
       "export default function Changed() {}\n",
+    );
+    assert(
+      sandboxes
+        .state(prepared.sandboxId)
+        .files.has("node_modules/pkg/index.js"),
+    );
+    await executor.applyRevision({
+      ...initialTarget,
+      sandboxId: prepared.sandboxId,
+      leaseEpoch: worktree.leaseEpoch,
+      durableRevision: {
+        wipOid: worktree.wipOid,
+        revision: worktree.revision,
+      },
+      appliedWipOid: initial.sha,
+    });
+    assert.deepEqual(
+      sandboxes.state(prepared.sandboxId).repositoryMaterializations,
+      ["fresh", "update"],
+    );
+    assert(
+      sandboxes
+        .state(prepared.sandboxId)
+        .files.has("node_modules/pkg/index.js"),
+      "hot Git updates preserve dependency caches",
     );
 
     const installed = await executor.install(
@@ -936,6 +981,40 @@ async function run(): Promise<void> {
         async onProvisioned() {},
       },
     );
+    const recreatedRepository = cancelledSandboxes.state(
+      cancelledPrepared.sandboxId,
+    ).repositoryPath;
+    assert(recreatedRepository);
+    assert.equal(
+      runSandboxGit(recreatedRepository, ["branch", "--show-current"]).stdout,
+      worktree.branch,
+    );
+    assert.equal(
+      runSandboxGit(recreatedRepository, ["rev-parse", "HEAD"]).stdout,
+      worktree.baseSha,
+    );
+    assert.notEqual(
+      runSandboxGit(recreatedRepository, ["status", "--short"]).stdout,
+      "",
+      "WIP snapshot must remain dirty against branch HEAD",
+    );
+    assert.match(
+      runSandboxGit(recreatedRepository, ["diff", "--cached", "--name-status"])
+        .stdout,
+      /src\/App\.tsx/,
+    );
+    assert.match(
+      runSandboxGit(recreatedRepository, ["log", "--oneline", "-1"]).stdout,
+      /Initial Mako Apps v2 scaffold/,
+    );
+    assert.equal(
+      runSandboxGit(recreatedRepository, ["remote", "get-url", "origin"])
+        .stdout,
+      "https://apps-v2.mako.invalid/blocked.git",
+    );
+    const blockedPush = runSandboxGit(recreatedRepository, ["push", "origin"]);
+    assert.notEqual(blockedPush.status, 0);
+    assert.match(blockedPush.stderr, /apps-v2\.mako\.invalid/);
     const cancelledCommand = await cancelledExecutor.exec(
       {
         ...cancelledTargetBase,
@@ -1609,6 +1688,72 @@ async function run(): Promise<void> {
     assert(renewalFailureStore.record?.pendingRecoveryId);
     assert.equal(renewalFailureStore.record?.pendingRecoveryCompleted, false);
     assert.equal(renewalFailureStore.record?.operationId, undefined);
+
+    class BlockingHotUpdateExecutor extends FakeSessionExecutor {
+      readonly hotUpdateStarted = new Promise<void>(resolve => {
+        this.resolveHotUpdateStarted = resolve;
+      });
+      observedSignal?: AbortSignal;
+      returnedAfterAbort = false;
+      private resolveHotUpdateStarted!: () => void;
+
+      override async applyRevision(
+        target: Parameters<FakeSessionExecutor["applyRevision"]>[0],
+        signal?: AbortSignal,
+      ): ReturnType<FakeSessionExecutor["applyRevision"]> {
+        this.observedSignal = signal;
+        this.resolveHotUpdateStarted();
+        await new Promise<void>(resolve => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        this.returnedAfterAbort = true;
+        signal?.throwIfAborted();
+        await super.applyRevision(target, signal);
+      }
+    }
+
+    const hotUpdateStore = new MemorySessionStore();
+    hotUpdateStore.record = {
+      ...(raceStore.record as AppV2SessionRecord),
+      id: new Types.ObjectId().toString(),
+      actorId: "hot-update-renewal-actor",
+      sandboxId: "hot-update-renewal-sandbox",
+      reservationId: "hot-update-renewal-reservation",
+      leaseEpoch: worktree.leaseEpoch,
+      appliedWipOid: initial.sha,
+      status: "active",
+    };
+    hotUpdateStore.failRenewal = true;
+    const hotUpdateExecutor = new BlockingHotUpdateExecutor();
+    const hotUpdateService = new AppV2SessionService(
+      "fake",
+      hotUpdateExecutor,
+      worktrees,
+      hotUpdateStore,
+      new AppV2KeyedMutex(),
+      30,
+    );
+    const blockedHotUpdate = hotUpdateService.flush(project, worktree, {
+      userId: hotUpdateStore.record.actorId,
+    });
+    await hotUpdateExecutor.hotUpdateStarted;
+    await assert.rejects(blockedHotUpdate, AppV2OperationConflictError);
+    assert.equal(hotUpdateExecutor.observedSignal?.aborted, true);
+    assert.equal(hotUpdateExecutor.returnedAfterAbort, true);
+    assert.equal(hotUpdateExecutor.applied.length, 0);
+    assert.equal(hotUpdateStore.record.appliedWipOid, initial.sha);
+    assert.equal(
+      hotUpdateStore.updates.some(
+        update => update.appliedWipOid === worktree.wipOid,
+      ),
+      false,
+    );
+    assert.equal(hotUpdateStore.record.operationId, undefined);
+
     const renewalFailureRecoveryId =
       renewalFailureStore.record.pendingRecoveryId;
     const recoveredAfterRenewalFailure = await renewalFailureService.get(
@@ -1947,6 +2092,169 @@ async function run(): Promise<void> {
     assert.equal(destroyed.session.recoveryRef, retainedRecoveryRef);
     assert.equal(conflictExecutor.killed.length, 1);
     assert.equal(conflictStore.record?.recoveryRef, retainedRecoveryRef);
+
+    const equivalentInitial = await git.createRepository(
+      "equivalent-project",
+      createAppV2Scaffold(),
+    );
+    const equivalentProject = {
+      _id: new Types.ObjectId(),
+      workspaceId: new Types.ObjectId(),
+      repositoryId: "equivalent-project",
+      defaultBranch: "main",
+      headSha: equivalentInitial.sha,
+    } as unknown as IAppV2Project;
+    const equivalentRefs = await git.createWorktreeRef(
+      equivalentProject.repositoryId,
+      "equivalent-worktree",
+      equivalentInitial.sha,
+    );
+    const equivalentDirty = await git.writeFile(
+      equivalentProject.repositoryId,
+      equivalentRefs.wipRef,
+      equivalentRefs.wipOid,
+      equivalentInitial.sha,
+      equivalentRefs.leaseRef,
+      equivalentRefs.leaseOid,
+      "src/equivalent.ts",
+      Buffer.from("export const equivalent = true;\n"),
+      false,
+    );
+    const equivalentWorktree = {
+      _id: new Types.ObjectId(),
+      workspaceId: equivalentProject.workspaceId,
+      projectId: equivalentProject._id,
+      actorId: "equivalent-actor",
+      kind: "agent",
+      contextKey: "chat:equivalent",
+      branch: "main",
+      baseSha: equivalentInitial.sha,
+      wipRef: equivalentRefs.wipRef,
+      wipOid: equivalentDirty.wipOid,
+      leaseRef: equivalentRefs.leaseRef,
+      leaseOid: equivalentRefs.leaseOid,
+      revision: 1,
+      leaseEpoch: 1,
+      status: "active",
+    } as unknown as IAppV2Worktree;
+    const equivalentProjects = new MemoryProjectService(git, equivalentProject);
+    class EquivalentWorktrees extends AppV2WorktreeService {
+      override async getById(): Promise<IAppV2Worktree> {
+        return equivalentWorktree;
+      }
+    }
+    const equivalentWorktrees = new EquivalentWorktrees(equivalentProjects);
+    const equivalentSandboxes = new FakeSandboxProvider();
+    const equivalentExecutor = new CloudSessionExecutor(
+      equivalentSandboxes,
+      equivalentProjects,
+      equivalentWorktrees,
+    );
+    const equivalentTarget = {
+      workspaceId: equivalentProject.workspaceId.toString(),
+      projectId: equivalentProject._id.toString(),
+      worktreeId: equivalentWorktree._id.toString(),
+      repositoryId: equivalentProject.repositoryId,
+      branch: equivalentWorktree.branch,
+      wipRef: equivalentWorktree.wipRef,
+      actorId: equivalentWorktree.actorId,
+      purpose: "dev" as const,
+      leaseEpoch: equivalentWorktree.leaseEpoch,
+      durableRevision: {
+        wipOid: equivalentWorktree.wipOid,
+        revision: equivalentWorktree.revision,
+      },
+    };
+    const equivalentPrepared = await equivalentExecutor.prepare(
+      equivalentTarget,
+      {
+        reservationId: "equivalent-reservation",
+        signal: new AbortController().signal,
+        async onProvisioned() {},
+      },
+    );
+    equivalentSandboxes
+      .state(equivalentPrepared.sandboxId)
+      .files.set("node_modules/preserved/index.js", {
+        path: "node_modules/preserved/index.js",
+        content: Buffer.from("cached"),
+        executable: false,
+      });
+    const equivalentStore = new MemorySessionStore();
+    equivalentStore.record = {
+      id: new Types.ObjectId().toString(),
+      workspaceId: equivalentProject.workspaceId.toString(),
+      projectId: equivalentProject._id.toString(),
+      worktreeId: equivalentWorktree._id.toString(),
+      actorId: equivalentWorktree.actorId,
+      purpose: "dev",
+      provider: "fake",
+      sandboxId: equivalentPrepared.sandboxId,
+      reservationId: "equivalent-reservation",
+      generation: 0,
+      leaseEpoch: equivalentWorktree.leaseEpoch,
+      appliedWipOid: equivalentDirty.wipOid,
+      status: "active",
+      lastActiveAt: new Date(),
+    };
+    const equivalentSessions = new AppV2SessionService(
+      "fake",
+      equivalentExecutor,
+      equivalentWorktrees,
+      equivalentStore,
+      new AppV2KeyedMutex(),
+    );
+    const equivalentCommit = await git.commit(
+      equivalentProject.repositoryId,
+      equivalentWorktree.branch,
+      equivalentWorktree.wipRef,
+      equivalentDirty.wipOid,
+      equivalentInitial.sha,
+      equivalentWorktree.leaseRef,
+      equivalentWorktree.leaseOid,
+      "Equivalent source commit",
+    );
+    equivalentWorktree.baseSha = equivalentCommit.sha;
+    equivalentWorktree.wipOid = equivalentCommit.sha;
+    equivalentWorktree.revision += 1;
+    await equivalentSessions.advanceEquivalentCommit(
+      equivalentProject,
+      equivalentWorktree,
+      { userId: equivalentWorktree.actorId },
+      equivalentDirty.wipOid,
+    );
+    assert.equal(equivalentStore.record?.appliedWipOid, equivalentCommit.sha);
+    assert.deepEqual(
+      equivalentSandboxes.state(equivalentPrepared.sandboxId)
+        .repositoryMaterializations,
+      ["fresh", "update"],
+    );
+    assert(
+      equivalentSandboxes
+        .state(equivalentPrepared.sandboxId)
+        .files.has("node_modules/preserved/index.js"),
+    );
+    const equivalentRepository = equivalentSandboxes.state(
+      equivalentPrepared.sandboxId,
+    ).repositoryPath;
+    assert(equivalentRepository);
+    assert.equal(
+      runSandboxGit(equivalentRepository, ["rev-parse", "HEAD"]).stdout,
+      equivalentCommit.sha,
+    );
+    assert.equal(
+      runSandboxGit(equivalentRepository, ["status", "--short"]).stdout,
+      "",
+    );
+    await equivalentSessions.ensure(equivalentProject, equivalentWorktree, {
+      userId: equivalentWorktree.actorId,
+    });
+    assert.deepEqual(
+      equivalentSandboxes.state(equivalentPrepared.sandboxId)
+        .repositoryMaterializations,
+      ["fresh", "update"],
+      "next turn reuses the synchronized sandbox without rematerializing",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

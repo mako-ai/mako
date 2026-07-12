@@ -35,6 +35,7 @@ import type {
   AppV2NetworkPhase,
   SandboxFile,
   SandboxProvider,
+  SandboxRepositorySnapshot,
   SandboxStatus,
 } from "./providers/sandbox-provider";
 import { AppV2WorktreeService } from "./worktree.service";
@@ -59,7 +60,9 @@ export class CloudSessionExecutor implements SessionExecutor {
     target: Omit<SessionExecutionTarget, "sandboxId" | "appliedWipOid">,
     options: SessionPrepareOptions,
   ): Promise<PreparedSession> {
+    options.signal.throwIfAborted();
     const loaded = await this.load(target);
+    options.signal.throwIfAborted();
     this.assertRevision(target, loaded.worktree);
     const sandbox = await this.sandboxes.create({
       workspaceId: target.workspaceId,
@@ -77,9 +80,10 @@ export class CloudSessionExecutor implements SessionExecutor {
       onProvisioned: options.onProvisioned,
     });
     try {
-      await this.sandboxes.materializeFiles(
+      await this.sandboxes.materializeRepository(
         sandbox.sandboxId,
-        await this.readRevision(loaded),
+        await this.repositorySnapshot(target, loaded, options.signal),
+        "fresh",
         options.signal,
       );
     } catch (error) {
@@ -92,12 +96,19 @@ export class CloudSessionExecutor implements SessionExecutor {
     };
   }
 
-  async applyRevision(target: SessionExecutionTarget): Promise<void> {
+  async applyRevision(
+    target: SessionExecutionTarget,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    signal?.throwIfAborted();
     const loaded = await this.load(target);
+    signal?.throwIfAborted();
     this.assertRevision(target, loaded.worktree);
-    await this.sandboxes.materializeFiles(
+    await this.sandboxes.materializeRepository(
       target.sandboxId,
-      await this.readRevision(loaded),
+      await this.repositorySnapshot(target, loaded, signal),
+      "update",
+      signal,
     );
   }
 
@@ -205,10 +216,12 @@ export class CloudSessionExecutor implements SessionExecutor {
     loaded: LoadedWorktree,
     signal?: AbortSignal,
   ): Promise<void> {
+    signal?.throwIfAborted();
     if (target.appliedWipOid !== target.durableRevision.wipOid) {
-      await this.sandboxes.materializeFiles(
+      await this.sandboxes.materializeRepository(
         target.sandboxId,
-        await this.readRevision(loaded),
+        await this.repositorySnapshot(target, loaded, signal),
+        "update",
         signal,
       );
     }
@@ -491,16 +504,54 @@ export class CloudSessionExecutor implements SessionExecutor {
   }
 
   private assertRevision(
-    target: Pick<SessionExecutionTarget, "leaseEpoch" | "durableRevision">,
+    target: Pick<
+      SessionExecutionTarget,
+      "repositoryId" | "branch" | "wipRef" | "leaseEpoch" | "durableRevision"
+    >,
     worktree: IAppV2Worktree,
   ): void {
     if (
+      target.repositoryId === "" ||
+      target.branch !== worktree.branch ||
+      target.wipRef !== worktree.wipRef ||
       worktree.leaseEpoch !== target.leaseEpoch ||
       worktree.wipOid !== target.durableRevision.wipOid ||
       worktree.revision !== target.durableRevision.revision
     ) {
       throw new AppV2ConflictError("Session worktree revision is stale");
     }
+  }
+
+  private async repositorySnapshot(
+    target: Pick<SessionExecutionTarget, "repositoryId" | "branch" | "wipRef">,
+    { project, worktree }: LoadedWorktree,
+    signal?: AbortSignal,
+  ): Promise<SandboxRepositorySnapshot> {
+    signal?.throwIfAborted();
+    if (target.repositoryId !== project.repositoryId) {
+      throw new AppV2ConflictError("Session repository identity is stale");
+    }
+    const bundle = await this.projects.git.createBundle(
+      project.repositoryId,
+      {
+        branch: worktree.branch,
+        wipRef: worktree.wipRef,
+      },
+      signal,
+    );
+    signal?.throwIfAborted();
+    if (
+      bundle.branchHead !== worktree.baseSha ||
+      bundle.wipOid !== worktree.wipOid
+    ) {
+      throw new AppV2ConflictError("Session Git snapshot changed concurrently");
+    }
+    return {
+      bundle: bundle.bytes,
+      branch: worktree.branch,
+      branchHead: bundle.branchHead,
+      wipOid: bundle.wipOid,
+    };
   }
 
   private async readRevision({

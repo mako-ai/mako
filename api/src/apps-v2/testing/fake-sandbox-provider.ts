@@ -1,5 +1,20 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import {
+  lstat,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { isAppV2SessionFileEligible } from "../session-files";
+import {
+  validateAppV2GitBranch,
+  validateAppV2GitOid,
+} from "../providers/git-provider";
 import type {
   AppV2NetworkPhase,
   SandboxCapture,
@@ -9,6 +24,8 @@ import type {
   SandboxFile,
   SandboxHandle,
   SandboxProvider,
+  SandboxRepositoryMaterialization,
+  SandboxRepositorySnapshot,
   SandboxStatus,
 } from "../providers/sandbox-provider";
 
@@ -21,6 +38,8 @@ export interface FakeSandboxState {
   quiesceCount: number;
   captureCount: number;
   pendingTenantTimers: Set<NodeJS.Timeout>;
+  repositoryPath?: string;
+  repositoryMaterializations: SandboxRepositoryMaterialization[];
 }
 
 export type FakeCommandHandler = (
@@ -92,6 +111,7 @@ export class FakeSandboxProvider implements SandboxProvider {
       quiesceCount: 0,
       captureCount: 0,
       pendingTenantTimers: new Set(),
+      repositoryMaterializations: [],
     });
     try {
       await spec.onProvisioned(sandboxId);
@@ -117,7 +137,11 @@ export class FakeSandboxProvider implements SandboxProvider {
       .map(([sandboxId, state]) => ({ sandboxId, status: state.status }));
   }
 
-  async materializeFiles(
+  /**
+   * Explicit file-only test fixture path. Production providers intentionally
+   * expose only credential-free Git repository materialization.
+   */
+  async materializeFilesForTest(
     sandboxId: string,
     files: readonly SandboxFile[],
   ): Promise<void> {
@@ -128,6 +152,137 @@ export class FakeSandboxProvider implements SandboxProvider {
         { ...file, content: Uint8Array.from(file.content) },
       ]),
     );
+  }
+
+  async materializeRepository(
+    sandboxId: string,
+    snapshot: SandboxRepositorySnapshot,
+    materialization: SandboxRepositoryMaterialization,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    signal?.throwIfAborted();
+    const state = this.requireState(sandboxId);
+    const branch = validateAppV2GitBranch(snapshot.branch);
+    const branchHead = validateAppV2GitOid(snapshot.branchHead);
+    const wipOid = validateAppV2GitOid(snapshot.wipOid);
+    const root =
+      state.repositoryPath === undefined
+        ? await mkdtemp(path.join(os.tmpdir(), "mako-fake-sandbox-"))
+        : path.dirname(state.repositoryPath);
+    const repositoryPath = path.join(root, "workspace");
+    const bundlePath = path.join(root, `controller-${randomUUID()}.bundle`);
+    const retained = [...state.files.entries()].filter(([filePath]) => {
+      try {
+        return !isAppV2SessionFileEligible(filePath);
+      } catch {
+        return false;
+      }
+    });
+    let sourceEquivalent = false;
+    await writeFile(bundlePath, snapshot.bundle);
+    try {
+      if (materialization === "fresh" || state.repositoryPath === undefined) {
+        await rm(repositoryPath, { recursive: true, force: true });
+        await this.runLocalGit(
+          [
+            "clone",
+            "--no-checkout",
+            "--no-hardlinks",
+            "--origin",
+            "origin",
+            "--",
+            bundlePath,
+            repositoryPath,
+          ],
+          root,
+        );
+      } else {
+        await this.runLocalGit(
+          [
+            "fetch",
+            "--force",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--",
+            bundlePath,
+            "+refs/heads/*:refs/mako/controller/heads/*",
+            "+refs/mako/worktrees/*:refs/mako/controller/worktrees/*",
+          ],
+          repositoryPath,
+        );
+        const [currentBranch, currentIndexTree, incomingWipTree] =
+          await Promise.all([
+            this.runLocalGit(
+              ["symbolic-ref", "--quiet", "--short", "HEAD"],
+              repositoryPath,
+            ),
+            this.runLocalGit(["write-tree"], repositoryPath),
+            this.runLocalGit(
+              ["rev-parse", "--verify", `${wipOid}^{tree}`],
+              repositoryPath,
+            ),
+          ]);
+        sourceEquivalent =
+          currentBranch.stdout?.trim() === branch &&
+          currentIndexTree.stdout?.trim() === incomingWipTree.stdout?.trim();
+        if (!sourceEquivalent) {
+          await this.runLocalGit(["reset", "--hard"], repositoryPath);
+          await this.runLocalGit(
+            [
+              "clean",
+              "-ffdx",
+              "-e",
+              "node_modules/",
+              "-e",
+              "dist/",
+              "-e",
+              ".cache/",
+              "-e",
+              ".pnpm-store/",
+              "-e",
+              ".turbo/",
+              "-e",
+              ".vite/",
+              "-e",
+              "coverage/",
+            ],
+            repositoryPath,
+          );
+        }
+      }
+      await this.runLocalGit(
+        [
+          "remote",
+          "set-url",
+          "origin",
+          "https://apps-v2.mako.invalid/blocked.git",
+        ],
+        repositoryPath,
+      );
+      if (sourceEquivalent) {
+        await this.runLocalGit(["reset", "--soft", branchHead], repositoryPath);
+      } else {
+        await this.runLocalGit(
+          ["checkout", "-B", branch, branchHead],
+          repositoryPath,
+        );
+        await this.runLocalGit(["reset", "--hard", branchHead], repositoryPath);
+        await this.runLocalGit(
+          ["read-tree", "--reset", "-u", `${wipOid}^{tree}`],
+          repositoryPath,
+        );
+      }
+      state.repositoryPath = repositoryPath;
+      state.repositoryMaterializations.push(materialization);
+      state.files = await this.readLocalFiles(repositoryPath);
+      if (materialization === "update") {
+        for (const [filePath, file] of retained) {
+          state.files.set(filePath, file);
+        }
+      }
+    } finally {
+      await rm(bundlePath, { force: true });
+    }
   }
 
   async captureFiles(
@@ -181,14 +336,23 @@ export class FakeSandboxProvider implements SandboxProvider {
       spec.signal?.addEventListener("abort", abortListener, { once: true });
     });
     try {
+      const defaultExecution: Promise<Partial<SandboxExecResult>> =
+        !this.commandHandler &&
+        spec.argv[0] === "git" &&
+        state.repositoryPath !== undefined
+          ? this.runLocalProcess(
+              spec.argv,
+              spec.cwd.replace("/workspace", state.repositoryPath),
+            )
+          : Promise.resolve<Partial<SandboxExecResult>>({
+              exitCode: 0,
+              stdout: "",
+              stderr: "",
+            });
       const handled = await Promise.race([
-        Promise.resolve(
-          this.commandHandler?.(state, spec) ?? {
-            exitCode: 0,
-            stdout: "",
-            stderr: "",
-          },
-        ),
+        this.commandHandler
+          ? Promise.resolve(this.commandHandler(state, spec))
+          : defaultExecution,
         timeout,
       ]);
       const bounded = truncateOutput(
@@ -246,6 +410,12 @@ export class FakeSandboxProvider implements SandboxProvider {
     for (const timer of state.pendingTenantTimers) clearTimeout(timer);
     state.pendingTenantTimers.clear();
     state.status = "missing";
+    if (state.repositoryPath) {
+      await rm(path.dirname(state.repositoryPath), {
+        recursive: true,
+        force: true,
+      });
+    }
   }
 
   async status(sandboxId: string): Promise<SandboxStatus> {
@@ -276,5 +446,89 @@ export class FakeSandboxProvider implements SandboxProvider {
       throw new Error("Sandbox not found");
     }
     return state;
+  }
+
+  private runLocalGit(
+    argv: readonly string[],
+    cwd: string,
+  ): Promise<Partial<SandboxExecResult>> {
+    return this.runLocalProcess(
+      [
+        "git",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "credential.helper=",
+        "-c",
+        "protocol.file.allow=always",
+        ...argv,
+      ],
+      cwd,
+    ).then(result => {
+      if (result.exitCode !== 0) {
+        throw new Error(`Fake sandbox Git failed: ${result.stderr}`);
+      }
+      return result;
+    });
+  }
+
+  private runLocalProcess(
+    argv: readonly string[],
+    cwd: string,
+  ): Promise<Partial<SandboxExecResult>> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(argv[0], argv.slice(1), {
+        cwd,
+        shell: false,
+        env: {
+          HOME: os.tmpdir(),
+          PATH: process.env.PATH,
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_TERMINAL_PROMPT: "0",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+      child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+      child.on("error", reject);
+      child.on("close", code =>
+        resolve({
+          exitCode: code,
+          stdout: Buffer.concat(stdout).toString("utf8"),
+          stderr: Buffer.concat(stderr).toString("utf8"),
+        }),
+      );
+    });
+  }
+
+  private async readLocalFiles(
+    repositoryPath: string,
+  ): Promise<Map<string, SandboxFile>> {
+    const files = new Map<string, SandboxFile>();
+    const visit = async (directory: string): Promise<void> => {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        if (directory === repositoryPath && entry.name === ".git") continue;
+        const absolute = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          await visit(absolute);
+          continue;
+        }
+        const relative = path
+          .relative(repositoryPath, absolute)
+          .split(path.sep)
+          .join("/");
+        const metadata = await lstat(absolute);
+        files.set(relative, {
+          path: relative,
+          content: await readFile(absolute),
+          executable: (metadata.mode & 0o111) !== 0,
+        });
+      }
+    };
+    await visit(repositoryPath);
+    return files;
   }
 }

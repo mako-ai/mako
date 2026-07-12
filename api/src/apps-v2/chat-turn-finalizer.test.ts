@@ -136,6 +136,7 @@ function harness(
         error: "GitHub unavailable",
       }))
     : vi.fn(async () => ({ status: "local_only" as const, skipped: true }));
+  const advanceEquivalentCommit = vi.fn(async () => undefined);
   let shouldCrash = options.crashAfterLocalPersist ?? false;
   const dependencies = {
     services: () => ({
@@ -162,6 +163,7 @@ function harness(
         : {
             ensure: vi.fn(async () => ({ session: {}, worktree: current })),
             flush,
+            advanceEquivalentCommit,
           },
     }),
     shouldFlush: vi.fn(async () => true),
@@ -191,7 +193,15 @@ function harness(
     }),
     publish: vi.fn(),
   } as unknown as AppsV2ChatTurnFinalizerDependencies;
-  return { dependencies, turn, commit, flush, persist, push };
+  return {
+    dependencies,
+    turn,
+    commit,
+    flush,
+    persist,
+    push,
+    advanceEquivalentCommit,
+  };
 }
 
 const input = {
@@ -229,6 +239,12 @@ describe("Apps v2 durable chat turn finalization", () => {
     });
     expect(duplicate.projects).toMatchObject([{ status: "committed" }]);
     expect(test.commit).toHaveBeenCalledOnce();
+    expect(test.advanceEquivalentCommit).toHaveBeenCalledWith(
+      project,
+      expect.objectContaining({ wipOid: "d".repeat(40) }),
+      { userId: actorId },
+      "b".repeat(40),
+    );
     expect(test.push).toHaveBeenCalledWith(
       expect.objectContaining({
         localSha: "d".repeat(40),

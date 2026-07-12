@@ -798,6 +798,52 @@ export class AppV2SessionService {
     });
   }
 
+  advanceEquivalentCommit(
+    project: IAppV2Project,
+    worktree: IAppV2Worktree,
+    actor: AppV2Actor,
+    previousWipOid: string,
+  ): Promise<void> {
+    return this.locked(project, worktree, actor, async () => {
+      const session = await this.find(project, worktree, actor);
+      if (
+        !session ||
+        !["active", "paused"].includes(session.status) ||
+        session.recoveryRef ||
+        session.pendingRecoveryId ||
+        session.appliedWipOid !== previousWipOid
+      ) {
+        return;
+      }
+      await this.withOperation(session, async context => {
+        const [previous, committed] = await Promise.all([
+          this.worktrees.projects.git.getCommit(
+            project.repositoryId,
+            previousWipOid,
+          ),
+          this.worktrees.projects.git.getCommit(
+            project.repositoryId,
+            worktree.wipOid,
+          ),
+        ]);
+        if (previous.treeSha !== committed.treeSha) {
+          throw new AppV2ConflictError(
+            "Committed worktree is not source-equivalent to the sandbox",
+          );
+        }
+        await this.executor.applyRevision(
+          this.target(project, worktree, actor, context.record),
+          context.signal,
+        );
+        context.assertHealthy();
+        await this.write(context, {
+          appliedWipOid: worktree.wipOid,
+          lastActiveAt: new Date(),
+        });
+      });
+    });
+  }
+
   install(
     project: IAppV2Project,
     worktree: IAppV2Worktree,
@@ -1022,6 +1068,9 @@ export class AppV2SessionService {
           workspaceId: project.workspaceId.toString(),
           projectId: project._id.toString(),
           worktreeId: worktree._id.toString(),
+          repositoryId: project.repositoryId,
+          branch: worktree.branch,
+          wipRef: worktree.wipRef,
           actorId: actor.userId,
           memberRole: actor.memberRole,
           purpose: "dev",
@@ -1075,6 +1124,9 @@ export class AppV2SessionService {
             workspaceId: project.workspaceId.toString(),
             projectId: project._id.toString(),
             worktreeId: worktree._id.toString(),
+            repositoryId: project.repositoryId,
+            branch: worktree.branch,
+            wipRef: worktree.wipRef,
             actorId: actor.userId,
             memberRole: actor.memberRole,
             purpose: "dev",
@@ -1162,7 +1214,7 @@ export class AppV2SessionService {
     });
     try {
       if (context.record.appliedWipOid !== worktree.wipOid) {
-        await this.executor.applyRevision(recoveryTarget);
+        await this.executor.applyRevision(recoveryTarget, context.signal);
         context.assertHealthy();
         await this.write(context, {
           appliedWipOid: worktree.wipOid,
@@ -1519,6 +1571,9 @@ export class AppV2SessionService {
       workspaceId: project.workspaceId.toString(),
       projectId: project._id.toString(),
       worktreeId: worktree._id.toString(),
+      repositoryId: project.repositoryId,
+      branch: worktree.branch,
+      wipRef: worktree.wipRef,
       actorId: actor.userId,
       memberRole: actor.memberRole,
       purpose: session.purpose,

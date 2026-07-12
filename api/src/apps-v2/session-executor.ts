@@ -9,6 +9,9 @@ export interface SessionExecutionTarget {
   workspaceId: string;
   projectId: string;
   worktreeId: string;
+  repositoryId: string;
+  branch: string;
+  wipRef: string;
   actorId: string;
   memberRole?: string;
   purpose: AppV2ExecutionPurpose;
@@ -90,7 +93,10 @@ export interface SessionExecutor {
     target: Omit<SessionExecutionTarget, "sandboxId" | "appliedWipOid">,
     options: SessionPrepareOptions,
   ): Promise<PreparedSession>;
-  applyRevision(target: SessionExecutionTarget): Promise<void>;
+  applyRevision(
+    target: SessionExecutionTarget,
+    signal?: AbortSignal,
+  ): Promise<void>;
   exec(
     target: SessionExecutionTarget,
     request: SessionExecRequest,

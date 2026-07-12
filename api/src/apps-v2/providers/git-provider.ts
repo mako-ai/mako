@@ -1,6 +1,14 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdtemp, mkdir, readdir, rm } from "node:fs/promises";
+import {
+  lstat,
+  mkdtemp,
+  mkdir,
+  readFile as readFileBytes,
+  readdir,
+  rm,
+  stat,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AppV2ScaffoldFile } from "@mako/schemas";
@@ -34,14 +42,36 @@ const logger = loggers.api("apps-v2-git");
 const DEFAULT_MAINTENANCE_INTERVAL_MS = 5 * 60 * 1_000;
 const DEFAULT_PRUNE_RETENTION_MS = 24 * 60 * 60 * 1_000;
 
+function appV2AbortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  const error = new Error("Apps v2 Git operation aborted");
+  error.name = "AbortError";
+  return error;
+}
+
 class GitCommandSemaphore {
   private active = 0;
   private readonly waiters: Array<() => void> = [];
 
-  async acquire(): Promise<() => void> {
+  async acquire(signal?: AbortSignal): Promise<() => void> {
+    signal?.throwIfAborted();
     if (this.active >= APP_V2_GIT_MAX_CONCURRENCY) {
-      await new Promise<void>(resolve => this.waiters.push(resolve));
+      await new Promise<void>((resolve, reject) => {
+        const waiter = (): void => {
+          signal?.removeEventListener("abort", abort);
+          resolve();
+        };
+        const abort = (): void => {
+          const index = this.waiters.indexOf(waiter);
+          if (index >= 0) this.waiters.splice(index, 1);
+          reject(appV2AbortError(signal as AbortSignal));
+        };
+        signal?.addEventListener("abort", abort, { once: true });
+        this.waiters.push(waiter);
+        if (signal?.aborted) abort();
+      });
     }
+    signal?.throwIfAborted();
     this.active += 1;
     let released = false;
     return () => {
@@ -123,14 +153,50 @@ export interface AppV2GitLease {
   purpose: "active" | "deletion-fence";
 }
 
+export interface AppV2GitBundle {
+  bytes: Buffer;
+  branchHead: string;
+  wipOid: string;
+}
+
+export function validateAppV2GitBranch(branch: string): string {
+  if (
+    !branch ||
+    branch.startsWith("/") ||
+    branch.endsWith("/") ||
+    branch.startsWith(".") ||
+    branch.endsWith(".") ||
+    branch.includes("..") ||
+    branch.includes("@{") ||
+    branch.includes("//") ||
+    branch.split("/").some(part => !part || part.endsWith(".lock")) ||
+    Array.from(branch).some(character => {
+      const code = character.charCodeAt(0);
+      return code <= 32 || code === 127 || "~^:?*[\\".includes(character);
+    })
+  ) {
+    throw new AppV2ValidationError("Invalid Apps v2 branch");
+  }
+  return branch;
+}
+
+export function validateAppV2GitOid(oid: string): string {
+  if (!/^[a-f0-9]{40}$/.test(oid)) {
+    throw new AppV2ValidationError("Invalid Apps v2 Git object ID");
+  }
+  return oid;
+}
+
 async function runGit(
   repositoryPath: string,
   args: readonly string[],
   input?: Buffer | string,
   extraEnvironment: NodeJS.ProcessEnv = {},
+  signal?: AbortSignal,
 ): Promise<GitResult> {
-  const release = await gitCommandSemaphore.acquire();
+  const release = await gitCommandSemaphore.acquire(signal);
   try {
+    signal?.throwIfAborted();
     return await new Promise((resolve, reject) => {
       const child = spawn(
         "git",
@@ -182,6 +248,11 @@ async function runGit(
         killTimer = setTimeout(() => terminate("SIGKILL"), 1_000);
         killTimer.unref();
       };
+      const abort = (): void => {
+        forceTerminate(appV2AbortError(signal as AbortSignal));
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
       const capture = (target: Buffer[], chunk: Buffer): void => {
         outputBytes += chunk.byteLength;
         if (outputBytes > APP_V2_GIT_MAX_OUTPUT_BYTES) {
@@ -202,11 +273,13 @@ async function runGit(
       child.on("error", error => {
         clearTimeout(timeout);
         if (killTimer) clearTimeout(killTimer);
+        signal?.removeEventListener("abort", abort);
         reject(error);
       });
       child.on("close", code => {
         clearTimeout(timeout);
         if (killTimer && !forcedError) clearTimeout(killTimer);
+        signal?.removeEventListener("abort", abort);
         const result = {
           stdout: Buffer.concat(stdout),
           stderr: Buffer.concat(stderr),
@@ -277,6 +350,7 @@ async function directorySizeBytes(
 
 export class AppV2GitProvider {
   private readonly maxRepositoryBytes: number;
+  private readonly maxBundleBytes: number;
   private readonly maintenanceIntervalMs: number;
   private readonly pruneRetentionMs: number;
 
@@ -284,12 +358,14 @@ export class AppV2GitProvider {
     private readonly root: string,
     options: {
       maxRepositoryBytes?: number;
+      maxBundleBytes?: number;
       maintenanceIntervalMs?: number;
       pruneRetentionMs?: number;
     } = {},
   ) {
     this.maxRepositoryBytes =
       options.maxRepositoryBytes ?? getAppsV2MaxRepositoryBytes();
+    this.maxBundleBytes = options.maxBundleBytes ?? this.maxRepositoryBytes;
     this.maintenanceIntervalMs =
       options.maintenanceIntervalMs ?? DEFAULT_MAINTENANCE_INTERVAL_MS;
     this.pruneRetentionMs =
@@ -384,18 +460,105 @@ export class AppV2GitProvider {
     });
   }
 
-  async resolveRef(repositoryId: string, ref: string): Promise<string> {
+  async resolveRef(
+    repositoryId: string,
+    ref: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
     this.assertManagedRef(ref);
-    const result = await runGit(this.repositoryPath(repositoryId), [
-      "rev-parse",
-      "--verify",
-      ref,
-    ]);
+    const result = await runGit(
+      this.repositoryPath(repositoryId),
+      ["rev-parse", "--verify", ref],
+      undefined,
+      {},
+      signal,
+    );
     return oidFrom(result);
   }
 
-  async resolveBranch(repositoryId: string, branch: string): Promise<string> {
-    return this.resolveRef(repositoryId, this.branchRef(branch));
+  async resolveBranch(
+    repositoryId: string,
+    branch: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    return this.resolveRef(repositoryId, this.branchRef(branch), signal);
+  }
+
+  async createBundle(
+    repositoryId: string,
+    refs: { branch: string; wipRef: string },
+    signal?: AbortSignal,
+  ): Promise<AppV2GitBundle> {
+    signal?.throwIfAborted();
+    const repositoryPath = this.repositoryPath(repositoryId);
+    const branchRef = this.branchRef(refs.branch);
+    this.assertWorktreeRef(refs.wipRef);
+    const [branchHead, wipOid] = await Promise.all([
+      this.resolveRef(repositoryId, branchRef, signal),
+      this.resolveRef(repositoryId, refs.wipRef, signal),
+    ]);
+    signal?.throwIfAborted();
+    validateAppV2GitOid(branchHead);
+    validateAppV2GitOid(wipOid);
+    const temporaryDirectory = await mkdtemp(
+      path.join(os.tmpdir(), "mako-app-v2-bundle-"),
+    );
+    const bundlePath = path.join(temporaryDirectory, "repository.bundle");
+    try {
+      signal?.throwIfAborted();
+      await runGit(
+        repositoryPath,
+        ["bundle", "create", bundlePath, branchRef, refs.wipRef],
+        undefined,
+        {},
+        signal,
+      );
+      signal?.throwIfAborted();
+      const bundleSize = (await stat(bundlePath)).size;
+      if (bundleSize > this.maxBundleBytes) {
+        throw new AppV2LimitError("Git bundle exceeds the Apps v2 size limit");
+      }
+      const listed = await runGit(
+        repositoryPath,
+        ["bundle", "list-heads", bundlePath],
+        undefined,
+        {},
+        signal,
+      );
+      const heads = new Map(
+        listed.stdout
+          .toString("utf8")
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map(line => {
+            const match = /^([a-f0-9]{40}) (refs\/\S+)$/.exec(line);
+            if (!match) {
+              throw new AppV2ValidationError(
+                "Git bundle contains an invalid reference",
+              );
+            }
+            return [match[2], match[1]] as const;
+          }),
+      );
+      if (
+        heads.size !== 2 ||
+        heads.get(branchRef) !== branchHead ||
+        heads.get(refs.wipRef) !== wipOid
+      ) {
+        throw new AppV2ConflictError(
+          "Branch or worktree changed while creating Git bundle",
+        );
+      }
+      const bytes = await readFileBytes(bundlePath, { signal });
+      signal?.throwIfAborted();
+      if (bytes.byteLength > this.maxBundleBytes) {
+        throw new AppV2LimitError("Git bundle exceeds the Apps v2 size limit");
+      }
+      return { bytes, branchHead, wipOid };
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
   }
 
   async ensureBranch(
@@ -1124,15 +1287,19 @@ export class AppV2GitProvider {
   }
 
   private assertWorktreeAndLeaseRefs(wipRef: string, leaseRef: string): void {
-    if (!/^refs\/mako\/worktrees\/[a-zA-Z0-9_-]+$/.test(wipRef)) {
-      throw new AppV2ValidationError("Invalid Apps v2 worktree ref");
-    }
+    this.assertWorktreeRef(wipRef);
     this.assertLeaseRef(leaseRef);
     if (
       wipRef.slice("refs/mako/worktrees/".length) !==
       leaseRef.slice("refs/mako/leases/".length)
     ) {
       throw new AppV2ValidationError("Apps v2 worktree refs do not match");
+    }
+  }
+
+  private assertWorktreeRef(wipRef: string): void {
+    if (!/^refs\/mako\/worktrees\/[a-zA-Z0-9_-]+$/.test(wipRef)) {
+      throw new AppV2ValidationError("Invalid Apps v2 worktree ref");
     }
   }
 
@@ -1159,24 +1326,7 @@ export class AppV2GitProvider {
   }
 
   private branchRef(branch: string): string {
-    if (
-      !branch ||
-      branch.startsWith("/") ||
-      branch.endsWith("/") ||
-      branch.startsWith(".") ||
-      branch.endsWith(".") ||
-      branch.includes("..") ||
-      branch.includes("@{") ||
-      branch.includes("//") ||
-      branch.split("/").some(part => !part || part.endsWith(".lock")) ||
-      Array.from(branch).some(character => {
-        const code = character.charCodeAt(0);
-        return code <= 32 || code === 127 || "~^:?*[\\".includes(character);
-      })
-    ) {
-      throw new AppV2ValidationError("Invalid Apps v2 branch");
-    }
-    return `refs/heads/${branch}`;
+    return `refs/heads/${validateAppV2GitBranch(branch)}`;
   }
 
   private async createRecoveryRef(

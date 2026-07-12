@@ -15,13 +15,15 @@ async function run(): Promise<void> {
   let nextPid = 100;
   let sandboxState: "running" | "paused" = "running";
   let pauseResult = true;
+  let workspaceGitExists = false;
+  const commands: string[] = [];
 
   const sandbox: E2BSandboxClient = {
     sandboxId: "sandbox-test",
     files: {
-      async exists() {
+      async exists(filePath) {
         events.push("tenant:file:exists");
-        return false;
+        return filePath === "/workspace/.git" && workspaceGitExists;
       },
       async remove() {
         events.push("tenant:file:remove");
@@ -44,6 +46,7 @@ async function run(): Promise<void> {
     },
     commands: {
       async run(command, options) {
+        commands.push(command);
         const stage = command.includes("iptables -I OUTPUT")
           ? "isolation"
           : command.includes("id -u")
@@ -73,7 +76,24 @@ async function run(): Promise<void> {
             if (failureStage === stage) {
               throw new Error(`${stage} failed`);
             }
-            return { exitCode: 0, stdout: "", stderr: "" };
+            const stdout = command.includes("'symbolic-ref'")
+              ? "main\n"
+              : command.includes("'write-tree'")
+                ? `${"c".repeat(40)}\n`
+                : command.includes("'rev-parse'") &&
+                    command.includes(`${"b".repeat(40)}^{tree}`)
+                  ? `${"c".repeat(40)}\n`
+                  : command.includes("'rev-parse'") &&
+                      command.includes("'HEAD'")
+                    ? `${"a".repeat(40)}\n`
+                    : command.includes("'remote'") &&
+                        command.includes("'get-url'")
+                      ? "https://apps-v2.mako.invalid/blocked.git\n"
+                      : command.includes("'remote'") &&
+                          !command.includes("'set-url'")
+                        ? "origin\n"
+                        : "";
+            return { exitCode: 0, stdout, stderr: "" };
           },
           async kill() {
             return true;
@@ -157,15 +177,52 @@ async function run(): Promise<void> {
     "tenant:command",
   ]);
 
+  commands.length = 0;
   events.length = 0;
-  await provider.materializeFiles("sandbox-test", []);
-  assert.deepEqual(events, [
-    "connect",
-    "isolation",
-    "conformance",
-    "tenant:file:exists",
-    "tenant:file:mkdir",
-  ]);
+  await provider.materializeRepository(
+    "sandbox-test",
+    {
+      bundle: Buffer.from("test bundle"),
+      branch: "main",
+      branchHead: "a".repeat(40),
+      wipOid: "b".repeat(40),
+    },
+    "fresh",
+  );
+  assert(events.includes("tenant:network"));
+  assert(commands.some(command => command.includes("'clone'")));
+  assert(
+    commands.some(
+      command =>
+        command.includes("'remote' 'set-url' 'origin'") &&
+        command.includes("apps-v2.mako.invalid"),
+    ),
+  );
+  assert(commands.some(command => command.includes("'read-tree'")));
+  assert(
+    commands.every(
+      command =>
+        !command.includes("github.com") && !command.includes("credential="),
+    ),
+  );
+
+  workspaceGitExists = true;
+  commands.length = 0;
+  events.length = 0;
+  await provider.materializeRepository(
+    "sandbox-test",
+    {
+      bundle: Buffer.from("updated bundle"),
+      branch: "main",
+      branchHead: "a".repeat(40),
+      wipOid: "b".repeat(40),
+    },
+    "update",
+  );
+  assert(commands.some(command => command.includes("'fetch'")));
+  assert(commands.some(command => command.includes("'reset' '--soft'")));
+  assert(!commands.some(command => command.includes("'clean' '-ffdx'")));
+  assert(!commands.some(command => command.includes("'clone'")));
 
   events.length = 0;
   await provider.captureFiles("sandbox-test");
@@ -230,7 +287,7 @@ async function run(): Promise<void> {
   failureStage = "conformance";
   events.length = 0;
   await assert.rejects(
-    provider.materializeFiles("sandbox-test", []),
+    provider.captureFiles("sandbox-test"),
     /failed Apps v2 conformance\/runtime isolation/,
   );
   assert.deepEqual(events, ["connect", "isolation", "conformance", "kill"]);

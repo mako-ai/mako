@@ -34,6 +34,15 @@ export interface SandboxFile {
   executable: boolean;
 }
 
+export interface SandboxRepositorySnapshot {
+  bundle: Uint8Array;
+  branch: string;
+  branchHead: string;
+  wipOid: string;
+}
+
+export type SandboxRepositoryMaterialization = "fresh" | "update";
+
 export interface SandboxExecSpec {
   argv: readonly string[];
   cwd: string;
@@ -67,9 +76,10 @@ export interface SandboxProvider {
     labels: Readonly<Record<string, string>>,
     signal?: AbortSignal,
   ): Promise<SandboxHandle[]>;
-  materializeFiles(
+  materializeRepository(
     sandboxId: string,
-    files: readonly SandboxFile[],
+    snapshot: SandboxRepositorySnapshot,
+    materialization: SandboxRepositoryMaterialization,
     signal?: AbortSignal,
   ): Promise<void>;
   captureFiles(

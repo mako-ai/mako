@@ -51,7 +51,11 @@ export class FakeSessionExecutor implements SessionExecutor {
     return { sandboxId, appliedRevision: target.durableRevision };
   }
 
-  async applyRevision(target: SessionExecutionTarget): Promise<void> {
+  async applyRevision(
+    target: SessionExecutionTarget,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    signal?.throwIfAborted();
     this.applied.push(target);
   }
 

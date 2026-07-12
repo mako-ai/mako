@@ -381,6 +381,14 @@ export async function finalizeAppsV2ChatTurn(
           )
         : undefined;
       if (commitRecovery?.state === "recovered") {
+        if (serviceGraph.sessions && touched.commitIntent) {
+          await serviceGraph.sessions.advanceEquivalentCommit(
+            project,
+            worktree,
+            actor,
+            touched.commitIntent.expectedWipOid,
+          );
+        }
         result = durableResult(touched, {
           expectedRevision: touched.commitIntent?.expectedRevision ?? 0,
           status: "committed",
@@ -553,6 +561,14 @@ export async function finalizeAppsV2ChatTurn(
             );
             localCommitCompleted = true;
             await dependencies.afterLocalCommit?.(committed.sha);
+            if (serviceGraph.sessions) {
+              await serviceGraph.sessions.advanceEquivalentCommit(
+                project,
+                committed.worktree,
+                actor,
+                current.wipOid,
+              );
+            }
             dependencies.publish(workspaceId, {
               type: "app-v2.worktree.updated",
               projectId,

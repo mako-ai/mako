@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   ALL_TRAFFIC,
   CommandExitError,
@@ -17,8 +18,10 @@ import {
   APP_V2_MAX_FILE_BYTES,
   APP_V2_MAX_FILES,
   APP_V2_MAX_TOTAL_BYTES,
+  getAppsV2MaxRepositoryBytes,
 } from "../config";
 import { AppV2LimitError, AppV2ValidationError } from "../errors";
+import { validateAppV2GitBranch, validateAppV2GitOid } from "./git-provider";
 import type {
   AppV2NetworkPhase,
   SandboxCapture,
@@ -28,6 +31,8 @@ import type {
   SandboxFile,
   SandboxHandle,
   SandboxProvider,
+  SandboxRepositoryMaterialization,
+  SandboxRepositorySnapshot,
   SandboxStatus,
 } from "./sandbox-provider";
 
@@ -36,6 +41,17 @@ const INSTALL_EGRESS = ["registry.npmjs.org"];
 const MAX_CAPTURE_PATHS = APP_V2_MAX_FILES * 4;
 const CLEAN_PATH = "/usr/local/bin:/usr/bin:/bin";
 const CLEAN_ROOT_PATH = `${CLEAN_PATH}:/usr/local/sbin:/usr/sbin:/sbin`;
+const BLOCKED_GIT_REMOTE = "https://apps-v2.mako.invalid/blocked.git";
+const BUNDLE_PATH_PREFIX = "/tmp/mako-apps-v2-controller-";
+const PRESERVED_CACHE_PATHS = [
+  "node_modules/",
+  "dist/",
+  ".cache/",
+  ".pnpm-store/",
+  ".turbo/",
+  ".vite/",
+  "coverage/",
+] as const;
 const RUNTIME_ISOLATION_SCRIPT = String.raw`set -eu
 iptables -C OUTPUT -d 169.254.169.254/32 -j REJECT 2>/dev/null || iptables -I OUTPUT -d 169.254.169.254/32 -j REJECT
 iptables -C OUTPUT -d 169.254.169.254/32 -j REJECT`;
@@ -196,6 +212,11 @@ export function e2bCommandForArgv(
     `HOME=${quoteShellArgument(home)}`,
     `PATH=${quoteShellArgument(commandPath)}`,
     `BASH_ENV=${quoteShellArgument("/dev/null")}`,
+    `GIT_CONFIG_GLOBAL=${quoteShellArgument("/dev/null")}`,
+    `GIT_CONFIG_NOSYSTEM=${quoteShellArgument("1")}`,
+    `GIT_TERMINAL_PROMPT=${quoteShellArgument("0")}`,
+    `GCM_INTERACTIVE=${quoteShellArgument("never")}`,
+    `GIT_ASKPASS=${quoteShellArgument("/bin/false")}`,
     "setsid --wait --",
     argv.map(quoteShellArgument).join(" "),
   ].join(" ");
@@ -302,44 +323,182 @@ export class E2BSandboxProvider implements SandboxProvider {
     return matches;
   }
 
-  async materializeFiles(
+  async materializeRepository(
     sandboxId: string,
-    files: readonly SandboxFile[],
+    snapshot: SandboxRepositorySnapshot,
+    materialization: SandboxRepositoryMaterialization,
     signal?: AbortSignal,
   ): Promise<void> {
-    const sandbox = await this.secureConnect(sandboxId, signal);
-    const fileOptions = { signal, user: this.user };
-    if (await sandbox.files.exists(WORKSPACE_ROOT, fileOptions)) {
-      await sandbox.files.remove(WORKSPACE_ROOT, fileOptions);
+    const branch = validateAppV2GitBranch(snapshot.branch);
+    const branchHead = validateAppV2GitOid(snapshot.branchHead);
+    const wipOid = validateAppV2GitOid(snapshot.wipOid);
+    if (
+      snapshot.bundle.byteLength === 0 ||
+      snapshot.bundle.byteLength > getAppsV2MaxRepositoryBytes()
+    ) {
+      throw new AppV2LimitError("Invalid Apps v2 Git bundle size");
     }
-    await sandbox.files.makeDir(WORKSPACE_ROOT, fileOptions);
-    if (files.length > 0) {
+    const sandbox = await this.secureConnect(sandboxId, signal);
+    await sandbox.updateNetwork(
+      {
+        allowOut: [],
+        denyOut: [ALL_TRAFFIC],
+        allowInternetAccess: false,
+      },
+      { signal },
+    );
+    const fileOptions = { signal, user: this.user };
+    const bundlePath = `${BUNDLE_PATH_PREFIX}${randomUUID()}.bundle`;
+    const bundle = Uint8Array.from(snapshot.bundle);
+    let sourceEquivalent = false;
+    try {
       await sandbox.files.write(
-        files.map(file => {
-          const copy = Uint8Array.from(file.content);
-          return {
-            path: `${WORKSPACE_ROOT}/${file.path}`,
-            data: copy.buffer,
-          };
-        }),
+        [{ path: bundlePath, data: bundle.buffer }],
         fileOptions,
       );
-    }
-    const executablePaths = files
-      .filter(file => file.executable)
-      .map(file => `${WORKSPACE_ROOT}/${file.path}`);
-    if (executablePaths.length > 0) {
-      const handle = await sandbox.commands.run(
-        e2bCommandForArgv(["chmod", "755", ...executablePaths], this.user),
-        {
-          background: true,
-          timeoutMs: 30_000,
+      if (materialization === "fresh") {
+        if (await sandbox.files.exists(WORKSPACE_ROOT, fileOptions)) {
+          await sandbox.files.remove(WORKSPACE_ROOT, fileOptions);
+        }
+        await sandbox.files.makeDir(WORKSPACE_ROOT, fileOptions);
+        await this.runControllerCommand(
+          sandbox,
+          [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "protocol.file.allow=always",
+            "clone",
+            "--no-checkout",
+            "--no-hardlinks",
+            "--origin",
+            "origin",
+            "--",
+            bundlePath,
+            WORKSPACE_ROOT,
+          ],
+          undefined,
           signal,
-          user: this.user,
-          envs: this.cleanEnvironment(),
-        },
+        );
+      } else {
+        if (
+          !(await sandbox.files.exists(`${WORKSPACE_ROOT}/.git`, fileOptions))
+        ) {
+          throw new AppV2ValidationError(
+            "Cannot update a sandbox without a Git worktree",
+          );
+        }
+        await this.runControllerCommand(
+          sandbox,
+          [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "protocol.file.allow=always",
+            "fetch",
+            "--force",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--",
+            bundlePath,
+            "+refs/heads/*:refs/mako/controller/heads/*",
+            "+refs/mako/worktrees/*:refs/mako/controller/worktrees/*",
+          ],
+          WORKSPACE_ROOT,
+          signal,
+        );
+        const [currentBranch, currentIndexTree, incomingWipTree] =
+          await Promise.all([
+            this.runControllerCommand(
+              sandbox,
+              ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+              WORKSPACE_ROOT,
+              signal,
+            ),
+            this.runControllerCommand(
+              sandbox,
+              ["git", "write-tree"],
+              WORKSPACE_ROOT,
+              signal,
+            ),
+            this.runControllerCommand(
+              sandbox,
+              ["git", "rev-parse", "--verify", `${wipOid}^{tree}`],
+              WORKSPACE_ROOT,
+              signal,
+            ),
+          ]);
+        sourceEquivalent =
+          currentBranch.stdout.trim() === branch &&
+          currentIndexTree.stdout.trim() === incomingWipTree.stdout.trim();
+        if (!sourceEquivalent) {
+          await this.runControllerCommand(
+            sandbox,
+            ["git", "reset", "--hard"],
+            WORKSPACE_ROOT,
+            signal,
+          );
+          await this.runControllerCommand(
+            sandbox,
+            [
+              "git",
+              "clean",
+              "-ffdx",
+              ...PRESERVED_CACHE_PATHS.flatMap(cachePath => ["-e", cachePath]),
+            ],
+            WORKSPACE_ROOT,
+            signal,
+          );
+        }
+      }
+      await this.runControllerCommand(
+        sandbox,
+        ["git", "remote", "set-url", "origin", BLOCKED_GIT_REMOTE],
+        WORKSPACE_ROOT,
+        signal,
       );
-      await handle.wait();
+      if (sourceEquivalent) {
+        await this.runControllerCommand(
+          sandbox,
+          ["git", "reset", "--soft", branchHead],
+          WORKSPACE_ROOT,
+          signal,
+        );
+      } else {
+        await this.runControllerCommand(
+          sandbox,
+          ["git", "checkout", "-B", branch, branchHead],
+          WORKSPACE_ROOT,
+          signal,
+        );
+        await this.runControllerCommand(
+          sandbox,
+          ["git", "reset", "--hard", branchHead],
+          WORKSPACE_ROOT,
+          signal,
+        );
+        await this.runControllerCommand(
+          sandbox,
+          ["git", "read-tree", "--reset", "-u", `${wipOid}^{tree}`],
+          WORKSPACE_ROOT,
+          signal,
+        );
+      }
+      await this.verifyRepositorySnapshot(
+        sandbox,
+        { branch, branchHead, wipOid },
+        signal,
+      );
+    } finally {
+      await sandbox.files
+        .remove(bundlePath, { user: this.user })
+        .catch(() => undefined);
     }
   }
 
@@ -568,6 +727,85 @@ export class E2BSandboxProvider implements SandboxProvider {
       throw error;
     } finally {
       spec.signal?.removeEventListener("abort", cancel);
+    }
+  }
+
+  private async runControllerCommand(
+    sandbox: E2BSandboxClient,
+    argv: readonly string[],
+    cwd?: string,
+    signal?: AbortSignal,
+  ): Promise<CommandResult> {
+    signal?.throwIfAborted();
+    const handle = await sandbox.commands.run(
+      e2bCommandForArgv(argv, this.user),
+      {
+        background: true,
+        cwd,
+        timeoutMs: 60_000,
+        signal,
+        user: this.user,
+        envs: this.cleanEnvironment(),
+      },
+    );
+    let termination: Promise<void> | undefined;
+    const abort = (): void => {
+      termination ??= this.terminateProcessGroup(sandbox, handle);
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    let result: CommandResult | undefined;
+    let commandError: unknown;
+    try {
+      try {
+        result = await handle.wait();
+      } catch (error) {
+        commandError = error;
+      }
+      await termination;
+      signal?.throwIfAborted();
+      if (commandError) throw commandError;
+      if (!result) throw new Error("E2B controller command returned no result");
+      return result;
+    } finally {
+      signal?.removeEventListener("abort", abort);
+    }
+  }
+
+  private async verifyRepositorySnapshot(
+    sandbox: E2BSandboxClient,
+    snapshot: Omit<SandboxRepositorySnapshot, "bundle">,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const output = async (argv: readonly string[]): Promise<string> =>
+      (
+        await this.runControllerCommand(sandbox, argv, WORKSPACE_ROOT, signal)
+      ).stdout.trim();
+    const [branch, head, indexTree, wipTree, remotes, origin] =
+      await Promise.all([
+        output(["git", "symbolic-ref", "--quiet", "--short", "HEAD"]),
+        output(["git", "rev-parse", "--verify", "HEAD"]),
+        output(["git", "write-tree"]),
+        output(["git", "rev-parse", "--verify", `${snapshot.wipOid}^{tree}`]),
+        output(["git", "remote"]),
+        output(["git", "remote", "get-url", "origin"]),
+        this.runControllerCommand(
+          sandbox,
+          ["git", "diff", "--quiet"],
+          WORKSPACE_ROOT,
+          signal,
+        ),
+      ]);
+    if (
+      branch !== snapshot.branch ||
+      head !== snapshot.branchHead ||
+      indexTree !== wipTree ||
+      remotes !== "origin" ||
+      origin !== BLOCKED_GIT_REMOTE
+    ) {
+      throw new AppV2ValidationError(
+        "Sandbox Git worktree did not match the requested snapshot",
+      );
     }
   }
 

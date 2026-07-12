@@ -17,7 +17,7 @@ import type { AppV2ReplacementFile } from "./providers/git-provider";
 import { appV2ConversationBranch } from "./conversation-branch";
 
 export class AppV2WorktreeService {
-  constructor(private readonly projects = new AppV2ProjectService()) {}
+  constructor(readonly projects = new AppV2ProjectService()) {}
 
   async getOrCreate(
     project: IAppV2Project,
