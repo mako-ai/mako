@@ -20,6 +20,9 @@ Two RFCs were written independently against the same brief and then merged. Wher
 | Terminal + local substrate | **`mako agent`** terminal harness and the **local machine as a first-class executor** (desktop local-first sessions) are kept; local WIP mirroring to Mako is **explicit opt-in** (`--sync`), never silent | This draft (surfaces) + other draft (explicit-sync contract) |
 | Scheduled jobs | Kept (Phase 5), same sandbox primitive as builds/materialization | This draft |
 | Delivery strategy | **Parallel v2 module** (`api/src/apps-v2/`, new collections, new routes, new tools); v1 code paths untouched until migration | New (this merge) |
+| Adopted post-hoc from the parallel implementation branch | Custom E2B template builder (pnpm pinned, scaffold deps cache-warmed — dead-sandbox `npm install` ≈ 2s); v1/v2 **app tool-family isolation** in `prepareStep` (tab/explorer context prunes the wrong suite); `apps-v2` system skill + app-mode prompt split; explicit **index migrations**; tenant-archive hardening (symlink stripping on sandbox sync-out); `.env.example` + OpenAPI-coverage tests | Other branch (implementation commits) |
+| Realtime invalidation | `app-v2.updated` pokes on flush/commit/merge/discard/lifecycle; open windows refetch from git (poke-then-pull, matching v1's pattern) | Both (their event-visibility idea, this branch's implementation) |
+| API keys on apps-v2 routes | **Allowed** (external harnesses authenticate with them — R7); the other branch's cookie-only stance was rejected as it contradicts the CLI/MCP path | This branch |
 
 ---
 

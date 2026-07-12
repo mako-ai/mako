@@ -190,8 +190,29 @@ function testNoPlaceholderStatusExplosion() {
   }
 }
 
+function testAppsV2OperationsRegisteredAndSecured() {
+  // Apps v2 is always registered (handlers gate on APPS_V2_ENABLED) so the
+  // spec and the generated frontend client types never drift with the flag.
+  // Unlike the parallel-branch draft, API keys are deliberately ALLOWED —
+  // external harnesses (CLI/MCP, see apps-v2.md §4.8) authenticate with them —
+  // so every operation must carry auth security, not cookie-only security.
+  const appsV2Ops = operations().filter(({ path }) =>
+    path.includes("/apps-v2"),
+  );
+  assert.ok(appsV2Ops.length >= 12, "Apps v2 operations registered");
+  for (const { path, method, op } of appsV2Ops) {
+    const where = `${method.toUpperCase()} ${path}`;
+    const security = (op.security ?? []) as Array<Record<string, unknown>>;
+    assert.ok(
+      security.some(s => "cookieAuth" in s || "bearerAuth" in s),
+      `${where} must require authentication`,
+    );
+  }
+}
+
 function main() {
   testDocumentEnvelope();
+  testAppsV2OperationsRegisteredAndSecured();
   testSecuritySchemes();
   testHasManyPaths();
   testEveryOperationHasResponsesAndMetadata();

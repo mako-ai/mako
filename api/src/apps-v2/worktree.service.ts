@@ -27,6 +27,7 @@ import {
   type IAppWorktreeV2,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { publishRealtimeEvent } from "../services/realtime.service";
 import { appsV2SessionsRoot, APPS_V2_MAX_FILE_BYTES } from "./config";
 import { assertSafeRelPath, runGit, ZERO_OID } from "./git";
 import {
@@ -58,6 +59,21 @@ import {
 } from "./sandbox/provider";
 
 const logger = loggers.api("apps-v2");
+
+/** Poke open windows to refetch this app's git-backed state. */
+function pokeAppV2(
+  workspaceId: { toString(): string },
+  appId: { toString(): string },
+  origin: "flush" | "commit" | "merge" | "discard" | "lifecycle",
+  updatedBy?: string,
+): void {
+  publishRealtimeEvent(workspaceId.toString(), {
+    type: "app-v2.updated",
+    appId: appId.toString(),
+    updatedBy,
+    origin,
+  });
+}
 
 /** Origin URL planted in session clones — deliberately unreachable so tenant
  * commands cannot push to the bare repo directly (the broker does refs). */
@@ -158,6 +174,7 @@ export async function createProject(input: {
     projectId: project._id.toString(),
     workspaceId: input.workspaceId,
   });
+  pokeAppV2(project.workspaceId, project._id, "lifecycle", input.userId);
   return project;
 }
 
@@ -178,6 +195,7 @@ export async function deleteProject(project: IAppProjectV2): Promise<void> {
   await AppWorktreeV2.deleteMany({ projectId: project._id });
   await AppProjectV2.deleteOne({ _id: project._id });
   await fs.rm(repoDir, { recursive: true, force: true });
+  pokeAppV2(project.workspaceId, project._id, "lifecycle");
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +390,7 @@ export async function flushWorktree(
         doc.revision += 1;
         doc.lastFlushAt = new Date();
         await doc.save();
+        pokeAppV2(doc.workspaceId, doc.projectId, "flush", doc.userId);
         return { flushed: true, revision: doc.revision };
       }
       return { flushed: false, revision: doc.revision };
@@ -412,6 +431,7 @@ export async function flushWorktree(
     doc.revision += 1;
     doc.lastFlushAt = new Date();
     await doc.save();
+    pokeAppV2(doc.workspaceId, doc.projectId, "flush", doc.userId);
     return { flushed: true, wipOid: snapshot, revision: doc.revision };
   });
 }
@@ -645,6 +665,7 @@ async function commitFromWip(
     await doc.save();
 
     logger.info("Apps v2 worktree committed", { worktreeId, commitOid });
+    pokeAppV2(doc.workspaceId, doc.projectId, "commit", doc.userId);
     return { committed: true, commitOid, message };
   });
 }
@@ -866,6 +887,7 @@ export async function mergeBranchToMain(
     if (!swapped) {
       throw new WorktreeConflictError("Main advanced concurrently; retry.");
     }
+    pokeAppV2(project.workspaceId, project._id, "merge");
     return { merged: true, commitOid: branchHead, fastForward: true };
   } catch (error) {
     if (error instanceof WorktreeConflictError) throw error;
@@ -896,6 +918,7 @@ export async function mergeBranchToMain(
     branch,
     commitOid,
   });
+  pokeAppV2(project.workspaceId, project._id, "merge");
   return { merged: true, commitOid, fastForward: false };
 }
 
@@ -919,6 +942,7 @@ export async function discardWorktree(
     await doc.save();
     await fs.rm(sessionDir, { recursive: true, force: true });
     await materializeSession(repoDir, sessionDir, doc);
+    pokeAppV2(doc.workspaceId, doc.projectId, "discard", doc.userId);
     return { baseSha: head };
   });
 }

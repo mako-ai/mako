@@ -24,6 +24,7 @@ import {
   hasPendingAgentReview,
 } from "./consoleStore";
 import { useAppStore } from "./appStore";
+import { useAppsV2Store } from "./appsV2Store";
 import { useDashboardStore } from "./dashboardStore";
 import { useDbtStore } from "./dbtStore";
 import { useNotebookStore } from "./notebookStore";
@@ -76,6 +77,12 @@ export type RealtimeEvent =
       updatedBy: string;
       clientId?: string;
       origin: "agent" | "save";
+    }
+  | {
+      type: "app-v2.updated";
+      appId: string;
+      updatedBy?: string;
+      origin: "flush" | "commit" | "merge" | "discard" | "lifecycle";
     }
   | {
       type: "dbt.file.updated";
@@ -459,6 +466,36 @@ export const useRealtimeStore = create<RealtimeStore>()(
       })();
     };
 
+    // Apps v2 (git-backed): any durable change (agent turn, WIP flush, merge)
+    // pokes open windows; the store refetches from the API (git is the
+    // authority, so a refetch is always safe — openFile preserves dirty local
+    // edits and only refreshes clean buffers).
+    const handleAppV2Updated = (
+      event: Extract<RealtimeEvent, { type: "app-v2.updated" }>,
+    ) => {
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      const v2 = useAppsV2Store.getState();
+      // Explorer list (titles, new/deleted apps).
+      void v2.fetchApps(workspaceId);
+      if (event.origin === "lifecycle") return;
+      // Only refresh heavier per-app state when this window has it loaded.
+      if (v2.filesByApp[event.appId]) {
+        void v2.fetchFiles(workspaceId, event.appId);
+        void v2.fetchStatus(workspaceId, event.appId);
+      }
+      if (v2.branchesByApp[event.appId]) {
+        void v2.fetchBranches(workspaceId, event.appId);
+      }
+      const selected = v2.selectedFile[event.appId];
+      if (selected) {
+        const entry = v2.fileContents[`${event.appId}\u0000${selected}`];
+        if (entry && !entry.dirty) {
+          void v2.openFile(workspaceId, event.appId, selected);
+        }
+      }
+    };
+
     // User-scoped dbt events (drafts, checkouts) carry forUserId: they only
     // concern the acting user's windows — a draft is invisible to everyone
     // else, so other users must not react (or even refetch).
@@ -648,6 +685,9 @@ export const useRealtimeStore = create<RealtimeStore>()(
           break;
         case "app.updated":
           handleAppUpdated(event);
+          break;
+        case "app-v2.updated":
+          handleAppV2Updated(event);
           break;
         case "dashboard.updated":
           handleDashboardUpdated(event);

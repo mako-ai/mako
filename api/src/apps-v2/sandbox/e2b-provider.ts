@@ -35,7 +35,10 @@ import type {
 
 const logger = loggers.api("apps-v2-e2b");
 
-const TEMPLATE = process.env.APPS_V2_E2B_TEMPLATE || "base";
+/** Read at call time (not module load) so dotenv ordering can't freeze it. */
+function templateId(): string {
+  return process.env.APPS_V2_E2B_TEMPLATE?.trim() || "base";
+}
 const SANDBOX_USER = "user";
 const REMOTE_ROOT = "/home/user/app";
 /** Idle window before E2B auto-pauses the sandbox (resets on activity). */
@@ -102,7 +105,7 @@ async function connectSession(sessionKey: string): Promise<Sandbox> {
     });
   }
 
-  const sandbox = await Sandbox.create(TEMPLATE, {
+  const sandbox = await Sandbox.create(templateId(), {
     apiKey: apiKey(),
     timeoutMs: IDLE_TIMEOUT_MS,
     metadata: { makoAppsV2SessionKey: sessionKey },
@@ -208,10 +211,46 @@ async function syncOut(sandbox: Sandbox, hostDir: string): Promise<void> {
   );
   await fs.writeFile(tmpFile, Buffer.from(data));
   try {
-    await hostTar(["-xzf", tmpFile], hostDir);
+    // Hardening (adopted from the parallel branch's session-file policy):
+    // tenant code controls this archive, so refuse anything that is not a
+    // plain file/directory. GNU tar already refuses absolute paths and `..`
+    // members by default; on top of that we skip symlinks and hardlinks so a
+    // malicious link can't be smuggled onto the host and later followed by
+    // the git snapshot or the preview static server.
+    await hostTar(
+      [
+        "--no-same-owner",
+        "--no-same-permissions",
+        "--exclude-backups",
+        "-xzf",
+        tmpFile,
+        "--exclude=./.git",
+      ],
+      hostDir,
+    );
+    await stripLinks(hostDir);
   } finally {
     await fs.rm(tmpFile, { force: true });
   }
+}
+
+/** Remove symlinks/other non-regular files a tenant archive may contain. */
+async function stripLinks(root: string): Promise<void> {
+  const walk = async (dir: string): Promise<void> => {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        await fs.rm(abs, { force: true });
+      } else if (entry.isDirectory()) {
+        if (entry.name === ".git") continue;
+        await walk(abs);
+      } else if (!entry.isFile()) {
+        await fs.rm(abs, { force: true });
+      }
+    }
+  };
+  await walk(root);
 }
 
 // ---------------------------------------------------------------------------

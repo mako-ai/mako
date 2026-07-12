@@ -190,9 +190,14 @@ const FLOW_MODE_TOOL_NAMES: string[] = [
   "inspect_table",
 ];
 
-const APP_MODE_TOOL_NAMES: string[] = [
-  // Apps v2 (experimental, git-backed — tools exist only when APPS_V2_ENABLED;
-  // listing them here is inert otherwise because the tool set is empty).
+/**
+ * Tools that operate ONLY on Apps v2 (git-backed) projects. Kept as a set so
+ * {@link isolateAppToolFamily} can prune the wrong family when the user is
+ * clearly working in one of the two app systems (adopted from the parallel
+ * apps-v2 branch): a v2 project id passed to a v1 tool (or vice versa) fails
+ * confusingly, and models otherwise mix the suites.
+ */
+export const APP_V2_ONLY_TOOL_NAMES = new Set<string>([
   "app2_list_apps",
   "app2_create_app",
   "app2_bash",
@@ -203,6 +208,64 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "app2_commit",
   "app2_list_branches",
   "app2_merge_to_main",
+]);
+
+/** Tools that operate ONLY on Apps v1 (Mongo-document) apps. */
+export const APP_V1_ONLY_TOOL_NAMES = new Set<string>([
+  "list_open_apps",
+  "open_app",
+  "create_app",
+  "get_app_state",
+  "app_read_file",
+  "app_write_file",
+  "app_edit_file",
+  "app_delete_file",
+  "app_rename_file",
+  "app_add_dependency",
+  "app_remove_dependency",
+  "app_create_data_binding",
+  "app_update_data_binding",
+  "app_delete_data_binding",
+  "app_set_binding_materialization",
+  "app_set_binding_schedule",
+  "app_save_version",
+  "app_restore_version",
+  "materialize_binding",
+  "run_app",
+  "app_set_preview_environment",
+]);
+
+/**
+ * When the user's focus unambiguously belongs to one app system (an app tab
+ * of either kind, or one of the two app explorers), hide the OTHER system's
+ * tools from the step so the model cannot cross the streams.
+ */
+export function isolateAppToolFamily(
+  activeTools: string[],
+  tabKind: string | undefined,
+  activeExplorer?: AgentContext["activeExplorer"],
+): string[] {
+  const isAppV2Tab = tabKind === "app-v2" || tabKind === "app-v2-file";
+  const isAppV1Tab =
+    tabKind === "app" || tabKind === "app-file" || tabKind === "app-binding";
+  const excluded = isAppV2Tab
+    ? APP_V1_ONLY_TOOL_NAMES
+    : isAppV1Tab
+      ? APP_V2_ONLY_TOOL_NAMES
+      : activeExplorer === "apps-v2"
+        ? APP_V1_ONLY_TOOL_NAMES
+        : activeExplorer === "apps"
+          ? APP_V2_ONLY_TOOL_NAMES
+          : undefined;
+  return excluded
+    ? activeTools.filter(toolName => !excluded.has(toolName))
+    : activeTools;
+}
+
+const APP_MODE_TOOL_NAMES: string[] = [
+  // Apps v2 (experimental, git-backed — tools exist only when APPS_V2_ENABLED;
+  // listing them here is inert otherwise because the tool set is empty).
+  ...APP_V2_ONLY_TOOL_NAMES,
   // Client app tools
   "list_open_apps",
   "open_app",
@@ -421,6 +484,7 @@ export function defaultExpertiseMode(
   if (view === "flow-editor" || tabKind === "flow-editor") return "flow";
   if (view === "app" || tabKind === "app") return "app";
   if (tabKind === "notebook") return "notebook";
+  if (tabKind === "app-v2" || tabKind === "app-v2-file") return "app";
   if (view === "dbt" || tabKind === "dbt-file" || tabKind === "dbt-job") {
     return "transform";
   }

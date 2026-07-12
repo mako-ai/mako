@@ -20,6 +20,7 @@
     "test:destinations": "vitest run --config vitest.destinations.config.ts",
     "test:destinations:watch": "vitest --config vitest.destinations.config.ts",
     "test:apps-v2": "vitest run --config vitest.apps-v2.config.ts",
+    "apps-v2:build-template": "tsx src/apps-v2/e2b-template.ts",
     "test:apps-v2:watch": "vitest --config vitest.apps-v2.config.ts",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives",
     "lint:fix": "eslint . --ext ts,tsx --fix"

@@ -84,6 +84,16 @@ export type RealtimeEvent =
       clientId?: string;
       origin: "agent" | "save";
     }
+  // Apps v2 (git-backed): any durable change — WIP flush, commit, merge,
+  // discard, create/delete — pokes open windows to refetch from the API.
+  | {
+      type: "app-v2.updated";
+      appId: string;
+      /** Worktree actor that made the change (user id or `chat:<chatId>`). */
+      updatedBy?: string;
+      /** Coarse reason, for client-side refetch scoping. */
+      origin: "flush" | "commit" | "merge" | "discard" | "lifecycle";
+    }
   | {
       type: "dbt.file.updated";
       projectId: string;
