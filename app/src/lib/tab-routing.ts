@@ -46,6 +46,7 @@ export const TAB_DEEP_LINK_PATTERNS = {
   "app-binding": /^\/a\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9_-]+)/,
   // Apps v2 (git-backed, experimental) — /a2 so it can't collide with /a.
   "app-v2": /^\/a2\/([a-zA-Z0-9-]+)\/?$/,
+  "app-v2-file": /^\/a2\/([a-zA-Z0-9-]+)\/file\/(.+)$/,
   plan: /^\/p\/([a-zA-Z0-9-]+)/,
   settings: /^\/settings\/([a-z-]+)$/,
   // Legacy tab kind superseded by the settings "members" section.
@@ -123,6 +124,13 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
     case "app-v2": {
       const appId = tab.metadata?.appV2Id as string | undefined;
       return appId ? `/a2/${appId}` : null;
+    }
+    case "app-v2-file": {
+      const appId = tab.metadata?.appV2Id as string | undefined;
+      const path = tab.metadata?.path as string | undefined;
+      return appId && path
+        ? `/a2/${appId}/file/${encodePathSegments(path)}`
+        : null;
     }
     case "plan": {
       const chatId = tab.metadata?.chatId as string | undefined;

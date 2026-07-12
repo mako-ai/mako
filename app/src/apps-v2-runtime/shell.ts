@@ -32,3 +32,27 @@ export function focusAppsV2Tab(appId: string, title: string): string {
   consoleStore.setActiveTab(tabId);
   return tabId;
 }
+
+/** Open (or focus) a file of an Apps v2 project in its own editor tab. */
+export function focusAppsV2FileTab(appId: string, path: string): string {
+  const consoleStore = useConsoleStore.getState();
+  const existingTab = Object.values(consoleStore.tabs).find(
+    (tab: { kind?: string; metadata?: { appV2Id?: string; path?: string } }) =>
+      tab.kind === "app-v2-file" &&
+      tab.metadata?.appV2Id === appId &&
+      tab.metadata?.path === path,
+  );
+  if (existingTab) {
+    consoleStore.setActiveTab(existingTab.id);
+    return existingTab.id;
+  }
+  const fileName = path.split("/").pop() || path;
+  const tabId = consoleStore.openTab({
+    title: fileName,
+    content: "",
+    kind: "app-v2-file",
+    metadata: { appV2Id: appId, path },
+  });
+  consoleStore.setActiveTab(tabId);
+  return tabId;
+}

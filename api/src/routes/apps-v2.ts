@@ -28,7 +28,9 @@ import {
   discardWorktree,
   ensureWorktree,
   execInWorktree,
+  listBranches,
   listFiles,
+  mergeBranchToMain,
   projectHistory,
   readFile,
   worktreeStatus,
@@ -548,6 +550,65 @@ appsV2Routes.openapi(
       const result = await commitWorktree(
         handle,
         message,
+        user?.email ? { name: user.email, email: user.email } : undefined,
+      );
+      return c.json({ success: true as const, result }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/branches",
+    tags: ["Apps v2"],
+    summary: "List branches (main + one per chat conversation)",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const branches = await listBranches(loaded.project);
+      return c.json({ success: true as const, branches }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/merge",
+    tags: ["Apps v2"],
+    summary: "Merge a branch into main (fast-forward or merge commit)",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({ branch: z.string().min(1) }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { branch } = c.req.valid("json");
+      const user = c.get("user");
+      const result = await mergeBranchToMain(
+        loaded.project,
+        branch,
         user?.email ? { name: user.email, email: user.email } : undefined,
       );
       return c.json({ success: true as const, result }, 200);

@@ -10,17 +10,13 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-} from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {
+  chatActorFor,
+  chatBranchFor,
+  commitChatTurn,
   commitWorktree,
   createProject,
   deleteProject,
@@ -28,7 +24,9 @@ import {
   ensureWorktree,
   execInWorktree,
   flushWorktree,
+  listBranches,
   listFiles,
+  mergeBranchToMain,
   projectHistory,
   readFile,
   worktreeStatus,
@@ -227,14 +225,14 @@ describe("commit + conflicts", () => {
       parents: [handle.doc.baseSha],
       message: "foreign snapshot",
     });
-    expect(await updateRefCas(repoDir, wipRef, foreign, currentWip)).toBe(
-      true,
-    );
+    expect(await updateRefCas(repoDir, wipRef, foreign, currentWip)).toBe(true);
     // Make the in-memory doc stale (still believes currentWip).
     handle.doc.wipOid = currentWip;
 
     await fs.writeFile(path.join(handle.sessionDir, "one.txt"), "2\n");
-    await expect(flushWorktree(handle)).rejects.toThrow(/advanced concurrently/);
+    await expect(flushWorktree(handle)).rejects.toThrow(
+      /advanced concurrently/,
+    );
 
     // The losing snapshot was preserved for recovery.
     const stdout = await new Promise<string>((resolve, reject) => {
@@ -277,6 +275,119 @@ describe("commit + conflicts", () => {
   });
 });
 
+describe("chat branches (Cursor-cloud model)", () => {
+  const CHAT = "6a5300000000000000000abc";
+
+  it("chat actor works on its own branch; turn commit lands there; merge brings it to main", async () => {
+    const project = await makeProject();
+
+    // Chat actor: branch forked off main on first touch.
+    const chatHandle = await ensureWorktree(project, chatActorFor(CHAT), {
+      branch: chatBranchFor(CHAT),
+    });
+    expect(chatHandle.doc.branch).toBe(`chat/${CHAT}`);
+
+    await writeFile(chatHandle, "src/feature.ts", "export const f = 1;\n");
+
+    // End-of-turn commit (no session/sandbox required).
+    const results = await commitChatTurn(WS, CHAT, "add feature module");
+    expect(results).toHaveLength(1);
+    expect(results[0].commitOid).toBeTruthy();
+
+    // The commit is on the chat branch, NOT on main.
+    const branches = await listBranches(project);
+    const chatBranch = branches.find(b => b.name === `chat/${CHAT}`);
+    expect(chatBranch?.aheadOfMain).toBe(1);
+    expect(chatBranch?.lastCommit?.subject).toContain("add feature module");
+    const mainFiles = (await listFiles(project)).entries.map(e => e.path);
+    expect(mainFiles).not.toContain("src/feature.ts");
+
+    // A second turn commits again on the same branch.
+    const chatHandle2 = await ensureWorktree(project, chatActorFor(CHAT), {
+      branch: chatBranchFor(CHAT),
+    });
+    await writeFile(chatHandle2, "src/feature2.ts", "export const g = 2;\n");
+    await commitChatTurn(WS, CHAT, "second turn");
+    expect(
+      (await listBranches(project)).find(b => b.name === `chat/${CHAT}`)
+        ?.aheadOfMain,
+    ).toBe(2);
+
+    // Merge to main (fast-forward — main did not move).
+    const merge = await mergeBranchToMain(project, `chat/${CHAT}`);
+    expect(merge.merged).toBe(true);
+    expect(merge.fastForward).toBe(true);
+    const mainAfter = (await listFiles(project)).entries.map(e => e.path);
+    expect(mainAfter).toContain("src/feature.ts");
+    expect(mainAfter).toContain("src/feature2.ts");
+  });
+
+  it("clean worktrees fast-forward to the new head on resume", async () => {
+    const project = await makeProject();
+
+    // User worktree on main, clean, materialized at the initial commit.
+    const userHandle = await ensureWorktree(project, USER);
+    const initialBase = userHandle.doc.baseSha;
+
+    // A chat branch commits and merges to main.
+    const chat = "6a5300000000000000000def";
+    const h = await ensureWorktree(project, chatActorFor(chat), {
+      branch: chatBranchFor(chat),
+    });
+    await writeFile(h, "merged.txt", "hello\n");
+    await commitChatTurn(WS, chat);
+    await mergeBranchToMain(project, chatBranchFor(chat));
+
+    // Resume the user worktree: it fast-forwards ("pulls latest").
+    const resumed = await ensureWorktree(project, USER);
+    expect(resumed.doc.baseSha).not.toBe(initialBase);
+    const onDisk = await fs.readFile(
+      path.join(resumed.sessionDir, "merged.txt"),
+      "utf8",
+    );
+    expect(onDisk).toBe("hello\n");
+  });
+
+  it("merge builds a merge commit when main moved, and refuses conflicts", async () => {
+    const project = await makeProject();
+
+    // Chat branch edits file A.
+    const chat = "6a5300000000000000000aaa";
+    const h = await ensureWorktree(project, chatActorFor(chat), {
+      branch: chatBranchFor(chat),
+    });
+    await writeFile(h, "a.txt", "from chat\n");
+    await commitChatTurn(WS, chat);
+
+    // Meanwhile main gets an unrelated commit (file B) — no fast-forward.
+    const userHandle = await ensureWorktree(project, USER);
+    await writeFile(userHandle, "b.txt", "from user\n");
+    await commitWorktree(userHandle, "user change");
+
+    const merge = await mergeBranchToMain(project, chatBranchFor(chat));
+    expect(merge.merged).toBe(true);
+    expect(merge.fastForward).toBe(false);
+    const files = (await listFiles(project)).entries.map(e => e.path);
+    expect(files).toContain("a.txt");
+    expect(files).toContain("b.txt");
+
+    // Conflict: two branches editing the same line of the same file.
+    const chatB = "6a5300000000000000000bbb";
+    const hb = await ensureWorktree(project, chatActorFor(chatB), {
+      branch: chatBranchFor(chatB),
+    });
+    await writeFile(hb, "a.txt", "conflicting chat edit\n");
+    await commitChatTurn(WS, chatB);
+    const user2 = await ensureWorktree(project, USER);
+    await writeFile(user2, "a.txt", "conflicting user edit\n");
+    await commitWorktree(user2, "user conflicting change");
+
+    await expect(
+      mergeBranchToMain(project, chatBranchFor(chatB)),
+    ).rejects.toThrow(/conflict/i);
+  });
+});
+
 describe("multi-actor isolation", () => {
   it("two users have independent WIP states over one repo", async () => {
     const project = await makeProject();
@@ -289,9 +400,7 @@ describe("multi-actor isolation", () => {
     const aliceFiles = (await listFiles(project, "alice")).entries.map(
       e => e.path,
     );
-    const bobFiles = (await listFiles(project, "bob")).entries.map(
-      e => e.path,
-    );
+    const bobFiles = (await listFiles(project, "bob")).entries.map(e => e.path);
     expect(aliceFiles).toContain("alice.txt");
     expect(aliceFiles).not.toContain("bob.txt");
     expect(bobFiles).toContain("bob.txt");

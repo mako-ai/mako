@@ -99,9 +99,16 @@ export function tabRevealTarget(
         : null;
     }
     case "app-v2": {
-      // Apps v2 explorer rows are keyed by the project id (flat list).
+      // Apps v2 explorer app rows are keyed by the project id.
       const appId = meta.appV2Id as string | undefined;
       return appId ? { explorer: "apps-v2", nodeId: appId } : null;
+    }
+    case "app-v2-file": {
+      const appId = meta.appV2Id as string | undefined;
+      const path = meta.path as string | undefined;
+      return appId && path
+        ? { explorer: "apps-v2", nodeId: `${appId}${APP_FILE_SEP}${path}` }
+        : null;
     }
     case "connectors": {
       // Connector explorer rows are keyed by connector id, stored in `content`.

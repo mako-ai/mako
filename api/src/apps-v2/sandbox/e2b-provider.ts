@@ -106,6 +106,14 @@ async function connectSession(sessionKey: string): Promise<Sandbox> {
     apiKey: apiKey(),
     timeoutMs: IDLE_TIMEOUT_MS,
     metadata: { makoAppsV2SessionKey: sessionKey },
+    // Pause instead of kill on idle: a filesystem-only snapshot freezes the
+    // sandbox (node_modules, caches, everything on disk) at zero compute
+    // cost. Resume is explicit via Sandbox.connect() in connectSession —
+    // fs-only snapshots cold-boot, which is fine because commands are
+    // one-shot (no long-lived processes to preserve). If the sandbox is
+    // instead fully dead (deleted/expired), connectSession falls through to
+    // creating a fresh one and the host session dir re-seeds it via syncIn.
+    lifecycle: { onTimeout: { action: "pause", keepMemory: false } },
   });
   await sandbox.commands.run(`mkdir -p ${REMOTE_ROOT}`, {
     user: SANDBOX_USER,

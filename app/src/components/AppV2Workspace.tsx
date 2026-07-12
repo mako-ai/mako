@@ -1,19 +1,18 @@
 /**
- * Apps v2 workspace view — the content of an `app-v2` tab.
+ * Apps v2 workspace view — the content of an `app-v2` tab: the app's home.
  *
- * IDE-style layout over the durable worktree API:
+ * Files are browsed/opened from the Apps v2 explorer (each file gets its own
+ * `app-v2-file` tab, v1-style); this view owns everything app-level:
  *
- *   ┌ toolbar: status chip · Code/Preview toggle · Build & preview ·
- *   │          Commit · History · Discard
- *   ├ file tree │ Monaco editor (debounced save → WIP flush)   ← "code" mode
- *   │           │ token-gated sandboxed iframe                  ← "preview"
- *   └ terminal: run any shell command in the app's sandbox session
+ *   ┌ toolbar: status chip · branch menu (merge chat branches) ·
+ *   │          Build & preview · Commit · History · Discard
+ *   ├ preview: token-gated sandboxed iframe of the built app
+ *   └ terminal: shell into the app's sandbox session (E2B microVM)
  *
- * Every read here comes from git (bare repo + WIP refs) through the store, so
- * the view renders identically whether the app's sandbox session is warm or
- * was rebuilt after eviction.
+ * Every read resolves from git through the durable worktree API, so the view
+ * renders identically whether the sandbox is hot, paused, or dead.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   Box,
@@ -27,260 +26,29 @@ import {
   Divider,
   IconButton,
   InputBase,
-  List,
-  ListItemButton,
   ListItemText,
   Menu,
   MenuItem,
   TextField,
-  ToggleButton,
-  ToggleButtonGroup,
   Tooltip,
   Typography,
-  useTheme as useMuiTheme,
 } from "@mui/material";
-import MonacoEditor from "@monaco-editor/react";
 import {
-  ChevronDown as ChevronDownIcon,
-  ChevronRight as ChevronRightIcon,
   Eraser as ClearIcon,
-  FileCode as FileIcon,
-  Folder as FolderIcon,
+  GitBranch as BranchIcon,
   GitCommitHorizontal as CommitIcon,
+  GitMerge as MergeIcon,
   History as HistoryIcon,
   Play as PlayIcon,
   RotateCcw as DiscardIcon,
   TerminalSquare as TerminalIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
-import {
-  useAppsV2Store,
-  type AppV2FileEntry,
-  type AppV2TerminalEntry,
-} from "../store/appsV2Store";
-import {
-  configureMonacoForJsx,
-  languageForPath,
-} from "../app-runtime/monaco-jsx";
-
-// ---------------------------------------------------------------------------
-// File tree (flat entries -> nested folders)
-// ---------------------------------------------------------------------------
-
-interface TreeNode {
-  name: string;
-  path: string;
-  children?: TreeNode[];
-}
-
-function buildTree(entries: AppV2FileEntry[]): TreeNode[] {
-  const root: TreeNode[] = [];
-  for (const entry of [...entries].sort((a, b) =>
-    a.path.localeCompare(b.path),
-  )) {
-    const segments = entry.path.split("/");
-    let level = root;
-    let prefix = "";
-    for (let i = 0; i < segments.length; i++) {
-      const name = segments[i];
-      prefix = prefix ? `${prefix}/${name}` : name;
-      const isLeaf = i === segments.length - 1;
-      let node = level.find(n => n.name === name && !!n.children === !isLeaf);
-      if (!node) {
-        node = { name, path: prefix, ...(isLeaf ? {} : { children: [] }) };
-        level.push(node);
-      }
-      if (!isLeaf) level = node.children as TreeNode[];
-    }
-  }
-  const sortLevel = (nodes: TreeNode[]): TreeNode[] => {
-    nodes.sort((a, b) => {
-      const aDir = a.children ? 0 : 1;
-      const bDir = b.children ? 0 : 1;
-      return aDir - bDir || a.name.localeCompare(b.name);
-    });
-    for (const n of nodes) if (n.children) sortLevel(n.children);
-    return nodes;
-  };
-  return sortLevel(root);
-}
-
-function FileTreeLevel({
-  nodes,
-  depth,
-  selected,
-  expanded,
-  onToggle,
-  onSelect,
-}: {
-  nodes: TreeNode[];
-  depth: number;
-  selected: string | null;
-  expanded: Set<string>;
-  onToggle: (path: string) => void;
-  onSelect: (path: string) => void;
-}) {
-  return (
-    <>
-      {nodes.map(node => {
-        const isDir = Boolean(node.children);
-        const isOpen = expanded.has(node.path);
-        return (
-          <Box key={node.path}>
-            <ListItemButton
-              dense
-              selected={!isDir && selected === node.path}
-              onClick={() =>
-                isDir ? onToggle(node.path) : onSelect(node.path)
-              }
-              sx={{ pl: 1 + depth * 1.5, py: 0.25, minHeight: 26 }}
-            >
-              <Box
-                sx={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 0.5,
-                  overflow: "hidden",
-                }}
-              >
-                {isDir ? (
-                  isOpen ? (
-                    <ChevronDownIcon size={13} />
-                  ) : (
-                    <ChevronRightIcon size={13} />
-                  )
-                ) : null}
-                {isDir ? <FolderIcon size={13} /> : <FileIcon size={13} />}
-                <Typography variant="caption" noWrap>
-                  {node.name}
-                </Typography>
-              </Box>
-            </ListItemButton>
-            {isDir && isOpen && node.children && (
-              <FileTreeLevel
-                nodes={node.children}
-                depth={depth + 1}
-                selected={selected}
-                expanded={expanded}
-                onToggle={onToggle}
-                onSelect={onSelect}
-              />
-            )}
-          </Box>
-        );
-      })}
-    </>
-  );
-}
+import { useAppsV2Store, type AppV2TerminalEntry } from "../store/appsV2Store";
 
 // ---------------------------------------------------------------------------
 // Terminal panel
 // ---------------------------------------------------------------------------
-
-function TerminalPanel({
-  appId,
-  workspaceId,
-}: {
-  appId: string;
-  workspaceId: string;
-}) {
-  const entries = useAppsV2Store(s => s.terminalByApp[appId] ?? EMPTY_TERMINAL);
-  const running = useAppsV2Store(s => Boolean(s.execRunning[appId]));
-  const runCommand = useAppsV2Store(s => s.runCommand);
-  const clearTerminal = useAppsV2Store(s => s.clearTerminal);
-  const [command, setCommand] = useState("");
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [entries]);
-
-  const submit = useCallback(() => {
-    const trimmed = command.trim();
-    if (!trimmed || running) return;
-    setCommand("");
-    void runCommand(workspaceId, appId, trimmed);
-  }, [command, running, runCommand, workspaceId, appId]);
-
-  return (
-    <Box
-      sx={{
-        height: "100%",
-        display: "flex",
-        flexDirection: "column",
-        fontFamily: "monospace",
-        bgcolor: "background.default",
-      }}
-    >
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1,
-          px: 1,
-          py: 0.25,
-          borderBottom: "1px solid",
-          borderColor: "divider",
-        }}
-      >
-        <TerminalIcon size={14} />
-        <Typography variant="caption" sx={{ flex: 1 }}>
-          {"Terminal — runs in the app's sandbox session (repo root)"}
-        </Typography>
-        <Tooltip title="Clear">
-          <IconButton size="small" onClick={() => clearTerminal(appId)}>
-            <ClearIcon size={14} />
-          </IconButton>
-        </Tooltip>
-      </Box>
-      <Box ref={scrollRef} sx={{ flex: 1, overflow: "auto", px: 1, py: 0.5 }}>
-        {entries.length === 0 && (
-          <Typography variant="caption" color="text.secondary">
-            Try: ls · git status · git log --oneline · npm install · npm run
-            build
-          </Typography>
-        )}
-        {entries.map(entry => (
-          <TerminalEntryView key={entry.id} entry={entry} />
-        ))}
-      </Box>
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1,
-          px: 1,
-          py: 0.5,
-          borderTop: "1px solid",
-          borderColor: "divider",
-        }}
-      >
-        <Typography
-          variant="caption"
-          color="success.main"
-          sx={{ fontFamily: "monospace" }}
-        >
-          $
-        </Typography>
-        <InputBase
-          fullWidth
-          placeholder={
-            running ? "Running..." : "Type a command and press Enter"
-          }
-          value={command}
-          disabled={running}
-          onChange={e => setCommand(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === "Enter") submit();
-          }}
-          sx={{ fontFamily: "monospace", fontSize: 13 }}
-          inputProps={{ "aria-label": "terminal command" }}
-        />
-        {running && <CircularProgress size={14} />}
-      </Box>
-    </Box>
-  );
-}
 
 const EMPTY_TERMINAL: AppV2TerminalEntry[] = [];
 
@@ -330,6 +98,113 @@ function TerminalEntryView({ entry }: { entry: AppV2TerminalEntry }) {
   );
 }
 
+function TerminalPanel({
+  appId,
+  workspaceId,
+}: {
+  appId: string;
+  workspaceId: string;
+}) {
+  const entries = useAppsV2Store(s => s.terminalByApp[appId] ?? EMPTY_TERMINAL);
+  const running = useAppsV2Store(s => Boolean(s.execRunning[appId]));
+  const runCommand = useAppsV2Store(s => s.runCommand);
+  const clearTerminal = useAppsV2Store(s => s.clearTerminal);
+  const [command, setCommand] = useState("");
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    scrollEl?.scrollTo({ top: scrollEl.scrollHeight });
+  }, [entries, scrollEl]);
+
+  const submit = useCallback(() => {
+    const trimmed = command.trim();
+    if (!trimmed || running) return;
+    setCommand("");
+    void runCommand(workspaceId, appId, trimmed);
+  }, [command, running, runCommand, workspaceId, appId]);
+
+  return (
+    <Box
+      sx={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        fontFamily: "monospace",
+        bgcolor: "background.default",
+      }}
+    >
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          gap: 1,
+          px: 1,
+          py: 0.25,
+          borderBottom: "1px solid",
+          borderColor: "divider",
+        }}
+      >
+        <TerminalIcon size={14} />
+        <Typography variant="caption" sx={{ flex: 1 }}>
+          {
+            "Terminal — runs in the app's sandbox session (E2B microVM; resumes if paused, rebuilds if dead)"
+          }
+        </Typography>
+        <Tooltip title="Clear">
+          <IconButton size="small" onClick={() => clearTerminal(appId)}>
+            <ClearIcon size={14} />
+          </IconButton>
+        </Tooltip>
+      </Box>
+      <Box ref={setScrollEl} sx={{ flex: 1, overflow: "auto", px: 1, py: 0.5 }}>
+        {entries.length === 0 && (
+          <Typography variant="caption" color="text.secondary">
+            Try: ls · git status · git log --oneline · npm install · npm run
+            build
+          </Typography>
+        )}
+        {entries.map(entry => (
+          <TerminalEntryView key={entry.id} entry={entry} />
+        ))}
+      </Box>
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          gap: 1,
+          px: 1,
+          py: 0.5,
+          borderTop: "1px solid",
+          borderColor: "divider",
+        }}
+      >
+        <Typography
+          variant="caption"
+          color="success.main"
+          sx={{ fontFamily: "monospace" }}
+        >
+          $
+        </Typography>
+        <InputBase
+          fullWidth
+          placeholder={
+            running ? "Running..." : "Type a command and press Enter"
+          }
+          value={command}
+          disabled={running}
+          onChange={e => setCommand(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === "Enter") submit();
+          }}
+          sx={{ fontFamily: "monospace", fontSize: 13 }}
+          inputProps={{ "aria-label": "terminal command" }}
+        />
+        {running && <CircularProgress size={14} />}
+      </Box>
+    </Box>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main view
 // ---------------------------------------------------------------------------
@@ -343,92 +218,43 @@ export default function AppV2Workspace({
 }) {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
-  const monacoTheme = useMuiTheme().palette.mode === "dark" ? "vs-dark" : "vs";
 
   const app = useAppsV2Store(s => s.apps.find(a => a.id === appId));
-  const files = useAppsV2Store(s => s.filesByApp[appId]);
-  const selectedFile = useAppsV2Store(s => s.selectedFile[appId] ?? null);
-  const fileEntry = useAppsV2Store(s =>
-    selectedFile ? s.fileContents[`${appId}\u0000${selectedFile}`] : undefined,
-  );
   const status = useAppsV2Store(s => s.statusByApp[appId]);
   const history = useAppsV2Store(s => s.historyByApp[appId]);
+  const branches = useAppsV2Store(s => s.branchesByApp[appId]);
   const preview = useAppsV2Store(s => s.previewByApp[appId]);
-  const viewMode = useAppsV2Store(s => s.viewMode[appId] ?? "code");
 
   const fetchApps = useAppsV2Store(s => s.fetchApps);
   const fetchFiles = useAppsV2Store(s => s.fetchFiles);
   const fetchStatus = useAppsV2Store(s => s.fetchStatus);
   const fetchHistory = useAppsV2Store(s => s.fetchHistory);
-  const openFile = useAppsV2Store(s => s.openFile);
-  const updateFileLocal = useAppsV2Store(s => s.updateFileLocal);
-  const saveFile = useAppsV2Store(s => s.saveFile);
+  const fetchBranches = useAppsV2Store(s => s.fetchBranches);
+  const mergeBranch = useAppsV2Store(s => s.mergeBranch);
   const commit = useAppsV2Store(s => s.commit);
   const discard = useAppsV2Store(s => s.discard);
   const buildPreview = useAppsV2Store(s => s.buildPreview);
-  const setViewMode = useAppsV2Store(s => s.setViewMode);
 
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(["src"]));
   const [commitOpen, setCommitOpen] = useState(false);
   const [commitMessage, setCommitMessage] = useState("");
   const [committing, setCommitting] = useState(false);
   const [commitError, setCommitError] = useState<string | null>(null);
   const [historyAnchor, setHistoryAnchor] = useState<null | HTMLElement>(null);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [branchAnchor, setBranchAnchor] = useState<null | HTMLElement>(null);
+  const [merging, setMerging] = useState<string | null>(null);
+  const [mergeError, setMergeError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!workspaceId) return;
     if (!app) void fetchApps(workspaceId);
     void fetchFiles(workspaceId, appId);
     void fetchStatus(workspaceId, appId);
+    void fetchBranches(workspaceId, appId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, appId]);
 
-  // Auto-open the entrypoint on first load.
-  useEffect(() => {
-    if (!workspaceId || selectedFile || !files?.length) return;
-    const preferred =
-      files.find(f => f.path === "src/App.tsx") ??
-      files.find(f => f.path.endsWith(".tsx")) ??
-      files[0];
-    if (preferred) void openFile(workspaceId, appId, preferred.path);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, appId, files, selectedFile]);
-
-  const tree = useMemo(() => buildTree(files ?? []), [files]);
   const changeCount = status?.changes.length ?? 0;
-
-  const handleToggle = useCallback((path: string) => {
-    setExpanded(prev => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
-  }, []);
-
-  const handleSelect = useCallback(
-    (path: string) => {
-      if (workspaceId) void openFile(workspaceId, appId, path);
-      setViewMode(appId, "code");
-    },
-    [workspaceId, appId, openFile, setViewMode],
-  );
-
-  const handleEditorChange = useCallback(
-    (value: string | undefined) => {
-      if (!selectedFile) return;
-      updateFileLocal(appId, selectedFile, value ?? "");
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      if (workspaceId) {
-        const path = selectedFile;
-        saveTimer.current = setTimeout(() => {
-          void saveFile(workspaceId, appId, path);
-        }, 1000);
-      }
-    },
-    [appId, selectedFile, workspaceId, updateFileLocal, saveFile],
-  );
+  const chatBranches = (branches ?? []).filter(b => !b.isDefault);
 
   const handleCommit = useCallback(async () => {
     if (!workspaceId || !commitMessage.trim()) return;
@@ -443,6 +269,18 @@ export default function AppV2Workspace({
       setCommitError(result.error ?? "Commit failed");
     }
   }, [workspaceId, appId, commitMessage, commit]);
+
+  const handleMerge = useCallback(
+    async (branch: string) => {
+      if (!workspaceId) return;
+      setMerging(branch);
+      setMergeError(null);
+      const result = await mergeBranch(workspaceId, appId, branch);
+      setMerging(null);
+      if (!result.ok) setMergeError(result.error ?? "Merge failed");
+    },
+    [workspaceId, appId, mergeBranch],
+  );
 
   const handleDiscard = useCallback(() => {
     if (!workspaceId) return;
@@ -480,21 +318,22 @@ export default function AppV2Workspace({
               : "clean"
           }
         />
-        {status?.behindBranch && (
-          <Chip size="small" color="error" label="behind main" />
-        )}
+        <Tooltip title="Branches — each chat conversation works on its own branch; merge it into main when you're happy">
+          <Button
+            size="small"
+            variant="outlined"
+            color="inherit"
+            startIcon={<BranchIcon size={14} />}
+            onClick={e => {
+              setBranchAnchor(e.currentTarget);
+              void fetchBranches(workspaceId, appId);
+            }}
+          >
+            {status?.branch ?? "main"}
+            {chatBranches.length > 0 ? ` · ${chatBranches.length}` : ""}
+          </Button>
+        </Tooltip>
         <Box sx={{ flex: 1 }} />
-        <ToggleButtonGroup
-          size="small"
-          exclusive
-          value={viewMode}
-          onChange={(_, v) => v && setViewMode(appId, v)}
-        >
-          <ToggleButton value="code">Code</ToggleButton>
-          <ToggleButton value="preview" disabled={!preview?.url}>
-            Preview
-          </ToggleButton>
-        </ToggleButtonGroup>
         <Tooltip title="npm install (if needed) + npm run build in the sandbox, then preview the built app">
           <span>
             <Button
@@ -523,7 +362,7 @@ export default function AppV2Workspace({
         >
           Commit
         </Button>
-        <Tooltip title="History">
+        <Tooltip title="History (main)">
           <IconButton
             size="small"
             onClick={e => {
@@ -547,15 +386,16 @@ export default function AppV2Workspace({
         </Tooltip>
       </Box>
 
-      {preview?.error && viewMode === "code" && (
+      {(preview?.error || mergeError) && (
         <Alert
           severity="error"
-          onClose={() =>
+          onClose={() => {
+            setMergeError(null);
             useAppsV2Store.setState(s => {
               const p = s.previewByApp[appId];
               if (p) p.error = null;
-            })
-          }
+            });
+          }}
           sx={{
             borderRadius: 0,
             whiteSpace: "pre-wrap",
@@ -563,13 +403,13 @@ export default function AppV2Workspace({
             overflow: "auto",
           }}
         >
-          {preview.error}
+          {mergeError ?? preview?.error}
         </Alert>
       )}
 
-      {/* Body */}
-      <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
-        {viewMode === "preview" && preview?.url ? (
+      {/* Preview / getting started */}
+      <Box sx={{ flex: 1, minHeight: 0 }}>
+        {preview?.url ? (
           <iframe
             title="App preview"
             src={preview.url}
@@ -577,53 +417,21 @@ export default function AppV2Workspace({
             style={{ border: 0, width: "100%", height: "100%" }}
           />
         ) : (
-          <>
-            <Box
-              sx={{
-                width: 220,
-                flexShrink: 0,
-                borderRight: "1px solid",
-                borderColor: "divider",
-                overflow: "auto",
-              }}
-            >
-              <List dense disablePadding>
-                <FileTreeLevel
-                  nodes={tree}
-                  depth={0}
-                  selected={selectedFile}
-                  expanded={expanded}
-                  onToggle={handleToggle}
-                  onSelect={handleSelect}
-                />
-              </List>
-            </Box>
-            <Box sx={{ flex: 1, minWidth: 0 }}>
-              {selectedFile && fileEntry ? (
-                <MonacoEditor
-                  height="100%"
-                  path={`apps-v2/${appId}/${selectedFile}`}
-                  language={languageForPath(selectedFile)}
-                  value={fileEntry.contents}
-                  theme={monacoTheme}
-                  beforeMount={configureMonacoForJsx}
-                  onChange={handleEditorChange}
-                  options={{
-                    minimap: { enabled: false },
-                    fontSize: 13,
-                    automaticLayout: true,
-                    scrollBeyondLastLine: false,
-                  }}
-                />
-              ) : (
-                <Box sx={{ p: 2 }}>
-                  <Typography variant="body2" color="text.secondary">
-                    Select a file to edit.
-                  </Typography>
-                </Box>
-              )}
-            </Box>
-          </>
+          <Box sx={{ p: 3, maxWidth: 560 }}>
+            <Typography variant="subtitle1" gutterBottom>
+              {app?.title ?? "App"}
+            </Typography>
+            <Typography variant="body2" color="text.secondary" paragraph>
+              Browse and edit this app&apos;s files from the Apps v2 explorer on
+              the left — every file opens in its own tab. Ask the agent in chat
+              to build features (each conversation works on its own git branch
+              and commits every turn), or use the terminal below.
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Click <strong>Build &amp; preview</strong> to compile the app in
+              its sandbox and render it here.
+            </Typography>
+          </Box>
         )}
       </Box>
 
@@ -633,6 +441,50 @@ export default function AppV2Workspace({
       <Box sx={{ height: 200, flexShrink: 0 }}>
         <TerminalPanel appId={appId} workspaceId={workspaceId} />
       </Box>
+
+      {/* Branch menu */}
+      <Menu
+        anchorEl={branchAnchor}
+        open={Boolean(branchAnchor)}
+        onClose={() => setBranchAnchor(null)}
+      >
+        {(branches ?? []).map(branch => (
+          <MenuItem key={branch.name} disableRipple sx={{ cursor: "default" }}>
+            <ListItemText
+              primary={
+                branch.isDefault
+                  ? `${branch.name} (default)`
+                  : `${branch.name} — ${branch.aheadOfMain} ahead`
+              }
+              secondary={
+                branch.lastCommit
+                  ? `${branch.lastCommit.subject} · ${new Date(branch.lastCommit.timestamp).toLocaleString()}`
+                  : undefined
+              }
+            />
+            {!branch.isDefault && branch.aheadOfMain > 0 && (
+              <Button
+                size="small"
+                sx={{ ml: 2 }}
+                startIcon={
+                  merging === branch.name ? (
+                    <CircularProgress size={12} />
+                  ) : (
+                    <MergeIcon size={14} />
+                  )
+                }
+                disabled={merging !== null}
+                onClick={() => void handleMerge(branch.name)}
+              >
+                Merge into main
+              </Button>
+            )}
+          </MenuItem>
+        ))}
+        {(branches ?? []).length === 0 && (
+          <MenuItem disabled>No branches</MenuItem>
+        )}
+      </Menu>
 
       {/* History menu */}
       <Menu

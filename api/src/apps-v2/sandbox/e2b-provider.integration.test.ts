@@ -86,6 +86,29 @@ suite("e2b sandbox provider (live)", () => {
     const warm = await execInWorktree(handle, "cat /home/user/.mako-warm");
     expect(warm.stdout.trim()).toBe("warm");
 
+    // 3b. Pause/resume: explicitly pause the sandbox (same snapshot type
+    // as the idle auto-pause) and run again — connect() resumes it and the
+    // frozen filesystem (sentinel) is intact.
+    const { Sandbox } = await import("e2b");
+    const paginator = Sandbox.list({
+      apiKey: process.env.E2B_API_KEY,
+      query: {
+        metadata: { makoAppsV2SessionKey: handle.doc._id.toString() },
+      },
+      limit: 5,
+    });
+    const page = paginator.hasNext ? await paginator.nextItems() : [];
+    expect(page.length).toBeGreaterThan(0);
+    await Sandbox.pause(page[0].sandboxId, {
+      apiKey: process.env.E2B_API_KEY,
+    });
+    const resumed = await execInWorktree(
+      handle,
+      "cat /home/user/.mako-warm && echo resumed-ok",
+    );
+    expect(resumed.stdout).toContain("warm");
+    expect(resumed.stdout).toContain("resumed-ok");
+
     // 4. Commit through the broker (never from inside the sandbox).
     const commit = await commitWorktree(handle, "E2B live change");
     expect(commit.committed).toBe(true);

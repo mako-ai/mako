@@ -23,6 +23,7 @@ export const TAB_KIND_ENTITY_LABELS = {
   "app-file": "file",
   "app-binding": "data source",
   "app-v2": "app",
+  "app-v2-file": "file",
   plan: "plan",
   settings: "settings section",
   members: "members page",

@@ -34,11 +34,15 @@ import { canReadResource, canWriteResource } from "../../utils/resource-acl";
 import { isAppsV2Enabled } from "../../apps-v2/config";
 import {
   WorktreeConflictError,
+  chatActorFor,
+  chatBranchFor,
   commitWorktree,
   createProject,
   ensureWorktree,
   execInWorktree,
+  listBranches,
   listFiles,
+  mergeBranchToMain,
   readFile,
   readSessionFile,
   worktreeStatus,
@@ -59,12 +63,19 @@ type LoadResult = { project: IAppProjectV2 } | { error: string };
 export function createAppsV2Tools({
   workspaceId,
   userId,
+  chatId,
 }: AppsV2ToolsOptions): ToolSet {
   if (!isAppsV2Enabled()) return {};
 
-  // The worktree actor: per-user when we know the user, else a stable
-  // API-key pseudo-actor (matches the routes' behavior).
-  const actorId = userId ?? "api-key";
+  // Cursor-cloud model: each chat conversation is its own actor working on
+  // its own `chat/<chatId>` branch (forked off main on first touch). The
+  // chat-finalization hook commits the accumulated WIP at the end of every
+  // turn, so each turn becomes one commit on the conversation branch. Non-chat
+  // callers fall back to a per-user worktree on the default branch.
+  const actorId = chatId ? chatActorFor(chatId) : (userId ?? "api-key");
+  const actorBranch = chatId ? chatBranchFor(chatId) : undefined;
+  const ensureActorWorktree = (project: IAppProjectV2) =>
+    ensureWorktree(project, actorId, { branch: actorBranch });
 
   let cachedRole: string | undefined | null = null;
   const memberRole = async (): Promise<string | undefined> => {
@@ -186,7 +197,7 @@ export function createAppsV2Tools({
         const loaded = await loadProject(appId, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
-          const handle = await ensureWorktree(loaded.project, actorId);
+          const handle = await ensureActorWorktree(loaded.project);
           const result = await execInWorktree(handle, command, {
             cwd,
             timeoutMs: timeoutSeconds ? timeoutSeconds * 1000 : undefined,
@@ -213,7 +224,10 @@ export function createAppsV2Tools({
         "Read a file from an Apps v2 project at the latest durable state (committed + uncommitted). Prefer this over `app2_bash cat` for single files.",
       inputSchema: z.object({
         appId: z.string(),
-        path: z.string().min(1).describe("Repo-relative path, e.g. src/App.tsx"),
+        path: z
+          .string()
+          .min(1)
+          .describe("Repo-relative path, e.g. src/App.tsx"),
       }),
       execute: async ({ appId, path: relPath }) => {
         const loaded = await loadProject(appId, { write: false });
@@ -245,7 +259,7 @@ export function createAppsV2Tools({
         const loaded = await loadProject(appId, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
-          const handle = await ensureWorktree(loaded.project, actorId);
+          const handle = await ensureActorWorktree(loaded.project);
           const flush = await writeFile(handle, relPath, contents);
           return {
             success: true,
@@ -269,11 +283,17 @@ export function createAppsV2Tools({
         newString: z.string(),
         replaceAll: z.boolean().optional(),
       }),
-      execute: async ({ appId, path: relPath, oldString, newString, replaceAll }) => {
+      execute: async ({
+        appId,
+        path: relPath,
+        oldString,
+        newString,
+        replaceAll,
+      }) => {
         const loaded = await loadProject(appId, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
-          const handle = await ensureWorktree(loaded.project, actorId);
+          const handle = await ensureActorWorktree(loaded.project);
           let current: string;
           try {
             current = await readSessionFile(handle, relPath);
@@ -323,9 +343,60 @@ export function createAppsV2Tools({
       },
     }),
 
+    app2_list_branches: tool({
+      description:
+        "List all branches of an Apps v2 project: the default branch (main) plus one `chat/<id>` branch per conversation that edited the app, with ahead-of-main counts. Use before merging.",
+      inputSchema: z.object({ appId: z.string() }),
+      execute: async ({ appId }) => {
+        const loaded = await loadProject(appId, { write: false });
+        if ("error" in loaded) return { success: false, error: loaded.error };
+        try {
+          const branches = await listBranches(loaded.project);
+          return {
+            success: true,
+            branches,
+            currentBranch: actorBranch ?? "main",
+          };
+        } catch (error) {
+          return { success: false, error: errorMessage(error) };
+        }
+      },
+    }),
+
+    app2_merge_to_main: tool({
+      description:
+        "Merge a branch of an Apps v2 project into main (fast-forward when possible, real merge commit otherwise; refuses on conflicts). Use when the user is happy with this conversation's changes and wants them on main. Omit `branch` to merge THIS conversation's branch.",
+      inputSchema: z.object({
+        appId: z.string(),
+        branch: z
+          .string()
+          .optional()
+          .describe("Branch to merge (defaults to this conversation's branch)"),
+      }),
+      execute: async ({ appId, branch }) => {
+        const loaded = await loadProject(appId, { write: true });
+        if ("error" in loaded) return { success: false, error: loaded.error };
+        const target = branch ?? actorBranch;
+        if (!target) {
+          return {
+            success: false,
+            error:
+              "No branch specified and this session has no conversation branch.",
+          };
+        }
+        try {
+          const result = await mergeBranchToMain(loaded.project, target);
+          return { success: result.merged, ...result, branch: target };
+        } catch (error) {
+          logger.error("app2_merge_to_main failed", { error, appId });
+          return { success: false, error: errorMessage(error) };
+        }
+      },
+    }),
+
     app2_commit: tool({
       description:
-        "Commit the current WIP snapshot of an Apps v2 project onto its branch with a message (compare-and-swap; fails cleanly if the branch moved). This is the durable checkpoint users see in history.",
+        "Commit the current WIP snapshot of an Apps v2 project onto this conversation's branch with a message (compare-and-swap; fails cleanly if the branch moved). Note: uncommitted work is auto-committed at the end of every turn anyway; use this for meaningful mid-turn checkpoints with a good message.",
       inputSchema: z.object({
         appId: z.string(),
         message: z.string().min(1).describe("Commit message"),
@@ -334,7 +405,7 @@ export function createAppsV2Tools({
         const loaded = await loadProject(appId, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
-          const handle = await ensureWorktree(loaded.project, actorId);
+          const handle = await ensureActorWorktree(loaded.project);
           const result = await commitWorktree(handle, message);
           return { success: result.committed, ...result };
         } catch (error) {

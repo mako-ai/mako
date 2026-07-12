@@ -84,6 +84,8 @@ import {
 } from "../services/resumable-stream.service";
 import { hasAttachedClients } from "../services/realtime-presence.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
+import { isAppsV2Enabled } from "../apps-v2/config";
+import { commitChatTurn } from "../apps-v2/worktree.service";
 import { reportPubSubFailure } from "../services/pubsub.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
@@ -1172,6 +1174,27 @@ agentRoutes.openapi(
                   requestExecutionIds.clear();
                 }
                 const durationMs = Date.now() - startTime;
+
+                // Apps v2 (Cursor-cloud model): turn any WIP the agent
+                // accumulated on this conversation's app branches into one
+                // commit per turn. No-op unless APPS_V2_ENABLED and the turn
+                // touched an Apps v2 worktree; never throws.
+                if (isAppsV2Enabled() && !isAborted) {
+                  try {
+                    const lastUserText = [...allMessages]
+                      .reverse()
+                      .find(m => m.role === "user")
+                      ?.parts?.filter(
+                        (p): p is { type: "text"; text: string } =>
+                          (p as { type?: string }).type === "text",
+                      )
+                      .map(p => p.text)
+                      .join(" ");
+                    await commitChatTurn(workspaceId, chatId, lastUserText);
+                  } catch (err) {
+                    logger.warn("Apps v2 turn commit failed", { error: err });
+                  }
+                }
 
                 // Extract detailed per-step usage from result.steps
                 let steps: Array<Record<string, unknown>> = [];

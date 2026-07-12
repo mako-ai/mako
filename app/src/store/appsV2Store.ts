@@ -61,6 +61,14 @@ export interface AppV2TerminalEntry {
   at: number;
 }
 
+export interface AppV2Branch {
+  name: string;
+  head: string;
+  isDefault: boolean;
+  aheadOfMain: number;
+  lastCommit?: { subject: string; author: string; timestamp: number };
+}
+
 export interface AppV2Preview {
   url: string | null;
   building: boolean;
@@ -81,6 +89,7 @@ interface AppsV2Store {
   selectedFile: Record<string, string | null>;
   statusByApp: Record<string, AppV2Status | null>;
   historyByApp: Record<string, AppV2Commit[]>;
+  branchesByApp: Record<string, AppV2Branch[]>;
   terminalByApp: Record<string, AppV2TerminalEntry[]>;
   execRunning: Record<string, boolean>;
   previewByApp: Record<string, AppV2Preview>;
@@ -109,6 +118,12 @@ interface AppsV2Store {
 
   fetchStatus: (workspaceId: string, appId: string) => Promise<void>;
   fetchHistory: (workspaceId: string, appId: string) => Promise<void>;
+  fetchBranches: (workspaceId: string, appId: string) => Promise<void>;
+  mergeBranch: (
+    workspaceId: string,
+    appId: string,
+    branch: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
   commit: (
     workspaceId: string,
     appId: string,
@@ -138,6 +153,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
     selectedFile: {},
     statusByApp: {},
     historyByApp: {},
+    branchesByApp: {},
     terminalByApp: {},
     execRunning: {},
     previewByApp: {},
@@ -413,6 +429,48 @@ export const useAppsV2Store = create<AppsV2Store>()(
         set(s => {
           s.error = message(e, "Failed to load history");
         });
+      }
+    },
+
+    fetchBranches: async (workspaceId, appId) => {
+      try {
+        const body = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/apps-v2/{id}/branches", {
+            params: { path: { workspaceId, id: appId } },
+          }),
+        ) as { branches?: AppV2Branch[] };
+        set(s => {
+          s.branchesByApp[appId] = body.branches ?? [];
+        });
+      } catch (e) {
+        set(s => {
+          s.error = message(e, "Failed to load branches");
+        });
+      }
+    },
+
+    mergeBranch: async (workspaceId, appId, branch) => {
+      try {
+        const body = unwrapBody(
+          await api.POST("/api/workspaces/{workspaceId}/apps-v2/{id}/merge", {
+            params: { path: { workspaceId, id: appId } },
+            body: { branch },
+          }),
+        ) as { result?: { merged: boolean; reason?: string } };
+        // Merge moves main: refresh everything the UI shows.
+        void get().fetchBranches(workspaceId, appId);
+        void get().fetchFiles(workspaceId, appId);
+        void get().fetchStatus(workspaceId, appId);
+        void get().fetchHistory(workspaceId, appId);
+        const selected = get().selectedFile[appId];
+        if (selected) void get().openFile(workspaceId, appId, selected);
+        if (body.result?.merged) return { ok: true };
+        return {
+          ok: false,
+          error: body.result?.reason ?? "Nothing to merge",
+        };
+      } catch (e) {
+        return { ok: false, error: message(e, "Merge failed") };
       }
     },
 

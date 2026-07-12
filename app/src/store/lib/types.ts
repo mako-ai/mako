@@ -21,6 +21,7 @@ export type TabKind =
   | "app-file"
   | "app-binding"
   | "app-v2"
+  | "app-v2-file"
   | "plan"
   | "dbt-file"
   | "dbt-job"

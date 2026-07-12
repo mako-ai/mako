@@ -184,13 +184,33 @@ export async function deleteProject(project: IAppProjectV2): Promise<void> {
 // Worktree + session materialization
 // ---------------------------------------------------------------------------
 
+/** Branch a chat conversation's worktree lives on (Cursor-cloud model). */
+export function chatBranchFor(chatId: string): string {
+  return `chat/${chatId}`;
+}
+
+/** Actor id for a chat conversation (worktree `userId` holds actor ids). */
+export function chatActorFor(chatId: string): string {
+  return `chat:${chatId}`;
+}
+
 /**
  * Find-or-create the actor's worktree doc and make sure its session working
  * tree exists on disk, restoring base + WIP state when rebuilding.
+ *
+ * `actorId` is a user id for UI/API actors, or `chat:<chatId>` for agent
+ * conversations — each chat works on its own `chat/<chatId>` branch, created
+ * off the default branch head on first touch (pass `options.branch`).
+ *
+ * Resume semantics ("pull latest"): when the worktree is CLEAN and its branch
+ * head moved (e.g. another actor merged), the worktree fast-forwards to the
+ * new head before work continues. Dirty worktrees keep their base — the
+ * commit path surfaces the divergence instead of silently rebasing.
  */
 export async function ensureWorktree(
   project: IAppProjectV2,
-  userId: string,
+  actorId: string,
+  options: { branch?: string } = {},
 ): Promise<WorktreeHandle> {
   const repoDir = repoDirFor(
     project.workspaceId.toString(),
@@ -200,18 +220,33 @@ export async function ensureWorktree(
     throw new Error("Project repository is missing");
   }
 
-  const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
-  if (!head) throw new Error("Project branch is missing");
+  const mainHead = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+  if (!mainHead) throw new Error("Project branch is missing");
+
+  const branch = options.branch ?? DEFAULT_BRANCH;
+  let branchHead = await resolveCommit(repoDir, `refs/heads/${branch}`);
+  if (!branchHead) {
+    // First touch of an actor branch: fork it off the default branch head.
+    // CAS-create; a concurrent creator winning is fine (re-resolve).
+    await updateRefCas(repoDir, `refs/heads/${branch}`, mainHead, ZERO_OID);
+    branchHead = await resolveCommit(repoDir, `refs/heads/${branch}`);
+    if (!branchHead) throw new Error(`Failed to create branch ${branch}`);
+    logger.info("Apps v2 actor branch created", {
+      projectId: project._id.toString(),
+      branch,
+    });
+  }
+
   // Atomic find-or-create: the agent routinely fires tool calls in parallel
   // right after app creation, so a findOne+create pair races itself into
   // E11000 on the (projectId, userId) unique index.
   const doc = await AppWorktreeV2.findOneAndUpdate(
-    { projectId: project._id, userId },
+    { projectId: project._id, userId: actorId },
     {
       $setOnInsert: {
         workspaceId: project.workspaceId,
-        branch: DEFAULT_BRANCH,
-        baseSha: head,
+        branch,
+        baseSha: branchHead,
         revision: 0,
         leaseEpoch: 1,
       },
@@ -228,8 +263,28 @@ export async function ensureWorktree(
       await doc.save();
     }
 
+    // Fast-forward a clean worktree whose branch moved underneath it
+    // (resume-after-merge / another device committed).
+    const currentHead = await resolveCommit(
+      repoDir,
+      `refs/heads/${doc.branch}`,
+    );
+    let needsRematerialize = false;
+    if (currentHead && currentHead !== doc.baseSha && !doc.wipOid) {
+      doc.baseSha = currentHead;
+      doc.revision += 1;
+      await doc.save();
+      needsRematerialize = true;
+      logger.info("Apps v2 worktree fast-forwarded", {
+        worktreeId,
+        branch: doc.branch,
+        head: currentHead,
+      });
+    }
+
     const sessionDir = sessionDirFor(worktreeId);
     const materialized =
+      !needsRematerialize &&
       (await dirExists(path.join(sessionDir, ".git"))) &&
       (await resolveCommit(sessionDir, "HEAD")) !== null;
 
@@ -541,16 +596,19 @@ export interface CommitResult {
   reason?: string;
 }
 
-export async function commitWorktree(
-  handle: WorktreeHandle,
+/**
+ * Commit a worktree's WIP snapshot onto its branch WITHOUT touching the
+ * session directory. Safe to call for worktrees whose sandbox/session is
+ * gone (end-of-turn commits, cleanup jobs): the WIP ref already holds the
+ * durable state, so no filesystem is needed.
+ */
+async function commitFromWip(
+  doc: IAppWorktreeV2,
+  repoDir: string,
   message: string,
   author?: GitAuthor,
 ): Promise<CommitResult> {
-  const { doc, repoDir, sessionDir } = handle;
   const worktreeId = doc._id.toString();
-
-  await flushWorktree(handle);
-
   return withWorktreeLock(worktreeId, async () => {
     if (!doc.wipOid) {
       return { committed: false, reason: "No changes to commit" };
@@ -586,24 +644,259 @@ export async function commitWorktree(
     doc.revision += 1;
     await doc.save();
 
-    // Fast-forward the session clone so subsequent status is clean.
-    try {
-      await runGit(["-C", sessionDir, "fetch", repoDir, commitOid], {
-        timeoutMs: 60_000,
-      });
-      await runGit(["-C", sessionDir, "reset", "--mixed", commitOid]);
-    } catch (error) {
-      // Non-fatal: the session will be re-materialized on next use.
-      logger.warn("Apps v2 session fast-forward failed", {
-        worktreeId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      await fs.rm(sessionDir, { recursive: true, force: true });
-    }
-
     logger.info("Apps v2 worktree committed", { worktreeId, commitOid });
     return { committed: true, commitOid, message };
   });
+}
+
+export async function commitWorktree(
+  handle: WorktreeHandle,
+  message: string,
+  author?: GitAuthor,
+): Promise<CommitResult> {
+  const { doc, repoDir, sessionDir } = handle;
+  const worktreeId = doc._id.toString();
+
+  await flushWorktree(handle);
+  const result = await commitFromWip(doc, repoDir, message, author);
+  if (!result.committed || !result.commitOid) return result;
+
+  // Fast-forward the session clone so subsequent status is clean.
+  try {
+    await runGit(["-C", sessionDir, "fetch", repoDir, result.commitOid], {
+      timeoutMs: 60_000,
+    });
+    await runGit(["-C", sessionDir, "reset", "--mixed", result.commitOid]);
+  } catch (error) {
+    // Non-fatal: the session will be re-materialized on next use.
+    logger.warn("Apps v2 session fast-forward failed", {
+      worktreeId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    await fs.rm(sessionDir, { recursive: true, force: true });
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Chat turn commits (Cursor-cloud model: one branch per conversation, one
+// commit per turn)
+// ---------------------------------------------------------------------------
+
+/**
+ * Commit every dirty worktree owned by a chat conversation. Called from chat
+ * finalization at the end of each agent turn — the app2_* tools flushed after
+ * every mutation, so this only turns the accumulated WIP into a commit on the
+ * conversation's `chat/<chatId>` branch. Never throws (finalization must not
+ * fail a turn); conflicts are logged and left as WIP for the next turn.
+ */
+export async function commitChatTurn(
+  workspaceId: string,
+  chatId: string,
+  turnSummary?: string,
+): Promise<Array<{ projectId: string; commitOid?: string }>> {
+  const results: Array<{ projectId: string; commitOid?: string }> = [];
+  const actorId = chatActorFor(chatId);
+  const worktrees = await AppWorktreeV2.find({
+    workspaceId: new Types.ObjectId(workspaceId),
+    userId: actorId,
+    wipOid: { $exists: true, $ne: null },
+  });
+  if (worktrees.length === 0) return results;
+
+  const message = turnSummary?.trim()
+    ? `Agent turn: ${turnSummary.trim().slice(0, 120)}`
+    : `Agent turn (${new Date().toISOString()})`;
+
+  for (const doc of worktrees) {
+    const projectId = doc.projectId.toString();
+    try {
+      const repoDir = repoDirFor(workspaceId, projectId);
+      const result = await commitFromWip(doc, repoDir, message, {
+        name: "Mako Agent",
+        email: "agent@mako.ai",
+      });
+      results.push({ projectId, commitOid: result.commitOid });
+      // Best-effort session fast-forward so the next turn starts clean.
+      if (result.commitOid) {
+        const sessionDir = sessionDirFor(doc._id.toString());
+        try {
+          await runGit(["-C", sessionDir, "fetch", repoDir, result.commitOid]);
+          await runGit([
+            "-C",
+            sessionDir,
+            "reset",
+            "--mixed",
+            result.commitOid,
+          ]);
+        } catch {
+          await fs.rm(sessionDir, { recursive: true, force: true });
+        }
+      }
+    } catch (error) {
+      logger.warn("Apps v2 chat turn commit failed", {
+        chatId,
+        projectId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      results.push({ projectId });
+    }
+  }
+  logger.info("Apps v2 chat turn committed", {
+    chatId,
+    projects: results.length,
+  });
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Branches (list + merge to main)
+// ---------------------------------------------------------------------------
+
+export interface BranchInfo {
+  name: string;
+  head: string;
+  isDefault: boolean;
+  /** Commits ahead of the default branch (0 for the default itself). */
+  aheadOfMain: number;
+  lastCommit?: { subject: string; author: string; timestamp: number };
+}
+
+export async function listBranches(
+  project: IAppProjectV2,
+): Promise<BranchInfo[]> {
+  const repoDir = repoDirFor(
+    project.workspaceId.toString(),
+    project._id.toString(),
+  );
+  const { stdout } = await runGit([
+    "-C",
+    repoDir,
+    "for-each-ref",
+    "--format=%(refname:short)%00%(objectname)%00%(subject)%00%(authorname)%00%(authordate:unix)",
+    "refs/heads/",
+  ]);
+  const defaultBranch = project.defaultBranch || DEFAULT_BRANCH;
+  const branches: BranchInfo[] = [];
+  for (const line of stdout.split("\n").filter(Boolean)) {
+    const [name, head, subject, author, at] = line.split("\0");
+    let aheadOfMain = 0;
+    if (name !== defaultBranch) {
+      try {
+        const { stdout: count } = await runGit([
+          "-C",
+          repoDir,
+          "rev-list",
+          "--count",
+          `refs/heads/${defaultBranch}..refs/heads/${name}`,
+        ]);
+        aheadOfMain = Number(count.trim()) || 0;
+      } catch {
+        aheadOfMain = 0;
+      }
+    }
+    branches.push({
+      name,
+      head,
+      isDefault: name === defaultBranch,
+      aheadOfMain,
+      lastCommit: subject
+        ? { subject, author, timestamp: Number(at) * 1000 }
+        : undefined,
+    });
+  }
+  // Default branch first, then most recently committed.
+  branches.sort((a, b) => {
+    if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
+    return (b.lastCommit?.timestamp ?? 0) - (a.lastCommit?.timestamp ?? 0);
+  });
+  return branches;
+}
+
+export interface MergeResult {
+  merged: boolean;
+  commitOid?: string;
+  fastForward?: boolean;
+  reason?: string;
+}
+
+/**
+ * Merge a branch into the default branch, broker-side. Fast-forwards when
+ * possible; otherwise builds a real merge commit with `git merge-tree`
+ * (content-level three-way merge, no working tree needed). Conflicts abort
+ * with a structured error — v0 has no in-product conflict resolution.
+ */
+export async function mergeBranchToMain(
+  project: IAppProjectV2,
+  branch: string,
+  author?: GitAuthor,
+): Promise<MergeResult> {
+  const repoDir = repoDirFor(
+    project.workspaceId.toString(),
+    project._id.toString(),
+  );
+  const defaultBranch = project.defaultBranch || DEFAULT_BRANCH;
+  if (branch === defaultBranch) {
+    return {
+      merged: false,
+      reason: "Cannot merge the default branch into itself",
+    };
+  }
+  const mainRef = `refs/heads/${defaultBranch}`;
+  const branchHead = await resolveCommit(repoDir, `refs/heads/${branch}`);
+  const mainHead = await resolveCommit(repoDir, mainRef);
+  if (!branchHead || !mainHead) {
+    return { merged: false, reason: "Branch not found" };
+  }
+  if (branchHead === mainHead) {
+    return { merged: false, reason: "Already up to date" };
+  }
+
+  // Fast-forward when main is an ancestor of the branch.
+  try {
+    await runGit([
+      "-C",
+      repoDir,
+      "merge-base",
+      "--is-ancestor",
+      mainHead,
+      branchHead,
+    ]);
+    const swapped = await updateRefCas(repoDir, mainRef, branchHead, mainHead);
+    if (!swapped) {
+      throw new WorktreeConflictError("Main advanced concurrently; retry.");
+    }
+    return { merged: true, commitOid: branchHead, fastForward: true };
+  } catch (error) {
+    if (error instanceof WorktreeConflictError) throw error;
+    // Not an ancestor — fall through to a real merge.
+  }
+
+  const { stdout: mergeOut } = await runGit(
+    ["-C", repoDir, "merge-tree", "--write-tree", mainHead, branchHead],
+    // merge-tree exits 1 on conflicts; treat that as a structured failure.
+  ).catch((e: unknown) => {
+    throw new WorktreeConflictError(
+      `Merge of ${branch} into ${defaultBranch} has conflicts — resolve them locally (clone the repo) or discard one side. ${e instanceof Error ? "" : ""}`.trim(),
+    );
+  });
+  const mergedTree = mergeOut.trim().split("\n")[0];
+  const commitOid = await commitTree(repoDir, {
+    treeOid: mergedTree,
+    parents: [mainHead, branchHead],
+    message: `Merge ${branch} into ${defaultBranch}`,
+    author,
+  });
+  const swapped = await updateRefCas(repoDir, mainRef, commitOid, mainHead);
+  if (!swapped) {
+    throw new WorktreeConflictError("Main advanced concurrently; retry.");
+  }
+  logger.info("Apps v2 branch merged", {
+    projectId: project._id.toString(),
+    branch,
+    commitOid,
+  });
+  return { merged: true, commitOid, fastForward: false };
 }
 
 /** Throw away all uncommitted work and re-base the worktree on branch head. */

@@ -201,6 +201,8 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "app2_edit_file",
   "app2_status",
   "app2_commit",
+  "app2_list_branches",
+  "app2_merge_to_main",
   // Client app tools
   "list_open_apps",
   "open_app",
