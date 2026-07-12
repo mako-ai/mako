@@ -25,6 +25,8 @@ export function useAppV2Status() {
 
   return {
     enabled: availability?.enabled === true,
+    sandboxAvailable: availability?.sandboxAvailable === true,
+    sandboxProvider: availability?.sandboxProvider ?? "off",
     loading: availability?.loading === true,
     error: availability?.error ?? null,
     retry,

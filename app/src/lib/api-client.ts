@@ -122,6 +122,16 @@ class ApiClient {
     });
   }
 
+  async getWithStatus<T>(
+    path: string,
+    options?: {
+      signal?: AbortSignal;
+      alsoOk?: number[];
+    },
+  ): Promise<{ status: number; body: T }> {
+    return this.requestWithStatus<T>(path, "GET", undefined, options);
+  }
+
   /**
    * POST request
    */
@@ -150,46 +160,7 @@ class ApiClient {
       alsoOk?: number[];
     },
   ): Promise<{ status: number; body: T }> {
-    const alsoOk = new Set(options?.alsoOk ?? [400, 403]);
-    const url = this.buildUrl(path);
-    const workspaceId = this.getActiveWorkspaceId();
-    const workspaceHeaders: Record<string, string> = {};
-    if (workspaceId) {
-      workspaceHeaders["x-workspace-id"] = workspaceId;
-    }
-
-    const response = await fetch(url, {
-      method: "POST",
-      body: data ? JSON.stringify(data) : undefined,
-      signal: options?.signal,
-      headers: {
-        "Content-Type": "application/json",
-        ...workspaceHeaders,
-      },
-      credentials: "include",
-    });
-
-    if (response.status === 401) {
-      void handleUnauthorized();
-      throw new Error("Unauthorized");
-    }
-
-    const text = await response.text();
-    let body: T = {} as T;
-    if (text) {
-      try {
-        body = JSON.parse(text) as T;
-      } catch {
-        body = text as unknown as T;
-      }
-    }
-
-    if (response.ok || alsoOk.has(response.status)) {
-      return { status: response.status, body };
-    }
-
-    const errBody = body as { error?: string };
-    throw new Error(errBody?.error || `HTTP error! status: ${response.status}`);
+    return this.requestWithStatus<T>(path, "POST", data, options);
   }
 
   /**
@@ -272,6 +243,16 @@ class ApiClient {
     return this.request<T>(path, { method: "DELETE", signal: options?.signal });
   }
 
+  async deleteWithStatus<T>(
+    path: string,
+    options?: {
+      signal?: AbortSignal;
+      alsoOk?: number[];
+    },
+  ): Promise<{ status: number; body: T }> {
+    return this.requestWithStatus<T>(path, "DELETE", undefined, options);
+  }
+
   /**
    * PATCH request
    */
@@ -280,6 +261,55 @@ class ApiClient {
       method: "PATCH",
       body: data ? JSON.stringify(data) : undefined,
     });
+  }
+
+  private async requestWithStatus<T>(
+    path: string,
+    method: "GET" | "POST" | "DELETE",
+    data?: unknown,
+    options?: {
+      signal?: AbortSignal;
+      alsoOk?: number[];
+    },
+  ): Promise<{ status: number; body: T }> {
+    const alsoOk = new Set(options?.alsoOk ?? [400, 403]);
+    const url = this.buildUrl(path);
+    const workspaceId = this.getActiveWorkspaceId();
+    const workspaceHeaders: Record<string, string> = {};
+    if (workspaceId) {
+      workspaceHeaders["x-workspace-id"] = workspaceId;
+    }
+    const response = await fetch(url, {
+      method,
+      body: data ? JSON.stringify(data) : undefined,
+      signal: options?.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...workspaceHeaders,
+      },
+      credentials: "include",
+    });
+    if (response.status === 401) {
+      void handleUnauthorized();
+      throw new ApiError("Unauthorized", 401);
+    }
+    const text = await response.text();
+    let body: T = {} as T;
+    if (text) {
+      try {
+        body = JSON.parse(text) as T;
+      } catch {
+        body = text as unknown as T;
+      }
+    }
+    if (response.ok || alsoOk.has(response.status)) {
+      return { status: response.status, body };
+    }
+    const errBody = body as { error?: string };
+    throw new ApiError(
+      errBody?.error || `HTTP error! status: ${response.status}`,
+      response.status,
+    );
   }
 }
 

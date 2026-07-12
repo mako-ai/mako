@@ -7,6 +7,10 @@ import type {
 } from "../database/workspace-schema";
 import type { AuthEnv } from "../openapi/core";
 
+const calls = vi.hoisted(() => ({
+  installedPackages: [] as string[],
+}));
+
 vi.mock("../auth/unified-auth.middleware", () => ({
   unifiedAuthMiddleware: async (
     c: { set: (key: string, value: unknown) => void },
@@ -141,6 +145,27 @@ vi.mock("./session.service", () => ({
         },
       };
     }
+    async install(
+      _project: unknown,
+      _worktree: unknown,
+      _actor: unknown,
+      request: { packages: string[] },
+    ) {
+      calls.installedPackages = [...request.packages];
+      return {
+        exitCode: 0,
+        stdout: "installed",
+        stderr: "",
+        timedOut: false,
+        cancelled: false,
+        outputTruncated: false,
+        excludedPaths: ["node_modules"],
+        durability: {
+          status: "durable",
+          revision: { wipOid: "c".repeat(40), revision: 2 },
+        },
+      };
+    }
     async pause() {
       return {
         session: { ...session, status: "paused" },
@@ -171,7 +196,15 @@ describe("Apps v2 session routes", () => {
     app.route("/api/workspaces/:workspaceId/apps-v2", appsV2Routes);
   });
 
-  it("wires ensure, get, finite exec, flush, pause, and destroy", async () => {
+  it("wires ensure, get, finite exec, install, flush, pause, and destroy", async () => {
+    const status = await app.request(
+      `/api/workspaces/${workspaceId.toString()}/apps-v2/status`,
+    );
+    expect(await status.json()).toEqual({
+      enabled: true,
+      sandboxAvailable: true,
+      sandboxProvider: "e2b",
+    });
     expect((await app.request(base, { method: "POST" })).status).toBe(200);
     expect((await app.request(base)).status).toBe(200);
 
@@ -193,6 +226,27 @@ describe("Apps v2 session routes", () => {
       },
     });
 
+    const installation = await app.request(`${base}/install`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        packages: ["react@^18.3.1", "@scope/pkg@latest"],
+      }),
+    });
+    expect(installation.status).toBe(200);
+    expect(calls.installedPackages).toEqual([
+      "react@^18.3.1",
+      "@scope/pkg@latest",
+    ]);
+    expect(await installation.json()).toMatchObject({
+      success: true,
+      result: {
+        stdout: "installed",
+        excludedPaths: ["node_modules"],
+        durability: { status: "durable" },
+      },
+    });
+
     expect(
       (await app.request(`${base}/flush`, { method: "POST" })).status,
     ).toBe(200);
@@ -206,5 +260,20 @@ describe("Apps v2 session routes", () => {
       session: { status: "destroyed" },
       worktree: { leaseEpoch: 2 },
     });
+  });
+
+  it("rejects non-registry specs and arbitrary install controls", async () => {
+    for (const body of [
+      { packages: ["file:../private-package"] },
+      { packages: ["react"], networkPhase: "allow-all" },
+      { packages: [] },
+    ]) {
+      const response = await app.request(`${base}/install`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+    }
   });
 });

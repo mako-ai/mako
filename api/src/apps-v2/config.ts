@@ -14,7 +14,10 @@ export const APP_V2_SESSION_MAX_ARG_CHARACTERS = 8_192;
 export const APP_V2_SESSION_DEFAULT_TIMEOUT_MS = 60_000;
 export const APP_V2_SESSION_MAX_TIMEOUT_MS = 10 * 60 * 1_000;
 export const APP_V2_SESSION_MAX_OUTPUT_BYTES = 1024 * 1024;
+export const APP_V2_SESSION_CONTROL_PLANE_TIMEOUT_MS = 60_000;
 export const APP_V2_SESSION_OPERATION_LEASE_MS = 15 * 60 * 1_000;
+export const APP_V2_SESSION_MAX_PACKAGE_COUNT = 32;
+export const APP_V2_SESSION_MAX_PACKAGE_SPEC_CHARACTERS = 256;
 
 export function isAppsV2Enabled(): boolean {
   return process.env.APPS_V2_ENABLED === "true";

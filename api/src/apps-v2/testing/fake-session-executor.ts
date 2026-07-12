@@ -7,6 +7,7 @@ import type {
   SessionExecResult,
   SessionExecutor,
   SessionFlushResult,
+  SessionInstallRequest,
   SessionPrepareOptions,
   SessionRecoveryIntent,
   SessionRecoveryState,
@@ -21,9 +22,14 @@ export class FakeSessionExecutor implements SessionExecutor {
     target: SessionExecutionTarget;
     request: SessionExecRequest;
   }> = [];
+  readonly installs: Array<{
+    target: SessionExecutionTarget;
+    request: SessionInstallRequest;
+  }> = [];
   readonly killed: SessionExecutionTarget[] = [];
   readonly paused: SessionExecutionTarget[] = [];
   readonly flushed: SessionExecutionTarget[] = [];
+  readonly recovered: SessionExecutionTarget[] = [];
   readonly cleanedReservations: ProvisioningReservation[] = [];
   readonly statuses = new Map<string, SandboxStatus>();
   readonly recoveryRefs = new Map<string, string>();
@@ -71,8 +77,43 @@ export class FakeSessionExecutor implements SessionExecutor {
     );
   }
 
+  async install(
+    target: SessionExecutionTarget,
+    request: SessionInstallRequest,
+  ): Promise<SessionExecResult> {
+    this.installs.push({ target, request });
+    return (
+      this.nextResult ?? {
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        timedOut: false,
+        cancelled: false,
+        outputTruncated: false,
+        excludedPaths: [],
+        durability: {
+          status: "durable",
+          revision: target.durableRevision,
+        },
+      }
+    );
+  }
+
   async flush(target: SessionExecutionTarget): Promise<SessionFlushResult> {
     this.flushed.push(target);
+    return (
+      this.nextFlush ?? {
+        excludedPaths: [],
+        durability: {
+          status: "durable",
+          revision: target.durableRevision,
+        },
+      }
+    );
+  }
+
+  async recover(target: SessionExecutionTarget): Promise<SessionFlushResult> {
+    this.recovered.push(target);
     return (
       this.nextFlush ?? {
         excludedPaths: [],

@@ -3253,6 +3253,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/session/flush": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Flush the actor's Apps v2 sandbox session to durable WIP */
+        post: operations["post_api_workspaces_workspaceId_apps_v2_projectId_session_flush"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/apps-v2/status": {
         parameters: {
             query?: never;
@@ -3335,6 +3352,76 @@ export interface paths {
         put?: never;
         /** Rotate the actor worktree fencing lease */
         post: operations["post_api_workspaces_workspaceId_apps_v2_projectId_worktree_lease"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get the actor's Apps v2 sandbox session */
+        get: operations["get_api_workspaces_workspaceId_apps_v2_projectId_session"];
+        put?: never;
+        /** Ensure the actor's Apps v2 sandbox session */
+        post: operations["post_api_workspaces_workspaceId_apps_v2_projectId_session"];
+        /** Destroy and fence the actor's Apps v2 sandbox session */
+        delete: operations["delete_api_workspaces_workspaceId_apps_v2_projectId_session"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/session/exec": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run a finite argv command in an Apps v2 sandbox session */
+        post: operations["post_api_workspaces_workspaceId_apps_v2_projectId_session_exec"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/session/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Install npm registry packages in an Apps v2 sandbox session */
+        post: operations["post_api_workspaces_workspaceId_apps_v2_projectId_session_install"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/session/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pause the actor's Apps v2 sandbox session */
+        post: operations["post_api_workspaces_workspaceId_apps_v2_projectId_session_pause"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4521,8 +4608,76 @@ export interface components {
             updatedAt?: string;
             readOnly?: boolean;
         };
+        AppV2SessionLifecycleResponse: {
+            success: boolean;
+            error?: string;
+            session: components["schemas"]["AppV2Session"];
+            worktree: components["schemas"]["AppV2Worktree"];
+            flush: {
+                excludedPaths: string[];
+                durability: {
+                    /** @enum {string} */
+                    status: "durable";
+                    revision: {
+                        wipOid: string;
+                        revision: number;
+                    };
+                } | {
+                    /** @enum {string} */
+                    status: "conflict";
+                    recoveryRef: string;
+                };
+            };
+        };
+        AppV2Session: {
+            id?: string;
+            worktreeId: string;
+            provider: string;
+            sandboxId: string;
+            generation: number;
+            leaseEpoch: number;
+            appliedWipOid: string;
+            recoveryRef?: string;
+            /** @enum {string} */
+            status: "active" | "paused" | "unsynced" | "conflict" | "provisioning" | "revoked" | "destroyed" | "error";
+            /** Format: date-time */
+            lastActiveAt?: string;
+        };
+        AppV2Worktree: {
+            id: string;
+            projectId: string;
+            actorId: string;
+            branch: string;
+            baseSha: string;
+            wipOid: string;
+            revision: number;
+            leaseEpoch: number;
+            /** @enum {string} */
+            status: "active" | "discarded" | "fenced";
+            /** Format: date-time */
+            createdAt?: string;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        AppV2SessionConflictResponse: {
+            /** @enum {boolean} */
+            success: false;
+            error: string;
+            retryable?: boolean;
+            recoveryRef?: string;
+        };
+        AppV2ProviderUnavailableResponse: {
+            /** @enum {boolean} */
+            success: false;
+            error: string;
+            /** @enum {string} */
+            code: "provider_unavailable";
+        };
         AppV2StatusResponse: {
             enabled: boolean;
+            sandboxAvailable: boolean;
+            /** @enum {string} */
+            sandboxProvider: "e2b" | "off";
         };
         AppV2ProjectListResponse: {
             /** @enum {boolean} */
@@ -4573,21 +4728,46 @@ export interface components {
             success: true;
             worktree: components["schemas"]["AppV2Worktree"];
         };
-        AppV2Worktree: {
-            id: string;
-            projectId: string;
-            actorId: string;
-            branch: string;
-            baseSha: string;
-            wipOid: string;
-            revision: number;
-            leaseEpoch: number;
-            /** @enum {string} */
-            status: "active" | "discarded" | "fenced";
-            /** Format: date-time */
-            createdAt?: string;
-            /** Format: date-time */
-            updatedAt?: string;
+        AppV2SessionResponse: {
+            /** @enum {boolean} */
+            success: true;
+            session: components["schemas"]["AppV2Session"];
+            worktree?: components["schemas"]["AppV2Worktree"];
+        };
+        AppV2SessionExecResponse: {
+            success: boolean;
+            error?: string;
+            result: {
+                exitCode: number | null;
+                stdout: string;
+                stderr: string;
+                timedOut: boolean;
+                cancelled: boolean;
+                outputTruncated: boolean;
+                excludedPaths: string[];
+                durability: {
+                    /** @enum {string} */
+                    status: "durable";
+                    revision: {
+                        wipOid: string;
+                        revision: number;
+                    };
+                } | {
+                    /** @enum {string} */
+                    status: "conflict";
+                    recoveryRef: string;
+                };
+            };
+        };
+        AppV2SessionExec: {
+            argv: string[];
+            /** @default  */
+            cwd: string;
+            /** @default 60000 */
+            timeoutMs: number;
+        };
+        AppV2SessionInstall: {
+            packages: string[];
         };
         AppV2TreeResponse: {
             /** @enum {boolean} */
@@ -15698,6 +15878,47 @@ export interface operations {
             };
         };
     };
+    post_api_workspaces_workspaceId_apps_v2_projectId_session_flush: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Durable sandbox session flush */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppV2SessionLifecycleResponse"];
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     get_api_workspaces_workspaceId_apps_v2_status: {
         parameters: {
             query?: never;
@@ -16026,6 +16247,260 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AppV2WorktreeResponse"];
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_v2_projectId_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Apps v2 sandbox session */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppV2SessionResponse"];
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_apps_v2_projectId_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Apps v2 sandbox session */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppV2SessionResponse"];
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    delete_api_workspaces_workspaceId_apps_v2_projectId_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Destroyed sandbox session */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppV2SessionLifecycleResponse"];
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_apps_v2_projectId_session_exec: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AppV2SessionExec"];
+            };
+        };
+        responses: {
+            /** @description Finite command result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppV2SessionExecResponse"];
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_apps_v2_projectId_session_install: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AppV2SessionInstall"];
+            };
+        };
+        responses: {
+            /** @description Finite package installation result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppV2SessionExecResponse"];
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_apps_v2_projectId_session_pause: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Paused sandbox session */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppV2SessionLifecycleResponse"];
                 };
             };
             /** @description Invalid request */

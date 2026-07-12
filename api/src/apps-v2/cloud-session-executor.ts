@@ -6,6 +6,7 @@ import { AppV2ProjectService, type AppV2Actor } from "./app-project.service";
 import {
   APP_V2_SESSION_MAX_ARG_CHARACTERS,
   APP_V2_SESSION_MAX_ARG_COUNT,
+  APP_V2_SESSION_CONTROL_PLANE_TIMEOUT_MS,
   APP_V2_SESSION_MAX_OUTPUT_BYTES,
   APP_V2_SESSION_MAX_TIMEOUT_MS,
 } from "./config";
@@ -15,6 +16,7 @@ import {
   AppV2ValidationError,
 } from "./errors";
 import { isAppV2SessionFileEligible } from "./session-files";
+import { validateAppV2PackageSpecs } from "./package-spec";
 import { APP_V2_MAX_PATH_SEGMENTS } from "./path-validation";
 import type {
   PreparedSession,
@@ -24,11 +26,13 @@ import type {
   SessionExecResult,
   SessionExecutor,
   SessionFlushResult,
+  SessionInstallRequest,
   SessionPrepareOptions,
   SessionRecoveryIntent,
   SessionRecoveryState,
 } from "./session-executor";
 import type {
+  AppV2NetworkPhase,
   SandboxFile,
   SandboxProvider,
   SandboxStatus,
@@ -40,11 +44,15 @@ interface LoadedWorktree {
   worktree: IAppV2Worktree;
 }
 
+const ZERO_OID = "0".repeat(40);
+
 export class CloudSessionExecutor implements SessionExecutor {
   constructor(
     private readonly sandboxes: SandboxProvider,
     private readonly projects = new AppV2ProjectService(),
     private readonly worktrees = new AppV2WorktreeService(projects),
+    private readonly installTimeoutMs = APP_V2_SESSION_MAX_TIMEOUT_MS,
+    private readonly controlPlaneTimeoutMs = APP_V2_SESSION_CONTROL_PLANE_TIMEOUT_MS,
   ) {}
 
   async prepare(
@@ -100,19 +108,46 @@ export class CloudSessionExecutor implements SessionExecutor {
     this.validateExecRequest(request);
     const loaded = await this.load(target);
     this.assertRevision(target, loaded.worktree);
-    if (target.appliedWipOid !== target.durableRevision.wipOid) {
-      await this.sandboxes.materializeFiles(
-        target.sandboxId,
-        await this.readRevision(loaded),
-        request.signal,
-      );
-    }
+    await this.applyCurrentRevision(target, loaded, request.signal);
+    return this.executeAndFlush(target, loaded, request, "deny-all");
+  }
+
+  async install(
+    target: SessionExecutionTarget,
+    request: SessionInstallRequest,
+  ): Promise<SessionExecResult> {
+    validateAppV2PackageSpecs(request.packages);
+    const loaded = await this.load(target);
+    this.assertRevision(target, loaded.worktree);
+    await this.applyCurrentRevision(target, loaded, request.signal);
+    return this.executeAndFlush(
+      target,
+      loaded,
+      {
+        argv: ["pnpm", "add", "--save-exact", ...request.packages],
+        cwd: "/workspace",
+        timeoutMs: Math.min(
+          this.installTimeoutMs,
+          APP_V2_SESSION_MAX_TIMEOUT_MS,
+        ),
+        signal: request.signal,
+      },
+      "install",
+    );
+  }
+
+  private async executeAndFlush(
+    target: SessionExecutionTarget,
+    loaded: LoadedWorktree,
+    request: SessionExecRequest,
+    networkPhase: AppV2NetworkPhase,
+  ): Promise<SessionExecResult> {
     let execution: Awaited<ReturnType<SandboxProvider["exec"]>> | undefined;
     let failure: unknown;
     try {
       await this.sandboxes.setNetworkPhase(
         target.sandboxId,
-        "deny-all",
+        networkPhase,
         request.signal,
       );
       execution = await this.sandboxes.exec(target.sandboxId, {
@@ -123,23 +158,60 @@ export class CloudSessionExecutor implements SessionExecutor {
         signal: request.signal,
       });
     } catch (error) {
-      failure = error;
-    } finally {
-      try {
-        await this.sandboxes.setNetworkPhase(target.sandboxId, "deny-all");
-      } catch (error) {
-        failure ??= error;
-      }
-      try {
-        await this.quiesceAndAssert(target.sandboxId);
-      } catch (error) {
-        failure ??= error;
+      if (request.signal?.aborted) {
+        execution = {
+          exitCode: null,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          cancelled: true,
+          outputTruncated: false,
+        };
+      } else {
+        failure = error;
       }
     }
-    if (failure) throw failure;
-    if (!execution) throw new Error("Sandbox command returned no result");
-    const flush = await this.captureAndFlush(target, loaded, request.signal);
-    return { ...execution, ...flush };
+    const controlPlane = this.controlPlaneScope();
+    try {
+      try {
+        await this.sandboxes.setNetworkPhase(
+          target.sandboxId,
+          "deny-all",
+          controlPlane.signal,
+        );
+      } catch (error) {
+        failure ??= error;
+      }
+      try {
+        await this.quiesceAndAssert(target.sandboxId, controlPlane.signal);
+      } catch (error) {
+        failure ??= error;
+      }
+      if (failure) throw failure;
+      if (!execution) throw new Error("Sandbox command returned no result");
+      const flush = await this.captureAndFlush(
+        target,
+        loaded,
+        controlPlane.signal,
+      );
+      return { ...execution, ...flush };
+    } finally {
+      controlPlane.dispose();
+    }
+  }
+
+  private async applyCurrentRevision(
+    target: SessionExecutionTarget,
+    loaded: LoadedWorktree,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (target.appliedWipOid !== target.durableRevision.wipOid) {
+      await this.sandboxes.materializeFiles(
+        target.sandboxId,
+        await this.readRevision(loaded),
+        signal,
+      );
+    }
   }
 
   async flush(
@@ -151,6 +223,46 @@ export class CloudSessionExecutor implements SessionExecutor {
     await this.sandboxes.setNetworkPhase(target.sandboxId, "deny-all", signal);
     await this.quiesceAndAssert(target.sandboxId, signal);
     return this.captureAndFlush(target, loaded, signal);
+  }
+
+  async recover(
+    target: SessionExecutionTarget,
+    operationSignal?: AbortSignal,
+  ): Promise<SessionFlushResult> {
+    const loaded = await this.load(target);
+    const recoveryWorktree = {
+      ...(typeof loaded.worktree.toObject === "function"
+        ? loaded.worktree.toObject()
+        : loaded.worktree),
+      wipOid: target.durableRevision.wipOid,
+      revision: target.durableRevision.revision,
+      leaseEpoch: target.leaseEpoch,
+      leaseOid:
+        loaded.worktree.leaseEpoch === target.leaseEpoch &&
+        loaded.worktree.revision === target.durableRevision.revision &&
+        loaded.worktree.wipOid === target.durableRevision.wipOid
+          ? loaded.worktree.leaseOid
+          : ZERO_OID,
+    } as IAppV2Worktree;
+    const controlPlane = this.controlPlaneScope();
+    const signal = operationSignal
+      ? AbortSignal.any([operationSignal, controlPlane.signal])
+      : controlPlane.signal;
+    try {
+      await this.sandboxes.setNetworkPhase(
+        target.sandboxId,
+        "deny-all",
+        signal,
+      );
+      await this.quiesceAndAssert(target.sandboxId, signal);
+      return await this.captureAndFlush(
+        target,
+        { project: loaded.project, worktree: recoveryWorktree },
+        signal,
+      );
+    } finally {
+      controlPlane.dispose();
+    }
   }
 
   private async captureAndFlush(
@@ -171,6 +283,7 @@ export class CloudSessionExecutor implements SessionExecutor {
         ...retainedExcluded.map(file => file.path),
       ]),
     ].sort();
+    signal?.throwIfAborted();
     try {
       const updated = await this.worktrees.replaceTree(
         loaded.project,
@@ -187,6 +300,7 @@ export class CloudSessionExecutor implements SessionExecutor {
         })),
         target.recoveryId,
       );
+      signal?.throwIfAborted();
       return {
         excludedPaths,
         durability: {
@@ -216,6 +330,23 @@ export class CloudSessionExecutor implements SessionExecutor {
     if ((await this.sandboxes.status(sandboxId, signal)) !== "running") {
       throw new Error("Sandbox failed to reach quiesced controller state");
     }
+  }
+
+  private controlPlaneScope(): {
+    signal: AbortSignal;
+    dispose(): void;
+  } {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort(
+        new Error("Apps v2 post-command durability operation timed out"),
+      );
+    }, this.controlPlaneTimeoutMs);
+    timeout.unref();
+    return {
+      signal: controller.signal,
+      dispose: () => clearTimeout(timeout),
+    };
   }
 
   async pause(

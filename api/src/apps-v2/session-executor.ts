@@ -26,6 +26,11 @@ export interface SessionExecRequest {
   signal?: AbortSignal;
 }
 
+export interface SessionInstallRequest {
+  packages: readonly string[];
+  signal?: AbortSignal;
+}
+
 export type SessionDurabilityResult =
   | {
       status: "durable";
@@ -90,6 +95,14 @@ export interface SessionExecutor {
     target: SessionExecutionTarget,
     request: SessionExecRequest,
   ): Promise<SessionExecResult>;
+  install(
+    target: SessionExecutionTarget,
+    request: SessionInstallRequest,
+  ): Promise<SessionExecResult>;
+  recover(
+    target: SessionExecutionTarget,
+    signal?: AbortSignal,
+  ): Promise<SessionFlushResult>;
   flush(
     target: SessionExecutionTarget,
     signal?: AbortSignal,

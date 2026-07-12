@@ -53,6 +53,10 @@ describe("appV2Store conflict handling", () => {
       filesByKey: { [key]: file },
       editorBuffersByKey: { [key]: buffer },
       statusByProject: {},
+      sessionsByProject: {},
+      sessionCommandsByProject: {},
+      sessionFlushesByProject: {},
+      sessionIssuesByProject: {},
       loadingByKey: {},
       errorsByKey: {},
       conflictsByKey: {},
@@ -239,14 +243,255 @@ describe("appV2Store conflict handling", () => {
     const get = vi
       .spyOn(apiClient, "get")
       .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValueOnce({ enabled: true });
+      .mockResolvedValueOnce({
+        enabled: true,
+        sandboxAvailable: true,
+        sandboxProvider: "e2b",
+      });
 
     expect(
       await useAppV2Store.getState().fetchStatusWithRetry("workspace-1"),
     ).toBe(true);
     expect(
       useAppV2Store.getState().availabilityByWorkspace["workspace-1"],
-    ).toMatchObject({ loaded: true, enabled: true, error: null });
+    ).toMatchObject({
+      loaded: true,
+      enabled: true,
+      sandboxAvailable: true,
+      sandboxProvider: "e2b",
+      error: null,
+    });
     expect(get).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("appV2Store sandbox session API", () => {
+  const session = {
+    worktreeId: worktree.id,
+    provider: "e2b",
+    sandboxId: "sandbox-1",
+    generation: 1,
+    leaseEpoch: worktree.leaseEpoch,
+    appliedWipOid: worktree.wipOid,
+    status: "active" as const,
+    lastActiveAt: "2026-01-01T00:00:00.000Z",
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    useAppV2Store.setState({
+      availabilityByWorkspace: {
+        "workspace-1": {
+          enabled: true,
+          sandboxAvailable: true,
+          sandboxProvider: "e2b",
+          loaded: true,
+          loading: false,
+          error: null,
+        },
+      },
+      projectsByWorkspace: {},
+      projectsById: {},
+      worktreesByProject: { [worktree.projectId]: worktree },
+      treesByProject: {},
+      filesByKey: {},
+      editorBuffersByKey: {},
+      statusByProject: {},
+      sessionsByProject: {},
+      sessionCommandsByProject: {},
+      sessionFlushesByProject: {},
+      sessionIssuesByProject: {},
+      loadingByKey: {},
+      errorsByKey: {},
+      conflictsByKey: {},
+    });
+  });
+
+  it("gates session creation when the provider is unavailable", async () => {
+    useAppV2Store.setState(state => ({
+      availabilityByWorkspace: {
+        ...state.availabilityByWorkspace,
+        "workspace-1": {
+          ...state.availabilityByWorkspace["workspace-1"],
+          sandboxAvailable: false,
+          sandboxProvider: "off",
+        },
+      },
+    }));
+    const post = vi.spyOn(apiClient, "postWithStatus");
+
+    expect(
+      await useAppV2Store
+        .getState()
+        .ensureSession("workspace-1", worktree.projectId),
+    ).toBeNull();
+    expect(post).not.toHaveBeenCalled();
+    expect(
+      useAppV2Store.getState().sessionIssuesByProject[worktree.projectId],
+    ).toMatchObject({ kind: "provider_unavailable" });
+  });
+
+  it("ensures and reads the actor session through apiClient", async () => {
+    const post = vi.spyOn(apiClient, "postWithStatus").mockResolvedValue({
+      status: 200,
+      body: { success: true, session, worktree },
+    });
+    const get = vi.spyOn(apiClient, "getWithStatus").mockResolvedValue({
+      status: 200,
+      body: { success: true, session },
+    });
+
+    expect(
+      await useAppV2Store
+        .getState()
+        .ensureSession("workspace-1", worktree.projectId),
+    ).toEqual(session);
+    expect(post).toHaveBeenCalledWith(
+      "/workspaces/workspace-1/apps-v2/project-1/session",
+      undefined,
+      { alsoOk: [409, 503] },
+    );
+    expect(
+      await useAppV2Store
+        .getState()
+        .getSession("workspace-1", worktree.projectId),
+    ).toEqual(session);
+    expect(get).toHaveBeenCalledWith(
+      "/workspaces/workspace-1/apps-v2/project-1/session",
+      { alsoOk: [404, 409, 503] },
+    );
+  });
+
+  it("sends finite argv and surfaces command output and durability", async () => {
+    const result = {
+      exitCode: 7,
+      stdout: "stdout",
+      stderr: "stderr",
+      timedOut: false,
+      cancelled: false,
+      outputTruncated: false,
+      excludedPaths: ["node_modules"],
+      durability: {
+        status: "durable" as const,
+        revision: { wipOid: "d".repeat(40), revision: 8 },
+      },
+    };
+    const post = vi.spyOn(apiClient, "postWithStatus").mockResolvedValue({
+      status: 200,
+      body: { success: true, result },
+    });
+    vi.spyOn(apiClient, "get").mockImplementation(async path => {
+      if (path.endsWith("/worktree")) {
+        return { success: true, worktree: { ...worktree, revision: 8 } };
+      }
+      if (path.endsWith("/tree")) {
+        return { success: true, worktree, entries: [] };
+      }
+      return { success: true, worktree, clean: false, changes: [] };
+    });
+    const argv = ["printf", "%s", "$(touch /tmp/not-run)", "semi;colon"];
+
+    expect(
+      await useAppV2Store
+        .getState()
+        .execSession("workspace-1", worktree.projectId, argv),
+    ).toEqual({ ...result, operation: "exec" });
+    expect(post).toHaveBeenCalledWith(
+      "/workspaces/workspace-1/apps-v2/project-1/session/exec",
+      { argv, cwd: "" },
+      { alsoOk: [409, 503] },
+    );
+    expect(
+      useAppV2Store.getState().sessionCommandsByProject[worktree.projectId],
+    ).toMatchObject({
+      stdout: "stdout",
+      stderr: "stderr",
+      excludedPaths: ["node_modules"],
+      operation: "exec",
+    });
+  });
+
+  it("installs package specs and preserves recovery conflict details", async () => {
+    const recoveryRef = "refs/mako/recovery/worktree-1/install";
+    const result = {
+      exitCode: 0,
+      stdout: "installed",
+      stderr: "",
+      timedOut: false,
+      cancelled: false,
+      outputTruncated: false,
+      excludedPaths: ["node_modules"],
+      durability: { status: "conflict" as const, recoveryRef },
+    };
+    const post = vi.spyOn(apiClient, "postWithStatus").mockResolvedValue({
+      status: 409,
+      body: {
+        success: false,
+        error: "Install flush conflicted",
+        result,
+      },
+    });
+    const packages = ["react@18.3.1", "@scope/pkg@latest"];
+
+    expect(
+      await useAppV2Store
+        .getState()
+        .installPackages("workspace-1", worktree.projectId, packages),
+    ).toEqual({ ...result, operation: "install" });
+    expect(post).toHaveBeenCalledWith(
+      "/workspaces/workspace-1/apps-v2/project-1/session/install",
+      { packages },
+      { alsoOk: [409, 503] },
+    );
+    expect(
+      useAppV2Store.getState().sessionIssuesByProject[worktree.projectId],
+    ).toMatchObject({
+      kind: "conflict",
+      recoveryRef,
+    });
+  });
+
+  it("flushes, pauses, and destroys through finite lifecycle endpoints", async () => {
+    const flush = {
+      excludedPaths: [".env.local"],
+      durability: {
+        status: "durable" as const,
+        revision: { wipOid: worktree.wipOid, revision: worktree.revision },
+      },
+    };
+    const post = vi.spyOn(apiClient, "postWithStatus").mockResolvedValue({
+      status: 200,
+      body: { success: true, session, flush },
+    });
+    const remove = vi.spyOn(apiClient, "deleteWithStatus").mockResolvedValue({
+      status: 200,
+      body: {
+        success: true,
+        session: { ...session, status: "destroyed" },
+        flush,
+      },
+    });
+
+    await useAppV2Store
+      .getState()
+      .flushSession("workspace-1", worktree.projectId);
+    await useAppV2Store
+      .getState()
+      .pauseSession("workspace-1", worktree.projectId);
+    await useAppV2Store
+      .getState()
+      .destroySession("workspace-1", worktree.projectId);
+
+    expect(post.mock.calls.map(call => call[0])).toEqual([
+      "/workspaces/workspace-1/apps-v2/project-1/session/flush",
+      "/workspaces/workspace-1/apps-v2/project-1/session/pause",
+    ]);
+    expect(remove).toHaveBeenCalledWith(
+      "/workspaces/workspace-1/apps-v2/project-1/session",
+      { alsoOk: [409, 503] },
+    );
+    expect(
+      useAppV2Store.getState().sessionFlushesByProject[worktree.projectId],
+    ).toEqual(flush);
   });
 });

@@ -130,7 +130,11 @@ export class FakeSandboxProvider implements SandboxProvider {
     );
   }
 
-  async captureFiles(sandboxId: string): Promise<SandboxCapture> {
+  async captureFiles(
+    sandboxId: string,
+    signal?: AbortSignal,
+  ): Promise<SandboxCapture> {
+    signal?.throwIfAborted();
     const state = this.requireState(sandboxId);
     if (state.status !== "running" || state.quiesceCount < 1) {
       throw new Error("Sandbox must be quiesced before capture");
@@ -212,13 +216,16 @@ export class FakeSandboxProvider implements SandboxProvider {
   async setNetworkPhase(
     sandboxId: string,
     phase: AppV2NetworkPhase,
+    signal?: AbortSignal,
   ): Promise<void> {
+    signal?.throwIfAborted();
     const state = this.requireState(sandboxId);
     state.networkPhase = phase;
     state.networkPhases.push(phase);
   }
 
-  async quiesce(sandboxId: string): Promise<void> {
+  async quiesce(sandboxId: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     const state = this.requireState(sandboxId);
     for (const timer of state.pendingTenantTimers) clearTimeout(timer);
     state.pendingTenantTimers.clear();

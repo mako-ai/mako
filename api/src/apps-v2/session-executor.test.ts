@@ -82,9 +82,9 @@ class MemoryWorktreeService extends AppV2WorktreeService {
     recoveryId?: string,
   ): Promise<IAppV2Worktree> {
     if (
-      state.ifRevision !== this.current.revision ||
-      state.expectedWipOid !== this.current.wipOid ||
-      state.leaseEpoch !== this.current.leaseEpoch
+      state.ifRevision !== worktree.revision ||
+      state.expectedWipOid !== worktree.wipOid ||
+      state.leaseEpoch !== worktree.leaseEpoch
     ) {
       throw new AppV2ConflictError("Stale in-memory worktree");
     }
@@ -389,8 +389,10 @@ async function run(): Promise<void> {
   let e2bKillCalls = 0;
   let capturedListMetadata: Record<string, string> | undefined;
   let failConformance = false;
-  let recursiveEntries: EntryInfo[] = [];
   const directEntries = new Map<string, EntryInfo[]>();
+  const readContents = new Map<string, Uint8Array>();
+  const listedPaths: string[] = [];
+  const readPaths: string[] = [];
   const e2bClient: E2BSandboxClient = {
     sandboxId: "e2b-fake",
     files: {
@@ -403,12 +405,13 @@ async function run(): Promise<void> {
       },
       async write() {},
       async list(listPath: string, options?: { depth?: number }) {
-        return options?.depth === 100
-          ? recursiveEntries
-          : (directEntries.get(listPath) ?? []);
+        assert.equal(options?.depth, 1);
+        listedPaths.push(listPath);
+        return directEntries.get(listPath) ?? [];
       },
-      async read() {
-        return new Uint8Array();
+      async read(readPath: string) {
+        readPaths.push(readPath);
+        return readContents.get(readPath) ?? new Uint8Array();
       },
     },
     commands: {
@@ -623,21 +626,64 @@ async function run(): Promise<void> {
   const symlink = entry("/workspace/link", {
     symlinkTarget: "/etc/passwd",
   });
-  recursiveEntries = [symlink];
   directEntries.set("/workspace", [symlink]);
   await assert.rejects(e2b.captureFiles("e2b-fake"), /contains a symlink/);
-  recursiveEntries = [
-    entry(`/workspace/${Array.from({ length: 65 }, () => "deep").join("/")}`),
-  ];
-  directEntries.set("/workspace", []);
-  await assert.rejects(e2b.captureFiles("e2b-fake"), /64 segments/);
-  recursiveEntries = [];
-  directEntries.set("/workspace", [entry("/workspace/omitted.ts")]);
-  await assert.rejects(
-    e2b.captureFiles("e2b-fake"),
-    /incomplete or inconsistent/,
+
+  listedPaths.length = 0;
+  readPaths.length = 0;
+  const packageJson = Buffer.from('{"name":"capture-test"}\n');
+  const lockfile = Buffer.from("lockfileVersion: '9.0'\n");
+  const source = Buffer.from("export const captured = true;\n");
+  directEntries.set("/workspace", [
+    entry("/workspace/package.json", { size: packageJson.byteLength }),
+    entry("/workspace/pnpm-lock.yaml", { size: lockfile.byteLength }),
+    entry("/workspace/src", { type: FileType.DIR, mode: 0o040755 }),
+    entry("/workspace/node_modules", {
+      type: FileType.DIR,
+      mode: 0o040755,
+    }),
+    entry("/workspace/dist", { type: FileType.DIR, mode: 0o040755 }),
+    entry("/workspace/.env.local", {
+      symlinkTarget: "/run/secrets/should-never-be-inspected",
+    }),
+  ]);
+  directEntries.set("/workspace/src", [
+    entry("/workspace/src/index.ts", { size: source.byteLength }),
+  ]);
+  directEntries.set(
+    "/workspace/node_modules",
+    Array.from({ length: 5_000 }, (_, index) =>
+      entry(`/workspace/node_modules/.pnpm/pkg-${index}/node_modules/pkg`, {
+        symlinkTarget: `../../../pkg-${index}`,
+      }),
+    ),
+  );
+  readContents.set("/workspace/package.json", packageJson);
+  readContents.set("/workspace/pnpm-lock.yaml", lockfile);
+  readContents.set("/workspace/src/index.ts", source);
+  const prunedCapture = await e2b.captureFiles("e2b-fake");
+  assert.deepEqual(prunedCapture.files.map(file => file.path).sort(), [
+    "package.json",
+    "pnpm-lock.yaml",
+    "src/index.ts",
+  ]);
+  assert.deepEqual(prunedCapture.excludedPaths, [
+    ".env.local",
+    "dist",
+    "node_modules",
+  ]);
+  assert.deepEqual(listedPaths, ["/workspace", "/workspace/src"]);
+  assert.deepEqual(readPaths.sort(), [
+    "/workspace/package.json",
+    "/workspace/pnpm-lock.yaml",
+    "/workspace/src/index.ts",
+  ]);
+  assert.equal(
+    listedPaths.some(listedPath => listedPath.includes("node_modules")),
+    false,
   );
   directEntries.clear();
+  readContents.clear();
 
   const root = await mkdtemp(path.join(os.tmpdir(), "apps-v2-session-test-"));
   try {
@@ -687,7 +733,33 @@ async function run(): Promise<void> {
       | Awaited<ReturnType<AppV2GitProvider["rotateLease"]>>
       | undefined;
     const argv = ["tool", "$(touch /tmp/not-run)", "semi;colon", "a'b"];
+    const installPackages = ["react@>=18 <19", "@scope/pkg@latest"];
     const sandboxes = new FakeSandboxProvider(async (state, spec) => {
+      if (spec.argv[0] === "pnpm") {
+        assert.deepEqual(spec.argv, [
+          "pnpm",
+          "add",
+          "--save-exact",
+          ...installPackages,
+        ]);
+        assert.equal(state.networkPhase, "install");
+        state.files.set("pnpm-lock.yaml", {
+          path: "pnpm-lock.yaml",
+          content: Buffer.from("lockfileVersion: '9.0'\n"),
+          executable: false,
+        });
+        if (conflictDuringCommand) {
+          concurrentLease = await git.rotateLease(
+            project.repositoryId,
+            worktree.wipRef,
+            worktree.wipOid,
+            worktree.leaseRef,
+            worktree.leaseOid,
+            worktree.leaseEpoch + 1,
+          );
+        }
+        return { exitCode: 0, stdout: "packages installed", stderr: "" };
+      }
       assert.deepEqual(spec.argv, argv);
       assert.equal(state.networkPhase, "deny-all");
       const app = state.files.get("src/App.tsx");
@@ -786,6 +858,102 @@ async function run(): Promise<void> {
       "export default function Changed() {}\n",
     );
 
+    const installed = await executor.install(
+      {
+        ...initialTarget,
+        sandboxId: prepared.sandboxId,
+        leaseEpoch: worktree.leaseEpoch,
+        durableRevision: {
+          wipOid: worktree.wipOid,
+          revision: worktree.revision,
+        },
+        appliedWipOid: worktree.wipOid,
+      },
+      { packages: installPackages },
+    );
+    assert.equal(installed.stdout, "packages installed");
+    assert.equal(installed.durability.status, "durable");
+    assert.deepEqual(sandboxes.executions.at(-1)?.argv, [
+      "pnpm",
+      "add",
+      "--save-exact",
+      ...installPackages,
+    ]);
+    assert.deepEqual(
+      sandboxes.state(prepared.sandboxId).networkPhases.slice(-3),
+      ["install", "deny-all", "deny-all"],
+    );
+    assert.equal(sandboxes.state(prepared.sandboxId).networkPhase, "deny-all");
+    assert(
+      (await git.tree(project.repositoryId, worktree.wipOid)).some(
+        entry => entry.path === "pnpm-lock.yaml",
+      ),
+    );
+
+    const requestCancellation = new AbortController();
+    const cancelledSandboxes = new FakeSandboxProvider(state => {
+      state.files.set("src/cancelled-command.ts", {
+        path: "src/cancelled-command.ts",
+        content: Buffer.from("export const survivedCancellation = true;\n"),
+        executable: false,
+      });
+      requestCancellation.abort();
+      return new Promise(() => undefined);
+    });
+    const cancelledExecutor = new CloudSessionExecutor(
+      cancelledSandboxes,
+      projectService,
+      worktrees,
+    );
+    const cancelledTargetBase = {
+      ...initialTarget,
+      leaseEpoch: worktree.leaseEpoch,
+      durableRevision: {
+        wipOid: worktree.wipOid,
+        revision: worktree.revision,
+      },
+    };
+    const cancelledPrepared = await cancelledExecutor.prepare(
+      cancelledTargetBase,
+      {
+        reservationId: "cancelled-request-reservation",
+        signal: new AbortController().signal,
+        async onProvisioned() {},
+      },
+    );
+    const cancelledCommand = await cancelledExecutor.exec(
+      {
+        ...cancelledTargetBase,
+        sandboxId: cancelledPrepared.sandboxId,
+        appliedWipOid: worktree.wipOid,
+      },
+      {
+        argv: ["node", "cancelled-command.js"],
+        cwd: "/workspace",
+        timeoutMs: 1_000,
+        signal: requestCancellation.signal,
+      },
+    );
+    assert.equal(cancelledCommand.cancelled, true);
+    assert.equal(cancelledCommand.durability.status, "durable");
+    assert.equal(
+      cancelledSandboxes.state(cancelledPrepared.sandboxId).quiesceCount,
+      1,
+    );
+    assert.equal(
+      cancelledSandboxes.state(cancelledPrepared.sandboxId).captureCount,
+      1,
+    );
+    assert.equal(
+      cancelledSandboxes.state(cancelledPrepared.sandboxId).networkPhase,
+      "deny-all",
+    );
+    assert(
+      (await git.tree(project.repositoryId, worktree.wipOid)).some(
+        entry => entry.path === "src/cancelled-command.ts",
+      ),
+    );
+
     const staleWipOid = initial.sha;
     await assert.rejects(
       git.replaceWorktreeTree(
@@ -827,12 +995,10 @@ async function run(): Promise<void> {
       recoveryId: "b".repeat(64),
     };
     conflictDuringCommand = true;
-    const conflict = await executor.exec(conflictTarget, {
-      argv,
-      cwd: "/workspace",
-      timeoutMs: 1_000,
+    const conflict = await executor.install(conflictTarget, {
+      packages: installPackages,
     });
-    assert.equal(conflict.stdout, "command output");
+    assert.equal(conflict.stdout, "packages installed");
     assert.equal(conflict.durability.status, "conflict");
     assert.equal(conflict.durability.revision, undefined);
     assert.equal(
@@ -846,6 +1012,10 @@ async function run(): Promise<void> {
         "b".repeat(64),
       ),
       conflict.durability.recoveryRef,
+    );
+    assert.equal(
+      sandboxes.state(conflictPrepared.sandboxId).networkPhase,
+      "deny-all",
     );
     assert.equal(
       await git.findRecoveryRef(
@@ -874,6 +1044,23 @@ async function run(): Promise<void> {
     worktree.leaseOid = concurrentLease.oid;
     worktree.leaseEpoch = concurrentLease.epoch;
     worktree.revision += 1;
+    const wipBeforeTakeoverRecovery = await git.resolveRef(
+      project.repositoryId,
+      worktree.wipRef,
+    );
+    const takeoverRecovery = await executor.recover({
+      ...conflictTarget,
+      recoveryId: "c".repeat(64),
+    });
+    assert.equal(takeoverRecovery.durability.status, "conflict");
+    assert.equal(
+      takeoverRecovery.durability.recoveryRef,
+      `refs/mako/recovery/session-worktree/${"c".repeat(64)}`,
+    );
+    assert.equal(
+      await git.resolveRef(project.repositoryId, worktree.wipRef),
+      wipBeforeTakeoverRecovery,
+    );
 
     const capped = new FakeSandboxProvider(() => ({
       exitCode: 0,
@@ -931,6 +1118,7 @@ async function run(): Promise<void> {
       timeoutSandboxes,
       projectService,
       worktrees,
+      5,
     );
     const timeoutTargetBase = {
       ...initialTarget,
@@ -946,17 +1134,21 @@ async function run(): Promise<void> {
       async onProvisioned() {},
     });
     timeoutSandboxId = timeoutPrepared.sandboxId;
-    const timeoutResult = await timeoutExecutor.exec(
+    const timeoutResult = await timeoutExecutor.install(
       {
         ...timeoutTargetBase,
         sandboxId: timeoutSandboxId,
         appliedWipOid: worktree.wipOid,
       },
-      { argv: ["hang"], cwd: "/workspace", timeoutMs: 5 },
+      { packages: ["react@latest"] },
     );
     assert.equal(timeoutResult.timedOut, true);
     assert.equal(timeoutResult.durability.status, "durable");
     assert.equal(timeoutSandboxes.state(timeoutSandboxId).quiesceCount, 1);
+    assert.equal(
+      timeoutSandboxes.state(timeoutSandboxId).networkPhase,
+      "deny-all",
+    );
     await new Promise(resolve => setTimeout(resolve, 35));
     assert.equal(
       timeoutSandboxes.state(timeoutSandboxId).files.has("late-write.ts"),
@@ -967,6 +1159,51 @@ async function run(): Promise<void> {
         entry => entry.path === "late-write.ts",
       ),
       false,
+    );
+
+    const failingSandboxes = new FakeSandboxProvider(() => {
+      throw new Error("simulated install failure");
+    });
+    const failingExecutor = new CloudSessionExecutor(
+      failingSandboxes,
+      projectService,
+      worktrees,
+    );
+    const failingTargetBase = {
+      ...initialTarget,
+      leaseEpoch: worktree.leaseEpoch,
+      durableRevision: {
+        wipOid: worktree.wipOid,
+        revision: worktree.revision,
+      },
+    };
+    const failingPrepared = await failingExecutor.prepare(failingTargetBase, {
+      reservationId: "failing-install-reservation",
+      signal: new AbortController().signal,
+      async onProvisioned() {},
+    });
+    await assert.rejects(
+      failingExecutor.install(
+        {
+          ...failingTargetBase,
+          sandboxId: failingPrepared.sandboxId,
+          appliedWipOid: worktree.wipOid,
+        },
+        { packages: ["react@latest"] },
+      ),
+      /simulated install failure/,
+    );
+    assert.equal(
+      failingSandboxes.state(failingPrepared.sandboxId).networkPhase,
+      "deny-all",
+    );
+    assert.equal(
+      failingSandboxes.state(failingPrepared.sandboxId).quiesceCount,
+      1,
+    );
+    assert.equal(
+      failingSandboxes.state(failingPrepared.sandboxId).captureCount,
+      0,
     );
 
     const sessionStore = new MemorySessionStore();
@@ -1130,6 +1367,14 @@ async function run(): Promise<void> {
     await firstExec;
     assert.equal(blockingExecutor.executions.length, 1);
     assert.equal(concurrentExecStore.record?.operationId, undefined);
+    await concurrentExecServices[0].install(project, worktree, raceActor, {
+      packages: ["react@latest"],
+    });
+    assert.deepEqual(blockingExecutor.installs[0].request.packages, [
+      "react@latest",
+    ]);
+    assert.equal(concurrentExecStore.record?.pendingRecoveryId, undefined);
+    assert.equal(concurrentExecStore.record?.operationId, undefined);
 
     class RenewingRaceExecutor extends FakeSessionExecutor {
       readonly firstPrepared = new Promise<void>(resolve => {
@@ -1249,11 +1494,69 @@ async function run(): Promise<void> {
     assert(renewalFailureStore.record?.pendingRecoveryId);
     assert.equal(renewalFailureStore.record?.pendingRecoveryCompleted, false);
     assert.equal(renewalFailureStore.record?.operationId, undefined);
-    await assert.rejects(
-      renewalFailureService.get(project, worktree, raceActor),
-      /recovery reconciliation is still pending/,
+    const renewalFailureRecoveryId =
+      renewalFailureStore.record.pendingRecoveryId;
+    const recoveredAfterRenewalFailure = await renewalFailureService.get(
+      project,
+      worktree,
+      raceActor,
     );
-    assert(renewalFailureStore.record?.pendingRecoveryId);
+    assert.equal(recoveredAfterRenewalFailure.status, "active");
+    assert.equal(renewalFailureExecutor.recovered.length, 1);
+    assert.equal(
+      renewalFailureExecutor.recovered[0].recoveryId,
+      renewalFailureRecoveryId,
+    );
+    assert.equal(renewalFailureStore.record?.pendingRecoveryId, undefined);
+    assert.equal(
+      renewalFailureStore.record?.pendingRecoveryCompleted,
+      undefined,
+    );
+
+    const deadWorkerRecoveryId = "d".repeat(64);
+    const deadWorkerStore = new MemorySessionStore();
+    deadWorkerStore.record = {
+      ...(raceStore.record as AppV2SessionRecord),
+      id: new Types.ObjectId().toString(),
+      actorId: "dead-worker-actor",
+      sandboxId: "dead-worker-sandbox",
+      reservationId: "dead-worker-reservation",
+      leaseEpoch: worktree.leaseEpoch,
+      appliedWipOid: worktree.wipOid,
+      pendingRecoveryId: deadWorkerRecoveryId,
+      pendingRecoveryCompleted: false,
+      pendingExpectedWipOid: worktree.wipOid,
+      pendingExpectedRevision: worktree.revision,
+      pendingSuccessRef: `refs/mako/recovery-success/${worktree._id}/${deadWorkerRecoveryId}`,
+      operationId: "dead-worker-operation",
+      operationExpiresAt: new Date(Date.now() - 1_000),
+      status: "active",
+    };
+    const deadWorkerExecutor = new FakeSessionExecutor();
+    deadWorkerExecutor.statuses.set("dead-worker-sandbox", "running");
+    const deadWorkerService = new AppV2SessionService(
+      "fake",
+      deadWorkerExecutor,
+      worktrees,
+      deadWorkerStore,
+      new AppV2KeyedMutex(),
+      30,
+    );
+    const deadWorkerTakeover = await deadWorkerService.get(project, worktree, {
+      userId: "dead-worker-actor",
+    });
+    assert.equal(deadWorkerTakeover.status, "active");
+    assert.equal(deadWorkerExecutor.recovered.length, 1);
+    assert.equal(
+      deadWorkerExecutor.recovered[0].recoveryId,
+      deadWorkerRecoveryId,
+    );
+    assert.deepEqual(deadWorkerExecutor.recovered[0].durableRevision, {
+      wipOid: worktree.wipOid,
+      revision: worktree.revision,
+    });
+    assert.equal(deadWorkerStore.record?.pendingRecoveryId, undefined);
+    assert.equal(deadWorkerStore.record?.operationId, undefined);
 
     const orphanReservationId = "orphan-reservation";
     const orphanActor = { userId: "orphan-actor" };
@@ -1495,6 +1798,15 @@ async function run(): Promise<void> {
       AppV2RecoveryConflictError,
     );
     await assert.rejects(
+      conflictSessions.install(
+        project,
+        worktree,
+        { userId: "actor" },
+        { packages: ["react@latest"] },
+      ),
+      AppV2RecoveryConflictError,
+    );
+    await assert.rejects(
       conflictSessions.ensure(project, worktree, { userId: "actor" }),
       AppV2RecoveryConflictError,
     );
@@ -1503,6 +1815,7 @@ async function run(): Promise<void> {
       providerCallsBeforeBlockedRetries,
     );
     assert.equal(conflictExecutor.executions.length, 0);
+    assert.equal(conflictExecutor.installs.length, 0);
     assert.equal(conflictExecutor.prepared.length, 0);
 
     const retainedPause = await conflictSessions.pause(project, worktree, {

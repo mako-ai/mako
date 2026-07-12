@@ -1255,10 +1255,22 @@
         "properties": {
           "enabled": {
             "type": "boolean"
+          },
+          "sandboxAvailable": {
+            "type": "boolean"
+          },
+          "sandboxProvider": {
+            "type": "string",
+            "enum": [
+              "e2b",
+              "off"
+            ]
           }
         },
         "required": [
-          "enabled"
+          "enabled",
+          "sandboxAvailable",
+          "sandboxProvider"
         ]
       },
       "AppV2ProjectListResponse": {
@@ -1599,6 +1611,25 @@
         "required": [
           "argv"
         ]
+      },
+      "AppV2SessionInstall": {
+        "type": "object",
+        "properties": {
+          "packages": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "minItems": 1,
+            "maxItems": 32
+          }
+        },
+        "required": [
+          "packages"
+        ],
+        "additionalProperties": false
       },
       "AppV2TreeResponse": {
         "type": "object",
@@ -22849,6 +22880,85 @@
           }
         },
         "operationId": "post_api_workspaces_workspaceId_apps_v2_projectId_session_exec"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps-v2/{projectId}/session/install": {
+      "post": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Install npm registry packages in an Apps v2 sandbox session",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppV2SessionInstall"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Finite package installation result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppV2SessionExecResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_v2_projectId_session_install"
       }
     },
     "/api/workspaces/{workspaceId}/apps-v2/{projectId}/session/pause": {

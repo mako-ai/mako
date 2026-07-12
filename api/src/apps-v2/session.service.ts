@@ -25,6 +25,7 @@ import type {
   SessionExecResult,
   SessionExecutor,
   SessionFlushResult,
+  SessionInstallRequest,
 } from "./session-executor";
 import {
   appV2SessionOperationKey,
@@ -753,6 +754,94 @@ export class AppV2SessionService {
     });
   }
 
+  install(
+    project: IAppV2Project,
+    worktree: IAppV2Worktree,
+    actor: AppV2Actor,
+    request: SessionInstallRequest,
+  ): Promise<SessionExecResult> {
+    return this.locked(project, worktree, actor, async () => {
+      const session = await this.requireActive(project, worktree, actor);
+      return this.withOperation(session, async context => {
+        const currentWorktree = await this.reconcilePendingRecovery(
+          project,
+          worktree,
+          actor,
+          context,
+        );
+        this.assertNoRecoveryConflict(context.record);
+        const recoveryId = appV2PendingRecoveryId(
+          context.record.id,
+          context.operationId,
+        );
+        const recoveryTarget = this.target(
+          project,
+          currentWorktree,
+          actor,
+          context.record,
+          recoveryId,
+        );
+        const recoveryIdentity = this.executor.recoveryIdentity(
+          recoveryTarget,
+          recoveryId,
+        );
+        await this.write(context, {
+          pendingRecoveryId: recoveryId,
+          pendingRecoveryCompleted: false,
+          pendingExpectedWipOid: currentWorktree.wipOid,
+          pendingExpectedRevision: currentWorktree.revision,
+          pendingSuccessRef: recoveryIdentity.successRef,
+        });
+        try {
+          const result = await this.executor.install(recoveryTarget, {
+            ...request,
+            signal: this.combineSignals(request.signal, context.signal),
+          });
+          context.assertHealthy();
+          await this.write(context, { pendingRecoveryCompleted: true });
+          await this.write(
+            context,
+            result.durability.status === "durable"
+              ? {
+                  appliedWipOid: result.durability.revision.wipOid,
+                  pendingRecoveryId: null,
+                  pendingRecoveryCompleted: null,
+                  pendingExpectedWipOid: null,
+                  pendingExpectedRevision: null,
+                  pendingSuccessRef: null,
+                  status: "active",
+                  lastActiveAt: new Date(),
+                }
+              : {
+                  pendingRecoveryId: null,
+                  pendingRecoveryCompleted: null,
+                  pendingExpectedWipOid: null,
+                  pendingExpectedRevision: null,
+                  pendingSuccessRef: null,
+                  status: "conflict",
+                  recoveryRef: result.durability.recoveryRef,
+                  lastActiveAt: new Date(),
+                },
+          );
+          if (result.durability.status === "durable") {
+            await this.executor
+              .clearSuccessMarker(
+                recoveryTarget,
+                recoveryId,
+                result.durability.revision.wipOid,
+              )
+              .catch(() => undefined);
+          }
+          return result;
+        } catch (error) {
+          await this.markUnsynced(context);
+          context.assertHealthy();
+          throw error;
+        }
+      });
+    });
+  }
+
   flush(
     project: IAppV2Project,
     worktree: IAppV2Worktree,
@@ -1146,8 +1235,12 @@ export class AppV2SessionService {
       return worktree;
     }
     if (!context.record.pendingRecoveryCompleted) {
-      throw new AppV2OperationConflictError(
-        "Session recovery reconciliation is still pending; retry later",
+      return this.takeOverPendingRecovery(
+        project,
+        worktree,
+        actor,
+        context,
+        pendingRecoveryId,
       );
     }
     await this.write(context, {
@@ -1159,6 +1252,77 @@ export class AppV2SessionService {
       lastActiveAt: new Date(),
     });
     return worktree;
+  }
+
+  private async takeOverPendingRecovery(
+    project: IAppV2Project,
+    worktree: IAppV2Worktree,
+    actor: AppV2Actor,
+    context: OperationContext,
+    recoveryId: string,
+  ): Promise<IAppV2Worktree> {
+    const recoveryTarget = {
+      ...this.target(project, worktree, actor, context.record, recoveryId),
+      durableRevision: {
+        wipOid:
+          context.record.pendingExpectedWipOid ?? context.record.appliedWipOid,
+        revision: context.record.pendingExpectedRevision ?? worktree.revision,
+      },
+    };
+    try {
+      const flush = await this.executor.recover(recoveryTarget, context.signal);
+      context.assertHealthy();
+      await this.write(context, { pendingRecoveryCompleted: true });
+      if (flush.durability.status === "conflict") {
+        await this.write(context, {
+          pendingRecoveryId: null,
+          pendingRecoveryCompleted: null,
+          pendingExpectedWipOid: null,
+          pendingExpectedRevision: null,
+          pendingSuccessRef: null,
+          recoveryRef: flush.durability.recoveryRef,
+          status: "conflict",
+          lastActiveAt: new Date(),
+        });
+        return worktree;
+      }
+      const updatedWorktree = await this.worktrees.getById(
+        project,
+        worktree._id.toString(),
+        actor,
+      );
+      if (
+        updatedWorktree.wipOid !== flush.durability.revision.wipOid ||
+        updatedWorktree.revision !== flush.durability.revision.revision
+      ) {
+        throw new AppV2OperationConflictError(
+          "Takeover worktree projection does not match the Git success marker",
+        );
+      }
+      context.assertHealthy();
+      await this.write(context, {
+        appliedWipOid: flush.durability.revision.wipOid,
+        pendingRecoveryId: null,
+        pendingRecoveryCompleted: null,
+        pendingExpectedWipOid: null,
+        pendingExpectedRevision: null,
+        pendingSuccessRef: null,
+        status: "active",
+        lastActiveAt: new Date(),
+      });
+      await this.executor
+        .clearSuccessMarker(
+          this.target(project, updatedWorktree, actor, context.record),
+          recoveryId,
+          flush.durability.revision.wipOid,
+        )
+        .catch(() => undefined);
+      return updatedWorktree;
+    } catch (error) {
+      await this.markUnsynced(context);
+      context.assertHealthy();
+      throw error;
+    }
   }
 
   private async markUnsynced(context: OperationContext): Promise<void> {

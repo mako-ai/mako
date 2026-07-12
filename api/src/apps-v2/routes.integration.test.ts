@@ -171,14 +171,22 @@ describe("Apps v2 route isolation", () => {
       `/api/workspaces/${workspaceId.toString()}/apps-v2/status`,
     );
     expect(enabledResponse.status).toBe(200);
-    expect(await enabledResponse.json()).toEqual({ enabled: true });
+    expect(await enabledResponse.json()).toEqual({
+      enabled: true,
+      sandboxAvailable: false,
+      sandboxProvider: "off",
+    });
 
     process.env.APPS_V2_ENABLED = "false";
     const disabledResponse = await app.request(
       `/api/workspaces/${workspaceId.toString()}/apps-v2/status`,
     );
     expect(disabledResponse.status).toBe(200);
-    expect(await disabledResponse.json()).toEqual({ enabled: false });
+    expect(await disabledResponse.json()).toEqual({
+      enabled: false,
+      sandboxAvailable: false,
+      sandboxProvider: "off",
+    });
   });
 
   it("authenticates and scopes status before disclosing feature availability", async () => {

@@ -20,6 +20,7 @@ import EntityLoadErrorState, {
   EntityLoadingState,
 } from "./EntityLoadErrorState";
 import { TAB_KIND_ICONS } from "../lib/entity-icons";
+import AppV2CommandPanel from "./AppV2CommandPanel";
 
 const EMPTY_ENTRIES: AppV2TreeEntry[] = [];
 const AppV2ProjectIcon = TAB_KIND_ICONS["app-v2"];
@@ -306,10 +307,13 @@ export default function AppV2ProjectView({
         </Paper>
       </Box>
 
-      <Alert severity="info">
-        Isolated execution is not provisioned for Apps v2. Preview and terminal
-        access will appear only after a sandbox runtime is available.
-      </Alert>
+      {workspaceId ? (
+        <AppV2CommandPanel
+          workspaceId={workspaceId}
+          projectId={projectId}
+          readOnly={project.readOnly}
+        />
+      ) : null}
     </Box>
   );
 }

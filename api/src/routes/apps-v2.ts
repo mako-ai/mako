@@ -44,6 +44,8 @@ import {
   APP_V2_SESSION_DEFAULT_TIMEOUT_MS,
   APP_V2_SESSION_MAX_ARG_CHARACTERS,
   APP_V2_SESSION_MAX_ARG_COUNT,
+  APP_V2_SESSION_MAX_PACKAGE_COUNT,
+  APP_V2_SESSION_MAX_PACKAGE_SPEC_CHARACTERS,
   APP_V2_SESSION_MAX_TIMEOUT_MS,
   getAppsV2SandboxConfiguration,
   isAppsV2Enabled,
@@ -62,6 +64,7 @@ import { CloudSessionExecutor } from "../apps-v2/cloud-session-executor";
 import { AppV2SessionService } from "../apps-v2/session.service";
 import { createAppsV2SandboxProvider } from "../apps-v2/providers/sandbox-provider-factory";
 import { APP_V2_MAX_PATH_SEGMENTS } from "../apps-v2/path-validation";
+import { isAppV2RegistryPackageSpec } from "../apps-v2/package-spec";
 
 const logger = loggers.api("apps-v2");
 const routes = createRouter();
@@ -153,9 +156,31 @@ const AppV2SessionExecSchema = z
       .default(APP_V2_SESSION_DEFAULT_TIMEOUT_MS),
   })
   .openapi("AppV2SessionExec");
+const AppV2SessionInstallSchema = z
+  .object({
+    packages: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .max(APP_V2_SESSION_MAX_PACKAGE_SPEC_CHARACTERS)
+          .refine(
+            isAppV2RegistryPackageSpec,
+            "Must be a public npm registry package spec",
+          ),
+      )
+      .min(1)
+      .max(APP_V2_SESSION_MAX_PACKAGE_COUNT),
+  })
+  .strict()
+  .openapi("AppV2SessionInstall");
 
 const AppV2StatusResponseSchema = z
-  .object({ enabled: z.boolean() })
+  .object({
+    enabled: z.boolean(),
+    sandboxAvailable: z.boolean(),
+    sandboxProvider: z.enum(["e2b", "off"]),
+  })
   .openapi("AppV2StatusResponse");
 const AppV2ProjectSchema = z
   .object({
@@ -631,7 +656,16 @@ routes.openapi(
       ),
     },
   }),
-  c => c.json({ enabled: isAppsV2Enabled() }),
+  c => {
+    const enabled = isAppsV2Enabled();
+    const sandbox = getAppsV2SandboxConfiguration();
+    const sandboxAvailable = enabled && sandbox.available;
+    return c.json({
+      enabled,
+      sandboxAvailable,
+      sandboxProvider: sandboxAvailable ? sandbox.provider : ("off" as const),
+    });
+  },
 );
 
 routes.use("*", async (c, next) => {
@@ -1044,6 +1078,86 @@ routes.openapi(
           {
             success: false,
             error: "Command output retained; durable WIP flush conflicted",
+            result,
+          },
+          409,
+        );
+      }
+      publishRealtimeEvent(workspaceId, {
+        type: "app-v2.worktree.updated",
+        projectId,
+        worktreeId: worktree._id.toString(),
+        revision: result.durability.revision?.revision ?? worktree.revision,
+        forUserId: worktree.actorId,
+      });
+      return c.json({ success: true, result });
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  },
+);
+
+routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{projectId}/session/install",
+    tags: ["Apps v2"],
+    summary: "Install npm registry packages in an Apps v2 sandbox session",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParams,
+      body: {
+        required: true,
+        content: { "application/json": { schema: AppV2SessionInstallSchema } },
+      },
+    },
+    responses: {
+      ...okResponse(
+        AppV2SessionExecResponseSchema,
+        "Finite package installation result",
+      ),
+      409: jsonContent(
+        z.union([
+          AppV2SessionExecResponseSchema,
+          AppV2SessionConflictResponseSchema,
+        ]),
+        "Install flush conflicted, recovery is required, or another operation is in progress",
+      ),
+      503: jsonContent(
+        ProviderUnavailableResponseSchema,
+        "Sandbox provider unavailable",
+      ),
+    },
+  }),
+  async c => {
+    const sessionController = sessions();
+    if (!sessionController) return unavailableProvider(c);
+    try {
+      const requestActor = actor(c);
+      const { workspaceId, projectId } = c.req.valid("param");
+      const project = await services().projects.getWritable(
+        workspaceId,
+        projectId,
+        requestActor,
+      );
+      const worktree = await services().worktrees.getActorWorktree(
+        project,
+        requestActor,
+      );
+      const result = await sessionController.install(
+        project,
+        worktree,
+        requestActor,
+        {
+          packages: c.req.valid("json").packages,
+          signal: c.req.raw.signal,
+        },
+      );
+      if (result.durability.status === "conflict") {
+        return c.json(
+          {
+            success: false,
+            error: "Installed source retained; durable WIP flush conflicted",
             result,
           },
           409,

@@ -8,6 +8,11 @@ import {
 } from "@mako/schemas";
 import type { AuthEnv } from "../openapi/core";
 import { appsV2Routes } from "../routes/apps-v2";
+import {
+  isAppV2RegistryPackageSpec,
+  validateAppV2PackageSpecs,
+} from "./package-spec";
+import { APP_V2_SESSION_MAX_PACKAGE_COUNT } from "./config";
 
 const validState = {
   ifRevision: 0,
@@ -49,6 +54,30 @@ assert.equal(
   false,
 );
 assert.equal(AppV2LeaseRotateSchema.safeParse(validState).success, true);
+for (const spec of [
+  "react",
+  "react@18.3.1",
+  "react@>=18 <19",
+  "@scope/package@latest",
+]) {
+  assert.equal(isAppV2RegistryPackageSpec(spec), true, spec);
+}
+for (const spec of [
+  "--ignore-scripts",
+  "file:../private-package",
+  "https://example.com/package.tgz",
+  "git+ssh://git@example.com/package.git",
+  "safe-package; touch /tmp/not-data",
+  "alias@npm:other-package",
+]) {
+  assert.equal(isAppV2RegistryPackageSpec(spec), false, spec);
+}
+assert.throws(() => validateAppV2PackageSpecs([]));
+assert.throws(() =>
+  validateAppV2PackageSpecs(
+    Array.from({ length: APP_V2_SESSION_MAX_PACKAGE_COUNT + 1 }, () => "react"),
+  ),
+);
 
 async function verifyDisabledRouteStillRequiresAuthentication(): Promise<void> {
   const previous = process.env.APPS_V2_ENABLED;

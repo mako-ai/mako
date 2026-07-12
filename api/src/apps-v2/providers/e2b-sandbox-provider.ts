@@ -362,17 +362,13 @@ export class E2BSandboxProvider implements SandboxProvider {
       apiKey: this.apiKey,
       signal,
     });
-    const entries = await this.completeCaptureManifest(sandbox, signal);
+    const captureManifest = await this.completeCaptureManifest(sandbox, signal);
     const files: SandboxFile[] = [];
-    const excludedPaths: string[] = [];
+    const excludedPaths = [...captureManifest.excludedPaths];
     let capturedBytes = 0;
-    for (const entry of entries) {
+    for (const entry of captureManifest.entries) {
       if (entry.type !== FileType.FILE) continue;
       const filePath = normalizeSandboxFilePath(entry.path);
-      if (!isAppV2SessionFileEligible(filePath)) {
-        excludedPaths.push(filePath);
-        continue;
-      }
       if (
         entry.size > APP_V2_MAX_FILE_BYTES ||
         files.length >= APP_V2_MAX_FILES ||
@@ -413,15 +409,11 @@ export class E2BSandboxProvider implements SandboxProvider {
   private async completeCaptureManifest(
     sandbox: E2BSandboxClient,
     signal?: AbortSignal,
-  ): Promise<EntryInfo[]> {
+  ): Promise<{ entries: EntryInfo[]; excludedPaths: string[] }> {
     const options = { signal, user: this.user };
-    const recursive = await sandbox.files.list(WORKSPACE_ROOT, {
-      ...options,
-      depth: 100,
-    });
-    const recursiveManifest = this.captureManifest(recursive);
     const traversed: EntryInfo[] = [];
     const traversedManifest = new Map<string, string>();
+    const excludedPaths: string[] = [];
     const queue: Array<{ absolute: string; relative: string }> = [
       { absolute: WORKSPACE_ROOT, relative: "" },
     ];
@@ -442,6 +434,10 @@ export class E2BSandboxProvider implements SandboxProvider {
             "Sandbox file listing returned an unexpected traversal",
           );
         }
+        if (!isAppV2SessionFileEligible(relative)) {
+          excludedPaths.push(relative);
+          continue;
+        }
         if (traversedManifest.has(relative)) {
           throw new AppV2ValidationError(
             "Sandbox file listing returned duplicate paths",
@@ -461,35 +457,10 @@ export class E2BSandboxProvider implements SandboxProvider {
         }
       }
     }
-    if (
-      recursiveManifest.size !== traversedManifest.size ||
-      [...traversedManifest].some(
-        ([entryPath, signature]) =>
-          recursiveManifest.get(entryPath) !== signature,
-      )
-    ) {
-      throw new AppV2ValidationError(
-        "Sandbox file listing was incomplete or inconsistent",
-      );
-    }
-    return traversed;
-  }
-
-  private captureManifest(entries: readonly EntryInfo[]): Map<string, string> {
-    const manifest = new Map<string, string>();
-    for (const entry of entries) {
-      const filePath = normalizeSandboxFilePath(entry.path);
-      if (manifest.has(filePath)) {
-        throw new AppV2ValidationError(
-          "Sandbox file listing returned duplicate paths",
-        );
-      }
-      manifest.set(filePath, this.captureEntrySignature(entry));
-      if (manifest.size > MAX_CAPTURE_PATHS) {
-        throw new AppV2LimitError("Sandbox source manifest exceeds limits");
-      }
-    }
-    return manifest;
+    return {
+      entries: traversed,
+      excludedPaths: [...new Set(excludedPaths)].sort(),
+    };
   }
 
   private captureEntrySignature(entry: EntryInfo): string {
