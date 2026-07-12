@@ -16,11 +16,12 @@ export function createAppsV2Scaffold(
 ): Record<string, string> {
   const { title, description } = options;
   const safeTitle = title.trim() || "Mako App";
-  const pkgName = safeTitle
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 64) || "mako-app";
+  const pkgName =
+    safeTitle
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 64) || "mako-app";
 
   return {
     "package.json": `${JSON.stringify(
@@ -78,6 +79,9 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  // Relative asset URLs so builds work under any hosting prefix
+  // (including Mako's token-scoped preview paths).
+  base: "./",
 });
 `,
     "tsconfig.json": `${JSON.stringify(

@@ -167,7 +167,9 @@ export async function deleteProject(project: IAppProjectV2): Promise<void> {
     project._id.toString(),
   );
   const worktrees = await AppWorktreeV2.find({ projectId: project._id });
+  const provider = getSandboxProvider();
   for (const wt of worktrees) {
+    await provider.destroySession?.(wt._id.toString()).catch(() => undefined);
     await fs.rm(sessionDirFor(wt._id.toString()), {
       recursive: true,
       force: true,
@@ -259,7 +261,14 @@ async function materializeSession(
     timeoutMs: 120_000,
   });
   // The session must not be able to reach the bare repo on its own.
-  await runGit(["-C", sessionDir, "remote", "set-url", "origin", BLOCKED_ORIGIN_URL]);
+  await runGit([
+    "-C",
+    sessionDir,
+    "remote",
+    "set-url",
+    "origin",
+    BLOCKED_ORIGIN_URL,
+  ]);
   await runGit(["-C", sessionDir, "config", "user.name", "Mako Session"]);
   await runGit(["-C", sessionDir, "config", "user.email", "session@mako.ai"]);
 
@@ -366,7 +375,11 @@ export async function execInWorktree(
   options: SandboxExecOptions = {},
 ): Promise<ExecOutcome> {
   const provider = getSandboxProvider();
-  const result = await provider.exec(handle.sessionDir, command, options);
+  const result = await provider.exec(
+    { hostDir: handle.sessionDir, sessionKey: handle.doc._id.toString() },
+    command,
+    options,
+  );
   const flush = await flushWorktree(handle);
   return { ...result, flush };
 }
@@ -414,7 +427,12 @@ export async function readFile(
   project: IAppProjectV2,
   relPath: string,
   userId?: string,
-): Promise<{ path: string; contents: string; isBinary: boolean; size: number }> {
+): Promise<{
+  path: string;
+  contents: string;
+  isBinary: boolean;
+  size: number;
+}> {
   const repoDir = repoDirFor(
     project.workspaceId.toString(),
     project._id.toString(),

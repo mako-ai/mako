@@ -17,6 +17,7 @@ import {
   APPS_V2_EXEC_MAX_TIMEOUT_MS,
 } from "../config";
 import type {
+  SandboxExecContext,
   SandboxExecOptions,
   SandboxExecResult,
   SandboxProvider,
@@ -85,7 +86,7 @@ class CappedCollector {
 }
 
 async function execLocal(
-  rootDir: string,
+  ctx: SandboxExecContext,
   command: string,
   options: SandboxExecOptions = {},
 ): Promise<SandboxExecResult> {
@@ -94,6 +95,7 @@ async function execLocal(
       "The local sandbox provider is development-only and cannot run in production",
     );
   }
+  const rootDir = ctx.hostDir;
   const cwd = resolveCwd(rootDir, options.cwd);
   const timeoutMs = Math.min(
     Math.max(1_000, options.timeoutMs ?? APPS_V2_EXEC_DEFAULT_TIMEOUT_MS),

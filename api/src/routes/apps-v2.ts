@@ -14,10 +14,7 @@
  */
 import { createRoute, z } from "@hono/zod-openapi";
 import { Types } from "mongoose";
-import {
-  AppProjectV2,
-  type IAppProjectV2,
-} from "../database/workspace-schema";
+import { AppProjectV2, type IAppProjectV2 } from "../database/workspace-schema";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
@@ -76,7 +73,10 @@ appsV2Routes.use("*", async (c: AuthenticatedContext, next) => {
     if (workspace) {
       if (workspace._id.toString() !== workspaceId) {
         return c.json(
-          { success: false, error: "API key not authorized for this workspace" },
+          {
+            success: false,
+            error: "API key not authorized for this workspace",
+          },
           403,
         );
       }
@@ -113,8 +113,7 @@ async function loadProject(
   c: AuthenticatedContext,
   opts: { write: boolean },
 ): Promise<
-  | { project: IAppProjectV2; userId?: string }
-  | { errorResponse: Response }
+  { project: IAppProjectV2; userId?: string } | { errorResponse: Response }
 > {
   const workspaceId = c.req.param("workspaceId");
   const id = c.req.param("id");
@@ -581,7 +580,7 @@ appsV2Routes.openapi(
         handle,
         // Install only when node_modules is missing/stale-empty — repeat
         // previews stay fast on the warm session.
-        '[ -d node_modules ] || npm install --no-audit --no-fund',
+        "[ -d node_modules ] || npm install --no-audit --no-fund",
         { timeoutMs: 300_000 },
       );
       if (install.exitCode !== 0) {
@@ -596,7 +595,10 @@ appsV2Routes.openapi(
         );
       }
 
-      const build = await execInWorktree(handle, "npm run build", {
+      // --base=./ makes the emitted asset URLs relative so they resolve
+      // under the token-prefixed preview path (works for apps whose
+      // vite.config predates the scaffold's relative base too).
+      const build = await execInWorktree(handle, "npm run build -- --base=./", {
         timeoutMs: 300_000,
       });
       if (build.exitCode !== 0) {

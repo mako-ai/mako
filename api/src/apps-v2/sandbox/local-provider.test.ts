@@ -9,6 +9,8 @@ import { localSandboxProvider } from "./local-provider";
 
 let root: string;
 
+const ctx = () => ({ hostDir: root, sessionKey: "test-session" });
+
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), "apps-v2-sbx-test-"));
 });
@@ -19,25 +21,28 @@ afterEach(async () => {
 
 describe("localSandboxProvider", () => {
   it("runs commands in the session root with exit codes and output", async () => {
-    const ok = await localSandboxProvider.exec(root, "pwd && echo out && echo err >&2");
+    const ok = await localSandboxProvider.exec(
+      ctx(),
+      "pwd && echo out && echo err >&2",
+    );
     expect(ok.exitCode).toBe(0);
     expect(ok.stdout).toContain(root);
     expect(ok.stdout).toContain("out");
     expect(ok.stderr).toContain("err");
 
-    const fail = await localSandboxProvider.exec(root, "exit 3");
+    const fail = await localSandboxProvider.exec(ctx(), "exit 3");
     expect(fail.exitCode).toBe(3);
   });
 
   it("rejects cwd escaping the session root", async () => {
     await expect(
-      localSandboxProvider.exec(root, "pwd", { cwd: "../.." }),
+      localSandboxProvider.exec(ctx(), "pwd", { cwd: "../.." }),
     ).rejects.toThrow(/escapes/);
   });
 
   it("kills commands at the timeout", async () => {
     const started = Date.now();
-    const result = await localSandboxProvider.exec(root, "sleep 30", {
+    const result = await localSandboxProvider.exec(ctx(), "sleep 30", {
       timeoutMs: 1_000,
     });
     expect(result.timedOut).toBe(true);
@@ -47,7 +52,7 @@ describe("localSandboxProvider", () => {
   it("builds the environment from scratch (no API secrets)", async () => {
     process.env.SUPER_SECRET_TEST_VALUE = "do-not-leak";
     try {
-      const result = await localSandboxProvider.exec(root, "env");
+      const result = await localSandboxProvider.exec(ctx(), "env");
       expect(result.stdout).not.toContain("do-not-leak");
       expect(result.stdout).toContain("PATH=");
     } finally {
