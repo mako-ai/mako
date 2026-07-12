@@ -1,5 +1,9 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { appsV2MaintenanceFunction, getFunctions } from "./index";
+import {
+  appsV2MaintenanceFunction,
+  flowSchedulerFunction,
+  getFunctions,
+} from "./index";
 
 const previousNodeEnvironment = process.env.NODE_ENV;
 const previousDisableScheduledSync = process.env.DISABLE_SCHEDULED_SYNC;
@@ -15,10 +19,11 @@ afterAll(() => {
 });
 
 describe("Inngest function registration", () => {
-  it("does not register Apps v2 maintenance outside production", () => {
-    process.env.NODE_ENV = "development";
-    delete process.env.DISABLE_SCHEDULED_SYNC;
+  it("keeps Apps v2 maintenance active in production previews", () => {
+    process.env.NODE_ENV = "production";
+    process.env.DISABLE_SCHEDULED_SYNC = "true";
 
-    expect(getFunctions()).not.toContain(appsV2MaintenanceFunction);
+    expect(getFunctions()).toContain(appsV2MaintenanceFunction);
+    expect(getFunctions()).not.toContain(flowSchedulerFunction);
   });
 });

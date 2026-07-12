@@ -200,11 +200,6 @@ jobs:
       VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
       DEMO_DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
       BILLING_ENABLED: "true"
-      # Apps v2 is visible in PR previews. Git state is intentionally
-      # ephemeral there; production retains the durable-storage gate.
-      APPS_V2_ENABLED: "true"
-      APPS_V2_GIT_ROOT: /tmp/mako-apps-v2-git
-      APPS_V2_ALLOW_EPHEMERAL_GIT: "true"
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}
       STRIPE_PRO_PRICE_ID: ${{ secrets.STRIPE_TEST_PRO_PRICE_ID }}
@@ -565,8 +560,9 @@ jobs:
             --memory=1Gi \
             --concurrency=80 \
             --min-instances=0 \
-            --max-instances=3 \
+            --max-instances=1 \
             --allow-unauthenticated \
+            --session-affinity \
             --network=mako-vpc \
             --subnet=mako-subnet \
             --vpc-egress=all-traffic \
@@ -611,9 +607,6 @@ jobs:
             --set-env-vars VITE_API_URL=${VITE_API_URL} \
             --set-env-vars DEMO_DATABASE_URL=${DEMO_DATABASE_URL} \
             --set-env-vars BILLING_ENABLED=${BILLING_ENABLED} \
-            --set-env-vars APPS_V2_ENABLED=${APPS_V2_ENABLED} \
-            --set-env-vars APPS_V2_GIT_ROOT=${APPS_V2_GIT_ROOT} \
-            --set-env-vars APPS_V2_ALLOW_EPHEMERAL_GIT=${APPS_V2_ALLOW_EPHEMERAL_GIT} \
             --set-env-vars STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY} \
             --set-env-vars STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET} \
             --set-env-vars STRIPE_PRO_PRICE_ID=${STRIPE_PRO_PRICE_ID} \
@@ -975,6 +968,7 @@ jobs:
             --min-instances=1 \
             --max-instances=15 \
             --allow-unauthenticated \
+            --session-affinity \
             --network=mako-vpc \
             --subnet=mako-subnet \
             --vpc-egress=all-traffic \

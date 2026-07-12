@@ -78,28 +78,33 @@ let _functions: typeof baseFunctions | null = null;
 export function getFunctions() {
   if (_functions) return _functions;
 
-  const isDevelopment =
-    process.env.NODE_ENV !== "production" ||
-    process.env.DISABLE_SCHEDULED_SYNC === "true";
+  const isProduction = process.env.NODE_ENV === "production";
+  const scheduledSyncDisabled =
+    !isProduction || process.env.DISABLE_SCHEDULED_SYNC === "true";
 
   const disableWebhookProcessing =
     process.env.DISABLE_WEBHOOK_PROCESSING === "true";
 
   const webhookFunctions = disableWebhookProcessing ? [] : allWebhookFunctions;
 
-  _functions = isDevelopment
-    ? [...baseFunctions, ...webhookFunctions]
-    : [
-        ...baseFunctions,
-        ...webhookFunctions,
-        flowSchedulerFunction,
-        cdcScheduledBackfillFunction,
-        dashboardSchedulerFunction,
-        appBindingSchedulerFunction,
-        scheduledQuerySchedulerFunction,
-        dbtSchedulerFunction,
-        appsV2MaintenanceFunction,
-      ];
+  _functions = [
+    ...baseFunctions,
+    ...webhookFunctions,
+    ...(!scheduledSyncDisabled
+      ? [
+          flowSchedulerFunction,
+          cdcScheduledBackfillFunction,
+          dashboardSchedulerFunction,
+          appBindingSchedulerFunction,
+          scheduledQuerySchedulerFunction,
+          dbtSchedulerFunction,
+        ]
+      : []),
+    // Apps v2 recovery is independent from data-sync scheduling. PR previews
+    // run NODE_ENV=production with DISABLE_SCHEDULED_SYNC=true and still need
+    // stale turn/provisioning reconciliation.
+    ...(isProduction ? [appsV2MaintenanceFunction] : []),
+  ];
 
   return _functions;
 }

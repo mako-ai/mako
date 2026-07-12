@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Alert,
   Button,
   Dialog,
   DialogActions,
@@ -39,6 +40,7 @@ import {
   prepareAppV2Reveal,
 } from "../apps-v2-runtime/tree";
 import { TAB_KIND_ICONS } from "../lib/entity-icons";
+import { useAppV2Status } from "../hooks/useAppV2Status";
 
 const EMPTY_PROJECTS: AppV2Project[] = [];
 const AppV2ProjectIcon = TAB_KIND_ICONS["app-v2"];
@@ -72,11 +74,7 @@ function projectNodes(
 export default function AppsV2Explorer() {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
-  const enabled = useAppV2Store(state =>
-    workspaceId
-      ? state.availabilityByWorkspace[workspaceId]?.enabled === true
-      : false,
-  );
+  const { loaded: statusLoaded, storageDurability } = useAppV2Status();
   const projects = useAppV2Store(state =>
     workspaceId
       ? (state.projectsByWorkspace[workspaceId] ?? EMPTY_PROJECTS)
@@ -118,11 +116,11 @@ export default function AppsV2Explorer() {
   }, [activeTab]);
 
   useEffect(() => {
-    if (enabled && workspaceId) void listProjects(workspaceId);
-  }, [enabled, listProjects, workspaceId]);
+    if (workspaceId) void listProjects(workspaceId);
+  }, [listProjects, workspaceId]);
 
   useEffect(() => {
-    if (!enabled || !workspaceId || !reveal) return;
+    if (!workspaceId || !reveal) return;
     const projectId = appV2ProjectIdFromRevealNodeId(reveal.nodeId);
     if (!projectId) return;
     let cancelled = false;
@@ -143,14 +141,7 @@ export default function AppsV2Explorer() {
     return () => {
       cancelled = true;
     };
-  }, [
-    enabled,
-    getOrCreateWorktree,
-    listProjects,
-    loadTree,
-    reveal,
-    workspaceId,
-  ]);
+  }, [getOrCreateWorktree, listProjects, loadTree, reveal, workspaceId]);
 
   const revealIsReady =
     !reveal ||
@@ -213,8 +204,6 @@ export default function AppsV2Explorer() {
     focusAppV2ProjectTab(project.id, project.title);
   }, [access, createProject, title, workspaceId]);
 
-  if (!enabled) return null;
-
   return (
     <>
       <ExplorerShell
@@ -247,48 +236,56 @@ export default function AppsV2Explorer() {
         }
       >
         {({ searchQuery }) => (
-          <ResourceTree
-            sections={sections}
-            searchQuery={searchQuery}
-            activeItemId={activeItemId}
-            revealNodeId={revealIsReady ? reveal?.nodeId : undefined}
-            revealNonce={revealIsReady ? reveal?.nonce : undefined}
-            getItemIcon={nodeIcon}
-            onLoadChildren={node => void handleLoadChildren(node)}
-            isLoadingChildren={node =>
-              Boolean(
-                loadingByKey[`tree:${node.id}`] ||
-                  loadingByKey[`worktree:${node.id}`],
-              )
-            }
-            onItemClick={handleItemClick}
-            shouldFolderClickActivate={node =>
-              node.entityType === "app-v2-project"
-            }
-            isFolderExpanded={key => expanded.has(key)}
-            onToggleFolder={key =>
-              setExpanded(current => {
-                const next = new Set(current);
-                if (next.has(key)) next.delete(key);
-                else next.add(key);
-                return next;
-              })
-            }
-            onExpandFolder={key =>
-              setExpanded(current => new Set(current).add(key))
-            }
-            getFolderExpansionKey={node =>
-              node.entityType === "app-v2-project"
-                ? node.id
-                : node.id.includes(APP_V2_DIR_SEP)
+          <>
+            {statusLoaded && storageDurability === "ephemeral" && (
+              <Alert severity="warning">
+                Testing storage: App Project Git data can disappear after a
+                deploy, restart, or instance replacement.
+              </Alert>
+            )}
+            <ResourceTree
+              sections={sections}
+              searchQuery={searchQuery}
+              activeItemId={activeItemId}
+              revealNodeId={revealIsReady ? reveal?.nodeId : undefined}
+              revealNonce={revealIsReady ? reveal?.nonce : undefined}
+              getItemIcon={nodeIcon}
+              onLoadChildren={node => void handleLoadChildren(node)}
+              isLoadingChildren={node =>
+                Boolean(
+                  loadingByKey[`tree:${node.id}`] ||
+                    loadingByKey[`worktree:${node.id}`],
+                )
+              }
+              onItemClick={handleItemClick}
+              shouldFolderClickActivate={node =>
+                node.entityType === "app-v2-project"
+              }
+              isFolderExpanded={key => expanded.has(key)}
+              onToggleFolder={key =>
+                setExpanded(current => {
+                  const next = new Set(current);
+                  if (next.has(key)) next.delete(key);
+                  else next.add(key);
+                  return next;
+                })
+              }
+              onExpandFolder={key =>
+                setExpanded(current => new Set(current).add(key))
+              }
+              getFolderExpansionKey={node =>
+                node.entityType === "app-v2-project"
                   ? node.id
-                  : node.path
-            }
-            enableDragDrop={false}
-            enableRename={false}
-            enableDelete={false}
-            enableNewFolder={false}
-          />
+                  : node.id.includes(APP_V2_DIR_SEP)
+                    ? node.id
+                    : node.path
+              }
+              enableDragDrop={false}
+              enableRename={false}
+              enableDelete={false}
+              enableNewFolder={false}
+            />
+          </>
         )}
       </ExplorerShell>
 
