@@ -38,13 +38,35 @@ export function createAppsV2E2BTemplate() {
       [
         "set -eux",
         "command -v node >/dev/null",
-        "command -v git >/dev/null",
+        // ALL git runs inside the sandbox (the API host has no git and never
+        // shells out to it). Guarantee git is present — install it if the base
+        // image lacks it — then assert.
+        "if ! command -v git >/dev/null; then " +
+          "(apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*) " +
+          "|| (apk add --no-cache git) " +
+          "|| (yum install -y git); fi",
+        "git --version",
         `npm install -g --force pnpm@${PNPM_VERSION}`,
         `test "$(pnpm --version)" = "${PNPM_VERSION}"`,
         "mkdir -p /home/user/app",
         "chown -R user:user /home/user/app",
       ].join(" && "),
       { user: "root" },
+    )
+    .runCmd(
+      [
+        "set -eux",
+        // A default commit identity so `git commit` works without per-command
+        // config (the server overrides author/committer per commit anyway).
+        'git config --global user.name "Mako Agent"',
+        'git config --global user.email "agent@mako.ai"',
+        // Never block on an interactive credential/host prompt; the server
+        // injects a tokenized remote URL for private repos.
+        "git config --global credential.helper ''",
+        "git config --global advice.detachedHead false",
+        "git config --global init.defaultBranch main",
+      ].join(" && "),
+      { user: "user" },
     )
     .runCmd(
       [
