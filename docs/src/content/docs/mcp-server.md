@@ -13,6 +13,8 @@ Where [MCP Connectors](/mcp-connectors/) let Mako's agent use *other* systems' t
 
 Give your client one URL — `https://your-mako-host/api/mcp` — and it discovers the OAuth sign-in flow itself. Your browser opens once: sign in with your Mako account, pick a workspace, approve **read-only** access. Done.
 
+Inside the app, everything lives at **Settings → Connect Agents**: per-client setup with one-click **Add to Claude** / **Add to Cursor** buttons, plus a **Connected agents** list showing every agent with access (who connected it, when it was last used) with one-click disconnect.
+
 **Claude Code**
 
 ```bash
@@ -21,13 +23,13 @@ claude mcp add --transport http mako https://your-mako-host/api/mcp
 
 Then type `/mcp` inside a session to trigger the sign-in.
 
-**Claude (web / desktop)** — the in-app API Keys page has a one-click **Add to Claude** button that opens claude.ai with the connector prefilled (you review and confirm, then click **Connect** and sign in). Manually: **Settings → Connectors → Add custom connector**, name it `mako`, paste the URL. The install-link format, if you want to share it, is:
+**Claude (web / desktop)** — **Settings → Connect Agents** has a one-click **Add to Claude** button that opens claude.ai with the connector prefilled (you review and confirm, then click **Connect** and sign in). Manually: **Settings → Connectors → Add custom connector**, name it `mako`, paste the URL. The install-link format, if you want to share it, is:
 
 ```text
 https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=mako&connectorUrl=<percent-encoded MCP URL>
 ```
 
-**Cursor** — add to `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global); Cursor prompts you to sign in on first use. The in-app API Keys page also has a one-click **Add to Cursor** button.
+**Cursor** — add to `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global); Cursor prompts you to sign in on first use. **Settings → Connect Agents** also has a one-click **Add to Cursor** button.
 
 ```json
 {

@@ -214,6 +214,77 @@ export async function refreshAccessToken(input: {
   });
 }
 
+/**
+ * One row per connected agent: a (client × user) pair that holds at least one
+ * live grant in the workspace. Grants are token documents; refresh rotation
+ * replaces them, so `connectedAt` is the oldest surviving grant's creation.
+ */
+export interface McpConnectionSummary {
+  clientId: string;
+  clientName?: string;
+  userId: string;
+  connectedAt: Date;
+  lastUsedAt?: Date;
+  accessExpiresAt: Date;
+}
+
+export async function listMcpConnections(
+  workspaceId: string,
+): Promise<McpConnectionSummary[]> {
+  const grants = await McpOAuthToken.aggregate<{
+    _id: { clientId: string; userId: string };
+    connectedAt: Date;
+    lastUsedAt?: Date;
+    accessExpiresAt: Date;
+  }>([
+    { $match: { workspaceId, refreshExpiresAt: { $gt: new Date() } } },
+    {
+      $group: {
+        _id: { clientId: "$clientId", userId: "$userId" },
+        connectedAt: { $min: "$createdAt" },
+        lastUsedAt: { $max: "$lastUsedAt" },
+        accessExpiresAt: { $max: "$accessExpiresAt" },
+      },
+    },
+    { $sort: { lastUsedAt: -1, connectedAt: -1 } },
+  ]);
+
+  const clientIds = [...new Set(grants.map(g => g._id.clientId))];
+  const clients = await McpOAuthClient.find({ clientId: { $in: clientIds } })
+    .select("clientId clientName")
+    .lean();
+  const nameByClientId = new Map(
+    clients.map(c => [c.clientId, c.clientName] as const),
+  );
+
+  return grants.map(g => ({
+    clientId: g._id.clientId,
+    clientName: nameByClientId.get(g._id.clientId),
+    userId: g._id.userId,
+    connectedAt: g.connectedAt,
+    lastUsedAt: g.lastUsedAt,
+    accessExpiresAt: g.accessExpiresAt,
+  }));
+}
+
+/**
+ * Revoke every grant a (client × user) pair holds in the workspace. The agent
+ * loses access immediately (access tokens are validated against the DB) and
+ * must run the sign-in flow again to reconnect.
+ */
+export async function revokeMcpConnection(input: {
+  workspaceId: string;
+  clientId: string;
+  userId: string;
+}): Promise<number> {
+  const result = await McpOAuthToken.deleteMany({
+    workspaceId: input.workspaceId,
+    clientId: input.clientId,
+    userId: input.userId,
+  });
+  return result.deletedCount ?? 0;
+}
+
 export interface ValidatedMcpToken {
   userId: string;
   workspaceId: string;

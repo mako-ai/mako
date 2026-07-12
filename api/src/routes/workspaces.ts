@@ -8,6 +8,10 @@ import {
   resolveWorkspaceApiKeyScopes,
   type WorkspaceApiKeyScope,
 } from "../auth/api-key-scopes";
+import {
+  listMcpConnections,
+  revokeMcpConnection,
+} from "../auth/mcp-oauth.service";
 import { workspaceService } from "../services/workspace.service";
 import {
   requireWorkspace,
@@ -16,6 +20,7 @@ import {
 } from "../middleware/workspace.middleware";
 import { Types } from "mongoose";
 import { Workspace } from "../database/workspace-schema";
+import { User } from "../database/schema";
 import { normalizeEmail } from "../utils/email.utils";
 import { loggers } from "../logging";
 import {
@@ -1531,6 +1536,166 @@ workspaceRoutes.openapi(
           success: false,
           error:
             error instanceof Error ? error.message : "Failed to delete API key",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// MCP OAuth connections (agents connected via the MCP sign-in flow)
+
+const IdClientParam = IdParam.extend({
+  clientId: z.string().openapi({ param: { name: "clientId", in: "path" } }),
+});
+
+/** Members see their own connected agents; owners/admins see everyone's. */
+function canSeeAllMcpConnections(role: string | undefined): boolean {
+  return role === "owner" || role === "admin";
+}
+
+// GET /api/workspaces/:id/mcp-connections - List agents connected via OAuth
+workspaceRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/mcp-connections",
+    tags: ["Workspaces"],
+    summary: "List MCP agents connected to the workspace via OAuth",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: { params: IdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      if (!isSessionAuth(c)) {
+        return c.json(
+          {
+            success: false,
+            error: "MCP connection management requires a browser session",
+          },
+          403,
+        );
+      }
+      const workspace = c.get("workspace");
+      const user = c.get("user");
+      if (!user) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
+      if (c.req.param("id") !== workspace._id.toString()) {
+        return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
+      }
+
+      const seeAll = canSeeAllMcpConnections(c.get("memberRole"));
+      const all = await listMcpConnections(workspace._id.toString());
+      const visible = seeAll
+        ? all
+        : all.filter(conn => conn.userId === user.id);
+
+      // User _ids are UUID strings, not ObjectIds.
+      const userIds = [...new Set(visible.map(conn => conn.userId))];
+      const users = await User.find({ _id: { $in: userIds } })
+        .select("email")
+        .lean();
+      const emailByUserId = new Map(
+        users.map(u => [String(u._id), u.email] as const),
+      );
+
+      return c.json({
+        success: true,
+        connections: visible.map(conn => ({
+          clientId: conn.clientId,
+          clientName: conn.clientName || "Unknown client",
+          userId: conn.userId,
+          userEmail: emailByUserId.get(conn.userId) ?? "",
+          isOwn: conn.userId === user.id,
+          connectedAt: conn.connectedAt,
+          lastUsedAt: conn.lastUsedAt ?? null,
+        })),
+        canSeeAll: seeAll,
+      });
+    } catch (error) {
+      logger.error("Error listing MCP connections", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to list MCP connections",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// DELETE /api/workspaces/:id/mcp-connections/:clientId - Revoke an agent
+workspaceRoutes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/{id}/mcp-connections/{clientId}",
+    tags: ["Workspaces"],
+    summary: "Revoke an MCP agent's OAuth access to the workspace",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: IdClientParam,
+      query: z.object({ userId: z.string().optional() }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      if (!isSessionAuth(c)) {
+        return c.json(
+          {
+            success: false,
+            error: "MCP connection management requires a browser session",
+          },
+          403,
+        );
+      }
+      const workspace = c.get("workspace");
+      const user = c.get("user");
+      if (!user) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
+      if (c.req.param("id") !== workspace._id.toString()) {
+        return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
+      }
+
+      // Members may only revoke their own grants; owners/admins anyone's.
+      const targetUserId = c.req.query("userId") || user.id;
+      if (
+        targetUserId !== user.id &&
+        !canSeeAllMcpConnections(c.get("memberRole"))
+      ) {
+        return c.json(
+          { success: false, error: "Insufficient permissions in workspace" },
+          403,
+        );
+      }
+
+      const revoked = await revokeMcpConnection({
+        workspaceId: workspace._id.toString(),
+        clientId: c.req.param("clientId"),
+        userId: targetUserId,
+      });
+      if (revoked === 0) {
+        return c.json({ success: false, error: "Connection not found" }, 404);
+      }
+
+      return c.json({ success: true, revokedGrants: revoked });
+    } catch (error) {
+      logger.error("Error revoking MCP connection", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to revoke MCP connection",
         },
         500,
       );
