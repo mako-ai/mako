@@ -38,11 +38,17 @@ const AUTHORIZE_PATH = "/api/oauth/mcp/authorize";
  * without PUBLIC_URL still serves consistent metadata.
  */
 function publicBaseUrl(c: Context): string {
-  const configured = process.env.PUBLIC_URL || process.env.CLIENT_URL;
-  if (configured) return configured.replace(/\/$/, "");
   const url = new URL(c.req.url);
   const proto = c.req.header("x-forwarded-proto") || url.protocol.slice(0, -1);
   const host = c.req.header("x-forwarded-host") || url.host;
+  // A direct Cloud Run host bypasses the CDN/WAF that fronts the canonical
+  // domain. Serve self-referential metadata there so the entire OAuth dance
+  // stays on the host the client actually reached — e.g. connecting claude.ai
+  // to a PR preview via its *.run.app URL when Cloudflare blocks Anthropic's
+  // user agents on the canonical host.
+  if (host.endsWith(".run.app")) return `${proto}://${host}`;
+  const configured = process.env.PUBLIC_URL || process.env.CLIENT_URL;
+  if (configured) return configured.replace(/\/$/, "");
   return `${proto}://${host}`;
 }
 
