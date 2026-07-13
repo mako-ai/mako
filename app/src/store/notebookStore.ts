@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import { apiClient } from "../lib/api-client";
+import type { KernelOutput } from "../notebook-runtime/kernel";
 import { useUIStore } from "./uiStore";
 import { realtimeClientId } from "../lib/realtime-client-id";
 
@@ -14,11 +15,27 @@ import { realtimeClientId } from "../lib/realtime-client-id";
  */
 export type NotebookBlockType = "code" | "sql" | "markdown";
 
+/** A rendered output persisted with a cell (survives reload). Mirrors the API
+ * schema: kernel outputs for code cells + a `sql` variant for SQL results. */
+export type NotebookCellOutput =
+  | KernelOutput
+  | {
+      type: "sql";
+      rows: unknown[];
+      fields?: Array<{ name?: string; originalName?: string } | string>;
+      rowCount: number;
+      executionTime?: number;
+      truncated?: boolean;
+    };
+
 export interface NotebookBlock {
   id: string;
   type: NotebookBlockType;
   source: string;
   connectionId?: string;
+  outputs?: NotebookCellOutput[];
+  executionCount?: number;
+  executedAt?: string;
 }
 
 export interface NotebookDoc {

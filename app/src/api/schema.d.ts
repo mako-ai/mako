@@ -4414,6 +4414,9 @@ export interface components {
                 type: "code" | "sql" | "markdown";
                 source: string;
                 connectionId?: string;
+                outputs?: unknown[];
+                executionCount?: number;
+                executedAt?: string;
             }[];
             clientId?: string;
         };

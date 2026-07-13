@@ -22,6 +22,7 @@ import {
   startKernelSession,
   type KernelOutput,
 } from "../notebook-runtime/kernel";
+import { capKernelOutputs, capSqlRows } from "../notebook-runtime/outputs";
 import KernelOutputView from "./KernelOutputView";
 import ResultsTable from "./ResultsTable";
 import { StreamingMarkdown } from "./StreamingMarkdown";
@@ -76,10 +77,31 @@ export default function NotebookCell({
   const monacoLanguage = MONACO_LANGUAGE[block.type];
 
   const [running, setRunning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<CellResult | null>(null);
-  const [kernelOutputs, setKernelOutputs] = useState<KernelOutput[]>([]);
+  // Live streaming buffer for the current Python run this session; when null we
+  // render the persisted outputs off `block.outputs` (the source of truth).
+  const [liveOutputs, setLiveOutputs] = useState<KernelOutput[] | null>(null);
   const [editingMarkdown, setEditingMarkdown] = useState(false);
+
+  const nowIso = () => new Date().toISOString();
+
+  // Persisted outputs (survive reload; also reflect agent/collab writes).
+  const codeOutputs =
+    liveOutputs ??
+    ((block.outputs ?? []).filter(o => o.type !== "sql") as KernelOutput[]);
+  const sqlOutput = block.outputs?.find(o => o.type === "sql");
+  const sqlError = block.outputs?.find(o => o.type === "error");
+  const sqlResult: CellResult | null =
+    sqlOutput && sqlOutput.type === "sql"
+      ? {
+          results: sqlOutput.rows,
+          executedAt: block.executedAt ?? "",
+          resultCount: sqlOutput.rowCount,
+          executionTime: sqlOutput.executionTime,
+          fields: sqlOutput.fields,
+          pageInfo: null,
+          currentPage: 1,
+        }
+      : null;
 
   const canRunSql =
     block.type === "sql" &&
@@ -94,22 +116,38 @@ export default function NotebookCell({
     block.source.trim().length > 0 &&
     !running;
 
-  // Run a Python cell: ensure the notebook's kernel session exists, then stream
-  // execution outputs into the cell as they arrive.
+  // Run a Python cell: ensure the notebook's kernel session exists, stream
+  // outputs live, then persist them to the block so they survive reload.
   const runCode = async () => {
     if (!workspaceId) return;
     setRunning(true);
-    setError(null);
-    setKernelOutputs([]);
+    setLiveOutputs([]);
     const collected: KernelOutput[] = [];
     try {
       await startKernelSession(workspaceId, notebookId);
-      await executeCode(workspaceId, notebookId, block.source, output => {
-        collected.push(output);
-        setKernelOutputs([...collected]);
+      const res = await executeCode(
+        workspaceId,
+        notebookId,
+        block.source,
+        output => {
+          collected.push(output);
+          setLiveOutputs([...collected]);
+        },
+      );
+      onChange({
+        outputs: capKernelOutputs(collected),
+        executionCount: res.executionCount ?? undefined,
+        executedAt: nowIso(),
       });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Execution failed");
+      const errOut: KernelOutput = {
+        type: "error",
+        ename: "ExecutionError",
+        evalue: e instanceof Error ? e.message : "Execution failed",
+        traceback: [],
+      };
+      setLiveOutputs([errOut]);
+      onChange({ outputs: [errOut], executedAt: nowIso() });
     } finally {
       setRunning(false);
     }
@@ -118,7 +156,7 @@ export default function NotebookCell({
   const runSql = async () => {
     if (!workspaceId || !block.connectionId) return;
     setRunning(true);
-    setError(null);
+    setLiveOutputs(null); // SQL renders from persisted block.outputs
     const start = Date.now();
     try {
       const res = await useConsoleStore
@@ -127,8 +165,19 @@ export default function NotebookCell({
           pageSize: 500,
         });
       if (!res.success) {
-        setError(typeof res.error === "string" ? res.error : "Query failed");
-        setResult(null);
+        const message =
+          typeof res.error === "string" ? res.error : "Query failed";
+        onChange({
+          outputs: [
+            {
+              type: "error",
+              ename: "SQLError",
+              evalue: message,
+              traceback: [],
+            },
+          ],
+          executedAt: nowIso(),
+        });
         return;
       }
       const rows = (res as { rows?: unknown[] }).rows ?? [];
@@ -137,18 +186,32 @@ export default function NotebookCell({
           fields?: Array<{ name?: string; originalName?: string } | string>;
         }
       ).fields;
-      setResult({
-        results: rows,
-        executedAt: new Date().toISOString(),
-        resultCount: rows.length,
-        executionTime: Date.now() - start,
-        fields,
-        pageInfo: null,
-        currentPage: 1,
+      const { rows: persistRows, truncated } = capSqlRows(rows);
+      onChange({
+        outputs: [
+          {
+            type: "sql",
+            rows: persistRows,
+            fields,
+            rowCount: rows.length,
+            executionTime: Date.now() - start,
+            truncated,
+          },
+        ],
+        executedAt: nowIso(),
       });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Query failed");
-      setResult(null);
+      onChange({
+        outputs: [
+          {
+            type: "error",
+            ename: "SQLError",
+            evalue: e instanceof Error ? e.message : "Query failed",
+            traceback: [],
+          },
+        ],
+        executedAt: nowIso(),
+      });
     } finally {
       setRunning(false);
     }
@@ -387,33 +450,26 @@ export default function NotebookCell({
         </Box>
       )}
 
-      {/* SQL results / error, inline under the cell. */}
-      {block.type === "sql" && (error || result) && (
+      {/* SQL result / error, from persisted block.outputs (survives reload). */}
+      {block.type === "sql" && (sqlError || sqlResult) && (
         <Box sx={{ borderTop: 1, borderColor: "divider" }}>
-          {error ? (
+          {sqlError && sqlError.type === "error" ? (
             <Alert
               severity="error"
               sx={{ borderRadius: 0, fontSize: "0.8rem" }}
             >
-              {error}
+              {sqlError.evalue}
             </Alert>
-          ) : (
+          ) : sqlResult ? (
             <Box sx={{ height: 320, position: "relative" }}>
-              <ResultsTable results={result} />
+              <ResultsTable results={sqlResult} />
             </Box>
-          )}
+          ) : null}
         </Box>
       )}
 
-      {/* Python kernel outputs / error, inline under the cell. */}
-      {block.type === "code" && error && (
-        <Alert severity="error" sx={{ borderRadius: 0, fontSize: "0.8rem" }}>
-          {error}
-        </Alert>
-      )}
-      {block.type === "code" && !error && (
-        <KernelOutputView outputs={kernelOutputs} />
-      )}
+      {/* Python kernel outputs: live buffer while running, else persisted. */}
+      {block.type === "code" && <KernelOutputView outputs={codeOutputs} />}
     </Box>
   );
 }

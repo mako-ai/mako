@@ -1065,6 +1065,16 @@
                 },
                 "connectionId": {
                   "type": "string"
+                },
+                "outputs": {
+                  "type": "array",
+                  "items": {}
+                },
+                "executionCount": {
+                  "type": "number"
+                },
+                "executedAt": {
+                  "type": "string"
                 }
               },
               "required": [

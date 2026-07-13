@@ -38,6 +38,12 @@ const BlockSchema = z.object({
   type: z.enum(["code", "sql", "markdown"]),
   source: z.string(),
   connectionId: z.string().optional(),
+  // Persisted execution outputs (shape validated on the client; stored as-is
+  // so cell results survive reload). Kept permissive to avoid coupling the
+  // wire schema to the output union.
+  outputs: z.array(z.unknown()).optional(),
+  executionCount: z.number().optional(),
+  executedAt: z.string().optional(),
 });
 
 const CreateNotebookSchema = z

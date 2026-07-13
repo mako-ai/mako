@@ -10,12 +10,38 @@
  */
 export type NotebookBlockType = "code" | "sql" | "markdown";
 
+/**
+ * A rendered output persisted with a cell so it survives reload. `stream` /
+ * `result` / `display` / `error` mirror the kernel's Jupyter outputs (Python
+ * cells); `sql` holds a SQL cell's result set. Kept small — large payloads are
+ * capped/truncated on write (GCS offload of big outputs is a follow-up).
+ */
+export type NotebookCellOutput =
+  | { type: "stream"; name: "stdout" | "stderr"; text: string }
+  | { type: "result"; data: Record<string, unknown> }
+  | { type: "display"; data: Record<string, unknown> }
+  | { type: "error"; ename: string; evalue: string; traceback: string[] }
+  | {
+      type: "sql";
+      rows: unknown[];
+      fields?: Array<{ name?: string; originalName?: string } | string>;
+      rowCount: number;
+      executionTime?: number;
+      truncated?: boolean;
+    };
+
 export interface NotebookBlock {
   id: string;
   type: NotebookBlockType;
   source: string;
   /** SQL blocks target a Mako data source; code blocks run on the kernel. */
   connectionId?: string;
+  /** Persisted outputs from the last execution (so they survive reload). */
+  outputs?: NotebookCellOutput[];
+  /** The kernel's execution counter for code cells (`In [n]`). */
+  executionCount?: number;
+  /** ISO timestamp of the last execution. */
+  executedAt?: string;
 }
 
 export interface NotebookDoc {
