@@ -322,20 +322,13 @@ function describeGoogleApiError(error: any, fallback: string): string {
 }
 
 /**
-/**
- * Database engines that cannot enforce read-only execution at the
- * session/transaction layer. For these, `readOnly: true` fails closed in
- * `executeQuery` (and the BigQuery-native streaming/schema paths are bypassed),
- * rather than relying on lexical SQL checks. Callers that already guarantee a
- * query is read-only by other means (e.g. materialization via
- * `assertReadOnlyMaterializationQuery`) must NOT request session read-only for
- * these engines — use `supportsReadOnlySessionEnforcement` to decide.
+ * Non-SQL engines whose queries cannot be validated by the lexical read-only
+ * analyzer (`checkPreviewQuerySafety`). Under `readOnly` these fail closed in
+ * `executeQuery`; SQL engines (incl. BigQuery) are enforced read-only lexically
+ * instead — see `executeQuery`.
  */
-const READ_ONLY_SESSION_UNSUPPORTED_TYPES = new Set<string>([
+const READ_ONLY_UNSUPPORTED_TYPES = new Set<string>([
   "mongodb",
-  "bigquery",
-  "mssql",
-  "cloudflare-d1",
   "cloudflare-kv",
 ]);
 
@@ -506,19 +499,6 @@ export class DatabaseConnectionService {
   }
 
   /**
-   * Whether `readOnly: true` can be honored at the database/session layer for
-   * a given engine. Engines that return `false` fail closed under `readOnly` in
-   * `executeQuery`, and their BigQuery-style native streaming/schema paths are
-   * skipped when `readOnly` is set. Callers that guarantee read-only by other
-   * means (e.g. materialization validates the query up front) should request
-   * session read-only only for engines where this returns `true`; otherwise the
-   * query would be routed into an unsupported generic batch path.
-   */
-  supportsReadOnlySessionEnforcement(databaseType: string): boolean {
-    return !READ_ONLY_SESSION_UNSUPPORTED_TYPES.has(databaseType);
-  }
-
-  /**
    * Execute query on database
    */
   async executeQuery(
@@ -535,11 +515,16 @@ export class DatabaseConnectionService {
               "Read-only execution only supports SQL strings; arbitrary MongoDB execution is disabled",
           };
         }
+        // Lexical read-only validation is the uniform guarantee. Engines with a
+        // session/transaction read-only mode (Postgres READ ONLY txn, ClickHouse
+        // readonly=2, ...) additionally enforce it below; SQL engines without one
+        // (e.g. BigQuery) rely on this validated single SELECT/WITH statement.
         const safety = checkPreviewQuerySafety(query);
         if (!safety.safe) {
           return { success: false, error: safety.errors.join(" ") };
         }
-        if (!this.supportsReadOnlySessionEnforcement(database.type)) {
+        // Non-SQL engines can't be validated by the SQL analyzer, so fail closed.
+        if (READ_ONLY_UNSUPPORTED_TYPES.has(database.type)) {
           return {
             success: false,
             error: `Read-only execution is not supported for ${database.type}; connect it with database credentials restricted to read access`,
@@ -713,11 +698,21 @@ export class DatabaseConnectionService {
     query: any,
     options: StreamingQueryOptions & QueryExecuteOptions,
   ): Promise<{ success: boolean; totalRows: number; error?: string }> {
-    if (
-      !options.readOnly &&
-      database.type === "bigquery" &&
-      typeof query === "string"
-    ) {
+    if (database.type === "bigquery" && typeof query === "string") {
+      // BigQuery has no session read-only mode, so enforce it lexically (single
+      // validated SELECT/WITH) and use the native streaming path. Previously
+      // `readOnly` skipped this branch and fell into the offset-batch loop,
+      // which throws "BigQuery batch queries must use native page tokens".
+      if (options.readOnly) {
+        const safety = checkPreviewQuerySafety(query);
+        if (!safety.safe) {
+          return {
+            success: false,
+            totalRows: 0,
+            error: safety.errors.join(" "),
+          };
+        }
+      }
       return await this.executeBigQueryStreamingQuery(database, query, options);
     }
 
@@ -823,7 +818,12 @@ export class DatabaseConnectionService {
       };
     }
 
-    if (typeof query === "string" && !options.readOnly) {
+    // Schema introspection (dry-run / describe / `LIMIT 0`) never mutates data,
+    // so it is always used regardless of `readOnly`. Gating it on `readOnly`
+    // (previously the case) forced every engine onto a `LIMIT 1` sample probe —
+    // degrading type fidelity everywhere and breaking BigQuery, whose native
+    // dry-run was skipped in favor of an unsupported offset-batch probe.
+    if (typeof query === "string") {
       const driver = databaseRegistry.getDriver(database.type);
       if (driver?.getQuerySchema) {
         const result = await driver.getQuerySchema(database, query, {

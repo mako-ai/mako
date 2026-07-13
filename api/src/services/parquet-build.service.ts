@@ -109,22 +109,13 @@ export async function buildQueryParquetFile(
 
   assertReadOnlyMaterializationQuery(executableQuery, connection.type);
 
-  // The query is already validated read-only above, so session-level read-only
-  // enforcement is defense-in-depth. Only request it for engines that can honor
-  // it — engines like BigQuery fail closed under `readOnly` (and skip their
-  // native streaming/schema paths), which would otherwise abort the build with
-  // a misleading "must use native page tokens" error.
-  const readOnly = databaseConnectionService.supportsReadOnlySessionEnforcement(
-    connection.type,
-  );
-
   let fields: FieldMeta[] = [];
   try {
     const schemaResult =
       await databaseConnectionService.getStreamingQueryFields(
         connection,
         executableQuery,
-        { databaseId, databaseName, readOnly },
+        { databaseId, databaseName, readOnly: true },
       );
     if (schemaResult.success && schemaResult.fields) {
       fields = schemaResult.fields;
@@ -159,7 +150,7 @@ export async function buildQueryParquetFile(
             databaseId,
             databaseName,
             onBatch: insertBatch,
-            readOnly,
+            readOnly: true,
           },
         );
       // A mid-stream failure must fail the build — otherwise a silently
