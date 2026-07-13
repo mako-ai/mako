@@ -18,6 +18,7 @@ description: Build outputs, deployment paths, and do-not-edit policy for dist
 - Production deploys on push to `master`. PR previews deploy automatically on PR open/sync.
 - Cloud Run config (memory, instances, timeouts, env vars) must be changed in the workflow file, not `deploy.sh`.
 - Cloud Run services run with `--memory=1Gi`, `--timeout=600`, `--min-instances=1` (prod) or `0` (preview).
+- CI builds once via `pnpm run build:ci` (no re-lint), then packages with `docker build --build-arg USE_PREBUILT=1` + BuildKit registry cache (`mako:buildcache`). Do not reintroduce a second full compile inside the image for deploy jobs.
 
 Environment variables (local defaults):
 

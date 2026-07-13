@@ -8,8 +8,12 @@ description: Deploy Mako to production with Docker, Google Cloud Run, or Cloudfl
 Mako ships with a production-ready Dockerfile.
 
 ```bash
-# Build the image
+# Build the image from source (default)
 docker build -t mako .
+
+# Or: build packages on the host, then package only (what CI does)
+pnpm run build:ci
+docker build --build-arg USE_PREBUILT=1 -t mako .
 
 # Run it
 docker run -p 8080:8080 \
@@ -21,6 +25,8 @@ docker run -p 8080:8080 \
 ```
 
 The image bundles both the API and the pre-built React frontend. The API serves the frontend from `/public`.
+
+CI (`deploy-app.yml`) builds once on the runner with `pnpm run build:ci`, then packages with `USE_PREBUILT=1` and BuildKit registry cache so apt/dbt/pnpm layers are reused across deploys.
 
 ### Docker Compose (Development)
 
