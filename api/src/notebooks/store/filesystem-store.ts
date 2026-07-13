@@ -39,6 +39,16 @@ function notebookPath(workspaceId: string, id: string): string {
   return path.join(workspaceDir(workspaceId), `${id}.json`);
 }
 
+function artifactPath(
+  workspaceId: string,
+  notebookId: string,
+  artifactId: string,
+): string {
+  if (!ID_RE.test(notebookId)) throw new Error("Invalid notebook id");
+  if (!ID_RE.test(artifactId)) throw new Error("Invalid artifact id");
+  return path.join(workspaceDir(workspaceId), notebookId, "outputs", artifactId);
+}
+
 export class FilesystemNotebookStore implements NotebookStore {
   readonly kind = "filesystem" as const;
 
@@ -106,6 +116,42 @@ export class FilesystemNotebookStore implements NotebookStore {
       return true;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw err;
+    }
+  }
+
+  async putArtifact(
+    workspaceId: string,
+    notebookId: string,
+    artifactId: string,
+    body: Buffer,
+    contentType: string,
+  ): Promise<void> {
+    const file = artifactPath(workspaceId, notebookId, artifactId);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, body);
+    // Sidecar so getArtifact can serve the right Content-Type.
+    await fs.writeFile(`${file}.type`, contentType, "utf8");
+  }
+
+  async getArtifact(
+    workspaceId: string,
+    notebookId: string,
+    artifactId: string,
+  ): Promise<{ body: Buffer; contentType: string } | null> {
+    const file = artifactPath(workspaceId, notebookId, artifactId);
+    try {
+      const body = await fs.readFile(file);
+      let contentType = "application/octet-stream";
+      try {
+        contentType =
+          (await fs.readFile(`${file}.type`, "utf8")).trim() || contentType;
+      } catch {
+        // missing sidecar — fall back to octet-stream
+      }
+      return { body, contentType };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw err;
     }
   }

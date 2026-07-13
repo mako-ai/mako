@@ -392,7 +392,13 @@ export default function NotebookCell({
       )}
 
       {/* Python kernel outputs: live buffer while running, else persisted. */}
-      {block.type === "code" && <KernelOutputView outputs={codeOutputs} />}
+      {block.type === "code" && (
+        <KernelOutputView
+          outputs={codeOutputs}
+          workspaceId={workspaceId}
+          notebookId={notebookId}
+        />
+      )}
     </Box>
   );
 }

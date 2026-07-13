@@ -15,6 +15,7 @@ import { randomUUID } from "crypto";
 import { Types } from "mongoose";
 
 import { getNotebookStore } from "../../notebooks/store";
+import { offloadOutputs } from "../../notebooks/offload";
 import type {
   NotebookBlock,
   NotebookBlockType,
@@ -375,9 +376,17 @@ export function createNotebookServerTools({
     outputs: NotebookCellOutput[],
     executionCount?: number,
   ) {
+    // Offload large payloads (plots, HTML tables) to the store, keeping only a
+    // small ref inline — same as the human PATCH path.
+    const offloaded = await offloadOutputs(store, workspaceId, notebookId, outputs);
     const next = blocks.map(b =>
       b.id === cellId
-        ? { ...b, outputs, executionCount, executedAt: new Date().toISOString() }
+        ? {
+            ...b,
+            outputs: offloaded,
+            executionCount,
+            executedAt: new Date().toISOString(),
+          }
         : b,
     );
     await saveBlocks(notebookId, next);

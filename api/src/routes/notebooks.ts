@@ -19,6 +19,7 @@ import {
   pathParam,
 } from "../openapi/core";
 import { getNotebookStore } from "../notebooks/store";
+import { offloadBlocks } from "../notebooks/offload";
 import type { NotebookBlock } from "../notebooks/types";
 import { loggers } from "../logging";
 import { publishRealtimeEvent } from "../services/realtime.service";
@@ -144,6 +145,41 @@ notebookRoutes.openapi(
   },
 );
 
+// GET /:id/artifacts/:artifactId — stream a large output offloaded to the store
+notebookRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/artifacts/{artifactId}",
+    tags: ["Notebooks"],
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: z.object({
+        workspaceId: pathParam("workspaceId"),
+        id: pathParam("id"),
+        artifactId: pathParam("artifactId"),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const { id, artifactId } = c.req.valid("param");
+    const artifact = await getNotebookStore().getArtifact(
+      workspaceId(c),
+      id,
+      artifactId,
+    );
+    if (!artifact) {
+      return c.json({ success: false, error: "Artifact not found" }, 404);
+    }
+    // artifactId is unique per output, so the bytes are immutable — cache hard.
+    return c.body(artifact.body, 200, {
+      "Content-Type": artifact.contentType,
+      "Cache-Control": "private, max-age=31536000, immutable",
+    });
+  },
+);
+
 // PATCH /:id — rename and/or replace blocks
 notebookRoutes.openapi(
   createRoute({
@@ -161,11 +197,14 @@ notebookRoutes.openapi(
       blocks?: NotebookBlock[];
       clientId?: string;
     };
-    const doc = await getNotebookStore().update(
-      workspaceId(c),
-      c.req.valid("param").id,
-      body,
-    );
+    const store = getNotebookStore();
+    const id = c.req.valid("param").id;
+    // Offload large outputs (plots, HTML tables) to the store, keeping only a
+    // small ref inline, so the document stays lean and nothing is dropped.
+    const blocks = body.blocks
+      ? await offloadBlocks(store, workspaceId(c), id, body.blocks)
+      : undefined;
+    const doc = await store.update(workspaceId(c), id, { ...body, blocks });
     if (!doc) {
       return c.json({ success: false, error: "Notebook not found" }, 404);
     }

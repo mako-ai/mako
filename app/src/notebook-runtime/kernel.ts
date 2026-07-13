@@ -9,10 +9,26 @@
 import { api } from "../api/client";
 
 /** A rendered output from executing a code cell (mirrors the server union). */
+/** A large mime payload offloaded to the store; fetched via the artifacts
+ * route. Mirrors the API's `NotebookArtifactRef`. */
+export interface KernelArtifactRef {
+  artifactId: string;
+  contentType: string;
+  size: number;
+}
+
 export type KernelOutput =
   | { type: "stream"; name: "stdout" | "stderr"; text: string }
-  | { type: "result"; data: Record<string, unknown> }
-  | { type: "display"; data: Record<string, unknown> }
+  | {
+      type: "result";
+      data: Record<string, unknown>;
+      artifacts?: Record<string, KernelArtifactRef>;
+    }
+  | {
+      type: "display";
+      data: Record<string, unknown>;
+      artifacts?: Record<string, KernelArtifactRef>;
+    }
   | { type: "error"; ename: string; evalue: string; traceback: string[] };
 
 export interface ExecuteResult {

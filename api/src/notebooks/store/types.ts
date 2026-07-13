@@ -58,4 +58,24 @@ export interface NotebookStore {
     patch: { name?: string; blocks?: NotebookBlock[] },
   ): Promise<NotebookDoc | null>;
   remove(workspaceId: string, id: string): Promise<boolean>;
+
+  /**
+   * Store a large output payload (a plot, HTML table, …) offloaded from a
+   * notebook document, keyed by `artifactId` under the notebook. Overwrites any
+   * existing object with the same id (ids are unique per output).
+   */
+  putArtifact(
+    workspaceId: string,
+    notebookId: string,
+    artifactId: string,
+    body: Buffer,
+    contentType: string,
+  ): Promise<void>;
+
+  /** Fetch an offloaded output payload; `null` if it does not exist. */
+  getArtifact(
+    workspaceId: string,
+    notebookId: string,
+    artifactId: string,
+  ): Promise<{ body: Buffer; contentType: string } | null>;
 }

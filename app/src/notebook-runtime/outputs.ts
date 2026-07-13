@@ -1,13 +1,16 @@
 /**
- * Output caps for persistence. Cell outputs are stored inline in the notebook
- * document (GCS), so we bound their size: truncate long stream text and stop
- * persisting a cell's outputs once a byte budget is exceeded. Large-output
- * offload to GCS (with a ref) is a follow-up.
+ * Output caps for persistence. Long stream text is truncated here; large
+ * `result`/`display` mime payloads (plots, HTML tables) are kept intact and
+ * sent to the server, which offloads them to the store and leaves a small ref
+ * in the document (see api `notebooks/offload.ts`). The per-cell byte budget is
+ * only a backstop against a pathological payload blowing up the save request —
+ * it sits well above a typical plot + table so those reach the server and get
+ * offloaded rather than dropped.
  */
 import type { KernelOutput } from "./kernel";
 
 const MAX_STREAM_CHARS = 50_000; // per stream chunk
-const MAX_TOTAL_BYTES = 512 * 1024; // per cell, all outputs combined
+const MAX_TOTAL_BYTES = 6 * 1024 * 1024; // per cell, all outputs combined
 export const MAX_PERSIST_SQL_ROWS = 200;
 
 /** Truncate long stream text and drop outputs past the per-cell byte budget. */

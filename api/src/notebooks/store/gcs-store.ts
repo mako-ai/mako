@@ -58,6 +58,21 @@ export class GcsNotebookStore implements NotebookStore {
     return this.storage.bucket(this.bucketName).file(this.objectKey(workspaceId, id));
   }
 
+  /** Offloaded output artifacts live under `…/notebooks/<id>/outputs/<artifactId>`. */
+  private artifactFile(
+    workspaceId: string,
+    notebookId: string,
+    artifactId: string,
+  ): File {
+    if (!ID_RE.test(notebookId)) throw new Error("Invalid notebook id");
+    if (!ID_RE.test(artifactId)) throw new Error("Invalid artifact id");
+    return this.storage
+      .bucket(this.bucketName)
+      .file(
+        `${this.notebooksPrefix(workspaceId)}${notebookId}/outputs/${artifactId}`,
+      );
+  }
+
   private saveOptions(doc: NotebookDoc, ifGenerationMatch?: number | string) {
     return {
       contentType: "application/json",
@@ -80,9 +95,14 @@ export class GcsNotebookStore implements NotebookStore {
       .bucket(this.bucketName)
       .getFiles({ prefix: this.notebooksPrefix(workspaceId) });
 
+    const prefix = this.notebooksPrefix(workspaceId);
     const summaries: NotebookSummary[] = [];
     for (const file of files) {
-      const id = file.name.split("/").pop()?.replace(/\.json$/, "");
+      // Only direct `<id>.json` documents — skip nested artifact objects
+      // (`<id>/outputs/<artifactId>`), which share the notebooks/ prefix.
+      const rel = file.name.slice(prefix.length);
+      if (!rel.endsWith(".json") || rel.includes("/")) continue;
+      const id = rel.replace(/\.json$/, "");
       if (!id) continue;
       const meta = (file.metadata.metadata ?? {}) as Record<string, string>;
       summaries.push({
@@ -162,6 +182,38 @@ export class GcsNotebookStore implements NotebookStore {
       return true;
     } catch (err) {
       if (isNotFound(err)) return false;
+      throw err;
+    }
+  }
+
+  async putArtifact(
+    workspaceId: string,
+    notebookId: string,
+    artifactId: string,
+    body: Buffer,
+    contentType: string,
+  ): Promise<void> {
+    await this.artifactFile(workspaceId, notebookId, artifactId).save(body, {
+      contentType,
+      resumable: false,
+    });
+  }
+
+  async getArtifact(
+    workspaceId: string,
+    notebookId: string,
+    artifactId: string,
+  ): Promise<{ body: Buffer; contentType: string } | null> {
+    const file = this.artifactFile(workspaceId, notebookId, artifactId);
+    try {
+      const [meta] = await file.getMetadata();
+      const [body] = await file.download();
+      return {
+        body,
+        contentType: String(meta.contentType ?? "application/octet-stream"),
+      };
+    } catch (err) {
+      if (isNotFound(err)) return null;
       throw err;
     }
   }
