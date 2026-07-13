@@ -509,6 +509,7 @@ export function createServerAppTools({
           const waitMs = Math.min(Math.max(waitSeconds ?? 120, 0), 600) * 1000;
           const deadline = Date.now() + waitMs;
           let status: string = queued.status;
+          let lastError: string | null | undefined = queued.error;
           // Poll the doc until the background build terminates or the wait
           // elapses (the build keeps running server-side either way).
           while (
@@ -522,6 +523,7 @@ export function createServerAppTools({
               : null;
             if (!st) break;
             status = st.status;
+            lastError = st.error;
           }
           if (status === "ready") {
             // Bump version + poke so an attached browser reloads the artifact
@@ -550,7 +552,9 @@ export function createServerAppTools({
               success: false,
               binding: { name },
               status: "error",
-              error: "Materialization failed. Check the binding query.",
+              error: lastError
+                ? `Materialization failed: ${lastError}`
+                : "Materialization failed. Check the binding query.",
             };
           }
           return {

@@ -22,6 +22,7 @@ import { databaseRegistry } from "../databases/registry";
 import { isLocalBigQueryEmulator } from "../utils/bigquery-emulator";
 import {
   type PreviewPageInfo,
+  applySqlRowLimit,
   buildBigQueryCursor,
   buildPreviewPage,
   checkPreviewQuerySafety,
@@ -842,15 +843,23 @@ export class DatabaseConnectionService {
       }
     }
 
+    // BigQuery must never go through prepareSqlBatchQuery: LIMIT/OFFSET batching
+    // is unsupported there (it throws "BigQuery batch queries must use native
+    // page tokens"). This fallback path is reached when the native dry-run
+    // schema probe returns no columns (e.g. an empty dry-run schema), so probe
+    // with a dialect-safe single-row execution rather than throwing and failing
+    // the entire materialization.
     const probeQuery =
-      typeof query === "string"
-        ? prepareSqlBatchQuery({
-            query,
-            databaseType: database.type,
-            batchSize: 1,
-            offset: 0,
-          }).query
-        : query;
+      typeof query !== "string"
+        ? query
+        : database.type === "bigquery"
+          ? applySqlRowLimit({ query, databaseType: database.type, limit: 1 })
+          : prepareSqlBatchQuery({
+              query,
+              databaseType: database.type,
+              batchSize: 1,
+              offset: 0,
+            }).query;
 
     const probe = await this.executeQuery(database, probeQuery, {
       databaseId: options.databaseId,
