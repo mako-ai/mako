@@ -680,10 +680,19 @@ dataSourceRoutes.openapi(
         }));
       }
 
-      // Enrich each entity (and sub-entity) with its field list from the
-      // connector schema so the UI can build schema-driven partition/cluster
-      // selectors (see 15-connector-agnostic.mdc). Sub-entities are resolved
-      // with the flattened `parent:Sub` key used elsewhere in the pipeline.
+      // Static, no-I/O — safe to compute once and reuse per entity below.
+      const incrementalCapabilities =
+        typeof connector.getIncrementalCapabilities === "function"
+          ? connector.getIncrementalCapabilities()
+          : undefined;
+
+      // Enrich each entity (and sub-entity) with its field list, dedup key
+      // columns, and incremental-pull capability from the connector schema,
+      // so the UI can build schema-driven partition/cluster selectors (see
+      // 15-connector-agnostic.mdc) and show Airbyte-style per-entity primary
+      // key + incremental indicators instead of only a connector-level one.
+      // Sub-entities are resolved with the flattened `parent:Sub` key used
+      // elsewhere in the pipeline.
       const attachFields = async (node: any, schemaKey: string) => {
         try {
           const schema = await connector.resolveSchema(schemaKey);
@@ -692,9 +701,22 @@ dataSourceRoutes.openapi(
               ([name, field]) => ({ name, type: field.type }),
             );
           }
+          // Mirrors the CDC layout fallback in buildCdcEntityLayout — when a
+          // connector doesn't declare keyColumns, the pipeline dedups on
+          // ["id"], so reflect that here rather than showing nothing.
+          node.keyColumns =
+            schema?.keyColumns && schema.keyColumns.length > 0
+              ? schema.keyColumns
+              : ["id"];
         } catch {
           // Skip entities where schema resolution fails; the UI falls back
           // to system fields only.
+          node.keyColumns = ["id"];
+        }
+        if (incrementalCapabilities) {
+          node.incrementalMode =
+            incrementalCapabilities.perEntity?.[schemaKey]?.mode ??
+            incrementalCapabilities.mode;
         }
       };
 

@@ -7,7 +7,7 @@
  * pieces of both legacy forms (destination + schema/prefix, entity layout
  * table, webhook secret/provisioning block, cron presets).
  */
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useForm, Controller, useFieldArray } from "react-hook-form";
 import {
   Accordion,
@@ -206,6 +206,22 @@ const SYNC_MODE_COMBOS: SyncModeCombo[] = [
   },
 ];
 
+/**
+ * Airbyte-style per-entity incremental badge — mirrors backend
+ * `IncrementalMode` (BaseConnector.getIncrementalCapabilities). Shown in the
+ * Entities table regardless of the currently-selected Sync Mode so users can
+ * see stream-level capability before deciding.
+ */
+const INCREMENTAL_MODE_BADGE: Record<
+  string,
+  { label: string; color: "success" | "info" | "warning" | "default" }
+> = {
+  native: { label: "Incremental", color: "success" },
+  "client-filter": { label: "Incremental (full scan)", color: "info" },
+  "created-anchor": { label: "New records only", color: "warning" },
+  none: { label: "Full re-pull only", color: "default" },
+};
+
 const STEPS = [
   { label: "Source", description: "Where the data comes from" },
   { label: "Destination", description: "Where the data is written" },
@@ -301,6 +317,18 @@ export function SyncFlowForm({
     entities: string[];
   } | null>(null);
   const [transferQueriesSchema, setTransferQueriesSchema] = useState<any>(null);
+  // Guards the two auto-correction effects below (Incremental capability
+  // downgrade, hidden-schedule collapse) so they never silently rewrite an
+  // EXISTING flow's already-saved mode on load — only in reaction to the
+  // user's own subsequent changes (Sync Mode select, entity toggles) during
+  // this editing session. Without this, the connector capability catalog
+  // resolving asynchronously after mount (a real network round trip, not a
+  // same-tick event) would look identical to a user-driven change and could
+  // downgrade a currently-working saved flow the instant it's opened — the
+  // exact "must not break already-tested CDC/backfill flows" regression this
+  // guards against. Reset to false whenever a different existing flow loads;
+  // always "touched" for brand-new flows (nothing saved to protect there).
+  const formTouchedRef = useRef(isNew);
 
   const toggleStep = (stepIndex: number) => {
     setOpenSteps(prev => {
@@ -419,6 +447,33 @@ export function SyncFlowForm({
     ? selectedIncrementalCapabilities?.warning
     : undefined;
 
+  // Sync Mode dropdown options: the currently-loaded combo is ALWAYS kept
+  // visible, even if it would otherwise be filtered out (e.g. an existing
+  // flow saved as Incremental before this connector's capability was known,
+  // or before it lost webhook/entity support). Without this, MUI's <Select>
+  // can't find a matching MenuItem for the current value and silently
+  // renders blank — which looks like the saved mode was lost, even though
+  // `formTouchedRef` already protects the underlying value from being
+  // rewritten on load. Only NEW selections are restricted to the visible
+  // (supported) list.
+  const visibleSyncModeCombos = SYNC_MODE_COMBOS.filter(
+    combo =>
+      supportedWriteModes.includes(combo.writeMode) &&
+      !(combo.writeMode === "overwrite" && watchWebhookEnabled) &&
+      !(combo.syncMode === "incremental" && !connectorSupportsIncremental),
+  );
+  const currentSyncModeValue = `${watchSyncMode}:${watchWriteMode}`;
+  const currentSyncModeCombo = SYNC_MODE_COMBOS.find(
+    c => c.value === currentSyncModeValue,
+  );
+  const currentSyncModeIsOrphaned =
+    Boolean(currentSyncModeCombo) &&
+    !visibleSyncModeCombos.some(c => c.value === currentSyncModeValue);
+  const syncModeMenuCombos =
+    currentSyncModeIsOrphaned && currentSyncModeCombo
+      ? [currentSyncModeCombo, ...visibleSyncModeCombos]
+      : visibleSyncModeCombos;
+
   const selectedDestination = databases.find(
     db => db.id === watchDestinationId,
   );
@@ -454,6 +509,14 @@ export function SyncFlowForm({
         destType === "mysql"
       ? "index"
       : "none";
+  // Checkbox, Entity, Primary Key, Sync (incremental badge), then
+  // layout-mode-specific columns (partition/index) or nothing ("none").
+  const entityGridTemplate =
+    layoutMode === "partition"
+      ? "36px minmax(110px, 1.3fr) minmax(70px, 0.6fr) minmax(120px, 0.9fr) minmax(100px, 1fr) 80px minmax(100px, 1fr)"
+      : layoutMode === "index"
+        ? "36px minmax(110px, 1.3fr) minmax(70px, 0.6fr) minmax(120px, 0.9fr) minmax(100px, 1fr) minmax(100px, 1fr)"
+        : "36px minmax(110px, 1.3fr) minmax(70px, 0.6fr) minmax(120px, 0.9fr)";
   const requiresQueries = !!transferQueriesSchema;
   const requiresDestinationDatabaseName =
     !isCdcCapableDest && availableDatabases.length > 0;
@@ -514,7 +577,11 @@ export function SyncFlowForm({
   // Refresh + a CDC destination make it redundant with the reconcile cron —
   // disable it too so it doesn't keep firing invisibly in the background.
   useEffect(() => {
-    if (!showScheduleTrigger && watchScheduleEnabled) {
+    if (
+      !showScheduleTrigger &&
+      watchScheduleEnabled &&
+      formTouchedRef.current
+    ) {
       setValue("scheduleEnabled", false);
     }
   }, [showScheduleTrigger, watchScheduleEnabled, setValue]);
@@ -526,7 +593,8 @@ export function SyncFlowForm({
     if (
       watchSyncMode === "incremental" &&
       selectedConnectorType &&
-      !connectorSupportsIncremental
+      !connectorSupportsIncremental &&
+      formTouchedRef.current
     ) {
       setValue("syncMode", "full");
       setValue("writeMode", "append_dedup");
@@ -717,6 +785,7 @@ export function SyncFlowForm({
         ? "preset"
         : "custom",
     );
+    formTouchedRef.current = false;
     reset(formData);
   }, [isNewMode, currentFlowId, flows, reset]);
 
@@ -1808,6 +1877,7 @@ export function SyncFlowForm({
                           c => c.value === e.target.value,
                         );
                         if (!combo) return;
+                        formTouchedRef.current = true;
                         setValue("syncMode", combo.syncMode, {
                           shouldDirty: true,
                         });
@@ -1816,42 +1886,43 @@ export function SyncFlowForm({
                         });
                       }}
                     >
-                      {SYNC_MODE_COMBOS.filter(
-                        combo =>
-                          supportedWriteModes.includes(combo.writeMode) &&
-                          !(
-                            combo.writeMode === "overwrite" &&
-                            watchWebhookEnabled
-                          ) &&
-                          !(
-                            combo.syncMode === "incremental" &&
-                            !connectorSupportsIncremental
-                          ),
-                      ).map(combo => (
+                      {syncModeMenuCombos.map(combo => (
                         <MenuItem key={combo.value} value={combo.value}>
                           {combo.label}
+                          {currentSyncModeIsOrphaned &&
+                            combo.value === currentSyncModeValue &&
+                            " (unsupported — pick a different mode)"}
                         </MenuItem>
                       ))}
                     </Select>
                     <FormHelperText>
-                      {SYNC_MODE_COMBOS.find(
-                        c =>
-                          c.value ===
-                          `${watch("syncMode")}:${watch("writeMode")}`,
-                      )?.help ?? "How records are read and written each run."}
+                      {currentSyncModeCombo?.help ??
+                        "How records are read and written each run."}
                     </FormHelperText>
                   </FormControl>
 
-                  {!connectorSupportsIncremental && selectedConnectorType && (
-                    <Alert severity="info">
-                      Incremental is hidden —{" "}
-                      {selectedConnector?.name || "this connector"} has no way
-                      to fetch only changed records for the selected entities,
-                      so every run would silently re-fetch everything anyway.
-                      Use Full Refresh, and add the webhook trigger or a
-                      periodic full reconcile to stay current between runs.
+                  {currentSyncModeIsOrphaned && (
+                    <Alert severity="warning">
+                      This sync was saved as Incremental before{" "}
+                      {selectedConnector?.name || "this connector"} lost support
+                      for it (or the selected entities changed). It keeps
+                      running as-is until you pick a different Sync Mode above
+                      and save.
                     </Alert>
                   )}
+
+                  {!connectorSupportsIncremental &&
+                    selectedConnectorType &&
+                    !currentSyncModeIsOrphaned && (
+                      <Alert severity="info">
+                        Incremental is hidden —{" "}
+                        {selectedConnector?.name || "this connector"} has no way
+                        to fetch only changed records for the selected entities,
+                        so every run would silently re-fetch everything anyway.
+                        Use Full Refresh, and add the webhook trigger or a
+                        periodic full reconcile to stay current between runs.
+                      </Alert>
+                    )}
 
                   {watchSyncMode === "incremental" && incrementalWarning && (
                     <Alert severity="warning">{incrementalWarning}</Alert>
@@ -2073,16 +2144,11 @@ export function SyncFlowForm({
                           overflowX: "auto",
                         }}
                       >
-                        <Box sx={{ minWidth: layoutMode === "none" ? 0 : 560 }}>
+                        <Box sx={{ minWidth: layoutMode === "none" ? 0 : 720 }}>
                           <Box
                             sx={{
                               display: "grid",
-                              gridTemplateColumns:
-                                layoutMode === "partition"
-                                  ? "36px minmax(120px, 1.5fr) minmax(100px, 1fr) 80px minmax(100px, 1fr)"
-                                  : layoutMode === "index"
-                                    ? "36px minmax(120px, 1.5fr) minmax(100px, 1fr) minmax(100px, 1fr)"
-                                    : "36px 1fr",
+                              gridTemplateColumns: entityGridTemplate,
                               gap: 1,
                               px: 1,
                               py: 0.5,
@@ -2104,6 +2170,7 @@ export function SyncFlowForm({
                                 )
                               }
                               onChange={e => {
+                                formTouchedRef.current = true;
                                 const layouts =
                                   getValues("entityLayouts") || [];
                                 setValue(
@@ -2118,6 +2185,12 @@ export function SyncFlowForm({
                             />
                             <Typography variant="caption" fontWeight="bold">
                               Entity{layoutMode !== "none" ? " Table" : ""}
+                            </Typography>
+                            <Typography variant="caption" fontWeight="bold">
+                              Primary Key
+                            </Typography>
+                            <Typography variant="caption" fontWeight="bold">
+                              Sync
                             </Typography>
                             {layoutMode === "partition" && (
                               <>
@@ -2144,9 +2217,10 @@ export function SyncFlowForm({
                             )}
                           </Box>
                           {watchEntityLayouts.map((layout, idx) => {
-                            const schemaFields =
-                              entityMetadata.find(e => e.name === layout.entity)
-                                ?.fields ?? [];
+                            const entityMeta = entityMetadata.find(
+                              e => e.name === layout.entity,
+                            );
+                            const schemaFields = entityMeta?.fields ?? [];
                             const entityFields =
                               schemaFields.length > 0
                                 ? schemaFields.map(f => f.name)
@@ -2161,17 +2235,18 @@ export function SyncFlowForm({
                               timestampFields.push("_syncedAt");
                             }
                             const isEnabled = layout.enabled !== false;
+                            const keyColumns = entityMeta?.keyColumns ?? ["id"];
+                            const incrementalBadge = entityMeta?.incrementalMode
+                              ? INCREMENTAL_MODE_BADGE[
+                                  entityMeta.incrementalMode
+                                ]
+                              : undefined;
                             return (
                               <Box
                                 key={layout.entity}
                                 sx={{
                                   display: "grid",
-                                  gridTemplateColumns:
-                                    layoutMode === "partition"
-                                      ? "36px minmax(120px, 1.5fr) minmax(100px, 1fr) 80px minmax(100px, 1fr)"
-                                      : layoutMode === "index"
-                                        ? "36px minmax(120px, 1.5fr) minmax(100px, 1fr) minmax(100px, 1fr)"
-                                        : "36px 1fr",
+                                  gridTemplateColumns: entityGridTemplate,
                                   gap: 1,
                                   px: 1,
                                   py: 0.5,
@@ -2185,6 +2260,7 @@ export function SyncFlowForm({
                                   size="small"
                                   checked={isEnabled}
                                   onChange={e => {
+                                    formTouchedRef.current = true;
                                     const layouts =
                                       getValues("entityLayouts") || [];
                                     setValue(
@@ -2201,6 +2277,42 @@ export function SyncFlowForm({
                                 <Typography variant="body2">
                                   {layout.label || layout.entity}
                                 </Typography>
+                                <Tooltip
+                                  title={`Rows are deduplicated/merged on ${keyColumns.join(", ")}. Set by the connector — not user-configurable today.`}
+                                >
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                    sx={{ fontFamily: "monospace" }}
+                                  >
+                                    {keyColumns.join(", ")}
+                                  </Typography>
+                                </Tooltip>
+                                {incrementalBadge ? (
+                                  <Tooltip
+                                    title={
+                                      incrementalCheckEntities.includes(
+                                        layout.entity,
+                                      ) && incrementalWarning
+                                        ? incrementalWarning
+                                        : `Incremental capability for this entity: ${entityMeta?.incrementalMode}`
+                                    }
+                                  >
+                                    <Chip
+                                      size="small"
+                                      variant="outlined"
+                                      label={incrementalBadge.label}
+                                      color={incrementalBadge.color}
+                                    />
+                                  </Tooltip>
+                                ) : (
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                  >
+                                    —
+                                  </Typography>
+                                )}
                                 {layoutMode !== "none" && (
                                   <>
                                     <Controller
