@@ -47,10 +47,10 @@ echo "ESLint checks passed. Proceeding with local build..."
 # Local verification step (build & quick start)
 # -------------------------------------------------------------
 
-# Attempt to build both front-end and API locally. If this fails, abort early.
+# Building app and API locally (lint already ran — skip lint:fix).
 echo "Building app and API with pnpm..."
-if ! pnpm run build; then
-  echo "❌ pnpm build failed! Aborting deploy."
+if ! pnpm run build:ci; then
+  echo "❌ pnpm build:ci failed! Aborting deploy."
   exit 1
 fi
 
@@ -157,20 +157,14 @@ echo "API startup verification succeeded."
 #     --role="roles/iam.serviceAccountTokenCreator"
 # -------------------------------------------------------------
 
-# Rebuild and redeploy (explicitly build for linux/amd64 platform)
+# Rebuild and redeploy (explicitly build for linux/amd64 platform).
+# Host already built dist/ — USE_PREBUILT=1 packages those artifacts (no second compile).
 echo "Building Docker image..."
 
-# Create a temporary .env.production file for the build to pick up variables
-echo "VITE_API_URL=$VITE_API_URL" > .env.production
-echo "VITE_MUI_LICENSE_KEY=$VITE_MUI_LICENSE_KEY" >> .env.production
-echo "VITE_GTM_ID=$VITE_GTM_ID" >> .env.production
-
-if ! docker build --platform linux/amd64 -t $IMAGE_NAME:latest .; then
+if ! docker build --platform linux/amd64 --build-arg USE_PREBUILT=1 -t $IMAGE_NAME:latest .; then
     echo "❌ Docker build failed!"
-    rm .env.production
     exit 1
 fi
-rm .env.production
 
 # Verify that the freshly built image can start successfully.
 echo "Testing Docker image locally..."

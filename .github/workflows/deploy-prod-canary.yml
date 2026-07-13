@@ -103,9 +103,13 @@ jobs:
         run: pnpm run --filter api lint
 
       - name: Build workspaces
-        run: pnpm run build
+        run: pnpm run build:ci
         env:
           NODE_ENV: production
+          VITE_API_URL: ${{ env.VITE_API_URL }}
+          VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
+          VITE_GTM_ID: ${{ env.VITE_GTM_ID }}
+          VITE_BUILD_ID: ${{ github.sha }}
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
@@ -124,22 +128,26 @@ jobs:
         id: image
         run: |
           IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_ARTIFACT_REPOSITORY}/${IMAGE_NAME}"
+          CACHE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_ARTIFACT_REPOSITORY}/mako:buildcache"
           echo "sha_tag=${IMAGE_URI}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "cache_uri=${CACHE_URI}" >> "$GITHUB_OUTPUT"
 
-      - name: Create frontend build environment
-        run: |
-          cat <<EOF > .env.production
-          VITE_API_URL=${VITE_API_URL}
-          VITE_MUI_LICENSE_KEY=${VITE_MUI_LICENSE_KEY}
-          VITE_GTM_ID=${VITE_GTM_ID}
-          VITE_BUILD_ID=${GITHUB_SHA}
-          EOF
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Build and push Docker image
-        run: |
-          docker build --platform linux/amd64 -t "${{ steps.image.outputs.sha_tag }}" .
-          docker push "${{ steps.image.outputs.sha_tag }}"
-          rm -f .env.production
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image.outputs.sha_tag }}
+          build-args: |
+            USE_PREBUILT=1
+          cache-from: type=registry,ref=${{ steps.image.outputs.cache_uri }}
+          cache-to: type=registry,ref=${{ steps.image.outputs.cache_uri }},mode=max
+          provenance: false
+          sbom: false
 
       - name: Deploy quiesced canary
         run: |
