@@ -13,14 +13,24 @@ export function focusNotebookTab(notebookId: string, title: string): string {
   );
   const tabId =
     existing?.id ??
-    consoleStore.openTab({
-      title,
-      content: "",
-      kind: "notebook",
-      // Notebooks own their own persistence — never auto-save as a console.
-      isSaved: true,
-      metadata: { notebookId },
-    });
+    consoleStore.openTab(
+      {
+        title,
+        content: "",
+        kind: "notebook",
+        // Notebooks own their own persistence — never auto-save as a console.
+        isSaved: true,
+        metadata: { notebookId },
+      },
+      // Notebooks are durable documents, not "preview" tabs: opening one must
+      // not evict an existing pristine tab.
+      { replacePristine: false },
+    );
+  // Pin the tab (mark it non-pristine) so a later open — another notebook or a
+  // scratch console — doesn't replace it. This is what lets several notebooks
+  // stay open at once, like consoles and dashboards. Renders non-italic (a
+  // permanent tab), with no "unsaved" indicator.
+  consoleStore.updateDirty(tabId, true);
   consoleStore.setActiveTab(tabId);
   return tabId;
 }

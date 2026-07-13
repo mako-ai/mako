@@ -16,13 +16,8 @@ import { ChevronDown, ChevronUp, Play, Trash2 } from "lucide-react";
 
 import type { NotebookBlock, NotebookBlockType } from "../store/notebookStore";
 import type { Connection } from "../store/schemaStore";
-import { useConsoleStore } from "../store/consoleStore";
-import {
-  executeCode,
-  startKernelSession,
-  type KernelOutput,
-} from "../notebook-runtime/kernel";
-import { capKernelOutputs, capSqlRows } from "../notebook-runtime/outputs";
+import type { KernelOutput } from "../notebook-runtime/kernel";
+import { runCell } from "../notebook-runtime/run";
 import KernelOutputView from "./KernelOutputView";
 import ResultsTable from "./ResultsTable";
 import { StreamingMarkdown } from "./StreamingMarkdown";
@@ -57,6 +52,8 @@ interface NotebookCellProps {
   notebookId: string;
   workspaceId: string | null;
   sources: Connection[];
+  /** True while a batch "Run all" is executing this cell. */
+  isRunning?: boolean;
   onChange: (patch: Partial<NotebookBlock>) => void;
   onDelete: () => void;
   onMove: (direction: -1 | 1) => void;
@@ -69,6 +66,7 @@ export default function NotebookCell({
   notebookId,
   workspaceId,
   sources,
+  isRunning = false,
   onChange,
   onDelete,
   onMove,
@@ -76,13 +74,14 @@ export default function NotebookCell({
   const theme = useTheme();
   const monacoLanguage = MONACO_LANGUAGE[block.type];
 
-  const [running, setRunning] = useState(false);
+  const [localRunning, setLocalRunning] = useState(false);
   // Live streaming buffer for the current Python run this session; when null we
   // render the persisted outputs off `block.outputs` (the source of truth).
   const [liveOutputs, setLiveOutputs] = useState<KernelOutput[] | null>(null);
   const [editingMarkdown, setEditingMarkdown] = useState(false);
 
-  const nowIso = () => new Date().toISOString();
+  // Running = this cell's own run, or a batch "Run all" driven by the parent.
+  const running = localRunning || isRunning;
 
   // Persisted outputs (survive reload; also reflect agent/collab writes).
   const codeOutputs =
@@ -116,105 +115,28 @@ export default function NotebookCell({
     block.source.trim().length > 0 &&
     !running;
 
-  // Run a Python cell: ensure the notebook's kernel session exists, stream
-  // outputs live, then persist them to the block so they survive reload.
+  // Run this Python cell: stream outputs live, persisting via runCell.
   const runCode = async () => {
     if (!workspaceId) return;
-    setRunning(true);
+    setLocalRunning(true);
     setLiveOutputs([]);
     const collected: KernelOutput[] = [];
-    try {
-      await startKernelSession(workspaceId, notebookId);
-      const res = await executeCode(
-        workspaceId,
-        notebookId,
-        block.source,
-        output => {
-          collected.push(output);
-          setLiveOutputs([...collected]);
-        },
-      );
-      onChange({
-        outputs: capKernelOutputs(collected),
-        executionCount: res.executionCount ?? undefined,
-        executedAt: nowIso(),
-      });
-    } catch (e) {
-      const errOut: KernelOutput = {
-        type: "error",
-        ename: "ExecutionError",
-        evalue: e instanceof Error ? e.message : "Execution failed",
-        traceback: [],
-      };
-      setLiveOutputs([errOut]);
-      onChange({ outputs: [errOut], executedAt: nowIso() });
-    } finally {
-      setRunning(false);
-    }
+    await runCell(workspaceId, notebookId, block, {
+      onOutput: o => {
+        collected.push(o);
+        setLiveOutputs([...collected]);
+      },
+    });
+    setLocalRunning(false);
   };
 
+  // Run this SQL cell; runCell persists the result/error to block.outputs.
   const runSql = async () => {
-    if (!workspaceId || !block.connectionId) return;
-    setRunning(true);
+    if (!workspaceId) return;
+    setLocalRunning(true);
     setLiveOutputs(null); // SQL renders from persisted block.outputs
-    const start = Date.now();
-    try {
-      const res = await useConsoleStore
-        .getState()
-        .executeQuery(workspaceId, block.connectionId, block.source, {
-          pageSize: 500,
-        });
-      if (!res.success) {
-        const message =
-          typeof res.error === "string" ? res.error : "Query failed";
-        onChange({
-          outputs: [
-            {
-              type: "error",
-              ename: "SQLError",
-              evalue: message,
-              traceback: [],
-            },
-          ],
-          executedAt: nowIso(),
-        });
-        return;
-      }
-      const rows = (res as { rows?: unknown[] }).rows ?? [];
-      const fields = (
-        res as {
-          fields?: Array<{ name?: string; originalName?: string } | string>;
-        }
-      ).fields;
-      const { rows: persistRows, truncated } = capSqlRows(rows);
-      onChange({
-        outputs: [
-          {
-            type: "sql",
-            rows: persistRows,
-            fields,
-            rowCount: rows.length,
-            executionTime: Date.now() - start,
-            truncated,
-          },
-        ],
-        executedAt: nowIso(),
-      });
-    } catch (e) {
-      onChange({
-        outputs: [
-          {
-            type: "error",
-            ename: "SQLError",
-            evalue: e instanceof Error ? e.message : "Query failed",
-            traceback: [],
-          },
-        ],
-        executedAt: nowIso(),
-      });
-    } finally {
-      setRunning(false);
-    }
+    await runCell(workspaceId, notebookId, block);
+    setLocalRunning(false);
   };
 
   return (
@@ -222,9 +144,10 @@ export default function NotebookCell({
       sx={{
         mb: 1.5,
         border: 1,
-        borderColor: "divider",
+        borderColor: running ? "primary.main" : "divider",
         borderRadius: 1,
         overflow: "hidden",
+        transition: "border-color 120ms",
         "&:hover .cell-actions": { opacity: 1 },
       }}
     >

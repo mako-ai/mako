@@ -3,19 +3,31 @@ import {
   Box,
   Button,
   CircularProgress,
+  IconButton,
   InputBase,
   Menu,
   MenuItem,
+  Tooltip,
   Typography,
 } from "@mui/material";
-import { Notebook as NotebookIcon, Plus } from "lucide-react";
+import {
+  Eraser,
+  FastForward,
+  Notebook as NotebookIcon,
+  Play,
+  Plus,
+  RotateCcw,
+} from "lucide-react";
 
 import {
   useNotebookStore,
   type NotebookBlockType,
   type NotebookSaveState,
 } from "../store/notebookStore";
+import { runCell } from "../notebook-runtime/run";
+import { stopKernelSession } from "../notebook-runtime/kernel";
 import NotebookCell from "./NotebookCell";
+import { useConsoleStore } from "../store/consoleStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useUIStore } from "../store/uiStore";
 
@@ -39,6 +51,7 @@ interface NotebookRendererProps {
  */
 export default function NotebookRenderer({
   notebookId,
+  tabId,
 }: NotebookRendererProps) {
   const doc = useNotebookStore(s => s.openNotebooks[notebookId]);
   const saveState = useNotebookStore(s => s.saveState[notebookId] ?? "idle");
@@ -48,6 +61,8 @@ export default function NotebookRenderer({
   const updateCell = useNotebookStore(s => s.updateCell);
   const deleteCell = useNotebookStore(s => s.deleteCell);
   const moveCell = useNotebookStore(s => s.moveCell);
+  const clearAllOutputs = useNotebookStore(s => s.clearAllOutputs);
+  const updateTabTitle = useConsoleStore(s => s.updateTitle);
 
   const workspaceId = useUIStore(s => s.currentWorkspaceId) ?? null;
   const connectionsByWs = useSchemaStore(s => s.connections);
@@ -56,6 +71,38 @@ export default function NotebookRenderer({
 
   const [loading, setLoading] = useState(!doc);
   const [addAnchor, setAddAnchor] = useState<HTMLElement | null>(null);
+  // "Run all" progress: which cell is currently executing (highlights it).
+  const [runningAll, setRunningAll] = useState(false);
+  const [runningCellId, setRunningCellId] = useState<string | null>(null);
+
+  // Run every runnable cell top-to-bottom; stop on the first error since later
+  // cells usually depend on earlier ones (Jupyter "Run all" semantics).
+  const runAll = async () => {
+    if (!workspaceId || runningAll) return;
+    setRunningAll(true);
+    try {
+      const blocks =
+        useNotebookStore.getState().openNotebooks[notebookId]?.blocks ?? [];
+      for (const block of blocks) {
+        if (block.type === "markdown" || !block.source.trim()) continue;
+        setRunningCellId(block.id);
+        const res = await runCell(workspaceId, notebookId, block);
+        if (!res.ok) break;
+      }
+    } finally {
+      setRunningCellId(null);
+      setRunningAll(false);
+    }
+  };
+
+  const restartKernel = async () => {
+    if (workspaceId) await stopKernelSession(workspaceId, notebookId);
+  };
+
+  const restartAndRunAll = async () => {
+    await restartKernel();
+    await runAll();
+  };
 
   useEffect(() => {
     let alive = true;
@@ -70,6 +117,13 @@ export default function NotebookRenderer({
   useEffect(() => {
     if (workspaceId) void ensureConnections(workspaceId);
   }, [workspaceId, ensureConnections]);
+
+  // Keep the tab label, breadcrumb, and browser title in sync with the
+  // notebook name — they all read `tab.title`, which was set once when the tab
+  // opened, so a rename would otherwise leave them showing "Untitled notebook".
+  useEffect(() => {
+    if (doc?.name) updateTabTitle(tabId, doc.name);
+  }, [doc?.name, tabId, updateTabTitle]);
 
   const handleAdd = (type: NotebookBlockType) => {
     setAddAnchor(null);
@@ -108,9 +162,9 @@ export default function NotebookRenderer({
           zIndex: 1,
           display: "flex",
           alignItems: "center",
-          gap: 1,
+          gap: 0.25,
           px: 2,
-          py: 1,
+          py: 0.75,
           bgcolor: "background.paper",
           borderBottom: 1,
           borderColor: "divider",
@@ -121,18 +175,64 @@ export default function NotebookRenderer({
           value={doc.name}
           onChange={e => renameOpenNotebook(notebookId, e.target.value)}
           placeholder="Untitled notebook"
-          sx={{ flex: 1, fontSize: "1.05rem", fontWeight: 600 }}
+          sx={{ flex: 1, minWidth: 60, fontSize: "1.05rem", fontWeight: 600 }}
         />
         <Typography
           variant="caption"
           sx={{
             color: saveState === "error" ? "error.main" : "text.secondary",
-            minWidth: 64,
-            textAlign: "right",
+            whiteSpace: "nowrap",
+            mr: 0.5,
           }}
         >
           {SAVE_LABEL[saveState]}
         </Typography>
+
+        {/* Compact run/clear/restart controls, inline with the title. */}
+        <Tooltip title="Run all cells">
+          <span>
+            <IconButton
+              size="small"
+              disabled={runningAll || !workspaceId}
+              onClick={() => void runAll()}
+            >
+              {runningAll ? <CircularProgress size={16} /> : <Play size={16} />}
+            </IconButton>
+          </span>
+        </Tooltip>
+        <Tooltip title="Restart kernel, then run all">
+          <span>
+            <IconButton
+              size="small"
+              disabled={runningAll || !workspaceId}
+              onClick={() => void restartAndRunAll()}
+            >
+              <FastForward size={16} />
+            </IconButton>
+          </span>
+        </Tooltip>
+        <Tooltip title="Clear all outputs">
+          <span>
+            <IconButton
+              size="small"
+              disabled={runningAll}
+              onClick={() => clearAllOutputs(notebookId)}
+            >
+              <Eraser size={16} />
+            </IconButton>
+          </span>
+        </Tooltip>
+        <Tooltip title="Restart kernel (clears variables)">
+          <span>
+            <IconButton
+              size="small"
+              disabled={runningAll || !workspaceId}
+              onClick={() => void restartKernel()}
+            >
+              <RotateCcw size={16} />
+            </IconButton>
+          </span>
+        </Tooltip>
       </Box>
 
       <Box sx={{ p: 2 }}>
@@ -145,6 +245,7 @@ export default function NotebookRenderer({
             notebookId={notebookId}
             workspaceId={workspaceId}
             sources={sources}
+            isRunning={runningCellId === block.id}
             onChange={patch => updateCell(notebookId, block.id, patch)}
             onDelete={() => deleteCell(notebookId, block.id)}
             onMove={dir => moveCell(notebookId, index, dir)}
@@ -157,9 +258,8 @@ export default function NotebookRenderer({
             color="text.secondary"
             sx={{ mb: 2, maxWidth: 520 }}
           >
-            Empty notebook. Add a cell to get started — SQL cells run against a
-            data source; Python runs once the kernel lands; Markdown renders
-            inline.
+            Empty notebook. Add a cell to get started — SQL runs against a data
+            source, Python runs on the kernel, Markdown renders inline.
           </Typography>
         )}
 

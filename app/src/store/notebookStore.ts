@@ -101,6 +101,10 @@ interface NotebookStore {
   ) => void;
   deleteCell: (id: string, cellId: string) => void;
   moveCell: (id: string, index: number, direction: -1 | 1) => void;
+  /** Clear persisted outputs from every cell (Jupyter "Clear all outputs"). */
+  clearAllOutputs: (id: string) => void;
+  /** Clear persisted outputs from one cell. */
+  clearCellOutputs: (id: string, cellId: string) => void;
   /** Pull a fresh copy of an open notebook (realtime poke-then-pull). */
   reloadOpenNotebook: (id: string) => Promise<void>;
   /** Create a notebook from imported blocks (e.g. an uploaded .ipynb). */
@@ -309,5 +313,31 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
         [blocks[index], blocks[target]] = [blocks[target], blocks[index]];
         return { ...d, blocks };
       }),
+
+    clearAllOutputs: id =>
+      applyEdit(id, d => ({
+        ...d,
+        blocks: d.blocks.map(b => ({
+          ...b,
+          outputs: undefined,
+          executionCount: undefined,
+          executedAt: undefined,
+        })),
+      })),
+
+    clearCellOutputs: (id, cellId) =>
+      applyEdit(id, d => ({
+        ...d,
+        blocks: d.blocks.map(b =>
+          b.id === cellId
+            ? {
+                ...b,
+                outputs: undefined,
+                executionCount: undefined,
+                executedAt: undefined,
+              }
+            : b,
+        ),
+      })),
   };
 });
