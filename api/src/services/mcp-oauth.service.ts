@@ -41,7 +41,11 @@ import {
   McpOAuthFlow,
   McpServer,
 } from "../database/workspace-schema";
-import { getMcpPreset, mcpPresetOAuthScope } from "../mcp/presets";
+import {
+  getMcpPreset,
+  mcpPresetEnvOAuthClient,
+  mcpPresetOAuthScope,
+} from "../mcp/presets";
 import { decryptString, encryptString } from "./crypto.service";
 import { loggers } from "../logging";
 
@@ -102,14 +106,18 @@ class MongoOAuthClientProvider implements OAuthClientProvider {
       .select("oauth")
       .lean();
     const encrypted = doc?.oauth?.clientInformation;
-    if (!encrypted) return undefined;
-    try {
-      return JSON.parse(
-        decryptString(encrypted),
-      ) as OAuthClientInformationMixed;
-    } catch {
-      return undefined;
+    if (encrypted) {
+      try {
+        return JSON.parse(
+          decryptString(encrypted),
+        ) as OAuthClientInformationMixed;
+      } catch {
+        // Corrupt/unreadable — fall through to the env client, if any.
+      }
     }
+    // Deployment-wide client from the environment (one shared provider app,
+    // Claude-connectors style). Workspace-saved clients take precedence.
+    return mcpPresetEnvOAuthClient(getMcpPreset(this.server.connectorType));
   }
 
   async saveClientInformation(
@@ -247,10 +255,29 @@ export async function saveMcpOAuthClient(params: {
   });
 }
 
-/** Whether a server already has an OAuth client (DCR'd or manually saved). */
+export type McpOAuthClientSource = "workspace" | "environment";
+
+/**
+ * Where a server's OAuth client comes from: a workspace-saved (or DCR'd)
+ * client, the deployment environment, or nowhere (null). Workspace clients
+ * win — self-hosters can override the shared app per workspace.
+ */
+export function mcpOAuthClientSource(
+  server: Pick<IMcpServer, "connectorType" | "oauth">,
+): McpOAuthClientSource | null {
+  if (server.oauth?.clientInformation) return "workspace";
+  if (mcpPresetEnvOAuthClient(getMcpPreset(server.connectorType))) {
+    return "environment";
+  }
+  return null;
+}
+
+/** Whether a server has a usable OAuth client (saved, DCR'd, or from env). */
 export async function hasMcpOAuthClient(server: IMcpServer): Promise<boolean> {
-  const doc = await McpServer.findById(server._id).select("oauth").lean();
-  return Boolean(doc?.oauth?.clientInformation);
+  const doc = await McpServer.findById(server._id)
+    .select("oauth connectorType")
+    .lean();
+  return mcpOAuthClientSource(doc ?? server) !== null;
 }
 
 /**

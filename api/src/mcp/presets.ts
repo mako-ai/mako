@@ -38,6 +38,17 @@ export interface McpPresetOAuthConfig {
   /** Where the admin registers the OAuth app (manual mode). */
   docsUrl?: string;
   /**
+   * Environment variables holding a deployment-wide OAuth client for this
+   * preset (Claude-connectors model: the operator registers ONE provider app
+   * and every workspace just clicks Connect). When set, workspaces skip the
+   * client ID/secret form entirely; a workspace-saved client still wins so
+   * self-hosters can override per workspace.
+   */
+  clientEnvVars?: {
+    clientId: string;
+    clientSecret: string;
+  };
+  /**
    * OAuth scopes requested per Mako write scope (least-privilege). When
    * absent, the SDK falls back to the provider's advertised
    * `scopes_supported` — fine for providers that scope via headers instead
@@ -134,6 +145,10 @@ export const SLACK_MCP_PRESET: McpPreset = {
     helperText:
       "Create a Slack app at api.slack.com/apps, enable MCP under “Agents & AI Apps”, add Mako's OAuth callback as a redirect URL, then paste the app's Client ID and Client Secret.",
     docsUrl: "https://api.slack.com/apps",
+    clientEnvVars: {
+      clientId: "SLACK_MCP_CLIENT_ID",
+      clientSecret: "SLACK_MCP_CLIENT_SECRET",
+    },
     scopes: {
       read: [
         "search:read.public",
@@ -241,4 +256,23 @@ export function mcpPresetOAuthScope(
 ): string | undefined {
   const scopes = preset.oauth?.scopes?.[writeScope];
   return scopes && scopes.length > 0 ? scopes.join(" ") : undefined;
+}
+
+/**
+ * The deployment-wide OAuth client for a preset, read from the environment
+ * (e.g. `SLACK_MCP_CLIENT_ID` / `SLACK_MCP_CLIENT_SECRET`). Undefined when
+ * the preset has no env client configured — workspaces then supply their own.
+ */
+export function mcpPresetEnvOAuthClient(
+  preset: McpPreset,
+): { client_id: string; client_secret?: string } | undefined {
+  const vars = preset.oauth?.clientEnvVars;
+  if (!vars) return undefined;
+  const clientId = process.env[vars.clientId]?.trim();
+  if (!clientId) return undefined;
+  const clientSecret = process.env[vars.clientSecret]?.trim();
+  return {
+    client_id: clientId,
+    ...(clientSecret ? { client_secret: clientSecret } : {}),
+  };
 }

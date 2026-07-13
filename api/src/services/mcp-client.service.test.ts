@@ -43,10 +43,12 @@ import {
   CUSTOM_MCP_PRESET,
   SLACK_MCP_PRESET,
   getMcpPreset,
+  mcpPresetEnvOAuthClient,
   mcpPresetOAuthScope,
 } from "../mcp/presets";
 import {
   hasMcpOAuthClient,
+  mcpOAuthClientSource,
   saveMcpOAuthClient,
   startMcpOAuthFlow,
 } from "./mcp-oauth.service";
@@ -263,6 +265,50 @@ function testPresetsAndOAuthScopes() {
 }
 
 /**
+ * Deployment-wide OAuth client from env (Claude-connectors model): with
+ * SLACK_MCP_CLIENT_ID/SECRET set, workspaces need no per-workspace app —
+ * connect is one click. Workspace-saved clients still take precedence.
+ */
+function testEnvOAuthClient() {
+  const slackServer = (oauth?: { clientInformation?: string }) =>
+    ({ connectorType: "slack", oauth }) as Parameters<
+      typeof mcpOAuthClientSource
+    >[0];
+
+  delete process.env.SLACK_MCP_CLIENT_ID;
+  delete process.env.SLACK_MCP_CLIENT_SECRET;
+  assert.equal(mcpPresetEnvOAuthClient(SLACK_MCP_PRESET), undefined);
+  assert.equal(mcpOAuthClientSource(slackServer()), null);
+
+  process.env.SLACK_MCP_CLIENT_ID = "env-client-id";
+  process.env.SLACK_MCP_CLIENT_SECRET = "env-client-secret";
+  try {
+    assert.deepEqual(mcpPresetEnvOAuthClient(SLACK_MCP_PRESET), {
+      client_id: "env-client-id",
+      client_secret: "env-client-secret",
+    });
+    // No workspace client → the env client is the effective source.
+    assert.equal(mcpOAuthClientSource(slackServer()), "environment");
+    // A workspace-saved client overrides the shared env app.
+    assert.equal(
+      mcpOAuthClientSource(slackServer({ clientInformation: "encrypted…" })),
+      "workspace",
+    );
+    // Presets without clientEnvVars are unaffected.
+    assert.equal(mcpPresetEnvOAuthClient(CLOSE_MCP_PRESET), undefined);
+    assert.equal(
+      mcpOAuthClientSource({ connectorType: "close" } as Parameters<
+        typeof mcpOAuthClientSource
+      >[0]),
+      null,
+    );
+  } finally {
+    delete process.env.SLACK_MCP_CLIENT_ID;
+    delete process.env.SLACK_MCP_CLIENT_SECRET;
+  }
+}
+
+/**
  * Manual OAuth client registration (Slack model), against in-memory Mongo:
  * connect is blocked with a setup message until an admin saves the app,
  * saving stores the client encrypted (retrievable), and re-saving clears
@@ -288,8 +334,10 @@ async function testManualOAuthClient() {
       createdBy: "user-1",
     });
 
-    // No app saved yet → the flow refuses with an actionable message
-    // instead of attempting DCR (which Slack rejects).
+    // No app saved and no env client → the flow refuses with an actionable
+    // message instead of attempting DCR (which Slack rejects).
+    delete process.env.SLACK_MCP_CLIENT_ID;
+    delete process.env.SLACK_MCP_CLIENT_SECRET;
     assert.equal(await hasMcpOAuthClient(server), false);
     await assert.rejects(
       () =>
@@ -300,6 +348,15 @@ async function testManualOAuthClient() {
         }),
       /pre-registered OAuth app/,
     );
+
+    // A deployment-wide env client unblocks connect without any saved app.
+    process.env.SLACK_MCP_CLIENT_ID = "env-client-id";
+    try {
+      assert.equal(await hasMcpOAuthClient(server), true);
+    } finally {
+      delete process.env.SLACK_MCP_CLIENT_ID;
+    }
+    assert.equal(await hasMcpOAuthClient(server), false);
 
     // Simulate a stale token from a previous app registration.
     await McpConnectionConfig.create({
@@ -587,6 +644,7 @@ async function main() {
   testAllowlistFiltering();
   testCryptoRoundTrip();
   testPresetsAndOAuthScopes();
+  testEnvOAuthClient();
   await testUrlSafety();
   await testGrantsAndNeedsApproval();
   await testManualOAuthClient();

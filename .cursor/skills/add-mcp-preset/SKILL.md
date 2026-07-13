@@ -88,12 +88,12 @@ curl -s https://mcp.example.com/.well-known/oauth-authorization-server # registr
 | Provider behavior | Preset config |
 | --- | --- |
 | OAuth + `registration_endpoint` (DCR works) | `authType: "oauth"`, no `oauth` block (Close) |
-| OAuth, but only pre-registered confidential apps | `oauth: { clientMode: "manual", ... }` (Slack) — the admin saves Client ID/Secret via `PUT .../oauth/client`; connect is blocked until then |
+| OAuth, but only pre-registered confidential apps | `oauth: { clientMode: "manual", ... }` (Slack). Prefer also setting `clientEnvVars` so the operator can ship ONE deployment-wide app (`SLACK_MCP_CLIENT_ID`/`SLACK_MCP_CLIENT_SECRET`) and users get Claude-style one-click connect. Without an env client, the admin saves Client ID/Secret via `PUT .../oauth/client`; connect is blocked until then |
 | Capability gated by OAuth **scopes** | fill `oauth.scopes` per write scope so read-only connections never hold write tokens |
 | Capability gated by a request **header** | `scopeHeader` (Close's `Close-Scope`) |
 | Static API key / token headers | `authType: "api_key"` + `headerFields` |
 
-Both client modes store the client on the same encrypted `mcp_servers.oauth.clientInformation` field; the MCP SDK's `auth()` uses whatever is there and only attempts DCR when it's empty. Saving a new manual client wipes previously issued member tokens (they belonged to the old app).
+Client resolution order at auth time: workspace-saved client (encrypted `mcp_servers.oauth.clientInformation`) → deployment env client (`clientEnvVars`) → DCR. The MCP SDK's `auth()` only attempts DCR when `clientInformation()` returns nothing. Saving a new manual client wipes previously issued member tokens (they belonged to the old app). The UI hides the client form when the env client is the effective source (`oauthClientSource === "environment"`), and the add-server dialog deep-links straight into the OAuth consent screen whenever a client is already available ("Connect Slack" instead of "Add server").
 
 ## What you get for free
 

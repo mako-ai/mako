@@ -30,7 +30,11 @@ import {
   McpServer,
   McpToolGrant,
 } from "../database/workspace-schema";
-import { MCP_PRESETS, getMcpPreset } from "../mcp/presets";
+import {
+  MCP_PRESETS,
+  getMcpPreset,
+  mcpPresetEnvOAuthClient,
+} from "../mcp/presets";
 import { decryptString, encryptRecord } from "../services/crypto.service";
 import {
   assertSafeMcpUrl,
@@ -42,6 +46,7 @@ import {
 import {
   completeMcpOAuthFlow,
   findMcpOAuthFlowServerId,
+  mcpOAuthClientSource,
   saveMcpOAuthClient,
   startMcpOAuthFlow,
 } from "../services/mcp-oauth.service";
@@ -64,7 +69,20 @@ mcpPresetRoutes.openapi(
     responses: { ...OPEN_RESPONSES },
   }),
   c => {
-    return c.json({ success: true, presets: Object.values(MCP_PRESETS) });
+    // Annotate OAuth presets with whether a deployment-wide client exists,
+    // so the UI can offer one-click connect without a per-workspace app.
+    const presets = Object.values(MCP_PRESETS).map(preset => ({
+      ...preset,
+      ...(preset.oauth
+        ? {
+            oauth: {
+              ...preset.oauth,
+              envClientConfigured: Boolean(mcpPresetEnvOAuthClient(preset)),
+            },
+          }
+        : {}),
+    }));
+    return c.json({ success: true, presets });
   },
 );
 
@@ -246,18 +264,23 @@ async function requireAdmin(
   return isAdmin ? user.id : null;
 }
 
-/** Non-secret client id of the server's OAuth app, when one is stored. */
+/** Non-secret client id of the server's OAuth app (workspace or env). */
 function oauthClientIdOf(server: IMcpServer): string | null {
   const encrypted = server.oauth?.clientInformation;
-  if (!encrypted) return null;
-  try {
-    const info = JSON.parse(decryptString(encrypted)) as {
-      client_id?: string;
-    };
-    return info.client_id ?? null;
-  } catch {
-    return null;
+  if (encrypted) {
+    try {
+      const info = JSON.parse(decryptString(encrypted)) as {
+        client_id?: string;
+      };
+      if (info.client_id) return info.client_id;
+    } catch {
+      // Fall through to the env client.
+    }
   }
+  return (
+    mcpPresetEnvOAuthClient(getMcpPreset(server.connectorType))?.client_id ??
+    null
+  );
 }
 
 function serializeServer(
@@ -296,9 +319,11 @@ function serializeServer(
     updatedAt: server.updatedAt,
     hasWorkspaceCredential: extras.hasWorkspaceCredential ?? false,
     hasUserCredential: extras.hasUserCredential ?? false,
-    // Manual-client OAuth presets (Slack): whether the admin has saved the
-    // provider app's credentials, and its (non-secret) client id.
-    hasOAuthClient: Boolean(server.oauth?.clientInformation),
+    // Manual-client OAuth presets (Slack): whether a provider app is usable
+    // (workspace-saved or a deployment-wide env client), where it comes
+    // from, and its (non-secret) client id.
+    hasOAuthClient: mcpOAuthClientSource(server) !== null,
+    oauthClientSource: mcpOAuthClientSource(server),
     oauthClientId: oauthClientIdOf(server),
   };
 }

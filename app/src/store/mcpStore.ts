@@ -44,9 +44,11 @@ export interface McpServerInfo {
   isActive: boolean;
   hasWorkspaceCredential: boolean;
   hasUserCredential: boolean;
-  /** Manual-client OAuth presets (Slack): admin saved the provider app. */
+  /** Manual-client OAuth presets (Slack): a provider app is usable. */
   hasOAuthClient: boolean;
-  /** Non-secret client id of the saved OAuth app, when one exists. */
+  /** Where the OAuth app comes from: workspace-saved or deployment env. */
+  oauthClientSource: "workspace" | "environment" | null;
+  /** Non-secret client id of the OAuth app, when one exists. */
   oauthClientId: string | null;
 }
 
@@ -63,6 +65,8 @@ export interface McpPresetOAuthInfo {
   clientMode: "dcr" | "manual";
   helperText?: string;
   docsUrl?: string;
+  /** A deployment-wide OAuth app exists — connect is one click. */
+  envClientConfigured?: boolean;
 }
 
 export interface McpPresetInfo {

@@ -139,6 +139,7 @@ function AddServerDialog({
 }) {
   const { currentWorkspace } = useWorkspace();
   const createServer = useMcpStore(s => s.createServer);
+  const startOAuth = useMcpStore(s => s.startOAuth);
   const muiTheme = useTheme();
   const fullScreenDialog = useMediaQuery(muiTheme.breakpoints.down("sm"));
   const [presetType, setPresetType] = useState("close");
@@ -149,10 +150,21 @@ function AddServerDialog({
   );
   const [writeScope, setWriteScope] = useState<McpWriteScope>("read");
   const [submitting, setSubmitting] = useState(false);
+  const [redirecting, setRedirecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const preset = presets.find(p => p.type === presetType);
   const authOptions = preset?.authOptions ?? ["api_key"];
+  // Claude-style one-click connect: after adding an OAuth server whose
+  // client is already available (DCR, or a deployment-wide app), go straight
+  // to the provider's consent screen. Manual-client presets without a shared
+  // app still need the admin form first.
+  const canConnectImmediately =
+    authType === "oauth" &&
+    (preset?.oauth
+      ? preset.oauth.clientMode !== "manual" ||
+        Boolean(preset.oauth.envClientConfigured)
+      : true);
 
   useEffect(() => {
     if (open && initialPreset) setPresetType(initialPreset);
@@ -180,6 +192,24 @@ function AddServerDialog({
         authType,
         writeScope,
       });
+      if (canConnectImmediately) {
+        try {
+          const { authorizationUrl, alreadyAuthorized } = await startOAuth(
+            currentWorkspace.id,
+            server.id,
+          );
+          if (!alreadyAuthorized && authorizationUrl) {
+            setRedirecting(true);
+            // Provider consent screen; it redirects back to
+            // /api/mcp/oauth/callback → /settings/mcp with auto-discovery.
+            window.location.href = authorizationUrl;
+            return;
+          }
+        } catch {
+          // OAuth couldn't start (e.g. DCR unsupported) — fall back to the
+          // detail dialog where the error surfaces on manual connect.
+        }
+      }
       onCreated(server.id);
       onClose();
     } catch (err) {
@@ -309,10 +339,19 @@ function AddServerDialog({
         <Button onClick={onClose}>Cancel</Button>
         <Button
           variant="contained"
-          disabled={!canSubmit || submitting}
+          disabled={!canSubmit || submitting || redirecting}
           onClick={handleCreate}
+          data-testid="mcp-add-server"
         >
-          {submitting ? "Adding…" : "Add server"}
+          {redirecting
+            ? "Redirecting…"
+            : submitting
+              ? canConnectImmediately
+                ? "Connecting…"
+                : "Adding…"
+              : canConnectImmediately
+                ? `Connect ${preset && preset.type !== "custom" ? preset.label : ""}`.trim()
+                : "Add server"}
         </Button>
       </DialogActions>
     </Dialog>
@@ -987,16 +1026,20 @@ function ServerDetail({
 
       {server.authType === "oauth" ? (
         <>
-          {isAdmin && preset?.oauth?.clientMode === "manual" && (
-            <>
-              <OAuthClientForm
-                server={server}
-                preset={preset}
-                onNotify={onNotify}
-              />
-              <Divider />
-            </>
-          )}
+          {/* The OAuth app form only appears when there's no deployment-wide
+              client — with a shared app configured, connect is one click. */}
+          {isAdmin &&
+            preset?.oauth?.clientMode === "manual" &&
+            server.oauthClientSource !== "environment" && (
+              <>
+                <OAuthClientForm
+                  server={server}
+                  preset={preset}
+                  onNotify={onNotify}
+                />
+                <Divider />
+              </>
+            )}
           <OAuthConnectSection
             server={server}
             preset={preset}
