@@ -67,6 +67,8 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   "search_consoles",
   "search_dashboards",
   "search_skills",
+  "list_skills",
+  "get_relevant_skills",
   "fetch_url",
   "web_search",
   // Memory reads

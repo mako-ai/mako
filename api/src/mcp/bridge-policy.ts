@@ -309,6 +309,8 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "in-product-only",
     "Expertise modes are the in-product agent runtime.",
   ),
+  get_relevant_skills: bridge(),
+  list_skills: bridge(),
   load_skill: bridge(),
   read_self_directive: exclude(
     "in-product-only",

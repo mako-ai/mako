@@ -83,7 +83,7 @@ Try: *"Using the mako tools, explore my data and build a dashboard app showing r
 
 The server ships usage instructions with the handshake, so agents discover this workflow on their own:
 
-1. **Discover** — `list_connections`, `sql_list_tables`, `sql_inspect_table` (schemas + sample rows), plus MongoDB discovery/inspection. `search_consoles` / `search_dashboards` / `search_skills` find existing workspace work and playbooks.
+1. **Discover** — `list_connections`, `sql_list_tables`, `sql_inspect_table` (schemas + sample rows), plus MongoDB discovery/inspection. `search_consoles` / `search_dashboards` find existing workspace work. Skills: `list_skills` (index), `get_relevant_skills` (ranked bodies for your task — same retrieval as the in-product agent), then `load_skill` / `read_skill_resource` as needed.
 2. **Validate queries** — `sql_execute_query` (read-only, short exploration timeout). Slow warehouse? `create_console` → `run_console` → `check_query_status` for long-running queries.
 3. **Build apps** — `create_app`, `app_write_file` / `app_edit_file`, `app_create_data_binding` (bind the validated query), version history and restore.
 4. **Verify visually** — `render_app` renders the draft server-side and returns status, errors, filtered console output, and a screenshot. `create_preview_token` mints a short-lived, login-free preview URL to share or open yourself.

@@ -199,6 +199,8 @@ async function main() {
       "search_consoles",
       "search_dashboards",
       "search_skills",
+      "list_skills",
+      "get_relevant_skills",
       "read_console",
       "create_console",
       "run_console",

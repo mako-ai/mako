@@ -72,8 +72,12 @@ Typical loop:
 4. Verify with render_app after edits. Pass includeScreenshot: false when you only need status/errors — it is much cheaper than the screenshot.
 5. app_save_version to snapshot/publish.
 
-Before writing app code, read the authoring playbook: resource mako://skills/apps (or load_skill / search_skills).
-Optional: search_dashboards for existing workspace dashboards, web_search / fetch_url for public docs.`;
+Skills (same knowledge as the in-product agent):
+- list_skills → compact index (workspace + system).
+- get_relevant_skills({ query }) → ranked bodies for your task (call this early).
+- load_skill / read_skill_resource / mako://skills/{name} for specifics.
+Before writing app code: get_relevant_skills("build a Mako app") or resource mako://skills/apps.
+Optional: search_dashboards, web_search / fetch_url for public docs.`;
 
 /** Defensive cap so a huge query result cannot blow up the JSON response. */
 const MAX_TOOL_RESULT_CHARS = 200_000;
