@@ -379,7 +379,7 @@ workspaceDatabaseRoutes.openapi(
         201,
       );
     } catch (error) {
-      console.error("Error creating demo database:", error);
+      logger.error("Error creating demo database", { error });
       return c.json(
         {
           success: false,
