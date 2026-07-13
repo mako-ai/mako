@@ -322,6 +322,24 @@ function describeGoogleApiError(error: any, fallback: string): string {
 }
 
 /**
+/**
+ * Database engines that cannot enforce read-only execution at the
+ * session/transaction layer. For these, `readOnly: true` fails closed in
+ * `executeQuery` (and the BigQuery-native streaming/schema paths are bypassed),
+ * rather than relying on lexical SQL checks. Callers that already guarantee a
+ * query is read-only by other means (e.g. materialization via
+ * `assertReadOnlyMaterializationQuery`) must NOT request session read-only for
+ * these engines — use `supportsReadOnlySessionEnforcement` to decide.
+ */
+const READ_ONLY_SESSION_UNSUPPORTED_TYPES = new Set<string>([
+  "mongodb",
+  "bigquery",
+  "mssql",
+  "cloudflare-d1",
+  "cloudflare-kv",
+]);
+
+/**
  * Enhanced Database Connection Service
  *
  * Provides unified connection management for all database types with:
@@ -488,6 +506,19 @@ export class DatabaseConnectionService {
   }
 
   /**
+   * Whether `readOnly: true` can be honored at the database/session layer for
+   * a given engine. Engines that return `false` fail closed under `readOnly` in
+   * `executeQuery`, and their BigQuery-style native streaming/schema paths are
+   * skipped when `readOnly` is set. Callers that guarantee read-only by other
+   * means (e.g. materialization validates the query up front) should request
+   * session read-only only for engines where this returns `true`; otherwise the
+   * query would be routed into an unsupported generic batch path.
+   */
+  supportsReadOnlySessionEnforcement(databaseType: string): boolean {
+    return !READ_ONLY_SESSION_UNSUPPORTED_TYPES.has(databaseType);
+  }
+
+  /**
    * Execute query on database
    */
   async executeQuery(
@@ -508,13 +539,7 @@ export class DatabaseConnectionService {
         if (!safety.safe) {
           return { success: false, error: safety.errors.join(" ") };
         }
-        if (
-          database.type === "mongodb" ||
-          database.type === "bigquery" ||
-          database.type === "mssql" ||
-          database.type === "cloudflare-d1" ||
-          database.type === "cloudflare-kv"
-        ) {
+        if (!this.supportsReadOnlySessionEnforcement(database.type)) {
           return {
             success: false,
             error: `Read-only execution is not supported for ${database.type}; connect it with database credentials restricted to read access`,
