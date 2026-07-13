@@ -1,0 +1,102 @@
+name: Build & publish notebook kernel image
+
+# Builds the notebook Python kernel image (packages/kernel-image, which bundles
+# packages/mako-sdk-py) once and publishes it to the dev + prod Artifact
+# Registries. PRs build-only (validate the Dockerfile); master + manual runs
+# push. Rolling the new image onto the GKE warm pools is separate (the pools
+# reference a tag / are re-applied via deploy/notebook-kernels/build-and-deploy.sh).
+on:
+  push:
+    branches: [master]
+    paths:
+      - "packages/kernel-image/**"
+      - "packages/mako-sdk-py/**"
+      - ".github/workflows/kernel-image.yml"
+  pull_request:
+    paths:
+      - "packages/kernel-image/**"
+      - "packages/mako-sdk-py/**"
+      - ".github/workflows/kernel-image.yml"
+  workflow_dispatch:
+
+env:
+  GCP_REGION: ${{ vars.GCP_REGION }}
+  IMAGE_NAME: notebook-kernel
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kernel-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-publish:
+    name: Build + publish kernel image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # One SA (GCP_DEV_SERVICE_ACCOUNT) has cross-project push access to both
+      # the dev and prod Artifact Registries — same as the app deploy.
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker ${GCP_REGION}-docker.pkg.dev --quiet
+
+      - name: Resolve registries
+        id: reg
+        env:
+          PROD_CONFIG: ${{ vars.GCP_PROD_DEPLOY_CONFIG }}
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          DEV="${GCP_REGION}-docker.pkg.dev/${{ vars.GCP_DEV_PROJECT_ID }}/${{ vars.GCP_DEV_ARTIFACT_REPOSITORY }}/${IMAGE_NAME}"
+          PROD_PROJECT=$(echo "${PROD_CONFIG}" | jq -er '.project_id')
+          PROD_REPO=$(echo "${PROD_CONFIG}" | jq -er '.artifact_repository')
+          PROD="${GCP_REGION}-docker.pkg.dev/${PROD_PROJECT}/${PROD_REPO}/${IMAGE_NAME}"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "dev=${DEV}" >> "$GITHUB_OUTPUT"
+          echo "prod=${PROD}" >> "$GITHUB_OUTPUT"
+          echo "Dev registry:  ${DEV}"
+          echo "Prod registry: ${PROD}"
+
+      - name: Build image (context = repo root; bundles the mako SDK)
+        run: |
+          docker build \
+            -f packages/kernel-image/Dockerfile \
+            -t kernel:${{ steps.reg.outputs.sha }} \
+            .
+
+      # PRs stop here (Dockerfile validated). master + manual runs publish.
+      - name: Publish to dev registry
+        if: github.event_name != 'pull_request'
+        run: |
+          for TAG in "${{ steps.reg.outputs.sha }}" latest; do
+            docker tag kernel:${{ steps.reg.outputs.sha }} ${{ steps.reg.outputs.dev }}:${TAG}
+            docker push ${{ steps.reg.outputs.dev }}:${TAG}
+          done
+
+      - name: Publish to prod registry
+        if: github.event_name != 'pull_request'
+        run: |
+          for TAG in "${{ steps.reg.outputs.sha }}" latest; do
+            docker tag kernel:${{ steps.reg.outputs.sha }} ${{ steps.reg.outputs.prod }}:${TAG}
+            docker push ${{ steps.reg.outputs.prod }}:${TAG}
+          done
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### Kernel image published :whale:"
+            echo "- \`${{ steps.reg.outputs.dev }}:${{ steps.reg.outputs.sha }}\` (+ \`:latest\`)"
+            echo "- \`${{ steps.reg.outputs.prod }}:${{ steps.reg.outputs.sha }}\` (+ \`:latest\`)"
+            echo ""
+            echo "Roll onto the warm pools with \`deploy/notebook-kernels/build-and-deploy.sh\` or \`kubectl set image\`."
+          } >> "$GITHUB_STEP_SUMMARY"
