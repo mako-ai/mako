@@ -3562,9 +3562,29 @@ export interface paths {
         put?: never;
         /**
          * Build the app in its session and mint a preview link
-         * @description Runs `npm install` (when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe.
+         * @description Runs `npm install` (when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe. Pass `chatId` to build the conversation's `chat/<chatId>` branch instead of the caller's own worktree — the caller's own worktree always starts on main, so building it while a chat is actively working on this app previews stale, unrelated content.
          */
         post: operations["post_api_workspaces_workspaceId_apps_v2_id_preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start (or reuse) a live `vite dev` preview for this app
+         * @description Prototype of apps-v2.md §4.7's 'dev preview' tier — LOCAL SANDBOX PROVIDER ONLY (returns 501 under the e2b provider, whose public-URL exposure isn't built yet). Runs `npm install` if needed, starts a persistent `vite dev` process bound to the worktree's session directory, and returns a token-gated URL that proxies to it — HMR works, no rebuild step required as files change. Pass `chatId` for the same reason as POST /preview: your own worktree always starts on main.
+         */
+        post: operations["post_api_workspaces_workspaceId_apps_v2_id_dev_preview"];
         delete?: never;
         options?: never;
         head?: never;
@@ -16550,7 +16570,60 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    chatId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_apps_v2_id_dev_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    chatId?: string;
+                };
+            };
+        };
         responses: {
             /** @description Successful response */
             "2XX": {

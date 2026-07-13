@@ -22702,7 +22702,7 @@
           "Apps v2"
         ],
         "summary": "Build the app in its session and mint a preview link",
-        "description": "Runs `npm install` (when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe.",
+        "description": "Runs `npm install` (when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe. Pass `chatId` to build the conversation's `chat/<chatId>` branch instead of the caller's own worktree — the caller's own worktree always starts on main, so building it while a chat is actively working on this app previews stale, unrelated content.",
         "security": [
           {
             "cookieAuth": []
@@ -22729,6 +22729,21 @@
             "in": "path"
           }
         ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "chatId": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "2XX": {
             "description": "Successful response",
@@ -22772,6 +22787,99 @@
           }
         },
         "operationId": "post_api_workspaces_workspaceId_apps_v2_id_preview"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview": {
+      "post": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Start (or reuse) a live `vite dev` preview for this app",
+        "description": "Prototype of apps-v2.md §4.7's 'dev preview' tier — LOCAL SANDBOX PROVIDER ONLY (returns 501 under the e2b provider, whose public-URL exposure isn't built yet). Runs `npm install` if needed, starts a persistent `vite dev` process bound to the worktree's session directory, and returns a token-gated URL that proxies to it — HMR works, no rebuild step required as files change. Pass `chatId` for the same reason as POST /preview: your own worktree always starts on main.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "chatId": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_dev_preview"
       }
     },
     "/api/workspaces/{workspaceId}/apps-v2/{id}/discard": {

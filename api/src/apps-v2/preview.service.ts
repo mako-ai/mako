@@ -22,8 +22,10 @@ export interface PreviewGrant {
   token: string;
   workspaceId: string;
   projectId: string;
-  /** Absolute directory the grant serves (the session's dist/). */
-  rootDir: string;
+  /** Absolute directory a "static" grant serves (the session's dist/). */
+  rootDir?: string;
+  /** Port a "dev" grant proxies to (a live `vite dev` process). */
+  devPort?: number;
   expiresAt: number;
 }
 
@@ -37,26 +39,63 @@ function sweep(): void {
   }
 }
 
+function mint(
+  input: { workspaceId: string; projectId: string; token?: string },
+  scope: Pick<PreviewGrant, "rootDir" | "devPort">,
+  dedupe: (grant: PreviewGrant) => boolean,
+): PreviewGrant {
+  sweep();
+  // One live grant per (project, target): re-minting invalidates older
+  // tokens for the same session so links don't accumulate — except a grant
+  // reusing its own already-registered token (dev grants: the token is baked
+  // into the running vite process's --base and must survive re-minting on
+  // every "Start dev session" click against the same worktree).
+  for (const [token, grant] of grants) {
+    if (token !== input.token && dedupe(grant)) grants.delete(token);
+  }
+  const grant: PreviewGrant = {
+    token: input.token ?? randomBytes(24).toString("base64url"),
+    workspaceId: input.workspaceId,
+    projectId: input.projectId,
+    ...scope,
+    expiresAt: Date.now() + PREVIEW_TTL_MS,
+  };
+  grants.set(grant.token, grant);
+  return grant;
+}
+
+/** Static grant: serves a built `dist/` directory as plain files. */
 export function mintPreviewGrant(input: {
   workspaceId: string;
   projectId: string;
   rootDir: string;
 }): PreviewGrant {
-  sweep();
-  // One live grant per (project, rootDir): re-minting invalidates older
-  // tokens for the same session so links don't accumulate.
-  for (const [token, grant] of grants) {
-    if (grant.rootDir === input.rootDir) grants.delete(token);
-  }
-  const grant: PreviewGrant = {
-    token: randomBytes(24).toString("base64url"),
-    workspaceId: input.workspaceId,
-    projectId: input.projectId,
-    rootDir: input.rootDir,
-    expiresAt: Date.now() + PREVIEW_TTL_MS,
-  };
-  grants.set(grant.token, grant);
-  return grant;
+  return mint(
+    input,
+    { rootDir: input.rootDir },
+    grant => grant.rootDir === input.rootDir,
+  );
+}
+
+/**
+ * Dev grant: proxies to a live `vite dev` process (see dev-server.service).
+ * `token`, if given, reuses a specific value instead of minting a random one
+ * — required here because the token is baked into the vite process's
+ * `--base` at spawn time (so its absolute-root asset paths resolve under the
+ * proxy prefix); it must stay the same across every "Start dev session"
+ * click that reuses that already-running process.
+ */
+export function mintDevPreviewGrant(input: {
+  workspaceId: string;
+  projectId: string;
+  devPort: number;
+  token?: string;
+}): PreviewGrant {
+  return mint(
+    input,
+    { devPort: input.devPort },
+    grant => grant.devPort === input.devPort,
+  );
 }
 
 export function resolvePreviewGrant(token: string): PreviewGrant | null {
@@ -98,9 +137,11 @@ export async function readPreviewAsset(
   grant: PreviewGrant,
   requestPath: string,
 ): Promise<PreviewAsset | null> {
+  if (!grant.rootDir) return null;
+  const rootDir = grant.rootDir;
   const cleaned = requestPath.replace(/^\/+/, "");
-  const candidate = path.resolve(grant.rootDir, cleaned || "index.html");
-  const rel = path.relative(grant.rootDir, candidate);
+  const candidate = path.resolve(rootDir, cleaned || "index.html");
+  const rel = path.relative(rootDir, candidate);
   if (rel.startsWith("..") || path.isAbsolute(rel)) return null;
 
   const tryRead = async (abs: string): Promise<PreviewAsset | null> => {
@@ -122,7 +163,7 @@ export async function readPreviewAsset(
   if (direct) return direct;
   // SPA fallback for extension-less navigation paths only.
   if (!path.extname(candidate)) {
-    return tryRead(path.join(grant.rootDir, "index.html"));
+    return tryRead(path.join(rootDir, "index.html"));
   }
   return null;
 }

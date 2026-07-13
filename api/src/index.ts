@@ -1,5 +1,6 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { serve } from "@hono/node-server";
+import { attachAppsV2DevPreviewWsProxy } from "./apps-v2/dev-preview-ws-proxy";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
@@ -346,10 +347,14 @@ async function main(): Promise<void> {
   });
 
   // Start the server
-  serve({
+  const server = serve({
     fetch: app.fetch,
     port,
   });
+  // Hono only handles regular HTTP requests; apps-v2's live dev preview
+  // (vite's HMR client) needs a raw WebSocket upgrade proxy — see
+  // apps-v2/dev-preview-ws-proxy.ts.
+  attachAppsV2DevPreviewWsProxy(server);
 
   if (!process.env.AI_GATEWAY_API_KEY) {
     logger.error(

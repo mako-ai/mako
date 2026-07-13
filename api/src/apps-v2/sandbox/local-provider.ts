@@ -36,7 +36,7 @@ function sandboxEnv(
   const cacheRoot = path.join(os.tmpdir(), "mako-apps-v2-cache");
   return {
     PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
-    HOME: rootDir,
+    HOME: path.join(cacheRoot, "home"),
     LANG: "C.UTF-8",
     TERM: "dumb",
     CI: "1",

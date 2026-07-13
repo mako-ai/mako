@@ -37,6 +37,7 @@ export default function AppsV2LinkRepoDialog({
   const linkedRepo = useAppsV2Store(s => s.linkedRepo);
   const fetchGithubStatus = useAppsV2Store(s => s.fetchGithubStatus);
   const fetchGithubRepos = useAppsV2Store(s => s.fetchGithubRepos);
+  const getGitHubInstallUrl = useAppsV2Store(s => s.getGitHubInstallUrl);
   const linkRepo = useAppsV2Store(s => s.linkRepo);
   const unlinkRepo = useAppsV2Store(s => s.unlinkRepo);
 
@@ -102,6 +103,13 @@ export default function AppsV2LinkRepoDialog({
     onClose,
   ]);
 
+  const handleInstall = useCallback(async () => {
+    setLoading(true);
+    const url = await getGitHubInstallUrl(workspaceId);
+    setLoading(false);
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
+  }, [workspaceId, getGitHubInstallUrl]);
+
   const handleUnlink = useCallback(async () => {
     if (
       !window.confirm(
@@ -146,9 +154,8 @@ export default function AppsV2LinkRepoDialog({
               <Button
                 variant="outlined"
                 size="small"
-                href={`https://github.com/apps/${appSlug}/installations/new`}
-                target="_blank"
-                rel="noreferrer"
+                onClick={() => void handleInstall()}
+                disabled={loading}
                 sx={{ mt: 1 }}
               >
                 Install the Mako GitHub App

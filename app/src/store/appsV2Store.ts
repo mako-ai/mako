@@ -13,6 +13,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { api, unwrapBody, ApiError } from "../api";
+import { apiClient } from "../lib/api-client";
 
 export interface AppV2Meta {
   id: string;
@@ -75,6 +76,8 @@ export interface AppV2Preview {
   error: string | null;
   buildOutput?: string;
   builtAt?: number;
+  /** "dev" = live `vite dev` proxy (HMR, no rebuild step); "static" = one-shot build. */
+  mode?: "static" | "dev";
 }
 
 export interface AppV2RepoBinding {
@@ -128,6 +131,9 @@ interface AppsV2Store {
     workspaceId: string,
     installationId: number,
   ) => Promise<AppV2GithubRepo[]>;
+  // TODO(apps-v2): borrows dbt's raw (non-OpenAPI) install-url route until
+  // apps-v2 gets its own /apps-v2/github/install-url endpoint.
+  getGitHubInstallUrl: (workspaceId: string) => Promise<string | null>;
   linkRepo: (
     workspaceId: string,
     input: {
@@ -174,7 +180,24 @@ interface AppsV2Store {
   ) => Promise<{ ok: boolean; error?: string }>;
   discard: (workspaceId: string, appId: string) => Promise<void>;
 
-  buildPreview: (workspaceId: string, appId: string) => Promise<void>;
+  // `chatId`: build the conversation's `chat/<chatId>` branch instead of the
+  // caller's own worktree, which always starts on main — pass it whenever an
+  // active chat has already committed work on this app (see AppV2Workspace),
+  // otherwise Build & preview silently renders stale, unrelated content.
+  buildPreview: (
+    workspaceId: string,
+    appId: string,
+    chatId?: string,
+  ) => Promise<void>;
+  // Prototype of apps-v2.md §4.7's "dev preview" tier (local-provider only —
+  // see api/src/apps-v2/dev-server.service.ts). Starts (or reuses) a
+  // persistent `vite dev` process and iframes it directly: HMR picks up
+  // every subsequent file change with no rebuild step, unlike buildPreview.
+  startDevPreview: (
+    workspaceId: string,
+    appId: string,
+    chatId?: string,
+  ) => Promise<void>;
   setViewMode: (appId: string, mode: "code" | "preview") => void;
   clearError: () => void;
 }
@@ -252,6 +275,20 @@ export const useAppsV2Store = create<AppsV2Store>()(
           s.error = message(e, "Failed to load GitHub status");
         });
         return { installations: [], appSlug: null };
+      }
+    },
+
+    getGitHubInstallUrl: async workspaceId => {
+      try {
+        const response = await apiClient.get<{ success: boolean; url: string }>(
+          `/workspaces/${workspaceId}/dbt/github/install-url`,
+        );
+        return response.url ?? null;
+      } catch (e) {
+        set(s => {
+          s.error = message(e, "Failed to start GitHub App install");
+        });
+        return null;
       }
     },
 
@@ -650,7 +687,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
       }
     },
 
-    buildPreview: async (workspaceId, appId) => {
+    buildPreview: async (workspaceId, appId, chatId) => {
       set(s => {
         s.previewByApp[appId] = {
           ...(s.previewByApp[appId] ?? { url: null }),
@@ -661,7 +698,10 @@ export const useAppsV2Store = create<AppsV2Store>()(
       try {
         const res = await api.POST(
           "/api/workspaces/{workspaceId}/apps-v2/{id}/preview",
-          { params: { path: { workspaceId, id: appId } } },
+          {
+            params: { path: { workspaceId, id: appId } },
+            body: chatId ? { chatId } : undefined,
+          },
         );
         const raw = (res.data ?? res.error) as
           | {
@@ -681,6 +721,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
               error: null,
               buildOutput: raw.buildOutput,
               builtAt: Date.now(),
+              mode: "static",
             };
             s.viewMode[appId] = "preview";
           });
@@ -703,6 +744,56 @@ export const useAppsV2Store = create<AppsV2Store>()(
             ...(s.previewByApp[appId] ?? { url: null }),
             building: false,
             error: message(e, "Build failed"),
+          };
+        });
+      }
+    },
+
+    startDevPreview: async (workspaceId, appId, chatId) => {
+      set(s => {
+        s.previewByApp[appId] = {
+          ...(s.previewByApp[appId] ?? { url: null }),
+          building: true,
+          error: null,
+        };
+      });
+      try {
+        const res = await api.POST(
+          "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview",
+          {
+            params: { path: { workspaceId, id: appId } },
+            body: chatId ? { chatId } : undefined,
+          },
+        );
+        const raw = (res.data ?? res.error) as
+          | { success?: boolean; url?: string; error?: string }
+          | undefined;
+        if (res.response.ok && raw?.url) {
+          set(s => {
+            s.previewByApp[appId] = {
+              url: raw.url ?? null,
+              building: false,
+              error: null,
+              builtAt: Date.now(),
+              mode: "dev",
+            };
+            s.viewMode[appId] = "preview";
+          });
+        } else {
+          set(s => {
+            s.previewByApp[appId] = {
+              ...(s.previewByApp[appId] ?? { url: null }),
+              building: false,
+              error: raw?.error ?? "Failed to start dev preview",
+            };
+          });
+        }
+      } catch (e) {
+        set(s => {
+          s.previewByApp[appId] = {
+            ...(s.previewByApp[appId] ?? { url: null }),
+            building: false,
+            error: message(e, "Failed to start dev preview"),
           };
         });
       }

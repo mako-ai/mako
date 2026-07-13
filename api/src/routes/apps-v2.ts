@@ -41,6 +41,8 @@ import {
 } from "../apps-v2/repo-binding.service";
 import {
   WorktreeConflictError,
+  chatActorFor,
+  chatBranchFor,
   commitWorktree,
   createProject,
   deleteProject,
@@ -56,7 +58,11 @@ import {
   writeFile,
 } from "../apps-v2/worktree.service";
 import { APPS_V2_EXEC_MAX_TIMEOUT_MS } from "../apps-v2/config";
-import { mintPreviewGrant } from "../apps-v2/preview.service";
+import {
+  mintDevPreviewGrant,
+  mintPreviewGrant,
+} from "../apps-v2/preview.service";
+import { ensureDevServer } from "../apps-v2/dev-server.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
 const logger = loggers.api("apps-v2");
@@ -826,17 +832,31 @@ appsV2Routes.openapi(
     tags: ["Apps v2"],
     summary: "Build the app in its session and mint a preview link",
     description:
-      "Runs `npm install` (when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe.",
+      "Runs `npm install` (when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe. Pass `chatId` to build the conversation's `chat/<chatId>` branch instead of the caller's own worktree — the caller's own worktree always starts on main, so building it while a chat is actively working on this app previews stale, unrelated content.",
     security: AUTH_SECURITY,
-    request: { params: ProjectParam },
+    request: {
+      params: ProjectParam,
+      body: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: z.object({ chatId: z.string().optional() }),
+          },
+        },
+      },
+    },
     responses: OPEN_RESPONSES,
   }),
   async c => {
     try {
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const userId = loaded.userId ?? "api-key";
-      const handle = await ensureWorktree(loaded.project, userId);
+      const chatId = c.req.valid("json")?.chatId;
+      const handle = chatId
+        ? await ensureWorktree(loaded.project, chatActorFor(chatId), {
+            branch: chatBranchFor(chatId),
+          })
+        : await ensureWorktree(loaded.project, loaded.userId ?? "api-key");
 
       const install = await execInWorktree(
         handle,
@@ -875,6 +895,17 @@ appsV2Routes.openapi(
         );
       }
 
+      // npm install can leave a new/updated lockfile in the worktree (e.g.
+      // the scaffold ships without one). Commit it immediately rather than
+      // leaving it as WIP — every mutating action here should end in a real
+      // commit, same as chat turns, not just an in-progress build.
+      const user = c.get("user");
+      await commitWorktree(
+        handle,
+        "chore: install dependencies",
+        user?.email ? { name: user.email, email: user.email } : undefined,
+      );
+
       const grant = mintPreviewGrant({
         workspaceId: loaded.project.workspaceId.toString(),
         projectId: loaded.project._id.toString(),
@@ -887,6 +918,94 @@ appsV2Routes.openapi(
           url: `/api/apps-v2-preview/${grant.token}/`,
           expiresAt: grant.expiresAt,
           buildOutput: build.stdout.slice(-2000),
+        },
+        200,
+      );
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/dev-preview",
+    tags: ["Apps v2"],
+    summary: "Start (or reuse) a live `vite dev` preview for this app",
+    description:
+      "Prototype of apps-v2.md §4.7's 'dev preview' tier — LOCAL SANDBOX PROVIDER ONLY (returns 501 under the e2b provider, whose public-URL exposure isn't built yet). Runs `npm install` if needed, starts a persistent `vite dev` process bound to the worktree's session directory, and returns a token-gated URL that proxies to it — HMR works, no rebuild step required as files change. Pass `chatId` for the same reason as POST /preview: your own worktree always starts on main.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: z.object({ chatId: z.string().optional() }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const chatId = c.req.valid("json")?.chatId;
+      const handle = chatId
+        ? await ensureWorktree(loaded.project, chatActorFor(chatId), {
+            branch: chatBranchFor(chatId),
+          })
+        : await ensureWorktree(loaded.project, loaded.userId ?? "api-key");
+
+      const install = await execInWorktree(
+        handle,
+        "[ -d node_modules ] || npm install --no-audit --no-fund",
+        { timeoutMs: 300_000 },
+      );
+      if (install.exitCode !== 0) {
+        return c.json(
+          {
+            success: false,
+            error: "npm install failed",
+            stdout: install.stdout.slice(-4000),
+            stderr: install.stderr.slice(-4000),
+          },
+          422,
+        );
+      }
+
+      let devPort: number;
+      let devToken: string;
+      try {
+        ({ port: devPort, token: devToken } = await ensureDevServer(handle));
+      } catch (error) {
+        return c.json(
+          {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to start dev server",
+          },
+          501,
+        );
+      }
+
+      const grant = mintDevPreviewGrant({
+        workspaceId: loaded.project.workspaceId.toString(),
+        projectId: loaded.project._id.toString(),
+        devPort,
+        token: devToken,
+      });
+      return c.json(
+        {
+          success: true as const,
+          token: grant.token,
+          url: `/api/apps-v2-preview/${grant.token}/`,
+          expiresAt: grant.expiresAt,
         },
         200,
       );

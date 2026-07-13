@@ -4,10 +4,12 @@
  * Files are browsed/opened from the Apps v2 explorer (each file gets its own
  * `app-v2-file` tab, v1-style); this view owns everything app-level:
  *
- *   ┌ toolbar: status chip · branch menu (merge chat branches) ·
- *   │          Build & preview · Commit · History · Discard
+ *   ┌ toolbar: Build & preview · History · Discard
  *   ├ preview: token-gated sandboxed iframe of the built app
  *   └ terminal: shell into the app's sandbox session (E2B microVM)
+ *
+ * Branch status, commit, and merge live in the Apps v2 explorer's "Version
+ * control" section (sidebar), not here — same split as Transforms.
  *
  * Every read resolves from git through the durable worktree API, so the view
  * renders identically whether the sandbox is hot, paused, or dead.
@@ -19,31 +21,24 @@ import {
   Button,
   Chip,
   CircularProgress,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   Divider,
   IconButton,
   InputBase,
   ListItemText,
   Menu,
   MenuItem,
-  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
 import {
   Eraser as ClearIcon,
-  GitBranch as BranchIcon,
-  GitCommitHorizontal as CommitIcon,
-  GitMerge as MergeIcon,
   History as HistoryIcon,
   Play as PlayIcon,
   RotateCcw as DiscardIcon,
   TerminalSquare as TerminalIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useRealtimeStore } from "../store/realtimeStore";
 import { useAppsV2Store, type AppV2TerminalEntry } from "../store/appsV2Store";
 
 // ---------------------------------------------------------------------------
@@ -230,19 +225,11 @@ export default function AppV2Workspace({
   const fetchStatus = useAppsV2Store(s => s.fetchStatus);
   const fetchHistory = useAppsV2Store(s => s.fetchHistory);
   const fetchBranches = useAppsV2Store(s => s.fetchBranches);
-  const mergeBranch = useAppsV2Store(s => s.mergeBranch);
-  const commit = useAppsV2Store(s => s.commit);
   const discard = useAppsV2Store(s => s.discard);
   const buildPreview = useAppsV2Store(s => s.buildPreview);
+  const startDevPreview = useAppsV2Store(s => s.startDevPreview);
 
-  const [commitOpen, setCommitOpen] = useState(false);
-  const [commitMessage, setCommitMessage] = useState("");
-  const [committing, setCommitting] = useState(false);
-  const [commitError, setCommitError] = useState<string | null>(null);
   const [historyAnchor, setHistoryAnchor] = useState<null | HTMLElement>(null);
-  const [branchAnchor, setBranchAnchor] = useState<null | HTMLElement>(null);
-  const [merging, setMerging] = useState<string | null>(null);
-  const [mergeError, setMergeError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -254,32 +241,15 @@ export default function AppV2Workspace({
   }, [workspaceId, appId]);
 
   const changeCount = status?.changes.length ?? 0;
-  const chatBranches = (branches ?? []).filter(b => !b.isDefault);
 
-  const handleCommit = useCallback(async () => {
-    if (!workspaceId || !commitMessage.trim()) return;
-    setCommitting(true);
-    setCommitError(null);
-    const result = await commit(workspaceId, appId, commitMessage.trim());
-    setCommitting(false);
-    if (result.ok) {
-      setCommitOpen(false);
-      setCommitMessage("");
-    } else {
-      setCommitError(result.error ?? "Commit failed");
-    }
-  }, [workspaceId, appId, commitMessage, commit]);
-
-  const handleMerge = useCallback(
-    async (branch: string) => {
-      if (!workspaceId) return;
-      setMerging(branch);
-      setMergeError(null);
-      const result = await mergeBranch(workspaceId, appId, branch);
-      setMerging(null);
-      if (!result.ok) setMergeError(result.error ?? "Merge failed");
-    },
-    [workspaceId, appId, mergeBranch],
+  // Same "prefer the active chat's branch" logic as the sidebar's Version
+  // control section: if the conversation you're currently chatting in has
+  // already committed work on this app, Build & preview should build THAT
+  // branch — your own separate worktree always starts on main, so building
+  // it while a chat is actively working here silently renders stale content.
+  const activeChatId = useRealtimeStore(s => s.activeChatId);
+  const activeChatBranch = (branches ?? []).find(
+    b => b.name === `chat/${activeChatId}`,
   );
 
   const handleDiscard = useCallback(() => {
@@ -308,37 +278,20 @@ export default function AppV2Workspace({
         <Typography variant="subtitle2" noWrap sx={{ maxWidth: 240 }}>
           {app?.title ?? "App"}
         </Typography>
-        <Chip
-          size="small"
-          variant="outlined"
-          color={changeCount > 0 ? "warning" : "default"}
-          label={
-            changeCount > 0
-              ? `${changeCount} uncommitted change${changeCount === 1 ? "" : "s"}`
-              : "clean"
-          }
-        />
-        <Tooltip title="Branches — each chat conversation works on its own branch; merge it into main when you're happy">
-          <Button
+        {preview?.mode === "dev" && preview.url && (
+          <Chip
+            label="live · HMR"
             size="small"
+            color="success"
             variant="outlined"
-            color="inherit"
-            startIcon={<BranchIcon size={14} />}
-            onClick={e => {
-              setBranchAnchor(e.currentTarget);
-              void fetchBranches(workspaceId, appId);
-            }}
-          >
-            {status?.branch ?? "main"}
-            {chatBranches.length > 0 ? ` · ${chatBranches.length}` : ""}
-          </Button>
-        </Tooltip>
+          />
+        )}
         <Box sx={{ flex: 1 }} />
-        <Tooltip title="npm install (if needed) + npm run build in the sandbox, then preview the built app">
+        <Tooltip title="Prototype of apps-v2.md §4.7's dev-preview tier: starts a persistent `vite dev` process and iframes it directly — edits picked up live via HMR, no rebuild step. Local-provider only.">
           <span>
             <Button
               size="small"
-              variant="contained"
+              variant={preview?.mode === "dev" ? "outlined" : "contained"}
               startIcon={
                 preview?.building ? (
                   <CircularProgress size={14} color="inherit" />
@@ -347,21 +300,46 @@ export default function AppV2Workspace({
                 )
               }
               disabled={preview?.building}
-              onClick={() => void buildPreview(workspaceId, appId)}
+              onClick={() =>
+                void startDevPreview(
+                  workspaceId,
+                  appId,
+                  activeChatBranch ? (activeChatId ?? undefined) : undefined,
+                )
+              }
             >
-              {preview?.building ? "Building..." : "Build & preview"}
+              {preview?.building
+                ? "Starting..."
+                : activeChatBranch
+                  ? "Start dev session (active chat)"
+                  : "Start dev session"}
             </Button>
           </span>
         </Tooltip>
-        <Button
-          size="small"
-          variant="outlined"
-          startIcon={<CommitIcon size={14} />}
-          disabled={changeCount === 0}
-          onClick={() => setCommitOpen(true)}
+        <Tooltip
+          title={
+            activeChatBranch
+              ? `One-shot npm install + npm run build in the sandbox — builds ${activeChatBranch.name} (your active chat's branch), then previews the static output`
+              : "One-shot npm install + npm run build in the sandbox, then preview the built app"
+          }
         >
-          Commit
-        </Button>
+          <span>
+            <Button
+              size="small"
+              variant={preview?.mode === "dev" ? "text" : "outlined"}
+              disabled={preview?.building}
+              onClick={() =>
+                void buildPreview(
+                  workspaceId,
+                  appId,
+                  activeChatBranch ? (activeChatId ?? undefined) : undefined,
+                )
+              }
+            >
+              Build & preview
+            </Button>
+          </span>
+        </Tooltip>
         <Tooltip title="History (main)">
           <IconButton
             size="small"
@@ -386,11 +364,10 @@ export default function AppV2Workspace({
         </Tooltip>
       </Box>
 
-      {(preview?.error || mergeError) && (
+      {preview?.error && (
         <Alert
           severity="error"
           onClose={() => {
-            setMergeError(null);
             useAppsV2Store.setState(s => {
               const p = s.previewByApp[appId];
               if (p) p.error = null;
@@ -403,7 +380,7 @@ export default function AppV2Workspace({
             overflow: "auto",
           }}
         >
-          {mergeError ?? preview?.error}
+          {preview.error}
         </Alert>
       )}
 
@@ -442,50 +419,6 @@ export default function AppV2Workspace({
         <TerminalPanel appId={appId} workspaceId={workspaceId} />
       </Box>
 
-      {/* Branch menu */}
-      <Menu
-        anchorEl={branchAnchor}
-        open={Boolean(branchAnchor)}
-        onClose={() => setBranchAnchor(null)}
-      >
-        {(branches ?? []).map(branch => (
-          <MenuItem key={branch.name} disableRipple sx={{ cursor: "default" }}>
-            <ListItemText
-              primary={
-                branch.isDefault
-                  ? `${branch.name} (default)`
-                  : `${branch.name} — ${branch.aheadOfMain} ahead`
-              }
-              secondary={
-                branch.lastCommit
-                  ? `${branch.lastCommit.subject} · ${new Date(branch.lastCommit.timestamp).toLocaleString()}`
-                  : undefined
-              }
-            />
-            {!branch.isDefault && branch.aheadOfMain > 0 && (
-              <Button
-                size="small"
-                sx={{ ml: 2 }}
-                startIcon={
-                  merging === branch.name ? (
-                    <CircularProgress size={12} />
-                  ) : (
-                    <MergeIcon size={14} />
-                  )
-                }
-                disabled={merging !== null}
-                onClick={() => void handleMerge(branch.name)}
-              >
-                Merge into main
-              </Button>
-            )}
-          </MenuItem>
-        ))}
-        {(branches ?? []).length === 0 && (
-          <MenuItem disabled>No branches</MenuItem>
-        )}
-      </Menu>
-
       {/* History menu */}
       <Menu
         anchorEl={historyAnchor}
@@ -504,62 +437,6 @@ export default function AppV2Workspace({
           </MenuItem>
         ))}
       </Menu>
-
-      {/* Commit dialog */}
-      <Dialog
-        open={commitOpen}
-        onClose={() => !committing && setCommitOpen(false)}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle>Commit changes</DialogTitle>
-        <DialogContent>
-          {status && status.changes.length > 0 && (
-            <Box sx={{ mb: 1 }}>
-              {status.changes.map(ch => (
-                <Typography
-                  key={ch.path}
-                  variant="caption"
-                  display="block"
-                  sx={{ fontFamily: "monospace" }}
-                >
-                  {ch.status[0].toUpperCase()} {ch.path}
-                </Typography>
-              ))}
-            </Box>
-          )}
-          <TextField
-            autoFocus
-            fullWidth
-            label="Commit message"
-            value={commitMessage}
-            onChange={e => setCommitMessage(e.target.value)}
-            disabled={committing}
-            onKeyDown={e => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                void handleCommit();
-              }
-            }}
-          />
-          {commitError && (
-            <Alert severity="error" sx={{ mt: 1 }}>
-              {commitError}
-            </Alert>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setCommitOpen(false)} disabled={committing}>
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            onClick={() => void handleCommit()}
-            disabled={committing || !commitMessage.trim()}
-          >
-            {committing ? "Committing..." : "Commit"}
-          </Button>
-        </DialogActions>
-      </Dialog>
     </Box>
   );
 }
