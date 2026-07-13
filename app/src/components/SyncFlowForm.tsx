@@ -447,33 +447,6 @@ export function SyncFlowForm({
     ? selectedIncrementalCapabilities?.warning
     : undefined;
 
-  // Sync Mode dropdown options: the currently-loaded combo is ALWAYS kept
-  // visible, even if it would otherwise be filtered out (e.g. an existing
-  // flow saved as Incremental before this connector's capability was known,
-  // or before it lost webhook/entity support). Without this, MUI's <Select>
-  // can't find a matching MenuItem for the current value and silently
-  // renders blank — which looks like the saved mode was lost, even though
-  // `formTouchedRef` already protects the underlying value from being
-  // rewritten on load. Only NEW selections are restricted to the visible
-  // (supported) list.
-  const visibleSyncModeCombos = SYNC_MODE_COMBOS.filter(
-    combo =>
-      supportedWriteModes.includes(combo.writeMode) &&
-      !(combo.writeMode === "overwrite" && watchWebhookEnabled) &&
-      !(combo.syncMode === "incremental" && !connectorSupportsIncremental),
-  );
-  const currentSyncModeValue = `${watchSyncMode}:${watchWriteMode}`;
-  const currentSyncModeCombo = SYNC_MODE_COMBOS.find(
-    c => c.value === currentSyncModeValue,
-  );
-  const currentSyncModeIsOrphaned =
-    Boolean(currentSyncModeCombo) &&
-    !visibleSyncModeCombos.some(c => c.value === currentSyncModeValue);
-  const syncModeMenuCombos =
-    currentSyncModeIsOrphaned && currentSyncModeCombo
-      ? [currentSyncModeCombo, ...visibleSyncModeCombos]
-      : visibleSyncModeCombos;
-
   const selectedDestination = databases.find(
     db => db.id === watchDestinationId,
   );
@@ -501,6 +474,33 @@ export function SyncFlowForm({
     !isCdcCapableDest || destType === "clickhouse"
       ? ["append_dedup"]
       : ["append_dedup", "append", "overwrite"];
+
+  // Sync Mode dropdown options: the currently-loaded combo is ALWAYS kept
+  // visible, even if it would otherwise be filtered out (e.g. an existing
+  // flow saved as Incremental before this connector's capability was known,
+  // or before it lost webhook/entity support). Without this, MUI's <Select>
+  // can't find a matching MenuItem for the current value and silently
+  // renders blank — which looks like the saved mode was lost, even though
+  // `formTouchedRef` already protects the underlying value from being
+  // rewritten on load. Only NEW selections are restricted to the visible
+  // (supported) list.
+  const visibleSyncModeCombos = SYNC_MODE_COMBOS.filter(
+    combo =>
+      supportedWriteModes.includes(combo.writeMode) &&
+      !(combo.writeMode === "overwrite" && watchWebhookEnabled) &&
+      !(combo.syncMode === "incremental" && !connectorSupportsIncremental),
+  );
+  const currentSyncModeValue = `${watchSyncMode}:${watchWriteMode}`;
+  const currentSyncModeCombo = SYNC_MODE_COMBOS.find(
+    c => c.value === currentSyncModeValue,
+  );
+  const currentSyncModeIsOrphaned =
+    Boolean(currentSyncModeCombo) &&
+    !visibleSyncModeCombos.some(c => c.value === currentSyncModeValue);
+  const syncModeMenuCombos =
+    currentSyncModeIsOrphaned && currentSyncModeCombo
+      ? [currentSyncModeCombo, ...visibleSyncModeCombos]
+      : visibleSyncModeCombos;
 
   const layoutMode: "partition" | "index" | "none" = hasStagingDest
     ? "partition"
