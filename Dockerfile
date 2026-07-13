@@ -6,6 +6,9 @@
 #
 # Runtime layers (apt, dbt venvs, pnpm) are ordered for BuildKit cache reuse.
 
+# Must be declared before any FROM so it can interpolate the builder selector stage.
+ARG USE_PREBUILT=0
+
 # =============================================================================
 # Builder: compile from source (local / docs path)
 # =============================================================================
@@ -56,7 +59,6 @@ COPY app/dist ./app/dist
 # =============================================================================
 # Select builder based on USE_PREBUILT (0 = source, 1 = prebuilt)
 # =============================================================================
-ARG USE_PREBUILT=0
 FROM builder-source AS builder-0
 FROM builder-prebuilt AS builder-1
 FROM builder-${USE_PREBUILT} AS builder
