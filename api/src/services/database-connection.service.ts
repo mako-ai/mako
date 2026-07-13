@@ -698,21 +698,20 @@ export class DatabaseConnectionService {
     query: any,
     options: StreamingQueryOptions & QueryExecuteOptions,
   ): Promise<{ success: boolean; totalRows: number; error?: string }> {
-    if (database.type === "bigquery" && typeof query === "string") {
-      // BigQuery has no session read-only mode, so enforce it lexically (single
-      // validated SELECT/WITH) and use the native streaming path. Previously
-      // `readOnly` skipped this branch and fell into the offset-batch loop,
-      // which throws "BigQuery batch queries must use native page tokens".
-      if (options.readOnly) {
-        const safety = checkPreviewQuerySafety(query);
-        if (!safety.safe) {
-          return {
-            success: false,
-            totalRows: 0,
-            error: safety.errors.join(" "),
-          };
-        }
+    // Read-only enforcement is engine-agnostic: validate the query lexically
+    // once, up front. Engines with a session read-only mode additionally get it
+    // via executeQuery below; engines without one (e.g. BigQuery, whose native
+    // streaming path bypasses executeQuery) rely solely on this check.
+    if (options.readOnly && typeof query === "string") {
+      const safety = checkPreviewQuerySafety(query);
+      if (!safety.safe) {
+        return { success: false, totalRows: 0, error: safety.errors.join(" ") };
       }
+    }
+
+    // BigQuery paginates via native job page tokens, not offset batches, so it
+    // always streams through its native path.
+    if (database.type === "bigquery" && typeof query === "string") {
       return await this.executeBigQueryStreamingQuery(database, query, options);
     }
 
