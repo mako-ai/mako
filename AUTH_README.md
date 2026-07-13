@@ -463,6 +463,81 @@ Desktop app (deep link received: open-url on macOS, argv on Win/Linux)
 | `app/src/utils/desktop-auth-redirect.ts` | sessionStorage resume across the login round trip      |
 | `packages/desktop/src/main.ts`         | PKCE generation, `mako://` protocol, deep-link handling  |
 
+## MCP OAuth (AI agent connections)
+
+The MCP endpoint (`POST /api/mcp`) accepts two credentials: a workspace API
+key (`Authorization: Bearer revops_...`) or an OAuth 2.1 grant minted by
+Mako's own built-in authorization server. Session cookies are rejected there
+so the workspace binding is always unambiguous.
+
+### Authorization server
+
+Public clients only (`token_endpoint_auth_methods_supported: ["none"]`) with
+mandatory PKCE S256 — the MCP spec's auth profile, implemented by Claude,
+Cursor, and Codex. Clients self-register via RFC 7591 dynamic registration;
+no provider console setup is needed.
+
+| Method | Endpoint                  | Description                                        |
+| ------ | ------------------------- | -------------------------------------------------- |
+| POST   | `/api/oauth/mcp/register` | RFC 7591 dynamic client registration               |
+| GET    | `/api/oauth/mcp/authorize`| Consent page (bounces through `/login` if needed)  |
+| POST   | `/api/oauth/mcp/authorize`| Consent form submit → authorization code redirect  |
+| POST   | `/api/oauth/mcp/token`    | Code/refresh-token exchange                        |
+
+Discovery documents are mounted at root in `src/index.ts` (not in
+`register-routes.ts`): `/.well-known/oauth-protected-resource` and six
+authorization-server metadata spellings (RFC 8414 path-inserted variants plus
+OIDC-discovery spellings). All variants serve the same metadata — a miss
+would fall through to the SPA fallback and poison client discovery.
+
+### Token model
+
+- Opaque tokens, stored as SHA-256 hashes: access `mcpat_*` (8 h TTL),
+  refresh `mcprt_*` (30 d TTL, rotated on every refresh). Auth codes live
+  10 minutes and are consumed atomically.
+- `unifiedAuthMiddleware` recognizes the `mcpat_` Bearer prefix and sets
+  `authType: "mcpOAuth"` with the grant's workspace binding and scopes.
+- Scopes are always the read-only set (`mcp`, `query:read`). There is
+  deliberately no `query:write` scope — an OAuth grant can never do more
+  than a freshly-created MCP API key.
+- Redirect URIs accepted at registration: `https` anywhere, `http` on
+  loopback only (RFC 8252), or a custom app scheme (e.g. `cursor://`).
+  Max 10 per client.
+- `lastUsedAt` is written at most once per minute per grant to avoid a
+  DB write on every MCP request.
+
+### Workspace API key scopes
+
+Workspace API keys (`revops_*`) now carry a `scopes` array
+(`api/src/auth/api-key-scopes.ts`). New keys default to
+`["mcp", "query:read"]`. Legacy keys created before scopes existed have
+`scopes: undefined` and are refused by the MCP endpoint with a rotation
+hint — they keep working everywhere else.
+
+### Managing connected agents
+
+| Method | Endpoint                                        | Description                     |
+| ------ | ----------------------------------------------- | ------------------------------- |
+| GET    | `/api/workspaces/:id/mcp-connections`           | List agents connected via OAuth |
+| DELETE | `/api/workspaces/:id/mcp-connections/:clientId` | Revoke an agent's grants        |
+
+Members see and revoke their own connections; owners/admins see everyone's.
+The app surface for this is **Settings → Connect Agents**.
+
+### Key Files
+
+| File                                    | Purpose                                                        |
+| --------------------------------------- | -------------------------------------------------------------- |
+| `api/src/routes/mcp-oauth.routes.ts`    | AS endpoints, well-known discovery documents, consent page      |
+| `api/src/auth/mcp-oauth.service.ts`     | Code/token mint, exchange, refresh rotation, revocation         |
+| `api/src/database/mcp-oauth-schema.ts`  | `McpOAuthClient`, `McpOAuthCode`, `McpOAuthToken` models        |
+| `api/src/auth/api-key-scopes.ts`        | Scope constants, parsing, legacy-key resolution                 |
+| `api/src/auth/unified-auth.middleware.ts` | `mcpat_` Bearer recognition alongside sessions and API keys   |
+| `api/src/routes/mcp-server.routes.ts`   | `POST /api/mcp` — auth-type and scope enforcement               |
+
+User-facing setup docs live in the Starlight site: `docs/src/content/docs/mcp-server.md`.
+
+
 ## Customization
 
 ### Adding New OAuth Providers
