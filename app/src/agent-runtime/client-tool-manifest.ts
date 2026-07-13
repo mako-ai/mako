@@ -1212,6 +1212,13 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Running SQL cell",
     icon: "play",
   },
+  run_notebook_code_cell: {
+    domain: "notebook",
+    execution: "client",
+    clientExecutor: "notebook",
+    getLabel: () => "Running Python cell",
+    icon: "play",
+  },
 } as const satisfies Record<string, AgentToolManifestEntry>;
 
 export type AgentToolName = keyof typeof AGENT_TOOL_MANIFEST;

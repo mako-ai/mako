@@ -245,6 +245,7 @@ const NOTEBOOK_MODE_TOOL_NAMES: string[] = [
   "edit_notebook_cell",
   "delete_notebook_cell",
   "run_notebook_sql_cell",
+  "run_notebook_code_cell",
   // Discovery: find data sources + tables for SQL cells
   "list_connections",
   "sql_list_connections",

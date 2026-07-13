@@ -13,12 +13,59 @@ import {
   type NotebookBlockType,
 } from "../store/notebookStore";
 import { useUIStore } from "../store/uiStore";
+import {
+  executeCode,
+  startKernelSession,
+  type ExecuteResult,
+  type KernelOutput,
+} from "./kernel";
+import { capKernelOutputs } from "./outputs";
 import { focusNotebookTab } from "./shell";
 
 type ToolResult = Record<string, unknown>;
 
 function fail(error: string): ToolResult {
   return { success: false, error };
+}
+
+/** Condense kernel outputs into a compact result the agent can act on. */
+function summarizeKernelOutputs(
+  outputs: KernelOutput[],
+  result: ExecuteResult,
+): ToolResult {
+  const trunc = (s: string, n = 4000) =>
+    s.length > n ? s.slice(0, n) + "\n… (truncated)" : s;
+  const streamText = (name: "stdout" | "stderr") =>
+    outputs
+      .filter(o => o.type === "stream" && o.name === name)
+      .map(o => (o.type === "stream" ? o.text : ""))
+      .join("");
+  const errorOut = outputs.find(o => o.type === "error");
+  const resultOut = [...outputs]
+    .reverse()
+    .find(o => o.type === "result" || o.type === "display");
+  const resultText =
+    resultOut && (resultOut.type === "result" || resultOut.type === "display")
+      ? String(
+          resultOut.data["text/plain"] ??
+            Object.keys(resultOut.data).join(", "),
+        )
+      : undefined;
+  return {
+    status: result.status,
+    executionCount: result.executionCount ?? null,
+    stdout: trunc(streamText("stdout")),
+    stderr: trunc(streamText("stderr")),
+    error:
+      errorOut && errorOut.type === "error"
+        ? {
+            ename: errorOut.ename,
+            evalue: errorOut.evalue,
+            traceback: errorOut.traceback.slice(-20),
+          }
+        : undefined,
+    result: resultText ? trunc(resultText) : undefined,
+  };
 }
 
 /** The notebook id from input, else the notebook in the active (or any) tab. */
@@ -155,7 +202,10 @@ export async function executeNotebookAgentTool(
       const cell = doc.blocks.find(b => b.id === cellId);
       if (!cell) return fail(`No cell with id "${cellId}"`);
       if (cell.type !== "sql") {
-        return fail("Only SQL cells can run yet (Python needs the kernel).");
+        return fail(
+          "run_notebook_sql_cell only runs SQL cells; use " +
+            "run_notebook_code_cell for Python.",
+        );
       }
       if (!cell.connectionId) {
         return fail("Set a data source (connectionId) on the cell first.");
@@ -184,6 +234,45 @@ export async function executeNotebookAgentTool(
         columns,
         sampleRows: rows.slice(0, 20),
       };
+    }
+
+    case "run_notebook_code_cell": {
+      const cellId = input.cellId as string;
+      const cell = doc.blocks.find(b => b.id === cellId);
+      if (!cell) return fail(`No cell with id "${cellId}"`);
+      if (cell.type !== "code") {
+        return fail(
+          "run_notebook_code_cell only runs 'code' (Python) cells; use " +
+            "run_notebook_sql_cell for SQL.",
+        );
+      }
+      const workspaceId = useUIStore.getState().currentWorkspaceId ?? null;
+      if (!workspaceId) return fail("No active workspace");
+      const collected: KernelOutput[] = [];
+      try {
+        await startKernelSession(workspaceId, notebookId);
+        const res = await executeCode(
+          workspaceId,
+          notebookId,
+          cell.source,
+          o => collected.push(o),
+          options?.signal,
+        );
+        // Persist to the cell so outputs show in the editor + survive reload,
+        // exactly like a human clicking Run.
+        store.updateCell(notebookId, cellId, {
+          outputs: capKernelOutputs(collected),
+          executionCount: res.executionCount ?? undefined,
+          executedAt: new Date().toISOString(),
+        });
+        return {
+          success: true,
+          cellId,
+          ...summarizeKernelOutputs(collected, res),
+        };
+      } catch (e) {
+        return fail(e instanceof Error ? e.message : "Execution failed");
+      }
     }
 
     default:

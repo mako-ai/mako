@@ -19,7 +19,7 @@ const cellTypeField = z
   .enum(["code", "sql", "markdown"])
   .describe(
     "Cell type: 'sql' runs against a data source, 'code' is Python (runs on " +
-      "the kernel — not available yet), 'markdown' renders as prose.",
+      "the managed kernel), 'markdown' renders as prose.",
   );
 
 export const clientNotebookTools = {
@@ -88,8 +88,20 @@ export const clientNotebookTools = {
   run_notebook_sql_cell: tool({
     description:
       "Run a SQL cell against its data source and return the columns + first " +
-      "rows. The cell must be type 'sql' with a connectionId set. Python cells " +
-      "cannot run yet.",
+      "rows. The cell must be type 'sql' with a connectionId set.",
+    inputSchema: z.object({
+      notebookId: notebookIdField,
+      cellId: z.string(),
+    }),
+  }),
+  run_notebook_code_cell: tool({
+    description:
+      "Run a Python ('code') cell on the notebook's managed kernel and return " +
+      "its stdout/stderr, any error + traceback, and the result. Kernel state " +
+      "persists across runs (variables, imports), so cells build on each other. " +
+      "pandas, polars, numpy, matplotlib, plotly, duckdb and the `mako` SDK are " +
+      "preinstalled. Use after add_notebook_cell to execute + iterate: run, read " +
+      "the output/error, fix the cell, rerun.",
     inputSchema: z.object({
       notebookId: notebookIdField,
       cellId: z.string(),

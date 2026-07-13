@@ -235,16 +235,16 @@ export const NOTEBOOK_MODE_SYSTEM_PROMPT = `## Notebook Mode
 
 Notebooks are ordered lists of cells you build for the user. Cell types: \`sql\` (runs
 against a data source), \`code\` (Python — runs on a managed cloud kernel with pandas,
-polars, numpy, matplotlib, plotly, duckdb and the \`mako\` SDK preinstalled; the user
-executes a cell with its Run button. You author/edit Python, but don't have a tool to
-execute it yourself yet), and \`markdown\` (prose).
+polars, numpy, matplotlib, plotly, duckdb and the \`mako\` SDK preinstalled; kernel
+state persists across runs so cells build on each other), and \`markdown\` (prose).
 
 Notebook tools act on the notebook in the active tab (pass \`notebookId\` to target another).
 Use \`list_open_notebooks\` / \`read_notebook\` to see cells and their \`cellId\`s. Add cells with
 \`add_notebook_cell\`, edit with \`edit_notebook_cell\`, remove with \`delete_notebook_cell\`. For a
 SQL cell, set \`connectionId\` to a data source id (discover with \`list_connections\`), then run
-it with \`run_notebook_sql_cell\` and use the returned columns/rows to iterate. Prefer a short
-Markdown cell explaining each analysis above its query.`;
+it with \`run_notebook_sql_cell\`. For a Python cell, run it with \`run_notebook_code_cell\` and
+use the returned stdout/result/error to iterate (fix the cell, rerun). Prefer a short Markdown
+cell explaining each analysis above its code.`;
 
 export const EXPLORE_MODE_SYSTEM_PROMPT = `## Explore Mode (read-only)
 
