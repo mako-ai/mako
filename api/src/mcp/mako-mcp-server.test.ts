@@ -25,6 +25,14 @@ import {
   type WorkspaceApiKeyScope,
 } from "../auth/api-key-scopes";
 import { sqlReadOnlyAccessError } from "../services/read-only-query.service";
+import {
+  assertBridgePolicyCovers,
+  assertBridgePolicyNotStale,
+  MCP_BRIDGE_POLICY,
+  mcpExposedToolNames,
+  summarizeBridgeGaps,
+} from "./bridge-policy";
+import { collectLiveAgentToolNames } from "./bridge-inventory";
 
 const WORKSPACE_ID = new Types.ObjectId().toString();
 
@@ -189,6 +197,8 @@ async function main() {
       "sql_execute_query",
       "mongo_list_connections",
       "search_consoles",
+      "search_dashboards",
+      "search_skills",
       "read_console",
       "create_console",
       "run_console",
@@ -198,6 +208,7 @@ async function main() {
       "get_version_snapshot",
       "load_skill",
       "read_skill_resource",
+      "fetch_url",
     ]) {
       assert.ok(names.has(expected), `missing tool: ${expected}`);
     }
@@ -213,6 +224,63 @@ async function main() {
       false,
       "read-only keys must not expose arbitrary MongoDB JavaScript execution",
     );
+    if (names.has("web_search")) {
+      assert.equal(
+        byName.get("web_search")?.annotations?.openWorldHint,
+        true,
+        "web_search should be annotated open-world",
+      );
+    }
+    assert.equal(
+      byName.get("fetch_url")?.annotations?.openWorldHint,
+      true,
+      "fetch_url should be annotated open-world",
+    );
+    assert.equal(
+      names.has("save_skill"),
+      false,
+      "skill writes stay in-product",
+    );
+    assert.equal(
+      names.has("open_app"),
+      false,
+      "client-only app tools must not be bridged",
+    );
+  }
+
+  // 3b. Bridge policy covers the live agent inventory — this is how we stay
+  //     smart about gaps when someone adds a new agent tool.
+  {
+    const live = collectLiveAgentToolNames();
+    assertBridgePolicyCovers(live);
+    assertBridgePolicyNotStale(live);
+
+    const [res] = await exchange([
+      { jsonrpc: "2.0", id: "policy", method: "tools/list" },
+    ]);
+    const { tools } = res.result as { tools: { name: string }[] };
+    const exposed = new Set(tools.map(t => t.name));
+    for (const [name, entry] of Object.entries(MCP_BRIDGE_POLICY)) {
+      if (entry.status !== "bridge") continue;
+      // Conditional tools (e.g. web_search) only appear when optional
+      // providers are configured.
+      if (entry.conditional) continue;
+      assert.ok(
+        exposed.has(name),
+        `policy says bridge ${name} but tools/list omitted it`,
+      );
+    }
+    for (const name of exposed) {
+      const entry = MCP_BRIDGE_POLICY[name];
+      assert.ok(
+        entry && (entry.status === "bridge" || entry.status === "mcp-only"),
+        `tools/list exposed ${name} without a bridge/mcp-only policy entry`,
+      );
+    }
+    // Sanity: gaps summary is non-empty and includes the security exclusion.
+    const gaps = summarizeBridgeGaps();
+    assert.ok(gaps.some(g => g.why === "security"));
+    assert.ok(mcpExposedToolNames().includes("create_app"));
   }
 
   // 4. Arbitrary MongoDB JavaScript execution is never bridged over MCP.
