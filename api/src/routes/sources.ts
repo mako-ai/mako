@@ -813,15 +813,15 @@ dataSourceRoutes.openapi(
           },
         });
       } catch (error: any) {
+        // Log full detail server-side, but return a single opaque error to the
+        // client. Distinct decryption-failure messages (e.g. bad padding) turn
+        // this endpoint into a padding oracle against the unauthenticated
+        // AES-256-CBC scheme, enabling plaintext recovery.
         logger.error("Decryption error", { error });
         return c.json(
           {
             success: false,
-            error: `Decryption failed: ${error.message}`,
-            details: {
-              code: error.code,
-              message: error.message,
-            },
+            error: "Decryption failed",
           },
           400,
         );
