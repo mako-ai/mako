@@ -1,0 +1,30 @@
+# Local development services.
+#
+# Currently this runs the notebook Python kernel so `code` cells execute
+# locally: the API's StaticKernelProvider (KERNEL_GATEWAY_URL, see .env.example)
+# drives this sidecar's Jupyter Kernel Gateway. In deployed environments the
+# GKE KernelProvider is used instead — this is dev-only.
+#
+# The dev database is hosted MongoDB Atlas (via DATABASE_URL), so it is not a
+# compose service.
+#
+# Usage:
+#   pnpm docker:up      # build (first run) + start the kernel
+#   pnpm docker:logs    # follow logs
+#   pnpm docker:down    # stop
+services:
+  notebook-kernel:
+    build:
+      # Build from source so no GCP/registry auth is needed. Context is the
+      # repo root because the image bundles packages/mako-sdk-py.
+      context: .
+      dockerfile: packages/kernel-image/Dockerfile
+    image: mako-notebook-kernel:local
+    container_name: mako-notebook-kernel
+    ports:
+      - "8888:8888"
+    # Lets the kernel reach the host API for mako.sources.sql.read (the session
+    # injects MAKO_API_URL=NOTEBOOK_KERNEL_API_URL=http://host.docker.internal:8080).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
