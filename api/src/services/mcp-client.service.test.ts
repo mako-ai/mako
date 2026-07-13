@@ -38,6 +38,18 @@ import {
   McpServer,
   McpToolGrant,
 } from "../database/workspace-schema";
+import {
+  CLOSE_MCP_PRESET,
+  CUSTOM_MCP_PRESET,
+  SLACK_MCP_PRESET,
+  getMcpPreset,
+  mcpPresetOAuthScope,
+} from "../mcp/presets";
+import {
+  hasMcpOAuthClient,
+  saveMcpOAuthClient,
+  startMcpOAuthFlow,
+} from "./mcp-oauth.service";
 
 function testServerSlugAndPrefix() {
   assert.equal(mcpServerSlug("Close CRM"), "close_crm");
@@ -203,6 +215,132 @@ function testAllowlistFiltering() {
     ),
     "always",
   );
+}
+
+function testPresetsAndOAuthScopes() {
+  // Registry lookups: known presets resolve, unknown types fall back to
+  // custom (any Streamable-HTTP server).
+  assert.equal(getMcpPreset("close"), CLOSE_MCP_PRESET);
+  assert.equal(getMcpPreset("slack"), SLACK_MCP_PRESET);
+  assert.equal(getMcpPreset("nope"), CUSTOM_MCP_PRESET);
+
+  // Slack: official hosted endpoint, OAuth-only, manual (pre-registered
+  // confidential app) client mode — Slack does not support DCR.
+  assert.equal(SLACK_MCP_PRESET.url, "https://mcp.slack.com/mcp");
+  assert.equal(SLACK_MCP_PRESET.urlEditable, false);
+  assert.deepEqual(SLACK_MCP_PRESET.authOptions, ["oauth"]);
+  assert.equal(SLACK_MCP_PRESET.oauth?.clientMode, "manual");
+
+  // Least-privilege scope sets: read never holds write scopes; each tier is
+  // a superset of the previous one.
+  const readScope = mcpPresetOAuthScope(SLACK_MCP_PRESET, "read");
+  const safeScope = mcpPresetOAuthScope(SLACK_MCP_PRESET, "write_safe");
+  const destructiveScope = mcpPresetOAuthScope(
+    SLACK_MCP_PRESET,
+    "write_destructive",
+  );
+  assert.ok(readScope && safeScope && destructiveScope);
+  assert.ok(readScope.includes("search:read.public"));
+  assert.ok(!readScope.includes("chat:write"));
+  assert.ok(safeScope.includes("chat:write"));
+  assert.ok(!safeScope.includes("channels:write"));
+  assert.ok(destructiveScope.includes("channels:write"));
+  const asSet = (s: string) => new Set(s.split(" "));
+  for (const scope of asSet(readScope)) {
+    assert.ok(asSet(safeScope).has(scope), `write_safe missing ${scope}`);
+  }
+  for (const scope of asSet(safeScope)) {
+    assert.ok(
+      asSet(destructiveScope).has(scope),
+      `write_destructive missing ${scope}`,
+    );
+  }
+
+  // Close scopes via the Close-Scope header, not OAuth scopes — the SDK
+  // falls back to the provider's advertised scopes_supported.
+  assert.equal(mcpPresetOAuthScope(CLOSE_MCP_PRESET, "read"), undefined);
+  assert.equal(mcpPresetOAuthScope(CUSTOM_MCP_PRESET, "read"), undefined);
+}
+
+/**
+ * Manual OAuth client registration (Slack model), against in-memory Mongo:
+ * connect is blocked with a setup message until an admin saves the app,
+ * saving stores the client encrypted (retrievable), and re-saving clears
+ * previously issued tokens (they belonged to the old client).
+ */
+async function testManualOAuthClient() {
+  const replSet = await MongoMemoryReplSet.create({
+    replSet: { count: 1 },
+  });
+  await mongoose.connect(replSet.getUri("mako-test-oauth"));
+
+  try {
+    const workspaceId = new Types.ObjectId();
+    const server = await McpServer.create({
+      workspaceId,
+      name: "Slack",
+      connectorType: "slack",
+      transport: { type: "http", url: "https://mcp.slack.com/mcp" },
+      authType: "oauth",
+      authPerformer: "user",
+      writeScope: "read",
+      status: "awaiting_auth",
+      createdBy: "user-1",
+    });
+
+    // No app saved yet → the flow refuses with an actionable message
+    // instead of attempting DCR (which Slack rejects).
+    assert.equal(await hasMcpOAuthClient(server), false);
+    await assert.rejects(
+      () =>
+        startMcpOAuthFlow({
+          server,
+          configUserId: "user-1",
+          startedByUserId: "user-1",
+        }),
+      /pre-registered OAuth app/,
+    );
+
+    // Simulate a stale token from a previous app registration.
+    await McpConnectionConfig.create({
+      workspaceId,
+      serverId: server._id,
+      userId: "user-1",
+      headers: {},
+      oauthTokens: encryptString(
+        JSON.stringify({ access_token: "old", token_type: "Bearer" }),
+      ),
+      oauthExpiresAt: Date.now() + 60_000,
+    });
+
+    await saveMcpOAuthClient({
+      server,
+      clientId: "1234.5678",
+      clientSecret: "shhh",
+    });
+    assert.equal(await hasMcpOAuthClient(server), true);
+
+    // Stored encrypted, decrypts back to the exact client information.
+    const saved = await McpServer.findById(server._id).select("oauth").lean();
+    const encrypted = saved?.oauth?.clientInformation;
+    assert.ok(encrypted);
+    assert.ok(!encrypted.includes("shhh"));
+    assert.deepEqual(JSON.parse(decryptString(encrypted)), {
+      client_id: "1234.5678",
+      client_secret: "shhh",
+    });
+
+    // Old tokens were invalidated — members must reconnect.
+    const config = await McpConnectionConfig.findOne({
+      serverId: server._id,
+      userId: "user-1",
+    }).lean();
+    assert.equal(config?.oauthTokens, undefined);
+    assert.equal(config?.oauthExpiresAt, undefined);
+  } finally {
+    await mongoose.disconnect();
+    await replSet.stop();
+  }
 }
 
 async function testUrlSafety() {
@@ -448,8 +586,10 @@ async function main() {
   testRiskTiers();
   testAllowlistFiltering();
   testCryptoRoundTrip();
+  testPresetsAndOAuthScopes();
   await testUrlSafety();
   await testGrantsAndNeedsApproval();
+  await testManualOAuthClient();
   // eslint-disable-next-line no-console
   console.log("✓ mcp-client.service tests passed");
 }

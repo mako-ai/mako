@@ -15237,6 +15237,107 @@
         "operationId": "put_api_workspaces_workspaceId_mcp_servers_id_credentials"
       }
     },
+    "/api/workspaces/{workspaceId}/mcp-servers/{id}/oauth/client": {
+      "put": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "Save a pre-registered OAuth app (client ID + secret) for an MCP server",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "clientId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "clientSecret": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "clientId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "put_api_workspaces_workspaceId_mcp_servers_id_oauth_client"
+      }
+    },
     "/api/workspaces/{workspaceId}/mcp-servers/{id}/oauth/connect": {
       "post": {
         "tags": [
@@ -15773,6 +15874,48 @@
           }
         },
         "operationId": "get_api_mcp_presets"
+      }
+    },
+    "/api/mcp/presets/{type}/icon.svg": {
+      "get": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "Get MCP preset icon",
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "type",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SVG icon.",
+            "content": {
+              "image/svg+xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Icon not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_mcp_presets_type_icon_svg"
       }
     },
     "/api/mcp/oauth/callback": {

@@ -44,6 +44,10 @@ export interface McpServerInfo {
   isActive: boolean;
   hasWorkspaceCredential: boolean;
   hasUserCredential: boolean;
+  /** Manual-client OAuth presets (Slack): admin saved the provider app. */
+  hasOAuthClient: boolean;
+  /** Non-secret client id of the saved OAuth app, when one exists. */
+  oauthClientId: string | null;
 }
 
 export interface McpPresetHeaderField {
@@ -52,6 +56,13 @@ export interface McpPresetHeaderField {
   type: "password" | "string";
   required: boolean;
   helperText?: string;
+}
+
+export interface McpPresetOAuthInfo {
+  /** "dcr" = automatic registration; "manual" = admin supplies app creds. */
+  clientMode: "dcr" | "manual";
+  helperText?: string;
+  docsUrl?: string;
 }
 
 export interface McpPresetInfo {
@@ -64,6 +75,7 @@ export interface McpPresetInfo {
   authType: "none" | "api_key" | "oauth";
   authOptions: Array<"none" | "api_key" | "oauth">;
   headerFields: McpPresetHeaderField[];
+  oauth?: McpPresetOAuthInfo;
 }
 
 export interface McpToolUiInfo {
@@ -135,6 +147,13 @@ interface McpActions {
     workspaceId: string,
     serverId: string,
     headers: Record<string, string>,
+  ) => Promise<void>;
+  /** Save a pre-registered OAuth app (manual-client presets like Slack). */
+  saveOAuthClient: (
+    workspaceId: string,
+    serverId: string,
+    clientId: string,
+    clientSecret?: string,
   ) => Promise<void>;
   testServer: (
     workspaceId: string,
@@ -292,6 +311,19 @@ export const useMcpStore = create<McpStore>()(
           {
             params: { path: { workspaceId, id: serverId } },
             body: { headers },
+          },
+        ),
+      );
+      await get().fetchServers(workspaceId);
+    },
+
+    saveOAuthClient: async (workspaceId, serverId, clientId, clientSecret) => {
+      unwrapBody(
+        await api.PUT(
+          "/api/workspaces/{workspaceId}/mcp-servers/{id}/oauth/client",
+          {
+            params: { path: { workspaceId, id: serverId } },
+            body: { clientId, clientSecret },
           },
         ),
       );
