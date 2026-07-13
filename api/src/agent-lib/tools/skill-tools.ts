@@ -1,18 +1,17 @@
 /**
  * Skill tools — agent-side CRUD + search for the skills system (issue #365).
  *
- * Four tools:
- *   - save_skill     upsert a named playbook (auto-extracts entities)
- *   - delete_skill   retract a skill by name
- *   - load_skill     explicit load; appears in trace, forces commitment
- *   - read_skill_resource load a system skill reference file
- *   - search_skills  fallback when the injected index misses
+ * Tools:
+ *   - save_skill / delete_skill     workspace skill writes (in-product)
+ *   - list_skills                   compact index (workspace + system)
+ *   - get_relevant_skills           same retrieval as pre-turn auto-inject
+ *   - load_skill                    explicit load by name
+ *   - read_skill_resource           system skill references/*.md
+ *   - search_skills                 free-text fallback
  *
- * The main retrieval happens *before* the agent runs — the system prompt
- * is pre-populated with the skill index and top-k auto-loaded bodies. These
- * tools exist so the agent can (a) write what it learns, (b) correct itself
- * by deleting wrong skills, (c) pull a specific skill mid-turn, and (d) run
- * a direct search if the index hint didn't fire.
+ * The in-product agent also gets the index + top-k bodies injected into the
+ * system prompt before each turn. MCP clients do not — they call list_skills /
+ * get_relevant_skills instead.
  */
 
 import { tool } from "ai";
@@ -21,6 +20,7 @@ import {
   deleteSkill,
   loadSkill,
   readSkillResource,
+  retrieveRelevantSkills,
   saveSkill,
   searchSkills,
 } from "../../services/skills.service";
@@ -103,6 +103,17 @@ const readSkillResourceSchema = z.object({
     ),
 });
 
+const listSkillsSchema = z.object({});
+
+const getRelevantSkillsSchema = z.object({
+  query: z
+    .string()
+    .min(1)
+    .describe(
+      "Natural-language task or question to rank skills against — same signal the in-product agent uses for pre-turn auto-injection.",
+    ),
+});
+
 export function createSkillTools(workspaceId: string, userId?: string) {
   const authorId = userId && userId.length > 0 ? userId : "agent";
 
@@ -133,9 +144,64 @@ export function createSkillTools(workspaceId: string, userId?: string) {
         return deleteSkill(workspaceId, name);
       },
     }),
+    list_skills: tool({
+      description: [
+        "List every available skill (workspace + system) as a compact index:",
+        "name, loadWhen trigger, scope, and optional references paths.",
+        "Bodies are NOT included — call get_relevant_skills for ranked bodies,",
+        "or load_skill / read_skill_resource for a specific skill.",
+        "Prefer this over guessing skill names.",
+      ].join(" "),
+      inputSchema: listSkillsSchema,
+      execute: async () => {
+        // Empty query → index only (no body injection / useCount bumps).
+        const result = await retrieveRelevantSkills(workspaceId, "");
+        return {
+          success: true as const,
+          skills: result.index.map(s => ({
+            name: s.name,
+            loadWhen: s.loadWhen,
+            scope: s.scope,
+            ...(s.references && s.references.length > 0
+              ? { references: s.references }
+              : {}),
+          })),
+        };
+      },
+    }),
+    get_relevant_skills: tool({
+      description: [
+        "Rank skills against a task/query and return the top relevant bodies",
+        "(same retrieval the in-product agent auto-injects each turn).",
+        "Call this at the start of a multi-step task, or when switching domains",
+        "(e.g. apps → SQL dialect). Also returns near-misses so you can",
+        "load_skill anything the threshold skipped.",
+      ].join(" "),
+      inputSchema: getRelevantSkillsSchema,
+      execute: async ({ query }) => {
+        const result = await retrieveRelevantSkills(workspaceId, query);
+        return {
+          success: true as const,
+          queryEntities: result.queryEntities,
+          relevant: result.injected.map(h => ({
+            name: h.name,
+            loadWhen: h.loadWhen,
+            scope: h.scope,
+            score: Math.round(h.score * 100) / 100,
+            body: h.body,
+          })),
+          considered: result.considered.map(h => ({
+            name: h.name,
+            loadWhen: h.loadWhen,
+            scope: h.scope,
+            score: Math.round(h.score * 100) / 100,
+          })),
+        };
+      },
+    }),
     load_skill: tool({
       description:
-        "Explicitly load a skill by name from the index. Use this when you spot a skill in the injected index whose `loadWhen` matches what you're about to do, but it wasn't auto-loaded. Bumps the skill's useCount so retrieval can reinforce it later.",
+        "Explicitly load a skill by name from the index. Use this when you spot a skill in the index whose `loadWhen` matches what you're about to do, but it wasn't auto-loaded. Bumps the skill's useCount so retrieval can reinforce it later.",
       inputSchema: loadSkillSchema,
       execute: async ({ name }) => {
         return loadSkill(workspaceId, name);
