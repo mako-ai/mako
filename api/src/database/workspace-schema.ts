@@ -2,6 +2,10 @@ import mongoose, { Schema, Document, Types } from "mongoose";
 import { v4 as uuidv4 } from "uuid";
 import * as crypto from "crypto";
 import { loggers } from "../logging";
+import {
+  WORKSPACE_API_KEY_SCOPES,
+  type WorkspaceApiKeyScope,
+} from "../auth/api-key-scopes";
 
 // Encryption helper functions
 let _encryptionKey: string | null = null;
@@ -173,6 +177,7 @@ export interface IWorkspaceApiKey {
   name: string;
   keyHash: string;
   prefix: string; // First 8 characters to help identify the key
+  scopes?: WorkspaceApiKeyScope[];
   createdAt: Date;
   lastUsedAt?: Date;
   createdBy: string;
@@ -1237,6 +1242,15 @@ Add any specific instructions for how the AI should interpret your data or respo
         prefix: {
           type: String,
           required: true,
+        },
+        scopes: {
+          type: [
+            {
+              type: String,
+              enum: WORKSPACE_API_KEY_SCOPES,
+            },
+          ],
+          default: undefined,
         },
         createdAt: {
           type: Date,

@@ -21,14 +21,14 @@ export interface AuthenticatedContext extends Context {
   get(key: "workspace"): any;
   get(key: "memberRole"): string | undefined;
   // Keys set by unifiedAuthMiddleware
-  get(key: "authType"): "session" | "apiKey" | undefined;
+  get(key: "authType"): "session" | "apiKey" | "mcpOAuth" | undefined;
   get(key: "workspaceId"): string | undefined;
   get(key: "apiKey"): any;
   set(key: "user", value: ValidatedUser): void;
   set(key: "session", value: ValidatedSession): void;
   set(key: "workspace", value: any): void;
   set(key: "memberRole", value: string): void;
-  set(key: "authType", value: "session" | "apiKey"): void;
+  set(key: "authType", value: "session" | "apiKey" | "mcpOAuth"): void;
   set(key: "workspaceId", value: string): void;
   set(key: "apiKey", value: any): void;
 }

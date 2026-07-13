@@ -17,8 +17,10 @@ export interface AuthVariables {
 
   apiKey?: any;
   memberRole?: string;
-  authType?: "session" | "apiKey";
+  authType?: "session" | "apiKey" | "mcpOAuth";
   workspaceId?: string;
+  /** Scopes carried by an MCP OAuth access token (authType "mcpOAuth"). */
+  mcpOAuthScopes?: string[];
 }
 
 export type AuthEnv = { Variables: AuthVariables };

@@ -9,6 +9,7 @@ import fs from "fs";
 import path from "path";
 import { connectDatabase } from "./database/schema";
 import { registerApiRoutes } from "./routes/register-routes";
+import { mcpOAuthWellKnownRoutes } from "./routes/mcp-oauth.routes";
 import { getOpenApiDocument } from "./openapi";
 import type { AuthEnv } from "./openapi/core";
 import { databaseRegistry } from "./databases/registry";
@@ -108,6 +109,10 @@ app.get("/health", c => {
   return c.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
+// OAuth discovery for the Mako MCP endpoint (RFC 9728 + RFC 8414). Root-level
+// well-known documents, so registered here rather than in register-routes.ts.
+app.route("/", mcpOAuthWellKnownRoutes);
+
 // Frontend build version - public, used by long-lived clients (especially the
 // desktop app) to detect that their loaded bundle is stale and prompt a
 // reload. The build ID is emitted into public/version.json by the Vite build
@@ -180,8 +185,16 @@ app.on(
 app.use("*", async (c, next) => {
   const requestPath = c.req.path;
 
-  // Skip API routes and health check - let them continue to their handlers
-  if (requestPath.startsWith("/api/") || requestPath === "/health") {
+  // Skip API routes, health check, and well-known documents - let them
+  // continue to their handlers. /.well-known/* must never fall through to
+  // the SPA: a 200 text/html "discovery document" breaks OAuth/MCP clients,
+  // which treat it as found and fail to parse instead of trying the next
+  // well-known variant. Unregistered ones must 404.
+  if (
+    requestPath.startsWith("/api/") ||
+    requestPath.startsWith("/.well-known/") ||
+    requestPath === "/health"
+  ) {
     await next();
     return;
   }

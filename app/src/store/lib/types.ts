@@ -35,6 +35,7 @@ export type SettingsSection =
   | "prompt"
   | "skills"
   | "mcp"
+  | "agents"
   | "models"
   | "billing"
   | "members"

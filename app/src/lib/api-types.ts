@@ -482,6 +482,11 @@ export interface ApiKey {
   lastUsedAt?: string;
   createdAt: string;
   expiresAt?: string;
+  /**
+   * Key capabilities (e.g. "mcp", "query:read"). Empty/absent means a legacy
+   * key created before scopes existed: REST keeps working, MCP is refused.
+   */
+  scopes?: string[];
 }
 
 export interface ApiKeyListResponse {

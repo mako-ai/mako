@@ -9,6 +9,8 @@ import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { queryExecutionService } from "../../services/query-execution.service";
+import { sqlReadOnlyAccessError } from "../../services/read-only-query.service";
+import type { QueryAccess } from "../../auth/api-key-scopes";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import type { ConsoleDataV2 } from "../types";
 import {
@@ -857,6 +859,20 @@ async function inspectTableInner(
 // ============================================================================
 // sql_execute_query
 // ============================================================================
+
+/**
+ * Driver field metadata trimmed to what an agent needs. The raw pg/mysql
+ * shape (tableID, columnID, dataTypeID, dataTypeModifier, …) is pure token
+ * noise in a tool result.
+ */
+function compactQueryFields(fields: unknown): unknown {
+  if (!Array.isArray(fields)) return fields;
+  return fields.map(field => {
+    const { name, type } = field as { name?: unknown; type?: unknown };
+    return { name, ...(type !== undefined ? { type } : {}) };
+  });
+}
+
 async function executeQueryImpl(
   connectionId: string,
   requestedDatabase: string | undefined,
@@ -864,11 +880,19 @@ async function executeQueryImpl(
   workspaceId: string,
   userId?: string,
   toolExecutionContext?: AgentToolExecutionContext,
+  queryAccess: QueryAccess = "write",
 ) {
   const startTime = Date.now();
 
   if (typeof query !== "string" || query.trim().length === 0) {
     throw new Error("'query' must be a non-empty string");
+  }
+  if (queryAccess === "none") {
+    throw new Error("This API key does not have query access");
+  }
+  if (queryAccess === "read") {
+    const accessError = sqlReadOnlyAccessError(query);
+    if (accessError) throw new Error(accessError);
   }
 
   const database = await fetchSqlDatabase(connectionId, workspaceId);
@@ -925,7 +949,12 @@ async function executeQueryImpl(
             typeof databaseConnectionService.executeQuery
           >[0],
           safeQuery,
-          { ...options, executionId: registeredExecutionId, signal },
+          {
+            ...options,
+            executionId: registeredExecutionId,
+            signal,
+            readOnly: queryAccess === "read",
+          },
         ),
       { signal },
     );
@@ -987,10 +1016,19 @@ async function executeQueryImpl(
 
     if (result && result.success && result.data) {
       const truncatedData = truncateQueryResults(result.data);
-      return { ...result, data: truncatedData, sqlDialect: dialect };
+      return {
+        ...result,
+        data: truncatedData,
+        fields: compactQueryFields(result.fields),
+        sqlDialect: dialect,
+      };
     }
 
-    return { ...result, sqlDialect: dialect };
+    return {
+      ...result,
+      fields: compactQueryFields(result.fields),
+      sqlDialect: dialect,
+    };
   } catch (err: unknown) {
     if (isAgentToolAbortError(err)) {
       return {
@@ -1037,6 +1075,7 @@ export const createSqlToolsV2 = (
   _preferredConsoleId?: string,
   userId?: string,
   toolExecutionContext?: AgentToolExecutionContext,
+  queryAccess: QueryAccess = "write",
 ) => {
   return {
     sql_list_connections: tool({
@@ -1150,6 +1189,7 @@ export const createSqlToolsV2 = (
             workspaceId,
             userId,
             toolExecutionContext,
+            queryAccess,
           );
         } catch (error) {
           return {

@@ -2,6 +2,7 @@ import type { SettingsSection } from "../store/lib/types";
 import SettingsPrompt from "./settings/SettingsPrompt";
 import SettingsSkills from "./settings/SettingsSkills";
 import SettingsMcp from "./settings/SettingsMcp";
+import SettingsAgents from "./settings/SettingsAgents";
 import SettingsModels from "./settings/SettingsModels";
 import SettingsBilling from "./settings/SettingsBilling";
 import SettingsMembers from "./settings/SettingsMembers";
@@ -29,6 +30,8 @@ function Settings({ section = "prompt" }: Props) {
       return <SettingsSkills />;
     case "mcp":
       return <SettingsMcp />;
+    case "agents":
+      return <SettingsAgents />;
     case "models":
       return <SettingsModels />;
     case "billing":
