@@ -83,6 +83,11 @@ export interface QueryExecuteOptions {
   /** Execution ID for job tracking (enables cancellation) */
   executionId?: string;
   /**
+   * Enforce read-only execution at the database/session layer. Unsupported
+   * engines fail closed instead of falling back to lexical SQL checks.
+   */
+  readOnly?: boolean;
+  /**
    * BigQuery only: max time to poll jobs.query until jobComplete (default 5m).
    * Large MERGE/DML jobs need a higher value or we return a false timeout while BQ keeps running.
    */
@@ -317,6 +322,17 @@ function describeGoogleApiError(error: any, fallback: string): string {
 }
 
 /**
+ * Non-SQL engines whose queries cannot be validated by the lexical read-only
+ * analyzer (`checkPreviewQuerySafety`). Under `readOnly` these fail closed in
+ * `executeQuery`; SQL engines (incl. BigQuery) are enforced read-only lexically
+ * instead — see `executeQuery`.
+ */
+const READ_ONLY_UNSUPPORTED_TYPES = new Set<string>([
+  "mongodb",
+  "cloudflare-kv",
+]);
+
+/**
  * Enhanced Database Connection Service
  *
  * Provides unified connection management for all database types with:
@@ -491,6 +507,31 @@ export class DatabaseConnectionService {
     options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
     try {
+      if (options?.readOnly) {
+        if (typeof query !== "string") {
+          return {
+            success: false,
+            error:
+              "Read-only execution only supports SQL strings; arbitrary MongoDB execution is disabled",
+          };
+        }
+        // Lexical read-only validation is the uniform guarantee. Engines with a
+        // session/transaction read-only mode (Postgres READ ONLY txn, ClickHouse
+        // readonly=2, ...) additionally enforce it below; SQL engines without one
+        // (e.g. BigQuery) rely on this validated single SELECT/WITH statement.
+        const safety = checkPreviewQuerySafety(query);
+        if (!safety.safe) {
+          return { success: false, error: safety.errors.join(" ") };
+        }
+        // Non-SQL engines can't be validated by the SQL analyzer, so fail closed.
+        if (READ_ONLY_UNSUPPORTED_TYPES.has(database.type)) {
+          return {
+            success: false,
+            error: `Read-only execution is not supported for ${database.type}; connect it with database credentials restricted to read access`,
+          };
+        }
+      }
+
       switch (database.type) {
         case "mongodb":
           return await this.executeMongoDBQuery(database, query, options);
@@ -552,7 +593,11 @@ export class DatabaseConnectionService {
     options?: QueryPreviewOptions,
   ): Promise<QueryPreviewResult> {
     try {
-      if (database.type === "bigquery" && typeof query === "string") {
+      if (
+        !options?.readOnly &&
+        database.type === "bigquery" &&
+        typeof query === "string"
+      ) {
         return await this.executeBigQueryPreviewQuery(database, query, options);
       }
 
@@ -609,6 +654,7 @@ export class DatabaseConnectionService {
           databaseId: options?.databaseId,
           executionId: options?.executionId,
           signal: options?.signal,
+          readOnly: options?.readOnly,
         },
       );
 
@@ -652,12 +698,29 @@ export class DatabaseConnectionService {
     query: any,
     options: StreamingQueryOptions & QueryExecuteOptions,
   ): Promise<{ success: boolean; totalRows: number; error?: string }> {
+    // Read-only enforcement is engine-agnostic: validate the query lexically
+    // once, up front. Engines with a session read-only mode additionally get it
+    // via executeQuery below; engines without one (e.g. BigQuery, whose native
+    // streaming path bypasses executeQuery) rely solely on this check.
+    if (options.readOnly && typeof query === "string") {
+      const safety = checkPreviewQuerySafety(query);
+      if (!safety.safe) {
+        return { success: false, totalRows: 0, error: safety.errors.join(" ") };
+      }
+    }
+
+    // BigQuery paginates via native job page tokens, not offset batches, so it
+    // always streams through its native path.
     if (database.type === "bigquery" && typeof query === "string") {
       return await this.executeBigQueryStreamingQuery(database, query, options);
     }
 
     const driver = databaseRegistry.getDriver(database.type);
-    if (typeof query === "string" && driver?.executeStreamingQuery) {
+    if (
+      !options.readOnly &&
+      typeof query === "string" &&
+      driver?.executeStreamingQuery
+    ) {
       return await driver.executeStreamingQuery(database, query, options);
     }
 
@@ -703,6 +766,7 @@ export class DatabaseConnectionService {
           databaseId: options.databaseId,
           executionId: options.executionId,
           signal: options.signal,
+          readOnly: options.readOnly,
         });
 
         if (!result.success) {
@@ -753,6 +817,11 @@ export class DatabaseConnectionService {
       };
     }
 
+    // Schema introspection (dry-run / describe / `LIMIT 0`) never mutates data,
+    // so it is always used regardless of `readOnly`. Gating it on `readOnly`
+    // (previously the case) forced every engine onto a `LIMIT 1` sample probe —
+    // degrading type fidelity everywhere and breaking BigQuery, whose native
+    // dry-run was skipped in favor of an unsupported offset-batch probe.
     if (typeof query === "string") {
       const driver = databaseRegistry.getDriver(database.type);
       if (driver?.getQuerySchema) {
@@ -787,6 +856,7 @@ export class DatabaseConnectionService {
       databaseId: options.databaseId,
       databaseName: options.databaseName,
       signal: options.signal,
+      readOnly: options.readOnly,
     });
 
     if (!probe.success) {
@@ -3649,6 +3719,7 @@ export class DatabaseConnectionService {
         signal,
       });
 
+      let readOnlyTransactionStarted = false;
       try {
         // Get backend PID for cancellation support
         if (executionId) {
@@ -3664,7 +3735,15 @@ export class DatabaseConnectionService {
           return { success: false, error: "Query cancelled" };
         }
 
+        if (options?.readOnly) {
+          await client.query("BEGIN TRANSACTION READ ONLY");
+          readOnlyTransactionStarted = true;
+        }
         const result = await client.query(query);
+        if (readOnlyTransactionStarted) {
+          await client.query("COMMIT");
+          readOnlyTransactionStarted = false;
+        }
         const fields = normalizePostgresFields(result.fields);
         const rows = normalizePostgresRows(
           result.rows as Record<string, unknown>[],
@@ -3677,6 +3756,9 @@ export class DatabaseConnectionService {
           fields,
         };
       } finally {
+        if (readOnlyTransactionStarted) {
+          await client.query("ROLLBACK").catch(() => undefined);
+        }
         // Always release the client back to the pool
         client.release();
         if (executionId) {
@@ -4064,12 +4146,21 @@ export class DatabaseConnectionService {
         signal,
       });
 
+      let readOnlyTransactionStarted = false;
       try {
         if (signal?.aborted) {
           return { success: false, error: "Query cancelled" };
         }
 
+        if (options?.readOnly) {
+          await connection.query("START TRANSACTION READ ONLY");
+          readOnlyTransactionStarted = true;
+        }
         const [rows, fields] = await connection.execute(query);
+        if (readOnlyTransactionStarted) {
+          await connection.commit();
+          readOnlyTransactionStarted = false;
+        }
         const normalizedRows = Array.isArray(rows)
           ? rows.map(row => this.normalizeMySQLValue(row))
           : rows;
@@ -4097,6 +4188,9 @@ export class DatabaseConnectionService {
           fields: normalizedFields,
         };
       } finally {
+        if (readOnlyTransactionStarted) {
+          await connection.rollback().catch(() => undefined);
+        }
         connection.release();
       }
     } catch (error) {
@@ -4430,6 +4524,7 @@ export class DatabaseConnectionService {
           clickhouse_settings: {
             // Allow query to be cancelled
             cancel_http_readonly_queries_on_client_close: 1,
+            ...(options?.readOnly ? { readonly: "2" } : {}),
           },
           abort_signal: abortController.signal,
         });

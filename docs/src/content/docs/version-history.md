@@ -36,7 +36,7 @@ All endpoints live under the workspace path and require workspace membership.
 
 ### Apps
 
-Apps autosave every edit, so versions are explicit **checkpoints** rather than per-save snapshots. Saving a version also **publishes** it (see [Drafts & publishing](#drafts--publishing-apps) below).
+Apps autosave every edit, so versions are explicit **checkpoints** rather than per-save snapshots. Saving a version also **publishes** it (see [Drafts & publishing](#drafts--publishing-apps) below). Unlike older builds, every app now seeds a v1 `App created` published baseline at creation time (both the REST `POST /apps` and the agent `create_app` tool), so an app's version history is never empty.
 
 | Method | Endpoint                                                  | Description                              |
 | ------ | --------------------------------------------------------- | ---------------------------------------- |
@@ -111,6 +111,7 @@ Optional body on restore: `{ "comment": "Reverting because X" }`. If omitted, th
 Apps use a **draft → published** split:
 
 - The files, dependencies, and bindings you edit are the working **draft**, autosaved on every edit. Editors (and the AI agent) always see the draft in the live preview.
+- A freshly created app starts with a v1 `App created` checkpoint that is also the initial published version, so version history exists from the first moment (no explicit save required).
 - **Saving a version** snapshots the current draft into history *and* sets it as the **published** definition — the one that public/shared links and viewers render. A half-finished or in-progress draft is therefore never shown to viewers until you save a version.
 - The app document tracks `publishedVersion`, `publishedAt`, and a `hasUnpublishedChanges` flag so the UI can show when the draft has drifted from what viewers see.
 - **Restoring** reverts the *draft* to a past checkpoint (snapshotting the current draft first, so it is never lossy). Restore does **not** auto-publish — save a version afterward to push the restored state live. Binding materialization caches are preserved by binding id across restore.
@@ -123,7 +124,7 @@ Open the **version history panel** from any saved console, dashboard, or app. It
 - Restore any past version with one click
 - Optionally add a commit comment when saving via the save dialog
 
-Unsaved drafts have no version history yet; the history button is disabled until the first save.
+For **consoles and dashboards**, an unsaved draft has no version history yet, so the history button stays disabled until the first explicit save. **Apps** always have at least a v1 `App created` checkpoint, so their history is available immediately — and the app preview toolbar carries a **Version History** button that opens the panel for the open app.
 
 ## AI Agent Tools
 
@@ -148,3 +149,4 @@ Both tools are workspace-scoped: the assistant can only browse entities inside t
 - Version history is enabled by default for every workspace; no configuration needed.
 - The `EntityVersion` collection was introduced in migration `2026-04-05-075746_add_entity_versions_collection`.
 - History is append-only — there is no hard delete, even on restore.
+- Apps created before the initial-version fix were backfilled with a v1 snapshot by migration `2026-06-27-145356_backfill_initial_app_version` (idempotent — apps that already had a version are skipped).

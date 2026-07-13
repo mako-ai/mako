@@ -75,6 +75,9 @@ import {
 import { resolveDevEnvName, resolveProdLikeEnvName } from "../lib/dbt-env";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
+import EntityLoadErrorState, {
+  EntityLoadingState,
+} from "./EntityLoadErrorState";
 import StreamingMarkdown from "./StreamingMarkdown";
 
 const DbtLineageView = lazy(() => import("./DbtLineageView"));
@@ -283,6 +286,9 @@ export default function DbtFileEditor({
 
   const project = useDbtStore(s => s.projects.find(p => p._id === projectId));
   const file = useDbtStore(s => s.filesByProject[projectId]?.[path]);
+  const fileLoadError = useDbtStore(
+    s => s.loadErrors[`file:${projectId}:${path}`],
+  );
   const filePaths = useDbtStore(s => s.filePathsByProject[projectId]);
   const fetchProjects = useDbtStore(s => s.fetchProjects);
   const readFile = useDbtStore(s => s.readFile);
@@ -602,11 +608,18 @@ export default function DbtFileEditor({
               : { label: "Ready", tone: "idle" };
 
   if (!file?.loaded) {
-    return (
-      <Box sx={{ p: 3, color: "text.secondary" }}>
-        <Typography variant="body2">Loading file…</Typography>
-      </Box>
-    );
+    if (fileLoadError) {
+      return (
+        <EntityLoadErrorState
+          error={fileLoadError}
+          entityLabel="file"
+          onRetry={() => {
+            if (workspaceId) void readFile(workspaceId, projectId, path);
+          }}
+        />
+      );
+    }
+    return <EntityLoadingState label="Loading file…" />;
   }
 
   const editorPane = showMarkdownPreview ? (

@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
-import { api, unwrapBody } from "../api";
+import { api, toLoadError, unwrapBody, type LoadError } from "../api";
 import {
   isLocalConnectionId,
   localAgentClient,
@@ -192,6 +192,8 @@ interface ConsoleActions {
     consoleId: string,
     options?: { openScheduledRuns?: boolean },
   ) => Promise<void>;
+  /** Open a placeholder tab surfacing a failed console load (see impl). */
+  openConsoleLoadErrorTab: (consoleId: string, loadError: LoadError) => void;
   reloadConsole: (workspaceId: string, consoleId: string) => Promise<void>;
   fetchConsoleContent: (
     workspaceId: string,
@@ -473,6 +475,65 @@ function normalizeScheduledRunSnapshotForTab(
     runCount: scheduledRun?.runCount ?? 0,
     consecutiveFailures: scheduledRun?.consecutiveFailures ?? 0,
   };
+}
+
+/**
+ * Tabs are persisted per workspace: `console-store:<workspaceId>`. The active
+ * workspace id lives in localStorage (`activeWorkspaceId`, written before the
+ * post-switch reload), so each boot rehydrates the bucket that belongs to the
+ * workspace being loaded — switching workspaces no longer leaks tabs from
+ * another workspace, and switching back restores that workspace's tabs.
+ */
+const CONSOLE_STORE_BASE_KEY = "console-store";
+
+function consoleStoreStorageKey(): string {
+  const workspaceId = localStorage.getItem("activeWorkspaceId");
+  return workspaceId
+    ? `${CONSOLE_STORE_BASE_KEY}:${workspaceId}`
+    : CONSOLE_STORE_BASE_KEY;
+}
+
+/**
+ * One-time migration: users upgrading from the global bucket keep the tabs of
+ * the workspace they are currently in; the legacy key is removed so it can't
+ * leak into other workspaces later.
+ */
+function readConsoleStoreItem(): string | null {
+  const key = consoleStoreStorageKey();
+  const scoped = localStorage.getItem(key);
+  if (scoped !== null) return scoped;
+  if (key === CONSOLE_STORE_BASE_KEY) return null;
+  const legacy = localStorage.getItem(CONSOLE_STORE_BASE_KEY);
+  if (legacy !== null) {
+    localStorage.setItem(key, legacy);
+    localStorage.removeItem(CONSOLE_STORE_BASE_KEY);
+  }
+  return legacy;
+}
+
+/** Bucket this session's in-memory tab state was rehydrated from. */
+let hydratedConsoleStoreKey: string | null = null;
+
+/**
+ * Resolve the bucket writes should target, or null to skip the write.
+ *
+ * When the active workspace changes mid-session (workspace switch, invite
+ * accept) the in-memory tabs still belong to the previous workspace, so
+ * persisting them under the new workspace's key would leak them across
+ * workspaces. Writes are frozen until the post-switch reload rehydrates the
+ * correct bucket. The one legitimate flip — booting with no workspace selected
+ * and resolving to one — adopts the new key instead.
+ */
+function consoleStoreWriteKey(): string | null {
+  const key = consoleStoreStorageKey();
+  if (hydratedConsoleStoreKey === null || hydratedConsoleStoreKey === key) {
+    return key;
+  }
+  if (hydratedConsoleStoreKey === CONSOLE_STORE_BASE_KEY) {
+    hydratedConsoleStoreKey = key;
+    return key;
+  }
+  return null;
 }
 
 export const useConsoleStore = create<ConsoleStore>()(
@@ -1065,12 +1126,14 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       // API operations
       loadConsole: async (workspaceId, consoleId, options) => {
-        // Check if console is already loaded
-        if (get().tabs[consoleId]) {
+        // Check if console is already loaded. A load-error placeholder tab
+        // does not count: fall through and retry the fetch (access may have
+        // been granted since, or the failure was transient).
+        const existingTab = get().tabs[consoleId];
+        if (existingTab && !existingTab.metadata?.loadError) {
           if (options?.openScheduledRuns) {
-            const existingMetadata = get().tabs[consoleId].metadata;
             get().updateMetadata(consoleId, {
-              ...(existingMetadata || {}),
+              ...(existingTab.metadata || {}),
               openScheduledRuns: true,
             });
           }
@@ -1129,18 +1192,43 @@ export const useConsoleStore = create<ConsoleStore>()(
             set(state => {
               state.error[consoleId] = "Failed to load console";
             });
+            get().openConsoleLoadErrorTab(consoleId, {
+              message: "Failed to load console",
+            });
           }
         } catch (e) {
           console.error("Failed to load console", e);
+          const loadError = toLoadError(e, "Failed to load console");
           set(state => {
-            state.error[consoleId] =
-              e instanceof Error ? e.message : "Failed to load console";
+            state.error[consoleId] = loadError.message;
           });
+          get().openConsoleLoadErrorTab(consoleId, loadError);
         } finally {
           set(state => {
             delete state.loading[consoleId];
           });
         }
+      },
+
+      /**
+       * Deep links and palette opens must not fail silently: when the console
+       * can't be loaded (deleted, other workspace, no access), open a
+       * placeholder tab that renders the load error (Editor short-circuits on
+       * `metadata.loadError`). The tab reuses the console id so the /c/:id
+       * URL sticks and a successful retry replaces it in place.
+       */
+      openConsoleLoadErrorTab: (consoleId, loadError) => {
+        get().openTab(
+          {
+            id: consoleId,
+            title: "Console",
+            content: "",
+            kind: "console",
+            isSaved: false,
+            metadata: { loadError },
+          },
+          { replacePristine: false },
+        );
       },
 
       reloadConsole: async (workspaceId, consoleId) => {
@@ -1827,8 +1915,11 @@ export const useConsoleStore = create<ConsoleStore>()(
         activeTabId: state.activeTabId,
       }),
       storage: {
-        getItem: name => {
-          const str = localStorage.getItem(name);
+        // The `name` argument is ignored on purpose: reads and writes resolve
+        // the per-workspace key at call time (see consoleStoreStorageKey).
+        getItem: () => {
+          hydratedConsoleStoreKey = consoleStoreStorageKey();
+          const str = readConsoleStoreItem();
           if (str) {
             const data = JSON.parse(str);
             if (data.state?.tabs) {
@@ -1899,11 +1990,13 @@ export const useConsoleStore = create<ConsoleStore>()(
 
           return null;
         },
-        setItem: (name, value) => {
-          localStorage.setItem(name, JSON.stringify(value));
+        setItem: (_name, value) => {
+          const key = consoleStoreWriteKey();
+          if (key) localStorage.setItem(key, JSON.stringify(value));
         },
-        removeItem: name => {
-          localStorage.removeItem(name);
+        removeItem: () => {
+          const key = consoleStoreWriteKey();
+          if (key) localStorage.removeItem(key);
         },
       },
     },

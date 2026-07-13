@@ -50,6 +50,36 @@ export async function executeDataSourceTool(
 
 // ---- App surface ---------------------------------------------------------
 
+type AppEntityLike = ReturnType<
+  typeof useAppStore.getState
+>["openApps"][string];
+
+/**
+ * Server-side materialization completes with only a workspace poke as the
+ * fast-path delivery; a missed poke (dead SSE) leaves this window's copy of
+ * the binding cache stale — historically surfacing as "table does not exist"
+ * / "Parquet not built yet" loops even though the artifact was long ready.
+ * When a relevant parquet binding's local cache isn't "ready", pull the
+ * authoritative app once before trusting the stale copy.
+ */
+async function refreshAppIfParquetCacheStale(
+  workspaceId: string | null | undefined,
+  appId: string,
+  appEntity: AppEntityLike,
+  bindingName?: string,
+): Promise<AppEntityLike> {
+  if (!workspaceId) return appEntity;
+  const stale = appEntity.dataBindings.some(
+    b =>
+      b.materialization === "parquet" &&
+      (bindingName === undefined || b.name === bindingName) &&
+      b.cache?.parquetBuildStatus !== "ready",
+  );
+  if (!stale) return appEntity;
+  const fresh = await useAppStore.getState().fetchApp(workspaceId, appId);
+  return fresh ?? appEntity;
+}
+
 async function executeAppDataTool(
   toolName: string,
   appId: string,
@@ -87,6 +117,12 @@ async function executeAppDataTool(
 
   if (toolName === "inspect_data_source") {
     const name = input.dataSource as string;
+    appEntity = await refreshAppIfParquetCacheStale(
+      workspaceId,
+      appId,
+      appEntity,
+      name,
+    );
     const binding = appEntity.dataBindings.find(b => b.name === name);
     if (!binding) return fail(`No data source named "${name}"`);
 
@@ -144,6 +180,11 @@ async function executeAppDataTool(
 
   if (toolName === "query_duckdb") {
     try {
+      appEntity = await refreshAppIfParquetCacheStale(
+        workspaceId,
+        appId,
+        appEntity,
+      );
       // Preview-env aware, matching what the app preview itself reads.
       await Promise.all(
         appEntity.dataBindings

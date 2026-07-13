@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import { Box, Typography, useTheme } from "@mui/material";
+import { Box, useTheme } from "@mui/material";
 import MonacoEditor from "@monaco-editor/react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppStore } from "../store/appStore";
@@ -8,6 +8,10 @@ import {
   languageForPath,
 } from "../app-runtime/monaco-jsx";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
+import EntityLoadErrorState, {
+  EntityLoadingState,
+} from "./EntityLoadErrorState";
+import { missingEntityError } from "../lib/entity-labels";
 
 /**
  * Full-screen editor for a single file within an app. Opened as its own tab
@@ -28,6 +32,7 @@ export default function AppFileEditor({
   const monacoTheme = useTheme().palette.mode === "dark" ? "vs-dark" : "vs";
 
   const appEntity = useAppStore(s => s.openApps[appId]);
+  const appLoadError = useAppStore(s => s.openAppErrors[appId]);
   const fetchApp = useAppStore(s => s.fetchApp);
   const writeFile = useAppStore(s => s.writeFile);
   const persistApp = useAppStore(s => s.persistApp);
@@ -51,21 +56,28 @@ export default function AppFileEditor({
   );
 
   if (!appEntity) {
-    return (
-      <Box sx={{ p: 3, color: "text.secondary" }}>
-        <Typography variant="body2">Loading file…</Typography>
-      </Box>
-    );
+    if (appLoadError) {
+      return (
+        <EntityLoadErrorState
+          error={appLoadError}
+          entityLabel="app"
+          onRetry={() => {
+            if (workspaceId) void fetchApp(workspaceId, appId);
+          }}
+        />
+      );
+    }
+    return <EntityLoadingState label="Loading file…" />;
   }
 
   const file = appEntity.files.find(f => f.path === path);
   if (!file) {
     return (
-      <Box sx={{ p: 3, color: "text.secondary" }}>
-        <Typography variant="body2">
-          {path} no longer exists in this app.
-        </Typography>
-      </Box>
+      <EntityLoadErrorState
+        error={missingEntityError("file")}
+        entityLabel="file"
+        detail={`${path} no longer exists in this app.`}
+      />
     );
   }
 

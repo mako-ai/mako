@@ -84,13 +84,49 @@ function errorMessage(res: ApiResult): string {
 }
 
 /**
+ * Error thrown by `unwrap`/`unwrapBody` on non-2xx responses. Carries the HTTP
+ * status so callers can distinguish "not found" (404) from "no access" (403)
+ * without parsing the message string.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+/**
+ * Structured load failure for a single entity (app, dashboard, ...) kept in
+ * store state so views can render "not found" / "access denied" instead of an
+ * infinite loading placeholder.
+ */
+export interface LoadError {
+  status?: number;
+  message: string;
+}
+
+/** Normalize any thrown value into a `LoadError` for store error state. */
+export function toLoadError(e: unknown, fallbackMessage: string): LoadError {
+  if (e instanceof ApiError) {
+    return { status: e.status, message: e.message };
+  }
+  if (e instanceof Error && e.message.trim()) {
+    return { message: e.message };
+  }
+  return { message: fallbackMessage };
+}
+
+/**
  * Throws on transport/HTTP error; otherwise returns the parsed body as the
  * `{ success, data }` envelope with `data` typed as `unknown` (callers assert
  * their domain type — the API DTO is a structural subset).
  */
 export function unwrap(res: ApiResult): { data?: unknown } {
   if (res.error || !res.response.ok) {
-    throw new Error(errorMessage(res));
+    throw new ApiError(errorMessage(res), res.response.status);
   }
   return (res.data ?? {}) as { data?: unknown };
 }
@@ -98,7 +134,7 @@ export function unwrap(res: ApiResult): { data?: unknown } {
 /** Throws on error; returns the raw response body as `unknown` (no envelope). */
 export function unwrapBody(res: ApiResult): unknown {
   if (res.error || !res.response.ok) {
-    throw new Error(errorMessage(res));
+    throw new ApiError(errorMessage(res), res.response.status);
   }
   return res.data;
 }

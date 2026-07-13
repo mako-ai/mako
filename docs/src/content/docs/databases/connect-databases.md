@@ -24,8 +24,10 @@ Mako connects to your databases directly — no data leaves your infrastructure.
 1. Go to **Settings → Databases** in your workspace
 2. Select the database type
 3. Enter your connection details (host, port, credentials, database name)
-4. Click **Test Connection** to verify
-5. Save — Mako will discover your schema automatically
+4. Click **Save** — Mako tests the connection first and only persists it if the test passes. If the test fails, you can fix the details or choose **Save anyways**.
+5. Once saved, Mako discovers your schema automatically
+
+You can also click **Test Connection** at any point to check reachability without saving.
 
 ## Local Databases (localhost)
 

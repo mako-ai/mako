@@ -25,9 +25,6 @@
     "app:preview": "pnpm --filter app run preview",
     "app:lint": "pnpm --filter app run lint",
     "app:lint:fix": "pnpm --filter app run lint:fix",
-    "website:dev": "pnpm --filter website run dev",
-    "website:build": "pnpm --filter website run build",
-    "website:lint": "pnpm --filter website run lint",
     "api:dev": "pnpm --filter api run dev",
     "api:build": "pnpm --filter api run build",
     "api:start": "pnpm --filter api run start",
@@ -49,6 +46,12 @@
     "cf:tail": "wrangler tail --config cloudflare/wrangler.toml",
     "cf:kv:create": "wrangler kv:namespace create MAKO_PR_DEPLOYMENTS",
     "cf:kv:list": "wrangler kv:key list --namespace-id=$CLOUDFLARE_KV_NAMESPACE_ID",
+    "cf:app:test": "node --test cloudflare/app-router/worker.test.mjs",
+    "cf:app:check": "pnpm dlx wrangler@4.110.0 deploy --config cloudflare/app-router/wrangler.jsonc --dry-run",
+    "cf:app:check:canary": "pnpm dlx wrangler@4.110.0 deploy --config cloudflare/app-router/wrangler.canary.jsonc --dry-run",
+    "cf:app:deploy": "pnpm dlx wrangler@4.110.0 deploy --config cloudflare/app-router/wrangler.jsonc",
+    "cf:app:deploy:canary": "pnpm dlx wrangler@4.110.0 deploy --config cloudflare/app-router/wrangler.canary.jsonc",
+    "cf:app:tail": "pnpm dlx wrangler@4.110.0 tail --config cloudflare/app-router/wrangler.jsonc",
     "preview-db:list": "./scripts/manage-preview-db.sh list",
     "preview-db:create": "./scripts/manage-preview-db.sh create",
     "preview-db:delete": "./scripts/manage-preview-db.sh delete",
@@ -89,9 +92,6 @@
     ],
     "api/**/*.ts": [
       "eslint --fix --report-unused-disable-directives",
-      "prettier --write"
-    ],
-    "website/**/*.{ts,tsx}": [
       "prettier --write"
     ]
   },

@@ -112,6 +112,79 @@ function stripLeadingSqlComments(sql: string): string {
   return s;
 }
 
+/**
+ * Replace quoted values/identifiers and comments with spaces before scanning
+ * for write keywords. This prevents harmless text such as `SELECT 'UPDATE'`
+ * from tripping the guard while keeping executable SQL tokens visible.
+ */
+function maskSqlNonCode(sql: string): string {
+  let output = "";
+
+  for (let index = 0; index < sql.length; index += 1) {
+    const char = sql[index];
+    const next = sql[index + 1];
+
+    if ((char === "-" && next === "-") || char === "#") {
+      const newline = sql.indexOf("\n", index + (char === "#" ? 1 : 2));
+      if (newline === -1) return output.padEnd(sql.length, " ");
+      output += " ".repeat(newline - index);
+      index = newline - 1;
+      continue;
+    }
+
+    // MySQL version comments (`/*! ... */`) are executable SQL, so leave
+    // their contents visible to the forbidden-keyword scan.
+    if (char === "/" && next === "*" && sql[index + 2] !== "!") {
+      const end = sql.indexOf("*/", index + 2);
+      if (end === -1) return output.padEnd(sql.length, " ");
+      output += " ".repeat(end + 2 - index);
+      index = end + 1;
+      continue;
+    }
+
+    if (char === "$") {
+      const tag = sql
+        .slice(index)
+        .match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/)?.[0];
+      if (tag) {
+        const end = sql.indexOf(tag, index + tag.length);
+        if (end === -1) return output.padEnd(sql.length, " ");
+        output += " ".repeat(end + tag.length - index);
+        index = end + tag.length - 1;
+        continue;
+      }
+    }
+
+    if (char === "'" || char === '"' || char === "`") {
+      const quote = char;
+      output += " ";
+      for (index += 1; index < sql.length; index += 1) {
+        output += sql[index] === "\n" ? "\n" : " ";
+        if (sql[index] !== quote) continue;
+        if (sql[index + 1] === quote) {
+          output += " ";
+          index += 1;
+          continue;
+        }
+        break;
+      }
+      continue;
+    }
+
+    if (char === "[") {
+      const end = sql.indexOf("]", index + 1);
+      if (end === -1) return output.padEnd(sql.length, " ");
+      output += " ".repeat(end + 1 - index);
+      index = end;
+      continue;
+    }
+
+    output += char;
+  }
+
+  return output;
+}
+
 export function resolvePreviewPageSize(requested?: number): {
   pageSize: number;
   capApplied: boolean;
@@ -201,6 +274,25 @@ export function checkPreviewQuerySafety(
         `Query contains dangerous ${name} statement. Preview only supports read-only queries.`,
       );
     }
+  }
+
+  const executableSql = maskSqlNonCode(trimmedQuery);
+  const writePosition = findTopLevelKeyword(
+    executableSql,
+    /^(DELETE|INSERT|INTO|MERGE|UPDATE)\b/i,
+  );
+  const executableCommentWrite = trimmedQuery.match(
+    /\/\*![\s\S]*?\b(DELETE|INSERT|INTO|MERGE|UPDATE)\b[\s\S]*?\*\//i,
+  )?.[1];
+  if (writePosition !== -1 || executableCommentWrite) {
+    const writeKeyword =
+      executableCommentWrite ??
+      executableSql.slice(writePosition).match(/^[A-Z]+/i)?.[0] ??
+      "write";
+    result.safe = false;
+    result.errors.push(
+      `Query contains forbidden ${writeKeyword.toUpperCase()} syntax. Preview only supports read-only queries.`,
+    );
   }
 
   if (

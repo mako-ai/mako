@@ -9,6 +9,8 @@ export default defineConfig({
   integrations: [
     starlight({
       title: "Mako Docs",
+      // Editorial theme matching the mako.ai marketing site.
+      customCss: ["./src/styles/editorial.css"],
       social: [
         {
           icon: "github",
@@ -48,6 +50,8 @@ export default defineConfig({
             { label: "Query Runner", slug: "query-runner" },
             { label: "Self-Directive", slug: "self-directive" },
             { label: "Skills", slug: "skills" },
+            { label: "MCP Connectors", slug: "mcp-connectors" },
+            { label: "MCP Server (AI Agents)", slug: "mcp-server" },
             { label: "Notifications", slug: "notifications" },
             { label: "Mako Desktop", slug: "desktop" },
           ],

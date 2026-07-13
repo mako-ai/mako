@@ -5,6 +5,7 @@ import {
   unifiedAuthMiddleware,
   isApiKeyAuth,
 } from "../auth/unified-auth.middleware";
+import { restQueryAccessFromStoredScopes } from "../auth/api-key-scopes";
 import {
   DatabaseConnection,
   SavedConsole,
@@ -2718,6 +2719,15 @@ consoleRoutes.openapi(
 
       const user = c.get("user");
       const apiKey = c.get("apiKey");
+      const queryAccess = apiKey
+        ? restQueryAccessFromStoredScopes(apiKey.scopes)
+        : "write";
+      if (queryAccess === "none") {
+        return c.json(
+          { success: false, error: "API key does not have query access" },
+          403,
+        );
+      }
       const consoleId = c.req.param("id");
       const mode = c.req.query("mode");
       const pageSizeParam = c.req.query("pageSize");
@@ -2780,6 +2790,7 @@ consoleRoutes.openapi(
       const executionOptions = {
         databaseId: savedConsole.databaseId,
         databaseName: savedConsole.databaseName,
+        readOnly: queryAccess === "read",
       };
       const isPreviewMode = mode === "preview";
 
@@ -3125,6 +3136,7 @@ consoleRoutes.openapi(
                 batchSize: Math.max(1, Math.min(10000, limit)),
                 signal: c.req.raw.signal,
                 onBatch: emitRows,
+                readOnly: true,
               },
             ),
         });
@@ -3136,6 +3148,7 @@ consoleRoutes.openapi(
         {
           databaseId: savedConsole.databaseId,
           databaseName: savedConsole.databaseName,
+          readOnly: true,
         },
       );
 

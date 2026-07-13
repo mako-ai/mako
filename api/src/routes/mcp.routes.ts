@@ -34,6 +34,7 @@ import {
 } from "../services/mcp-client.service";
 import {
   completeMcpOAuthFlow,
+  findMcpOAuthFlowServerId,
   startMcpOAuthFlow,
 } from "../services/mcp-oauth.service";
 
@@ -82,36 +83,47 @@ mcpPresetRoutes.openapi(
   async c => {
     const { code, state, error, error_description } = c.req.query();
     const settingsUrl = "/settings/mcp";
+    // Carry the server id back so the UI can reopen that server's modal and
+    // auto-run discovery. Best-effort on errors (the flow may be gone).
+    const redirectWith = (params: Record<string, string>) => {
+      const query = new URLSearchParams(params).toString();
+      return c.redirect(`${settingsUrl}?${query}`);
+    };
+    const flowServerId = state
+      ? await findMcpOAuthFlowServerId(state).catch(() => null)
+      : null;
+    const serverParam: Record<string, string> = flowServerId
+      ? { oauth_server: flowServerId }
+      : {};
     if (error) {
       logger.warn("MCP OAuth callback returned an error", {
         error,
         error_description,
       });
-      return c.redirect(
-        `${settingsUrl}?oauth_error=${encodeURIComponent(error_description || error)}`,
-      );
+      return redirectWith({
+        oauth_error: error_description || error,
+        ...serverParam,
+      });
     }
     if (!code || !state) {
-      return c.redirect(`${settingsUrl}?oauth_error=Missing+code+or+state`);
+      return redirectWith({ oauth_error: "Missing code or state" });
     }
     const user = (c as AuthenticatedContext).get("user");
     if (!user) {
       return c.json({ success: false, error: "Unauthorized" }, 401);
     }
     try {
-      await completeMcpOAuthFlow({
+      const { serverId } = await completeMcpOAuthFlow({
         state,
         code,
         sessionUserId: user.id,
       });
-      return c.redirect(`${settingsUrl}?oauth_connected=1`);
+      return redirectWith({ oauth_connected: "1", oauth_server: serverId });
     } catch (err) {
       logger.error("MCP OAuth callback failed", { error: err });
       const message =
         err instanceof Error ? err.message : "OAuth connection failed";
-      return c.redirect(
-        `${settingsUrl}?oauth_error=${encodeURIComponent(message)}`,
-      );
+      return redirectWith({ oauth_error: message, ...serverParam });
     }
   },
 );

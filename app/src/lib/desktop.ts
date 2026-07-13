@@ -11,6 +11,7 @@
 export interface MakoDesktopBridge {
   version: string;
   platform: string;
+  arch: string;
   /**
    * Ask the desktop main process to start the browser-based sign-in flow:
    * it generates a PKCE pair and opens the system browser at

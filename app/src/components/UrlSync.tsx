@@ -21,6 +21,7 @@ import {
   focusDbtRunsTab,
 } from "../dbt-runtime/shell";
 import { useDbtStore } from "../store/dbtStore";
+import { useMcpStore } from "../store/mcpStore";
 import { focusDashboardDataSourceTab } from "../dashboard-runtime/shell";
 import {
   TAB_DEEP_LINK_PATTERNS,
@@ -74,6 +75,13 @@ export function UrlSync() {
       isHydrated.current = false;
     }
   }, [user]);
+
+  // Capture MCP OAuth callback flags (?oauth_connected / ?oauth_error) into
+  // the store before the URL-sync effect below rewrites the address bar and
+  // strips them. The MCP settings section consumes the captured outcome.
+  useEffect(() => {
+    useMcpStore.getState().captureOAuthReturn();
+  }, []);
 
   // --- Hydration: Restore state from URL on mount ---
   useEffect(() => {

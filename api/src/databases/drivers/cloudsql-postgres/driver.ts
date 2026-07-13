@@ -52,10 +52,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
     } as any;
   }
 
-  buildRowCountBatchQuery(
-    schema: string,
-    tableNames: string[],
-  ): string | null {
+  buildRowCountBatchQuery(schema: string, tableNames: string[]): string | null {
     if (tableNames.length === 0) return null;
     const inList = tableNames.map(escapeSqlLiteral).join(",");
     return `SELECT c.relname AS table_id, c.reltuples::bigint AS row_count FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ${escapeSqlLiteral(
@@ -247,6 +244,7 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       databaseId?: string;
       dbName?: string;
       executionId?: string;
+      readOnly?: boolean;
     },
   ): Promise<QueryResult> {
     try {
@@ -257,19 +255,30 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       // If executionId is provided, run the query on a dedicated pooled client
       // so we can reliably capture the backend PID for cancellation.
       const executionId = options?.executionId;
-      if (executionId) {
+      if (executionId || options?.readOnly) {
         const client = await pool.connect();
         const poolKey = `${database._id.toString()}:${targetDb || "default"}`;
+        let readOnlyTransactionStarted = false;
         try {
-          const pidResult = await client.query(
-            "SELECT pg_backend_pid() as pid",
-          );
-          const pid = pidResult.rows?.[0]?.pid as number | undefined;
-          if (typeof pid === "number") {
-            this.runningQueries.set(executionId, { pid, poolKey, pool });
+          if (executionId) {
+            const pidResult = await client.query(
+              "SELECT pg_backend_pid() as pid",
+            );
+            const pid = pidResult.rows?.[0]?.pid as number | undefined;
+            if (typeof pid === "number") {
+              this.runningQueries.set(executionId, { pid, poolKey, pool });
+            }
+          }
+          if (options?.readOnly) {
+            await client.query("BEGIN TRANSACTION READ ONLY");
+            readOnlyTransactionStarted = true;
           }
 
           const result = await client.query(query);
+          if (readOnlyTransactionStarted) {
+            await client.query("COMMIT");
+            readOnlyTransactionStarted = false;
+          }
           const fields = normalizePostgresFields(result.fields);
           const rows = normalizePostgresRows(
             result.rows as Record<string, unknown>[],
@@ -290,7 +299,10 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
                 : "Cloud SQL PostgreSQL query failed",
           };
         } finally {
-          this.runningQueries.delete(executionId);
+          if (readOnlyTransactionStarted) {
+            await client.query("ROLLBACK").catch(() => undefined);
+          }
+          if (executionId) this.runningQueries.delete(executionId);
           client.release();
         }
       }

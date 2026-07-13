@@ -84,6 +84,14 @@ export interface McpGrant {
   createdAt: string;
 }
 
+/** Outcome of an OAuth redirect back into the app (from URL query flags). */
+export interface McpOAuthReturn {
+  connected: boolean;
+  error: string | null;
+  /** Server the flow belonged to — lets the UI reopen its settings modal. */
+  serverId: string | null;
+}
+
 interface McpState {
   servers: McpServerInfo[];
   presets: McpPresetInfo[];
@@ -92,6 +100,8 @@ interface McpState {
   grants: Record<string, McpGrant[]>; // serverId → my grants
   loading: boolean;
   error: string | null;
+  /** Pending OAuth-callback outcome awaiting the MCP settings UI. */
+  oauthReturn: McpOAuthReturn | null;
 }
 
 interface McpActions {
@@ -141,6 +151,15 @@ interface McpActions {
     serverId: string,
     grantId: string,
   ) => Promise<void>;
+  /**
+   * Read the OAuth callback flags (`oauth_connected` / `oauth_error` /
+   * `oauth_server`) off the current URL into `oauthReturn`, and strip them
+   * from the address bar. Must run before UrlSync rewrites the URL, so it is
+   * called from UrlSync hydration (and again by the settings section as a
+   * fallback for direct loads). No-op when the flags are absent.
+   */
+  captureOAuthReturn: () => void;
+  clearOAuthReturn: () => void;
 }
 
 type McpStore = McpState & McpActions;
@@ -153,6 +172,7 @@ export const useMcpStore = create<McpStore>()(
     grants: {},
     loading: false,
     error: null,
+    oauthReturn: null,
 
     fetchServers: async workspaceId => {
       set(state => {
@@ -319,5 +339,30 @@ export const useMcpStore = create<McpStore>()(
       );
       await get().fetchGrants(workspaceId, serverId);
     },
+
+    captureOAuthReturn: () => {
+      const params = new URLSearchParams(window.location.search);
+      const error = params.get("oauth_error");
+      const connected = params.get("oauth_connected");
+      const serverId = params.get("oauth_server");
+      if (!error && !connected) return;
+      params.delete("oauth_error");
+      params.delete("oauth_connected");
+      params.delete("oauth_server");
+      const query = params.toString();
+      window.history.replaceState(
+        null,
+        "",
+        window.location.pathname + (query ? `?${query}` : ""),
+      );
+      set(state => {
+        state.oauthReturn = { connected: Boolean(connected), error, serverId };
+      });
+    },
+
+    clearOAuthReturn: () =>
+      set(state => {
+        state.oauthReturn = null;
+      }),
   })),
 );

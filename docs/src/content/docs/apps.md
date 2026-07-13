@@ -48,6 +48,14 @@ const { data: totals } = useDuckDB(
 
 Data sources are visible under **Data sources** in the app's explorer tree, with a Live/Materialized mode control and materialization run history.
 
+### dbt-linked bindings
+
+A binding can be linked to a workspace [dbt project](/transforms/) — from the **dbt** selector in the binding editor toolbar, or via agent tools. Linking enables environment-agnostic SQL:
+
+- Use the `{{ dbt_schema }}` token instead of hardcoding a schema (e.g. `SELECT * FROM {{ dbt_schema }}.fct_orders`). It resolves to the linked project's target schema.
+- Linking plus the token unlocks the app preview's **environment switcher** — preview the app's data against any dbt environment you can use (personal environments included). The override is per-user view state for *your* preview only; published and shared viewers always read prod. A linked binding whose query is missing the token gets a warning chip, and the switcher stays hidden for it.
+- Materialized (parquet) bindings participate too: while a non-prod override is active they serve a live, row-capped run (artifacts always hold prod data). Switching back to prod reloads the artifact — and a binding that was never materialized is built automatically instead of erroring.
+
 ## URL State & Routing
 
 Apps can keep view state — the active tab, applied filters, a selected record, a sub-page — in the URL, so a reload restores it and the link is shareable. This works both when the app is embedded in Mako (`/a/:appId`) and in the public share view (`/share/:token`).
@@ -76,7 +84,7 @@ Use distinct **paths** for separate views (`/`, `/customers/42`) and **query par
 
 ## Versioning & Publishing
 
-Apps autosave every edit, so what you (or the AI agent) work on is a **draft**. To create an immutable checkpoint, **save a version** — this snapshots the current draft into version history *and* **publishes** it.
+Apps autosave every edit, so what you (or the AI agent) work on is a **draft**. Every app starts with a v1 `App created` checkpoint (also its first published version), so version history is never empty. To create a further immutable checkpoint, **save a version** — this snapshots the current draft into version history *and* **publishes** it.
 
 - Public and shared links render the **published** version, never the live draft, so viewers never see a half-finished edit.
 - **Restoring** a past version reverts the draft (snapshotting the current draft first, so it's never lossy) but does **not** auto-publish — save a version afterward to push the restored state live.

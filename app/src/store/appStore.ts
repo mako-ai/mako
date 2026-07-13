@@ -13,7 +13,7 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { api, unwrapBody } from "../api";
+import { api, toLoadError, unwrapBody, type LoadError } from "../api";
 import { apiClient } from "../lib/api-client";
 import {
   containsDbtSchemaToken,
@@ -121,6 +121,11 @@ interface AppState {
   error: Record<string, string | null>;
 
   openApps: Record<string, AppEntity>;
+  /**
+   * Per-app load failure (404 / 403 / transport) from `fetchApp`. Views use
+   * this to render "not found" / "no access" instead of loading forever.
+   */
+  openAppErrors: Record<string, LoadError>;
   activeAppId: string | null;
 
   /** Bumping the nonce forces the renderer to rebuild that app's preview. */
@@ -279,6 +284,7 @@ const initialState: AppState = {
   loading: {},
   error: {},
   openApps: {},
+  openAppErrors: {},
   activeAppId: null,
   previewNonce: {},
   previewErrors: {},
@@ -363,9 +369,15 @@ export const useAppStore = create<AppStore>()(
             params: { path: { workspaceId, id: appId } },
           }),
         ) as { success: boolean; app: AppEntity };
-        if (!res.success || !res.app) return null;
+        if (!res.success || !res.app) {
+          set(state => {
+            state.openAppErrors[appId] = { message: "Failed to load app" };
+          });
+          return null;
+        }
         set(state => {
           state.openApps[appId] = res.app;
+          delete state.openAppErrors[appId];
           if (state.previewNonce[appId] === undefined) {
             state.previewNonce[appId] = 0;
           }
@@ -376,7 +388,10 @@ export const useAppStore = create<AppStore>()(
           }
         });
         return res.app;
-      } catch {
+      } catch (e) {
+        set(state => {
+          state.openAppErrors[appId] = toLoadError(e, "Failed to load app");
+        });
         return null;
       }
     },
@@ -412,6 +427,7 @@ export const useAppStore = create<AppStore>()(
         );
         set(state => {
           delete state.openApps[appId];
+          delete state.openAppErrors[appId];
           delete state.previewNonce[appId];
           delete state.previewErrors[appId];
         });

@@ -144,8 +144,37 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
         </Alert>
       )}
 
+      {/* Desktop: credentials are never entered in the embedded window (no
+          visible address bar, no password manager). All sign-up is handed to
+          the system browser instead. */}
+      {useBrowserAuth && (
+        <Box>
+          <Button
+            fullWidth
+            variant="contained"
+            size="large"
+            onClick={() => void handleBrowserAuth()}
+            disabled={loading}
+            sx={{ py: 1.5 }}
+          >
+            {browserAuthStarted
+              ? "Reopen browser to continue"
+              : "Continue in your browser"}
+          </Button>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ display: "block", mt: 1.5, lineHeight: 1.5 }}
+          >
+            For your security, Mako Desktop creates your account through your
+            web browser, where you can check the address bar and use your
+            password manager.
+          </Typography>
+        </Box>
+      )}
+
       {/* Social Login Buttons - Hidden when OAuth is disabled (PR previews) */}
-      {isOAuthEnabled && (
+      {!useBrowserAuth && isOAuthEnabled && (
         <>
           <Box
             sx={{
@@ -192,81 +221,83 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
         </>
       )}
 
-      <form onSubmit={handleSubmit}>
-        <Box sx={{ mb: 2 }}>
-          <Typography
-            variant="body2"
-            sx={{ fontWeight: 500, mb: 1, color: "text.primary" }}
-          >
-            Email
-          </Typography>
-          <TextField
-            fullWidth
-            size="small"
-            type="email"
-            value={email}
-            onChange={e => setEmail(e.target.value)}
-            error={!!formErrors.email}
-            helperText={formErrors.email}
-            disabled={loading}
-            autoComplete="email"
-            autoFocus
-            placeholder="youremail@email.com"
-          />
-        </Box>
+      {!useBrowserAuth && (
+        <form onSubmit={handleSubmit}>
+          <Box sx={{ mb: 2 }}>
+            <Typography
+              variant="body2"
+              sx={{ fontWeight: 500, mb: 1, color: "text.primary" }}
+            >
+              Email
+            </Typography>
+            <TextField
+              fullWidth
+              size="small"
+              type="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              error={!!formErrors.email}
+              helperText={formErrors.email}
+              disabled={loading}
+              autoComplete="email"
+              autoFocus
+              placeholder="youremail@email.com"
+            />
+          </Box>
 
-        <Box sx={{ mb: 2.5 }}>
-          <Typography
-            variant="body2"
-            sx={{ fontWeight: 500, mb: 1, color: "text.primary" }}
-          >
-            Password
-          </Typography>
-          <TextField
-            fullWidth
-            size="small"
-            type={showPassword ? "text" : "password"}
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            error={!!formErrors.password}
-            helperText={formErrors.password}
-            disabled={loading}
-            autoComplete="new-password"
-            placeholder="Enter a unique password"
-            slotProps={{
-              input: {
-                endAdornment: (
-                  <InputAdornment position="end">
-                    <IconButton
-                      aria-label="toggle password visibility"
-                      onClick={() => setShowPassword(!showPassword)}
-                      edge="end"
-                      size="small"
-                    >
-                      {showPassword ? (
-                        <VisibilityOff fontSize="small" />
-                      ) : (
-                        <Visibility fontSize="small" />
-                      )}
-                    </IconButton>
-                  </InputAdornment>
-                ),
-              },
-            }}
-          />
-        </Box>
+          <Box sx={{ mb: 2.5 }}>
+            <Typography
+              variant="body2"
+              sx={{ fontWeight: 500, mb: 1, color: "text.primary" }}
+            >
+              Password
+            </Typography>
+            <TextField
+              fullWidth
+              size="small"
+              type={showPassword ? "text" : "password"}
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              error={!!formErrors.password}
+              helperText={formErrors.password}
+              disabled={loading}
+              autoComplete="new-password"
+              placeholder="Enter a unique password"
+              slotProps={{
+                input: {
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <IconButton
+                        aria-label="toggle password visibility"
+                        onClick={() => setShowPassword(!showPassword)}
+                        edge="end"
+                        size="small"
+                      >
+                        {showPassword ? (
+                          <VisibilityOff fontSize="small" />
+                        ) : (
+                          <Visibility fontSize="small" />
+                        )}
+                      </IconButton>
+                    </InputAdornment>
+                  ),
+                },
+              }}
+            />
+          </Box>
 
-        <Button
-          type="submit"
-          fullWidth
-          variant="contained"
-          size="large"
-          disabled={loading}
-          sx={{ py: 1.5 }}
-        >
-          {loading ? "Creating account..." : "Continue"}
-        </Button>
-      </form>
+          <Button
+            type="submit"
+            fullWidth
+            variant="contained"
+            size="large"
+            disabled={loading}
+            sx={{ py: 1.5 }}
+          >
+            {loading ? "Creating account..." : "Continue"}
+          </Button>
+        </form>
+      )}
 
       <Typography
         variant="caption"

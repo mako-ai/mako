@@ -14,7 +14,19 @@
 
 import { containsDbtSchemaToken, type AppDataBinding } from "@mako/schemas";
 import { useAppStore, prodLikeDbtEnvironment } from "../store/appStore";
-import { ensureBindingLoaded, loadBindingRowsTable } from "./duckdb";
+import {
+  ensureBindingLoaded,
+  loadBindingRowsTable,
+  dropBindingTableByRevisionPrefix,
+} from "./duckdb";
+
+/**
+ * Revision prefix for DuckDB tables loaded from a live preview-env run
+ * (`dbt-preview:<env>`) rather than the prod Parquet artifact. Marks the
+ * table as override data so resetting the override can evict it when no prod
+ * artifact is available to reload.
+ */
+const DBT_PREVIEW_REVISION_PREFIX = "dbt-preview:";
 
 /**
  * The active preview env override for a binding, or null when the binding
@@ -55,12 +67,25 @@ export async function ensureBindingLoadedForPreview(
   if (binding.materialization !== "parquet") return false;
 
   const override = await getBindingPreviewOverride(workspaceId, appId, binding);
-  if (!override) return ensureBindingLoaded(appId, binding, signal);
+  if (!override) {
+    const loaded = await ensureBindingLoaded(appId, binding, signal);
+    if (!loaded) {
+      // No ready prod artifact to reload (never materialized / build failed):
+      // evict rows a previous override run left behind so prod reads fail
+      // loudly instead of silently serving the other environment's data.
+      await dropBindingTableByRevisionPrefix(
+        appId,
+        binding.name,
+        DBT_PREVIEW_REVISION_PREFIX,
+      );
+    }
+    return loaded;
+  }
 
   return loadBindingRowsTable(
     appId,
     binding,
-    `dbt-preview:${override.environment}`,
+    `${DBT_PREVIEW_REVISION_PREFIX}${override.environment}`,
     async () => {
       const result = await useAppStore
         .getState()

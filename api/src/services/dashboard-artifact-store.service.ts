@@ -1,4 +1,4 @@
-import fs, { promises as fsPromises } from "fs";
+import { promises as fsPromises } from "fs";
 import crypto from "crypto";
 import path from "path";
 import { Storage } from "@google-cloud/storage";
@@ -142,7 +142,17 @@ class FilesystemDashboardArtifactStore implements DashboardArtifactStore {
   }
 
   async openReadStream(key: string): Promise<NodeJS.ReadableStream | null> {
-    return fs.createReadStream(this.resolvePath(key));
+    // fs.createReadStream on a missing file only errors ASYNCHRONOUSLY —
+    // after the serve route has already sent 200 headers — which truncates
+    // direct responses and permanently hangs proxied ones (the Vite dev
+    // proxy never terminates the client request). Open the fd first so a
+    // missing artifact is a clean `null` (routes turn it into a 404).
+    try {
+      const handle = await fsPromises.open(this.resolvePath(key), "r");
+      return handle.createReadStream();
+    } catch {
+      return null;
+    }
   }
 
   async getSize(key: string): Promise<number | null> {
@@ -242,8 +252,14 @@ class GcsDashboardArtifactStore implements DashboardArtifactStore {
   }
 
   async openReadStream(key: string): Promise<NodeJS.ReadableStream | null> {
+    // Same lazy-error hazard as the filesystem store: a GCS read stream for a
+    // missing object only fails after headers are sent. Probe existence first
+    // so callers get `null` (→ 404) instead of a mid-stream abort.
     try {
-      return this.file(key).createReadStream();
+      const file = this.file(key);
+      const [exists] = await file.exists();
+      if (!exists) return null;
+      return file.createReadStream();
     } catch {
       return null;
     }

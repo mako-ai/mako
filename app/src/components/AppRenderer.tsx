@@ -23,6 +23,9 @@ import {
 import { containsDbtSchemaToken } from "@mako/schemas";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
+import EntityLoadErrorState, {
+  EntityLoadingState,
+} from "./EntityLoadErrorState";
 import { useTheme } from "../contexts/ThemeContext";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import { useAppStore } from "../store/appStore";
@@ -77,12 +80,14 @@ export default function AppRenderer({
   effectiveModeRef.current = effectiveMode;
 
   const appEntity = useAppStore(s => s.openApps[appId]);
+  const appLoadError = useAppStore(s => s.openAppErrors[appId]);
   const previewNonce = useAppStore(s => s.previewNonce[appId] ?? 0);
   const previewErrors = useAppStore(s => s.previewErrors[appId]);
   const fetchApp = useAppStore(s => s.fetchApp);
   const bumpPreview = useAppStore(s => s.bumpPreview);
   const setPreviewErrors = useAppStore(s => s.setPreviewErrors);
   const runBinding = useAppStore(s => s.runBinding);
+  const materializeBinding = useAppStore(s => s.materializeBinding);
   const materializeAllBindings = useAppStore(s => s.materializeAllBindings);
   const persistApp = useAppStore(s => s.persistApp);
   const generateSaveComment = useAppStore(s => s.generateSaveComment);
@@ -267,6 +272,48 @@ export default function AppRenderer({
     }
   }, [appId, appEntity, workspaceId, effectiveDbtEnv]);
 
+  // Auto-materialize: when a parquet binding's reads are about to hit the
+  // artifact path but no artifact exists (never materialized, or the cache
+  // was lost), queue its build automatically instead of leaving the app on a
+  // "table does not exist" error — e.g. switching the dbt preview env back to
+  // prod before the first build. Scoped tightly:
+  // - dbt-linked bindings serving a LIVE override run are skipped (building
+  //   would be pointless there: artifacts always hold prod data);
+  // - an errored build is NOT retried (no rebuild loops for broken queries —
+  //   the binding editor surfaces the error);
+  // - one attempt per binding per mount; the server-side per-binding claim
+  //   dedupes against builds already in flight.
+  const autoMaterializeAttempted = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!appEntity || !workspaceId) return;
+    for (const binding of appEntity.dataBindings) {
+      if (binding.materialization !== "parquet") continue;
+      const servesLiveOverride =
+        dbtOverrideActive &&
+        Boolean(binding.dbtProjectId) &&
+        containsDbtSchemaToken(binding.code);
+      if (servesLiveOverride) continue;
+      const status = binding.cache?.parquetBuildStatus;
+      const hasArtifact =
+        status === "ready" && Boolean(binding.cache?.parquetUrl);
+      if (hasArtifact || status === "error") continue;
+      if (autoMaterializeAttempted.current.has(binding.id)) continue;
+      autoMaterializeAttempted.current.add(binding.id);
+      setPublishedNotice(`Building data for "${binding.name}"…`);
+      void materializeBinding(workspaceId, appId, binding.id).then(result => {
+        if (result.status === "ready") {
+          // materializeBinding already refetched the app and bumped the
+          // preview, so the fresh artifact loads on the rebuilt preview.
+          setPublishedNotice(`Data for "${binding.name}" is ready.`);
+        } else if (result.status === "error") {
+          setPublishedNotice(
+            `Failed to build "${binding.name}": ${result.error ?? "unknown error"}`,
+          );
+        }
+      });
+    }
+  }, [appId, appEntity, workspaceId, dbtOverrideActive, materializeBinding]);
+
   // Dispose the DuckDB instance when the tab unmounts.
   useEffect(() => {
     return () => {
@@ -300,10 +347,12 @@ export default function AppRenderer({
           dbtOverrideActive &&
           Boolean(binding?.dbtProjectId) &&
           containsDbtSchemaToken(binding?.code ?? "");
-        // Materialized binding -> read its table from DuckDB-WASM.
+        // Materialized binding -> read its table from DuckDB-WASM. The
+        // preview-aware loader also evicts rows a previous env override left
+        // behind when no prod artifact exists to reload (stale-data guard).
         if (binding?.materialization === "parquet" && !dbtLiveOverride) {
           const rowLimit = resolveSandboxRowLimit(data.rowLimit);
-          void ensureBindingLoaded(appId, binding)
+          void ensureBindingLoadedForPreview(workspaceId, appId, binding)
             .then(() =>
               queryAppDuckDB(
                 appId,
@@ -483,11 +532,18 @@ export default function AppRenderer({
   }, [srcDoc, previewNonce]);
 
   if (!appEntity) {
-    return (
-      <Box sx={{ p: 3, color: "text.secondary" }}>
-        <Typography variant="body2">Loading app…</Typography>
-      </Box>
-    );
+    if (appLoadError) {
+      return (
+        <EntityLoadErrorState
+          error={appLoadError}
+          entityLabel="app"
+          onRetry={() => {
+            if (workspaceId) void fetchApp(workspaceId, appId);
+          }}
+        />
+      );
+    }
+    return <EntityLoadingState label="Loading app…" />;
   }
 
   const errors = previewErrors || [];

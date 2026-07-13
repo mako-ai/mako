@@ -22,6 +22,9 @@ import {
   Skeleton,
   Snackbar,
   Stack,
+  Tab,
+  Tabs,
+  Link,
 } from "@mui/material";
 import {
   Add as AddIcon,
@@ -32,9 +35,228 @@ import {
 } from "@mui/icons-material";
 import { formatDistanceToNow } from "date-fns";
 import { useWorkspace } from "../contexts/workspace-context";
+import {
+  selectTabBySettingsSection,
+  useConsoleStore,
+} from "../store/consoleStore";
+import { SECTION_LABELS } from "../pages/settings/sections";
 import { trackEvent } from "../lib/analytics";
 import { useApiKeyStore } from "../store/apiKeyStore";
 import type { ApiKeyCreateResponse } from "../lib/api-types";
+
+const MCP_STARTER_PROMPT =
+  "Using the mako tools, explore my data and build an app showing revenue " +
+  "by month, then give me a preview link.";
+
+/**
+ * Pointer to the dedicated "Connect Agents" settings page, where the
+ * OAuth-first connect flow and the connected-agents list live.
+ */
+function ConnectAgentsPointer() {
+  const openAgentsSettings = () => {
+    const state = useConsoleStore.getState();
+    const existing = selectTabBySettingsSection("agents")(state);
+    if (existing) {
+      state.setActiveTab(existing.id);
+      return;
+    }
+    const id = state.openTab({
+      title: SECTION_LABELS.agents,
+      content: "",
+      kind: "settings",
+      settingsSection: "agents",
+    });
+    state.setActiveTab(id);
+  };
+
+  return (
+    <Alert severity="info" sx={{ mb: 3 }}>
+      Connecting Claude, Cursor, or Codex? No API key needed — agents sign in
+      with your Mako account. Set up and manage them in{" "}
+      <Link
+        component="button"
+        type="button"
+        onClick={openAgentsSettings}
+        sx={{ verticalAlign: "baseline" }}
+      >
+        Settings → Connect Agents
+      </Link>
+      . API keys below are for the REST API and headless MCP (CI / servers).
+    </Alert>
+  );
+}
+
+/**
+ * Per-client MCP setup shown the one time the full key is visible: pick your
+ * client, see only your path. Base URL is this deployment's origin (the Vite
+ * dev server proxies /api). Cursor additionally gets a one-click install
+ * deeplink (cursor.com/docs/mcp/install-links).
+ */
+function buildMcpClientSetups(key: string) {
+  const endpoint = `${window.location.origin}/api/mcp`;
+  const cursorConfig = {
+    url: endpoint,
+    headers: { Authorization: `Bearer ${key}` },
+  };
+  const cursorDeeplink =
+    "cursor://anysphere.cursor-deeplink/mcp/install?name=mako&config=" +
+    encodeURIComponent(btoa(JSON.stringify(cursorConfig)));
+  return [
+    {
+      client: "Claude Code",
+      instruction:
+        "Run this in your terminal, then verify with `claude mcp list`:",
+      snippet: `claude mcp add --transport http mako ${endpoint} \\\n  --header "Authorization: Bearer ${key}"`,
+    },
+    {
+      client: "Cursor",
+      instruction:
+        "One click below — Cursor opens and asks to install. Or paste the JSON into .cursor/mcp.json:",
+      snippet: JSON.stringify({ mcpServers: { mako: cursorConfig } }, null, 2),
+      deeplink: cursorDeeplink,
+    },
+    {
+      client: "Codex",
+      instruction: `Add this to ~/.codex/config.toml, then export MAKO_API_KEY="${key.slice(0, 14)}..." in your shell:`,
+      snippet: `[mcp_servers.mako]\nurl = "${endpoint}"\nbearer_token_env_var = "MAKO_API_KEY"\n\n# then: export MAKO_API_KEY="${key}"`,
+    },
+    {
+      client: "Other",
+      instruction:
+        "Any MCP client that speaks Streamable HTTP works — one endpoint, one Bearer header:",
+      snippet: `URL     ${endpoint}\nHeader  Authorization: Bearer ${key}`,
+    },
+  ];
+}
+
+function McpConnectSection({
+  apiKey,
+  onCopy,
+}: {
+  apiKey: string;
+  onCopy: (text: string) => void;
+}) {
+  const [tab, setTab] = useState(0);
+  const setups = buildMcpClientSetups(apiKey);
+  const active = setups[tab] ?? setups[0];
+
+  return (
+    <Box sx={{ mt: 3 }}>
+      <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
+        Use this key with MCP (headless / CI)
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+        Interactive agents can connect without a key — see &quot;Connect an AI
+        agent&quot; on the API Keys page (they sign in instead). Use these
+        key-based setups where a browser sign-in isn&apos;t possible. The key is
+        already filled in.{" "}
+        <a
+          href="https://docs.mako.ai/mcp-server/"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Full guide
+        </a>
+      </Typography>
+      <Tabs
+        value={tab}
+        onChange={(_e, value: number) => setTab(value)}
+        variant="scrollable"
+        allowScrollButtonsMobile
+        sx={{ minHeight: 36, mb: 1.5, borderBottom: 1, borderColor: "divider" }}
+      >
+        {setups.map(setup => (
+          <Tab
+            key={setup.client}
+            label={setup.client}
+            sx={{ minHeight: 36, py: 0.5, textTransform: "none" }}
+          />
+        ))}
+      </Tabs>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+        {active.instruction}
+      </Typography>
+      {active.deeplink && (
+        <Button
+          variant="contained"
+          size="small"
+          href={active.deeplink}
+          sx={theme => ({
+            mb: 1.5,
+            textTransform: "none",
+            // Rendered as an <a>: keep the label readable even under global
+            // anchor color resets (see McpAgentsPanel).
+            color: "primary.contrastText",
+            WebkitTextFillColor: theme.palette.primary.contrastText,
+            "&:hover": {
+              color: "primary.contrastText",
+              WebkitTextFillColor: theme.palette.primary.contrastText,
+            },
+          })}
+        >
+          Add to Cursor
+        </Button>
+      )}
+      <Box sx={{ position: "relative" }}>
+        <Box
+          component="pre"
+          sx={{
+            m: 0,
+            p: 1.5,
+            pr: 6,
+            bgcolor: "grey.100",
+            borderRadius: 1,
+            fontSize: "0.7rem",
+            overflow: "auto",
+            whiteSpace: "pre",
+          }}
+        >
+          {active.snippet}
+        </Box>
+        <Tooltip title={`Copy ${active.client} setup`}>
+          <IconButton
+            size="small"
+            onClick={() => onCopy(active.snippet)}
+            aria-label={`Copy ${active.client} setup`}
+            sx={{ position: "absolute", top: 6, right: 6 }}
+          >
+            <CopyIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      </Box>
+      <Typography
+        variant="body2"
+        color="text.secondary"
+        sx={{ mt: 2, mb: 0.5 }}
+      >
+        Then ask it something:
+      </Typography>
+      <Stack direction="row" alignItems="flex-start" spacing={0.5}>
+        <Box
+          sx={{
+            flex: 1,
+            p: 1.5,
+            bgcolor: "grey.100",
+            borderRadius: 1,
+            fontStyle: "italic",
+            fontSize: "0.8rem",
+          }}
+        >
+          &quot;{MCP_STARTER_PROMPT}&quot;
+        </Box>
+        <Tooltip title="Copy starter prompt">
+          <IconButton
+            size="small"
+            onClick={() => onCopy(MCP_STARTER_PROMPT)}
+            aria-label="Copy starter prompt"
+          >
+            <CopyIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      </Stack>
+    </Box>
+  );
+}
 
 export function ApiKeyManager() {
   const { currentWorkspace, loading: workspaceLoading } = useWorkspace();
@@ -150,6 +372,8 @@ export function ApiKeyManager() {
 
   return (
     <Box>
+      <ConnectAgentsPointer />
+
       {workspaceId && (
         <Alert severity="info" sx={{ mb: 3 }}>
           <Typography variant="subtitle2" gutterBottom sx={{ fontWeight: 600 }}>
@@ -223,8 +447,8 @@ export function ApiKeyManager() {
         </Box>
       ) : apiKeys.length === 0 ? (
         <Alert severity="info">
-          No API keys found. Create one to enable API access for third-party
-          applications.
+          No API keys yet. AI agents connect via MCP without one (see above) —
+          create a key for the REST API or headless MCP use (CI, servers).
         </Alert>
       ) : (
         <TableContainer component={Paper} variant="outlined">
@@ -233,6 +457,7 @@ export function ApiKeyManager() {
               <TableRow>
                 <TableCell>Name</TableCell>
                 <TableCell>Key Prefix</TableCell>
+                <TableCell>Access</TableCell>
                 <TableCell>Created</TableCell>
                 <TableCell>Last Used</TableCell>
                 <TableCell align="right">Actions</TableCell>
@@ -249,6 +474,19 @@ export function ApiKeyManager() {
                       variant="outlined"
                       sx={{ fontFamily: "monospace" }}
                     />
+                  </TableCell>
+                  <TableCell>
+                    {key.scopes && key.scopes.length > 0 ? (
+                      <Stack direction="row" spacing={0.5}>
+                        {key.scopes.map(scope => (
+                          <Chip key={scope} label={scope} size="small" />
+                        ))}
+                      </Stack>
+                    ) : (
+                      <Tooltip title="Created before scopes existed. Works for the REST API but cannot connect MCP clients (Claude Code, Cursor, Codex) — create a new key for that.">
+                        <Chip label="legacy" size="small" color="warning" />
+                      </Tooltip>
+                    )}
                   </TableCell>
                   <TableCell>
                     {formatDistanceToNow(new Date(key.createdAt), {
@@ -324,7 +562,7 @@ export function ApiKeyManager() {
       <Dialog
         open={!!newApiKey}
         onClose={() => setNewApiKey(null)}
-        maxWidth="sm"
+        maxWidth="md"
         fullWidth
       >
         <DialogTitle>API Key Created Successfully</DialogTitle>
@@ -414,9 +652,15 @@ export function ApiKeyManager() {
               </IconButton>
             </Box>
           </Box>
+          {newApiKey?.key && (
+            <McpConnectSection
+              apiKey={newApiKey.key}
+              onCopy={copyToClipboard}
+            />
+          )}
           <Box sx={{ mt: 3 }}>
             <Typography variant="body2" color="text.secondary">
-              Use this API key in your requests:
+              Or use it against the REST API directly:
             </Typography>
             <Box
               component="pre"

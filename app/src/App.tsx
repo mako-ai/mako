@@ -40,7 +40,7 @@ import {
   PanelResizeHandle,
   type ImperativePanelGroupHandle,
 } from "react-resizable-panels";
-import { trackPageView } from "./lib/analytics";
+import { trackEvent, trackPageView } from "./lib/analytics";
 import { setIframeDragGuard } from "./lib/iframe-drag-guard";
 import Sidebar, {
   SidebarUserMenu,
@@ -74,6 +74,7 @@ const DashboardsExplorer = lazy(loadDashboardsExplorer);
 const loadAppsExplorer = () => import("./components/AppsExplorer");
 const AppsExplorer = lazy(loadAppsExplorer);
 const PublicSharePage = lazy(() => import("./pages/PublicSharePage"));
+const AppPreviewPage = lazy(() => import("./pages/AppPreviewPage"));
 const loadDbtExplorer = () => import("./components/DbtExplorer");
 const DbtExplorer = lazy(loadDbtExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
@@ -902,6 +903,19 @@ function LoadingScreen() {
   );
 }
 
+/**
+ * Same-origin post-login destination, e.g. the MCP OAuth consent page
+ * (/api/oauth/mcp/authorize?...) sends users here with ?returnTo=<path>.
+ * Only relative paths are honored so the parameter can't redirect off-site.
+ */
+function safeReturnTo(): string | null {
+  const returnTo = new URLSearchParams(window.location.search).get("returnTo");
+  if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+    return returnTo;
+  }
+  return null;
+}
+
 // Auth route wrapper - redirects to "/" if already authenticated
 function AuthRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -910,11 +924,17 @@ function AuthRoute({ children }: { children: React.ReactNode }) {
     return <LoadingScreen />;
   }
 
-  // If already authenticated, resume a pending desktop sign-in handoff or
-  // redirect to the main app
+  // If already authenticated, resume a pending desktop sign-in handoff,
+  // honor a same-origin returnTo (OAuth consent), or go to the main app
   if (user) {
     if (hasPendingDesktopAuth()) {
       return <Navigate to="/desktop-auth" replace />;
+    }
+    const returnTo = safeReturnTo();
+    if (returnTo) {
+      // Full navigation: the target may be an API-served page, not a route.
+      window.location.replace(returnTo);
+      return <LoadingScreen />;
     }
     return <Navigate to="/" replace />;
   }
@@ -1015,6 +1035,30 @@ function DesktopAuthResume() {
   return <Navigate to="/desktop-auth" replace />;
 }
 
+// Fire checkout_completed exactly once when Stripe redirects back with
+// ?billing=success (see api billing route's default successUrl). The param is
+// stripped via replaceState so refreshes/back-navigation don't re-fire it.
+function CheckoutSuccessTracker() {
+  const location = useLocation();
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get("billing") !== "success") return;
+
+    trackEvent("checkout_completed");
+
+    params.delete("billing");
+    const query = params.toString();
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${location.pathname}${query ? `?${query}` : ""}${location.hash}`,
+    );
+  }, [location.search, location.pathname, location.hash]);
+
+  return null;
+}
+
 // Track page views on route changes for SPA
 function PageViewTracker() {
   const location = useLocation();
@@ -1046,6 +1090,7 @@ function App() {
   return (
     <>
       <PageViewTracker />
+      <CheckoutSuccessTracker />
       <DesktopAuthResume />
       <UpdateNotification />
       <Routes>
@@ -1078,6 +1123,30 @@ function App() {
             }
           />
         ))}
+
+        {/* Draft-app preview via signed token - no authentication required.
+            Machine-facing sibling of /share (see AppPreviewPage). */}
+        <Route
+          path="/preview/:token"
+          element={
+            <Suspense
+              fallback={
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    height: "100vh",
+                  }}
+                >
+                  <CircularProgress />
+                </Box>
+              }
+            >
+              <AppPreviewPage />
+            </Suspense>
+          }
+        />
 
         {/* Desktop sign-in handoff - renders for both authed and unauthed users */}
         <Route path="/desktop-auth" element={<DesktopAuthPage />} />

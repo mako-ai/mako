@@ -1,4 +1,4 @@
-import { useState, type RefObject } from "react";
+import { useEffect, useState, type RefObject } from "react";
 import { Alert, Box, Tab, Tabs } from "@mui/material";
 import { SyncFlowForm } from "./SyncFlowForm";
 import { DbFlowForm, type DbFlowFormRef } from "./DbFlowForm";
@@ -6,6 +6,10 @@ import { FlowLogs } from "./FlowLogs";
 import { BackfillPanel } from "./BackfillPanel";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
+import EntityLoadErrorState, {
+  EntityLoadingState,
+} from "./EntityLoadErrorState";
+import { missingEntityError } from "../lib/entity-labels";
 
 interface FlowEditorProps {
   flowId?: string;
@@ -45,7 +49,10 @@ export function FlowEditor({
   const [viewTab, setViewTab] = useState<"cdc" | "runs">("cdc");
 
   const { currentWorkspace } = useWorkspace();
-  const { flows: flowsMap, runFlow } = useFlowStore();
+  const { flows: flowsMap, runFlow, fetchFlows } = useFlowStore();
+  const flowsError = useFlowStore(s =>
+    currentWorkspace ? s.error[currentWorkspace.id] : null,
+  );
 
   const flows = currentWorkspace ? flowsMap[currentWorkspace.id] || [] : [];
   const currentFlow = currentFlowId
@@ -53,6 +60,37 @@ export function FlowEditor({
     : null;
 
   const isNewMode = Boolean(isNew && !currentFlowId);
+
+  // Deep links can reference a flow that isn't in the (possibly stale) cached
+  // list — e.g. after a workspace switch. Refetch once before deciding the
+  // flow doesn't exist, so we never show "not found" for a merely-uncached
+  // flow, and never leave the tab empty for a truly missing one.
+  const [missingFlowVerified, setMissingFlowVerified] = useState(false);
+  useEffect(() => {
+    if (
+      !currentWorkspace?.id ||
+      isNewMode ||
+      !currentFlowId ||
+      currentFlow ||
+      missingFlowVerified
+    ) {
+      return;
+    }
+    let cancelled = false;
+    void fetchFlows(currentWorkspace.id).finally(() => {
+      if (!cancelled) setMissingFlowVerified(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    currentWorkspace?.id,
+    isNewMode,
+    currentFlowId,
+    currentFlow,
+    missingFlowVerified,
+    fetchFlows,
+  ]);
 
   // Database-query sources keep the dedicated DbFlowForm.
   const isDbFlow =
@@ -153,6 +191,30 @@ export function FlowEditor({
       </>
     );
   };
+
+  // Existing-flow tab whose flow can't be resolved: loading until the
+  // verification fetch settles, then an explicit error / not-found state
+  // (never a silently empty tab).
+  if (!isEditing && !isNewMode && currentFlowId && !currentFlow) {
+    if (!missingFlowVerified) {
+      return <EntityLoadingState label="Loading flow…" />;
+    }
+    if (flowsError) {
+      return (
+        <EntityLoadErrorState
+          error={{ message: flowsError }}
+          entityLabel="flow"
+          onRetry={() => setMissingFlowVerified(false)}
+        />
+      );
+    }
+    return (
+      <EntityLoadErrorState
+        error={missingEntityError("flow")}
+        entityLabel="flow"
+      />
+    );
+  }
 
   return (
     <Box

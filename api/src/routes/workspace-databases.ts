@@ -1,6 +1,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Db } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import { restQueryAccessFromStoredScopes } from "../auth/api-key-scopes";
 import {
   requireWorkspace,
   requireWorkspaceRole,
@@ -209,6 +210,7 @@ async function createAdHocParquetResponse(options: {
     {
       databaseId: options.queryDefinition.databaseId,
       databaseName: options.queryDefinition.databaseName,
+      readOnly: true,
     },
   );
 
@@ -684,6 +686,28 @@ workspaceDatabaseRoutes.openapi(
         return c.json({ success: false, error: "Unauthorized" }, 401);
       }
 
+      // Optionally verify the connection before persisting. When requested and
+      // the test fails, do NOT create the record — return a structured result
+      // so the client can offer "edit" vs "save anyways". Absent flag keeps the
+      // legacy behavior (save without testing) for programmatic callers.
+      const verifyBeforeSave = body.verifyBeforeSave === true;
+      if (verifyBeforeSave) {
+        const tempDatabase = {
+          _id: new Types.ObjectId(),
+          type: body.type,
+          connection: body.connection || {},
+        } as IDatabaseConnection;
+        const test =
+          await databaseConnectionService.testConnection(tempDatabase);
+        if (!test.success) {
+          return c.json({
+            success: false,
+            code: "connection_test_failed",
+            error: test.error || "Connection test failed",
+          });
+        }
+      }
+
       // Create database connection
       const database = new DatabaseConnection({
         workspaceId: workspace._id,
@@ -695,11 +719,17 @@ workspaceDatabaseRoutes.openapi(
         updatedAt: new Date(),
       });
 
+      // A successful pre-save test is the authoritative "reachable" signal.
+      if (verifyBeforeSave) {
+        database.lastConnectedAt = new Date();
+      }
+
       await database.save();
 
       return c.json(
         {
           success: true,
+          verified: verifyBeforeSave,
           data: {
             id: database._id,
             name: database.name,
@@ -774,6 +804,8 @@ workspaceDatabaseRoutes.openapi(
         return c.json({ success: false, error: "Database not found" }, 404);
       }
 
+      const verifyBeforeSave = body.verifyBeforeSave === true;
+
       // Update fields
       if (body.name) database.name = body.name;
       if (body.connection) {
@@ -782,14 +814,36 @@ workspaceDatabaseRoutes.openapi(
           (database.toObject({ getters: true }) as any).connection || {};
         const candidate = { ...previous, ...body.connection };
 
+        // Optionally verify the candidate before persisting the change.
+        if (verifyBeforeSave) {
+          const tempDatabase = {
+            _id: new Types.ObjectId(),
+            type: database.type,
+            connection: candidate,
+          } as IDatabaseConnection;
+          const test =
+            await databaseConnectionService.testConnection(tempDatabase);
+          if (!test.success) {
+            return c.json({
+              success: false,
+              code: "connection_test_failed",
+              error: test.error || "Connection test failed",
+            });
+          }
+        }
+
         database.connection = candidate as any;
       }
 
       database.updatedAt = new Date();
+      if (verifyBeforeSave) {
+        database.lastConnectedAt = new Date();
+      }
       await database.save();
 
       return c.json({
         success: true,
+        verified: verifyBeforeSave,
         data: {
           id: database._id,
           name: database.name,
@@ -991,8 +1045,18 @@ workspaceDatabaseRoutes.openapi(
   async c => {
     try {
       const workspace = c.get("workspace");
+      const apiKey = c.get("apiKey");
       const databaseId = c.req.param("id");
       const body = await c.req.json();
+      const queryAccess = apiKey
+        ? restQueryAccessFromStoredScopes(apiKey.scopes)
+        : "write";
+      if (queryAccess === "none") {
+        return c.json(
+          { success: false, error: "API key does not have query access" },
+          403,
+        );
+      }
 
       if (!Types.ObjectId.isValid(databaseId)) {
         return c.json({ success: false, error: "Invalid database ID" }, 400);
@@ -1014,7 +1078,7 @@ workspaceDatabaseRoutes.openapi(
       const result = await databaseConnectionService.executeQuery(
         database,
         body.query,
-        body.options,
+        { ...body.options, readOnly: queryAccess === "read" },
       );
 
       return c.json(result);
@@ -1848,6 +1912,15 @@ workspaceExecuteRoutes.openapi(
       const user = c.get("user");
       const apiKey = c.get("apiKey");
       const body = await parseRequestBody(c);
+      const queryAccess = apiKey
+        ? restQueryAccessFromStoredScopes(apiKey.scopes)
+        : "write";
+      if (queryAccess === "none") {
+        return c.json(
+          { success: false, error: "API key does not have query access" },
+          403,
+        );
+      }
 
       const queryDefinition = resolveQueryDefinition(body);
       const {
@@ -1917,6 +1990,7 @@ workspaceExecuteRoutes.openapi(
         databaseId: effectiveQueryDefinition.databaseId || databaseId,
         databaseName: effectiveQueryDefinition.databaseName || databaseName,
         executionId,
+        readOnly: queryAccess === "read",
       };
 
       const isPreviewMode = mode === "preview";
@@ -1943,7 +2017,7 @@ workspaceExecuteRoutes.openapi(
               400,
             );
           }
-          if (!user?.id) {
+          if (c.get("authType") !== "session" || !user?.id) {
             return c.json(
               {
                 success: false,
@@ -2274,6 +2348,7 @@ workspaceExecuteRoutes.openapi(
               : 1000,
         executionId: typeof executionId === "string" ? executionId : undefined,
         signal: c.req.raw.signal,
+        readOnly: true,
       };
 
       if (normalizedFormat === "parquet") {

@@ -185,6 +185,7 @@ export function AppsExplorer() {
     s => (workspaceId ? s.workspaceApps[workspaceId] : undefined) || EMPTY_LIST,
   );
   const openApps = useAppStore(s => s.openApps);
+  const openAppErrors = useAppStore(s => s.openAppErrors);
   const loading = useAppStore(s =>
     workspaceId ? !!s.loading[workspaceId] : false,
   );
@@ -257,7 +258,11 @@ export function AppsExplorer() {
     (items: AppListItem[]): ResourceTreeNode[] =>
       items.map(item => {
         const loaded = openApps[item.id];
-        let children: ResourceTreeNode[] | undefined;
+        // A failed fetch (deleted app, lost access) must not leave the row on
+        // a perpetual loading skeleton — resolve to an empty child list; the
+        // tab view carries the detailed error.
+        let children: ResourceTreeNode[] | undefined =
+          !loaded && openAppErrors[item.id] ? [] : undefined;
         if (loaded) {
           // buildAppFileNodes already returns folders-first, files-last. Insert
           // the synthetic "Data sources" folder alongside the real folders so
@@ -299,7 +304,7 @@ export function AppsExplorer() {
           children,
         };
       }),
-    [openApps],
+    [openApps, openAppErrors],
   );
 
   const sections = useMemo(

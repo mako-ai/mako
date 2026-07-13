@@ -226,6 +226,17 @@ export async function startMcpOAuthFlow(params: {
 }
 
 /**
+ * Server id of a pending flow (by `state`), so the OAuth callback can send
+ * the browser back to that server's settings modal even when the flow fails.
+ */
+export async function findMcpOAuthFlowServerId(
+  state: string,
+): Promise<string | null> {
+  const flow = await McpOAuthFlow.findOne({ state }).select("serverId").lean();
+  return flow?.serverId ? flow.serverId.toString() : null;
+}
+
+/**
  * Complete the flow from the OAuth callback: validate state, exchange the
  * authorization code (PKCE), persist tokens on the connection config.
  * Returns the workspace/server the flow belonged to for the UI redirect.

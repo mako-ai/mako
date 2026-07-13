@@ -902,6 +902,17 @@ app.openapi(
       const store = getDashboardArtifactStore();
       const stream = await store.openReadStream(info.artifactKey);
       if (!stream) {
+        // The binding cache says "ready" but the artifact bytes are gone
+        // (bucket cleanup, prod restore onto a machine without the files).
+        // Self-heal: queue a background rebuild — the atomic claim inside
+        // queueAppBindingMaterialization dedupes the concurrent 404s a page
+        // load produces — and return a clean 404 for this read. Open tabs
+        // pick the fresh artifact up via the post-build app.updated poke.
+        void queueAppBindingMaterialization({
+          workspaceId,
+          appId: id,
+          bindingId,
+        }).catch(() => undefined);
         return c.json({ success: false, error: "Artifact not found" }, 404);
       }
 

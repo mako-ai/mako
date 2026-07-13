@@ -216,8 +216,18 @@ interface SchemaState {
     workspaceId: string,
     payload: Record<string, unknown>,
     databaseId?: string,
-    options?: { local?: boolean },
-  ) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    options?: { local?: boolean; verifyBeforeSave?: boolean },
+  ) => Promise<{
+    success: boolean;
+    data?: unknown;
+    error?: string;
+    // Set by the cloud API when verifyBeforeSave is requested: the connection
+    // test ran before persisting.
+    verified?: boolean;
+    // "connection_test_failed" when verifyBeforeSave rejected the save because
+    // the pre-save connection test did not succeed (record NOT created).
+    code?: string;
+  }>;
   fetchCollections: (
     workspaceId: string,
     connectionId: string,
@@ -786,36 +796,47 @@ export const useSchemaStore = create<SchemaState>()(
           const isLocalTarget =
             options?.local || isLocalConnectionId(databaseId);
 
-          let res: { success: boolean; data?: unknown; error?: string };
+          type SaveResponse = {
+            success: boolean;
+            data?: unknown;
+            error?: string;
+            verified?: boolean;
+            code?: string;
+          };
+          let res: SaveResponse;
           if (isLocalTarget) {
             res = databaseId
-              ? await localAgentClient.put<{
-                  success: boolean;
-                  data: unknown;
-                  error?: string;
-                }>(`/connections/${databaseId}`, payload)
-              : await localAgentClient.post<{
-                  success: boolean;
-                  data: unknown;
-                  error?: string;
-                }>("/connections", payload);
+              ? await localAgentClient.put<SaveResponse>(
+                  `/connections/${databaseId}`,
+                  payload,
+                )
+              : await localAgentClient.post<SaveResponse>(
+                  "/connections",
+                  payload,
+                );
           } else {
+            // The cloud API tests-before-save when verifyBeforeSave is set, so
+            // pass it through in the request body.
+            const body =
+              options?.verifyBeforeSave === undefined
+                ? payload
+                : { ...payload, verifyBeforeSave: options.verifyBeforeSave };
             res = databaseId
               ? (unwrapBody(
                   await api.PUT(
                     "/api/workspaces/{workspaceId}/databases/{id}",
                     {
                       params: { path: { workspaceId, id: databaseId } },
-                      body: payload,
+                      body,
                     },
                   ),
-                ) as { success: boolean; data: unknown; error?: string })
+                ) as SaveResponse)
               : (unwrapBody(
                   await api.POST("/api/workspaces/{workspaceId}/databases", {
                     params: { path: { workspaceId } },
-                    body: payload,
+                    body,
                   }),
-                ) as { success: boolean; data: unknown; error?: string });
+                ) as SaveResponse);
           }
 
           if (res.success) {

@@ -15,6 +15,10 @@ import {
   validateAndNormalizeEmail,
   normalizeEmail,
 } from "../utils/email.utils";
+import {
+  captureSignupAttribution,
+  type SignupContext,
+} from "./signup-attribution";
 import { loggers } from "../logging";
 
 const logger = loggers.auth();
@@ -42,7 +46,7 @@ export class AuthService {
    * Register a new user with email and password
    * Creates an unverified user and sends verification email
    */
-  async register(email: string, password: string) {
+  async register(email: string, password: string, signup?: SignupContext) {
     // Validate input
     if (!password) {
       throw new Error("Password is required");
@@ -115,6 +119,13 @@ export class AuthService {
       email: normalizedEmail,
       hashedPassword,
       emailVerified: false,
+    });
+
+    // Persist first-party marketing attribution (best-effort, never throws).
+    await captureSignupAttribution({
+      userId,
+      signupMethod: "email",
+      ...signup,
     });
 
     // Generate verification code
@@ -304,6 +315,7 @@ export class AuthService {
     provider: OAuthProvider,
     providerUserId: string | undefined,
     email?: string,
+    signup?: SignupContext,
   ) {
     // Provider user id is essential to uniquely identify an OAuth account. If it's missing we
     // treat this as a fatal OAuth error instead of silently creating duplicate placeholder
@@ -401,6 +413,16 @@ export class AuthService {
       providerUserId,
       email: email ?? fallbackEmail,
     });
+
+    // Persist first-party marketing attribution for genuinely new accounts
+    // (best-effort, never throws).
+    if (isNewUser) {
+      await captureSignupAttribution({
+        userId: user._id,
+        signupMethod: provider,
+        ...signup,
+      });
+    }
 
     // Check for existing workspaces - don't auto-create, let frontend handle onboarding
     const workspaces = await workspaceService.getWorkspacesForUser(user._id);

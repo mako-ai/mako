@@ -17,9 +17,9 @@ import {
 } from "../lib/workspace-client";
 import { useAuth } from "./auth-context";
 import { useUIStore } from "../store/uiStore";
-import { useConsoleStore } from "../store/consoleStore";
 import { useExplorerStore } from "../store/explorerStore";
 import { useChatStore } from "../store/chatStore";
+import { useDashboardStore } from "../store/dashboardStore";
 
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore } from "../store/schemaStore";
@@ -332,24 +332,28 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           setCurrentWorkspace(workspace);
         }
 
-        // Clear local storage to reset app state for the new workspace.
-        // This is critical: persisted stores (console-store, flow-store-v2,
-        // explorer-store, chat-store, ui-store, …) must not leak tabs/state
-        // from the previous workspace into the new one. Preserve the
-        // activeWorkspaceId by setting it AFTER clear.
-        localStorage.clear();
-        localStorage.setItem("activeWorkspaceId", id);
-        setCurrentWorkspaceId(id);
-
-        // Also reset in-memory store state to prevent leaks if reload is delayed
-        useUIStore.getState().reset();
+        // Console tabs are persisted per workspace (`console-store:<id>`, see
+        // consoleStore's storage adapter), so they must NOT be cleared here:
+        // the post-switch reload rehydrates the new workspace's own tabs, and
+        // switching back later restores this workspace's tabs. The adapter
+        // freezes writes once `activeWorkspaceId` flips (workspaceClient set
+        // it above), so the old workspace's tabs can't leak into the new
+        // bucket before the reload.
+        //
+        // Reset only the persisted stores whose state is global and
+        // workspace-specific, so it can't leak into the new workspace.
         useExplorerStore.getState().reset();
         useChatStore.getState().reset();
-        useConsoleStore.getState().clearAllConsoles();
         useFlowStore.getState().reset();
+        useDashboardStore.setState({ activeDashboardId: null });
 
-        // Reload the page to refresh all data with new workspace context
-        window.location.reload();
+        setCurrentWorkspaceId(id);
+
+        // Reload from the root: keeping the current path would make UrlSync
+        // deep-link the previous workspace's resource (e.g. /a/<appId>) into
+        // the new workspace, where it 404s. The new workspace's own active
+        // tab is restored from its persisted bucket instead.
+        window.location.replace("/");
       } catch (err: any) {
         setError(err.message || "Failed to switch workspace");
         throw err;
