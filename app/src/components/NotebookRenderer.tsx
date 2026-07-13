@@ -13,6 +13,7 @@ import {
 import {
   Eraser,
   FastForward,
+  History,
   Notebook as NotebookIcon,
   Play,
   Plus,
@@ -27,6 +28,7 @@ import {
 import { runCell } from "../notebook-runtime/run";
 import { stopKernelSession } from "../notebook-runtime/kernel";
 import NotebookCell from "./NotebookCell";
+import NotebookHistoryDrawer from "./NotebookHistoryDrawer";
 import { useConsoleStore } from "../store/consoleStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useUIStore } from "../store/uiStore";
@@ -71,6 +73,7 @@ export default function NotebookRenderer({
 
   const [loading, setLoading] = useState(!doc);
   const [addAnchor, setAddAnchor] = useState<HTMLElement | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   // "Run all" progress: which cell is currently executing (highlights it).
   const [runningAll, setRunningAll] = useState(false);
   const [runningCellId, setRunningCellId] = useState<string | null>(null);
@@ -233,7 +236,20 @@ export default function NotebookRenderer({
             </IconButton>
           </span>
         </Tooltip>
+        <Tooltip title="Version history">
+          <span>
+            <IconButton size="small" onClick={() => setHistoryOpen(true)}>
+              <History size={16} />
+            </IconButton>
+          </span>
+        </Tooltip>
       </Box>
+
+      <NotebookHistoryDrawer
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        notebookId={notebookId}
+      />
 
       <Box sx={{ p: 2 }}>
         {doc.blocks.map((block, index) => (

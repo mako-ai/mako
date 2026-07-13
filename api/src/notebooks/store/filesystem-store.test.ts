@@ -78,6 +78,61 @@ async function testRemove() {
   assert.equal(await svc.get(WS, created.id), null);
 }
 
+async function testArtifactRoundTrip() {
+  const created = await svc.create(WS, { name: "With artifact" });
+  const artifactId = randomUUID();
+  const body = Buffer.from("<table><tr><td>1</td></tr></table>", "utf8");
+  await svc.putArtifact(WS, created.id, artifactId, body, "text/html");
+
+  const fetched = await svc.getArtifact(WS, created.id, artifactId);
+  assert.ok(fetched);
+  assert.equal(fetched?.contentType, "text/html");
+  assert.equal(fetched?.body.toString("utf8"), body.toString("utf8"));
+
+  // Missing artifact and bad ids resolve to null, never a thrown path error.
+  assert.equal(await svc.getArtifact(WS, created.id, randomUUID()), null);
+  assert.equal(await svc.getArtifact(WS, created.id, "../../etc/passwd"), null);
+  // Artifact objects must not leak into the notebook list.
+  const list = await svc.list(WS);
+  assert.ok(list.some(n => n.id === created.id));
+}
+
+async function testVersioning() {
+  const created = await svc.create(WS, { name: "v1" }); // version 1, empty
+  await svc.update(WS, created.id, {
+    blocks: [{ id: "b1", type: "code", source: "print(1)" }],
+  }); // version 2
+  await svc.update(WS, created.id, {
+    blocks: [
+      { id: "b1", type: "code", source: "print(1)" },
+      { id: "b2", type: "code", source: "print(2)" },
+    ],
+  }); // version 3
+
+  const versions = await svc.listVersions(WS, created.id);
+  assert.ok(versions.length >= 3, "expected at least 3 versions");
+  // Newest first, exactly one current.
+  assert.equal(versions[0].versionId, "3");
+  assert.equal(versions.filter(v => v.isCurrent).length, 1);
+  assert.ok(versions.find(v => v.versionId === "3")?.isCurrent);
+
+  // Fetch an old generation verbatim.
+  const v1 = await svc.getVersion(WS, created.id, "1");
+  assert.equal(v1?.blocks.length, 0);
+  assert.equal(await svc.getVersion(WS, created.id, "999"), null);
+  assert.equal(await svc.getVersion(WS, created.id, "not-a-number"), null);
+
+  // Restore is non-destructive: writes the old content as a NEW current gen.
+  const restored = await svc.restoreVersion(WS, created.id, "1");
+  assert.equal(restored?.blocks.length, 0, "restored to empty blocks");
+  assert.ok((restored?.version ?? 0) >= 4, "restore bumps version forward");
+  const after = await svc.listVersions(WS, created.id);
+  assert.ok(
+    after.length > versions.length,
+    "restore appends a version, never deletes",
+  );
+}
+
 async function main() {
   try {
     await testCreateGetListRoundTrip();
@@ -85,8 +140,10 @@ async function main() {
     await testWorkspaceIsolation();
     await testMissingAndBadIds();
     await testRemove();
+    await testArtifactRoundTrip();
+    await testVersioning();
     console.log(
-      "notebook store contract: OK — CRUD + isolation + guards",
+      "notebook store contract: OK — CRUD + isolation + guards + artifacts + versions",
     );
   } finally {
     await fs

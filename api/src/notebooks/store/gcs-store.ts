@@ -11,7 +11,12 @@
 import { Storage, type File } from "@google-cloud/storage";
 
 import { loggers } from "../../logging";
-import type { NotebookBlock, NotebookDoc, NotebookSummary } from "../types";
+import type {
+  NotebookBlock,
+  NotebookDoc,
+  NotebookSummary,
+  NotebookVersion,
+} from "../types";
 import {
   ID_RE,
   buildNewDoc,
@@ -204,6 +209,7 @@ export class GcsNotebookStore implements NotebookStore {
     notebookId: string,
     artifactId: string,
   ): Promise<{ body: Buffer; contentType: string } | null> {
+    if (!ID_RE.test(notebookId) || !ID_RE.test(artifactId)) return null;
     const file = this.artifactFile(workspaceId, notebookId, artifactId);
     try {
       const [meta] = await file.getMetadata();
@@ -216,5 +222,61 @@ export class GcsNotebookStore implements NotebookStore {
       if (isNotFound(err)) return null;
       throw err;
     }
+  }
+
+  async listVersions(
+    workspaceId: string,
+    id: string,
+  ): Promise<NotebookVersion[]> {
+    if (!ID_RE.test(id)) return [];
+    const key = this.objectKey(workspaceId, id);
+    // `versions: true` returns every generation of the object; the live one has
+    // no `timeDeleted`. Requires bucket object-versioning to be enabled — with
+    // it off, only the current generation comes back (history shows one entry).
+    const [files] = await this.storage
+      .bucket(this.bucketName)
+      .getFiles({ prefix: key, versions: true });
+    return files
+      .filter(f => f.name === key)
+      .map(f => ({
+        versionId: String(f.metadata.generation ?? ""),
+        createdAt: String(f.metadata.timeCreated ?? f.metadata.updated ?? ""),
+        size: Number(f.metadata.size ?? 0),
+        isCurrent: !f.metadata.timeDeleted,
+      }))
+      .filter(v => v.versionId)
+      .sort((a, b) => Number(b.versionId) - Number(a.versionId));
+  }
+
+  async getVersion(
+    workspaceId: string,
+    id: string,
+    versionId: string,
+  ): Promise<NotebookDoc | null> {
+    if (!ID_RE.test(id) || !/^\d+$/.test(versionId)) return null;
+    try {
+      const [buf] = await this.storage
+        .bucket(this.bucketName)
+        .file(this.objectKey(workspaceId, id), { generation: Number(versionId) })
+        .download();
+      return JSON.parse(buf.toString("utf8")) as NotebookDoc;
+    } catch (err) {
+      if (isNotFound(err)) return null;
+      throw err;
+    }
+  }
+
+  async restoreVersion(
+    workspaceId: string,
+    id: string,
+    versionId: string,
+  ): Promise<NotebookDoc | null> {
+    const version = await this.getVersion(workspaceId, id, versionId);
+    if (!version) return null;
+    // Non-destructive: write the old content as a new current generation.
+    return this.update(workspaceId, id, {
+      name: version.name,
+      blocks: version.blocks,
+    });
   }
 }

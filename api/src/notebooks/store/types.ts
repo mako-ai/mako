@@ -8,7 +8,12 @@
  */
 import { randomUUID } from "crypto";
 
-import type { NotebookBlock, NotebookDoc, NotebookSummary } from "../types";
+import type {
+  NotebookBlock,
+  NotebookDoc,
+  NotebookSummary,
+  NotebookVersion,
+} from "../types";
 
 /** Notebook ids (UUID) and Mongo workspace ids (hex) both match this. */
 export const ID_RE = /^[a-zA-Z0-9-]+$/;
@@ -78,4 +83,24 @@ export interface NotebookStore {
     notebookId: string,
     artifactId: string,
   ): Promise<{ body: Buffer; contentType: string } | null>;
+
+  /** Prior generations of a notebook, newest first (current included). Empty
+   * if the notebook does not exist or the store keeps no history. */
+  listVersions(workspaceId: string, id: string): Promise<NotebookVersion[]>;
+
+  /** Fetch a specific prior generation's document; `null` if not found. */
+  getVersion(
+    workspaceId: string,
+    id: string,
+    versionId: string,
+  ): Promise<NotebookDoc | null>;
+
+  /** Restore a prior generation by writing its content as a new current
+   * generation (non-destructive). Returns the new current doc, or `null` if
+   * the notebook or version is not found. */
+  restoreVersion(
+    workspaceId: string,
+    id: string,
+    versionId: string,
+  ): Promise<NotebookDoc | null>;
 }

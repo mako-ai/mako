@@ -180,6 +180,113 @@ notebookRoutes.openapi(
   },
 );
 
+// GET /:id/versions — list prior generations (newest first)
+notebookRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/versions",
+    tags: ["Notebooks"],
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: { params: wsIdParams },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const data = await getNotebookStore().listVersions(
+      workspaceId(c),
+      c.req.valid("param").id,
+    );
+    return c.json({ success: true, data });
+  },
+);
+
+// GET /:id/versions/:versionId — fetch a prior generation's document
+notebookRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/versions/{versionId}",
+    tags: ["Notebooks"],
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: z.object({
+        workspaceId: pathParam("workspaceId"),
+        id: pathParam("id"),
+        versionId: pathParam("versionId"),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const { id, versionId } = c.req.valid("param");
+    const doc = await getNotebookStore().getVersion(
+      workspaceId(c),
+      id,
+      versionId,
+    );
+    if (!doc) {
+      return c.json({ success: false, error: "Version not found" }, 404);
+    }
+    return c.json({ success: true, data: doc });
+  },
+);
+
+// POST /:id/versions/:versionId/restore — restore a prior generation as current
+notebookRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/versions/{versionId}/restore",
+    tags: ["Notebooks"],
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: z.object({
+        workspaceId: pathParam("workspaceId"),
+        id: pathParam("id"),
+        versionId: pathParam("versionId"),
+      }),
+      body: jsonBody(
+        z.object({ clientId: z.string().optional() }).openapi(
+          "RestoreNotebookVersionRequest",
+        ),
+        true,
+      ),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const { id, versionId } = c.req.valid("param");
+    const body = (await c.req.json().catch(() => ({}))) as { clientId?: string };
+    const doc = await getNotebookStore().restoreVersion(
+      workspaceId(c),
+      id,
+      versionId,
+    );
+    if (!doc) {
+      return c.json(
+        { success: false, error: "Notebook or version not found" },
+        404,
+      );
+    }
+    logger.info("Restored notebook version", {
+      workspaceId: workspaceId(c),
+      notebookId: id,
+      versionId,
+      newVersion: doc.version,
+    });
+    // Poke open tabs (including the actor's other windows) to pull the restore.
+    publishRealtimeEvent(workspaceId(c), {
+      type: "notebook.updated",
+      notebookId: doc.id,
+      version: doc.version,
+      updatedBy: editorUserId(c),
+      clientId: typeof body.clientId === "string" ? body.clientId : undefined,
+      origin: "save",
+    });
+    return c.json({ success: true, data: doc });
+  },
+);
+
 // PATCH /:id — rename and/or replace blocks
 notebookRoutes.openapi(
   createRoute({

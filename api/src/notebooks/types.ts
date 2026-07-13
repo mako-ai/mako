@@ -84,3 +84,20 @@ export interface NotebookSummary {
   name: string;
   updatedAt: string;
 }
+
+/**
+ * A prior generation of a notebook document, surfaced for the history UI.
+ * `versionId` is opaque and store-specific (a GCS object generation, or the
+ * filesystem store's monotonic doc version) — callers pass it back verbatim to
+ * fetch or restore. Restore is non-destructive: it writes the old content as a
+ * new current generation, so the intervening history is preserved.
+ */
+export interface NotebookVersion {
+  versionId: string;
+  /** ISO timestamp this generation was written. */
+  createdAt: string;
+  /** Size in bytes of the stored document. */
+  size: number;
+  /** True for the generation that is currently live. */
+  isCurrent: boolean;
+}
