@@ -304,6 +304,7 @@ agentRoutes.openapi(
       isActive: boolean;
       dashboardId?: string;
       flowId?: string;
+      notebookId?: string;
       connectionId?: string;
       databaseName?: string;
     }
@@ -700,6 +701,8 @@ agentRoutes.openapi(
       userId: actorId,
       consoles: enrichedConsoles,
       consoleId,
+      notebookId: openTabs?.find(t => t.isActive && t.kind === "notebook")
+        ?.notebookId,
       openTabs,
       openDashboards: dashboardContext.openDashboards,
       databases: workspaceDatabases.map(db => ({

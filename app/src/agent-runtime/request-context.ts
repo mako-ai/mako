@@ -78,6 +78,10 @@ function buildOpenTabs(tabs: ConsoleTab[], activeTabId?: string | null) {
       tab.kind === "flow-editor"
         ? (tab.metadata?.flowId as string | undefined)
         : undefined,
+    notebookId:
+      tab.kind === "notebook"
+        ? (tab.metadata?.notebookId as string | undefined)
+        : undefined,
     connectionId:
       tab.kind === "console" || !tab.kind ? tab.connectionId : undefined,
     databaseName:

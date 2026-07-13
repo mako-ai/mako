@@ -9,6 +9,7 @@ import {
 } from "@mako/agent-tools";
 import { createDbtServerTools } from "../../agent-lib/tools/dbt-tools";
 import { createServerAppTools } from "../../agent-lib/tools/server-app-tools";
+import { createNotebookServerTools } from "../../agent-lib/tools/server-notebook-tools";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import { createSkillTools } from "../../agent-lib/tools/skill-tools";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
@@ -58,6 +59,12 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     userId,
     chatId: context.chatId,
   });
+  const serverNotebookTools = createNotebookServerTools({
+    workspaceId,
+    userId,
+    chatId: context.chatId,
+    defaultNotebookId: context.notebookId,
+  });
 
   const {
     list_connections: _flowListConnections,
@@ -90,6 +97,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
       ...dbtServerTools,
       ...clientDataSourceTools,
       ...clientNotebookTools,
+      ...serverNotebookTools,
       ...flowUniqueTools,
       ...selfDirectiveTools,
       ...skillTools,
