@@ -304,13 +304,23 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
         color="text.secondary"
         sx={{ display: "block", mt: 2, lineHeight: 1.5 }}
       >
-        By creating an account you agree to the{" "}
-        <Link href="#" color="text.secondary">
-          Terms of Service
-        </Link>{" "}
-        and our{" "}
-        <Link href="#" color="text.secondary">
+        By creating an account you agree to our{" "}
+        <Link
+          href="https://docs.mako.ai/privacy/"
+          target="_blank"
+          rel="noopener noreferrer"
+          color="text.secondary"
+        >
           Privacy Policy
+        </Link>{" "}
+        and can reach us via{" "}
+        <Link
+          href="https://docs.mako.ai/support/"
+          target="_blank"
+          rel="noopener noreferrer"
+          color="text.secondary"
+        >
+          Support
         </Link>
         .
       </Typography>

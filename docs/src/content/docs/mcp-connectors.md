@@ -39,11 +39,14 @@ Providers register Mako as an OAuth client in one of two ways:
 
 #### Slack app setup (operators / self-hosters)
 
-1. Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps) (internal to your org, or Marketplace-published — Slack requires one of the two for MCP).
+Customer-facing install page: [Mako for Slack](/slack/). Paste-ready Marketplace listing copy and scope justifications: [Slack Marketplace submission kit](/slack-marketplace-submission/).
+
+1. Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps) (internal to your org, or Marketplace-published — Slack requires one of the two for MCP). You can also import [`docs/slack-app-manifest.json`](https://github.com/mako-ai/mako/blob/master/docs/slack-app-manifest.json) (write_safe scopes + prod/local redirect URLs).
 2. Enable MCP under **Agents & AI Apps** in the app settings.
 3. Add Mako's OAuth callback as a redirect URL. It must match what the API sends: `${PUBLIC_URL || CLIENT_URL}/api/mcp/oauth/callback` (shown in the connection dialog). Local default: `http://localhost:5173/api/mcp/oauth/callback`. Production: `https://app.mako.ai/api/mcp/oauth/callback`.
 4. Add the user scopes matching the write scope you'll pick in Mako — the connection dialog requests them automatically: read-only connections request only `search:read.*`, history, and read scopes; `write_safe` adds `chat:write`, `reactions:write`, `canvases:write`; `write_destructive` adds channel/conversation management scopes.
 5. Either set `SLACK_MCP_CLIENT_ID` / `SLACK_MCP_CLIENT_SECRET` in Mako's environment (deployment-wide, one-click for every workspace), or paste the app's Client ID and Client Secret in **Settings → MCP Servers → Slack**. Each member then clicks **Connect Slack account**.
+6. For **every customer workspace** to use the shared app, publish it to the [Slack Marketplace](https://docs.mako.ai/slack-marketplace-submission/) — do **not** leave it as an unlisted public-distribution app (Slack rejects MCP for those).
 
 ## Write scope and risk tiers
 

@@ -36,6 +36,7 @@ export default defineConfig({
             { label: "Welcome", slug: "index" },
             { label: "Introduction", slug: "intro" },
             { label: "Getting Started", slug: "getting-started" },
+            { label: "Mako for Slack", slug: "slack" },
           ],
         },
         {
@@ -67,10 +68,21 @@ export default defineConfig({
           items: [{ label: "Authentication", slug: "guides/authentication" }],
         },
         {
+          label: "Legal & Support",
+          items: [
+            { label: "Privacy Policy", slug: "privacy" },
+            { label: "Support", slug: "support" },
+          ],
+        },
+        {
           label: "Operations",
           items: [
             { label: "Architecture", slug: "architecture" },
             { label: "Deployment", slug: "deployment" },
+            {
+              label: "Slack Marketplace submission",
+              slug: "slack-marketplace-submission",
+            },
           ],
         },
         {
