@@ -36,6 +36,7 @@ import {
 } from "../agent-lib/capabilities/runtime";
 import { createHeadlessRunAppTool } from "./preview-tools";
 import { createServerAppTools } from "../agent-lib/tools/server-app-tools";
+import { createAppsV2Tools } from "../agent-lib/tools/apps-v2-tools";
 import { createSqlToolsV2 } from "../agent-lib/tools/sql-tools";
 import { createMongoToolsV2 } from "../agent-lib/tools/mongodb-tools";
 import { createUniversalTools } from "../agent-lib/tools/universal-tools";
@@ -164,6 +165,8 @@ export function buildMakoMcpCandidateTools(
     queryAccess,
   });
 
+  const appsV2Tools = createAppsV2Tools({ workspaceId, userId, chatId });
+
   const consoleTools = createServerConsoleTools({
     workspaceId,
     userId,
@@ -215,6 +218,7 @@ export function buildMakoMcpCandidateTools(
   return {
     ...appTools,
     ...headlessRunApp,
+    ...appsV2Tools,
     ...consoleTools,
     ...dashboardTools,
     ...notebookTools,
