@@ -56,6 +56,12 @@ import {
 } from "./repository.service";
 import { createAppsV2Scaffold } from "./scaffold";
 import {
+  deleteCloudRepo,
+  ensureCloudRepo,
+  mirrorPushNow,
+  queueMirrorPush,
+} from "./cloud-repo.service";
+import {
   getSandboxProvider,
   type SandboxExecOptions,
   type SandboxExecResult,
@@ -173,6 +179,19 @@ export async function createProject(input: {
     await AppProjectV2.deleteOne({ _id: project._id });
     throw error;
   }
+  // Cloud tier: mirror the project to its own private repo under Mako's org.
+  // Best-effort — GitHub being down must not block app creation (the local
+  // repo is fully functional; the mirror catches up on the next commit).
+  try {
+    if (await ensureCloudRepo(project)) {
+      await mirrorPushNow(project);
+    }
+  } catch (error) {
+    logger.warn("Apps v2 cloud repo provisioning failed (local-only)", {
+      projectId: project._id.toString(),
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
   logger.info("Apps v2 project created", {
     projectId: project._id.toString(),
     workspaceId: input.workspaceId,
@@ -198,6 +217,7 @@ export async function deleteProject(project: IAppProjectV2): Promise<void> {
   await AppWorktreeV2.deleteMany({ projectId: project._id });
   await AppProjectV2.deleteOne({ _id: project._id });
   await fs.rm(repoDir, { recursive: true, force: true });
+  await deleteCloudRepo(project);
   pokeAppV2(project.workspaceId, project._id, "lifecycle");
 }
 
@@ -714,6 +734,7 @@ export async function commitWorktree(
   await flushWorktree(handle);
   const result = await commitFromWip(doc, repoDir, message, author);
   if (!result.committed || !result.commitOid) return result;
+  queueMirrorPush(doc.workspaceId.toString(), doc.projectId.toString());
 
   // Fast-forward the session clone so subsequent status is clean.
   try {
@@ -771,6 +792,7 @@ export async function commitChatTurn(
         email: "agent@mako.ai",
       });
       results.push({ projectId, commitOid: result.commitOid });
+      if (result.commitOid) queueMirrorPush(workspaceId, projectId);
       // Best-effort session fast-forward so the next turn starts clean.
       if (result.commitOid) {
         const sessionDir = sessionDirFor(doc._id.toString());
@@ -920,6 +942,7 @@ export async function mergeBranchToMain(
     if (!swapped) {
       throw new WorktreeConflictError("Main advanced concurrently; retry.");
     }
+    queueMirrorPush(project.workspaceId.toString(), project._id.toString());
     pokeAppV2(project.workspaceId, project._id, "merge");
     return { merged: true, commitOid: branchHead, fastForward: true };
   } catch (error) {
@@ -951,6 +974,7 @@ export async function mergeBranchToMain(
     branch,
     commitOid,
   });
+  queueMirrorPush(project.workspaceId.toString(), project._id.toString());
   pokeAppV2(project.workspaceId, project._id, "merge");
   return { merged: true, commitOid, fastForward: false };
 }

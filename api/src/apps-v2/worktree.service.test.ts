@@ -51,6 +51,11 @@ beforeAll(async () => {
   process.env.APPS_V2_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_V2_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_V2_SANDBOX_PROVIDER = "local";
+  // Hermetic: never let a configured cloud org make createProject create
+  // real GitHub repos from tests (e.g. when the shell exports .env).
+  delete process.env.MAKO_CLOUD_GITHUB_ORG;
+  delete process.env.MAKO_CLOUD_GITHUB_APP_ID;
+  delete process.env.MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY;
 
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());

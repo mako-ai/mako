@@ -195,6 +195,7 @@ export default function AppsV2Explorer() {
   const error = useAppsV2Store(s => s.error);
   const clearError = useAppsV2Store(s => s.clearError);
   const linked = useAppsV2Store(s => s.linked);
+  const canCreate = useAppsV2Store(s => s.canCreate);
   const linkedRepo = useAppsV2Store(s => s.linkedRepo);
   const probeEnabled = useAppsV2Store(s => s.probeEnabled);
   const filesByApp = useAppsV2Store(s => s.filesByApp);
@@ -290,8 +291,8 @@ export default function AppsV2Explorer() {
   }, [workspaceId, probeEnabled]);
 
   useEffect(() => {
-    if (workspaceId && linked) void fetchApps(workspaceId);
-  }, [workspaceId, linked, fetchApps]);
+    if (workspaceId && canCreate) void fetchApps(workspaceId);
+  }, [workspaceId, canCreate, fetchApps]);
 
   useEffect(() => {
     if (!workspaceId || !activeAppId) return;
@@ -437,11 +438,11 @@ export default function AppsV2Explorer() {
 
   const actions = (
     <>
-      <Tooltip title={linked ? "New app" : "Link a GitHub repo first"}>
+      <Tooltip title={canCreate ? "New app" : "Link a GitHub repo first"}>
         <span>
           <IconButton
             size="small"
-            disabled={!linked}
+            disabled={!canCreate}
             onClick={() => setCreateOpen(true)}
           >
             <AddIcon size={20} strokeWidth={2} />
@@ -588,7 +589,7 @@ export default function AppsV2Explorer() {
               </>
             )}
 
-            {linked === false ? (
+            {canCreate === false ? (
               <Box sx={{ p: 2 }}>
                 <Typography variant="body2" color="text.secondary" gutterBottom>
                   Apps v2 apps live in a GitHub repository. Link one to get
@@ -770,8 +771,9 @@ export default function AppsV2Explorer() {
             disabled={creating}
           />
           <Typography variant="caption" color="text.secondary">
-            Creates a real Vite + React project as a folder in the linked GitHub
-            repo{linkedRepo ? ` (${linkedRepo.owner}/${linkedRepo.repo})` : ""}.
+            {linkedRepo
+              ? `Creates a real Vite + React project as a folder in the linked GitHub repo (${linkedRepo.owner}/${linkedRepo.repo}).`
+              : "Creates a real Vite + React project in Mako-hosted cloud storage — no GitHub setup needed."}
           </Typography>
         </DialogContent>
         <DialogActions>

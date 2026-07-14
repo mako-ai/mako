@@ -106,6 +106,11 @@ interface AppsV2Store {
   enabled: boolean | undefined;
   /** undefined = unknown; whether a GitHub repo is linked for this workspace. */
   linked: boolean | undefined;
+  /**
+   * Whether app creation works: a repo is linked OR the server has
+   * Mako-hosted cloud storage configured (instant start, no GitHub setup).
+   */
+  canCreate: boolean | undefined;
   linkedRepo: AppV2RepoBinding | null;
   apps: AppV2Meta[];
   appsLoading: boolean;
@@ -216,6 +221,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
   immer((set, get) => ({
     enabled: undefined,
     linked: undefined,
+    canCreate: undefined,
     linkedRepo: null,
     apps: [],
     appsLoading: false,
@@ -240,11 +246,14 @@ export const useAppsV2Store = create<AppsV2Store>()(
         ) as {
           enabled?: boolean;
           linked?: boolean;
+          canCreate?: boolean;
           repo?: AppV2RepoBinding | null;
         };
         set(s => {
           s.enabled = Boolean(body?.enabled);
           s.linked = Boolean(body?.linked);
+          // Older backends don't send canCreate — fall back to linked.
+          s.canCreate = Boolean(body?.canCreate ?? body?.linked);
           s.linkedRepo = body?.repo ?? null;
         });
       } catch {
@@ -325,6 +334,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
         ) as { repo?: AppV2RepoBinding };
         set(s => {
           s.linked = true;
+          s.canCreate = true;
           s.linkedRepo = body.repo ?? null;
         });
         void get().fetchApps(workspaceId);
@@ -346,6 +356,8 @@ export const useAppsV2Store = create<AppsV2Store>()(
           s.linkedRepo = null;
           s.apps = [];
         });
+        // canCreate may still be true via cloud storage — let the probe say.
+        void get().probeEnabled(workspaceId);
       } catch (e) {
         set(s => {
           s.error = message(e, "Failed to unlink repo");

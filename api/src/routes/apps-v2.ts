@@ -26,6 +26,7 @@ import {
   getGitHubDevToken,
   isGitHubAppConfigured,
 } from "../integrations/github/config";
+import { isMakoCloudConfigured } from "../integrations/github/cloud-app-auth";
 import {
   getInstallationToken,
   resolveRepoToken,
@@ -214,6 +215,9 @@ appsV2Routes.openapi(
         success: true as const,
         enabled: true,
         linked: Boolean(binding),
+        // Creation works without a linked repo when Mako-hosted cloud
+        // storage is configured (per-app repos under MAKO_CLOUD_GITHUB_ORG).
+        canCreate: Boolean(binding) || isMakoCloudConfigured(),
         repo: binding
           ? {
               owner: binding.owner,
@@ -496,15 +500,16 @@ appsV2Routes.openapi(
       const { workspaceId } = c.req.valid("param");
       const { title, description } = c.req.valid("json");
       const userId = actingUserId(c);
-      // Apps live in the linked GitHub repo — refuse until one is linked so
-      // the failure is actionable ("link a repo") rather than a git error.
+      // Instant start: with no BYO repo linked, apps are stored in a
+      // Mako-hosted cloud repo (per-project, under MAKO_CLOUD_GITHUB_ORG).
+      // Only refuse when NEITHER path exists, so the failure stays actionable.
       const binding = await getAppsRepoBinding(workspaceId);
-      if (!binding) {
+      if (!binding && !isMakoCloudConfigured()) {
         return c.json(
           {
             success: false,
             error:
-              "No GitHub repo is linked for this workspace. Link one first (Apps v2 → Link a GitHub repo).",
+              "No GitHub repo is linked and Mako Cloud storage is not configured. Link a repo (Settings → GitHub) or set MAKO_CLOUD_GITHUB_*.",
           },
           409,
         );
