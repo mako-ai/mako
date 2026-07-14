@@ -124,11 +124,22 @@ function SectionHeader({
 
 const AppIcon = TAB_KIND_ICONS["app-v2"];
 
+/**
+ * Synthetic root node grouping all apps under their storage mount — the
+ * linked repo's `<owner>/<repo>/<subdirectory>` (or Mako Cloud when no repo
+ * is linked). Purely presentational: it has no backend identity.
+ */
+const REPO_ROOT_ID = "::repo-root::";
+
 type ParsedNode =
+  | { kind: "repo"; appId: ""; path: "" }
   | { kind: "app"; appId: string; path: "" }
   | { kind: "dir" | "file"; appId: string; path: string };
 
 function parseNodeId(id: string): ParsedNode {
+  if (id === REPO_ROOT_ID) {
+    return { kind: "repo", appId: "", path: "" };
+  }
   if (id.includes(APP_FILE_SEP)) {
     const [appId, path] = id.split(APP_FILE_SEP);
     return { kind: "file", appId, path };
@@ -272,7 +283,7 @@ export default function AppsV2Explorer() {
   const [loadingApps, setLoadingApps] = useState<Record<string, boolean>>({});
   const [expandedFolders, setExpandedFolders] = useState<
     Record<string, boolean>
-  >({});
+  >({ [REPO_ROOT_ID]: true });
   const [createOpen, setCreateOpen] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [creating, setCreating] = useState(false);
@@ -329,25 +340,38 @@ export default function AppsV2Explorer() {
   // App rows are directories whose children are the file tree — `undefined`
   // until fetched so ResourceTree shows the loading skeleton and fires
   // onLoadChildren (same contract as the v1 apps explorer).
-  const sections = useMemo(
-    () => [
+  const sections = useMemo(() => {
+    const appNodes = apps.map(app => ({
+      id: app.id,
+      name: app.title,
+      path: app.id,
+      isDirectory: true,
+      children: filesByApp[app.id]
+        ? buildFileNodes(app.id, filesByApp[app.id])
+        : undefined,
+    }));
+    // Group every app under its storage mount so the hierarchy reads like
+    // the repo it (will) live in: <owner>/<repo>/<subdirectory>/<app>.
+    const mountLabel = linkedRepo
+      ? `${linkedRepo.owner}/${linkedRepo.repo}/${linkedRepo.subdirectory}`
+      : "Mako Cloud";
+    return [
       {
         key: "apps",
         label: "Apps",
-        nodes: apps.map(app => ({
-          id: app.id,
-          name: app.title,
-          path: app.id,
-          isDirectory: true,
-          children: filesByApp[app.id]
-            ? buildFileNodes(app.id, filesByApp[app.id])
-            : undefined,
-        })),
+        nodes: [
+          {
+            id: REPO_ROOT_ID,
+            name: mountLabel,
+            path: REPO_ROOT_ID,
+            isDirectory: true,
+            children: appNodes,
+          },
+        ],
         hideSectionHeader: true,
       },
-    ],
-    [apps, filesByApp],
-  );
+    ];
+  }, [apps, filesByApp, linkedRepo]);
 
   const handleLoadChildren = useCallback(
     async (node: ResourceTreeNode) => {
@@ -620,11 +644,16 @@ export default function AppsV2Explorer() {
                 activeItemId={activeItemId}
                 revealNodeId={reveal?.nodeId}
                 revealNonce={reveal?.nonce}
-                getItemIcon={node =>
-                  parseNodeId(node.id).kind === "app" ? (
-                    <AppIcon size={16} strokeWidth={1.5} />
-                  ) : undefined
-                }
+                getItemIcon={node => {
+                  const kind = parseNodeId(node.id).kind;
+                  if (kind === "app") {
+                    return <AppIcon size={16} strokeWidth={1.5} />;
+                  }
+                  if (kind === "repo") {
+                    return <LinkIcon size={16} strokeWidth={1.5} />;
+                  }
+                  return undefined;
+                }}
                 onItemClick={handleItemClick}
                 shouldFolderClickActivate={node =>
                   parseNodeId(node.id).kind === "app"

@@ -19,6 +19,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   Autocomplete,
+  Avatar,
   Box,
   Button,
   IconButton,
@@ -28,7 +29,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { ExternalLink, RefreshCw, Unplug } from "lucide-react";
+import { ExternalLink, Github, RefreshCw, Unplug } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import {
@@ -43,6 +44,19 @@ function installationSettingsUrl(inst: AppV2GithubInstallation): string {
       ? `https://github.com/organizations/${inst.accountLogin}/settings/installations`
       : "https://github.com/settings/installations";
   return `${base}/${inst.installationId}`;
+}
+
+/** Public GitHub avatar for an org/user login (no auth needed). */
+function AccountAvatar({ login, size = 18 }: { login: string; size?: number }) {
+  return (
+    <Avatar
+      src={`https://github.com/${login}.png?size=${size * 2}`}
+      alt={login}
+      sx={{ width: size, height: size }}
+    >
+      <Github size={size - 6} />
+    </Avatar>
+  );
 }
 
 export default function GitHubConnectionSection() {
@@ -204,6 +218,7 @@ export default function GitHubConnectionSection() {
                   borderRadius: 1,
                 }}
               >
+                <AccountAvatar login={inst.accountLogin} size={24} />
                 <Box sx={{ flex: 1 }}>
                   <Typography variant="body2" sx={{ fontWeight: 500 }}>
                     {inst.accountLogin}
@@ -292,7 +307,12 @@ export default function GitHubConnectionSection() {
                   key={inst.installationId}
                   value={String(inst.installationId)}
                 >
-                  {inst.accountLogin}
+                  {/* Select renders the chosen MenuItem's children in the
+                      closed state too, so the avatar shows there as well. */}
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                    <AccountAvatar login={inst.accountLogin} />
+                    {inst.accountLogin}
+                  </Box>
                 </MenuItem>
               ))}
             </TextField>
@@ -304,12 +324,29 @@ export default function GitHubConnectionSection() {
               value={selectedRepo}
               onChange={(_, v) => setSelectedRepo(v)}
               disabled={typeof installationId !== "number"}
+              renderOption={(props, option) => (
+                <Box
+                  component="li"
+                  {...props}
+                  key={option.fullName}
+                  sx={{ display: "flex", gap: 1 }}
+                >
+                  <Github size={14} style={{ flexShrink: 0 }} />
+                  {option.fullName}
+                </Box>
+              )}
               renderInput={params => (
                 <TextField
                   {...params}
                   margin="dense"
                   label="Repository"
                   placeholder="Search repositories..."
+                  InputProps={{
+                    ...params.InputProps,
+                    startAdornment: selectedRepo ? (
+                      <Github size={14} style={{ marginLeft: 6 }} />
+                    ) : undefined,
+                  }}
                 />
               )}
             />

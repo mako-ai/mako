@@ -13,7 +13,7 @@
 import { Hono, type Context } from "hono";
 import { createHmac, timingSafeEqual } from "crypto";
 
-import { isAllowedOrigin } from "../auth/oauth-proxy";
+import { getRequestOrigin, isAllowedOrigin } from "../auth/oauth-proxy";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { GitHubInstallation } from "../database/workspace-schema";
@@ -23,7 +23,10 @@ import {
   getInstallationMeta,
   userControlsInstallation,
 } from "../integrations/github/app-auth";
-import { verifyInstallState } from "../integrations/github/install-state";
+import {
+  peekInstallState,
+  verifyInstallState,
+} from "../integrations/github/install-state";
 import {
   getGitHubAppWebhookSecret,
   isGitHubAppUserAuthConfigured,
@@ -35,6 +38,34 @@ import { loggers } from "../logging";
 const logger = loggers.api("github");
 
 export const githubRoutes = new Hono();
+
+// Cross-environment relay — MUST run before auth. The GitHub App has a single
+// callback URL (production's), so installs started on localhost or a PR
+// preview land here without a session and would 401 before the handler even
+// runs. The state payload embeds the initiating environment's clientUrl; when
+// that names a DIFFERENT allowed Mako origin, bounce the entire callback
+// (installation_id, code, state) there. The receiving environment — the one
+// that actually minted the state — then performs the real verification
+// (signature with its own secret, session, admin role, install ownership) and
+// binds into its own database. Mirrors the login OAuth proxy (oauth-proxy.ts).
+// The relay itself grants nothing: a forged state just gets bounced to an
+// allowed origin whose verification then rejects it.
+githubRoutes.use("/setup", async (c, next) => {
+  if (c.req.query("relayed")) return next(); // never relay twice
+  const peeked = peekInstallState(c.req.query("state"));
+  if (!peeked?.clientUrl || !isAllowedOrigin(peeked.clientUrl)) return next();
+  const targetOrigin = new URL(peeked.clientUrl).origin;
+  if (targetOrigin === getRequestOrigin(c)) return next();
+  const target = new URL(`${targetOrigin}/api/github/setup`);
+  for (const [key, value] of Object.entries(c.req.query())) {
+    target.searchParams.set(key, value);
+  }
+  target.searchParams.set("relayed", "1");
+  logger.info("Relaying GitHub install callback to its origin", {
+    targetOrigin,
+  });
+  return c.redirect(target.toString());
+});
 
 // Auth only the interactive install callback. The webhook is unauthenticated
 // (GitHub calls it) and instead verified by HMAC signature below.
