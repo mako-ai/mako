@@ -259,10 +259,23 @@ githubRoutes.get("/setup", async (c: AuthenticatedContext) => {
       },
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
+    // GitHub allows at most one live installation of this App per account, so
+    // any other record for the same workspace + account is provably stale —
+    // left behind by an uninstall/reinstall cycle whose webhook never reached
+    // this environment's database (webhooks fan out to one configured URL,
+    // not every dev/staging/preview deployment). Prune them here so
+    // reinstalling through the UI is a real fix, not just a second, visually
+    // identical entry in the account picker.
+    const { deletedCount } = await GitHubInstallation.deleteMany({
+      workspaceId: new Types.ObjectId(workspaceId),
+      accountLogin: meta.accountLogin,
+      installationId: { $ne: installationId },
+    });
     logger.info("GitHub App installation recorded", {
       workspaceId,
       installationId,
       setupAction,
+      staleInstallationsRemoved: deletedCount,
     });
   } catch (error) {
     logger.error("Failed to record GitHub installation", { error });

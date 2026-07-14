@@ -185,6 +185,22 @@ export default function AppsV2LinkRepoDialog({
               ))}
             </TextField>
 
+            {appSlug && (
+              <Typography variant="caption" color="text.secondary">
+                Account missing, or &quot;Repository&quot; failing to load for
+                an existing one?{" "}
+                <Button
+                  size="small"
+                  onClick={() => void handleInstall()}
+                  disabled={loading}
+                  sx={{ p: 0, minWidth: 0, verticalAlign: "baseline" }}
+                >
+                  Reinstall the Mako GitHub App
+                </Button>{" "}
+                to refresh it.
+              </Typography>
+            )}
+
             <Autocomplete
               options={repos}
               loading={loading}
