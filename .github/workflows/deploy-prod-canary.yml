@@ -41,6 +41,8 @@ jobs:
       GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      SLACK_MCP_CLIENT_ID: ${{ vars.SLACK_MCP_CLIENT_ID }}
+      SLACK_MCP_CLIENT_SECRET: ${{ secrets.SLACK_MCP_CLIENT_SECRET }}
       IMAGE_NAME: mako-canary
       SERVICE_NAME: mako-canary
       INNGEST_ENV: migration-canary
@@ -180,6 +182,8 @@ jobs:
             --set-env-vars GH_CLIENT_SECRET=${GH_CLIENT_SECRET} \
             --set-env-vars GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID} \
             --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
+            --set-env-vars SLACK_MCP_CLIENT_ID=${SLACK_MCP_CLIENT_ID} \
+            --set-env-vars SLACK_MCP_CLIENT_SECRET=${SLACK_MCP_CLIENT_SECRET} \
             --set-env-vars INNGEST_ENV=${INNGEST_ENV} \
             --set-env-vars INNGEST_SERVE_ORIGIN=${BASE_URL} \
             --set-env-vars INNGEST_SERVE_PATH=/api/inngest \

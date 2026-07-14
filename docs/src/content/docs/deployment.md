@@ -75,6 +75,7 @@ Set these in Cloud Run's environment configuration (or via `cloud-run-env.yaml`)
 | `OPENAI_API_KEY`               | Optional    | Text embeddings only                     |
 | `GOOGLE_CLIENT_ID` + `SECRET`  | Optional    | Google OAuth                             |
 | `GH_CLIENT_ID` + `SECRET`      | Optional    | GitHub OAuth                             |
+| `SLACK_MCP_CLIENT_ID` + `SECRET` | Optional  | Deployment-wide Slack app for one-click MCP connect (`mcp.slack.com`). Redirect URI must be `${PUBLIC_URL \|\| CLIENT_URL}/api/mcp/oauth/callback`. |
 | `SENDGRID_API_KEY`             | Optional    | Email invitations                        |
 | `EMAIL_LOGO_URL`               | Optional    | Logo for run-notification emails (default: `https://app.mako.ai/email/mako-logo.png`). Override for self-hosted/staging. |
 | `BILLING_ENABLED`              | Optional    | Set `true` to enable Stripe billing (default: `false`) |

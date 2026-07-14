@@ -111,6 +111,11 @@ export interface McpOAuthReturn {
 interface McpState {
   servers: McpServerInfo[];
   presets: McpPresetInfo[];
+  /**
+   * Redirect URI the OAuth provider must whitelist — from the API
+   * (`PUBLIC_URL` || `CLIENT_URL` + `/api/mcp/oauth/callback`).
+   */
+  oauthCallbackUrl: string | null;
   /** prefixed tool name → UI info, for chat approval cards. */
   toolInfo: Record<string, McpToolUiInfo>;
   grants: Record<string, McpGrant[]>; // serverId → my grants
@@ -191,6 +196,7 @@ export const useMcpStore = create<McpStore>()(
   immer((set, get) => ({
     servers: [],
     presets: [],
+    oauthCallbackUrl: null,
     toolInfo: {},
     grants: {},
     loading: false,
@@ -226,9 +232,11 @@ export const useMcpStore = create<McpStore>()(
       try {
         const response = unwrapBody(await api.GET("/api/mcp/presets", {})) as {
           presets: McpPresetInfo[];
+          oauthCallbackUrl?: string;
         };
         set(state => {
           state.presets = response.presets ?? [];
+          state.oauthCallbackUrl = response.oauthCallbackUrl ?? null;
         });
       } catch {
         // Presets are static metadata; the form falls back to custom-only.

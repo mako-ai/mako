@@ -443,11 +443,13 @@ function OAuthClientForm({
 }) {
   const { currentWorkspace } = useWorkspace();
   const saveOAuthClient = useMcpStore(s => s.saveOAuthClient);
+  const oauthCallbackUrl = useMcpStore(s => s.oauthCallbackUrl);
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const callbackUrl = `${window.location.origin}/api/mcp/oauth/callback`;
+  const callbackUrl =
+    oauthCallbackUrl ?? `${window.location.origin}/api/mcp/oauth/callback`;
 
   const handleSave = async () => {
     if (!currentWorkspace) return;

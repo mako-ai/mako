@@ -35,13 +35,13 @@ Providers register Mako as an OAuth client in one of two ways:
 - **Dynamic Client Registration (DCR)** — the MCP-spec default (Close). Mako registers itself automatically on the first connect; no admin setup beyond adding the server.
 - **Pre-registered app** (Slack) — the provider only accepts confidential OAuth apps registered in advance. There are two ways to supply one:
   - **Deployment-wide app (recommended, one-click)** — the Mako operator registers a single provider app and sets `SLACK_MCP_CLIENT_ID` / `SLACK_MCP_CLIENT_SECRET` in the server environment. Every workspace then connects Claude-style: add Slack, click **Connect Slack**, approve on slack.com. No form, no per-workspace app.
-  - **Per-workspace app (self-host fallback)** — when no environment client is configured, a workspace admin creates the app with the provider and saves its **Client ID** and **Client Secret** on the connection before members can sign in. A workspace-saved app also overrides the deployment-wide one. Rotating the app credentials invalidates previously issued member tokens; everyone reconnects.
+  - **Per-workspace app (self-host fallback)** — when no environment client is configured, a workspace admin creates the app with the provider and saves its **Client ID** and **Client Secret** on the connection before members can sign in. Rotating the app credentials invalidates previously issued member tokens; everyone reconnects.
 
 #### Slack app setup (operators / self-hosters)
 
 1. Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps) (internal to your org, or Marketplace-published — Slack requires one of the two for MCP).
 2. Enable MCP under **Agents & AI Apps** in the app settings.
-3. Add Mako's OAuth callback as a redirect URL: `https://<your-mako-host>/api/mcp/oauth/callback` (shown in the connection dialog).
+3. Add Mako's OAuth callback as a redirect URL. It must match what the API sends: `${PUBLIC_URL || CLIENT_URL}/api/mcp/oauth/callback` (shown in the connection dialog). Local default: `http://localhost:5173/api/mcp/oauth/callback`. Production: `https://app.mako.ai/api/mcp/oauth/callback`.
 4. Add the user scopes matching the write scope you'll pick in Mako — the connection dialog requests them automatically: read-only connections request only `search:read.*`, history, and read scopes; `write_safe` adds `chat:write`, `reactions:write`, `canvases:write`; `write_destructive` adds channel/conversation management scopes.
 5. Either set `SLACK_MCP_CLIENT_ID` / `SLACK_MCP_CLIENT_SECRET` in Mako's environment (deployment-wide, one-click for every workspace), or paste the app's Client ID and Client Secret in **Settings → MCP Servers → Slack**. Each member then clicks **Connect Slack account**.
 

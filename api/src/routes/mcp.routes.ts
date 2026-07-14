@@ -46,6 +46,7 @@ import {
 import {
   completeMcpOAuthFlow,
   findMcpOAuthFlowServerId,
+  mcpOAuthCallbackUrl,
   mcpOAuthClientSource,
   saveMcpOAuthClient,
   startMcpOAuthFlow,
@@ -82,7 +83,13 @@ mcpPresetRoutes.openapi(
           }
         : {}),
     }));
-    return c.json({ success: true, presets });
+    // Same URL the OAuth provider must whitelist — do not derive from the
+    // browser origin (preview/proxy hosts can diverge from CLIENT_URL).
+    return c.json({
+      success: true,
+      presets,
+      oauthCallbackUrl: mcpOAuthCallbackUrl(),
+    });
   },
 );
 
@@ -800,6 +807,17 @@ mcpRoutes.openapi(
       if (server.authType !== "oauth") {
         return c.json(
           { success: false, error: "This server does not use OAuth" },
+          400,
+        );
+      }
+      const preset = getMcpPreset(server.connectorType);
+      if (preset.oauth?.clientMode !== "manual") {
+        return c.json(
+          {
+            success: false,
+            error:
+              "This connector registers its OAuth client automatically — manual client ID/secret is not supported",
+          },
           400,
         );
       }
