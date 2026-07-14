@@ -301,6 +301,47 @@ appsV2Routes.openapi(
 
 appsV2Routes.openapi(
   createRoute({
+    method: "delete",
+    path: "/github-installations/{installationId}",
+    tags: ["Apps v2"],
+    summary: "Forget a GitHub App installation binding for this workspace",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam.extend({
+        installationId: z.coerce
+          .number()
+          .int()
+          .openapi({ param: { name: "installationId", in: "path" } }),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    const { workspaceId, installationId } = c.req.valid("param");
+    const user = c.get("user");
+    // Same admin/owner bar as linking/reinstalling — this is local bookkeeping
+    // only (it never calls GitHub's uninstall API); the doc lingering after a
+    // real uninstall/reinstall on github.com is exactly the stale-binding bug
+    // this lets an admin clear without DB access.
+    if (user && !(await workspaceService.isAdmin(workspaceId, user.id))) {
+      return c.json(
+        {
+          success: false,
+          error: "Disconnecting GitHub requires the admin or owner role",
+        },
+        403,
+      );
+    }
+    await GitHubInstallation.deleteOne({
+      workspaceId: new Types.ObjectId(workspaceId),
+      installationId,
+    });
+    return c.json({ success: true as const }, 200);
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
     method: "post",
     path: "/link",
     tags: ["Apps v2"],

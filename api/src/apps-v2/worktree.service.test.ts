@@ -151,7 +151,14 @@ describe("worktree writes + durability", () => {
       const handle = await ensureWorktree(project, USER);
       const result = await execInWorktree(handle, "env");
       expect(result.stdout).not.toContain("leaky");
-      expect(result.stdout).toContain(`HOME=${handle.sessionDir}`);
+      // HOME is a shared cache dir outside the session tree (not the session
+      // dir itself and not the API host's real home) — anything written to it
+      // by tools like npm/pnpm must never be swept into the durable WIP
+      // snapshot. See local-provider.ts's sandboxEnv.
+      const expectedHome = path.join(os.tmpdir(), "mako-apps-v2-cache", "home");
+      expect(result.stdout).toContain(`HOME=${expectedHome}`);
+      expect(result.stdout).not.toContain(`HOME=${handle.sessionDir}`);
+      expect(result.stdout).not.toContain(`HOME=${os.homedir()}`);
     } finally {
       delete process.env.FAKE_SECRET_FOR_TEST;
     }

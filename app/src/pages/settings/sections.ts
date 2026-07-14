@@ -18,6 +18,7 @@ export const SECTION_LABELS: Record<SettingsSection, string> = {
   members: "Members",
   "api-keys": "API Keys",
   appearance: "Appearance",
+  github: "GitHub",
   admin: "Super Admin",
 };
 
@@ -37,6 +38,7 @@ export const SECTION_ORDER: SettingsSection[] = [
   "members",
   "api-keys",
   "appearance",
+  "github",
   "admin",
 ];
 

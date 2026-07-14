@@ -145,6 +145,10 @@ interface AppsV2Store {
     },
   ) => Promise<{ ok: boolean; error?: string }>;
   unlinkRepo: (workspaceId: string) => Promise<void>;
+  disconnectGithubInstallation: (
+    workspaceId: string,
+    installationId: number,
+  ) => Promise<{ ok: boolean; error?: string }>;
   fetchApps: (workspaceId: string) => Promise<void>;
   createApp: (
     workspaceId: string,
@@ -346,6 +350,23 @@ export const useAppsV2Store = create<AppsV2Store>()(
         set(s => {
           s.error = message(e, "Failed to unlink repo");
         });
+      }
+    },
+
+    disconnectGithubInstallation: async (workspaceId, installationId) => {
+      try {
+        unwrapBody(
+          await api.DELETE(
+            "/api/workspaces/{workspaceId}/apps-v2/github-installations/{installationId}",
+            { params: { path: { workspaceId, installationId } } },
+          ),
+        );
+        return { ok: true as const };
+      } catch (e) {
+        return {
+          ok: false as const,
+          error: message(e, "Failed to disconnect installation"),
+        };
       }
     },
 

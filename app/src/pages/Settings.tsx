@@ -10,6 +10,7 @@ import SettingsBilling from "./settings/SettingsBilling";
 import SettingsMembers from "./settings/SettingsMembers";
 import SettingsApiKeys from "./settings/SettingsApiKeys";
 import SettingsAppearance from "./settings/SettingsAppearance";
+import SettingsGitHub from "./settings/SettingsGitHub";
 import SettingsAdmin from "./settings/SettingsAdmin";
 
 interface Props {
@@ -48,6 +49,8 @@ function Settings({ section = "prompt" }: Props) {
       return <SettingsApiKeys />;
     case "appearance":
       return <SettingsAppearance />;
+    case "github":
+      return <SettingsGitHub />;
     case "admin":
       return <SettingsAdmin />;
     default:

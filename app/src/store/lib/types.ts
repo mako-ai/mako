@@ -45,6 +45,7 @@ export type SettingsSection =
   | "members"
   | "api-keys"
   | "appearance"
+  | "github"
   | "admin";
 
 /**

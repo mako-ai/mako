@@ -21421,6 +21421,86 @@
         "operationId": "get_api_workspaces_workspaceId_apps_v2_github_repos"
       }
     },
+    "/api/workspaces/{workspaceId}/apps-v2/github-installations/{installationId}": {
+      "delete": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Forget a GitHub App installation binding for this workspace",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "required": false,
+            "name": "installationId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "delete_api_workspaces_workspaceId_apps_v2_github_installations_installationId"
+      }
+    },
     "/api/workspaces/{workspaceId}/apps-v2/link": {
       "post": {
         "tags": [

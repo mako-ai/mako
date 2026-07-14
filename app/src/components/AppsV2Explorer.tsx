@@ -43,9 +43,12 @@ import {
   RefreshCw as RefreshIcon,
   Trash2 as DeleteIcon,
 } from "lucide-react";
-import AppsV2LinkRepoDialog from "./AppsV2LinkRepoDialog";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useConsoleStore } from "../store/consoleStore";
+import {
+  useConsoleStore,
+  selectTabBySettingsSection,
+} from "../store/consoleStore";
+import { SECTION_LABELS } from "../pages/settings/sections";
 import { useRealtimeStore } from "../store/realtimeStore";
 import { useAppsV2Store, type AppV2FileEntry } from "../store/appsV2Store";
 import { focusAppsV2FileTab, focusAppsV2Tab } from "../apps-v2-runtime/shell";
@@ -199,7 +202,21 @@ export default function AppsV2Explorer() {
   const fetchFiles = useAppsV2Store(s => s.fetchFiles);
   const createApp = useAppsV2Store(s => s.createApp);
   const deleteApp = useAppsV2Store(s => s.deleteApp);
-  const [linkOpen, setLinkOpen] = useState(false);
+  const openGitHubSettings = useCallback(() => {
+    const state = useConsoleStore.getState();
+    const existing = selectTabBySettingsSection("github")(state);
+    if (existing) {
+      state.setActiveTab(existing.id);
+      return;
+    }
+    const id = state.openTab({
+      title: SECTION_LABELS.github,
+      content: "",
+      kind: "settings",
+      settingsSection: "github",
+    });
+    state.setActiveTab(id);
+  }, []);
 
   const activeTab = useConsoleStore(s =>
     s.activeTabId ? s.tabs[s.activeTabId] : undefined,
@@ -442,9 +459,9 @@ export default function AppsV2Explorer() {
       </Tooltip>
       {linked && (
         <Tooltip
-          title={`Linked: ${linkedRepo?.owner}/${linkedRepo?.repo} — manage`}
+          title={`Linked: ${linkedRepo?.owner}/${linkedRepo?.repo} — manage in Settings`}
         >
-          <IconButton size="small" onClick={() => setLinkOpen(true)}>
+          <IconButton size="small" onClick={openGitHubSettings}>
             <LinkIcon size={18} strokeWidth={2} />
           </IconButton>
         </Tooltip>
@@ -584,7 +601,7 @@ export default function AppsV2Explorer() {
                   size="small"
                   startIcon={<LinkIcon size={16} />}
                   sx={{ mt: 1 }}
-                  onClick={() => setLinkOpen(true)}
+                  onClick={openGitHubSettings}
                 >
                   Link a GitHub repo
                 </Button>
@@ -770,14 +787,6 @@ export default function AppsV2Explorer() {
           </Button>
         </DialogActions>
       </Dialog>
-
-      {workspaceId && (
-        <AppsV2LinkRepoDialog
-          open={linkOpen}
-          workspaceId={workspaceId}
-          onClose={() => setLinkOpen(false)}
-        />
-      )}
     </>
   );
 }
