@@ -169,6 +169,9 @@ jobs:
       GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      # Optional Slack MCP one-click OAuth (unset → per-workspace app form).
+      SLACK_MCP_CLIENT_ID: ${{ vars.SLACK_MCP_CLIENT_ID }}
+      SLACK_MCP_CLIENT_SECRET: ${{ secrets.SLACK_MCP_CLIENT_SECRET }}
       # Inngest routes a sent event to an environment by its EVENT KEY, not by
       # INNGEST_ENV / the x-inngest-env header. Branch environments share a single
       # "Branch Environments" event key; pairing it with INNGEST_ENV=pr-<n> routes
@@ -577,6 +580,8 @@ jobs:
             --set-env-vars GH_CLIENT_SECRET=${GH_CLIENT_SECRET} \
             --set-env-vars GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID} \
             --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
+            --set-env-vars SLACK_MCP_CLIENT_ID=${SLACK_MCP_CLIENT_ID} \
+            --set-env-vars SLACK_MCP_CLIENT_SECRET=${SLACK_MCP_CLIENT_SECRET} \
             --set-env-vars INNGEST_ENV=${INNGEST_ENV} \
             --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
             --set-env-vars INNGEST_SERVE_PATH=/api/inngest \
@@ -806,6 +811,8 @@ jobs:
       GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      SLACK_MCP_CLIENT_ID: ${{ vars.SLACK_MCP_CLIENT_ID }}
+      SLACK_MCP_CLIENT_SECRET: ${{ secrets.SLACK_MCP_CLIENT_SECRET }}
       IMAGE_NAME: mako
       INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
@@ -981,6 +988,8 @@ jobs:
             --set-env-vars GH_CLIENT_SECRET=${GH_CLIENT_SECRET} \
             --set-env-vars GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID} \
             --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
+            --set-env-vars SLACK_MCP_CLIENT_ID=${SLACK_MCP_CLIENT_ID} \
+            --set-env-vars SLACK_MCP_CLIENT_SECRET=${SLACK_MCP_CLIENT_SECRET} \
             --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
             --set-env-vars INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY} \
             --set-env-vars INNGEST_SERVE_ORIGIN=${INNGEST_SERVE_ORIGIN} \

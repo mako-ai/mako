@@ -11,20 +11,31 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
+import fs from "node:fs";
+import path from "node:path";
 import { Types } from "mongoose";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
-import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import {
+  AUTH_SECURITY,
+  OPEN_RESPONSES,
+  createRouter,
+  errorJson,
+} from "../openapi/core";
 import {
   type IMcpServer,
   McpConnectionConfig,
   McpServer,
   McpToolGrant,
 } from "../database/workspace-schema";
-import { MCP_PRESETS, getMcpPreset } from "../mcp/presets";
-import { encryptRecord } from "../services/crypto.service";
+import {
+  MCP_PRESETS,
+  getMcpPreset,
+  mcpPresetEnvOAuthClient,
+} from "../mcp/presets";
+import { decryptString, encryptRecord } from "../services/crypto.service";
 import {
   assertSafeMcpUrl,
   discoverMcpTools,
@@ -35,6 +46,9 @@ import {
 import {
   completeMcpOAuthFlow,
   findMcpOAuthFlowServerId,
+  mcpOAuthCallbackUrl,
+  mcpOAuthClientSource,
+  saveMcpOAuthClient,
   startMcpOAuthFlow,
 } from "../services/mcp-oauth.service";
 
@@ -56,7 +70,76 @@ mcpPresetRoutes.openapi(
     responses: { ...OPEN_RESPONSES },
   }),
   c => {
-    return c.json({ success: true, presets: Object.values(MCP_PRESETS) });
+    // Annotate OAuth presets with whether a deployment-wide client exists,
+    // so the UI can offer one-click connect without a per-workspace app.
+    const presets = Object.values(MCP_PRESETS).map(preset => ({
+      ...preset,
+      ...(preset.oauth
+        ? {
+            oauth: {
+              ...preset.oauth,
+              envClientConfigured: Boolean(mcpPresetEnvOAuthClient(preset)),
+            },
+          }
+        : {}),
+    }));
+    // Same URL the OAuth provider must whitelist — do not derive from the
+    // browser origin (preview/proxy hosts can diverge from CLIENT_URL).
+    return c.json({
+      success: true,
+      presets,
+      oauthCallbackUrl: mcpOAuthCallbackUrl(),
+    });
+  },
+);
+
+// Preset icons (public, static assets — same pattern as connector icons).
+mcpPresetRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/presets/{type}/icon.svg",
+    tags: ["MCP"],
+    summary: "Get MCP preset icon",
+    security: [],
+    request: {
+      params: z.object({
+        type: z.string().openapi({ param: { name: "type", in: "path" } }),
+      }),
+    },
+    responses: {
+      200: {
+        description: "SVG icon.",
+        content: { "image/svg+xml": { schema: z.string() } },
+      },
+      404: errorJson("Icon not found"),
+    },
+  }),
+  c => {
+    const { type } = c.req.valid("param");
+    // Only registered presets are servable — never a path traversal vector.
+    if (!MCP_PRESETS[type]) {
+      return c.json({ success: false, error: "Icon not found" }, 404);
+    }
+    let iconPath = path.resolve(__dirname, "..", "mcp", "icons", `${type}.svg`);
+    if (!fs.existsSync(iconPath)) {
+      iconPath = path.resolve(
+        process.cwd(),
+        "src",
+        "mcp",
+        "icons",
+        `${type}.svg`,
+      );
+    }
+    if (!fs.existsSync(iconPath)) {
+      return c.json({ success: false, error: "Icon not found" }, 404);
+    }
+    return c.body(fs.readFileSync(iconPath), 200, {
+      "Content-Type": "image/svg+xml",
+      "Cache-Control":
+        process.env.NODE_ENV !== "production"
+          ? "no-cache"
+          : "public, max-age=86400, must-revalidate",
+    });
   },
 );
 
@@ -188,6 +271,25 @@ async function requireAdmin(
   return isAdmin ? user.id : null;
 }
 
+/** Non-secret client id of the server's OAuth app (workspace or env). */
+function oauthClientIdOf(server: IMcpServer): string | null {
+  const encrypted = server.oauth?.clientInformation;
+  if (encrypted) {
+    try {
+      const info = JSON.parse(decryptString(encrypted)) as {
+        client_id?: string;
+      };
+      if (info.client_id) return info.client_id;
+    } catch {
+      // Fall through to the env client.
+    }
+  }
+  return (
+    mcpPresetEnvOAuthClient(getMcpPreset(server.connectorType))?.client_id ??
+    null
+  );
+}
+
 function serializeServer(
   server: IMcpServer,
   extras: {
@@ -224,6 +326,12 @@ function serializeServer(
     updatedAt: server.updatedAt,
     hasWorkspaceCredential: extras.hasWorkspaceCredential ?? false,
     hasUserCredential: extras.hasUserCredential ?? false,
+    // Manual-client OAuth presets (Slack): whether a provider app is usable
+    // (workspace-saved or a deployment-wide env client), where it comes
+    // from, and its (non-secret) client id.
+    hasOAuthClient: mcpOAuthClientSource(server) !== null,
+    oauthClientSource: mcpOAuthClientSource(server),
+    oauthClientId: oauthClientIdOf(server),
   };
 }
 
@@ -642,6 +750,95 @@ mcpRoutes.openapi(
       logger.error("Error saving MCP credentials", { error });
       return c.json(
         { success: false, error: "Failed to save credentials" },
+        500,
+      );
+    }
+  },
+);
+
+const OAuthClientSchema = z.object({
+  clientId: z.string().min(1).max(200),
+  clientSecret: z.string().max(500).optional(),
+});
+
+// --- Save a pre-registered OAuth client (admin; manual-client presets) ---
+mcpRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/oauth/client",
+    tags: ["MCP"],
+    summary:
+      "Save a pre-registered OAuth app (client ID + secret) for an MCP server",
+    security: AUTH_SECURITY,
+    request: {
+      params: ServerIdParam,
+      body: {
+        required: true,
+        content: { "application/json": { schema: OAuthClientSchema } },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const id = c.req.param("id");
+      if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+        return c.json(
+          { success: false, error: "Valid workspace ID is required" },
+          400,
+        );
+      }
+      // The app credential is shared by every connecting member — admin only.
+      const adminUserId = await requireAdmin(
+        c as AuthenticatedContext,
+        workspaceId,
+      );
+      if (!adminUserId) {
+        return c.json(
+          { success: false, error: "Workspace admin role required" },
+          403,
+        );
+      }
+      const server = await loadServer(workspaceId, id);
+      if (!server) {
+        return c.json({ success: false, error: "Server not found" }, 404);
+      }
+      if (server.authType !== "oauth") {
+        return c.json(
+          { success: false, error: "This server does not use OAuth" },
+          400,
+        );
+      }
+      const preset = getMcpPreset(server.connectorType);
+      if (preset.oauth?.clientMode !== "manual") {
+        return c.json(
+          {
+            success: false,
+            error:
+              "This connector registers its OAuth client automatically — manual client ID/secret is not supported",
+          },
+          400,
+        );
+      }
+      const parsed = OAuthClientSchema.safeParse(await c.req.json());
+      if (!parsed.success) {
+        return c.json({ success: false, error: "Invalid request body" }, 400);
+      }
+      await saveMcpOAuthClient({
+        server,
+        clientId: parsed.data.clientId.trim(),
+        clientSecret: parsed.data.clientSecret?.trim() || undefined,
+      });
+      const updated = await loadServer(workspaceId, id);
+      return c.json({
+        success: true,
+        server: serializeServer(updated ?? server),
+      });
+    } catch (error) {
+      logger.error("Error saving MCP OAuth client", { error });
+      return c.json(
+        { success: false, error: "Failed to save OAuth client" },
         500,
       );
     }
