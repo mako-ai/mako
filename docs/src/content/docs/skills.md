@@ -22,12 +22,15 @@ Skills survive across sessions and are shared across all members of the workspac
 
 ## Agent Tools
 
-| Tool            | What It Does                                                                                  |
-| --------------- | --------------------------------------------------------------------------------------------- |
-| `save_skill`    | Upsert a skill by name. Reusing the same name overwrites the body (one undo step is retained) |
-| `delete_skill`  | Retract a skill permanently. Use when a skill turned out to be wrong                          |
-| `load_skill`    | Explicitly load a skill from the index mid-turn. Bumps `useCount` for retrieval reinforcement |
-| `search_skills` | Free-text search over all skills in the workspace. Fallback when the index doesn't surface it |
+| Tool                  | What It Does                                                                                  |
+| --------------------- | --------------------------------------------------------------------------------------------- |
+| `save_skill`          | Upsert a skill by name. Reusing the same name overwrites the body (one undo step is retained) |
+| `delete_skill`        | Retract a skill permanently. Use when a skill turned out to be wrong                          |
+| `list_skills`         | Compact index of every skill (workspace + system): name, trigger, scope — no bodies           |
+| `get_relevant_skills` | Rank skills against a task and return the top bodies — the same retrieval the auto-injection uses each turn, plus near-misses |
+| `load_skill`          | Explicitly load a skill from the index mid-turn. Bumps `useCount` for retrieval reinforcement |
+| `read_skill_resource` | Read a tier-3 `references/*.md` file that a system skill points to                            |
+| `search_skills`       | Free-text search over all skills in the workspace. Fallback when the index doesn't surface it |
 
 `save_skill` accepts:
 

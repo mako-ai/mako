@@ -252,7 +252,7 @@ Workspace skills — named playbooks the agent can author and load on demand. Se
 | `POST`   | `/api/workspaces/:wid/skills/:id/suppress`          | Toggle the `suppressed` flag                  |
 | `DELETE` | `/api/workspaces/:wid/skills/:id`                   | Permanently delete a skill                    |
 
-All endpoints require authentication and workspace access. Agent-side CRUD is available through the `save_skill`, `delete_skill`, `load_skill`, and `search_skills` tools — see [AI Agent](/ai-agent/#targeted-playbooks-skills).
+All endpoints require authentication and workspace access. Agent-side access is available through the `save_skill`, `delete_skill`, `list_skills`, `get_relevant_skills`, `load_skill`, and `search_skills` tools — see [AI Agent](/ai-agent/#targeted-playbooks-skills).
 
 ### Skill Response Shape
 

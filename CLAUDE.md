@@ -41,6 +41,7 @@ pnpm docs:dev              # Documentation site (Astro)
 
 ```bash
 pnpm build                 # Lint + build all packages in workspace
+pnpm build:ci              # Compile only, no lint (what CI runs before USE_PREBUILT=1 docker build)
 pnpm start                 # Start production server (serves both API and static frontend)
 pnpm app:build             # Build frontend only (outputs to app/dist)
 pnpm api:build             # Build backend only (TypeScript compilation)
