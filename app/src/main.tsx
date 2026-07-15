@@ -4,6 +4,7 @@ import "./index.css";
 import { BrowserRouter } from "react-router-dom";
 import CssBaseline from "@mui/material/CssBaseline";
 import { LicenseInfo } from "@mui/x-license";
+import { muiXTelemetrySettings } from "@mui/x-telemetry";
 import { enableMapSet } from "immer";
 import App from "./App.tsx";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
@@ -11,8 +12,12 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import { AuthProvider } from "./contexts/auth-context.tsx";
 import { initializeStoreVersion } from "./store/lib/storeVersion";
 
-// Set MUI X Premium license key
-LicenseInfo.setLicenseKey(import.meta.env.VITE_MUI_LICENSE_KEY || "");
+// Register MUI X Premium license key (same provisioning as realadvisor.crm:
+// committed in source — MUI license keys are not secrets — with telemetry off)
+LicenseInfo.setLicenseKey(
+  "94ebd1251d9b12888034f89d04c5f9f3Tz0xMjk2NjQsRT0xODExNjM1MTk5MDAwLFM9cHJlbWl1bSxMTT1hbm51YWwsUFY9UTEtMjAyNixRPTEsQVQ9bXVsdGksS1Y9Mg==",
+);
+muiXTelemetrySettings.disableTelemetry();
 
 // Initialize store versioning before any stores are created
 // This clears localStorage when the schema version changes

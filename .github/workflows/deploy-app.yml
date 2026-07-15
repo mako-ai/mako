@@ -210,7 +210,6 @@ jobs:
       SENDGRID_VERIFICATION_TEMPLATE_ID: ${{ vars.SENDGRID_VERIFICATION_TEMPLATE_ID }}
       SESSION_DURATION: ${{ vars.SESSION_DURATION }}
       SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
-      VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
       VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
       DEMO_DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
       # Notebook GKE kernel plane — DEV cluster (mako-ai-dev), since previews
@@ -290,7 +289,6 @@ jobs:
           CLIENT_URL: ${{ env.CLIENT_URL }}
           NODE_ENV: production
           VITE_API_URL: ${{ env.VITE_API_URL }}
-          VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
           VITE_GTM_ID: ${{ env.VITE_GTM_ID }}
           VITE_BUILD_ID: ${{ needs.detect-changes.outputs.pr_sha || github.sha }}
 
@@ -882,7 +880,6 @@ jobs:
       SESSION_DURATION: ${{ vars.SESSION_DURATION }}
       SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
       VITE_API_URL: https://app.mako.ai/api
-      VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
       VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
       DEMO_DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
       # Notebook GKE kernel plane (see deploy/notebook-kernels).
@@ -958,7 +955,6 @@ jobs:
           CLIENT_URL: ${{ env.CLIENT_URL }}
           NODE_ENV: production
           VITE_API_URL: ${{ env.VITE_API_URL }}
-          VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
           VITE_GTM_ID: ${{ env.VITE_GTM_ID }}
           VITE_BUILD_ID: ${{ github.sha }}
 

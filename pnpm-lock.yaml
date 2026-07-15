@@ -412,6 +412,9 @@ importers:
       '@mui/x-license':
         specifier: ^8.4.0
         version: 8.4.0(@types/react@18.3.23)(react@18.3.1)
+      '@mui/x-telemetry':
+        specifier: 8.4.0
+        version: 8.4.0(@types/react@18.3.23)(react@18.3.1)
       '@streamdown/code':
         specifier: ^1.1.1
         version: 1.1.1(react@18.3.1)
@@ -7617,9 +7620,6 @@ packages:
 
   json-schema-traverse@1.0.0:
     resolution: {integrity: sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==}
-
-  json-schema-typed@8.0.1:
-    resolution: {integrity: sha512-XQmWYj2Sm4kn4WeTYvmpKEbyPsL7nBsb647c7pMe6l02/yx2+Jfc4dT6UZkEXnIUb5LhD55r2HPsJ1milQ4rDg==}
 
   json-schema-typed@8.0.2:
     resolution: {integrity: sha512-fQhoXdcvc3V28x7C7BMs4P5+kNlgUURe2jmUT1T//oBRMDrqy1QPelJimwZGo7Hg9VPV3EQV5Bnq4hbFy2vetA==}
@@ -17541,7 +17541,7 @@ snapshots:
       debounce-fn: 5.1.2
       dot-prop: 7.2.0
       env-paths: 3.0.0
-      json-schema-typed: 8.0.1
+      json-schema-typed: 8.0.2
       semver: 7.7.3
 
   confbox@0.1.8: {}
@@ -20249,8 +20249,6 @@ snapshots:
   json-schema-traverse@0.4.1: {}
 
   json-schema-traverse@1.0.0: {}
-
-  json-schema-typed@8.0.1: {}
 
   json-schema-typed@8.0.2: {}
 
