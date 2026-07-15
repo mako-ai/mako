@@ -154,6 +154,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   app2_glob: bridge(),
   app2_grep: bridge(),
   app2_list_apps: bridge(),
+  app2_materialize: bridge(),
   app2_list_branches: bridge(),
   app2_merge_to_main: bridge(),
   app2_read_file: bridge(),

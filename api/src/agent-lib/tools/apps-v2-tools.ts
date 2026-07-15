@@ -49,6 +49,7 @@ import {
   worktreeStatus,
   writeFile,
 } from "../../apps-v2/worktree.service";
+import { materializeAppV2Binding } from "../../apps-v2/bindings.service";
 import { loggers } from "../../logging";
 
 const logger = loggers.agent();
@@ -482,6 +483,30 @@ export function createAppsV2Tools({
           return { success: result.merged, ...result, branch: target };
         } catch (error) {
           logger.error("app2_merge_to_main failed", { error, appId });
+          return { success: false, error: errorMessage(error) };
+        }
+      },
+    }),
+
+    app2_materialize: tool({
+      description:
+        "Build (or rebuild) the parquet artifact for a data binding of an Apps v2 project. Bindings are files: bindings/<name>.sql with '-- connection: <id>' front matter (see the apps-v2 skill). Reads THIS conversation's branch, so it works before merging to main. The build runs synchronously against the warehouse (read-only enforced) and the preview serves the result at __data/<name>.parquet.",
+      inputSchema: z.object({
+        appId: z.string(),
+        name: z.string().describe("Binding name (= filename without .sql)"),
+      }),
+      execute: async ({ appId, name }) => {
+        const loaded = await loadProject(appId, { write: true });
+        if ("error" in loaded) return { success: false, error: loaded.error };
+        try {
+          const result = await materializeAppV2Binding(
+            loaded.project,
+            name,
+            actorId,
+          );
+          return { success: true, ...result };
+        } catch (error) {
+          logger.error("app2_materialize failed", { error, appId });
           return { success: false, error: errorMessage(error) };
         }
       },
