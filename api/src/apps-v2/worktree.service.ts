@@ -58,9 +58,22 @@ import { createAppsV2Scaffold } from "./scaffold";
 import {
   deleteCloudRepo,
   ensureCloudRepo,
+  ensureLocalRepo,
   mirrorPushNow,
   queueMirrorPush,
 } from "./cloud-repo.service";
+
+/**
+ * Local repo dir for a project, restoring it from the cloud mirror first
+ * when the cache is cold (serverless hosts start with an empty
+ * APPS_V2_GIT_ROOT — see ensureLocalRepo).
+ */
+async function repoFor(project: IAppProjectV2): Promise<string> {
+  const workspaceId = project.workspaceId.toString();
+  const projectId = project._id.toString();
+  await ensureLocalRepo(workspaceId, projectId);
+  return repoDirFor(workspaceId, projectId);
+}
 import {
   getSandboxProvider,
   type SandboxExecOptions,
@@ -180,17 +193,24 @@ export async function createProject(input: {
     throw error;
   }
   // Cloud tier: mirror the project to its own private repo under Mako's org.
-  // Best-effort — GitHub being down must not block app creation (the local
-  // repo is fully functional; the mirror catches up on the next commit).
+  // When the cloud app is configured, the durable push is REQUIRED — on
+  // serverless hosts the local repo is an ephemeral cache, so a local-only
+  // project would silently vanish with the instance. Hosts without cloud
+  // config (pure local dev) keep working local-only.
   try {
     if (await ensureCloudRepo(project)) {
       await mirrorPushNow(project);
     }
   } catch (error) {
-    logger.warn("Apps v2 cloud repo provisioning failed (local-only)", {
+    await AppProjectV2.deleteOne({ _id: project._id });
+    await fs.rm(repoDir, { recursive: true, force: true });
+    logger.error("Apps v2 creation aborted: durable push failed", {
       projectId: project._id.toString(),
       error: error instanceof Error ? error.message : String(error),
     });
+    throw new Error(
+      `Could not store the app durably (GitHub push failed): ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   logger.info("Apps v2 project created", {
     projectId: project._id.toString(),
@@ -201,6 +221,7 @@ export async function createProject(input: {
 }
 
 export async function deleteProject(project: IAppProjectV2): Promise<void> {
+  // Plain path: no point restoring a cold cache just to delete it.
   const repoDir = repoDirFor(
     project.workspaceId.toString(),
     project._id.toString(),
@@ -253,10 +274,7 @@ export async function ensureWorktree(
   actorId: string,
   options: { branch?: string } = {},
 ): Promise<WorktreeHandle> {
-  const repoDir = repoDirFor(
-    project.workspaceId.toString(),
-    project._id.toString(),
-  );
+  const repoDir = await repoFor(project);
   if (!(await repoExists(repoDir))) {
     throw new Error("Project repository is missing");
   }
@@ -513,10 +531,7 @@ export async function listFiles(
   project: IAppProjectV2,
   userId?: string,
 ): Promise<{ ref: string; entries: TreeEntry[] }> {
-  const repoDir = repoDirFor(
-    project.workspaceId.toString(),
-    project._id.toString(),
-  );
+  const repoDir = await repoFor(project);
   const ref = await readRefFor(project, userId, repoDir);
   return { ref, entries: await listTree(repoDir, ref) };
 }
@@ -531,10 +546,7 @@ export async function readFile(
   isBinary: boolean;
   size: number;
 }> {
-  const repoDir = repoDirFor(
-    project.workspaceId.toString(),
-    project._id.toString(),
-  );
+  const repoDir = await repoFor(project);
   const safe = assertSafeRelPath(relPath);
   const ref = await readRefFor(project, userId, repoDir);
   const blob = await readBlob(repoDir, ref, safe);
@@ -548,10 +560,7 @@ export async function grepFiles(
   userId: string | undefined,
   options?: { ignoreCase?: boolean; pathspec?: string; maxMatches?: number },
 ): Promise<GrepMatch[]> {
-  const repoDir = repoDirFor(
-    project.workspaceId.toString(),
-    project._id.toString(),
-  );
+  const repoDir = await repoFor(project);
   const ref = await readRefFor(project, userId, repoDir);
   return grepTree(repoDir, ref, pattern, options);
 }
@@ -563,10 +572,7 @@ export async function globFiles(
   userId?: string,
   limit?: number,
 ): Promise<string[]> {
-  const repoDir = repoDirFor(
-    project.workspaceId.toString(),
-    project._id.toString(),
-  );
+  const repoDir = await repoFor(project);
   const ref = await readRefFor(project, userId, repoDir);
   return globTree(repoDir, ref, glob, limit);
 }
@@ -625,10 +631,7 @@ export async function worktreeStatus(
   project: IAppProjectV2,
   userId: string,
 ): Promise<WorktreeStatus | null> {
-  const repoDir = repoDirFor(
-    project.workspaceId.toString(),
-    project._id.toString(),
-  );
+  const repoDir = await repoFor(project);
   const doc = await AppWorktreeV2.findOne({ projectId: project._id, userId });
   if (!doc) return null;
   const branchHead = await resolveCommit(repoDir, `refs/heads/${doc.branch}`);
@@ -647,10 +650,7 @@ export async function worktreeStatus(
 }
 
 export async function projectHistory(project: IAppProjectV2, limit = 20) {
-  const repoDir = repoDirFor(
-    project.workspaceId.toString(),
-    project._id.toString(),
-  );
+  const repoDir = await repoFor(project);
   return repoLog(
     repoDir,
     `refs/heads/${project.defaultBranch || DEFAULT_BRANCH}`,
@@ -786,6 +786,7 @@ export async function commitChatTurn(
   for (const doc of worktrees) {
     const projectId = doc.projectId.toString();
     try {
+      await ensureLocalRepo(workspaceId, projectId);
       const repoDir = repoDirFor(workspaceId, projectId);
       const result = await commitFromWip(doc, repoDir, message, {
         name: "Mako Agent",
@@ -841,10 +842,7 @@ export interface BranchInfo {
 export async function listBranches(
   project: IAppProjectV2,
 ): Promise<BranchInfo[]> {
-  const repoDir = repoDirFor(
-    project.workspaceId.toString(),
-    project._id.toString(),
-  );
+  const repoDir = await repoFor(project);
   const { stdout } = await runGit([
     "-C",
     repoDir,
@@ -907,10 +905,7 @@ export async function mergeBranchToMain(
   branch: string,
   author?: GitAuthor,
 ): Promise<MergeResult> {
-  const repoDir = repoDirFor(
-    project.workspaceId.toString(),
-    project._id.toString(),
-  );
+  const repoDir = await repoFor(project);
   const defaultBranch = project.defaultBranch || DEFAULT_BRANCH;
   if (branch === defaultBranch) {
     return {

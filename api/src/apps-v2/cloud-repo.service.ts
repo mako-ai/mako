@@ -24,8 +24,10 @@ import {
   getMakoCloudToken,
   isMakoCloudConfigured,
 } from "../integrations/github/cloud-app-auth";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { runGit } from "./git";
-import { repoDirFor } from "./repository.service";
+import { repoDirFor, repoExists } from "./repository.service";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps-v2");
@@ -117,6 +119,71 @@ export async function deleteCloudRepo(project: IAppProjectV2): Promise<void> {
       error,
     });
   }
+}
+
+/**
+ * Recover-on-miss: rebuild the local bare repo from its cloud mirror.
+ *
+ * On serverless hosts (Cloud Run: tmpfs, min-instances=0) the local repos
+ * under APPS_V2_GIT_ROOT are a CACHE, not a store — any fresh instance
+ * starts without them. Since every commit/merge mirror-pushes ALL refs
+ * (including refs/mako/* WIP snapshots) to the project's cloud repo,
+ * `git clone --mirror` restores the full state on demand. Projects without
+ * a cloudRepo (pre-cloud or cloud-unconfigured hosts) are left alone — on a
+ * stateful host their local repo simply still exists.
+ *
+ * Serialized per project so concurrent requests don't race the clone.
+ */
+const cloneInFlight = new Map<string, Promise<void>>();
+
+export async function ensureLocalRepo(
+  workspaceId: string,
+  projectId: string,
+): Promise<void> {
+  const repoDir = repoDirFor(workspaceId, projectId);
+  if (await repoExists(repoDir)) return;
+  const existing = cloneInFlight.get(projectId);
+  if (existing) return existing;
+  const run = (async () => {
+    const project = await AppProjectV2.findById(new Types.ObjectId(projectId))
+      .select("cloudRepo")
+      .lean();
+    const cloudRepo = project?.cloudRepo;
+    if (!cloudRepo || !isMakoCloudConfigured()) return;
+    const token = await getMakoCloudToken();
+    const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+    await fs.mkdir(path.dirname(repoDir), { recursive: true });
+    const tmp = `${repoDir}.cloning-${process.pid}`;
+    try {
+      await runGit([
+        "-c",
+        `http.extraheader=Authorization: Basic ${basic}`,
+        "clone",
+        "--mirror",
+        "--quiet",
+        `https://github.com/${cloudRepo.owner}/${cloudRepo.repo}.git`,
+        tmp,
+      ]);
+      // Same serving config initRepo applies to freshly-created repos.
+      await runGit(["-C", tmp, "config", "transfer.hideRefs", "refs/mako/"]);
+      await runGit([
+        "-C",
+        tmp,
+        "config",
+        "uploadpack.allowAnySHA1InWant",
+        "true",
+      ]);
+      await fs.rename(tmp, repoDir);
+      logger.info("Apps v2 local repo restored from cloud mirror", {
+        projectId,
+        repo: `${cloudRepo.owner}/${cloudRepo.repo}`,
+      });
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  })().finally(() => cloneInFlight.delete(projectId));
+  cloneInFlight.set(projectId, run);
+  return run;
 }
 
 // Per-project push serialization: `pending` coalesces bursts (N commits
