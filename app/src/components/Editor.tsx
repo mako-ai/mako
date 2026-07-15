@@ -73,6 +73,7 @@ import AppFileEditor from "./AppFileEditor";
 import AppBindingEditor from "./AppBindingEditor";
 import AppV2Workspace from "./AppV2Workspace";
 import AppV2FileEditor from "./AppV2FileEditor";
+import AppV2BindingEditor from "./AppV2BindingEditor";
 import PlanDocumentTab from "./PlanDocumentTab";
 import DbtFileEditor from "./DbtFileEditor";
 import DbtJobView from "./DbtJobView";
@@ -2868,6 +2869,15 @@ function Editor({
                     <AppV2Workspace
                       tabId={tab.id}
                       appId={tab.metadata?.appV2Id as string}
+                    />
+                  ) : tab.kind === "app-v2-file" &&
+                    /^bindings\/[^/]+\.sql$/.test(
+                      (tab.metadata?.path as string) ?? "",
+                    ) ? (
+                    <AppV2BindingEditor
+                      tabId={tab.id}
+                      appId={tab.metadata?.appV2Id as string}
+                      path={tab.metadata?.path as string}
                     />
                   ) : tab.kind === "app-v2-file" ? (
                     <AppV2FileEditor
