@@ -5,8 +5,10 @@
  * edits autosave with a debounce, each save flushing to the actor's private
  * WIP ref so nothing is lost if the tab or the sandbox dies.
  */
-import { useCallback, useEffect, useRef } from "react";
-import { Box, Typography, useTheme } from "@mui/material";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Alert, Box, Button, Chip, Typography, useTheme } from "@mui/material";
+import { Database as DatabaseIcon, Play as PlayIcon } from "lucide-react";
+import { api, unwrapBody } from "../api";
 import MonacoEditor from "@monaco-editor/react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppsV2Store } from "../store/appsV2Store";
@@ -14,6 +16,22 @@ import {
   configureMonacoForJsx,
   languageForPath,
 } from "../app-runtime/monaco-jsx";
+
+/** Leading `-- key: value` front-matter block of a binding file. */
+function parseFrontMatter(sql: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of sql.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed === "--") continue;
+    const m = trimmed.match(/^--\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$/);
+    if (!m) {
+      if (trimmed.startsWith("--")) continue;
+      break;
+    }
+    out[m[1].toLowerCase()] = m[2];
+  }
+  return out;
+}
 
 export default function AppV2FileEditor({
   tabId: _tabId,
@@ -38,6 +56,38 @@ export default function AppV2FileEditor({
   const saveFile = useAppsV2Store(s => s.saveFile);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Binding files get a console-style toolbar (Block 3 of the bindings plan;
+  // connection picker + Run-through-console-engine are the next slice).
+  const isBinding = /^bindings\/[^/]+\.sql$/.test(path);
+  const bindingName = isBinding
+    ? path.replace(/^bindings\//, "").replace(/\.sql$/, "")
+    : null;
+  const frontMatter =
+    isBinding && fileEntry ? parseFrontMatter(fileEntry.contents) : {};
+  const [materializing, setMaterializing] = useState(false);
+  const [matResult, setMatResult] = useState<string | null>(null);
+  const [matError, setMatError] = useState<string | null>(null);
+
+  const handleMaterialize = useCallback(async () => {
+    if (!workspaceId || !bindingName) return;
+    setMaterializing(true);
+    setMatError(null);
+    setMatResult(null);
+    try {
+      const body = unwrapBody(
+        await api.POST(
+          "/api/workspaces/{workspaceId}/apps-v2/{id}/bindings/{name}/materialize",
+          { params: { path: { workspaceId, id: appId, name: bindingName } } },
+        ),
+      ) as { rowCount?: number };
+      setMatResult(`Materialized — ${body.rowCount ?? "?"} rows`);
+    } catch (e) {
+      setMatError(e instanceof Error ? e.message : "Materialization failed");
+    } finally {
+      setMaterializing(false);
+    }
+  }, [workspaceId, appId, bindingName]);
+
   useEffect(() => {
     if (!workspaceId) return;
     // Title/breadcrumb data for deep links + the file contents themselves.
@@ -61,6 +111,60 @@ export default function AppV2FileEditor({
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      {isBinding && (
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+            px: 1.5,
+            py: 0.75,
+            borderBottom: 1,
+            borderColor: "divider",
+          }}
+        >
+          <DatabaseIcon size={15} />
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+            {bindingName}
+          </Typography>
+          {frontMatter.connection ? (
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`connection ${frontMatter.connection.slice(0, 8)}…`}
+            />
+          ) : (
+            <Chip size="small" color="warning" label="no -- connection:" />
+          )}
+          {frontMatter.schedule && (
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`cron ${frontMatter.schedule}`}
+            />
+          )}
+          <Box sx={{ flex: 1 }} />
+          {matResult && (
+            <Typography variant="caption" color="success.main">
+              {matResult}
+            </Typography>
+          )}
+          <Button
+            size="small"
+            variant="contained"
+            startIcon={<PlayIcon size={13} />}
+            disabled={materializing || !frontMatter.connection}
+            onClick={() => void handleMaterialize()}
+          >
+            {materializing ? "Materializing…" : "Materialize"}
+          </Button>
+        </Box>
+      )}
+      {matError && (
+        <Alert severity="error" onClose={() => setMatError(null)}>
+          {matError}
+        </Alert>
+      )}
       <Box sx={{ flex: 1, minHeight: 0 }}>
         {fileEntry ? (
           <MonacoEditor
