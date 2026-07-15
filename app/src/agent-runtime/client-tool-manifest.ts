@@ -1154,32 +1154,33 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "shield-check",
   },
-  // -- Notebook tools (client-executed via app/src/notebook-runtime) ---------
+  // Notebook tools execute SERVER-SIDE (Phase A durable runs; see
+  // api/src/agent-lib/tools/server-notebook-tools.ts). They mutate the durable
+  // GCS notebook + kernel and poke open tabs over the realtime channel
+  // (notebook.updated), so a run survives the tab closing — and the browser
+  // must NOT also run them, or every call would happen twice (two notebooks per
+  // create_notebook). Entries kept only for the tool-card UI.
   create_notebook: {
     domain: "notebook",
-    execution: "client",
-    clientExecutor: "notebook",
+    execution: "server",
     getLabel: () => "Creating notebook",
     icon: "plus",
   },
   list_open_notebooks: {
     domain: "notebook",
-    execution: "client",
-    clientExecutor: "notebook",
+    execution: "server",
     getLabel: () => "Listing notebooks",
     icon: "list",
   },
   read_notebook: {
     domain: "notebook",
-    execution: "client",
-    clientExecutor: "notebook",
+    execution: "server",
     getLabel: () => "Reading notebook",
     icon: "eye",
   },
   add_notebook_cell: {
     domain: "notebook",
-    execution: "client",
-    clientExecutor: "notebook",
+    execution: "server",
     getLabel: input => {
       const type = (input as Record<string, unknown>)?.type;
       return `Adding ${typeof type === "string" ? type : ""} cell`.replace(
@@ -1192,30 +1193,26 @@ export const AGENT_TOOL_MANIFEST = {
   },
   edit_notebook_cell: {
     domain: "notebook",
-    execution: "client",
-    clientExecutor: "notebook",
+    execution: "server",
     getLabel: () => "Editing cell",
     icon: "pencil",
     preview: { field: "source", language: "sql" },
   },
   delete_notebook_cell: {
     domain: "notebook",
-    execution: "client",
-    clientExecutor: "notebook",
+    execution: "server",
     getLabel: () => "Deleting cell",
     icon: "trash",
   },
   run_notebook_sql_cell: {
     domain: "notebook",
-    execution: "client",
-    clientExecutor: "notebook",
+    execution: "server",
     getLabel: () => "Running SQL cell",
     icon: "play",
   },
   run_notebook_code_cell: {
     domain: "notebook",
-    execution: "client",
-    clientExecutor: "notebook",
+    execution: "server",
     getLabel: () => "Running Python cell",
     icon: "play",
   },
