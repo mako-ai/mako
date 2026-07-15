@@ -2,6 +2,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { serve } from "@hono/node-server";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
+import { secureHeaders } from "hono/secure-headers";
 import { serve as serveInngest } from "inngest/hono";
 import { Scalar } from "@scalar/hono-api-reference";
 import dotenv from "dotenv";
@@ -67,11 +68,42 @@ const REQUIRED_SYSTEM_SKILLS = [
 
 const app = new OpenAPIHono<AuthEnv>();
 
-// CORS middleware
+const isProduction = process.env.NODE_ENV === "production";
+
+// Security headers. CSP is intentionally left unset here because the SPA loads
+// GTM, Google Fonts, and renders sandboxed blob/srcdoc iframes; a tuned CSP is
+// tracked as a follow-up. COOP/CORP/COEP are disabled to avoid breaking OAuth
+// popups and cross-origin asset loads.
+app.use(
+  "*",
+  secureHeaders({
+    contentSecurityPolicy: undefined,
+    xFrameOptions: "SAMEORIGIN",
+    xContentTypeOptions: "nosniff",
+    referrerPolicy: "strict-origin-when-cross-origin",
+    strictTransportSecurity: isProduction
+      ? "max-age=31536000; includeSubDomains"
+      : false,
+    crossOriginOpenerPolicy: false,
+    crossOriginResourcePolicy: false,
+    crossOriginEmbedderPolicy: false,
+  }),
+);
+
+// CORS middleware. Never fall back to a wildcard origin: combined with
+// `credentials: true` that is both rejected by browsers and a footgun if the
+// fallback ever changed to reflect the request origin. Require an explicit
+// client origin instead.
+const clientOrigin = process.env.CLIENT_URL || "http://localhost:5173";
+if (!process.env.CLIENT_URL) {
+  logger.warn(
+    "CLIENT_URL is not set; defaulting CORS origin to http://localhost:5173. Set CLIENT_URL explicitly in non-local environments.",
+  );
+}
 app.use(
   "*",
   cors({
-    origin: process.env.CLIENT_URL || "*",
+    origin: clientOrigin,
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
     credentials: true,

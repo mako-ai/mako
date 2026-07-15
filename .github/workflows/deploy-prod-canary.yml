@@ -41,6 +41,8 @@ jobs:
       GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      SLACK_MCP_CLIENT_ID: ${{ vars.SLACK_MCP_CLIENT_ID }}
+      SLACK_MCP_CLIENT_SECRET: ${{ secrets.SLACK_MCP_CLIENT_SECRET }}
       IMAGE_NAME: mako-canary
       SERVICE_NAME: mako-canary
       INNGEST_ENV: migration-canary
@@ -103,9 +105,13 @@ jobs:
         run: pnpm run --filter api lint
 
       - name: Build workspaces
-        run: pnpm run build
+        run: pnpm run build:ci
         env:
           NODE_ENV: production
+          VITE_API_URL: ${{ env.VITE_API_URL }}
+          VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
+          VITE_GTM_ID: ${{ env.VITE_GTM_ID }}
+          VITE_BUILD_ID: ${{ github.sha }}
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
@@ -124,22 +130,26 @@ jobs:
         id: image
         run: |
           IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_ARTIFACT_REPOSITORY}/${IMAGE_NAME}"
+          CACHE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_ARTIFACT_REPOSITORY}/mako:buildcache"
           echo "sha_tag=${IMAGE_URI}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "cache_uri=${CACHE_URI}" >> "$GITHUB_OUTPUT"
 
-      - name: Create frontend build environment
-        run: |
-          cat <<EOF > .env.production
-          VITE_API_URL=${VITE_API_URL}
-          VITE_MUI_LICENSE_KEY=${VITE_MUI_LICENSE_KEY}
-          VITE_GTM_ID=${VITE_GTM_ID}
-          VITE_BUILD_ID=${GITHUB_SHA}
-          EOF
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Build and push Docker image
-        run: |
-          docker build --platform linux/amd64 -t "${{ steps.image.outputs.sha_tag }}" .
-          docker push "${{ steps.image.outputs.sha_tag }}"
-          rm -f .env.production
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image.outputs.sha_tag }}
+          build-args: |
+            USE_PREBUILT=1
+          cache-from: type=registry,ref=${{ steps.image.outputs.cache_uri }}
+          cache-to: type=registry,ref=${{ steps.image.outputs.cache_uri }},mode=max
+          provenance: false
+          sbom: false
 
       - name: Deploy quiesced canary
         run: |
@@ -172,6 +182,8 @@ jobs:
             --set-env-vars GH_CLIENT_SECRET=${GH_CLIENT_SECRET} \
             --set-env-vars GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID} \
             --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
+            --set-env-vars SLACK_MCP_CLIENT_ID=${SLACK_MCP_CLIENT_ID} \
+            --set-env-vars SLACK_MCP_CLIENT_SECRET=${SLACK_MCP_CLIENT_SECRET} \
             --set-env-vars INNGEST_ENV=${INNGEST_ENV} \
             --set-env-vars INNGEST_SERVE_ORIGIN=${BASE_URL} \
             --set-env-vars INNGEST_SERVE_PATH=/api/inngest \

@@ -169,6 +169,9 @@ jobs:
       GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      # Optional Slack MCP one-click OAuth (unset → per-workspace app form).
+      SLACK_MCP_CLIENT_ID: ${{ vars.SLACK_MCP_CLIENT_ID }}
+      SLACK_MCP_CLIENT_SECRET: ${{ secrets.SLACK_MCP_CLIENT_SECRET }}
       # Inngest routes a sent event to an environment by its EVENT KEY, not by
       # INNGEST_ENV / the x-inngest-env header. Branch environments share a single
       # "Branch Environments" event key; pairing it with INNGEST_ENV=pr-<n> routes
@@ -267,8 +270,10 @@ jobs:
       - name: Lint API
         run: pnpm run --filter api lint
 
-      - name: Build workspaces (Fail Fast Check)
-        run: pnpm run build
+      # Lint already ran above — build:ci skips lint:fix so we don't triple-lint.
+      # Frontend env (including VITE_BUILD_ID) is baked here; the Docker step only packages.
+      - name: Build workspaces
+        run: pnpm run build:ci
         env:
           BASE_URL: ${{ env.BASE_URL }}
           CLIENT_URL: ${{ env.CLIENT_URL }}
@@ -276,6 +281,7 @@ jobs:
           VITE_API_URL: ${{ env.VITE_API_URL }}
           VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
           VITE_GTM_ID: ${{ env.VITE_GTM_ID }}
+          VITE_BUILD_ID: ${{ needs.detect-changes.outputs.pr_sha || github.sha }}
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
@@ -298,36 +304,31 @@ jobs:
           CODE_SHA: ${{ needs.detect-changes.outputs.pr_sha || github.sha }}
         run: |
           IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_ARTIFACT_REPOSITORY}/${IMAGE_NAME}"
+          # Shared cache across PR preview images in this Artifact Registry
+          CACHE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_ARTIFACT_REPOSITORY}/mako:buildcache"
           echo "uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
           echo "sha_tag=${IMAGE_URI}:${CODE_SHA}" >> "$GITHUB_OUTPUT"
           echo "latest_tag=${IMAGE_URI}:latest" >> "$GITHUB_OUTPUT"
+          echo "cache_uri=${CACHE_URI}" >> "$GITHUB_OUTPUT"
 
-      - name: Create .env.production for Docker build
-        env:
-          # Build ID baked into the frontend bundle + version.json so clients
-          # can detect stale bundles (served back via GET /api/version)
-          VITE_BUILD_ID: ${{ needs.detect-changes.outputs.pr_sha || github.sha }}
-        run: |
-          cat <<EOF > .env.production
-          VITE_API_URL=${VITE_API_URL}
-          VITE_MUI_LICENSE_KEY=${VITE_MUI_LICENSE_KEY}
-          VITE_GTM_ID=${VITE_GTM_ID}
-          VITE_BUILD_ID=${VITE_BUILD_ID}
-          EOF
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker image
-        run: docker build --platform linux/amd64 -t ${{ steps.image.outputs.sha_tag }} .
-
-      - name: Tag Docker image as latest
-        run: docker tag ${{ steps.image.outputs.sha_tag }} ${{ steps.image.outputs.latest_tag }}
-
-      - name: Push Docker images
-        run: |
-          docker push ${{ steps.image.outputs.sha_tag }}
-          docker push ${{ steps.image.outputs.latest_tag }}
-
-      - name: Clean temporary env.production file
-        run: rm -f .env.production
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.sha_tag }}
+            ${{ steps.image.outputs.latest_tag }}
+          build-args: |
+            USE_PREBUILT=1
+          cache-from: type=registry,ref=${{ steps.image.outputs.cache_uri }}
+          cache-to: type=registry,ref=${{ steps.image.outputs.cache_uri }},mode=max
+          provenance: false
+          sbom: false
 
       # Handle ephemeral database if migrations changed OR manual rebuild requested
       # Step 1: Calculate ephemeral DB URL (when PR has migrations or rebuild requested)
@@ -589,6 +590,8 @@ jobs:
             --set-env-vars GH_CLIENT_SECRET=${GH_CLIENT_SECRET} \
             --set-env-vars GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID} \
             --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
+            --set-env-vars SLACK_MCP_CLIENT_ID=${SLACK_MCP_CLIENT_ID} \
+            --set-env-vars SLACK_MCP_CLIENT_SECRET=${SLACK_MCP_CLIENT_SECRET} \
             --set-env-vars INNGEST_ENV=${INNGEST_ENV} \
             --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
             --set-env-vars INNGEST_SERVE_PATH=/api/inngest \
@@ -823,6 +826,8 @@ jobs:
       GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      SLACK_MCP_CLIENT_ID: ${{ vars.SLACK_MCP_CLIENT_ID }}
+      SLACK_MCP_CLIENT_SECRET: ${{ secrets.SLACK_MCP_CLIENT_SECRET }}
       IMAGE_NAME: mako
       INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
@@ -911,8 +916,10 @@ jobs:
       - name: Lint API
         run: pnpm run --filter api lint
 
-      - name: Build workspaces (Fail Fast Check)
-        run: pnpm run build
+      # Lint already ran above — build:ci skips lint:fix so we don't triple-lint.
+      # Frontend env (including VITE_BUILD_ID) is baked here; the Docker step only packages.
+      - name: Build workspaces
+        run: pnpm run build:ci
         env:
           BASE_URL: ${{ env.BASE_URL }}
           CLIENT_URL: ${{ env.CLIENT_URL }}
@@ -920,6 +927,7 @@ jobs:
           VITE_API_URL: ${{ env.VITE_API_URL }}
           VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
           VITE_GTM_ID: ${{ env.VITE_GTM_ID }}
+          VITE_BUILD_ID: ${{ github.sha }}
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
@@ -938,32 +946,30 @@ jobs:
         id: image
         run: |
           IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_ARTIFACT_REPOSITORY}/${IMAGE_NAME}"
+          CACHE_URI="${IMAGE_URI}:buildcache"
           echo "uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
           echo "sha_tag=${IMAGE_URI}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
           echo "latest_tag=${IMAGE_URI}:latest" >> "$GITHUB_OUTPUT"
+          echo "cache_uri=${CACHE_URI}" >> "$GITHUB_OUTPUT"
 
-      - name: Create .env.production for Docker build
-        run: |
-          cat <<EOF > .env.production
-          VITE_API_URL=${VITE_API_URL}
-          VITE_MUI_LICENSE_KEY=${VITE_MUI_LICENSE_KEY}
-          VITE_GTM_ID=${VITE_GTM_ID}
-          VITE_BUILD_ID=${GITHUB_SHA}
-          EOF
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker image
-        run: docker build --platform linux/amd64 -t ${{ steps.image.outputs.sha_tag }} .
-
-      - name: Tag Docker image as latest
-        run: docker tag ${{ steps.image.outputs.sha_tag }} ${{ steps.image.outputs.latest_tag }}
-
-      - name: Push Docker images
-        run: |
-          docker push ${{ steps.image.outputs.sha_tag }}
-          docker push ${{ steps.image.outputs.latest_tag }}
-
-      - name: Clean temporary env.production file
-        run: rm -f .env.production
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.sha_tag }}
+            ${{ steps.image.outputs.latest_tag }}
+          build-args: |
+            USE_PREBUILT=1
+          cache-from: type=registry,ref=${{ steps.image.outputs.cache_uri }}
+          cache-to: type=registry,ref=${{ steps.image.outputs.cache_uri }},mode=max
+          provenance: false
+          sbom: false
 
       - name: Resolve existing Cloud Run URL
         id: cloud-run-before
@@ -1004,6 +1010,8 @@ jobs:
             --set-env-vars GH_CLIENT_SECRET=${GH_CLIENT_SECRET} \
             --set-env-vars GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID} \
             --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
+            --set-env-vars SLACK_MCP_CLIENT_ID=${SLACK_MCP_CLIENT_ID} \
+            --set-env-vars SLACK_MCP_CLIENT_SECRET=${SLACK_MCP_CLIENT_SECRET} \
             --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
             --set-env-vars INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY} \
             --set-env-vars INNGEST_SERVE_ORIGIN=${INNGEST_SERVE_ORIGIN} \

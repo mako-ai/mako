@@ -27,6 +27,8 @@ export const CORE_ALWAYS_TOOL_NAMES: readonly string[] = [
   // Skills
   "save_skill",
   "delete_skill",
+  "list_skills",
+  "get_relevant_skills",
   "load_skill",
   "read_skill_resource",
   "search_skills",

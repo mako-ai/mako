@@ -1,12 +1,21 @@
 /**
- * MCP OAuth 2.0 client flows (Close CRM "log in with your personal account").
+ * MCP OAuth 2.0 client flows (Close CRM / Slack "log in with your personal
+ * account").
  *
  * Implements the MCP authorization spec via the official SDK's `auth()`
  * machinery: protected-resource metadata discovery, Dynamic Client
  * Registration (DCR), authorization-code + PKCE, token exchange, and refresh.
  *
+ * Client registration comes in two flavors (see `McpPresetOAuthConfig`):
+ *  - DCR (Close): Mako registers itself automatically on first connect.
+ *  - Manual (Slack): the provider only accepts pre-registered confidential
+ *    apps, so an admin saves the app's client ID + secret first
+ *    (`saveMcpOAuthClient`). Both are stored on the same encrypted
+ *    `mcp_servers.oauth.clientInformation` field, so the SDK's `auth()` uses
+ *    them identically and skips DCR whenever client info already exists.
+ *
  * Persistence model:
- *  - DCR client registration is per *server* (`mcp_servers.oauth`,
+ *  - OAuth client registration is per *server* (`mcp_servers.oauth`,
  *    encrypted) — one OAuth client shared by all connecting users.
  *  - Tokens are per *connection config* (workspace-shared or per-user),
  *    encrypted on `mcp_connection_configs.oauthTokens`.
@@ -32,6 +41,11 @@ import {
   McpOAuthFlow,
   McpServer,
 } from "../database/workspace-schema";
+import {
+  getMcpPreset,
+  mcpPresetEnvOAuthClient,
+  mcpPresetOAuthScope,
+} from "../mcp/presets";
 import { decryptString, encryptString } from "./crypto.service";
 import { loggers } from "../logging";
 
@@ -92,14 +106,18 @@ class MongoOAuthClientProvider implements OAuthClientProvider {
       .select("oauth")
       .lean();
     const encrypted = doc?.oauth?.clientInformation;
-    if (!encrypted) return undefined;
-    try {
-      return JSON.parse(
-        decryptString(encrypted),
-      ) as OAuthClientInformationMixed;
-    } catch {
-      return undefined;
+    if (encrypted) {
+      try {
+        return JSON.parse(
+          decryptString(encrypted),
+        ) as OAuthClientInformationMixed;
+      } catch {
+        // Corrupt/unreadable — fall through to the env client, if any.
+      }
     }
+    // Deployment-wide client from the environment (one shared provider app,
+    // Claude-connectors style). Workspace-saved clients take precedence.
+    return mcpPresetEnvOAuthClient(getMcpPreset(this.server.connectorType));
   }
 
   async saveClientInformation(
@@ -191,6 +209,78 @@ class MongoOAuthClientProvider implements OAuthClientProvider {
 }
 
 /**
+ * OAuth scope to request for a server: the preset's least-privilege scope
+ * set for the connection's write scope (Slack), or undefined to fall back
+ * to the provider's advertised `scopes_supported` (Close, custom).
+ */
+function oauthScopeForServer(server: IMcpServer): string | undefined {
+  return mcpPresetOAuthScope(
+    getMcpPreset(server.connectorType),
+    server.writeScope,
+  );
+}
+
+/**
+ * Save a pre-registered (manual) OAuth client for a server — used by
+ * providers that don't support Dynamic Client Registration (Slack). Stored
+ * on the same encrypted field DCR uses, so `auth()` picks it up and skips
+ * registration. Clears any previously issued tokens: they belonged to the
+ * old client and would be rejected.
+ */
+export async function saveMcpOAuthClient(params: {
+  server: IMcpServer;
+  clientId: string;
+  clientSecret?: string;
+}): Promise<void> {
+  const { server, clientId, clientSecret } = params;
+  await McpServer.updateOne(
+    { _id: server._id },
+    {
+      $set: {
+        "oauth.clientInformation": encryptString(
+          JSON.stringify({
+            client_id: clientId,
+            ...(clientSecret ? { client_secret: clientSecret } : {}),
+          }),
+        ),
+      },
+    },
+  );
+  await McpConnectionConfig.updateMany(
+    { serverId: server._id },
+    { $unset: { oauthTokens: "", oauthExpiresAt: "" } },
+  );
+  logger.info("MCP OAuth client saved", {
+    serverId: server._id.toString(),
+  });
+}
+
+export type McpOAuthClientSource = "workspace" | "environment";
+
+/**
+ * Where a server's OAuth client comes from: a workspace-saved (or DCR'd)
+ * client, the deployment environment, or nowhere (null). Workspace clients
+ * win — self-hosters can override the shared app per workspace.
+ */
+export function mcpOAuthClientSource(
+  server: Pick<IMcpServer, "connectorType" | "oauth">,
+): McpOAuthClientSource | null {
+  if (server.oauth?.clientInformation) return "workspace";
+  if (mcpPresetEnvOAuthClient(getMcpPreset(server.connectorType))) {
+    return "environment";
+  }
+  return null;
+}
+
+/** Whether a server has a usable OAuth client (saved, DCR'd, or from env). */
+export async function hasMcpOAuthClient(server: IMcpServer): Promise<boolean> {
+  const doc = await McpServer.findById(server._id)
+    .select("oauth connectorType")
+    .lean();
+  return mcpOAuthClientSource(doc ?? server) !== null;
+}
+
+/**
  * Begin the OAuth flow for a server/connection: discover metadata, register
  * the client (DCR) if needed, mint PKCE + state, persist the pending flow,
  * and return the authorization URL for the browser to visit.
@@ -201,12 +291,26 @@ export async function startMcpOAuthFlow(params: {
   startedByUserId: string;
 }): Promise<{ authorizationUrl: string }> {
   const { server, configUserId, startedByUserId } = params;
+  const preset = getMcpPreset(server.connectorType);
+
+  // Manual-client presets (Slack) can't fall back to DCR: fail with a clear
+  // setup message instead of a confusing provider error.
+  if (
+    preset.oauth?.clientMode === "manual" &&
+    !(await hasMcpOAuthClient(server))
+  ) {
+    throw new Error(
+      `${preset.label} requires a pre-registered OAuth app — a workspace admin must save its Client ID and Client Secret first`,
+    );
+  }
+
   const provider = new MongoOAuthClientProvider(server, configUserId);
   provider.startedByUserId = startedByUserId;
 
   try {
     const result = await auth(provider, {
       serverUrl: server.transport.url,
+      scope: oauthScopeForServer(server),
     });
     // Already authorized (valid or refreshable tokens) — no redirect needed.
     if (result === "AUTHORIZED") {
@@ -267,6 +371,7 @@ export async function completeMcpOAuthFlow(params: {
   const result = await auth(provider, {
     serverUrl: server.transport.url,
     authorizationCode: code,
+    scope: oauthScopeForServer(server),
   });
   if (result !== "AUTHORIZED") {
     throw new UnauthorizedError("Token exchange did not complete");
@@ -319,6 +424,7 @@ export async function getMcpOAuthAuthorization(
     try {
       const result = await auth(provider, {
         serverUrl: server.transport.url,
+        scope: oauthScopeForServer(server),
       });
       if (result !== "AUTHORIZED") {
         throw new UnauthorizedError("Token refresh requires re-consent");

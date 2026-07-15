@@ -27,10 +27,12 @@ function testAvailableEntitiesIncludeModernEntities() {
   assert.ok(entities.includes("payment_intents"));
   assert.ok(entities.includes("prices"));
   assert.ok(entities.includes("plans"));
+  assert.ok(entities.includes("disputes"));
 
   const metadata = connector.getEntityMetadata().map(entry => entry.name);
   assert.ok(metadata.includes("payment_intents"));
   assert.ok(metadata.includes("prices"));
+  assert.ok(metadata.includes("disputes"));
 }
 
 function testResolveRecordTimestampUsesEpochCreated() {
@@ -69,6 +71,7 @@ async function testResolveSchema() {
   for (const entity of [
     "customers",
     "subscriptions",
+    "disputes",
     "charges",
     "invoices",
     "products",
@@ -89,6 +92,11 @@ async function testResolveSchema() {
   assert.equal(charge?.fields.amount?.type, "integer");
   assert.equal(charge?.fields.currency?.type, "string");
   assert.equal(charge?.fields.billing_details?.type, "json");
+
+  const dispute = await connector.resolveSchema("disputes");
+  assert.equal(dispute?.fields.status?.type, "string");
+  assert.equal(dispute?.fields.amount?.type, "integer");
+  assert.equal(dispute?.fields.charge?.type, "string");
 
   // Invoice fields that were previously absent (and therefore string-coerced
   // by the unknown-field policy) must now carry their real types.
@@ -176,6 +184,27 @@ function testNormalizeBackfillRecordTsParityWithWebhook() {
   assert.equal(webhook.recordId, "pi_123");
   // Backfill and webhook records must agree on the source timestamp.
   assert.equal(backfill?.sourceTs.getTime(), webhook.sourceTs.getTime());
+}
+
+function testDisputeEventsMapToDisputesEntity() {
+  const connector = createConnector();
+  assert.deepEqual(connector.getWebhookEventMapping("charge.dispute.created"), {
+    entity: "disputes",
+    operation: "upsert",
+  });
+  assert.deepEqual(connector.getWebhookEventMapping("charge.dispute.closed"), {
+    entity: "disputes",
+    operation: "upsert",
+  });
+
+  const events = connector.getWebhookEventsForEntities(["disputes"]).sort();
+  assert.deepEqual(events, [
+    "charge.dispute.closed",
+    "charge.dispute.created",
+    "charge.dispute.funds_reinstated",
+    "charge.dispute.funds_withdrawn",
+    "charge.dispute.updated",
+  ]);
 }
 
 function testPriceEventsMapToPricesEntity() {
@@ -321,6 +350,7 @@ async function main() {
   await testResolveSchema();
   await testSubscriptionsBackfillRequestsAllStatuses();
   testNormalizeBackfillRecordTsParityWithWebhook();
+  testDisputeEventsMapToDisputesEntity();
   testPriceEventsMapToPricesEntity();
   testNoLegacySubscriptionWebhookEvents();
   testWebhookEventsForEntities();

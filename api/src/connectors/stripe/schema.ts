@@ -97,6 +97,22 @@ export const SUBSCRIPTION_SCHEMA: Record<string, ConnectorFieldSchema> = {
   cancellation_details: j(),
 };
 
+export const DISPUTE_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  ...COMMON_STRIPE_SCHEMA,
+  amount: i(),
+  currency: s(),
+  charge: s(),
+  payment_intent: s(),
+  status: s(),
+  reason: s(),
+  balance_transaction: s(),
+  balance_transactions: j(),
+  evidence: j(),
+  evidence_details: j(),
+  is_charge_refundable: b(),
+  network_reason_code: s(),
+};
+
 export const CHARGE_SCHEMA: Record<string, ConnectorFieldSchema> = {
   ...COMMON_STRIPE_SCHEMA,
   amount: i(),
@@ -276,6 +292,7 @@ export const STRIPE_ENTITY_SCHEMA_MAP: Record<
 > = {
   customers: CUSTOMER_SCHEMA,
   subscriptions: SUBSCRIPTION_SCHEMA,
+  disputes: DISPUTE_SCHEMA,
   charges: CHARGE_SCHEMA,
   invoices: INVOICE_SCHEMA,
   products: PRODUCT_SCHEMA,

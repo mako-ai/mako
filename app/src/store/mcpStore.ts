@@ -44,6 +44,12 @@ export interface McpServerInfo {
   isActive: boolean;
   hasWorkspaceCredential: boolean;
   hasUserCredential: boolean;
+  /** Manual-client OAuth presets (Slack): a provider app is usable. */
+  hasOAuthClient: boolean;
+  /** Where the OAuth app comes from: workspace-saved or deployment env. */
+  oauthClientSource: "workspace" | "environment" | null;
+  /** Non-secret client id of the OAuth app, when one exists. */
+  oauthClientId: string | null;
 }
 
 export interface McpPresetHeaderField {
@@ -52,6 +58,15 @@ export interface McpPresetHeaderField {
   type: "password" | "string";
   required: boolean;
   helperText?: string;
+}
+
+export interface McpPresetOAuthInfo {
+  /** "dcr" = automatic registration; "manual" = admin supplies app creds. */
+  clientMode: "dcr" | "manual";
+  helperText?: string;
+  docsUrl?: string;
+  /** A deployment-wide OAuth app exists — connect is one click. */
+  envClientConfigured?: boolean;
 }
 
 export interface McpPresetInfo {
@@ -64,6 +79,7 @@ export interface McpPresetInfo {
   authType: "none" | "api_key" | "oauth";
   authOptions: Array<"none" | "api_key" | "oauth">;
   headerFields: McpPresetHeaderField[];
+  oauth?: McpPresetOAuthInfo;
 }
 
 export interface McpToolUiInfo {
@@ -95,6 +111,11 @@ export interface McpOAuthReturn {
 interface McpState {
   servers: McpServerInfo[];
   presets: McpPresetInfo[];
+  /**
+   * Redirect URI the OAuth provider must whitelist — from the API
+   * (`PUBLIC_URL` || `CLIENT_URL` + `/api/mcp/oauth/callback`).
+   */
+  oauthCallbackUrl: string | null;
   /** prefixed tool name → UI info, for chat approval cards. */
   toolInfo: Record<string, McpToolUiInfo>;
   grants: Record<string, McpGrant[]>; // serverId → my grants
@@ -136,6 +157,13 @@ interface McpActions {
     serverId: string,
     headers: Record<string, string>,
   ) => Promise<void>;
+  /** Save a pre-registered OAuth app (manual-client presets like Slack). */
+  saveOAuthClient: (
+    workspaceId: string,
+    serverId: string,
+    clientId: string,
+    clientSecret?: string,
+  ) => Promise<void>;
   testServer: (
     workspaceId: string,
     serverId: string,
@@ -168,6 +196,7 @@ export const useMcpStore = create<McpStore>()(
   immer((set, get) => ({
     servers: [],
     presets: [],
+    oauthCallbackUrl: null,
     toolInfo: {},
     grants: {},
     loading: false,
@@ -203,9 +232,11 @@ export const useMcpStore = create<McpStore>()(
       try {
         const response = unwrapBody(await api.GET("/api/mcp/presets", {})) as {
           presets: McpPresetInfo[];
+          oauthCallbackUrl?: string;
         };
         set(state => {
           state.presets = response.presets ?? [];
+          state.oauthCallbackUrl = response.oauthCallbackUrl ?? null;
         });
       } catch {
         // Presets are static metadata; the form falls back to custom-only.
@@ -292,6 +323,19 @@ export const useMcpStore = create<McpStore>()(
           {
             params: { path: { workspaceId, id: serverId } },
             body: { headers },
+          },
+        ),
+      );
+      await get().fetchServers(workspaceId);
+    },
+
+    saveOAuthClient: async (workspaceId, serverId, clientId, clientSecret) => {
+      unwrapBody(
+        await api.PUT(
+          "/api/workspaces/{workspaceId}/mcp-servers/{id}/oauth/client",
+          {
+            params: { path: { workspaceId, id: serverId } },
+            body: { clientId, clientSecret },
           },
         ),
       );
