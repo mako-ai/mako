@@ -128,22 +128,27 @@ const AppIcon = TAB_KIND_ICONS["app-v2"];
  * Synthetic nodes grouping apps under their storage mount, connector-tab
  * style: an org node (GitHub avatar) containing a repo node (GitHub mark)
  * containing the apps — or a single "Mako Cloud" node when no repo is
- * linked. Purely presentational: neither has a backend identity.
+ * connected. Purely presentational: neither has a backend identity. The
+ * suffix after the prefix carries the org login / repo name for icon lookup.
  */
-const ORG_NODE_ID = "::org::";
-const REPO_ROOT_ID = "::repo-root::";
+const ORG_NODE_PREFIX = "::org::";
+const REPO_NODE_PREFIX = "::repo::";
+const CLOUD_NODE_ID = "::mako-cloud::";
 
 type ParsedNode =
-  | { kind: "org" | "repo"; appId: ""; path: "" }
+  | { kind: "org" | "repo"; appId: ""; path: string }
   | { kind: "app"; appId: string; path: "" }
   | { kind: "dir" | "file"; appId: string; path: string };
 
 function parseNodeId(id: string): ParsedNode {
-  if (id === ORG_NODE_ID) {
-    return { kind: "org", appId: "", path: "" };
+  if (id.startsWith(ORG_NODE_PREFIX)) {
+    return { kind: "org", appId: "", path: id.slice(ORG_NODE_PREFIX.length) };
   }
-  if (id === REPO_ROOT_ID) {
+  if (id === CLOUD_NODE_ID) {
     return { kind: "repo", appId: "", path: "" };
+  }
+  if (id.startsWith(REPO_NODE_PREFIX)) {
+    return { kind: "repo", appId: "", path: id.slice(REPO_NODE_PREFIX.length) };
   }
   if (id.includes(APP_FILE_SEP)) {
     const [appId, path] = id.split(APP_FILE_SEP);
@@ -210,9 +215,8 @@ export default function AppsV2Explorer() {
   const loading = useAppsV2Store(s => s.appsLoading);
   const error = useAppsV2Store(s => s.error);
   const clearError = useAppsV2Store(s => s.clearError);
-  const linked = useAppsV2Store(s => s.linked);
   const canCreate = useAppsV2Store(s => s.canCreate);
-  const linkedRepo = useAppsV2Store(s => s.linkedRepo);
+  const repos = useAppsV2Store(s => s.repos);
   const probeEnabled = useAppsV2Store(s => s.probeEnabled);
   const filesByApp = useAppsV2Store(s => s.filesByApp);
   const fetchApps = useAppsV2Store(s => s.fetchApps);
@@ -286,9 +290,19 @@ export default function AppsV2Explorer() {
   const reveal = useExplorerRevealStore(selectRevealFor("apps-v2"));
 
   const [loadingApps, setLoadingApps] = useState<Record<string, boolean>>({});
+  // Synthetic org/repo mount nodes default OPEN (their ids are dynamic, so
+  // the default lives in the lookup, not the initial state).
   const [expandedFolders, setExpandedFolders] = useState<
     Record<string, boolean>
-  >({ [ORG_NODE_ID]: true, [REPO_ROOT_ID]: true });
+  >({});
+  const isFolderOpen = useCallback(
+    (key: string) =>
+      expandedFolders[key] ??
+      (key.startsWith(ORG_NODE_PREFIX) ||
+        key.startsWith(REPO_NODE_PREFIX) ||
+        key === CLOUD_NODE_ID),
+    [expandedFolders],
+  );
   const [createOpen, setCreateOpen] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [creating, setCreating] = useState(false);
@@ -355,34 +369,44 @@ export default function AppsV2Explorer() {
         ? buildFileNodes(app.id, filesByApp[app.id])
         : undefined,
     }));
-    // Group every app under its storage mount so the hierarchy reads like
-    // the repo it (will) live in: org (avatar) > repo (GitHub mark) > apps.
-    const repoNode = {
-      id: REPO_ROOT_ID,
-      name: linkedRepo ? linkedRepo.repo : "Mako Cloud",
-      path: REPO_ROOT_ID,
+    // Group apps under their storage mount so the hierarchy reads like the
+    // repo they (will) live in: org (avatar) > repo (GitHub mark) > apps.
+    // Until apps carry a per-repo pointer (substrate pivot pending), they all
+    // nest under the first connected repo; extra repos render empty.
+    const orgNodes = repos.map((repo, index) => ({
+      id: `${ORG_NODE_PREFIX}${repo.owner}/${repo.repo}`,
+      name: repo.owner,
+      path: repo.owner,
       isDirectory: true,
-      children: appNodes,
-    };
+      children: [
+        {
+          id: `${REPO_NODE_PREFIX}${repo.owner}/${repo.repo}`,
+          name: repo.repo,
+          path: `${repo.owner}/${repo.repo}`,
+          isDirectory: true,
+          children: index === 0 ? appNodes : [],
+        },
+      ],
+    }));
     return [
       {
         key: "apps",
         label: "Apps",
-        nodes: linkedRepo
-          ? [
+        nodes: orgNodes.length
+          ? orgNodes
+          : [
               {
-                id: ORG_NODE_ID,
-                name: linkedRepo.owner,
-                path: ORG_NODE_ID,
+                id: CLOUD_NODE_ID,
+                name: "Mako Cloud",
+                path: CLOUD_NODE_ID,
                 isDirectory: true,
-                children: [repoNode],
+                children: appNodes,
               },
-            ]
-          : [repoNode],
+            ],
         hideSectionHeader: true,
       },
     ];
-  }, [apps, filesByApp, linkedRepo]);
+  }, [apps, filesByApp, repos]);
 
   const handleLoadChildren = useCallback(
     async (node: ResourceTreeNode) => {
@@ -493,9 +517,9 @@ export default function AppsV2Explorer() {
           <RefreshIcon size={20} strokeWidth={2} />
         </IconButton>
       </Tooltip>
-      {linked && (
+      {repos.length > 0 && (
         <Tooltip
-          title={`Linked: ${linkedRepo?.owner}/${linkedRepo?.repo} — manage in Settings`}
+          title={`Connected: ${repos.map(r => `${r.owner}/${r.repo}`).join(", ")} — manage in Settings`}
         >
           <IconButton size="small" onClick={openGitHubSettings}>
             <LinkIcon size={18} strokeWidth={2} />
@@ -656,19 +680,20 @@ export default function AppsV2Explorer() {
                 revealNodeId={reveal?.nodeId}
                 revealNonce={reveal?.nonce}
                 getItemIcon={node => {
-                  const kind = parseNodeId(node.id).kind;
-                  if (kind === "app") {
+                  const parsed = parseNodeId(node.id);
+                  if (parsed.kind === "app") {
                     return <AppIcon size={16} strokeWidth={1.5} />;
                   }
-                  if (kind === "repo") {
+                  if (parsed.kind === "repo") {
                     return <LinkIcon size={16} strokeWidth={1.5} />;
                   }
-                  if (kind === "org" && linkedRepo) {
+                  if (parsed.kind === "org") {
+                    const owner = parsed.path.split("/")[0];
                     return (
                       <Box
                         component="img"
-                        src={`https://github.com/${linkedRepo.owner}.png?size=32`}
-                        alt={`${linkedRepo.owner} avatar`}
+                        src={`https://github.com/${owner}.png?size=32`}
+                        alt={`${owner} avatar`}
                         sx={{
                           width: 16,
                           height: 16,
@@ -693,7 +718,7 @@ export default function AppsV2Explorer() {
                 getContextMenuItems={getContextMenuItems}
                 enableRename={false}
                 enableDelete={false}
-                isFolderExpanded={key => !!expandedFolders[key]}
+                isFolderExpanded={isFolderOpen}
                 onToggleFolder={key =>
                   setExpandedFolders(prev => ({ ...prev, [key]: !prev[key] }))
                 }
@@ -827,8 +852,8 @@ export default function AppsV2Explorer() {
             disabled={creating}
           />
           <Typography variant="caption" color="text.secondary">
-            {linkedRepo
-              ? `Creates a real Vite + React project as a folder in the linked GitHub repo (${linkedRepo.owner}/${linkedRepo.repo}).`
+            {repos.length > 0
+              ? `Creates a real Vite + React project in the connected GitHub repo (${repos[0].owner}/${repos[0].repo}).`
               : "Creates a real Vite + React project in Mako-hosted cloud storage — no GitHub setup needed."}
           </Typography>
         </DialogContent>

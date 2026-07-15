@@ -1,19 +1,18 @@
 /**
- * Settings > GitHub — the workspace's GitHub App connection.
+ * Settings > GitHub — the workspace's connected repositories.
  *
- * Shows every installation bound to this workspace (account, type, a link to
- * manage/uninstall it on github.com), a way to connect another account, and
- * (today) the Apps v2 repo binding — Apps v2 apps live as subdirectories of
- * one linked repo. dbt has its own separate repo-import flow; this section
- * only owns the shared "which GitHub accounts are connected" concern plus
- * Apps v2's repo pick, not dbt's project import.
+ * The primary object is the CONNECTED REPO (0..N per workspace, default 1):
+ * apps (and later consoles, dbt projects) mount into them at
+ * `<makoRoot>/apps/<app>`. GitHub App installations are plumbing — which
+ * accounts repos can be picked from — shown as a secondary list with
+ * manage/forget actions, never as the main event.
  *
- * Previously this was a modal opened from the Apps v2 explorer
- * (AppsV2LinkRepoDialog). Moved here so a broken/stale installation (GitHub
- * only allows one live installation per account, so an uninstall+reinstall
- * cycle can leave a dead binding behind in whichever workspace-scoped
- * database missed the uninstall webhook) has a real place to see and fix it,
- * instead of silently failing inside a feature-panel dialog.
+ * "Add GitHub repository" is the single entry point. Clicking it silently
+ * runs the user-authorization sync in a background tab (GitHub never fires
+ * the install callback for an account where the app is already installed, so
+ * this discovers + binds every installation the user controls — instant when
+ * already authorized) and opens the connect dialog; a window-focus listener
+ * refreshes the account list when the user returns from any GitHub hop.
  */
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -22,6 +21,10 @@ import {
   Avatar,
   Box,
   Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   IconButton,
   MenuItem,
   Stack,
@@ -29,7 +32,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { ExternalLink, Github, Unplug } from "lucide-react";
+import { ExternalLink, Github, Plus, Unplug } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import {
@@ -64,13 +67,13 @@ export default function GitHubConnectionSection() {
   const workspaceId = currentWorkspace?.id;
   const isAdmin = useIsWorkspaceAdmin();
 
-  const linkedRepo = useAppsV2Store(s => s.linkedRepo);
+  const repos = useAppsV2Store(s => s.repos);
   const fetchGithubStatus = useAppsV2Store(s => s.fetchGithubStatus);
   const fetchGithubRepos = useAppsV2Store(s => s.fetchGithubRepos);
   const getGitHubInstallUrl = useAppsV2Store(s => s.getGitHubInstallUrl);
   const getGitHubSyncUrl = useAppsV2Store(s => s.getGitHubSyncUrl);
-  const linkRepo = useAppsV2Store(s => s.linkRepo);
-  const unlinkRepo = useAppsV2Store(s => s.unlinkRepo);
+  const connectRepo = useAppsV2Store(s => s.connectRepo);
+  const disconnectRepo = useAppsV2Store(s => s.disconnectRepo);
   const disconnectGithubInstallation = useAppsV2Store(
     s => s.disconnectGithubInstallation,
   );
@@ -80,27 +83,29 @@ export default function GitHubConnectionSection() {
   );
   const [appSlug, setAppSlug] = useState<string | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
+  const [addOpen, setAddOpen] = useState(false);
   const [installationId, setInstallationId] = useState<number | "">("");
-  const [repos, setRepos] = useState<AppV2GithubRepo[]>([]);
+  const [pickerRepos, setPickerRepos] = useState<AppV2GithubRepo[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<AppV2GithubRepo | null>(
     null,
   );
-  const [subdirectory, setSubdirectory] = useState("/");
+  const [makoRoot, setMakoRoot] = useState("/");
   const [reposLoading, setReposLoading] = useState(false);
-  const [connecting, setConnecting] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [disconnectingId, setDisconnectingId] = useState<number | null>(null);
-  const [linking, setLinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const reloadStatus = useCallback(async () => {
     if (!workspaceId) return;
-    setStatusLoading(true);
     const status = await fetchGithubStatus(workspaceId);
     setInstallations(status.installations);
     setAppSlug(status.appSlug);
-    if (status.installations.length === 1) {
-      setInstallationId(status.installations[0].installationId);
-    }
+    setInstallationId(current => {
+      if (typeof current === "number") return current;
+      return status.installations.length === 1
+        ? status.installations[0].installationId
+        : current;
+    });
     setStatusLoading(false);
   }, [workspaceId, fetchGithubStatus]);
 
@@ -108,40 +113,86 @@ export default function GitHubConnectionSection() {
     void reloadStatus();
   }, [reloadStatus]);
 
+  // Coming back from any GitHub hop (sync tab, install flow) → refresh the
+  // accounts so the picker fills in without a manual reload.
+  useEffect(() => {
+    const onFocus = () => void reloadStatus();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [reloadStatus]);
+
   useEffect(() => {
     if (typeof installationId !== "number" || !workspaceId) {
-      setRepos([]);
+      setPickerRepos([]);
       return;
     }
     void (async () => {
       setReposLoading(true);
-      setRepos(await fetchGithubRepos(workspaceId, installationId));
+      setPickerRepos(await fetchGithubRepos(workspaceId, installationId));
       setReposLoading(false);
     })();
   }, [installationId, workspaceId, fetchGithubRepos]);
 
-  const handleConnect = useCallback(async () => {
+  const handleAdd = useCallback(async () => {
     if (!workspaceId) return;
-    setConnecting(true);
-    const url = await getGitHubInstallUrl(workspaceId);
-    setConnecting(false);
-    if (url) window.open(url, "_blank", "noopener,noreferrer");
-  }, [workspaceId, getGitHubInstallUrl]);
-
-  const handleSync = useCallback(async () => {
-    if (!workspaceId) return;
-    setConnecting(true);
+    setError(null);
+    setAddOpen(true);
+    // Silent background sync: binds installations that already exist on
+    // GitHub (instant when previously authorized). Same-gesture window.open
+    // keeps popup blockers out of the way.
     const url = await getGitHubSyncUrl(workspaceId);
-    setConnecting(false);
     if (url) window.open(url, "_blank", "noopener,noreferrer");
   }, [workspaceId, getGitHubSyncUrl]);
 
-  const handleDisconnect = useCallback(
+  const handleInstallNewAccount = useCallback(async () => {
+    if (!workspaceId) return;
+    const url = await getGitHubInstallUrl(workspaceId);
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
+  }, [workspaceId, getGitHubInstallUrl]);
+
+  const handleConnect = useCallback(async () => {
+    if (!workspaceId || !selectedRepo) return;
+    setBusy(true);
+    setError(null);
+    const result = await connectRepo(workspaceId, {
+      owner: selectedRepo.owner,
+      repo: selectedRepo.name,
+      defaultBranch: selectedRepo.defaultBranch,
+      // "/" (or blank) = repo root; the backend stores root as "".
+      subdirectory: makoRoot.trim().replace(/^\/+$/, ""),
+      installationId:
+        typeof installationId === "number" ? installationId : undefined,
+    });
+    setBusy(false);
+    if (result.ok) {
+      setAddOpen(false);
+      setSelectedRepo(null);
+    } else {
+      setError(result.error ?? "Failed to connect");
+    }
+  }, [workspaceId, selectedRepo, makoRoot, installationId, connectRepo]);
+
+  const handleDisconnectRepo = useCallback(
+    async (owner: string, repo: string) => {
+      if (!workspaceId) return;
+      if (
+        !window.confirm(
+          `Disconnect ${owner}/${repo}? Its content stays in GitHub; this workspace just stops pointing at it.`,
+        )
+      ) {
+        return;
+      }
+      await disconnectRepo(workspaceId, owner, repo);
+    },
+    [workspaceId, disconnectRepo],
+  );
+
+  const handleForgetInstallation = useCallback(
     async (inst: AppV2GithubInstallation) => {
       if (!workspaceId) return;
       if (
         !window.confirm(
-          `Forget the "${inst.accountLogin}" installation? This only clears Mako's local record — it does not uninstall the app on GitHub. Use this to clear a broken/stale entry after reinstalling on github.com.`,
+          `Forget the "${inst.accountLogin}" account? This only clears Mako's record — it does not uninstall the app on GitHub.`,
         )
       ) {
         return;
@@ -156,40 +207,11 @@ export default function GitHubConnectionSection() {
         if (installationId === inst.installationId) setInstallationId("");
         void reloadStatus();
       } else {
-        setError(result.error ?? "Failed to disconnect");
+        setError(result.error ?? "Failed to forget account");
       }
     },
     [workspaceId, disconnectGithubInstallation, installationId, reloadStatus],
   );
-
-  const handleLink = useCallback(async () => {
-    if (!workspaceId || !selectedRepo) return;
-    setLinking(true);
-    setError(null);
-    const result = await linkRepo(workspaceId, {
-      owner: selectedRepo.owner,
-      repo: selectedRepo.name,
-      defaultBranch: selectedRepo.defaultBranch,
-      // "/" (or blank) = repo root; the backend stores root as "".
-      subdirectory: subdirectory.trim().replace(/^\/+$/, ""),
-      installationId:
-        typeof installationId === "number" ? installationId : undefined,
-    });
-    setLinking(false);
-    if (!result.ok) setError(result.error ?? "Failed to link");
-  }, [workspaceId, selectedRepo, subdirectory, installationId, linkRepo]);
-
-  const handleUnlink = useCallback(async () => {
-    if (!workspaceId) return;
-    if (
-      !window.confirm(
-        "Unlink this repo? Existing apps stay in GitHub; this workspace just stops pointing at them.",
-      )
-    ) {
-      return;
-    }
-    await unlinkRepo(workspaceId);
-  }, [workspaceId, unlinkRepo]);
 
   if (!isAdmin) {
     return (
@@ -200,45 +222,106 @@ export default function GitHubConnectionSection() {
   }
 
   return (
-    <Stack spacing={3}>
+    <Stack spacing={4}>
       <Box>
         <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-          Installations
+          Connected repositories
         </Typography>
-        {statusLoading ? (
-          <Typography variant="body2" color="text.secondary">
-            Loading…
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Mako content lives in these repos under each repo&apos;s Mako root
+          folder; apps always go in its <code>apps/</code> subfolder. Without a
+          connected repo, apps are stored in Mako Cloud.
+        </Typography>
+
+        {repos.length === 0 && !statusLoading && (
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            No repository connected — apps are stored in Mako Cloud.
           </Typography>
-        ) : installations.length === 0 ? (
-          <Typography variant="body2" color="text.secondary">
-            No GitHub App installation is connected to this workspace yet.
+        )}
+
+        <Stack spacing={1}>
+          {repos.map(repo => (
+            <Box
+              key={`${repo.owner}/${repo.repo}`}
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 1.5,
+                p: 1.5,
+                border: 1,
+                borderColor: "divider",
+                borderRadius: 1,
+              }}
+            >
+              <AccountAvatar login={repo.owner} size={24} />
+              <Box sx={{ flex: 1 }}>
+                <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                  {repo.owner}/{repo.repo}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  branch {repo.defaultBranch} · Mako root{" "}
+                  {repo.subdirectory || "/"} · apps under{" "}
+                  {repo.subdirectory ? `${repo.subdirectory}/apps/` : "apps/"}
+                </Typography>
+              </Box>
+              <Tooltip title="Open on GitHub">
+                <IconButton
+                  size="small"
+                  component="a"
+                  href={`https://github.com/${repo.owner}/${repo.repo}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <ExternalLink size={16} />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="Disconnect from this workspace">
+                <IconButton
+                  size="small"
+                  onClick={() =>
+                    void handleDisconnectRepo(repo.owner, repo.repo)
+                  }
+                >
+                  <Unplug size={16} />
+                </IconButton>
+              </Tooltip>
+            </Box>
+          ))}
+        </Stack>
+
+        {appSlug && (
+          <Button
+            size="small"
+            variant="contained"
+            startIcon={<Plus size={14} />}
+            onClick={() => void handleAdd()}
+            sx={{ mt: 1.5 }}
+          >
+            Add GitHub repository
+          </Button>
+        )}
+      </Box>
+
+      {installations.length > 0 && (
+        <Box>
+          <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
+            GitHub accounts
           </Typography>
-        ) : (
-          <Stack spacing={1}>
+          <Typography variant="caption" color="text.secondary">
+            Accounts the Mako GitHub App is installed on — repositories are
+            picked from these.
+          </Typography>
+          <Stack spacing={0.5} sx={{ mt: 1 }}>
             {installations.map(inst => (
               <Box
                 key={inst.installationId}
-                sx={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 1,
-                  p: 1.5,
-                  border: 1,
-                  borderColor: "divider",
-                  borderRadius: 1,
-                }}
+                sx={{ display: "flex", alignItems: "center", gap: 1 }}
               >
-                <AccountAvatar login={inst.accountLogin} size={24} />
-                <Box sx={{ flex: 1 }}>
-                  <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                    {inst.accountLogin}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {inst.accountType ?? "account"} · installation{" "}
-                    {inst.installationId}
-                  </Typography>
-                </Box>
-                <Tooltip title="Manage on GitHub (uninstall, change repo access)">
+                <AccountAvatar login={inst.accountLogin} size={18} />
+                <Typography variant="body2" sx={{ flex: 1 }}>
+                  {inst.accountLogin}
+                </Typography>
+                <Tooltip title="Manage on GitHub (repo access, uninstall)">
                   <IconButton
                     size="small"
                     component="a"
@@ -246,176 +329,132 @@ export default function GitHubConnectionSection() {
                     target="_blank"
                     rel="noopener noreferrer"
                   >
-                    <ExternalLink size={16} />
+                    <ExternalLink size={14} />
                   </IconButton>
                 </Tooltip>
-                <Tooltip title="Forget this installation in Mako (does not uninstall on GitHub)">
+                <Tooltip title="Forget in Mako (does not uninstall on GitHub)">
                   <IconButton
                     size="small"
-                    onClick={() => void handleDisconnect(inst)}
+                    onClick={() => void handleForgetInstallation(inst)}
                     disabled={disconnectingId === inst.installationId}
                   >
-                    <Unplug size={16} />
+                    <Unplug size={14} />
                   </IconButton>
                 </Tooltip>
               </Box>
             ))}
           </Stack>
-        )}
-        {appSlug && (
-          <Stack
-            direction="row"
-            spacing={1}
-            sx={{ mt: 1.5 }}
-            alignItems="center"
+        </Box>
+      )}
+
+      {error && !addOpen && <Alert severity="error">{error}</Alert>}
+
+      <Dialog
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Add GitHub repository</DialogTitle>
+        <DialogContent>
+          <TextField
+            select
+            fullWidth
+            margin="dense"
+            label="GitHub account"
+            value={installationId === "" ? "" : String(installationId)}
+            onChange={e => {
+              setInstallationId(Number(e.target.value));
+              setSelectedRepo(null);
+            }}
+            helperText={
+              installations.length === 0
+                ? "Your accounts are syncing — this fills in when you return from GitHub."
+                : undefined
+            }
           >
-            <Button
-              size="small"
-              startIcon={<Github size={14} />}
-              onClick={() => void handleConnect()}
-              disabled={connecting}
-            >
-              Add GitHub repository
-            </Button>
-            <Tooltip title="Already installed the app on GitHub but it's not listed here? Authorize once to sync every installation you control.">
-              <Button
-                size="small"
-                color="inherit"
-                onClick={() => void handleSync()}
-                disabled={connecting}
+            {installations.map(inst => (
+              <MenuItem
+                key={inst.installationId}
+                value={String(inst.installationId)}
               >
-                Sync existing installations
-              </Button>
-            </Tooltip>
-          </Stack>
-        )}
-      </Box>
-
-      <Box>
-        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-          Apps v2 repository
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Mako content lives in one linked repo under the Mako root folder; apps
-          always go in its <code>apps/</code> subfolder, e.g.
-          apps/my-dashboard/.
-        </Typography>
-
-        {linkedRepo && (
-          <Alert severity="success" sx={{ mb: 2 }}>
-            Linked to{" "}
-            <strong>
-              {linkedRepo.owner}/{linkedRepo.repo}
-            </strong>{" "}
-            (default branch <code>{linkedRepo.defaultBranch}</code>, Mako root{" "}
-            <code>{linkedRepo.subdirectory || "/"}</code>, apps under{" "}
-            <code>
-              {linkedRepo.subdirectory
-                ? `${linkedRepo.subdirectory}/apps/`
-                : "apps/"}
-            </code>
-            ).
-          </Alert>
-        )}
-
-        {installations.length === 0 ? (
-          <Typography variant="body2" color="text.secondary">
-            Connect a GitHub account above first.
-          </Typography>
-        ) : (
-          <>
-            <TextField
-              select
-              fullWidth
-              margin="dense"
-              label="GitHub account / installation"
-              value={installationId === "" ? "" : String(installationId)}
-              onChange={e => {
-                setInstallationId(Number(e.target.value));
-                setSelectedRepo(null);
-              }}
-            >
-              {installations.map(inst => (
-                <MenuItem
-                  key={inst.installationId}
-                  value={String(inst.installationId)}
-                >
-                  {/* Select renders the chosen MenuItem's children in the
-                      closed state too, so the avatar shows there as well. */}
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                    <AccountAvatar login={inst.accountLogin} />
-                    {inst.accountLogin}
-                  </Box>
-                </MenuItem>
-              ))}
-            </TextField>
-
-            <Autocomplete
-              options={repos}
-              loading={reposLoading}
-              getOptionLabel={r => r.fullName}
-              value={selectedRepo}
-              onChange={(_, v) => setSelectedRepo(v)}
-              disabled={typeof installationId !== "number"}
-              renderOption={(props, option) => (
-                <Box
-                  component="li"
-                  {...props}
-                  key={option.fullName}
-                  sx={{ display: "flex", gap: 1 }}
-                >
-                  <Github size={14} style={{ flexShrink: 0 }} />
-                  {option.fullName}
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                  <AccountAvatar login={inst.accountLogin} />
+                  {inst.accountLogin}
                 </Box>
-              )}
-              renderInput={params => (
-                <TextField
-                  {...params}
-                  margin="dense"
-                  label="Repository"
-                  placeholder="Search repositories..."
-                  InputProps={{
-                    ...params.InputProps,
-                    startAdornment: selectedRepo ? (
-                      <Github size={14} style={{ marginLeft: 6 }} />
-                    ) : undefined,
-                  }}
-                />
-              )}
-            />
+              </MenuItem>
+            ))}
+          </TextField>
+          <Button
+            size="small"
+            onClick={() => void handleInstallNewAccount()}
+            sx={{ mb: 1 }}
+          >
+            Install on another GitHub account…
+          </Button>
 
-            <TextField
-              fullWidth
-              margin="dense"
-              label="Mako root folder"
-              helperText="The folder Mako owns in this repo (/ = repo root). Apps always go under its apps/ subfolder, e.g. apps/my-dashboard/"
-              value={subdirectory}
-              onChange={e => setSubdirectory(e.target.value)}
-            />
-
-            {error && (
-              <Alert severity="error" sx={{ mt: 1 }}>
-                {error}
-              </Alert>
-            )}
-
-            <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
-              <Button
-                variant="contained"
-                onClick={() => void handleLink()}
-                disabled={linking || !selectedRepo}
+          <Autocomplete
+            options={pickerRepos}
+            loading={reposLoading}
+            getOptionLabel={r => r.fullName}
+            value={selectedRepo}
+            onChange={(_, v) => setSelectedRepo(v)}
+            disabled={typeof installationId !== "number"}
+            renderOption={(props, option) => (
+              <Box
+                component="li"
+                {...props}
+                key={option.fullName}
+                sx={{ display: "flex", gap: 1 }}
               >
-                {linkedRepo ? "Change repo" : "Link"}
-              </Button>
-              {linkedRepo && (
-                <Button color="error" onClick={() => void handleUnlink()}>
-                  Unlink
-                </Button>
-              )}
-            </Stack>
-          </>
-        )}
-      </Box>
+                <Github size={14} style={{ flexShrink: 0 }} />
+                {option.fullName}
+              </Box>
+            )}
+            renderInput={params => (
+              <TextField
+                {...params}
+                margin="dense"
+                label="Repository"
+                placeholder="Search repositories..."
+                InputProps={{
+                  ...params.InputProps,
+                  startAdornment: selectedRepo ? (
+                    <Github size={14} style={{ marginLeft: 6 }} />
+                  ) : undefined,
+                }}
+              />
+            )}
+          />
+
+          <TextField
+            fullWidth
+            margin="dense"
+            label="Mako root folder"
+            helperText="The folder Mako owns in this repo (/ = repo root). Apps always go under its apps/ subfolder."
+            value={makoRoot}
+            onChange={e => setMakoRoot(e.target.value)}
+          />
+
+          {error && (
+            <Alert severity="error" sx={{ mt: 1 }}>
+              {error}
+            </Alert>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAddOpen(false)} disabled={busy}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => void handleConnect()}
+            disabled={busy || !selectedRepo}
+          >
+            Connect
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }

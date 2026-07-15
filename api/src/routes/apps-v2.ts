@@ -38,10 +38,10 @@ import {
   listInstallationRepos,
 } from "../integrations/github/github-api";
 import {
-  getAppsRepoBinding,
-  linkAppsRepo,
-  unlinkAppsRepo,
-} from "../apps-v2/repo-binding.service";
+  connectWorkspaceRepo,
+  disconnectWorkspaceRepo,
+  listWorkspaceRepos,
+} from "../services/workspace-repos.service";
 import {
   WorktreeConflictError,
   chatActorFor,
@@ -211,23 +211,21 @@ appsV2Routes.openapi(
   }),
   async c => {
     const { workspaceId } = c.req.valid("param");
-    const binding = await getAppsRepoBinding(workspaceId);
+    const repos = await listWorkspaceRepos(workspaceId);
     return c.json(
       {
         success: true as const,
         enabled: true,
-        linked: Boolean(binding),
-        // Creation works without a linked repo when Mako-hosted cloud
+        linked: repos.length > 0,
+        // Creation works without a connected repo when Mako-hosted cloud
         // storage is configured (per-app repos under MAKO_CLOUD_GITHUB_ORG).
-        canCreate: Boolean(binding) || isMakoCloudConfigured(),
-        repo: binding
-          ? {
-              owner: binding.owner,
-              repo: binding.repo,
-              defaultBranch: binding.defaultBranch,
-              subdirectory: binding.subdirectory,
-            }
-          : null,
+        canCreate: repos.length > 0 || isMakoCloudConfigured(),
+        repos: repos.map(r => ({
+          owner: r.owner,
+          repo: r.repo,
+          defaultBranch: r.defaultBranch,
+          subdirectory: r.subdirectory,
+        })),
       },
       200,
     );
@@ -257,7 +255,7 @@ appsV2Routes.openapi(
     })
       .select("installationId accountLogin accountType repositorySelection")
       .lean();
-    const binding = await getAppsRepoBinding(workspaceId);
+    const repos = await listWorkspaceRepos(workspaceId);
     return c.json(
       {
         success: true as const,
@@ -265,7 +263,7 @@ appsV2Routes.openapi(
         appSlug: getGitHubAppSlug() ?? null,
         devTokenAvailable: Boolean(getGitHubDevToken()),
         installations,
-        linkedRepo: binding ?? null,
+        repos,
       },
       200,
     );
@@ -444,7 +442,7 @@ appsV2Routes.openapi(
       // caller didn't pin one (reuses the dbt token resolver).
       const token = await resolveRepoToken(body.installationId);
       const info = await getRepoInfo(body.owner, body.repo, token);
-      const binding = await linkAppsRepo({
+      const binding = await connectWorkspaceRepo({
         workspaceId,
         owner: body.owner,
         repo: body.repo,
@@ -465,9 +463,21 @@ appsV2Routes.openapi(
     method: "post",
     path: "/unlink",
     tags: ["Apps v2"],
-    summary: "Unlink the workspace's apps repo",
+    summary: "Disconnect a workspace repo",
     security: AUTH_SECURITY,
-    request: { params: WorkspaceParam },
+    request: {
+      params: WorkspaceParam,
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              owner: z.string().min(1),
+              repo: z.string().min(1),
+            }),
+          },
+        },
+      },
+    },
     responses: OPEN_RESPONSES,
   }),
   async c => {
@@ -478,12 +488,13 @@ appsV2Routes.openapi(
         return c.json(
           {
             success: false,
-            error: "Unlinking a repo requires the admin or owner role",
+            error: "Disconnecting a repo requires the admin or owner role",
           },
           403,
         );
       }
-      await unlinkAppsRepo(workspaceId);
+      const body = c.req.valid("json");
+      await disconnectWorkspaceRepo(workspaceId, body.owner, body.repo);
       return c.json({ success: true as const }, 200);
     } catch (error) {
       return handleError(c, error);
@@ -555,16 +566,16 @@ appsV2Routes.openapi(
       const { workspaceId } = c.req.valid("param");
       const { title, description } = c.req.valid("json");
       const userId = actingUserId(c);
-      // Instant start: with no BYO repo linked, apps are stored in a
+      // Instant start: with no repo connected, apps are stored in a
       // Mako-hosted cloud repo (per-project, under MAKO_CLOUD_GITHUB_ORG).
       // Only refuse when NEITHER path exists, so the failure stays actionable.
-      const binding = await getAppsRepoBinding(workspaceId);
-      if (!binding && !isMakoCloudConfigured()) {
+      const repos = await listWorkspaceRepos(workspaceId);
+      if (repos.length === 0 && !isMakoCloudConfigured()) {
         return c.json(
           {
             success: false,
             error:
-              "No GitHub repo is linked and Mako Cloud storage is not configured. Link a repo (Settings → GitHub) or set MAKO_CLOUD_GITHUB_*.",
+              "No GitHub repo is connected and Mako Cloud storage is not configured. Connect a repo (Settings → GitHub) or set MAKO_CLOUD_GITHUB_*.",
           },
           409,
         );

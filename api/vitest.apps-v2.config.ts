@@ -11,7 +11,12 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/apps-v2/**/*.test.ts"],
+    include: [
+      "src/apps-v2/**/*.test.ts",
+      // Workspace repos grew out of apps-v2's repo binding and shares its
+      // fixtures/infra (mongodb-memory-server), so it runs in this suite.
+      "src/services/workspace-repos.service.test.ts",
+    ],
     exclude: ["**/node_modules/**"],
     // mongodb-memory-server downloads a mongod binary on first run.
     testTimeout: 60_000,

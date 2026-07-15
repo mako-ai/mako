@@ -3401,7 +3401,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Unlink the workspace's apps repo */
+        /** Disconnect a workspace repo */
         post: operations["post_api_workspaces_workspaceId_apps_v2_unlink"];
         delete?: never;
         options?: never;
@@ -16078,7 +16078,14 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    owner: string;
+                    repo: string;
+                };
+            };
+        };
         responses: {
             /** @description Successful response */
             "2XX": {

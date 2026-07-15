@@ -21677,7 +21677,7 @@
         "tags": [
           "Apps v2"
         ],
-        "summary": "Unlink the workspace's apps repo",
+        "summary": "Disconnect a workspace repo",
         "security": [
           {
             "cookieAuth": []
@@ -21696,6 +21696,29 @@
             "in": "path"
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "owner": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "repo": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "owner",
+                  "repo"
+                ]
+              }
+            }
+          }
+        },
         "responses": {
           "2XX": {
             "description": "Successful response",

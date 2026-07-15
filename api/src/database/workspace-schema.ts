@@ -178,15 +178,19 @@ export interface IWorkspace extends Document {
   selfDirective?: string;
   apiKeys?: IWorkspaceApiKey[];
   /**
-   * Apps v2 GitHub repo binding. Apps v2 stores nothing in Mongo except this
-   * link: the repo itself is the durable store (files/history/branches live in
-   * GitHub, working copies in E2B sandboxes). Same shape/spirit as
-   * `DbtProject.repo` and reuses the same GitHub App installation.
+   * Connected GitHub repos — workspace-level infrastructure, not an apps-v2
+   * detail: apps (and later consoles, dbt projects) mount into these. Mako
+   * stores nothing in Mongo except these links: the repos themselves are the
+   * durable store. Layout inside a repo: `<makoRoot>/apps/<app>` for
+   * workspace content, `<makoRoot>/users/<userId>/apps/<app>` for personal.
+   * The model allows N repos; the product default is one.
    */
-  appsV2Repo?: IAppsV2RepoBinding;
+  workspaceRepos?: IWorkspaceRepoBinding[];
+  /** @deprecated pre-workspaceRepos single binding — migrated at read time. */
+  appsV2Repo?: IWorkspaceRepoBinding;
 }
 
-export interface IAppsV2RepoBinding {
+export interface IWorkspaceRepoBinding {
   provider: "github";
   /** GitHub App installation granting repo access (omit for public repos). */
   installationId?: number;
@@ -194,11 +198,17 @@ export interface IAppsV2RepoBinding {
   repo: string;
   /** Default/main branch conversations fork from and publish merges into. */
   defaultBranch: string;
-  /** Root under which apps live, e.g. "apps" → apps/<slug>/. */
+  /**
+   * The Mako root — the folder Mako owns in this repo ("" = repo root).
+   * Apps always live under `<subdirectory>/apps/<app>`.
+   */
   subdirectory: string;
   linkedBy?: string;
   linkedAt?: Date;
 }
+
+/** @deprecated old name — repos are workspace-level, not apps-v2-scoped. */
+export type IAppsV2RepoBinding = IWorkspaceRepoBinding;
 
 /**
  * API Key interface for workspace authentication
@@ -1327,6 +1337,25 @@ Add any specific instructions for how the AI should interpret your data or respo
       default: "",
       maxlength: 10000,
     },
+    workspaceRepos: {
+      type: [
+        new Schema(
+          {
+            provider: { type: String, enum: ["github"], default: "github" },
+            installationId: { type: Number },
+            owner: { type: String, required: true, trim: true },
+            repo: { type: String, required: true, trim: true },
+            defaultBranch: { type: String, required: true, default: "main" },
+            // Mako root ("" = repo root); apps live at <root>/apps/<app>.
+            subdirectory: { type: String, default: "" },
+            linkedBy: { type: String },
+            linkedAt: { type: Date },
+          },
+          { _id: false },
+        ),
+      ],
+      default: undefined,
+    },
     appsV2Repo: {
       type: {
         provider: { type: String, enum: ["github"], default: "github" },
@@ -1334,7 +1363,7 @@ Add any specific instructions for how the AI should interpret your data or respo
         owner: { type: String, required: true, trim: true },
         repo: { type: String, required: true, trim: true },
         defaultBranch: { type: String, required: true, default: "main" },
-        subdirectory: { type: String, required: true, default: "apps" },
+        subdirectory: { type: String, default: "" },
         linkedBy: { type: String },
         linkedAt: { type: Date },
       },

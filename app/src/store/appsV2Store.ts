@@ -104,14 +104,13 @@ export interface AppV2GithubInstallation {
 interface AppsV2Store {
   /** undefined = probe pending; false = hidden; true = show the rail. */
   enabled: boolean | undefined;
-  /** undefined = unknown; whether a GitHub repo is linked for this workspace. */
-  linked: boolean | undefined;
   /**
-   * Whether app creation works: a repo is linked OR the server has
+   * Whether app creation works: a repo is connected OR the server has
    * Mako-hosted cloud storage configured (instant start, no GitHub setup).
    */
   canCreate: boolean | undefined;
-  linkedRepo: AppV2RepoBinding | null;
+  /** Connected workspace repos (0..N; the product default is one). */
+  repos: AppV2RepoBinding[];
   apps: AppV2Meta[];
   appsLoading: boolean;
   error: string | null;
@@ -144,7 +143,7 @@ interface AppsV2Store {
    * GitHub (whose install page short-circuits and never fires our callback).
    */
   getGitHubSyncUrl: (workspaceId: string) => Promise<string | null>;
-  linkRepo: (
+  connectRepo: (
     workspaceId: string,
     input: {
       owner: string;
@@ -154,7 +153,11 @@ interface AppsV2Store {
       installationId?: number;
     },
   ) => Promise<{ ok: boolean; error?: string }>;
-  unlinkRepo: (workspaceId: string) => Promise<void>;
+  disconnectRepo: (
+    workspaceId: string,
+    owner: string,
+    repo: string,
+  ) => Promise<void>;
   disconnectGithubInstallation: (
     workspaceId: string,
     installationId: number,
@@ -225,9 +228,8 @@ function message(e: unknown, fallback: string): string {
 export const useAppsV2Store = create<AppsV2Store>()(
   immer((set, get) => ({
     enabled: undefined,
-    linked: undefined,
     canCreate: undefined,
-    linkedRepo: null,
+    repos: [],
     apps: [],
     appsLoading: false,
     error: null,
@@ -250,16 +252,13 @@ export const useAppsV2Store = create<AppsV2Store>()(
           }),
         ) as {
           enabled?: boolean;
-          linked?: boolean;
           canCreate?: boolean;
-          repo?: AppV2RepoBinding | null;
+          repos?: AppV2RepoBinding[];
         };
         set(s => {
           s.enabled = Boolean(body?.enabled);
-          s.linked = Boolean(body?.linked);
-          // Older backends don't send canCreate — fall back to linked.
-          s.canCreate = Boolean(body?.canCreate ?? body?.linked);
-          s.linkedRepo = body?.repo ?? null;
+          s.canCreate = Boolean(body?.canCreate);
+          s.repos = body?.repos ?? [];
         });
       } catch {
         // Older backend without the route (or transient failure): hide.
@@ -278,11 +277,11 @@ export const useAppsV2Store = create<AppsV2Store>()(
         ) as {
           installations?: AppV2GithubInstallation[];
           appSlug?: string | null;
-          linkedRepo?: AppV2RepoBinding | null;
+          repos?: AppV2RepoBinding[];
         };
         set(s => {
-          s.linked = Boolean(body.linkedRepo);
-          s.linkedRepo = body.linkedRepo ?? null;
+          s.repos = body.repos ?? [];
+          s.canCreate = s.canCreate || (body.repos ?? []).length > 0;
         });
         return {
           installations: body.installations ?? [],
@@ -346,7 +345,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
       }
     },
 
-    linkRepo: async (workspaceId, input) => {
+    connectRepo: async (workspaceId, input) => {
       try {
         const body = unwrapBody(
           await api.POST("/api/workspaces/{workspaceId}/apps-v2/link", {
@@ -355,34 +354,42 @@ export const useAppsV2Store = create<AppsV2Store>()(
           }),
         ) as { repo?: AppV2RepoBinding };
         set(s => {
-          s.linked = true;
           s.canCreate = true;
-          s.linkedRepo = body.repo ?? null;
+          if (body.repo) {
+            s.repos = [
+              ...s.repos.filter(
+                r =>
+                  !(r.owner === body.repo?.owner && r.repo === body.repo.repo),
+              ),
+              body.repo,
+            ];
+          }
         });
         void get().fetchApps(workspaceId);
         return { ok: true };
       } catch (e) {
-        return { ok: false, error: message(e, "Failed to link repo") };
+        return { ok: false, error: message(e, "Failed to connect repo") };
       }
     },
 
-    unlinkRepo: async workspaceId => {
+    disconnectRepo: async (workspaceId, owner, repo) => {
       try {
         unwrapBody(
           await api.POST("/api/workspaces/{workspaceId}/apps-v2/unlink", {
             params: { path: { workspaceId } },
+            body: { owner, repo },
           }),
         );
         set(s => {
-          s.linked = false;
-          s.linkedRepo = null;
-          s.apps = [];
+          s.repos = s.repos.filter(
+            r => !(r.owner === owner && r.repo === repo),
+          );
         });
         // canCreate may still be true via cloud storage — let the probe say.
         void get().probeEnabled(workspaceId);
       } catch (e) {
         set(s => {
-          s.error = message(e, "Failed to unlink repo");
+          s.error = message(e, "Failed to disconnect repo");
         });
       }
     },
