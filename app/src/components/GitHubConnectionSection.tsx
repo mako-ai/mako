@@ -138,10 +138,11 @@ export default function GitHubConnectionSection() {
     setError(null);
     setAddOpen(true);
     // Silent background sync: binds installations that already exist on
-    // GitHub (instant when previously authorized). Same-gesture window.open
-    // keeps popup blockers out of the way.
+    // GitHub. Runs in a small popup that self-closes on completion (instant
+    // when previously authorized); refocusing this window then triggers the
+    // focus-refresh above. Sized like GitHub's own OAuth popups.
     const url = await getGitHubSyncUrl(workspaceId);
-    if (url) window.open(url, "_blank", "noopener,noreferrer");
+    if (url) window.open(url, "mako-github-sync", "width=640,height=760");
   }, [workspaceId, getGitHubSyncUrl]);
 
   const handleInstallNewAccount = useCallback(async () => {

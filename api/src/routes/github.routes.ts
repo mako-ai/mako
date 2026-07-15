@@ -270,7 +270,15 @@ githubRoutes.get("/setup", async (c: AuthenticatedContext) => {
         workspaceId,
         count: controlled.length,
       });
-      return c.redirect(`${redirectBase}/?transformGithub=connected`);
+      // The sync runs in a popup the Settings page opened — don't load the
+      // whole SPA in it, just close it. Refocusing the opener triggers the
+      // Settings page's focus-refresh, which picks up the synced accounts.
+      return c.html(
+        `<!doctype html><html><body style="font-family:system-ui;padding:2rem;text-align:center">
+<p>GitHub accounts synced — you can close this window.</p>
+<script>window.close();</script>
+</body></html>`,
+      );
     } catch (error) {
       logger.error("Failed to sync GitHub installations", { error });
       return c.redirect(`${redirectBase}/?transformGithub=error`);
