@@ -14,27 +14,28 @@ function createConnector() {
 function testUserWebhookEventsAreSupported() {
   const connector = createConnector();
 
+  // Close has no user.* webhook selectors — membership carries user CDC.
   assert.deepEqual(connector.getWebhookEventsForEntities(["users"]), [
-    "user.created",
-    "user.updated",
-    "user.deleted",
+    "membership.activated",
+    "membership.deactivated",
   ]);
 }
 
 function testUserWebhookEventsAreMapped() {
   const connector = createConnector();
 
+  assert.deepEqual(connector.getWebhookEventMapping("membership.activated"), {
+    entity: "users",
+    operation: "upsert",
+  });
+  assert.deepEqual(connector.getWebhookEventMapping("membership.deactivated"), {
+    entity: "users",
+    operation: "delete",
+  });
+  // Legacy user.* mappings retained for defensive processing.
   assert.deepEqual(connector.getWebhookEventMapping("user.created"), {
     entity: "users",
     operation: "upsert",
-  });
-  assert.deepEqual(connector.getWebhookEventMapping("user.updated"), {
-    entity: "users",
-    operation: "upsert",
-  });
-  assert.deepEqual(connector.getWebhookEventMapping("user.deleted"), {
-    entity: "users",
-    operation: "delete",
   });
 }
 
@@ -44,14 +45,18 @@ function testUserWebhookPayloadIsExtractedForProcessing() {
   assert.deepEqual(
     connector.extractWebhookData({
       event: {
-        object_type: "user",
-        action: "updated",
-        object_id: "user_123",
+        object_type: "membership",
+        action: "activated",
+        object_id: "memb_123",
         data: {
-          id: "user_123",
-          email: "user@example.com",
-          first_name: "Test",
-          date_updated: "2026-05-20T07:00:00.000Z",
+          id: "memb_123",
+          user_id: "user_123",
+          user: {
+            id: "user_123",
+            email: "user@example.com",
+            first_name: "Test",
+            date_updated: "2026-05-20T07:00:00.000Z",
+          },
         },
       },
     }),
@@ -74,12 +79,17 @@ function testUserWebhookCdcRecordUsesUsersEntity() {
     {
       id: "evt_123",
       event: {
-        object_type: "user",
-        action: "deleted",
-        object_id: "user_123",
+        object_type: "membership",
+        action: "deactivated",
+        object_id: "memb_123",
+        data: {
+          id: "memb_123",
+          user_id: "user_123",
+          user: { id: "user_123" },
+        },
       },
     },
-    "user.deleted",
+    "membership.deactivated",
   );
 
   assert.equal(records.length, 1);

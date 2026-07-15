@@ -85,9 +85,10 @@ const CLOSE_SUPPORTED_WEBHOOK_SELECTORS: CloseWebhookSelector[] = [
   { object_type: "contact", action: "created" },
   { object_type: "contact", action: "updated" },
   { object_type: "contact", action: "deleted" },
-  { object_type: "user", action: "created" },
-  { object_type: "user", action: "updated" },
-  { object_type: "user", action: "deleted" },
+  // Close has no `user` webhook object_type — membership activated/deactivated
+  // carries embedded user data (see Close "List of Event Types").
+  { object_type: "membership", action: "activated" },
+  { object_type: "membership", action: "deactivated" },
   { object_type: "opportunity", action: "created" },
   { object_type: "opportunity", action: "updated" },
   { object_type: "opportunity", action: "deleted" },
@@ -2447,7 +2448,10 @@ export class CloseConnector extends BaseConnector {
       "contact.updated": { entity: "contacts", operation: "upsert" },
       "contact.deleted": { entity: "contacts", operation: "delete" },
 
-      // Users
+      // Users — Close emits membership events (not user.*). Keep legacy
+      // user.* mappings so any older payloads still route to the users entity.
+      "membership.activated": { entity: "users", operation: "upsert" },
+      "membership.deactivated": { entity: "users", operation: "delete" },
       "user.created": { entity: "users", operation: "upsert" },
       "user.updated": { entity: "users", operation: "upsert" },
       "user.deleted": { entity: "users", operation: "delete" },
@@ -2578,7 +2582,7 @@ export class CloseConnector extends BaseConnector {
     const entityToObjectTypes: Record<string, string[]> = {
       leads: ["lead"],
       contacts: ["contact"],
-      users: ["user"],
+      users: ["membership"],
       opportunities: ["opportunity"],
       custom_fields: [
         "custom_fields.lead",
@@ -2624,7 +2628,29 @@ export class CloseConnector extends BaseConnector {
     // Close webhook payload: {subscription_id, event: {object_type, action, data: {...}}}
     // Prefer object_id from wrapper, then fall back to nested payload ids.
     const innerEvent = event?.event;
+    const objectType = innerEvent?.object_type || event?.object_type;
     const data = innerEvent?.data || event?.data;
+
+    // Membership events embed the user record; CDC writes the users entity.
+    if (objectType === "membership" && data && typeof data === "object") {
+      const embeddedUser =
+        data.user && typeof data.user === "object"
+          ? data.user
+          : data.user_id
+            ? { id: data.user_id }
+            : null;
+      if (embeddedUser) {
+        const userId =
+          embeddedUser.id || data.user_id || innerEvent?.object_id || event?.id;
+        if (userId) {
+          return {
+            id: String(userId),
+            data: { ...embeddedUser, id: String(userId) },
+          };
+        }
+      }
+    }
+
     const objectId =
       innerEvent?.object_id || event?.object_id || data?.id || event?.id;
 
