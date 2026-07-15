@@ -340,3 +340,19 @@ Each phase ships behind a flag and is independently valuable (Phase 1 alone give
 - **One repo per workspace** — this RFC's original position, reversed in the merge: per-app ACLs make a shared repo unauthorizable (clone access = read access to all objects). Agent context is recovered by materializing all accessible apps into one workspace-shaped session directory instead.
 - **Run user code in the API container** — rejected outright (N1).
 - **Fly Machines / Cloudflare / Modal instead of E2B** — viable fallbacks; E2B wins on agent-native SDK, pause/resume economics, per-port public URLs, and alignment with the connector-builder PRD.
+
+## 9. Bindings v2 plan (agreed 2026-07-15)
+
+Everything lives in the binding file; nothing in Mongo except derived cache.
+
+**Block 1 — Front matter (foundation).** Binding = `bindings/<name>.sql`; name = filename; discovery = git glob (the `mako.json bindings[]` array dies; kept briefly as deprecated fallback). Leading SQL-comment front matter: `-- connection:` (required), `-- materialization:` (default parquet), `-- schedule:` (cron, optional), `-- dbt_project:` (optional → `{{ dbt_schema }}` rendered at materialize time). Rationale: branch-per-conversation makes central metadata files (yaml/json array) merge-conflict magnets — two conversations adding bindings must never conflict; dbt-style in-file config; self-contained diffs/copies. Migrate binding-smoke; update apps-v2 skill.
+
+**Block 2 — Agent/API completeness.** `app2_materialize` tool (+ bridge-policy entry + MCP candidate set) reading bindings from the conversation's OWN branch; materialize route gains `?ref=` so pre-merge branches build; single artifact per (project, binding) to start (last-writer-wins across branches — revisit if it bites). Materialization errors surface to the agent verbatim.
+
+**Block 3 — Console-editor UX (v1 parity).** Opening `bindings/*.sql` from the v2 explorer routes to a console-style editor, not plain Monaco: SQL highlighting, connection picker ↔ `-- connection:` line, Run (console engine, read-only), materialization toggle + cron picker ↔ front-matter lines, Materialize-now button, last-build status chip. Explorer shows a per-app Data bindings node (v1 "Data sources" parity).
+
+**Block 4 — Scheduler.** Derived schedule index rebuilt on commit/merge-to-main (parse front matter during the mirror-push hook) → registry (Mongo now, Postgres later; cache, rebuildable) → Inngest cron materializes due bindings, reusing v1 scheduling patterns.
+
+**Block 5 — Runtime polish.** `__data/<name>.parquet`: Range support + ETag (Content-Length shipped 2026-07-15); skill guidance for hyparquet/duckdb-wasm; consider a tiny v2 SDK helper later.
+
+Order: 1 → 2 → 3; 4 needs 1; 5 independent. Adjacent, already recorded elsewhere: Phase B substrate pivot (GitHub API reads, sandbox clones, delete local git), dev GitHub App callback repoint to app.mako.ai at merge.
