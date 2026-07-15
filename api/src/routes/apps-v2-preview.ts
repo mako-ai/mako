@@ -119,10 +119,15 @@ async function serveAsset(c: Context): Promise<Response> {
         404,
       );
     }
+    // Content-Length is required: parquet readers (hyparquet's
+    // asyncBufferFromUrl, duckdb-wasm) need the size (or Range support) to
+    // read the footer.
+    const size = await store.getSize(key);
     return new Response(Readable.toWeb(stream as Readable) as ReadableStream, {
       status: 200,
       headers: {
         "Content-Type": "application/vnd.apache.parquet",
+        ...(size !== null ? { "Content-Length": String(size) } : {}),
         "Cache-Control": "no-store",
         "Access-Control-Allow-Origin": "*",
       },
