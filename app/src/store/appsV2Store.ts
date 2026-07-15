@@ -139,6 +139,11 @@ interface AppsV2Store {
   // TODO(apps-v2): borrows dbt's raw (non-OpenAPI) install-url route until
   // apps-v2 gets its own /apps-v2/github/install-url endpoint.
   getGitHubInstallUrl: (workspaceId: string) => Promise<string | null>;
+  /**
+   * User-authorization OAuth flow: binds installations that already exist on
+   * GitHub (whose install page short-circuits and never fires our callback).
+   */
+  getGitHubSyncUrl: (workspaceId: string) => Promise<string | null>;
   linkRepo: (
     workspaceId: string,
     input: {
@@ -300,6 +305,23 @@ export const useAppsV2Store = create<AppsV2Store>()(
       } catch (e) {
         set(s => {
           s.error = message(e, "Failed to start GitHub App install");
+        });
+        return null;
+      }
+    },
+
+    getGitHubSyncUrl: async workspaceId => {
+      try {
+        const body = unwrapBody(
+          await api.GET(
+            "/api/workspaces/{workspaceId}/apps-v2/github-sync-url",
+            { params: { path: { workspaceId } } },
+          ),
+        ) as { url?: string };
+        return body.url ?? null;
+      } catch (e) {
+        set(s => {
+          s.error = message(e, "Failed to start GitHub sync");
         });
         return null;
       }

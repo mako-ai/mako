@@ -163,6 +163,54 @@ export async function exchangeInstallUserToken(code: string): Promise<string> {
 }
 
 /**
+ * List every installation of THIS app the user token can access — i.e. the
+ * installations the authenticated GitHub user controls. Used by the
+ * sync-existing flow: when the app is already installed on an account,
+ * GitHub's install page short-circuits to "Configure" and never fires our
+ * setup callback, so the only way to (re)discover such installations is the
+ * user-authorization OAuth flow + this listing.
+ */
+export async function listUserInstallations(
+  userToken: string,
+): Promise<Array<{ id: number } & InstallationMeta>> {
+  const out: Array<{ id: number } & InstallationMeta> = [];
+  for (let page = 1; page <= 20; page++) {
+    const res = await fetch(
+      `${GITHUB_API}/user/installations?per_page=100&page=${page}`,
+      {
+        headers: {
+          Authorization: `Bearer ${userToken}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      },
+    );
+    if (!res.ok) {
+      throw new Error(`Failed to list user installations (${res.status})`);
+    }
+    const json = (await res.json()) as {
+      installations?: Array<{
+        id: number;
+        account?: { login?: string; type?: "Organization" | "User" };
+        repository_selection?: "all" | "selected";
+      }>;
+    };
+    const installations = json.installations ?? [];
+    for (const inst of installations) {
+      if (!inst.account?.login) continue;
+      out.push({
+        id: inst.id,
+        accountLogin: inst.account.login,
+        accountType: inst.account.type ?? "User",
+        repositorySelection: inst.repository_selection ?? "selected",
+      });
+    }
+    if (installations.length < 100) break;
+  }
+  return out;
+}
+
+/**
  * Verify the authenticated GitHub user actually controls the installation, by
  * checking it appears in their `GET /user/installations`. This is the
  * authoritative ownership proof that prevents binding a foreign installation.

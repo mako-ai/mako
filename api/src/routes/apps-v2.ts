@@ -22,11 +22,13 @@ import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { canReadResource, canWriteResource } from "../utils/resource-acl";
 import {
+  getGitHubAppClientId,
   getGitHubAppSlug,
   getGitHubDevToken,
   isGitHubAppConfigured,
 } from "../integrations/github/config";
 import { isMakoCloudConfigured } from "../integrations/github/cloud-app-auth";
+import { signInstallState } from "../integrations/github/install-state";
 import {
   getInstallationToken,
   resolveRepoToken,
@@ -264,6 +266,59 @@ appsV2Routes.openapi(
         devTokenAvailable: Boolean(getGitHubDevToken()),
         installations,
         linkedRepo: binding ?? null,
+      },
+      200,
+    );
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/github-sync-url",
+    tags: ["Apps v2"],
+    summary: "URL that syncs the user's existing GitHub App installations",
+    description:
+      "Starts GitHub's user-authorization OAuth flow. GitHub never fires the install callback for an account where the app is already installed, so already-installed accounts can only be (re)bound by authorizing and listing the installations the user controls.",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    const { workspaceId } = c.req.valid("param");
+    const user = c.get("user");
+    if (!user || !(await workspaceService.isAdmin(workspaceId, user.id))) {
+      return c.json(
+        {
+          success: false,
+          error: "Connecting GitHub requires the admin or owner role",
+        },
+        403,
+      );
+    }
+    const clientId = getGitHubAppClientId();
+    if (!clientId) {
+      return c.json(
+        {
+          success: false,
+          error:
+            "GitHub App OAuth client is not configured (GITHUB_APP_CLIENT_ID)",
+        },
+        400,
+      );
+    }
+    const state = signInstallState({
+      workspaceId,
+      userId: user.id,
+      clientUrl: process.env.CLIENT_URL || "http://localhost:5173",
+    });
+    // No redirect_uri: GitHub falls back to the app's registered callback
+    // URL, and the cross-environment relay on /api/github/setup bounces the
+    // callback home to whichever environment minted this state.
+    return c.json(
+      {
+        success: true as const,
+        url: `https://github.com/login/oauth/authorize?client_id=${clientId}&state=${state}`,
       },
       200,
     );

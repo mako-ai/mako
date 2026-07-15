@@ -125,18 +125,23 @@ function SectionHeader({
 const AppIcon = TAB_KIND_ICONS["app-v2"];
 
 /**
- * Synthetic root node grouping all apps under their storage mount — the
- * linked repo's `<owner>/<repo>/<subdirectory>` (or Mako Cloud when no repo
- * is linked). Purely presentational: it has no backend identity.
+ * Synthetic nodes grouping apps under their storage mount, connector-tab
+ * style: an org node (GitHub avatar) containing a repo node (GitHub mark)
+ * containing the apps — or a single "Mako Cloud" node when no repo is
+ * linked. Purely presentational: neither has a backend identity.
  */
+const ORG_NODE_ID = "::org::";
 const REPO_ROOT_ID = "::repo-root::";
 
 type ParsedNode =
-  | { kind: "repo"; appId: ""; path: "" }
+  | { kind: "org" | "repo"; appId: ""; path: "" }
   | { kind: "app"; appId: string; path: "" }
   | { kind: "dir" | "file"; appId: string; path: string };
 
 function parseNodeId(id: string): ParsedNode {
+  if (id === ORG_NODE_ID) {
+    return { kind: "org", appId: "", path: "" };
+  }
   if (id === REPO_ROOT_ID) {
     return { kind: "repo", appId: "", path: "" };
   }
@@ -283,7 +288,7 @@ export default function AppsV2Explorer() {
   const [loadingApps, setLoadingApps] = useState<Record<string, boolean>>({});
   const [expandedFolders, setExpandedFolders] = useState<
     Record<string, boolean>
-  >({ [REPO_ROOT_ID]: true });
+  >({ [ORG_NODE_ID]: true, [REPO_ROOT_ID]: true });
   const [createOpen, setCreateOpen] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [creating, setCreating] = useState(false);
@@ -351,23 +356,29 @@ export default function AppsV2Explorer() {
         : undefined,
     }));
     // Group every app under its storage mount so the hierarchy reads like
-    // the repo it (will) live in: <owner>/<repo>/<subdirectory>/<app>.
-    const mountLabel = linkedRepo
-      ? `${linkedRepo.owner}/${linkedRepo.repo}/${linkedRepo.subdirectory}`
-      : "Mako Cloud";
+    // the repo it (will) live in: org (avatar) > repo (GitHub mark) > apps.
+    const repoNode = {
+      id: REPO_ROOT_ID,
+      name: linkedRepo ? linkedRepo.repo : "Mako Cloud",
+      path: REPO_ROOT_ID,
+      isDirectory: true,
+      children: appNodes,
+    };
     return [
       {
         key: "apps",
         label: "Apps",
-        nodes: [
-          {
-            id: REPO_ROOT_ID,
-            name: mountLabel,
-            path: REPO_ROOT_ID,
-            isDirectory: true,
-            children: appNodes,
-          },
-        ],
+        nodes: linkedRepo
+          ? [
+              {
+                id: ORG_NODE_ID,
+                name: linkedRepo.owner,
+                path: ORG_NODE_ID,
+                isDirectory: true,
+                children: [repoNode],
+              },
+            ]
+          : [repoNode],
         hideSectionHeader: true,
       },
     ];
@@ -651,6 +662,22 @@ export default function AppsV2Explorer() {
                   }
                   if (kind === "repo") {
                     return <LinkIcon size={16} strokeWidth={1.5} />;
+                  }
+                  if (kind === "org" && linkedRepo) {
+                    return (
+                      <Box
+                        component="img"
+                        src={`https://github.com/${linkedRepo.owner}.png?size=32`}
+                        alt={`${linkedRepo.owner} avatar`}
+                        sx={{
+                          width: 16,
+                          height: 16,
+                          borderRadius: "50%",
+                          display: "block",
+                          flexShrink: 0,
+                        }}
+                      />
+                    );
                   }
                   return undefined;
                 }}

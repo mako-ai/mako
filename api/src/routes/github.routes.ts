@@ -21,6 +21,7 @@ import { Types } from "mongoose";
 import {
   exchangeInstallUserToken,
   getInstallationMeta,
+  listUserInstallations,
   userControlsInstallation,
 } from "../integrations/github/app-auth";
 import {
@@ -218,7 +219,7 @@ githubRoutes.get("/setup", async (c: AuthenticatedContext) => {
     // Not logged in (cookie missing) — send to login, then back to the app.
     return c.redirect(`${redirectBase}/login`);
   }
-  if (!installationIdRaw || !state) {
+  if (!state) {
     return c.redirect(`${redirectBase}/?transformGithub=error`);
   }
   const { workspaceId } = state;
@@ -233,6 +234,50 @@ githubRoutes.get("/setup", async (c: AuthenticatedContext) => {
   const isAdmin = await workspaceService.isAdmin(workspaceId, user.id);
   if (!isAdmin) {
     return c.redirect(`${redirectBase}/?transformGithub=forbidden`);
+  }
+
+  // Sync-existing flow: no installation_id means this is the callback of the
+  // user-authorization OAuth flow (github.com/login/oauth/authorize), not an
+  // install. GitHub never fires the install callback for an account where the
+  // app is ALREADY installed (its install page short-circuits to
+  // "Configure"), so this is the only way to bind such installations: use
+  // the code to list every installation the user controls and record the
+  // ones this workspace is missing. Ownership proof is inherent — the list
+  // comes from the user's own token.
+  const syncCode = c.req.query("code");
+  if (!installationIdRaw && syncCode) {
+    try {
+      const userToken = await exchangeInstallUserToken(syncCode);
+      const controlled = await listUserInstallations(userToken);
+      for (const inst of controlled) {
+        await GitHubInstallation.findOneAndUpdate(
+          {
+            workspaceId: new Types.ObjectId(workspaceId),
+            installationId: inst.id,
+          },
+          {
+            $set: {
+              accountLogin: inst.accountLogin,
+              accountType: inst.accountType,
+              repositorySelection: inst.repositorySelection,
+            },
+            $setOnInsert: { createdBy: user.id },
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true },
+        );
+      }
+      logger.info("GitHub installations synced from user authorization", {
+        workspaceId,
+        count: controlled.length,
+      });
+      return c.redirect(`${redirectBase}/?transformGithub=connected`);
+    } catch (error) {
+      logger.error("Failed to sync GitHub installations", { error });
+      return c.redirect(`${redirectBase}/?transformGithub=error`);
+    }
+  }
+  if (!installationIdRaw) {
+    return c.redirect(`${redirectBase}/?transformGithub=error`);
   }
 
   const installationId = Number(installationIdRaw);

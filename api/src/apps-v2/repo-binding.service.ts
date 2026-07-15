@@ -7,9 +7,10 @@
  * (same category as the existing GitHub installation mapping — a link, not app
  * state), mirroring `DbtProject.repo` and reusing the same GitHub App.
  *
- * Layout convention: each app is a subdirectory `<subdirectory>/<slug>/` in the
- * linked repo (default subdirectory "apps"). Conversations branch off the
- * default branch; publish merges back into it.
+ * Layout convention: `subdirectory` is the MAKO ROOT — the folder Mako owns
+ * inside the linked repo (default "" = the repo root). Apps always live under
+ * `<subdirectory>/apps/<slug>/`. Conversations branch off the default branch;
+ * publish merges back into it.
  */
 import { Types } from "mongoose";
 import {
@@ -50,8 +51,10 @@ export async function linkAppsRepo(
   const owner = input.owner.trim();
   const repo = input.repo.trim();
   const defaultBranch = input.defaultBranch.trim() || "main";
-  const subdirectory =
-    (input.subdirectory ?? "apps").trim().replace(/^\/+|\/+$/g, "") || "apps";
+  // "" = repo root. "/" from the UI normalizes to "" here.
+  const subdirectory = (input.subdirectory ?? "")
+    .trim()
+    .replace(/^\/+|\/+$/g, "");
 
   if (!isValidRepoSegment(owner) || !isValidRepoSegment(repo)) {
     throw new Error("Invalid owner or repo name");

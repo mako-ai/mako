@@ -29,7 +29,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { ExternalLink, Github, RefreshCw, Unplug } from "lucide-react";
+import { ExternalLink, Github, Unplug } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import {
@@ -68,6 +68,7 @@ export default function GitHubConnectionSection() {
   const fetchGithubStatus = useAppsV2Store(s => s.fetchGithubStatus);
   const fetchGithubRepos = useAppsV2Store(s => s.fetchGithubRepos);
   const getGitHubInstallUrl = useAppsV2Store(s => s.getGitHubInstallUrl);
+  const getGitHubSyncUrl = useAppsV2Store(s => s.getGitHubSyncUrl);
   const linkRepo = useAppsV2Store(s => s.linkRepo);
   const unlinkRepo = useAppsV2Store(s => s.unlinkRepo);
   const disconnectGithubInstallation = useAppsV2Store(
@@ -84,7 +85,7 @@ export default function GitHubConnectionSection() {
   const [selectedRepo, setSelectedRepo] = useState<AppV2GithubRepo | null>(
     null,
   );
-  const [subdirectory, setSubdirectory] = useState("apps");
+  const [subdirectory, setSubdirectory] = useState("/");
   const [reposLoading, setReposLoading] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [disconnectingId, setDisconnectingId] = useState<number | null>(null);
@@ -127,6 +128,14 @@ export default function GitHubConnectionSection() {
     if (url) window.open(url, "_blank", "noopener,noreferrer");
   }, [workspaceId, getGitHubInstallUrl]);
 
+  const handleSync = useCallback(async () => {
+    if (!workspaceId) return;
+    setConnecting(true);
+    const url = await getGitHubSyncUrl(workspaceId);
+    setConnecting(false);
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
+  }, [workspaceId, getGitHubSyncUrl]);
+
   const handleDisconnect = useCallback(
     async (inst: AppV2GithubInstallation) => {
       if (!workspaceId) return;
@@ -161,7 +170,8 @@ export default function GitHubConnectionSection() {
       owner: selectedRepo.owner,
       repo: selectedRepo.name,
       defaultBranch: selectedRepo.defaultBranch,
-      subdirectory: subdirectory.trim() || "apps",
+      // "/" (or blank) = repo root; the backend stores root as "".
+      subdirectory: subdirectory.trim().replace(/^\/+$/, ""),
       installationId:
         typeof installationId === "number" ? installationId : undefined,
     });
@@ -253,15 +263,31 @@ export default function GitHubConnectionSection() {
           </Stack>
         )}
         {appSlug && (
-          <Button
-            size="small"
-            startIcon={<RefreshCw size={14} />}
-            onClick={() => void handleConnect()}
-            disabled={connecting}
+          <Stack
+            direction="row"
+            spacing={1}
             sx={{ mt: 1.5 }}
+            alignItems="center"
           >
-            Connect another account
-          </Button>
+            <Button
+              size="small"
+              startIcon={<Github size={14} />}
+              onClick={() => void handleConnect()}
+              disabled={connecting}
+            >
+              Add GitHub repository
+            </Button>
+            <Tooltip title="Already installed the app on GitHub but it's not listed here? Authorize once to sync every installation you control.">
+              <Button
+                size="small"
+                color="inherit"
+                onClick={() => void handleSync()}
+                disabled={connecting}
+              >
+                Sync existing installations
+              </Button>
+            </Tooltip>
+          </Stack>
         )}
       </Box>
 
@@ -270,7 +296,8 @@ export default function GitHubConnectionSection() {
           Apps v2 repository
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Apps v2 apps live as subfolders of one linked repo, e.g.
+          Mako content lives in one linked repo under the Mako root folder; apps
+          always go in its <code>apps/</code> subfolder, e.g.
           apps/my-dashboard/.
         </Typography>
 
@@ -280,8 +307,14 @@ export default function GitHubConnectionSection() {
             <strong>
               {linkedRepo.owner}/{linkedRepo.repo}
             </strong>{" "}
-            (default branch <code>{linkedRepo.defaultBranch}</code>, apps under{" "}
-            <code>{linkedRepo.subdirectory}/</code>).
+            (default branch <code>{linkedRepo.defaultBranch}</code>, Mako root{" "}
+            <code>{linkedRepo.subdirectory || "/"}</code>, apps under{" "}
+            <code>
+              {linkedRepo.subdirectory
+                ? `${linkedRepo.subdirectory}/apps/`
+                : "apps/"}
+            </code>
+            ).
           </Alert>
         )}
 
@@ -354,8 +387,8 @@ export default function GitHubConnectionSection() {
             <TextField
               fullWidth
               margin="dense"
-              label="Apps folder"
-              helperText="Apps are created as subfolders here, e.g. apps/my-dashboard/"
+              label="Mako root folder"
+              helperText="The folder Mako owns in this repo (/ = repo root). Apps always go under its apps/ subfolder, e.g. apps/my-dashboard/"
               value={subdirectory}
               onChange={e => setSubdirectory(e.target.value)}
             />
