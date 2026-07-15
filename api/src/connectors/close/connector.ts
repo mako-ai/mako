@@ -64,6 +64,18 @@ type CloseWebhookSelector = {
   action: string;
 };
 
+/** Close returns the HMAC key as `signature_key` on create/list/get. */
+function extractCloseSigningSecret(
+  webhook: Record<string, unknown> | null | undefined,
+): string | undefined {
+  if (!webhook || typeof webhook !== "object") return undefined;
+  const candidate =
+    webhook.signature_key ?? webhook.signing_secret ?? webhook.secret;
+  return typeof candidate === "string" && candidate.length > 0
+    ? candidate
+    : undefined;
+}
+
 // Close webhook selectors from official event list.
 const CLOSE_SUPPORTED_WEBHOOK_SELECTORS: CloseWebhookSelector[] = [
   { object_type: "lead", action: "created" },
@@ -73,9 +85,10 @@ const CLOSE_SUPPORTED_WEBHOOK_SELECTORS: CloseWebhookSelector[] = [
   { object_type: "contact", action: "created" },
   { object_type: "contact", action: "updated" },
   { object_type: "contact", action: "deleted" },
-  { object_type: "user", action: "created" },
-  { object_type: "user", action: "updated" },
-  { object_type: "user", action: "deleted" },
+  // Close has no `user` webhook object_type — membership activated/deactivated
+  // carries embedded user data (see Close "List of Event Types").
+  { object_type: "membership", action: "activated" },
+  { object_type: "membership", action: "deactivated" },
   { object_type: "opportunity", action: "created" },
   { object_type: "opportunity", action: "updated" },
   { object_type: "opportunity", action: "deleted" },
@@ -2291,9 +2304,30 @@ export class CloseConnector extends BaseConnector {
               error: updateError,
             });
           }
+
+          // Close includes `signature_key` on list/get responses. Re-use it so
+          // re-provisioning (same URL) still fills Mako's Webhook Secret field —
+          // the create-only path is the only place that previously returned it.
+          let signingSecret = extractCloseSigningSecret(existing);
+          if (!signingSecret) {
+            try {
+              const detailResponse = await api.get(`/webhook/${existingId}/`);
+              signingSecret = extractCloseSigningSecret(detailResponse?.data);
+            } catch (detailError) {
+              logger.warn(
+                "Could not fetch signature_key for existing Close webhook",
+                {
+                  webhookId: existingId,
+                  error: detailError,
+                },
+              );
+            }
+          }
+
           return {
             providerWebhookId: String(existingId),
             endpointUrl: options.endpointUrl,
+            signingSecret,
           };
         }
       }
@@ -2308,16 +2342,10 @@ export class CloseConnector extends BaseConnector {
         );
       }
 
-      const signingSecret =
-        data.signature_key || data.signing_secret || data.secret;
-
       return {
         providerWebhookId: String(providerWebhookId),
         endpointUrl: options.endpointUrl,
-        signingSecret:
-          typeof signingSecret === "string" && signingSecret.length > 0
-            ? signingSecret
-            : undefined,
+        signingSecret: extractCloseSigningSecret(data),
       };
     } catch (error) {
       const message = (() => {
@@ -2420,7 +2448,10 @@ export class CloseConnector extends BaseConnector {
       "contact.updated": { entity: "contacts", operation: "upsert" },
       "contact.deleted": { entity: "contacts", operation: "delete" },
 
-      // Users
+      // Users — Close emits membership events (not user.*). Keep legacy
+      // user.* mappings so any older payloads still route to the users entity.
+      "membership.activated": { entity: "users", operation: "upsert" },
+      "membership.deactivated": { entity: "users", operation: "delete" },
       "user.created": { entity: "users", operation: "upsert" },
       "user.updated": { entity: "users", operation: "upsert" },
       "user.deleted": { entity: "users", operation: "delete" },
@@ -2551,7 +2582,7 @@ export class CloseConnector extends BaseConnector {
     const entityToObjectTypes: Record<string, string[]> = {
       leads: ["lead"],
       contacts: ["contact"],
-      users: ["user"],
+      users: ["membership"],
       opportunities: ["opportunity"],
       custom_fields: [
         "custom_fields.lead",
@@ -2597,7 +2628,29 @@ export class CloseConnector extends BaseConnector {
     // Close webhook payload: {subscription_id, event: {object_type, action, data: {...}}}
     // Prefer object_id from wrapper, then fall back to nested payload ids.
     const innerEvent = event?.event;
+    const objectType = innerEvent?.object_type || event?.object_type;
     const data = innerEvent?.data || event?.data;
+
+    // Membership events embed the user record; CDC writes the users entity.
+    if (objectType === "membership" && data && typeof data === "object") {
+      const embeddedUser =
+        data.user && typeof data.user === "object"
+          ? data.user
+          : data.user_id
+            ? { id: data.user_id }
+            : null;
+      if (embeddedUser) {
+        const userId =
+          embeddedUser.id || data.user_id || innerEvent?.object_id || event?.id;
+        if (userId) {
+          return {
+            id: String(userId),
+            data: { ...embeddedUser, id: String(userId) },
+          };
+        }
+      }
+    }
+
     const objectId =
       innerEvent?.object_id || event?.object_id || data?.id || event?.id;
 

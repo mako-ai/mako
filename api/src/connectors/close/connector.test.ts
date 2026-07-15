@@ -14,27 +14,28 @@ function createConnector() {
 function testUserWebhookEventsAreSupported() {
   const connector = createConnector();
 
+  // Close has no user.* webhook selectors — membership carries user CDC.
   assert.deepEqual(connector.getWebhookEventsForEntities(["users"]), [
-    "user.created",
-    "user.updated",
-    "user.deleted",
+    "membership.activated",
+    "membership.deactivated",
   ]);
 }
 
 function testUserWebhookEventsAreMapped() {
   const connector = createConnector();
 
+  assert.deepEqual(connector.getWebhookEventMapping("membership.activated"), {
+    entity: "users",
+    operation: "upsert",
+  });
+  assert.deepEqual(connector.getWebhookEventMapping("membership.deactivated"), {
+    entity: "users",
+    operation: "delete",
+  });
+  // Legacy user.* mappings retained for defensive processing.
   assert.deepEqual(connector.getWebhookEventMapping("user.created"), {
     entity: "users",
     operation: "upsert",
-  });
-  assert.deepEqual(connector.getWebhookEventMapping("user.updated"), {
-    entity: "users",
-    operation: "upsert",
-  });
-  assert.deepEqual(connector.getWebhookEventMapping("user.deleted"), {
-    entity: "users",
-    operation: "delete",
   });
 }
 
@@ -44,14 +45,18 @@ function testUserWebhookPayloadIsExtractedForProcessing() {
   assert.deepEqual(
     connector.extractWebhookData({
       event: {
-        object_type: "user",
-        action: "updated",
-        object_id: "user_123",
+        object_type: "membership",
+        action: "activated",
+        object_id: "memb_123",
         data: {
-          id: "user_123",
-          email: "user@example.com",
-          first_name: "Test",
-          date_updated: "2026-05-20T07:00:00.000Z",
+          id: "memb_123",
+          user_id: "user_123",
+          user: {
+            id: "user_123",
+            email: "user@example.com",
+            first_name: "Test",
+            date_updated: "2026-05-20T07:00:00.000Z",
+          },
         },
       },
     }),
@@ -74,12 +79,17 @@ function testUserWebhookCdcRecordUsesUsersEntity() {
     {
       id: "evt_123",
       event: {
-        object_type: "user",
-        action: "deleted",
-        object_id: "user_123",
+        object_type: "membership",
+        action: "deactivated",
+        object_id: "memb_123",
+        data: {
+          id: "memb_123",
+          user_id: "user_123",
+          user: { id: "user_123" },
+        },
       },
     },
-    "user.deleted",
+    "membership.deactivated",
   );
 
   assert.equal(records.length, 1);
@@ -406,6 +416,108 @@ async function testOpportunitySearchBackfillRequestsAndFlattensCustomFields() {
   );
 }
 
+async function testCreateWebhookSubscriptionReturnsSignatureKey() {
+  const connector = createConnector();
+  const endpointUrl = "https://app.mako.ai/api/webhooks/ws/flow";
+
+  (connector as any).closeApi = {
+    get: async () => ({ data: { data: [] } }),
+    post: async (_url: string, body: Record<string, unknown>) => {
+      assert.equal(body.url, endpointUrl);
+      return {
+        data: {
+          id: "whsub_new",
+          url: endpointUrl,
+          signature_key: "aabbccddeeff00112233445566778899",
+        },
+      };
+    },
+  };
+
+  const result = await connector.createWebhookSubscription({
+    endpointUrl,
+    enabledEntities: ["leads"],
+  });
+
+  assert.equal(result.providerWebhookId, "whsub_new");
+  assert.equal(result.signingSecret, "aabbccddeeff00112233445566778899");
+}
+
+async function testExistingWebhookSubscriptionReturnsSignatureKey() {
+  const connector = createConnector();
+  const endpointUrl = "https://app.mako.ai/api/webhooks/ws/flow";
+  let putCalled = false;
+
+  (connector as any).closeApi = {
+    get: async (url: string) => {
+      if (url === "/webhook/") {
+        return {
+          data: {
+            data: [
+              {
+                id: "whsub_existing",
+                url: endpointUrl,
+                signature_key: "00112233445566778899aabbccddeeff",
+              },
+            ],
+          },
+        };
+      }
+      throw new Error(`Unexpected GET ${url}`);
+    },
+    put: async (url: string) => {
+      putCalled = true;
+      assert.equal(url, "/webhook/whsub_existing/");
+      return { data: {} };
+    },
+  };
+
+  const result = await connector.createWebhookSubscription({
+    endpointUrl,
+    enabledEntities: ["leads"],
+  });
+
+  assert.equal(putCalled, true);
+  assert.equal(result.providerWebhookId, "whsub_existing");
+  assert.equal(result.signingSecret, "00112233445566778899aabbccddeeff");
+}
+
+async function testExistingWebhookFetchesDetailWhenListOmitsSignatureKey() {
+  const connector = createConnector();
+  const endpointUrl = "https://app.mako.ai/api/webhooks/ws/flow";
+
+  (connector as any).closeApi = {
+    get: async (url: string) => {
+      if (url === "/webhook/") {
+        return {
+          data: {
+            data: [{ id: "whsub_existing", url: endpointUrl }],
+          },
+        };
+      }
+      if (url === "/webhook/whsub_existing/") {
+        return {
+          data: {
+            id: "whsub_existing",
+            url: endpointUrl,
+            signature_key: "fedcba9876543210fedcba9876543210",
+          },
+        };
+      }
+      throw new Error(`Unexpected GET ${url}`);
+    },
+    put: async () => ({ data: {} }),
+  };
+
+  const result = await connector.createWebhookSubscription({
+    endpointUrl,
+    enabledEntities: ["contacts"],
+  });
+
+  assert.equal(result.providerWebhookId, "whsub_existing");
+  assert.equal(result.signingSecret, "fedcba9876543210fedcba9876543210");
+}
+
 async function main() {
   testUserWebhookEventsAreSupported();
   testUserWebhookEventsAreMapped();
@@ -422,6 +534,9 @@ async function main() {
   testContactBackfillFlattensCustomFields();
   testSearchFieldSelectionIncludesCustomFieldSelectors();
   await testOpportunitySearchBackfillRequestsAndFlattensCustomFields();
+  await testCreateWebhookSubscriptionReturnsSignatureKey();
+  await testExistingWebhookSubscriptionReturnsSignatureKey();
+  await testExistingWebhookFetchesDetailWhenListOmitsSignatureKey();
 }
 
 main().catch(error => {
