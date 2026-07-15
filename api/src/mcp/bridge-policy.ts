@@ -98,6 +98,43 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "Browser iframe preview; MCP uses render_app instead.",
   ),
 
+  // ── Notebooks (server) — durable, but not yet an MCP surface ──────────
+  // These run headless server-side (like apps), so they *could* bridge, but
+  // notebooks have no designed external MCP surface yet — keep in-product
+  // until that's decided, rather than silently exposing authoring over MCP.
+  add_notebook_cell: exclude(
+    "deferred",
+    "Notebook authoring stays in-product until notebooks get a dedicated MCP surface.",
+  ),
+  create_notebook: exclude(
+    "deferred",
+    "Notebook authoring stays in-product until notebooks get a dedicated MCP surface.",
+  ),
+  delete_notebook_cell: exclude(
+    "deferred",
+    "Notebook authoring stays in-product until notebooks get a dedicated MCP surface.",
+  ),
+  edit_notebook_cell: exclude(
+    "deferred",
+    "Notebook authoring stays in-product until notebooks get a dedicated MCP surface.",
+  ),
+  list_open_notebooks: exclude(
+    "deferred",
+    "Notebook discovery stays in-product until notebooks get a dedicated MCP surface.",
+  ),
+  read_notebook: exclude(
+    "deferred",
+    "Notebook reads stay in-product until notebooks get a dedicated MCP surface.",
+  ),
+  run_notebook_code_cell: exclude(
+    "deferred",
+    "Notebook kernel execution stays in-product until notebooks get a dedicated MCP surface.",
+  ),
+  run_notebook_sql_cell: exclude(
+    "deferred",
+    "Notebook SQL execution stays in-product until notebooks get a dedicated MCP surface.",
+  ),
+
   // ── MCP-only preview / render ─────────────────────────────────────────
   create_preview_token: mcpOnly(),
   render_app: mcpOnly(),

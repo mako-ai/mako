@@ -26,6 +26,8 @@ import {
 import { useAppStore } from "./appStore";
 import { useDashboardStore } from "./dashboardStore";
 import { useDbtStore } from "./dbtStore";
+import { useNotebookStore } from "./notebookStore";
+import { useNotebookPresenceStore } from "./notebookPresenceStore";
 import { computeDashboardStateHash } from "../utils/stateHash";
 import { decideRemoteApply } from "./lib/remoteApplyGate";
 import { useConsoleTreeStore } from "./consoleTreeStore";
@@ -108,6 +110,23 @@ export type RealtimeEvent =
       updatedBy: string;
       clientId?: string;
       origin: "agent" | "save";
+    }
+  | {
+      type: "notebook.updated";
+      notebookId: string;
+      version: number;
+      updatedBy: string;
+      clientId?: string;
+      origin: "agent" | "save";
+    }
+  | {
+      type: "notebook.presence";
+      notebookId: string;
+      clientId: string;
+      userId: string;
+      userName: string;
+      activeCellId?: string | null;
+      gone?: boolean;
     };
 
 export type RealtimeStatus = "idle" | "connecting" | "open" | "reconnecting";
@@ -558,6 +577,41 @@ export const useRealtimeStore = create<RealtimeStore>()(
       void ds.reloadDashboard(workspaceId, event.dashboardId);
     };
 
+    // Notebook document changed (human or agent save): pull the authoritative
+    // notebook for an OPEN notebook when its version advances (a tab that is
+    // mid-save is skipped so it never stomps an in-flight local edit); if the
+    // notebook isn't open here, refresh the explorer list so new notebooks
+    // appear. Echo-suppressed by clientId.
+    const handleNotebookUpdated = (
+      event: Extract<RealtimeEvent, { type: "notebook.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      const nb = useNotebookStore.getState();
+      const open = nb.openNotebooks[event.notebookId];
+      if (!open) {
+        void nb.loadNotebooks();
+        return;
+      }
+      if ((open.version ?? 0) >= event.version) return; // stale / own echo
+      void nb.reloadOpenNotebook(event.notebookId);
+    };
+
+    const handleNotebookPresence = (
+      event: Extract<RealtimeEvent, { type: "notebook.presence" }>,
+    ) => {
+      const presence = useNotebookPresenceStore.getState();
+      if (event.gone) {
+        presence.remove(event.notebookId, event.clientId);
+        return;
+      }
+      presence.touch(event.notebookId, {
+        clientId: event.clientId,
+        userId: event.userId,
+        userName: event.userName,
+        activeCellId: event.activeCellId ?? null,
+      });
+    };
+
     const handleEvent = (event: RealtimeEvent) => {
       switch (event.type) {
         case "console.updated":
@@ -568,6 +622,12 @@ export const useRealtimeStore = create<RealtimeStore>()(
           break;
         case "dashboard.updated":
           handleDashboardUpdated(event);
+          break;
+        case "notebook.updated":
+          handleNotebookUpdated(event);
+          break;
+        case "notebook.presence":
+          handleNotebookPresence(event);
           break;
         case "dbt.file.updated":
           handleDbtFileUpdated(event);

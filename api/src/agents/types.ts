@@ -79,6 +79,8 @@ export interface AgentContext {
   consoles?: ConsoleDataV2[];
   /** Preferred console ID (active tab) */
   consoleId?: string;
+  /** Active notebook id — server notebook tools default their cell ops to it. */
+  notebookId?: string;
   /** Lightweight summary of ALL open tabs (all kinds) */
   openTabs?: Array<{
     id: string;

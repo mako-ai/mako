@@ -192,7 +192,9 @@ See the [docs](https://docs.mako.ai) for full GCS/S3 provisioning instructions.
 3. **Start Services**
 
    ```bash
-   # Start MongoDB
+   # Start the local notebook Python kernel so notebook `code` cells run
+   # locally. Requires the KERNEL_* vars from .env.example in your .env.
+   # (The dev database is hosted MongoDB Atlas, set via DATABASE_URL.)
    pnpm run docker:up
 
    # Start the full stack (API + App + Inngest)
@@ -222,7 +224,7 @@ This IP is used by Mako's cloud service for all outbound database connections.
 | `pnpm run app:dev:scan` | Start the frontend with React Scan and render debug logging   |
 | `pnpm run sync`         | Run the interactive sync tool                                 |
 | `pnpm run migrate`      | Run database migrations                                       |
-| `pnpm run docker:up`    | Start MongoDB and other services                              |
+| `pnpm run docker:up`    | Start the local notebook Python kernel (run notebook code cells) |
 | `pnpm run test`         | Run test suite                                                |
 | `pnpm run build`        | Build all packages                                            |
 | `pnpm run docs:dev`     | Start documentation site locally                              |
