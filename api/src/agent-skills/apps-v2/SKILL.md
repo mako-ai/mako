@@ -57,14 +57,21 @@ snapshot is preserved on a recovery ref.
 
 ## Data bindings (bindings-as-files)
 
-A binding is repo content — no CRUD tools:
+A binding is ONE file — `bindings/<name>.sql` (name = filename, no manifest):
 
-1. Declare it in `mako.json`: `{ "bindings": [{ "name": "engagement_v5", "connectionId": "<workspace connection id>" }] }`
-2. Put the SQL in `bindings/<name>.sql` (read-only SELECT; same connection ids as `list_connections`).
-3. Materialization builds `apps-v2/<projectId>/<name>.parquet` server-side via
-   `POST /api/workspaces/:workspaceId/apps-v2/:appId/bindings/:name/materialize`
-   — there is no agent tool for this yet; ask the user to trigger it (or note it as the remaining step).
-4. At runtime the preview serves each artifact at the APP-RELATIVE URL
-   `__data/<name>.parquet` (no leading slash — it must resolve under the
-   preview token prefix; use `new URL("__data/x.parquet", document.baseURI)`).
-   Fetch it and read with DuckDB-WASM (hyparquet or duckdb-wasm from npm).
+```sql
+-- connection: <workspace connection id>   (required; ids from list_connections)
+-- materialization: parquet                (default; only option today)
+-- schedule: 0 6 * * *                     (optional cron refresh)
+-- dbt_project: <id>                       (optional)
+SELECT ...
+```
+
+Front matter is a leading block of `-- key: value` SQL comments; the first
+SQL line ends it. Keep queries read-only SELECTs. Materialization builds
+`apps-v2/<projectId>/<name>.parquet` server-side via
+`POST /api/workspaces/:workspaceId/apps-v2/:appId/bindings/:name/materialize`
+— no agent tool yet; ask the user to trigger it. At runtime the preview
+serves each artifact at the APP-RELATIVE URL `__data/<name>.parquet`
+(no leading slash — use `new URL("__data/x.parquet", document.baseURI)`).
+Fetch and read with hyparquet or duckdb-wasm.

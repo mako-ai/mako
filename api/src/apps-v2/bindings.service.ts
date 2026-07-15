@@ -4,8 +4,8 @@
  * Unlike v1's Mongo `dataBindings` array, a v2 binding is REPO CONTENT,
  * versioned and branchable with the app:
  *
- *   mako.json      → `bindings: [{ name, connectionId, materialization? }]`
- *   bindings/<name>.sql → the query itself
+ *   bindings/<name>.sql → front matter (-- connection:, -- schedule:, ...)
+ *                         + the query; name = filename, discovery = glob
  *
  * The agent authors bindings with the ordinary file tools (app2_write_file /
  * app2_edit_file) — no bespoke binding CRUD. Materialization reuses v1's
@@ -25,7 +25,7 @@ import {
   buildQueryParquetFile,
   storeParquetArtifactFile,
 } from "../services/parquet-build.service";
-import { readFile } from "./worktree.service";
+import { globFiles, readFile } from "./worktree.service";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps-v2");
@@ -37,6 +37,10 @@ export interface AppV2Binding {
   connectionId: string;
   /** Only "parquet" exists in v2 — live bindings are a later phase. */
   materialization: "parquet";
+  /** Cron expression from `-- schedule:` front matter (Block 4 consumes it). */
+  schedule?: string;
+  /** From `-- dbt_project:` front matter ({{ dbt_schema }} rendering, later). */
+  dbtProjectId?: string;
   sql: string;
 }
 
@@ -45,42 +49,78 @@ export function bindingArtifactKey(projectId: string, name: string): string {
 }
 
 /**
- * Read the project's bindings from git (mako.json + bindings/*.sql) at the
- * given actor's view of the tree. Throws with an actionable message on
- * malformed declarations; an app without mako.json bindings has none.
+ * Parse a binding file's leading SQL-comment front matter:
+ *
+ *   -- connection: <workspace connection id>   (required)
+ *   -- materialization: parquet                (default)
+ *   -- schedule: 0 6 * * *                     (optional, cron)
+ *   -- dbt_project: <id>                       (optional)
+ *
+ * The block ends at the first non-comment line; unknown keys are ignored.
+ * Stays valid SQL for every editor/highlighter, and — unlike a central
+ * manifest — two conversation branches adding bindings can never conflict.
+ */
+export function parseBindingFrontMatter(sql: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of sql.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed === "--") continue;
+    const m = trimmed.match(/^--\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$/);
+    if (!m) {
+      if (trimmed.startsWith("--")) continue; // plain comment inside block
+      break; // first SQL line ends the front matter
+    }
+    out[m[1].toLowerCase()] = m[2];
+  }
+  return out;
+}
+
+/**
+ * Read the project's bindings from git at the given actor's view of the
+ * tree. A binding is `bindings/<name>.sql` with front matter (name =
+ * filename, discovery = glob) — no central manifest. Legacy fallback: a
+ * mako.json `bindings[]` entry supplies connectionId for files without a
+ * `-- connection:` line, until migrated.
  */
 export async function readBindings(
   project: IAppProjectV2,
   actorId: string,
 ): Promise<AppV2Binding[]> {
-  let manifest: {
-    bindings?: Array<{
-      name?: string;
-      connectionId?: string;
-      materialization?: string;
-    }>;
-  };
+  const legacyByName = new Map<string, string>();
   try {
     const raw = await readFile(project, "mako.json", actorId);
-    manifest = JSON.parse(raw.contents) as typeof manifest;
+    const manifest = JSON.parse(raw.contents) as {
+      bindings?: Array<{ name?: string; connectionId?: string }>;
+    };
+    for (const b of manifest.bindings ?? []) {
+      if (b.name && b.connectionId) legacyByName.set(b.name, b.connectionId);
+    }
   } catch {
-    return [];
+    // No manifest — fine; front matter is the source of truth anyway.
   }
-  const declared = manifest.bindings ?? [];
+
+  const paths = await globFiles(project, "bindings/*.sql", actorId);
   const out: AppV2Binding[] = [];
-  for (const b of declared) {
-    if (!b.name || !NAME_RE.test(b.name)) {
-      throw new Error(`Invalid binding name: ${JSON.stringify(b.name)}`);
+  for (const path of paths) {
+    const name = path.replace(/^bindings\//, "").replace(/\.sql$/, "");
+    if (!NAME_RE.test(name)) {
+      throw new Error(`Invalid binding filename: ${path}`);
     }
-    if (!b.connectionId) {
-      throw new Error(`Binding "${b.name}" is missing connectionId`);
+    const file = await readFile(project, path, actorId);
+    const meta = parseBindingFrontMatter(file.contents);
+    const connectionId = meta.connection ?? legacyByName.get(name);
+    if (!connectionId) {
+      throw new Error(
+        `Binding "${name}" has no connection — add "-- connection: <id>" front matter to ${path}`,
+      );
     }
-    const sqlFile = await readFile(project, `bindings/${b.name}.sql`, actorId);
     out.push({
-      name: b.name,
-      connectionId: b.connectionId,
+      name,
+      connectionId,
       materialization: "parquet",
-      sql: sqlFile.contents,
+      schedule: meta.schedule,
+      dbtProjectId: meta.dbt_project,
+      sql: file.contents,
     });
   }
   return out;
@@ -100,7 +140,7 @@ export async function materializeAppV2Binding(
   const binding = bindings.find(b => b.name === name);
   if (!binding) {
     throw new Error(
-      `No binding named "${name}" — declare it in mako.json and put the SQL in bindings/${name}.sql`,
+      `No binding named "${name}" — create bindings/${name}.sql with "-- connection: <id>" front matter`,
     );
   }
   const connection = await DatabaseConnection.findOne({
