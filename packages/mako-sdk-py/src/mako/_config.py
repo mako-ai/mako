@@ -23,7 +23,10 @@ from .errors import MakoConfigError
 # companion backend slice). Point at ``/api/workspaces/{workspace_id}/execute/export``
 # via ``configure(read_path=...)`` to run against an instance before it ships.
 DEFAULT_READ_PATH = "/api/workspaces/{workspace_id}/notebook/read"
-DEFAULT_DATABASES_PATH = "/api/workspaces/{workspace_id}/databases"
+# Source resolution goes through the kernel-token-authed notebook route (id /
+# name / type only). The generic ``/databases`` route rejects kernel tokens and
+# echoes credentialed connection docs, so it must not be reachable from a kernel.
+DEFAULT_DATABASES_PATH = "/api/workspaces/{workspace_id}/notebook/sources"
 DEFAULT_TIMEOUT_SECONDS = 300.0
 
 

@@ -108,6 +108,40 @@ const ReadRequestSchema = z
   })
   .openapi("NotebookReadRequest");
 
+// GET /api/workspaces/:workspaceId/notebook/sources
+// The SDK's source list — `mako.sources.list()` / `.resolve()` map a source
+// NAME to a connection id from inside the sandbox. Kernel-token authed (same as
+// /read) and deliberately minimal: id, name, type ONLY — never the credentialed
+// connection doc (the generic /databases route decrypts creds and must not be
+// reachable by a kernel token).
+notebookDataRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/sources",
+    tags: ["Notebooks"],
+    security: AUTH_SECURITY,
+    middleware: [kernelOrUnifiedAuth, requireWorkspace] as const,
+    request: {
+      params: z.object({ workspaceId: pathParam("workspaceId") }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspace = c.get("workspace") as { _id: unknown };
+    const rows = await DatabaseConnection.find({
+      workspaceId: new Types.ObjectId(String(workspace._id)),
+    })
+      .select("_id name type")
+      .lean();
+    const data = rows.map(r => ({
+      id: String(r._id),
+      name: (r as { name?: string }).name ?? "",
+      type: (r as { type?: string }).type ?? "",
+    }));
+    return c.json({ success: true, data });
+  },
+);
+
 // POST /api/workspaces/:workspaceId/notebook/read
 notebookDataRoutes.openapi(
   createRoute({
