@@ -9,7 +9,7 @@ import { getApiBasePath } from "../lib/api-base-path";
 
 /** Strip ANSI escape codes (kernel tracebacks are colourised). */
 // eslint-disable-next-line no-control-regex
-const ANSI_RE = /\[[0-9;]*m/g;
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
 function stripAnsi(s: string): string {
   return s.replace(ANSI_RE, "");
 }
