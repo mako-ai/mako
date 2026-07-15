@@ -11,7 +11,7 @@ export interface ParquetTempFileResult {
 
 type ParquetWasmModule = {
   Compression: {
-    ZSTD: unknown;
+    SNAPPY: unknown;
   };
   Table: {
     fromIPCStream(buffer: Uint8Array): unknown;
@@ -61,7 +61,9 @@ export async function writeParquetTempFile(options: {
   const arrowBuffer = serializeToArrowIPC(options.rows, options.fields);
   const table = parquetWasm.Table.fromIPCStream(arrowBuffer);
   const writerProps = new parquetWasm.WriterPropertiesBuilder()
-    .setCompression(parquetWasm.Compression.ZSTD)
+    // SNAPPY over ZSTD: readable by every parquet consumer, including
+    // plain hyparquet in browsers.
+    .setCompression(parquetWasm.Compression.SNAPPY)
     .setMaxRowGroupSize(5000)
     .build();
   const parquetBytes = parquetWasm.writeParquet(table, writerProps);

@@ -74,4 +74,5 @@ branch, so it works before merging to main; errors come back verbatim
 (fix the SQL and retry). At runtime the preview
 serves each artifact at the APP-RELATIVE URL `__data/<name>.parquet`
 (no leading slash — use `new URL("__data/x.parquet", document.baseURI)`).
-Fetch and read with hyparquet or duckdb-wasm.
+Fetch and read with hyparquet or duckdb-wasm; artifacts are
+SNAPPY-compressed, so plain hyparquet works (no compressors bundle needed).
