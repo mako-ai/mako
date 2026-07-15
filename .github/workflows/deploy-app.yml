@@ -642,6 +642,12 @@ jobs:
           CLOUD_RUN_URL=$(gcloud run services describe ${SERVICE_NAME} --project ${GCP_PROJECT_ID} --region ${GCP_REGION} --format='value(status.url)')
           echo "cloud_run_url=${CLOUD_RUN_URL}" >> "$GITHUB_OUTPUT"
 
+          # Kernel pods reach the API via the DIRECT run.app URL (not the
+          # Cloudflare-fronted pr-N.mako.ai, which 1010-blocks the pods).
+          gcloud run services update ${SERVICE_NAME} \
+            --project ${GCP_PROJECT_ID} --region ${GCP_REGION} \
+            --update-env-vars="NOTEBOOK_KERNEL_API_URL=${CLOUD_RUN_URL}" --quiet
+
       - name: Sync Inngest branch environment
         continue-on-error: true
         run: |
@@ -1068,13 +1074,20 @@ jobs:
             --region="${GCP_REGION}" \
             --format="value(status.url)")
 
+          # Notebook kernel pods reach the API via the DIRECT run.app URL, not
+          # the public (Cloudflare-fronted) domain — Cloudflare 1010-blocks the
+          # pods' non-browser requests from GCP egress IPs. Always kept in sync
+          # with the current direct URL. INNGEST_SERVE_ORIGIN is only set on the
+          # first deploy (unchanged thereafter).
+          EXTRA_ENV=""
           if [ -z "${{ steps.cloud-run-before.outputs.url }}" ]; then
-            gcloud run services update "${SERVICE_NAME}" \
-              --project="${GCP_PROJECT_ID}" \
-              --region="${GCP_REGION}" \
-              --update-env-vars="INNGEST_SERVE_ORIGIN=${CLOUD_RUN_URL},INNGEST_SERVE_PATH=/api/inngest" \
-              --quiet
+            EXTRA_ENV=",INNGEST_SERVE_ORIGIN=${CLOUD_RUN_URL},INNGEST_SERVE_PATH=/api/inngest"
           fi
+          gcloud run services update "${SERVICE_NAME}" \
+            --project="${GCP_PROJECT_ID}" \
+            --region="${GCP_REGION}" \
+            --update-env-vars="NOTEBOOK_KERNEL_API_URL=${CLOUD_RUN_URL}${EXTRA_ENV}" \
+            --quiet
 
           echo "cloud_run_url=${CLOUD_RUN_URL}" >> "$GITHUB_OUTPUT"
           echo "Cloud Run direct URL: ${CLOUD_RUN_URL}"
