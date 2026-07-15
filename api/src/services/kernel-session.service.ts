@@ -80,10 +80,16 @@ class KernelSessionService {
   }
 
   /**
-   * Python that wires the mako SDK inside the fresh kernel — the read-only
-   * token + workspace so `mako.sources.sql.read(...)` proxies through the API.
-   * Runs silently before any user code; each kernel is its own process, so this
-   * never leaks across co-tenant kernels.
+   * Python that prepares the fresh kernel before any user code. Runs silently;
+   * each kernel is its own process, so this never leaks across co-tenant
+   * kernels. Two jobs:
+   *  1. Wire the mako SDK — the read-only token + workspace so
+   *     `mako.sources.sql.read(...)` proxies through the API.
+   *  2. Activate the Jupyter inline backend so matplotlib figures render as
+   *     inline PNGs. The kernel image defaults to the headless Agg backend
+   *     (`MPLBACKEND=Agg`), which emits no image output; `%matplotlib inline`
+   *     switches to the inline backend (auto-displaying figures at cell end,
+   *     no `plt.show()` needed) — the behaviour users expect from Jupyter.
    */
   private kernelInitCode(session: KernelSession): string {
     const apiUrl =
@@ -93,7 +99,20 @@ class KernelSessionService {
       MAKO_WORKSPACE_ID: session.workspaceId,
       MAKO_KERNEL_TOKEN: session.kernelToken,
     };
-    return `import os as _os\n_os.environ.update(${JSON.stringify(env)})\n`;
+    return [
+      `import os as _os`,
+      `_os.environ.update(${JSON.stringify(env)})`,
+      // Inline matplotlib — isolated so a matplotlib issue can't break the SDK
+      // env setup above. Overrides MPLBACKEND=Agg at runtime.
+      `try:`,
+      `    from IPython import get_ipython as _get_ipython`,
+      `    _ip = _get_ipython()`,
+      `    if _ip is not None:`,
+      `        _ip.run_line_magic("matplotlib", "inline")`,
+      `except Exception:`,
+      `    pass`,
+      ``,
+    ].join("\n");
   }
 
   get(workspaceId: string, notebookId: string): KernelSessionInfo | null {
