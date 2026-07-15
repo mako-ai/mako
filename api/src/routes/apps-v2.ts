@@ -66,6 +66,7 @@ import {
   mintPreviewGrant,
 } from "../apps-v2/preview.service";
 import { ensureDevServer } from "../apps-v2/dev-server.service";
+import { materializeAppV2Binding } from "../apps-v2/bindings.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
 const logger = loggers.api("apps-v2");
@@ -873,6 +874,37 @@ appsV2Routes.openapi(
         user?.email ? { name: user.email, email: user.email } : undefined,
       );
       return c.json({ success: true as const, result }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/bindings/{name}/materialize",
+    tags: ["Apps v2"],
+    summary: "Materialize a data binding (bindings-as-files) to parquet",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam.extend({
+        name: z.string().openapi({ param: { name: "name", in: "path" } }),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const { name } = c.req.valid("param");
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const result = await materializeAppV2Binding(
+        loaded.project,
+        name,
+        loaded.userId ?? "api-key",
+      );
+      return c.json({ success: true as const, ...result }, 200);
     } catch (error) {
       return handleError(c, error);
     }

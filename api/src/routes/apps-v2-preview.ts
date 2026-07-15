@@ -10,7 +10,10 @@
  * zod-openapi's `{param}` syntax cannot express. Static asset serving does
  * not belong in the API reference anyway.
  */
+import { Readable } from "node:stream";
 import type { Context } from "hono";
+import { bindingArtifactKey } from "../apps-v2/bindings.service";
+import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import {
   readPreviewAsset,
   resolvePreviewGrant,
@@ -99,6 +102,33 @@ async function serveAsset(c: Context): Promise<Response> {
       404,
     );
   }
+  // Data bindings: `__data/<name>.parquet` (app-relative, so it works under
+  // the token prefix in BOTH static and dev previews). Streams the
+  // materialized artifact for this project — served BEFORE the dev proxy so
+  // vite never sees it.
+  const dataMatch = assetPathFor(c, token).match(
+    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.parquet$/,
+  );
+  if (dataMatch) {
+    const store = getDashboardArtifactStore();
+    const key = bindingArtifactKey(grant.projectId, dataMatch[1]);
+    const stream = await store.openReadStream(key);
+    if (!stream) {
+      return c.json(
+        { success: false, error: `Binding "${dataMatch[1]}" not materialized` },
+        404,
+      );
+    }
+    return new Response(Readable.toWeb(stream as Readable) as ReadableStream, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/vnd.apache.parquet",
+        "Cache-Control": "no-store",
+        "Access-Control-Allow-Origin": "*",
+      },
+    });
+  }
+
   if (grant.devPort) {
     return proxyToDevServer(c, grant.devPort);
   }
