@@ -65,17 +65,28 @@ export function isKernelToken(token: string): boolean {
   return token.startsWith(TOKEN_PREFIX);
 }
 
-export function mintKernelToken(input: {
+export interface MintKernelTokenInput {
   workspaceId: string;
   userId: string;
   notebookId?: string;
   ttlSeconds?: number;
   /** Injectable clock (ms) for tests. */
   nowMs?: number;
-}): string {
+}
+
+/**
+ * Mint a token and return it alongside its expiry (ms). The session service
+ * uses `expMs` to refresh the token before it lapses, so a long-lived session
+ * never fails a read with "Kernel token expired" without weakening the TTL.
+ */
+export function mintKernelTokenWithExpiry(input: MintKernelTokenInput): {
+  token: string;
+  expMs: number;
+} {
   const secret = resolveSecret();
   const nowSec = Math.floor((input.nowMs ?? Date.now()) / 1000);
   const ttl = Math.max(1, Math.floor(input.ttlSeconds ?? DEFAULT_TTL_SECONDS));
+  const exp = nowSec + ttl;
   const payload: KernelTokenPayload = {
     v: 1,
     wsId: input.workspaceId,
@@ -83,10 +94,14 @@ export function mintKernelToken(input: {
     notebookId: input.notebookId,
     scope: "read",
     iat: nowSec,
-    exp: nowSec + ttl,
+    exp,
   };
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  return `${TOKEN_PREFIX}${body}.${sign(body, secret)}`;
+  return { token: `${TOKEN_PREFIX}${body}.${sign(body, secret)}`, expMs: exp * 1000 };
+}
+
+export function mintKernelToken(input: MintKernelTokenInput): string {
+  return mintKernelTokenWithExpiry(input).token;
 }
 
 export function verifyKernelToken(

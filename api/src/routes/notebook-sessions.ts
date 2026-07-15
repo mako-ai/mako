@@ -99,7 +99,7 @@ notebookSessionRoutes.openapi(
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
-    const session = kernelSessionService.get(
+    const session = await kernelSessionService.get(
       workspaceId(c),
       c.req.valid("param").id,
     );
