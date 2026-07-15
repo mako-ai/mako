@@ -225,6 +225,7 @@ appsV2Routes.openapi(
           repo: r.repo,
           defaultBranch: r.defaultBranch,
           subdirectory: r.subdirectory,
+          installationId: r.installationId,
         })),
       },
       200,

@@ -81,6 +81,8 @@ export interface AppV2Preview {
 }
 
 export interface AppV2RepoBinding {
+  /** GitHub App installation granting access (needed to re-save the binding). */
+  installationId?: number;
   owner: string;
   repo: string;
   defaultBranch: string;
@@ -143,6 +145,13 @@ interface AppsV2Store {
    * GitHub (whose install page short-circuits and never fires our callback).
    */
   getGitHubSyncUrl: (workspaceId: string) => Promise<string | null>;
+  /** Branch names of a repo (for the branch switcher). */
+  fetchGithubBranches: (
+    workspaceId: string,
+    owner: string,
+    repo: string,
+    installationId?: number,
+  ) => Promise<string[]>;
   connectRepo: (
     workspaceId: string,
     input: {
@@ -306,6 +315,27 @@ export const useAppsV2Store = create<AppsV2Store>()(
           s.error = message(e, "Failed to start GitHub App install");
         });
         return null;
+      }
+    },
+
+    fetchGithubBranches: async (workspaceId, owner, repo, installationId) => {
+      try {
+        const params = new URLSearchParams({ owner, repo });
+        if (installationId) {
+          params.set("installationId", String(installationId));
+        }
+        // TODO(workspace-repos): reuses dbt's raw branches route until repos
+        // get their own workspace-level GitHub surface.
+        const response = await apiClient.get<{
+          success: boolean;
+          branches: string[];
+        }>(`/workspaces/${workspaceId}/dbt/github/branches?${params}`);
+        return response.branches ?? [];
+      } catch (e) {
+        set(s => {
+          s.error = message(e, "Failed to list branches");
+        });
+        return [];
       }
     },
 

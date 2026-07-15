@@ -13,6 +13,7 @@ import {
 } from "react";
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Chip,
@@ -223,6 +224,9 @@ export default function AppsV2Explorer() {
   const fetchFiles = useAppsV2Store(s => s.fetchFiles);
   const createApp = useAppsV2Store(s => s.createApp);
   const deleteApp = useAppsV2Store(s => s.deleteApp);
+  const fetchGithubBranches = useAppsV2Store(s => s.fetchGithubBranches);
+  const connectRepo = useAppsV2Store(s => s.connectRepo);
+  const disconnectRepo = useAppsV2Store(s => s.disconnectRepo);
   const openGitHubSettings = useCallback(() => {
     const state = useConsoleStore.getState();
     const existing = selectTabBySettingsSection("github")(state);
@@ -314,6 +318,16 @@ export default function AppsV2Explorer() {
   const [commitError, setCommitError] = useState<string | null>(null);
   const [merging, setMerging] = useState<string | null>(null);
   const [mergeError, setMergeError] = useState<string | null>(null);
+  // Repo-node kebab: menu anchor + which repo it targets; branch switcher.
+  const [repoMenu, setRepoMenu] = useState<{
+    anchor: HTMLElement;
+    repoKey: string;
+  } | null>(null);
+  const [switchRepoKey, setSwitchRepoKey] = useState<string | null>(null);
+  const [branchOptions, setBranchOptions] = useState<string[]>([]);
+  const [branchesLoading, setBranchesLoading] = useState(false);
+  const [switchBranch, setSwitchBranch] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -435,6 +449,67 @@ export default function AppsV2Explorer() {
       }
     },
     [workspaceId, filesByApp, fetchFiles],
+  );
+
+  const repoByKey = useCallback(
+    (key: string | null) =>
+      key ? repos.find(r => `${r.owner}/${r.repo}` === key) : undefined,
+    [repos],
+  );
+
+  const openSwitchBranch = useCallback(
+    async (repoKey: string) => {
+      const repo = repoByKey(repoKey);
+      if (!workspaceId || !repo) return;
+      setRepoMenu(null);
+      setSwitchRepoKey(repoKey);
+      setSwitchBranch(repo.defaultBranch);
+      setBranchesLoading(true);
+      setBranchOptions(
+        await fetchGithubBranches(
+          workspaceId,
+          repo.owner,
+          repo.repo,
+          repo.installationId,
+        ),
+      );
+      setBranchesLoading(false);
+    },
+    [workspaceId, repoByKey, fetchGithubBranches],
+  );
+
+  const handleSwitchBranch = useCallback(async () => {
+    const repo = repoByKey(switchRepoKey);
+    if (!workspaceId || !repo || !switchBranch) return;
+    setSwitching(true);
+    // Re-saving the binding with a new default branch — the branch
+    // conversations fork from and publish merges into for this repo.
+    await connectRepo(workspaceId, {
+      owner: repo.owner,
+      repo: repo.repo,
+      defaultBranch: switchBranch,
+      subdirectory: repo.subdirectory,
+      installationId: repo.installationId,
+    });
+    setSwitching(false);
+    setSwitchRepoKey(null);
+  }, [workspaceId, repoByKey, switchRepoKey, switchBranch, connectRepo]);
+
+  const handleDisconnectRepo = useCallback(
+    async (repoKey: string) => {
+      const repo = repoByKey(repoKey);
+      setRepoMenu(null);
+      if (!workspaceId || !repo) return;
+      if (
+        !window.confirm(
+          `Disconnect ${repo.owner}/${repo.repo}? Its content stays in GitHub; this workspace just stops pointing at it.`,
+        )
+      ) {
+        return;
+      }
+      await disconnectRepo(workspaceId, repo.owner, repo.repo);
+    },
+    [workspaceId, repoByKey, disconnectRepo],
   );
 
   const handleCreate = useCallback(async () => {
@@ -716,6 +791,37 @@ export default function AppsV2Explorer() {
                   return parsed.kind === "app" && !!loadingApps[parsed.appId];
                 }}
                 getContextMenuItems={getContextMenuItems}
+                getRightAdornment={node => {
+                  const parsed = parseNodeId(node.id);
+                  if (parsed.kind !== "repo" || node.id === CLOUD_NODE_ID) {
+                    return null;
+                  }
+                  const repo = repoByKey(parsed.path);
+                  if (!repo) return null;
+                  return (
+                    <Box
+                      sx={{ display: "flex", alignItems: "center", gap: 0.25 }}
+                      onClick={e => e.stopPropagation()}
+                    >
+                      <Typography variant="caption" color="text.secondary">
+                        {repo.defaultBranch}
+                      </Typography>
+                      <IconButton
+                        size="small"
+                        sx={{ p: 0.25 }}
+                        onClick={e => {
+                          e.stopPropagation();
+                          setRepoMenu({
+                            anchor: e.currentTarget,
+                            repoKey: parsed.path,
+                          });
+                        }}
+                      >
+                        <KebabIcon size={14} strokeWidth={1.75} />
+                      </IconButton>
+                    </Box>
+                  );
+                }}
                 enableRename={false}
                 enableDelete={false}
                 isFolderExpanded={isFolderOpen}
@@ -730,6 +836,86 @@ export default function AppsV2Explorer() {
           </Box>
         )}
       </ExplorerShell>
+
+      {/* Repo-node kebab menu */}
+      <Menu
+        anchorEl={repoMenu?.anchor ?? null}
+        open={Boolean(repoMenu)}
+        onClose={() => setRepoMenu(null)}
+      >
+        <MenuItem
+          onClick={() => repoMenu && void openSwitchBranch(repoMenu.repoKey)}
+        >
+          <ListItemIcon>
+            <BranchIcon size={16} />
+          </ListItemIcon>
+          Switch branch…
+        </MenuItem>
+        <MenuItem
+          component="a"
+          href={`https://github.com/${repoMenu?.repoKey ?? ""}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={() => setRepoMenu(null)}
+        >
+          <ListItemIcon>
+            <LinkIcon size={16} />
+          </ListItemIcon>
+          Open on GitHub
+        </MenuItem>
+        <MenuItem
+          onClick={() =>
+            repoMenu && void handleDisconnectRepo(repoMenu.repoKey)
+          }
+        >
+          <ListItemIcon>
+            <DeleteIcon size={16} />
+          </ListItemIcon>
+          Disconnect repo
+        </MenuItem>
+      </Menu>
+
+      {/* Switch-branch dialog */}
+      <Dialog
+        open={Boolean(switchRepoKey)}
+        onClose={() => setSwitchRepoKey(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Switch branch — {switchRepoKey}</DialogTitle>
+        <DialogContent>
+          <Autocomplete
+            options={branchOptions}
+            loading={branchesLoading}
+            value={switchBranch}
+            onChange={(_, v) => setSwitchBranch(v)}
+            renderInput={params => (
+              <TextField
+                {...params}
+                margin="dense"
+                label="Branch"
+                placeholder={branchesLoading ? "Loading branches…" : "Branch"}
+              />
+            )}
+          />
+          <Typography variant="caption" color="text.secondary">
+            Conversations fork from this branch and publishing merges back into
+            it.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSwitchRepoKey(null)} disabled={switching}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => void handleSwitchBranch()}
+            disabled={switching || !switchBranch}
+          >
+            {switching ? "Switching…" : "Switch"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Branch menu */}
       <Menu
