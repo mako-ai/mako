@@ -27,6 +27,7 @@ import { useAppStore } from "./appStore";
 import { useDashboardStore } from "./dashboardStore";
 import { useDbtStore } from "./dbtStore";
 import { useNotebookStore } from "./notebookStore";
+import { useNotebookPresenceStore } from "./notebookPresenceStore";
 import { computeDashboardStateHash } from "../utils/stateHash";
 import { decideRemoteApply } from "./lib/remoteApplyGate";
 import { useConsoleTreeStore } from "./consoleTreeStore";
@@ -117,6 +118,15 @@ export type RealtimeEvent =
       updatedBy: string;
       clientId?: string;
       origin: "agent" | "save";
+    }
+  | {
+      type: "notebook.presence";
+      notebookId: string;
+      clientId: string;
+      userId: string;
+      userName: string;
+      activeCellId?: string | null;
+      gone?: boolean;
     };
 
 export type RealtimeStatus = "idle" | "connecting" | "open" | "reconnecting";
@@ -586,6 +596,22 @@ export const useRealtimeStore = create<RealtimeStore>()(
       void nb.reloadOpenNotebook(event.notebookId);
     };
 
+    const handleNotebookPresence = (
+      event: Extract<RealtimeEvent, { type: "notebook.presence" }>,
+    ) => {
+      const presence = useNotebookPresenceStore.getState();
+      if (event.gone) {
+        presence.remove(event.notebookId, event.clientId);
+        return;
+      }
+      presence.touch(event.notebookId, {
+        clientId: event.clientId,
+        userId: event.userId,
+        userName: event.userName,
+        activeCellId: event.activeCellId ?? null,
+      });
+    };
+
     const handleEvent = (event: RealtimeEvent) => {
       switch (event.type) {
         case "console.updated":
@@ -599,6 +625,9 @@ export const useRealtimeStore = create<RealtimeStore>()(
           break;
         case "notebook.updated":
           handleNotebookUpdated(event);
+          break;
+        case "notebook.presence":
+          handleNotebookPresence(event);
           break;
         case "dbt.file.updated":
           handleDbtFileUpdated(event);

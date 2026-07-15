@@ -1097,6 +1097,26 @@
           }
         }
       },
+      "NotebookPresenceRequest": {
+        "type": "object",
+        "properties": {
+          "clientId": {
+            "type": "string"
+          },
+          "activeCellId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gone": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "clientId"
+        ]
+      },
       "NotebookExecuteRequest": {
         "type": "object",
         "properties": {
@@ -22250,6 +22270,92 @@
           }
         },
         "operationId": "post_api_workspaces_workspaceId_notebooks_id_versions_versionId_restore"
+      }
+    },
+    "/api/workspaces/{workspaceId}/notebooks/{id}/presence": {
+      "post": {
+        "tags": [
+          "Notebooks"
+        ],
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotebookPresenceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_notebooks_id_presence"
       }
     },
     "/api/workspaces/{workspaceId}/notebooks/{id}/sessions": {

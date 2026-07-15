@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import {
+  Avatar,
+  AvatarGroup,
   Box,
   Button,
   CircularProgress,
@@ -29,6 +31,12 @@ import { runCell } from "../notebook-runtime/run";
 import { stopKernelSession } from "../notebook-runtime/kernel";
 import NotebookCell from "./NotebookCell";
 import NotebookHistoryDrawer from "./NotebookHistoryDrawer";
+import { useNotebookPresence } from "../notebook-runtime/presence";
+import {
+  presenceColor,
+  presenceInitials,
+  type NotebookViewer,
+} from "../store/notebookPresenceStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useUIStore } from "../store/uiStore";
@@ -74,6 +82,23 @@ export default function NotebookRenderer({
   const [loading, setLoading] = useState(!doc);
   const [addAnchor, setAddAnchor] = useState<HTMLElement | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  // Which cell the local user is focused on — heartbeated as their live cursor.
+  const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
+
+  // Live collaborators in this notebook (self excluded) + where their cursors
+  // are, for the avatar row and per-cell soft-lock indicators.
+  const viewers = useNotebookPresence({
+    workspaceId,
+    notebookId,
+    activeCellId: focusedCellId,
+  });
+  const viewersByCell = new Map<string, NotebookViewer[]>();
+  for (const v of viewers) {
+    if (!v.activeCellId) continue;
+    const list = viewersByCell.get(v.activeCellId) ?? [];
+    list.push(v);
+    viewersByCell.set(v.activeCellId, list);
+  }
   // "Run all" progress: which cell is currently executing (highlights it).
   const [runningAll, setRunningAll] = useState(false);
   const [runningCellId, setRunningCellId] = useState<string | null>(null);
@@ -191,6 +216,30 @@ export default function NotebookRenderer({
           {SAVE_LABEL[saveState]}
         </Typography>
 
+        {viewers.length > 0 && (
+          <AvatarGroup
+            max={5}
+            sx={{
+              mr: 0.5,
+              "& .MuiAvatar-root": {
+                width: 24,
+                height: 24,
+                fontSize: "0.7rem",
+                border: "2px solid",
+                borderColor: "background.paper",
+              },
+            }}
+          >
+            {viewers.map(v => (
+              <Tooltip key={v.clientId} title={`${v.userName} is here`}>
+                <Avatar sx={{ bgcolor: presenceColor(v.userId) }}>
+                  {presenceInitials(v.userName)}
+                </Avatar>
+              </Tooltip>
+            ))}
+          </AvatarGroup>
+        )}
+
         {/* Compact run/clear/restart controls, inline with the title. */}
         <Tooltip title="Run all cells">
           <span>
@@ -262,6 +311,8 @@ export default function NotebookRenderer({
             workspaceId={workspaceId}
             sources={sources}
             isRunning={runningCellId === block.id}
+            remoteViewers={viewersByCell.get(block.id)}
+            onFocus={() => setFocusedCellId(block.id)}
             onChange={patch => updateCell(notebookId, block.id, patch)}
             onDelete={() => deleteCell(notebookId, block.id)}
             onMove={dir => moveCell(notebookId, index, dir)}

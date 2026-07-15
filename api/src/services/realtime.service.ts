@@ -138,6 +138,19 @@ export type RealtimeEvent =
       updatedBy: string;
       clientId?: string;
       origin: "agent" | "save";
+    }
+  // Ephemeral presence for an open notebook: a periodic heartbeat carrying who
+  // the viewer is and which cell they're focused on (live cursor / soft-lock).
+  // Never persisted; other clients TTL-expire a viewer whose beats stop, or
+  // drop it immediately on a `gone` beat (tab closed).
+  | {
+      type: "notebook.presence";
+      notebookId: string;
+      clientId: string;
+      userId: string;
+      userName: string;
+      activeCellId?: string | null;
+      gone?: boolean;
     };
 
 function channelFor(workspaceId: string): string {

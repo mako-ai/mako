@@ -328,6 +328,56 @@ notebookRoutes.openapi(
   },
 );
 
+// POST /:id/presence — ephemeral "who's here" heartbeat (never persisted).
+// Broadcasts a notebook.presence event: the viewer + their focused cell (live
+// cursor / soft-lock). `gone: true` announces a departure so peers drop the
+// viewer without waiting for the TTL.
+notebookRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/presence",
+    tags: ["Notebooks"],
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: wsIdParams,
+      body: jsonBody(
+        z
+          .object({
+            clientId: z.string(),
+            activeCellId: z.string().nullable().optional(),
+            gone: z.boolean().optional(),
+          })
+          .openapi("NotebookPresenceRequest"),
+      ),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      clientId?: string;
+      activeCellId?: string | null;
+      gone?: boolean;
+    };
+    if (!body.clientId) {
+      return c.json({ success: false, error: "clientId is required" }, 400);
+    }
+    const user = c.get("user") as
+      | { id?: unknown; email?: string; name?: string }
+      | undefined;
+    publishRealtimeEvent(workspaceId(c), {
+      type: "notebook.presence",
+      notebookId: c.req.valid("param").id,
+      clientId: body.clientId,
+      userId: String(user?.id ?? "anon"),
+      userName: user?.name || user?.email || "Someone",
+      activeCellId: body.activeCellId ?? null,
+      gone: body.gone === true,
+    });
+    return c.json({ success: true });
+  },
+);
+
 // DELETE /:id
 notebookRoutes.openapi(
   createRoute({

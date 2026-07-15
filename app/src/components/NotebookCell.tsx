@@ -1,6 +1,8 @@
 import { useState } from "react";
 import {
   Alert,
+  Avatar,
+  AvatarGroup,
   Box,
   Button,
   CircularProgress,
@@ -17,6 +19,11 @@ import { ChevronDown, ChevronUp, Play, Trash2 } from "lucide-react";
 import type { NotebookBlock, NotebookBlockType } from "../store/notebookStore";
 import type { Connection } from "../store/schemaStore";
 import type { KernelOutput } from "../notebook-runtime/kernel";
+import {
+  presenceColor,
+  presenceInitials,
+  type NotebookViewer,
+} from "../store/notebookPresenceStore";
 import { runCell } from "../notebook-runtime/run";
 import KernelOutputView from "./KernelOutputView";
 import ResultsTable from "./ResultsTable";
@@ -54,6 +61,10 @@ interface NotebookCellProps {
   sources: Connection[];
   /** True while a batch "Run all" is executing this cell. */
   isRunning?: boolean;
+  /** Remote collaborators whose cursor is on this cell (soft-lock indicator). */
+  remoteViewers?: NotebookViewer[];
+  /** Called when the local user focuses this cell (drives their live cursor). */
+  onFocus?: () => void;
   onChange: (patch: Partial<NotebookBlock>) => void;
   onDelete: () => void;
   onMove: (direction: -1 | 1) => void;
@@ -67,6 +78,8 @@ export default function NotebookCell({
   workspaceId,
   sources,
   isRunning = false,
+  remoteViewers,
+  onFocus,
   onChange,
   onDelete,
   onMove,
@@ -139,12 +152,18 @@ export default function NotebookCell({
     setLocalRunning(false);
   };
 
+  const viewersHere = remoteViewers ?? [];
+  const lockColor = viewersHere.length
+    ? presenceColor(viewersHere[0].userId)
+    : null;
+
   return (
     <Box
+      onFocusCapture={onFocus}
       sx={{
         mb: 1.5,
         border: 1,
-        borderColor: running ? "primary.main" : "divider",
+        borderColor: running ? "primary.main" : (lockColor ?? "divider"),
         borderRadius: 1,
         overflow: "hidden",
         transition: "border-color 120ms",
@@ -184,6 +203,30 @@ export default function NotebookCell({
         </Select>
 
         <Box sx={{ flex: 1 }} />
+
+        {viewersHere.length > 0 && (
+          <AvatarGroup
+            max={3}
+            sx={{
+              mr: 0.5,
+              "& .MuiAvatar-root": {
+                width: 18,
+                height: 18,
+                fontSize: "0.6rem",
+                border: "1.5px solid",
+                borderColor: "action.hover",
+              },
+            }}
+          >
+            {viewersHere.map(v => (
+              <Tooltip key={v.clientId} title={`${v.userName} is editing here`}>
+                <Avatar sx={{ bgcolor: presenceColor(v.userId) }}>
+                  {presenceInitials(v.userName)}
+                </Avatar>
+              </Tooltip>
+            ))}
+          </AvatarGroup>
+        )}
 
         <Box
           className="cell-actions"

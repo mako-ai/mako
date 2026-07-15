@@ -3433,6 +3433,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/notebooks/{id}/presence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["post_api_workspaces_workspaceId_notebooks_id_presence"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/notebooks/{id}/sessions": {
         parameters: {
             query?: never;
@@ -4554,6 +4570,11 @@ export interface components {
                 executedAt?: string;
             }[];
             clientId?: string;
+        };
+        NotebookPresenceRequest: {
+            clientId: string;
+            activeCellId?: string | null;
+            gone?: boolean;
         };
         NotebookExecuteRequest: {
             code: string;
@@ -16161,6 +16182,51 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": components["schemas"]["RestoreNotebookVersionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_notebooks_id_presence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotebookPresenceRequest"];
             };
         };
         responses: {
