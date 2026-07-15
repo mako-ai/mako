@@ -64,6 +64,18 @@ type CloseWebhookSelector = {
   action: string;
 };
 
+/** Close returns the HMAC key as `signature_key` on create/list/get. */
+function extractCloseSigningSecret(
+  webhook: Record<string, unknown> | null | undefined,
+): string | undefined {
+  if (!webhook || typeof webhook !== "object") return undefined;
+  const candidate =
+    webhook.signature_key ?? webhook.signing_secret ?? webhook.secret;
+  return typeof candidate === "string" && candidate.length > 0
+    ? candidate
+    : undefined;
+}
+
 // Close webhook selectors from official event list.
 const CLOSE_SUPPORTED_WEBHOOK_SELECTORS: CloseWebhookSelector[] = [
   { object_type: "lead", action: "created" },
@@ -2291,9 +2303,30 @@ export class CloseConnector extends BaseConnector {
               error: updateError,
             });
           }
+
+          // Close includes `signature_key` on list/get responses. Re-use it so
+          // re-provisioning (same URL) still fills Mako's Webhook Secret field —
+          // the create-only path is the only place that previously returned it.
+          let signingSecret = extractCloseSigningSecret(existing);
+          if (!signingSecret) {
+            try {
+              const detailResponse = await api.get(`/webhook/${existingId}/`);
+              signingSecret = extractCloseSigningSecret(detailResponse?.data);
+            } catch (detailError) {
+              logger.warn(
+                "Could not fetch signature_key for existing Close webhook",
+                {
+                  webhookId: existingId,
+                  error: detailError,
+                },
+              );
+            }
+          }
+
           return {
             providerWebhookId: String(existingId),
             endpointUrl: options.endpointUrl,
+            signingSecret,
           };
         }
       }
@@ -2308,16 +2341,10 @@ export class CloseConnector extends BaseConnector {
         );
       }
 
-      const signingSecret =
-        data.signature_key || data.signing_secret || data.secret;
-
       return {
         providerWebhookId: String(providerWebhookId),
         endpointUrl: options.endpointUrl,
-        signingSecret:
-          typeof signingSecret === "string" && signingSecret.length > 0
-            ? signingSecret
-            : undefined,
+        signingSecret: extractCloseSigningSecret(data),
       };
     } catch (error) {
       const message = (() => {

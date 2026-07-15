@@ -587,7 +587,11 @@ export function SyncFlowForm({
       scheduleCron: flow.schedule?.cron || "0 * * * *",
       scheduleTimezone: flow.schedule?.timezone || "UTC",
       webhookEnabled: hasWebhookTrigger,
-      webhookSecret: flow.webhookConfig?.secret || "",
+      // Prefer the server secret when present. If a flows refresh races with
+      // one-click provisioning (secret just set in the form, not yet visible
+      // on the list payload), keep the in-form value instead of blanking it.
+      webhookSecret:
+        flow.webhookConfig?.secret || getValues("webhookSecret") || "",
       syncMode: (flow.syncMode as "full" | "incremental") || "full",
       writeMode:
         (flow.writeMode as "append_dedup" | "append" | "overwrite") ||
@@ -621,7 +625,7 @@ export function SyncFlowForm({
         : "custom",
     );
     reset(formData);
-  }, [isNewMode, currentFlowId, flows, reset]);
+  }, [isNewMode, currentFlowId, flows, reset, getValues]);
 
   useEffect(() => {
     return () => {
@@ -891,6 +895,15 @@ export function SyncFlowForm({
         });
       }
       await useFlowStore.getState().fetchFlows(currentWorkspace.id);
+      // fetchFlows triggers the flows→reset useEffect. Re-apply after that
+      // paint so a missing/racy list secret can't wipe the provisioned value.
+      if (provisioned.webhookSecret) {
+        setTimeout(() => {
+          setValue("webhookSecret", provisioned.webhookSecret!, {
+            shouldDirty: true,
+          });
+        }, 0);
+      }
     } catch (err) {
       setError(
         err instanceof Error

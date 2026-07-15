@@ -406,6 +406,108 @@ async function testOpportunitySearchBackfillRequestsAndFlattensCustomFields() {
   );
 }
 
+async function testCreateWebhookSubscriptionReturnsSignatureKey() {
+  const connector = createConnector();
+  const endpointUrl = "https://app.mako.ai/api/webhooks/ws/flow";
+
+  (connector as any).closeApi = {
+    get: async () => ({ data: { data: [] } }),
+    post: async (_url: string, body: Record<string, unknown>) => {
+      assert.equal(body.url, endpointUrl);
+      return {
+        data: {
+          id: "whsub_new",
+          url: endpointUrl,
+          signature_key: "aabbccddeeff00112233445566778899",
+        },
+      };
+    },
+  };
+
+  const result = await connector.createWebhookSubscription({
+    endpointUrl,
+    enabledEntities: ["leads"],
+  });
+
+  assert.equal(result.providerWebhookId, "whsub_new");
+  assert.equal(result.signingSecret, "aabbccddeeff00112233445566778899");
+}
+
+async function testExistingWebhookSubscriptionReturnsSignatureKey() {
+  const connector = createConnector();
+  const endpointUrl = "https://app.mako.ai/api/webhooks/ws/flow";
+  let putCalled = false;
+
+  (connector as any).closeApi = {
+    get: async (url: string) => {
+      if (url === "/webhook/") {
+        return {
+          data: {
+            data: [
+              {
+                id: "whsub_existing",
+                url: endpointUrl,
+                signature_key: "00112233445566778899aabbccddeeff",
+              },
+            ],
+          },
+        };
+      }
+      throw new Error(`Unexpected GET ${url}`);
+    },
+    put: async (url: string) => {
+      putCalled = true;
+      assert.equal(url, "/webhook/whsub_existing/");
+      return { data: {} };
+    },
+  };
+
+  const result = await connector.createWebhookSubscription({
+    endpointUrl,
+    enabledEntities: ["leads"],
+  });
+
+  assert.equal(putCalled, true);
+  assert.equal(result.providerWebhookId, "whsub_existing");
+  assert.equal(result.signingSecret, "00112233445566778899aabbccddeeff");
+}
+
+async function testExistingWebhookFetchesDetailWhenListOmitsSignatureKey() {
+  const connector = createConnector();
+  const endpointUrl = "https://app.mako.ai/api/webhooks/ws/flow";
+
+  (connector as any).closeApi = {
+    get: async (url: string) => {
+      if (url === "/webhook/") {
+        return {
+          data: {
+            data: [{ id: "whsub_existing", url: endpointUrl }],
+          },
+        };
+      }
+      if (url === "/webhook/whsub_existing/") {
+        return {
+          data: {
+            id: "whsub_existing",
+            url: endpointUrl,
+            signature_key: "fedcba9876543210fedcba9876543210",
+          },
+        };
+      }
+      throw new Error(`Unexpected GET ${url}`);
+    },
+    put: async () => ({ data: {} }),
+  };
+
+  const result = await connector.createWebhookSubscription({
+    endpointUrl,
+    enabledEntities: ["contacts"],
+  });
+
+  assert.equal(result.providerWebhookId, "whsub_existing");
+  assert.equal(result.signingSecret, "fedcba9876543210fedcba9876543210");
+}
+
 async function main() {
   testUserWebhookEventsAreSupported();
   testUserWebhookEventsAreMapped();
@@ -422,6 +524,9 @@ async function main() {
   testContactBackfillFlattensCustomFields();
   testSearchFieldSelectionIncludesCustomFieldSelectors();
   await testOpportunitySearchBackfillRequestsAndFlattensCustomFields();
+  await testCreateWebhookSubscriptionReturnsSignatureKey();
+  await testExistingWebhookSubscriptionReturnsSignatureKey();
+  await testExistingWebhookFetchesDetailWhenListOmitsSignatureKey();
 }
 
 main().catch(error => {
