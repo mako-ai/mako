@@ -68,10 +68,10 @@ SELECT ...
 ```
 
 Front matter is a leading block of `-- key: value` SQL comments; the first
-SQL line ends it. Keep queries read-only SELECTs. Materialization builds
-`apps-v2/<projectId>/<name>.parquet` server-side via
-`POST /api/workspaces/:workspaceId/apps-v2/:appId/bindings/:name/materialize`
-— no agent tool yet; ask the user to trigger it. At runtime the preview
+SQL line ends it. Keep queries read-only SELECTs. Build the artifact with
+`app2_materialize` (appId + binding name) — it reads THIS conversation's
+branch, so it works before merging to main; errors come back verbatim
+(fix the SQL and retry). At runtime the preview
 serves each artifact at the APP-RELATIVE URL `__data/<name>.parquet`
 (no leading slash — use `new URL("__data/x.parquet", document.baseURI)`).
 Fetch and read with hyparquet or duckdb-wasm.
