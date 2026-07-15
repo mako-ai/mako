@@ -827,6 +827,14 @@ export function SyncFlowForm({
         onSaved?.(newFlow._id);
         reset(data);
         onSave?.();
+
+        // Provisioning needs a persisted flowId for the webhook URL. Do it
+        // automatically on first create so the user doesn't have to reopen
+        // Triggers just to click "Create in {Provider}".
+        if (data.webhookEnabled && provisioning?.supported) {
+          setOpenSteps(new Set([2]));
+          await provisionWebhookForFlow(newFlow._id);
+        }
       } else if (currentFlowId) {
         await updateFlow(currentWorkspace.id, currentFlowId, payload);
 
@@ -870,8 +878,8 @@ export function SyncFlowForm({
     }
   };
 
-  const handleProvisionWebhook = async () => {
-    if (!currentWorkspace?.id || !currentFlowId) {
+  const provisionWebhookForFlow = async (flowIdToProvision: string) => {
+    if (!currentWorkspace?.id) {
       setError("Save the sync first before creating the provider webhook");
       return;
     }
@@ -882,7 +890,7 @@ export function SyncFlowForm({
         typeof window !== "undefined" ? window.location.origin : undefined;
       const provisioned = await provisionFlowWebhook(
         currentWorkspace.id,
-        currentFlowId,
+        flowIdToProvision,
         { verifySsl: true, publicBaseUrl },
       );
       if (!provisioned) {
@@ -913,6 +921,14 @@ export function SyncFlowForm({
     } finally {
       setIsProvisioningWebhook(false);
     }
+  };
+
+  const handleProvisionWebhook = async () => {
+    if (!currentFlowId) {
+      setError("Save the sync first before creating the provider webhook");
+      return;
+    }
+    await provisionWebhookForFlow(currentFlowId);
   };
 
   const stepHasError = (stepIndex: number): boolean => {
@@ -1508,8 +1524,9 @@ export function SyncFlowForm({
                           )}
                           {isNewMode ? (
                             <Alert severity="info" icon={<WebhookIcon />}>
-                              Save the sync to generate the webhook URL and
-                              secret.
+                              {provisioning?.supported
+                                ? `Finish the steps and create the sync — we'll generate the webhook URL and create it in ${provisionProviderLabel} automatically.`
+                                : "Finish the steps and create the sync to generate the webhook URL, then paste the signing secret from your provider."}
                             </Alert>
                           ) : (
                             <>
