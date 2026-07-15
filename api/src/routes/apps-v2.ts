@@ -66,7 +66,14 @@ import {
   mintPreviewGrant,
 } from "../apps-v2/preview.service";
 import { ensureDevServer } from "../apps-v2/dev-server.service";
-import { materializeAppV2Binding } from "../apps-v2/bindings.service";
+import { Readable } from "node:stream";
+import {
+  bindingArtifactKey,
+  getBindingState,
+  materializeAppV2Binding,
+  readBindings,
+} from "../apps-v2/bindings.service";
+import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
 const logger = loggers.api("apps-v2");
@@ -874,6 +881,93 @@ appsV2Routes.openapi(
         user?.email ? { name: user.email, email: user.email } : undefined,
       );
       return c.json({ success: true as const, result }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/bindings",
+    tags: ["Apps v2"],
+    summary: "List the app's data bindings (front matter + build state)",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const bindings = await readBindings(
+        loaded.project,
+        loaded.userId ?? "api-key",
+      );
+      const projectId = loaded.project._id.toString();
+      const out = [];
+      for (const b of bindings) {
+        const state = await getBindingState(projectId, b.name);
+        out.push({
+          name: b.name,
+          connectionId: b.connectionId,
+          schedule: b.schedule ?? null,
+          lastMaterializedAt: state?.lastMaterializedAt ?? null,
+          rowCount: state?.lastRowCount ?? null,
+          history: state?.history ?? [],
+        });
+      }
+      return c.json({ success: true as const, bindings: out }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/bindings/{name}/artifact",
+    tags: ["Apps v2"],
+    summary: "Stream a binding's materialized parquet artifact",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam.extend({
+        name: z.string().openapi({ param: { name: "name", in: "path" } }),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { name } = c.req.valid("param");
+      if (!/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(name)) {
+        return c.json({ success: false, error: "Invalid binding name" }, 400);
+      }
+      const store = getDashboardArtifactStore();
+      const key = bindingArtifactKey(loaded.project._id.toString(), name);
+      const stream = await store.openReadStream(key);
+      if (!stream) {
+        return c.json(
+          { success: false, error: `Binding "${name}" is not materialized` },
+          404,
+        );
+      }
+      const size = await store.getSize(key);
+      return new Response(
+        Readable.toWeb(stream as Readable) as ReadableStream,
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/vnd.apache.parquet",
+            ...(size !== null ? { "Content-Length": String(size) } : {}),
+            "Cache-Control": "no-store",
+          },
+        },
+      );
     } catch (error) {
       return handleError(c, error);
     }

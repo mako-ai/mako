@@ -26,6 +26,20 @@ import {
  * Derived runtime state per binding (NOT source of truth — that is the repo).
  * Only what the scheduler needs: when the artifact was last built.
  */
+export interface AppV2BindingRun {
+  at: Date;
+  status: "ready" | "error";
+  rowCount?: number | null;
+  durationMs?: number | null;
+  error?: string | null;
+}
+
+export interface AppV2BindingStateDoc {
+  lastMaterializedAt?: Date;
+  lastRowCount?: number;
+  history?: AppV2BindingRun[];
+}
+
 const AppV2BindingState =
   mongoose.models.AppV2BindingState ??
   mongoose.model(
@@ -35,6 +49,22 @@ const AppV2BindingState =
         projectId: { type: Schema.Types.ObjectId, required: true },
         name: { type: String, required: true },
         lastMaterializedAt: { type: Date },
+        lastRowCount: { type: Number },
+        history: {
+          type: [
+            new Schema(
+              {
+                at: { type: Date, required: true },
+                status: { type: String, enum: ["ready", "error"] },
+                rowCount: { type: Number },
+                durationMs: { type: Number },
+                error: { type: String },
+              },
+              { _id: false },
+            ),
+          ],
+          default: undefined,
+        },
       },
       { collection: "app_v2_binding_state", timestamps: true },
     ).index({ projectId: 1, name: 1 }, { unique: true }),
@@ -43,11 +73,34 @@ const AppV2BindingState =
 export async function getBindingState(
   projectId: string,
   name: string,
-): Promise<{ lastMaterializedAt?: Date } | null> {
+): Promise<AppV2BindingStateDoc | null> {
   return AppV2BindingState.findOne({
     projectId: new Types.ObjectId(projectId),
     name,
-  }).lean() as Promise<{ lastMaterializedAt?: Date } | null>;
+  }).lean() as Promise<AppV2BindingStateDoc | null>;
+}
+
+async function recordBindingRun(
+  projectId: string,
+  name: string,
+  run: AppV2BindingRun,
+): Promise<void> {
+  await AppV2BindingState.updateOne(
+    { projectId: new Types.ObjectId(projectId), name },
+    {
+      ...(run.status === "ready"
+        ? {
+            $set: {
+              lastMaterializedAt: run.at,
+              lastRowCount: run.rowCount ?? 0,
+            },
+          }
+        : {}),
+      // Newest first, keep the last 20 runs.
+      $push: { history: { $each: [run], $position: 0, $slice: 20 } },
+    },
+    { upsert: true },
+  );
 }
 import {
   buildQueryParquetFile,
@@ -179,22 +232,35 @@ export async function materializeAppV2Binding(
     throw new Error(`Connection ${binding.connectionId} not found`);
   }
   const projectId = project._id.toString();
-  const built = await buildQueryParquetFile({
-    connection,
-    executableQuery: binding.sql,
-    filenameBase: `appv2-${projectId}-${binding.name}`,
-    schemaProbe: "strict",
-  });
+  const startedAt = Date.now();
+  let built;
+  try {
+    built = await buildQueryParquetFile({
+      connection,
+      executableQuery: binding.sql,
+      filenameBase: `appv2-${projectId}-${binding.name}`,
+      schemaProbe: "strict",
+    });
+  } catch (error) {
+    await recordBindingRun(projectId, binding.name, {
+      at: new Date(),
+      status: "error",
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
   await storeParquetArtifactFile({
     filePath: built.filePath,
     artifactKey: bindingArtifactKey(projectId, binding.name),
     metadata: { appV2ProjectId: projectId, binding: binding.name },
   });
-  await AppV2BindingState.updateOne(
-    { projectId: new Types.ObjectId(projectId), name: binding.name },
-    { $set: { lastMaterializedAt: new Date() } },
-    { upsert: true },
-  );
+  await recordBindingRun(projectId, binding.name, {
+    at: new Date(),
+    status: "ready",
+    rowCount: built.rowCount,
+    durationMs: Date.now() - startedAt,
+  });
   logger.info("Apps v2 binding materialized", {
     projectId,
     binding: binding.name,
