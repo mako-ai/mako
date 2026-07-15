@@ -273,6 +273,10 @@ export function SyncFlowForm({
   const [webhookUrl, setWebhookUrl] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isProvisioningWebhook, setIsProvisioningWebhook] = useState(false);
+  /** Keep Triggers expanded after create until the user can see provision result. */
+  const [pinTriggersOpen, setPinTriggersOpen] = useState(false);
+  const [webhookProvisionSucceeded, setWebhookProvisionSucceeded] =
+    useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(
     flowId,
@@ -292,10 +296,21 @@ export function SyncFlowForm({
   const [transferQueriesSchema, setTransferQueriesSchema] = useState<any>(null);
 
   const toggleStep = (stepIndex: number) => {
+    // Keep Triggers open while provisioning, and after success until the
+    // user dismisses the confirmation (pinTriggersOpen). Failures stay open
+    // but can be collapsed once the error is visible (!isProvisioningWebhook).
+    if (stepIndex === 4 && openSteps.has(4)) {
+      if (isProvisioningWebhook) return;
+      if (pinTriggersOpen && !error) return;
+    }
     setOpenSteps(prev => {
       const next = new Set(prev);
-      if (next.has(stepIndex)) next.delete(stepIndex);
-      else next.add(stepIndex);
+      if (next.has(stepIndex)) {
+        next.delete(stepIndex);
+        if (stepIndex === 4) setPinTriggersOpen(false);
+      } else {
+        next.add(stepIndex);
+      }
       return next;
     });
   };
@@ -828,12 +843,20 @@ export function SyncFlowForm({
         reset(data);
         onSave?.();
 
-        // Provisioning needs a persisted flowId for the webhook URL. Do it
-        // automatically on first create so the user doesn't have to reopen
-        // Triggers just to click "Create in {Provider}".
-        if (data.webhookEnabled && provisioning?.supported) {
+        // Triggers is last: stay on it after create so webhook URL/secret are
+        // visible. Pin open until provisioning finishes (or URL is shown).
+        if (data.webhookEnabled) {
+          setPinTriggersOpen(true);
+          setWebhookProvisionSucceeded(false);
           setOpenSteps(new Set([4]));
-          await provisionWebhookForFlow(newFlow._id);
+          if (provisioning?.supported) {
+            const ok = await provisionWebhookForFlow(newFlow._id);
+            if (ok) {
+              setWebhookProvisionSucceeded(true);
+            }
+            // Keep Triggers pinned until the user dismisses the success
+            // (or failure) so URL/secret stay visible.
+          }
         }
       } else if (currentFlowId) {
         await updateFlow(currentWorkspace.id, currentFlowId, payload);
@@ -878,13 +901,16 @@ export function SyncFlowForm({
     }
   };
 
-  const provisionWebhookForFlow = async (flowIdToProvision: string) => {
+  const provisionWebhookForFlow = async (
+    flowIdToProvision: string,
+  ): Promise<boolean> => {
     if (!currentWorkspace?.id) {
       setError("Save the sync first before creating the provider webhook");
-      return;
+      return false;
     }
     setIsProvisioningWebhook(true);
     setError(null);
+    setWebhookProvisionSucceeded(false);
     try {
       const publicBaseUrl =
         typeof window !== "undefined" ? window.location.origin : undefined;
@@ -912,12 +938,14 @@ export function SyncFlowForm({
           });
         }, 0);
       }
+      return Boolean(provisioned.endpoint && provisioned.webhookSecret);
     } catch (err) {
       setError(
         err instanceof Error
           ? err.message
           : `Failed to create webhook in ${provisionProviderLabel}`,
       );
+      return false;
     } finally {
       setIsProvisioningWebhook(false);
     }
@@ -928,7 +956,12 @@ export function SyncFlowForm({
       setError("Save the sync first before creating the provider webhook");
       return;
     }
-    await provisionWebhookForFlow(currentFlowId);
+    setPinTriggersOpen(true);
+    setOpenSteps(prev => new Set([...prev, 4]));
+    const ok = await provisionWebhookForFlow(currentFlowId);
+    if (ok) {
+      setWebhookProvisionSucceeded(true);
+    }
   };
 
   const stepHasError = (stepIndex: number): boolean => {
@@ -1945,7 +1978,9 @@ export function SyncFlowForm({
             </Accordion>
             {/* Step 5: Triggers */}
             <Accordion
-              expanded={openSteps.has(4)}
+              expanded={
+                openSteps.has(4) || pinTriggersOpen || isProvisioningWebhook
+              }
               onChange={() => toggleStep(4)}
               sx={{ mb: 1 }}
             >
@@ -2132,6 +2167,25 @@ export function SyncFlowForm({
                             </Alert>
                           ) : (
                             <>
+                              {isProvisioningWebhook && (
+                                <Alert severity="info" icon={<WebhookIcon />}>
+                                  Creating webhook in {provisionProviderLabel}…
+                                </Alert>
+                              )}
+                              {webhookProvisionSucceeded &&
+                                !isProvisioningWebhook && (
+                                  <Alert
+                                    severity="success"
+                                    onClose={() => {
+                                      setWebhookProvisionSucceeded(false);
+                                      setPinTriggersOpen(false);
+                                    }}
+                                  >
+                                    Webhook created in {provisionProviderLabel}.
+                                    URL and signing secret are filled below —
+                                    save if you change anything.
+                                  </Alert>
+                                )}
                               {webhookUrl && (
                                 <TextField
                                   value={webhookUrl}
@@ -2181,7 +2235,9 @@ export function SyncFlowForm({
                                   >
                                     {isProvisioningWebhook
                                       ? `Creating in ${provisionProviderLabel}...`
-                                      : `Create in ${provisionProviderLabel}`}
+                                      : webhookProvisionSucceeded
+                                        ? `Recreate in ${provisionProviderLabel}`
+                                        : `Create in ${provisionProviderLabel}`}
                                   </Button>
                                 </Box>
                               )}
