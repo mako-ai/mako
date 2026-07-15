@@ -85,7 +85,13 @@ class KernelSessionService {
    * kernels. Two jobs:
    *  1. Wire the mako SDK — the read-only token + workspace so
    *     `mako.sources.sql.read(...)` proxies through the API.
-   *  2. Activate the Jupyter inline backend so matplotlib figures render as
+   *  2. Point the mako SDK's source resolution at the kernel-token-authed
+   *     `/notebook/sources` route. `mako.sources.read(...)` first resolves a
+   *     source NAME to an id via that list; the SDK's baked default hits the
+   *     generic `/databases` route, which rejects kernel tokens (and echoes
+   *     credentials), so reads 403. This override reconfigures the baked SDK at
+   *     runtime — no kernel-image rebuild needed.
+   *  3. Activate the Jupyter inline backend so matplotlib figures render as
    *     inline PNGs. The kernel image defaults to the headless Agg backend
    *     (`MPLBACKEND=Agg`), which emits no image output; `%matplotlib inline`
    *     switches to the inline backend (auto-displaying figures at cell end,
@@ -102,6 +108,14 @@ class KernelSessionService {
     return [
       `import os as _os`,
       `_os.environ.update(${JSON.stringify(env)})`,
+      // Resolve sources via the kernel-authed notebook route, not the generic
+      // (credentialed, session-only) /databases route. Isolated so an SDK issue
+      // can't break the rest of init.
+      `try:`,
+      `    import mako as _mako`,
+      `    _mako.configure(databases_path="/api/workspaces/{workspace_id}/notebook/sources")`,
+      `except Exception:`,
+      `    pass`,
       // Inline matplotlib — isolated so a matplotlib issue can't break the SDK
       // env setup above. Overrides MPLBACKEND=Agg at runtime.
       `try:`,
