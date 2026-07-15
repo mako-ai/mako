@@ -16,11 +16,39 @@
  * fetches a relative URL and reads it with DuckDB-WASM (v1's useRows
  * pattern ports over with a one-line URL change).
  */
-import { Types } from "mongoose";
+import mongoose, { Schema, Types } from "mongoose";
 import {
   DatabaseConnection,
   type IAppProjectV2,
 } from "../database/workspace-schema";
+
+/**
+ * Derived runtime state per binding (NOT source of truth — that is the repo).
+ * Only what the scheduler needs: when the artifact was last built.
+ */
+const AppV2BindingState =
+  mongoose.models.AppV2BindingState ??
+  mongoose.model(
+    "AppV2BindingState",
+    new Schema(
+      {
+        projectId: { type: Schema.Types.ObjectId, required: true },
+        name: { type: String, required: true },
+        lastMaterializedAt: { type: Date },
+      },
+      { collection: "app_v2_binding_state", timestamps: true },
+    ).index({ projectId: 1, name: 1 }, { unique: true }),
+  );
+
+export async function getBindingState(
+  projectId: string,
+  name: string,
+): Promise<{ lastMaterializedAt?: Date } | null> {
+  return AppV2BindingState.findOne({
+    projectId: new Types.ObjectId(projectId),
+    name,
+  }).lean() as Promise<{ lastMaterializedAt?: Date } | null>;
+}
 import {
   buildQueryParquetFile,
   storeParquetArtifactFile,
@@ -162,6 +190,11 @@ export async function materializeAppV2Binding(
     artifactKey: bindingArtifactKey(projectId, binding.name),
     metadata: { appV2ProjectId: projectId, binding: binding.name },
   });
+  await AppV2BindingState.updateOne(
+    { projectId: new Types.ObjectId(projectId), name: binding.name },
+    { $set: { lastMaterializedAt: new Date() } },
+    { upsert: true },
+  );
   logger.info("Apps v2 binding materialized", {
     projectId,
     binding: binding.name,
