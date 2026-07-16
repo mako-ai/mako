@@ -1472,7 +1472,7 @@ export class CloseConnector extends BaseConnector {
 
           const lastRow = data[data.length - 1];
           if (lastRow?.date_created) {
-            lastSeenDateCreated = lastRow.date_created;
+            lastSeenDateCreated = new Date(lastRow.date_created).toISOString();
           }
         }
 
@@ -1546,6 +1546,9 @@ export class CloseConnector extends BaseConnector {
           // so we don't re-emit rows already sent via onBatch.
           // If we haven't fetched anything yet in this window, halve the span.
           if (lastSeenDateCreated) {
+            const normalizedLastSeenDateCreated = new Date(
+              lastSeenDateCreated,
+            ).toISOString();
             this.emitSyncLog(
               "info",
               "Close cursor limit reached, advancing past fetched rows",
@@ -1554,10 +1557,10 @@ export class CloseConnector extends BaseConnector {
                 recordsFetched: recordCount,
                 windowStart,
                 windowEnd,
-                advancingTo: lastSeenDateCreated,
+                advancingTo: normalizedLastSeenDateCreated,
               },
             );
-            windowStart = lastSeenDateCreated;
+            windowStart = normalizedLastSeenDateCreated;
             lastSeenDateCreated = null;
           } else {
             this.emitSyncLog(
