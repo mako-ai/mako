@@ -466,3 +466,47 @@ Open questions: (1) history preservation when consolidating existing
 per-project repos — default is snapshot, not subtree; (2) console autosave
 cadence vs commit noise — squash window length; (3) whether `AppProjectV2`
 dies entirely or stays as an id-stable cache once explorer reads git directly.
+
+### 10.1 Status + Block B substrate design (2026-07-16)
+
+Shipped: **Block A BUILT** (auto-commit on manual save, `edit: <path>`,
+5-min same-author-same-file squash via branch-head amend; Commit button,
+dirty chip and dialog deleted; verified live). **Block B slice 1 BUILT**
+(`connectWorkspaceRepo` refuses a second distinct repo; `getWorkspaceRepo`
+singular read API; legacy `appsV2Repo` counts as THE repo until
+disconnected).
+
+Block B substrate design (execution spec for the remaining slices):
+
+- **Git substrate**: ONE bare cache repo per workspace,
+  `~/.mako/apps-v2/repos/<workspaceId>.git`; cloud remote
+  `<prefix>-<workspaceId>` under mako-ai-cloud. `repoDirFor(workspaceId)`,
+  `ensureLocalRepo(workspaceId)`, `cloudRepoNameFor(workspaceId)` all drop
+  their projectId parameter.
+- **Apps are folders**: `apps/<slug>/` at the repo root. `AppProjectV2`
+  gains an immutable `slug` (kebab, unique per workspace, derived from the
+  title at creation; migration backfills from title, deduped). The doc
+  stays as the id-stable pointer; content lives only in git. All per-app
+  file APIs keep their shapes and internally prefix `apps/<slug>/`
+  (routes, agent tools, bindings glob `apps/<slug>/bindings/*.sql`,
+  scaffold, preview build cwd, dev-server root).
+- **Worktrees per (workspace, actor)** — not per project: one
+  `AppWorktreeV2` per actor per workspace, session dir = clone of the
+  workspace repo; a chat's `chat/<chatId>` branch can span apps (a real
+  capability, not a bug: one conversation can edit an app + its skill).
+  `commitChatTurn` iterates the actor's single workspace worktree.
+- **Migration** (`2026-07-16_workspace_monorepo`): per workspace — ensure
+  the workspace cloud repo; per project, read the old repo's main tree and
+  commit it under `apps/<slug>/` ("migrate: <title>"); mirror push; backfill
+  `slug`; DELETE all AppWorktreeV2 docs (disposable caches — auto-commit
+  means uncommitted residue is at most the last unsaved buffer) and the
+  local per-project bare repos; old per-project cloud repos left in place,
+  cleaned up manually after verification (snapshot migration — history
+  stays reachable in the old repos).
+- **Explorer/store flattening** rides the same slice: one repo node is no
+  UI at all — the rail lists apps (later: all root folders); org/repo
+  synthetic nodes and `repos[]` state die.
+
+Execution order (each lands green): repository.service →
+cloud-repo.service → worktree.service (+scaffold) → routes/tools/bindings →
+preview/dev-server → store/explorer → migration script → tests.
