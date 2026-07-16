@@ -471,10 +471,17 @@ dies entirely or stays as an id-stable cache once explorer reads git directly.
 
 Shipped: **Block A BUILT** (auto-commit on manual save, `edit: <path>`,
 5-min same-author-same-file squash via branch-head amend; Commit button,
-dirty chip and dialog deleted; verified live). **Block B slice 1 BUILT**
-(`connectWorkspaceRepo` refuses a second distinct repo; `getWorkspaceRepo`
-singular read API; legacy `appsV2Repo` counts as THE repo until
-disconnected).
+dirty chip and dialog deleted; verified live). **Block B BUILT**
+(2026-07-16): slice 1 — `connectWorkspaceRepo` refuses a second distinct
+repo, `getWorkspaceRepo` singular read API; slice 2 — the full substrate
+per the spec below (workspace bare repo, apps/<slug> folders with internal
+prefixing, per-(workspace, actor) worktrees, app lifecycle as commits,
+workspace-keyed cloud mirror, `2026-07-16-120000_workspace_monorepo`
+migration run against dev, explorer flattened to a plain app list).
+Verified live end-to-end on the consolidated dev workspace. Remaining in
+§10: Block C (per-session branch state + sync contract), Block D (skills →
+consoles → dbt into the repo), Block E cleanup (workspaceRepos array
+storage, repo-list settings UI, legacy fields).
 
 Block B substrate design (execution spec for the remaining slices):
 
