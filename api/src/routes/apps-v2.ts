@@ -45,6 +45,7 @@ import {
 import {
   WorktreeConflictError,
   chatActorFor,
+  autoCommitFileEdit,
   chatBranchFor,
   commitWorktree,
   createProject,
@@ -735,9 +736,17 @@ appsV2Routes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const userId = loaded.userId ?? "api-key";
       const { path: relPath, contents } = c.req.valid("json");
+      const user = c.get("user");
       const handle = await ensureWorktree(loaded.project, userId);
       const flush = await writeFile(handle, relPath, contents);
-      return c.json({ success: true as const, flush }, 200);
+      // §10 Block A: manual saves auto-commit — no staged state in the UI.
+      const commit = await autoCommitFileEdit(
+        handle,
+        relPath,
+        "edit",
+        user?.email ? { name: user.email, email: user.email } : undefined,
+      );
+      return c.json({ success: true as const, flush, commit }, 200);
     } catch (error) {
       return handleError(c, error);
     }

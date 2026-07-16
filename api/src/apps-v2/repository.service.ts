@@ -441,6 +441,42 @@ export async function log(
     });
 }
 
+export interface CommitMeta {
+  oid: string;
+  parents: string[];
+  subject: string;
+  authorEmail: string;
+  committerTimestamp: number;
+}
+
+/** Full metadata of one commit (for auto-commit squash decisions). */
+export async function commitMeta(
+  repoDir: string,
+  refOrOid: string,
+): Promise<CommitMeta | null> {
+  try {
+    const { stdout } = await runGit([
+      "-C",
+      repoDir,
+      "show",
+      "-s",
+      `--format=%H%x00%P%x00%ae%x00%ct%x00%s`,
+      refOrOid,
+    ]);
+    const [oid, parents, authorEmail, ct, subject] = stdout.trim().split("\0");
+    if (!oid) return null;
+    return {
+      oid,
+      parents: parents ? parents.split(" ").filter(Boolean) : [],
+      subject: subject ?? "",
+      authorEmail: authorEmail ?? "",
+      committerTimestamp: Number(ct) * 1000,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export interface ChangedFile {
   path: string;
   status: "added" | "modified" | "deleted" | "renamed";

@@ -36,7 +36,6 @@ import {
   ChevronDown as ChevronDownIcon,
   ChevronRight as ChevronRightIcon,
   GitBranch as BranchIcon,
-  GitCommitHorizontal as CommitIcon,
   GitMerge as MergeIcon,
   MoreVertical as KebabIcon,
   Plus as AddIcon,
@@ -275,7 +274,6 @@ export default function AppsV2Explorer() {
   const fetchStatus = useAppsV2Store(s => s.fetchStatus);
   const fetchBranches = useAppsV2Store(s => s.fetchBranches);
   const mergeBranch = useAppsV2Store(s => s.mergeBranch);
-  const commit = useAppsV2Store(s => s.commit);
 
   // Chat.tsx generates its own MongoDB-ObjectId-shaped chatId client-side and
   // pushes it to realtimeStore (NOT chatStore.currentChatId, which is an
@@ -289,7 +287,6 @@ export default function AppsV2Explorer() {
   // untouched) worktree, which always starts on main.
   const activeChatBranchName = activeChatId ? `chat/${activeChatId}` : null;
   const activeChatBranch = branches?.find(b => b.name === activeChatBranchName);
-  const changeCount = status?.changes.length ?? 0;
 
   const reveal = useExplorerRevealStore(selectRevealFor("apps-v2"));
 
@@ -312,10 +309,6 @@ export default function AppsV2Explorer() {
   const [creating, setCreating] = useState(false);
   const [vcOpen, setVcOpen] = useState(true);
   const [gitMenuAnchor, setGitMenuAnchor] = useState<null | HTMLElement>(null);
-  const [commitOpen, setCommitOpen] = useState(false);
-  const [commitMessage, setCommitMessage] = useState("");
-  const [committing, setCommitting] = useState(false);
-  const [commitError, setCommitError] = useState<string | null>(null);
   const [merging, setMerging] = useState<string | null>(null);
   const [mergeError, setMergeError] = useState<string | null>(null);
   // Repo-node kebab: menu anchor + which repo it targets; branch switcher.
@@ -343,20 +336,6 @@ export default function AppsV2Explorer() {
     void fetchStatus(workspaceId, activeAppId);
     void fetchBranches(workspaceId, activeAppId);
   }, [workspaceId, activeAppId, fetchStatus, fetchBranches]);
-
-  const handleCommit = useCallback(async () => {
-    if (!workspaceId || !activeAppId || !commitMessage.trim()) return;
-    setCommitting(true);
-    setCommitError(null);
-    const result = await commit(workspaceId, activeAppId, commitMessage.trim());
-    setCommitting(false);
-    if (result.ok) {
-      setCommitOpen(false);
-      setCommitMessage("");
-    } else {
-      setCommitError(result.error ?? "Commit failed");
-    }
-  }, [workspaceId, activeAppId, commitMessage, commit]);
 
   const handleMerge = useCallback(
     async (branch: string) => {
@@ -660,7 +639,7 @@ export default function AppsV2Explorer() {
                           ? activeChatBranch.name
                           : (status?.branch ?? "main")}
                       </Box>
-                      {activeChatBranch ? (
+                      {activeChatBranch && (
                         <Tooltip title="Your active chat conversation is working on this branch">
                           <Chip
                             label="active chat"
@@ -669,15 +648,6 @@ export default function AppsV2Explorer() {
                             sx={{ height: 16, fontSize: "0.62rem" }}
                           />
                         </Tooltip>
-                      ) : (
-                        changeCount > 0 && (
-                          <Chip
-                            label={changeCount}
-                            size="small"
-                            color="warning"
-                            sx={{ height: 16, fontSize: "0.62rem" }}
-                          />
-                        )
                       )}
                     </Box>
                     {mergeError && (
@@ -689,7 +659,7 @@ export default function AppsV2Explorer() {
                         {mergeError}
                       </Alert>
                     )}
-                    {activeChatBranch ? (
+                    {activeChatBranch && (
                       <Typography
                         variant="caption"
                         color="text.secondary"
@@ -702,20 +672,6 @@ export default function AppsV2Explorer() {
                           ? ` · ${activeChatBranch.lastCommit.subject}`
                           : ""}
                       </Typography>
-                    ) : (
-                      <Button
-                        fullWidth
-                        size="small"
-                        variant="outlined"
-                        startIcon={<CommitIcon size={15} strokeWidth={1.75} />}
-                        disabled={changeCount === 0}
-                        onClick={() => setCommitOpen(true)}
-                        sx={{ textTransform: "none" }}
-                      >
-                        {changeCount > 0
-                          ? `Commit (${changeCount})`
-                          : "No changes to commit"}
-                      </Button>
                     )}
                   </Box>
                 )}
@@ -960,62 +916,6 @@ export default function AppsV2Explorer() {
           <MenuItem disabled>No branches</MenuItem>
         )}
       </Menu>
-
-      {/* Commit dialog */}
-      <Dialog
-        open={commitOpen}
-        onClose={() => !committing && setCommitOpen(false)}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle>Commit changes</DialogTitle>
-        <DialogContent>
-          {status && status.changes.length > 0 && (
-            <Box sx={{ mb: 1 }}>
-              {status.changes.map(ch => (
-                <Typography
-                  key={ch.path}
-                  variant="caption"
-                  display="block"
-                  sx={{ fontFamily: "monospace" }}
-                >
-                  {ch.status[0].toUpperCase()} {ch.path}
-                </Typography>
-              ))}
-            </Box>
-          )}
-          <TextField
-            autoFocus
-            fullWidth
-            label="Commit message"
-            value={commitMessage}
-            onChange={e => setCommitMessage(e.target.value)}
-            disabled={committing}
-            onKeyDown={e => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                void handleCommit();
-              }
-            }}
-          />
-          {commitError && (
-            <Alert severity="error" sx={{ mt: 1 }}>
-              {commitError}
-            </Alert>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setCommitOpen(false)} disabled={committing}>
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            onClick={() => void handleCommit()}
-            disabled={committing || !commitMessage.trim()}
-          >
-            {committing ? "Committing..." : "Commit"}
-          </Button>
-        </DialogActions>
-      </Dialog>
 
       <Dialog
         open={createOpen}

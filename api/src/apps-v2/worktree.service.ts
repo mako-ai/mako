@@ -34,6 +34,7 @@ import {
   CONFLICT_REF_PREFIX,
   DEFAULT_BRANCH,
   WIP_REF_PREFIX,
+  commitMeta,
   commitTree,
   deleteRefCas,
   diffNameStatus,
@@ -721,6 +722,77 @@ async function commitFromWip(
     pokeAppV2(doc.workspaceId, doc.projectId, "commit", doc.userId);
     return { committed: true, commitOid, message };
   });
+}
+
+/**
+ * Auto-commit window: a manual save amends the branch head instead of adding
+ * a commit when the head is a save of the SAME file by the SAME author within
+ * this window (keeps "commit per save" from turning history into noise).
+ */
+const AUTOCOMMIT_SQUASH_WINDOW_MS = 5 * 60_000;
+
+/**
+ * Block A of the workspace-monorepo plan (apps-v2.md §10): every manual save
+ * IS a commit — no staged/uncommitted state survives a save. Consecutive
+ * saves of one file by one author squash by amending the branch head (the
+ * cloud mirror is a forced `push --mirror`, so rewriting the just-created
+ * head is safe; BYO remotes receive turn/publish pushes, not per-save ones).
+ */
+export async function autoCommitFileEdit(
+  handle: WorktreeHandle,
+  relPath: string,
+  action: "edit" | "delete",
+  author?: GitAuthor,
+): Promise<CommitResult> {
+  const { doc, repoDir, sessionDir } = handle;
+  const message = `${action}: ${assertSafeRelPath(relPath)}`;
+
+  const squashed = await withWorktreeLock(doc._id.toString(), async () => {
+    if (!doc.wipOid) return null;
+    const branchRef = `refs/heads/${doc.branch}`;
+    const head = await commitMeta(repoDir, branchRef);
+    if (
+      !head ||
+      head.oid !== doc.baseSha ||
+      head.subject !== message ||
+      head.parents.length !== 1 ||
+      (author?.email && head.authorEmail !== author.email) ||
+      Date.now() - head.committerTimestamp > AUTOCOMMIT_SQUASH_WINDOW_MS
+    ) {
+      return null;
+    }
+
+    const treeOid = await treeOfCommit(repoDir, doc.wipOid);
+    const amended = await commitTree(repoDir, {
+      treeOid,
+      parents: head.parents,
+      message,
+      author,
+    });
+    const swapped = await updateRefCas(repoDir, branchRef, amended, head.oid);
+    if (!swapped) return null; // branch moved — fall through to a new commit
+
+    await deleteRefCas(repoDir, wipRefFor(doc._id.toString()), doc.wipOid);
+    doc.baseSha = amended;
+    doc.wipOid = undefined;
+    doc.revision += 1;
+    await doc.save();
+    pokeAppV2(doc.workspaceId, doc.projectId, "commit", doc.userId);
+    return { committed: true, commitOid: amended, message } as CommitResult;
+  });
+
+  if (squashed?.commitOid) {
+    queueMirrorPush(doc.workspaceId.toString(), doc.projectId.toString());
+    try {
+      await runGit(["-C", sessionDir, "fetch", repoDir, squashed.commitOid]);
+      await runGit(["-C", sessionDir, "reset", "--mixed", squashed.commitOid]);
+    } catch {
+      await fs.rm(sessionDir, { recursive: true, force: true });
+    }
+    return squashed;
+  }
+
+  return commitWorktree(handle, message, author);
 }
 
 export async function commitWorktree(
