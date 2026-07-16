@@ -673,6 +673,7 @@ agentRoutes.openapi(
       tools: {},
       readOnlyToolNames: [],
       allToolNames: [],
+      catalog: [],
     };
     if (resolvedAgentId === "unified") {
       try {
@@ -723,6 +724,7 @@ agentRoutes.openapi(
       mcpTools: mcpChatTools.tools,
       mcpReadOnlyToolNames: mcpChatTools.readOnlyToolNames,
       mcpToolNames: mcpChatTools.allToolNames,
+      mcpToolCatalog: mcpChatTools.catalog,
     };
 
     // Create agent configuration.
@@ -742,6 +744,7 @@ agentRoutes.openapi(
         context: agentContext,
         messages,
         tabKind,
+        modelId: resolvedModelId,
       });
       systemPrompt = runtime.system;
       tools = runtime.tools;
@@ -750,7 +753,19 @@ agentRoutes.openapi(
         enabledModes: Array.from(runtime.modeState.enabledModes),
         planSubmitted: runtime.modeState.planSubmitted,
         planApproved: runtime.modeState.planApproved,
+        loadedToolCount: runtime.modeState.loadedToolNames.length,
+        ...runtime.workingSet,
       });
+      if (
+        runtime.workingSet.pagingActive &&
+        runtime.workingSet.activeToolCount >= runtime.workingSet.maxActiveTools
+      ) {
+        logger.warn("Tool working set at budget — oldest loads evicted", {
+          chatId,
+          modelId: resolvedModelId,
+          ...runtime.workingSet,
+        });
+      }
     } else {
       const agentConfig = agentFactory(agentContext);
       systemPrompt = agentConfig.systemPrompt;

@@ -55,4 +55,12 @@ export interface ModeState {
   planSubmitted: boolean;
   /** Whether the user has approved the submitted plan (latest decision). */
   planApproved: boolean;
+  /**
+   * Deferred-tier tools activated via `load_tools`, oldest-first (the order
+   * doubles as the LRU eviction order when the working-set budget binds).
+   * Seeded by replaying `load_tools` calls from history, then live-mutated
+   * by `load_tools.execute` within the request — same lifecycle as
+   * `enabledModes`. Loads persist across user turns, like modes.
+   */
+  loadedToolNames: string[];
 }
