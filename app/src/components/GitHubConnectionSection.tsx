@@ -226,13 +226,21 @@ export default function GitHubConnectionSection() {
     <Stack spacing={4}>
       <Box>
         <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-          Connected repositories
+          Workspace repository
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Mako content lives in these repos under each repo&apos;s Mako root
-          folder; apps always go in its <code>apps/</code> subfolder. Without a
-          connected repo, apps are stored in Mako Cloud.
+          A workspace has exactly ONE repository — its content root. Apps live
+          under <code>apps/</code>; consoles, skills and dbt content will join
+          as sibling folders. Without a connected repo, the workspace is stored
+          in Mako Cloud.
         </Typography>
+        {repos.length > 1 && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            This workspace has {repos.length} connected repositories from before
+            the one-repo-per-workspace rule. Only the first is used — disconnect
+            the others.
+          </Alert>
+        )}
 
         {repos.length === 0 && !statusLoading && (
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
@@ -290,7 +298,7 @@ export default function GitHubConnectionSection() {
           ))}
         </Stack>
 
-        {appSlug && (
+        {appSlug && repos.length === 0 && (
           <Button
             size="small"
             variant="contained"
@@ -298,7 +306,7 @@ export default function GitHubConnectionSection() {
             onClick={() => void handleAdd()}
             sx={{ mt: 1.5 }}
           >
-            Add GitHub repository
+            Connect GitHub repository
           </Button>
         )}
       </Box>

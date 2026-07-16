@@ -288,9 +288,11 @@ export default function AppsV2Explorer() {
     void probeEnabled(workspaceId);
   }, [workspaceId, probeEnabled]);
 
+  // Listing existing apps never depends on the ability to CREATE one — a
+  // stale/failed probe must not blank the explorer.
   useEffect(() => {
-    if (workspaceId && canCreate) void fetchApps(workspaceId);
-  }, [workspaceId, canCreate, fetchApps]);
+    if (workspaceId) void fetchApps(workspaceId);
+  }, [workspaceId, fetchApps]);
 
   useEffect(() => {
     if (!workspaceId || !activeAppId) return;
