@@ -406,6 +406,39 @@ keyed (workspace, user) runs `git fetch && git checkout` on switch; realtime
 refetch. Branch picker lists main + conversation branches with friendly
 labels ("Chat: port engagement score").
 
+*Explorer ↔ sandbox sync contract (agreed 2026-07-16).* There is no shared
+filesystem between the API and the sandbox and none is wanted (E2B can't
+mount external volumes, Cloud Run disk is tmpfs, and a shared working tree
+means two uncoordinated writers — shared bytes without atomicity, history,
+or conflict detection). **The git remote IS the shared storage**; Block A's
+auto-commit is what makes this sound — every manual save is a commit, so
+"uncommitted change the sandbox can't see" is not a state that exists. Sync
+is the same bus in both directions:
+- Agent → explorer (built): turn ends → commit + push → poke → explorer
+  refetches.
+- Explorer → sandbox: manual save → commit (Git Data API) → the same poke,
+  carrying the branch → the API execs `git pull --rebase --autostash` into
+  the live sandbox sessions it tracks on that branch, over the E2B control
+  channel. No in-sandbox daemon, no polling. Side effect: a running dev
+  server HMRs the pulled change, so manual saves update live previews.
+
+The sandbox pulls at exactly four moments: (1) session start/resume,
+(2) poke received while no agent turn is in flight, (3) just before an agent
+turn starts, (4) in the turn-end push loop — `push --force-with-lease` fails
+because the remote moved → fetch, rebase, retry. (4) covers the only racy
+window (manual save lands mid-turn): non-overlapping edits rebase silently;
+true same-line conflicts surface to the AGENT at push time — the one writer
+in the system that can actually resolve a merge conflict. A soft editor
+warning when the branch has a turn in flight is the cheap guard if this
+bites; not built until it does.
+
+Deferred optimization (not v1 of this block): write-through — when a WARM
+sandbox exists on the branch, route the manual save through it (write +
+commit + push inside the sandbox) instead of the Git Data API: one working
+tree per branch, zero rebases in the common case, instant HMR. Costs a
+second write path and ties save latency to sandbox liveness; ship
+pull-on-poke first, add write-through only if rebase noise shows up.
+
 **Block D — content moves into the repo (staged, each shippable alone).**
 - D1 `skills/`: workspace skills as `skills/<name>/SKILL.md`; agent skill
   discovery reads the repo (system skills stay in the API image).
