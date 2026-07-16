@@ -1157,7 +1157,7 @@ appsV2Routes.openapi(
       const grant = mintPreviewGrant({
         workspaceId: loaded.project.workspaceId.toString(),
         projectId: loaded.project._id.toString(),
-        rootDir: `${handle.sessionDir}/dist`,
+        rootDir: `${handle.sessionDir}/${handle.appRoot}/dist`,
       });
       return c.json(
         {

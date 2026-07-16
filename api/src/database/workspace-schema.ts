@@ -188,6 +188,13 @@ export interface IWorkspace extends Document {
   workspaceRepos?: IWorkspaceRepoBinding[];
   /** @deprecated pre-workspaceRepos single binding — migrated at read time. */
   appsV2Repo?: IWorkspaceRepoBinding;
+  /**
+   * §10 monorepo, cloud tier: the ONE Mako-hosted mirror repo for this
+   * workspace (`<prefix>-<workspaceId>` under MAKO_CLOUD_GITHUB_ORG). Set
+   * after the first successful ensure+push; absent when the cloud app is
+   * not configured or the workspace is BYO-only.
+   */
+  appsV2CloudRepo?: { owner: string; repo: string };
 }
 
 export interface IWorkspaceRepoBinding {
@@ -1336,6 +1343,16 @@ Add any specific instructions for how the AI should interpret your data or respo
       type: String,
       default: "",
       maxlength: 10000,
+    },
+    appsV2CloudRepo: {
+      type: new Schema(
+        {
+          owner: { type: String, required: true },
+          repo: { type: String, required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
     },
     workspaceRepos: {
       type: [
@@ -5683,6 +5700,11 @@ export interface IAppProjectV2 extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   title: string;
+  /**
+   * Folder name under `apps/` in the workspace repo (§10 monorepo). Kebab,
+   * immutable, unique per workspace. Optional only for pre-migration docs.
+   */
+  slug?: string;
   description?: string;
   /** Same Google-style ACL model as v1 apps (utils/resource-acl.ts). */
   access: "private" | "workspace";
@@ -5713,6 +5735,7 @@ const AppProjectV2Schema = new Schema<IAppProjectV2>(
       required: true,
     },
     title: { type: String, required: true, trim: true },
+    slug: { type: String, trim: true },
     description: { type: String },
     access: {
       type: String,
@@ -5740,6 +5763,12 @@ const AppProjectV2Schema = new Schema<IAppProjectV2>(
 );
 
 AppProjectV2Schema.index({ workspaceId: 1, updatedAt: -1 });
+// §10 monorepo: one folder per app in the workspace repo. Sparse until the
+// workspace-monorepo migration backfills slugs on legacy docs.
+AppProjectV2Schema.index(
+  { workspaceId: 1, slug: 1 },
+  { unique: true, sparse: true },
+);
 
 export const AppProjectV2 = mongoose.model<IAppProjectV2>(
   "AppProjectV2",
@@ -5759,7 +5788,8 @@ export const AppProjectV2 = mongoose.model<IAppProjectV2>(
 export interface IAppWorktreeV2 extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
-  projectId: Types.ObjectId;
+  /** @deprecated §10: worktrees are per (workspace, actor); unset on new docs. */
+  projectId?: Types.ObjectId;
   userId: string;
   branch: string;
   /** Commit the worktree is based on (branch head at materialize time). */
@@ -5785,7 +5815,6 @@ const AppWorktreeV2Schema = new Schema<IAppWorktreeV2>(
     projectId: {
       type: Schema.Types.ObjectId,
       ref: "AppProjectV2",
-      required: true,
     },
     userId: { type: String, required: true },
     branch: { type: String, required: true, default: "main" },
@@ -5798,8 +5827,9 @@ const AppWorktreeV2Schema = new Schema<IAppWorktreeV2>(
   { collection: "app_worktrees_v2", timestamps: true },
 );
 
-AppWorktreeV2Schema.index({ projectId: 1, userId: 1 }, { unique: true });
-AppWorktreeV2Schema.index({ workspaceId: 1, userId: 1 });
+// §10 monorepo: ONE worktree per (workspace, actor). The old per-project
+// unique index is dropped by the workspace-monorepo migration.
+AppWorktreeV2Schema.index({ workspaceId: 1, userId: 1 }, { unique: true });
 
 export const AppWorktreeV2 = mongoose.model<IAppWorktreeV2>(
   "AppWorktreeV2",

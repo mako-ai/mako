@@ -1,7 +1,8 @@
 /**
- * Apps v2 repository service — one Mako-managed bare git repo per app project.
+ * Apps v2 repository service — one Mako-managed bare git repo per WORKSPACE
+ * (§10 monorepo; apps are `apps/<slug>` folders inside it).
  *
- * Layout: <APPS_V2_GIT_ROOT>/<workspaceId>/<projectId>.git
+ * Layout: <APPS_V2_GIT_ROOT>/<workspaceId>.git
  *
  * Design (apps-v2.md §4.3–4.4):
  * - Bare repos are the durable source of truth. The API is the trusted "git
@@ -65,15 +66,12 @@ function authorEnv(author?: GitAuthor): Record<string, string> {
   };
 }
 
-/** Absolute path of a project's bare repo. Ids are validated as hex. */
-export function repoDirFor(workspaceId: string, projectId: string): string {
-  if (
-    !/^[0-9a-f]{24}$/i.test(workspaceId) ||
-    !/^[0-9a-f]{24}$/i.test(projectId)
-  ) {
-    throw new Error("Invalid workspace/project id");
+/** Absolute path of a workspace's bare repo. Id is validated as hex. */
+export function repoDirFor(workspaceId: string): string {
+  if (!/^[0-9a-f]{24}$/i.test(workspaceId)) {
+    throw new Error("Invalid workspace id");
   }
-  return path.join(appsV2ReposRoot(), workspaceId, `${projectId}.git`);
+  return path.join(appsV2ReposRoot(), `${workspaceId}.git`);
 }
 
 export async function repoExists(repoDir: string): Promise<boolean> {
@@ -422,6 +420,7 @@ export async function log(
   repoDir: string,
   refOrOid: string,
   limit = 20,
+  pathspec?: string,
 ): Promise<CommitInfo[]> {
   const { stdout } = await runGit([
     "-C",
@@ -431,6 +430,7 @@ export async function log(
     "-n",
     String(Math.max(1, Math.min(limit, 200))),
     refOrOid,
+    ...(pathspec ? ["--", pathspec] : []),
   ]);
   return stdout
     .split("\n")

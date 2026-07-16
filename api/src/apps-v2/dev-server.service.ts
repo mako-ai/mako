@@ -95,7 +95,9 @@ export async function ensureDevServer(
     );
   }
 
-  const worktreeId = handle.doc._id.toString();
+  // §10: the worktree spans the workspace; dev servers are per-app.
+  const worktreeId = `${handle.doc._id.toString()}:${handle.appRoot}`;
+  const appDir = path.join(handle.sessionDir, handle.appRoot);
   const existing = servers.get(worktreeId);
   if (existing && isAlive(existing)) {
     existing.lastAccessedAt = Date.now();
@@ -111,7 +113,7 @@ export async function ensureDevServer(
   // NOT be the worktree dir, or vite/node's own cache writes would pollute
   // the git-tracked tree (this is exactly the bug fixed there).
   const cacheRoot = path.join(os.tmpdir(), "mako-apps-v2-cache");
-  const viteBin = path.join(handle.sessionDir, "node_modules", ".bin", "vite");
+  const viteBin = path.join(appDir, "node_modules", ".bin", "vite");
 
   const child = spawn(
     viteBin,
@@ -125,7 +127,7 @@ export async function ensureDevServer(
       base,
     ],
     {
-      cwd: handle.sessionDir,
+      cwd: appDir,
       env: {
         PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
         HOME: path.join(cacheRoot, "home"),

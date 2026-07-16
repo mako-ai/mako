@@ -57,7 +57,6 @@ import {
 } from "./repository.service";
 import { createAppsV2Scaffold } from "./scaffold";
 import {
-  deleteCloudRepo,
   ensureCloudRepo,
   ensureLocalRepo,
   mirrorPushNow,
@@ -70,10 +69,23 @@ import {
  * APPS_V2_GIT_ROOT — see ensureLocalRepo).
  */
 async function repoFor(project: IAppProjectV2): Promise<string> {
-  const workspaceId = project.workspaceId.toString();
-  const projectId = project._id.toString();
-  await ensureLocalRepo(workspaceId, projectId);
-  return repoDirFor(workspaceId, projectId);
+  return repoForWorkspace(project.workspaceId.toString());
+}
+
+/** §10 monorepo: the ONE bare repo per workspace (clone-on-miss). */
+async function repoForWorkspace(workspaceId: string): Promise<string> {
+  await ensureLocalRepo(workspaceId);
+  return repoDirFor(workspaceId);
+}
+
+/** Repo-relative folder an app's content lives under (§10: apps/<slug>). */
+export function appRootFor(project: IAppProjectV2): string {
+  return `apps/${project.slug ?? project._id.toString()}`;
+}
+
+/** Prefix an app-relative path into its repo-relative form. */
+function appPath(project: IAppProjectV2, relPath: string): string {
+  return `${appRootFor(project)}/${assertSafeRelPath(relPath)}`;
 }
 import {
   getSandboxProvider,
@@ -86,13 +98,14 @@ const logger = loggers.api("apps-v2");
 /** Poke open windows to refetch this app's git-backed state. */
 function pokeAppV2(
   workspaceId: { toString(): string },
-  appId: { toString(): string },
+  appId: { toString(): string } | null | undefined,
   origin: "flush" | "commit" | "merge" | "discard" | "lifecycle",
   updatedBy?: string,
 ): void {
   publishRealtimeEvent(workspaceId.toString(), {
     type: "app-v2.updated",
-    appId: appId.toString(),
+    // "" = workspace-wide (a workspace worktree changed; may span apps).
+    appId: appId?.toString() ?? "",
     updatedBy,
     origin,
   });
@@ -138,6 +151,8 @@ export interface WorktreeHandle {
   project: IAppProjectV2;
   repoDir: string;
   sessionDir: string;
+  /** Repo-relative root of the app this handle was opened for. */
+  appRoot: string;
 }
 
 function wipRefFor(worktreeId: string): string {
@@ -161,6 +176,96 @@ async function dirExists(p: string): Promise<boolean> {
 // Project lifecycle
 // ---------------------------------------------------------------------------
 
+function slugify(title: string): string {
+  const base = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 50);
+  return base || "app";
+}
+
+async function uniqueSlug(workspaceId: string, title: string): Promise<string> {
+  const base = slugify(title);
+  const taken = new Set(
+    (
+      await AppProjectV2.find({
+        workspaceId: new Types.ObjectId(workspaceId),
+        slug: { $exists: true },
+      })
+        .select("slug")
+        .lean()
+    ).map(d => d.slug as string),
+  );
+  if (!taken.has(base)) return base;
+  for (let i = 2; ; i++) {
+    const candidate = `${base}-${i}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+/**
+ * Commit a mutation (writes and/or prefix deletions) directly onto a branch
+ * of the bare repo via a throwaway clone. Used for app lifecycle commits
+ * (scaffold, delete) — actor worktrees are not involved.
+ */
+async function commitFilesOnBranch(
+  repoDir: string,
+  branch: string,
+  mutation: { writes?: Record<string, string>; deletePrefixes?: string[] },
+  options: { message: string; author?: GitAuthor },
+): Promise<{ commitOid: string; previousHead: string }> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
+    if (!head) throw new Error(`Branch ${branch} is missing`);
+    await fs.mkdir(appsV2SessionsRoot(), { recursive: true });
+    const tmp = await fs.mkdtemp(
+      path.join(appsV2SessionsRoot(), "lifecycle-"),
+    );
+    try {
+      await runGit(["clone", "--branch", branch, repoDir, tmp], {
+        timeoutMs: 120_000,
+      });
+      for (const prefix of mutation.deletePrefixes ?? []) {
+        await fs.rm(path.join(tmp, assertSafeRelPath(prefix)), {
+          recursive: true,
+          force: true,
+        });
+      }
+      for (const [rel, contents] of Object.entries(mutation.writes ?? {})) {
+        const abs = path.join(tmp, assertSafeRelPath(rel));
+        await fs.mkdir(path.dirname(abs), { recursive: true });
+        await fs.writeFile(abs, contents, "utf8");
+      }
+      const treeOid = await snapshotDirToTree(repoDir, tmp);
+      const commitOid = await commitTree(repoDir, {
+        treeOid,
+        parents: [head],
+        message: options.message,
+        author: options.author,
+      });
+      const swapped = await updateRefCas(
+        repoDir,
+        `refs/heads/${branch}`,
+        commitOid,
+        head,
+      );
+      if (swapped) return { commitOid, previousHead: head };
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  }
+  throw new WorktreeConflictError(
+    `Branch ${branch} kept advancing during a lifecycle commit; retry.`,
+  );
+}
+
+const WORKSPACE_README = `# Mako workspace
+
+Managed by Mako. Apps live under apps/<name>; consoles, skills and dbt
+content will join as sibling folders (apps-v2.md §10).
+`;
+
 export async function createProject(input: {
   workspaceId: string;
   title: string;
@@ -168,9 +273,12 @@ export async function createProject(input: {
   userId?: string;
   author?: GitAuthor;
 }): Promise<IAppProjectV2> {
+  const title = input.title.trim() || "Untitled app";
+  const slug = await uniqueSlug(input.workspaceId, title);
   const project = await AppProjectV2.create({
     workspaceId: new Types.ObjectId(input.workspaceId),
-    title: input.title.trim() || "Untitled app",
+    title,
+    slug,
     description: input.description,
     access: "private",
     owner_id: input.userId,
@@ -178,33 +286,55 @@ export async function createProject(input: {
     defaultBranch: DEFAULT_BRANCH,
   });
 
-  const repoDir = repoDirFor(input.workspaceId, project._id.toString());
+  // §10 monorepo: ensure the ONE workspace repo, then commit the scaffold
+  // under apps/<slug>/ onto main.
+  const repoDir = await repoForWorkspace(input.workspaceId);
+  let scaffoldCommit: { commitOid: string; previousHead: string } | null =
+    null;
   try {
-    await initRepo(
+    if (!(await repoExists(repoDir))) {
+      await initRepo(
+        repoDir,
+        { "README.md": WORKSPACE_README },
+        { message: "Initialize workspace repository", author: input.author },
+      );
+    }
+    const scaffold = createAppsV2Scaffold({
+      title: project.title,
+      description: input.description,
+    });
+    const prefixed: Record<string, string> = {};
+    for (const [rel, contents] of Object.entries(scaffold)) {
+      prefixed[`apps/${slug}/${rel}`] = contents;
+    }
+    scaffoldCommit = await commitFilesOnBranch(
       repoDir,
-      createAppsV2Scaffold({
-        title: project.title,
-        description: input.description,
-      }),
-      { author: input.author },
+      DEFAULT_BRANCH,
+      { writes: prefixed },
+      { message: `Create app "${title}" (apps/${slug})`, author: input.author },
     );
   } catch (error) {
-    // Don't leave a repo-less project behind.
+    // Don't leave a content-less project behind.
     await AppProjectV2.deleteOne({ _id: project._id });
     throw error;
   }
-  // Cloud tier: mirror the project to its own private repo under Mako's org.
-  // When the cloud app is configured, the durable push is REQUIRED — on
-  // serverless hosts the local repo is an ephemeral cache, so a local-only
-  // project would silently vanish with the instance. Hosts without cloud
-  // config (pure local dev) keep working local-only.
+  // Cloud tier: mirror the workspace repo to Mako's org. When the cloud app
+  // is configured, the durable push is REQUIRED — on serverless hosts the
+  // local repo is an ephemeral cache. Hosts without cloud config (pure local
+  // dev) keep working local-only.
   try {
-    if (await ensureCloudRepo(project)) {
-      await mirrorPushNow(project);
+    if (await ensureCloudRepo(input.workspaceId)) {
+      await mirrorPushNow(input.workspaceId);
     }
   } catch (error) {
     await AppProjectV2.deleteOne({ _id: project._id });
-    await fs.rm(repoDir, { recursive: true, force: true });
+    // Roll the scaffold commit back so the repo matches the docs.
+    await updateRefCas(
+      repoDir,
+      `refs/heads/${DEFAULT_BRANCH}`,
+      scaffoldCommit.previousHead,
+      scaffoldCommit.commitOid,
+    ).catch(() => undefined);
     logger.error("Apps v2 creation aborted: durable push failed", {
       projectId: project._id.toString(),
       error: error instanceof Error ? error.message : String(error),
@@ -216,30 +346,26 @@ export async function createProject(input: {
   logger.info("Apps v2 project created", {
     projectId: project._id.toString(),
     workspaceId: input.workspaceId,
+    slug,
   });
   pokeAppV2(project.workspaceId, project._id, "lifecycle", input.userId);
   return project;
 }
 
 export async function deleteProject(project: IAppProjectV2): Promise<void> {
-  // Plain path: no point restoring a cold cache just to delete it.
-  const repoDir = repoDirFor(
-    project.workspaceId.toString(),
-    project._id.toString(),
-  );
-  const worktrees = await AppWorktreeV2.find({ projectId: project._id });
-  const provider = getSandboxProvider();
-  for (const wt of worktrees) {
-    await provider.destroySession?.(wt._id.toString()).catch(() => undefined);
-    await fs.rm(sessionDirFor(wt._id.toString()), {
-      recursive: true,
-      force: true,
-    });
+  // §10 monorepo: deleting an app is a COMMIT removing its folder — the
+  // workspace repo (and other apps, worktrees, history) are untouched.
+  const repoDir = await repoForWorkspace(project.workspaceId.toString());
+  if (await repoExists(repoDir)) {
+    await commitFilesOnBranch(
+      repoDir,
+      project.defaultBranch || DEFAULT_BRANCH,
+      { deletePrefixes: [appRootFor(project)] },
+      { message: `Delete app "${project.title}" (${appRootFor(project)})` },
+    );
+    queueMirrorPush(project.workspaceId.toString());
   }
-  await AppWorktreeV2.deleteMany({ projectId: project._id });
   await AppProjectV2.deleteOne({ _id: project._id });
-  await fs.rm(repoDir, { recursive: true, force: true });
-  await deleteCloudRepo(project);
   pokeAppV2(project.workspaceId, project._id, "lifecycle");
 }
 
@@ -299,12 +425,12 @@ export async function ensureWorktree(
 
   // Atomic find-or-create: the agent routinely fires tool calls in parallel
   // right after app creation, so a findOne+create pair races itself into
-  // E11000 on the (projectId, userId) unique index.
+  // E11000 on the (workspaceId, userId) unique index. §10: ONE worktree per
+  // actor per workspace — a chat branch can span apps.
   const doc = await AppWorktreeV2.findOneAndUpdate(
-    { projectId: project._id, userId: actorId },
+    { workspaceId: project.workspaceId, userId: actorId },
     {
       $setOnInsert: {
-        workspaceId: project.workspaceId,
         branch,
         baseSha: branchHead,
         revision: 0,
@@ -359,7 +485,7 @@ export async function ensureWorktree(
       });
     }
 
-    return { doc, project, repoDir, sessionDir };
+    return { doc, project, repoDir, sessionDir, appRoot: appRootFor(project) };
   });
 }
 
@@ -432,7 +558,7 @@ export async function flushWorktree(
         doc.revision += 1;
         doc.lastFlushAt = new Date();
         await doc.save();
-        pokeAppV2(doc.workspaceId, doc.projectId, "flush", doc.userId);
+        pokeAppV2(doc.workspaceId, null, "flush", doc.userId);
         return { flushed: true, revision: doc.revision };
       }
       return { flushed: false, revision: doc.revision };
@@ -473,7 +599,7 @@ export async function flushWorktree(
     doc.revision += 1;
     doc.lastFlushAt = new Date();
     await doc.save();
-    pokeAppV2(doc.workspaceId, doc.projectId, "flush", doc.userId);
+    pokeAppV2(doc.workspaceId, null, "flush", doc.userId);
     return { flushed: true, wipOid: snapshot, revision: doc.revision };
   });
 }
@@ -492,10 +618,13 @@ export async function execInWorktree(
   options: SandboxExecOptions = {},
 ): Promise<ExecOutcome> {
   const provider = getSandboxProvider();
+  // §10: the session is the whole workspace repo; commands are app-scoped by
+  // default (caller cwd is app-relative). posix.join keeps it session-rooted.
+  const cwd = path.posix.join(handle.appRoot, options.cwd ?? "");
   const result = await provider.exec(
     { hostDir: handle.sessionDir, sessionKey: handle.doc._id.toString() },
     command,
-    options,
+    { ...options, cwd },
   );
   const flush = await flushWorktree(handle);
   return { ...result, flush };
@@ -513,7 +642,7 @@ async function readRefFor(
 ): Promise<string> {
   if (userId) {
     const doc = await AppWorktreeV2.findOne({
-      projectId: project._id,
+      workspaceId: project.workspaceId,
       userId,
     });
     if (doc) {
@@ -534,7 +663,11 @@ export async function listFiles(
 ): Promise<{ ref: string; entries: TreeEntry[] }> {
   const repoDir = await repoFor(project);
   const ref = await readRefFor(project, userId, repoDir);
-  return { ref, entries: await listTree(repoDir, ref) };
+  const prefix = `${appRootFor(project)}/`;
+  const entries = (await listTree(repoDir, ref))
+    .filter(e => e.path.startsWith(prefix))
+    .map(e => ({ ...e, path: e.path.slice(prefix.length) }));
+  return { ref, entries };
 }
 
 export async function readFile(
@@ -550,7 +683,7 @@ export async function readFile(
   const repoDir = await repoFor(project);
   const safe = assertSafeRelPath(relPath);
   const ref = await readRefFor(project, userId, repoDir);
-  const blob = await readBlob(repoDir, ref, safe);
+  const blob = await readBlob(repoDir, ref, appPath(project, safe));
   return { path: safe, ...blob };
 }
 
@@ -563,7 +696,18 @@ export async function grepFiles(
 ): Promise<GrepMatch[]> {
   const repoDir = await repoFor(project);
   const ref = await readRefFor(project, userId, repoDir);
-  return grepTree(repoDir, ref, pattern, options);
+  const root = appRootFor(project);
+  const scoped = await grepTree(repoDir, ref, pattern, {
+    ...options,
+    pathspec: options?.pathspec
+      ? `${root}/${options.pathspec}`
+      : root,
+  });
+  return scoped.map(m =>
+    m.path.startsWith(`${root}/`)
+      ? { ...m, path: m.path.slice(root.length + 1) }
+      : m,
+  );
 }
 
 /** List paths matching a glob at an actor's latest state (sandbox-free). */
@@ -575,7 +719,11 @@ export async function globFiles(
 ): Promise<string[]> {
   const repoDir = await repoFor(project);
   const ref = await readRefFor(project, userId, repoDir);
-  return globTree(repoDir, ref, glob, limit);
+  const root = appRootFor(project);
+  const matched = await globTree(repoDir, ref, `${root}/${glob}`, limit);
+  return matched
+    .filter(p => p.startsWith(`${root}/`))
+    .map(p => p.slice(root.length + 1));
 }
 
 // ---------------------------------------------------------------------------
@@ -587,7 +735,7 @@ export async function writeFile(
   relPath: string,
   contents: string,
 ): Promise<FlushResult> {
-  const safe = assertSafeRelPath(relPath);
+  const safe = appPath(handle.project, relPath);
   if (Buffer.byteLength(contents, "utf8") > APPS_V2_MAX_FILE_BYTES) {
     throw new Error("File exceeds the maximum size for a direct write");
   }
@@ -601,7 +749,7 @@ export async function deleteFile(
   handle: WorktreeHandle,
   relPath: string,
 ): Promise<FlushResult> {
-  const safe = assertSafeRelPath(relPath);
+  const safe = appPath(handle.project, relPath);
   await fs.rm(path.join(handle.sessionDir, safe), { force: true });
   return flushWorktree(handle);
 }
@@ -610,7 +758,7 @@ export async function readSessionFile(
   handle: WorktreeHandle,
   relPath: string,
 ): Promise<string> {
-  const safe = assertSafeRelPath(relPath);
+  const safe = appPath(handle.project, relPath);
   return fs.readFile(path.join(handle.sessionDir, safe), "utf8");
 }
 
@@ -633,12 +781,18 @@ export async function worktreeStatus(
   userId: string,
 ): Promise<WorktreeStatus | null> {
   const repoDir = await repoFor(project);
-  const doc = await AppWorktreeV2.findOne({ projectId: project._id, userId });
+  const doc = await AppWorktreeV2.findOne({
+    workspaceId: project.workspaceId,
+    userId,
+  });
   if (!doc) return null;
   const branchHead = await resolveCommit(repoDir, `refs/heads/${doc.branch}`);
-  const changes = doc.wipOid
-    ? await diffNameStatus(repoDir, doc.baseSha, doc.wipOid)
-    : [];
+  const prefix = `${appRootFor(project)}/`;
+  const changes = (
+    doc.wipOid ? await diffNameStatus(repoDir, doc.baseSha, doc.wipOid) : []
+  )
+    .filter(ch => ch.path.startsWith(prefix))
+    .map(ch => ({ ...ch, path: ch.path.slice(prefix.length) }));
   return {
     branch: doc.branch,
     baseSha: doc.baseSha,
@@ -656,6 +810,7 @@ export async function projectHistory(project: IAppProjectV2, limit = 20) {
     repoDir,
     `refs/heads/${project.defaultBranch || DEFAULT_BRANCH}`,
     limit,
+    appRootFor(project),
   );
 }
 
@@ -719,7 +874,7 @@ async function commitFromWip(
     await doc.save();
 
     logger.info("Apps v2 worktree committed", { worktreeId, commitOid });
-    pokeAppV2(doc.workspaceId, doc.projectId, "commit", doc.userId);
+    pokeAppV2(doc.workspaceId, null, "commit", doc.userId);
     return { committed: true, commitOid, message };
   });
 }
@@ -777,12 +932,12 @@ export async function autoCommitFileEdit(
     doc.wipOid = undefined;
     doc.revision += 1;
     await doc.save();
-    pokeAppV2(doc.workspaceId, doc.projectId, "commit", doc.userId);
+    pokeAppV2(doc.workspaceId, null, "commit", doc.userId);
     return { committed: true, commitOid: amended, message } as CommitResult;
   });
 
   if (squashed?.commitOid) {
-    queueMirrorPush(doc.workspaceId.toString(), doc.projectId.toString());
+    queueMirrorPush(doc.workspaceId.toString());
     try {
       await runGit(["-C", sessionDir, "fetch", repoDir, squashed.commitOid]);
       await runGit(["-C", sessionDir, "reset", "--mixed", squashed.commitOid]);
@@ -806,7 +961,7 @@ export async function commitWorktree(
   await flushWorktree(handle);
   const result = await commitFromWip(doc, repoDir, message, author);
   if (!result.committed || !result.commitOid) return result;
-  queueMirrorPush(doc.workspaceId.toString(), doc.projectId.toString());
+  queueMirrorPush(doc.workspaceId.toString());
 
   // Fast-forward the session clone so subsequent status is clean.
   try {
@@ -841,9 +996,10 @@ export async function commitChatTurn(
   workspaceId: string,
   chatId: string,
   turnSummary?: string,
-): Promise<Array<{ projectId: string; commitOid?: string }>> {
-  const results: Array<{ projectId: string; commitOid?: string }> = [];
+): Promise<Array<{ commitOid?: string }>> {
+  const results: Array<{ commitOid?: string }> = [];
   const actorId = chatActorFor(chatId);
+  // §10: one workspace worktree per chat actor (a turn may span apps).
   const worktrees = await AppWorktreeV2.find({
     workspaceId: new Types.ObjectId(workspaceId),
     userId: actorId,
@@ -856,16 +1012,14 @@ export async function commitChatTurn(
     : `Agent turn (${new Date().toISOString()})`;
 
   for (const doc of worktrees) {
-    const projectId = doc.projectId.toString();
     try {
-      await ensureLocalRepo(workspaceId, projectId);
-      const repoDir = repoDirFor(workspaceId, projectId);
+      const repoDir = await repoForWorkspace(workspaceId);
       const result = await commitFromWip(doc, repoDir, message, {
         name: "Mako Agent",
         email: "agent@mako.ai",
       });
-      results.push({ projectId, commitOid: result.commitOid });
-      if (result.commitOid) queueMirrorPush(workspaceId, projectId);
+      results.push({ commitOid: result.commitOid });
+      if (result.commitOid) queueMirrorPush(workspaceId);
       // Best-effort session fast-forward so the next turn starts clean.
       if (result.commitOid) {
         const sessionDir = sessionDirFor(doc._id.toString());
@@ -885,15 +1039,14 @@ export async function commitChatTurn(
     } catch (error) {
       logger.warn("Apps v2 chat turn commit failed", {
         chatId,
-        projectId,
         error: error instanceof Error ? error.message : String(error),
       });
-      results.push({ projectId });
+      results.push({});
     }
   }
   logger.info("Apps v2 chat turn committed", {
     chatId,
-    projects: results.length,
+    worktrees: results.length,
   });
   return results;
 }
@@ -1009,7 +1162,7 @@ export async function mergeBranchToMain(
     if (!swapped) {
       throw new WorktreeConflictError("Main advanced concurrently; retry.");
     }
-    queueMirrorPush(project.workspaceId.toString(), project._id.toString());
+    queueMirrorPush(project.workspaceId.toString());
     pokeAppV2(project.workspaceId, project._id, "merge");
     return { merged: true, commitOid: branchHead, fastForward: true };
   } catch (error) {
@@ -1041,7 +1194,7 @@ export async function mergeBranchToMain(
     branch,
     commitOid,
   });
-  queueMirrorPush(project.workspaceId.toString(), project._id.toString());
+  queueMirrorPush(project.workspaceId.toString());
   pokeAppV2(project.workspaceId, project._id, "merge");
   return { merged: true, commitOid, fastForward: false };
 }
@@ -1066,7 +1219,7 @@ export async function discardWorktree(
     await doc.save();
     await fs.rm(sessionDir, { recursive: true, force: true });
     await materializeSession(repoDir, sessionDir, doc);
-    pokeAppV2(doc.workspaceId, doc.projectId, "discard", doc.userId);
+    pokeAppV2(doc.workspaceId, null, "discard", doc.userId);
     return { baseSha: head };
   });
 }

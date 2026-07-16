@@ -1,23 +1,20 @@
 /**
  * Apps v2 cloud repos — Mako-hosted GitHub storage (the instant-start tier).
  *
- * When a workspace has no BYO repo linked, each app project gets its own
- * private repo under MAKO_CLOUD_GITHUB_ORG (one repo per project — mirrors
- * the local one-bare-repo-per-project layout 1:1, so durability is a plain
- * `git push --mirror`). Users never see a GitHub install flow: Mako's own
+ * §10 monorepo: ONE private repo per WORKSPACE under MAKO_CLOUD_GITHUB_ORG
+ * (`<MAKO_CLOUD_REPO_PREFIX>-<workspaceId>` — the prefix namespaces per
+ * backing database: prod "ws", previews/staging "staging", local "dev").
+ * Apps are `apps/<slug>` folders inside it; deleting an app is a commit,
+ * never a repo deletion. Users never see a GitHub install flow: Mako's own
  * app (cloud-app-auth.ts) is installed once on Mako's own org.
  *
  * The local bare repo remains the working store the API reads from; the
  * cloud repo is the durable replica. Mirror pushes run after commits/merges
- * (not per WIP flush — too chatty), serialized per project and coalesced so
- * concurrent commits produce one trailing push, never an interleaving.
- *
- * Repo naming: `<MAKO_CLOUD_REPO_PREFIX>-<workspaceId>-<projectId>` — the
- * prefix namespaces per backing database (prod "ws", previews/staging
- * "staging", local "dev") since all environments share the single org.
+ * (not per WIP flush — too chatty), serialized per workspace and coalesced
+ * so concurrent commits produce one trailing push, never an interleaving.
  */
 import { Types } from "mongoose";
-import { AppProjectV2, type IAppProjectV2 } from "../database/workspace-schema";
+import { Workspace } from "../database/workspace-schema";
 import {
   getMakoCloudOrg,
   getMakoCloudRepoPrefix,
@@ -34,24 +31,34 @@ const logger = loggers.api("apps-v2");
 
 const GITHUB_API = "https://api.github.com";
 
-export function cloudRepoNameFor(project: IAppProjectV2): string {
-  return `${getMakoCloudRepoPrefix()}-${project.workspaceId.toString()}-${project._id.toString()}`;
+export function cloudRepoNameFor(workspaceId: string): string {
+  return `${getMakoCloudRepoPrefix()}-${workspaceId}`;
+}
+
+async function findCloudRepoPointer(
+  workspaceId: string,
+): Promise<{ owner: string; repo: string } | null> {
+  const ws = await Workspace.findById(new Types.ObjectId(workspaceId))
+    .select("appsV2CloudRepo")
+    .lean();
+  return ws?.appsV2CloudRepo ?? null;
 }
 
 /**
- * Create (idempotently) the project's cloud repo and persist the pointer on
- * the project doc. Returns null when the cloud app is not configured —
+ * Create (idempotently) the workspace's cloud repo and persist the pointer
+ * on the workspace doc. Returns null when the cloud app is not configured —
  * callers degrade to local-only storage rather than failing app creation.
  */
 export async function ensureCloudRepo(
-  project: IAppProjectV2,
+  workspaceId: string,
 ): Promise<{ owner: string; repo: string } | null> {
-  if (project.cloudRepo) return project.cloudRepo;
+  const existing = await findCloudRepoPointer(workspaceId);
+  if (existing) return existing;
   if (!isMakoCloudConfigured()) return null;
   const org = getMakoCloudOrg();
   if (!org) return null;
 
-  const name = cloudRepoNameFor(project);
+  const name = cloudRepoNameFor(workspaceId);
   const token = await getMakoCloudToken();
   const res = await fetch(`${GITHUB_API}/orgs/${org}/repos`, {
     method: "POST",
@@ -65,7 +72,7 @@ export async function ensureCloudRepo(
       name,
       private: true,
       auto_init: false,
-      description: `Mako app "${project.title}" (workspace ${project.workspaceId.toString()})`,
+      description: `Mako workspace repo (workspace ${workspaceId})`,
     }),
   });
   // 422 "name already exists" = an earlier attempt got the repo but died
@@ -78,47 +85,15 @@ export async function ensureCloudRepo(
   }
 
   const cloudRepo = { owner: org, repo: name };
-  await AppProjectV2.updateOne(
-    { _id: new Types.ObjectId(project._id.toString()) },
-    { $set: { cloudRepo } },
+  await Workspace.updateOne(
+    { _id: new Types.ObjectId(workspaceId) },
+    { $set: { appsV2CloudRepo: cloudRepo } },
   );
-  project.cloudRepo = cloudRepo;
-  logger.info("Apps v2 cloud repo ready", {
-    projectId: project._id.toString(),
+  logger.info("Apps v2 workspace cloud repo ready", {
+    workspaceId,
     repo: `${org}/${name}`,
   });
   return cloudRepo;
-}
-
-/** Best-effort delete of the cloud repo when the project is deleted. */
-export async function deleteCloudRepo(project: IAppProjectV2): Promise<void> {
-  const cloudRepo = project.cloudRepo;
-  if (!cloudRepo || !isMakoCloudConfigured()) return;
-  try {
-    const token = await getMakoCloudToken();
-    const res = await fetch(
-      `${GITHUB_API}/repos/${cloudRepo.owner}/${cloudRepo.repo}`,
-      {
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": "2022-11-28",
-        },
-      },
-    );
-    if (!res.ok && res.status !== 404) {
-      logger.warn("Failed to delete cloud repo", {
-        repo: `${cloudRepo.owner}/${cloudRepo.repo}`,
-        status: res.status,
-      });
-    }
-  } catch (error) {
-    logger.warn("Failed to delete cloud repo", {
-      repo: `${cloudRepo.owner}/${cloudRepo.repo}`,
-      error,
-    });
-  }
 }
 
 /**
@@ -127,28 +102,22 @@ export async function deleteCloudRepo(project: IAppProjectV2): Promise<void> {
  * On serverless hosts (Cloud Run: tmpfs, min-instances=0) the local repos
  * under APPS_V2_GIT_ROOT are a CACHE, not a store — any fresh instance
  * starts without them. Since every commit/merge mirror-pushes ALL refs
- * (including refs/mako/* WIP snapshots) to the project's cloud repo,
- * `git clone --mirror` restores the full state on demand. Projects without
- * a cloudRepo (pre-cloud or cloud-unconfigured hosts) are left alone — on a
+ * (including refs/mako/* WIP snapshots) to the workspace's cloud repo,
+ * `git clone --mirror` restores the full state on demand. Workspaces
+ * without a cloud pointer (cloud-unconfigured hosts) are left alone — on a
  * stateful host their local repo simply still exists.
  *
- * Serialized per project so concurrent requests don't race the clone.
+ * Serialized per workspace so concurrent requests don't race the clone.
  */
 const cloneInFlight = new Map<string, Promise<void>>();
 
-export async function ensureLocalRepo(
-  workspaceId: string,
-  projectId: string,
-): Promise<void> {
-  const repoDir = repoDirFor(workspaceId, projectId);
+export async function ensureLocalRepo(workspaceId: string): Promise<void> {
+  const repoDir = repoDirFor(workspaceId);
   if (await repoExists(repoDir)) return;
-  const existing = cloneInFlight.get(projectId);
+  const existing = cloneInFlight.get(workspaceId);
   if (existing) return existing;
   const run = (async () => {
-    const project = await AppProjectV2.findById(new Types.ObjectId(projectId))
-      .select("cloudRepo")
-      .lean();
-    const cloudRepo = project?.cloudRepo;
+    const cloudRepo = await findCloudRepoPointer(workspaceId);
     if (!cloudRepo || !isMakoCloudConfigured()) return;
     const token = await getMakoCloudToken();
     const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
@@ -175,28 +144,27 @@ export async function ensureLocalRepo(
       ]);
       await fs.rename(tmp, repoDir);
       logger.info("Apps v2 local repo restored from cloud mirror", {
-        projectId,
+        workspaceId,
         repo: `${cloudRepo.owner}/${cloudRepo.repo}`,
       });
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
-  })().finally(() => cloneInFlight.delete(projectId));
-  cloneInFlight.set(projectId, run);
+  })().finally(() => cloneInFlight.delete(workspaceId));
+  cloneInFlight.set(workspaceId, run);
   return run;
 }
 
-// Per-project push serialization: `pending` coalesces bursts (N commits
+// Per-workspace push serialization: `pending` coalesces bursts (N commits
 // while a push is in flight -> exactly one trailing push).
 const inFlight = new Map<string, Promise<void>>();
 const pending = new Set<string>();
 
 async function pushMirror(
   workspaceId: string,
-  projectId: string,
   cloudRepo: { owner: string; repo: string },
 ): Promise<void> {
-  const repoDir = repoDirFor(workspaceId, projectId);
+  const repoDir = repoDirFor(workspaceId);
   const token = await getMakoCloudToken();
   const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
   // --mirror: all refs incl. refs/mako/* WIP snapshots (this is OUR remote,
@@ -219,43 +187,38 @@ async function pushMirror(
  * Queue a fire-and-forget mirror push. Never throws — cloud durability is
  * best-effort on top of the local store, and a failed push must not fail the
  * user's commit. Failures are logged for a future reconciler to sweep. Loads
- * the project doc itself so callers holding only ids (commit paths) can use
- * it, and so a cloudRepo attached after their doc snapshot is still seen.
+ * the pointer itself so callers holding only ids (commit paths) can use it,
+ * and so a pointer attached after their doc snapshot is still seen.
  */
-export function queueMirrorPush(workspaceId: string, projectId: string): void {
+export function queueMirrorPush(workspaceId: string): void {
   if (!isMakoCloudConfigured()) return;
-  const key = projectId;
+  const key = workspaceId;
   if (inFlight.has(key)) {
     pending.add(key);
     return;
   }
   const run = (async () => {
     try {
-      const project = await AppProjectV2.findById(new Types.ObjectId(projectId))
-        .select("cloudRepo workspaceId")
-        .lean();
-      if (project?.cloudRepo) {
-        await pushMirror(workspaceId, projectId, project.cloudRepo);
+      const cloudRepo = await findCloudRepoPointer(workspaceId);
+      if (cloudRepo) {
+        await pushMirror(workspaceId, cloudRepo);
       }
     } catch (error) {
       logger.warn("Apps v2 cloud mirror push failed", {
-        projectId: key,
+        workspaceId: key,
         error: error instanceof Error ? error.message : String(error),
       });
     } finally {
       inFlight.delete(key);
-      if (pending.delete(key)) queueMirrorPush(workspaceId, projectId);
+      if (pending.delete(key)) queueMirrorPush(workspaceId);
     }
   })();
   inFlight.set(key, run);
 }
 
-/** Awaitable variant for the initial push right after project creation. */
-export async function mirrorPushNow(project: IAppProjectV2): Promise<void> {
-  if (!project.cloudRepo) return;
-  await pushMirror(
-    project.workspaceId.toString(),
-    project._id.toString(),
-    project.cloudRepo,
-  );
+/** Awaitable variant for the initial push right after repo/app creation. */
+export async function mirrorPushNow(workspaceId: string): Promise<void> {
+  const cloudRepo = await findCloudRepoPointer(workspaceId);
+  if (!cloudRepo) return;
+  await pushMirror(workspaceId, cloudRepo);
 }

@@ -479,19 +479,25 @@ export const useRealtimeStore = create<RealtimeStore>()(
       // Explorer list (titles, new/deleted apps).
       void v2.fetchApps(workspaceId);
       if (event.origin === "lifecycle") return;
-      // Only refresh heavier per-app state when this window has it loaded.
-      if (v2.filesByApp[event.appId]) {
-        void v2.fetchFiles(workspaceId, event.appId);
-        void v2.fetchStatus(workspaceId, event.appId);
-      }
-      if (v2.branchesByApp[event.appId]) {
-        void v2.fetchBranches(workspaceId, event.appId);
-      }
-      const selected = v2.selectedFile[event.appId];
-      if (selected) {
-        const entry = v2.fileContents[`${event.appId}\u0000${selected}`];
-        if (entry && !entry.dirty) {
-          void v2.openFile(workspaceId, event.appId, selected);
+      // §10 monorepo: appId "" = workspace-wide (a workspace worktree
+      // changed; it may span apps) — refresh every app this window has
+      // loaded. A non-empty appId scopes to that app as before.
+      const appIds = event.appId ? [event.appId] : Object.keys(v2.filesByApp);
+      for (const appId of appIds) {
+        // Only refresh heavier per-app state when this window has it loaded.
+        if (v2.filesByApp[appId]) {
+          void v2.fetchFiles(workspaceId, appId);
+          void v2.fetchStatus(workspaceId, appId);
+        }
+        if (v2.branchesByApp[appId]) {
+          void v2.fetchBranches(workspaceId, appId);
+        }
+        const selected = v2.selectedFile[appId];
+        if (selected) {
+          const entry = v2.fileContents[`${appId}\u0000${selected}`];
+          if (entry && !entry.dirty) {
+            void v2.openFile(workspaceId, appId, selected);
+          }
         }
       }
     };

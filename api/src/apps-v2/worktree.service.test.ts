@@ -73,6 +73,10 @@ const USER = "user-1";
 beforeEach(async () => {
   await mongoose.connection.collection("app_projects_v2").deleteMany({});
   await mongoose.connection.collection("app_worktrees_v2").deleteMany({});
+  // §10: ONE repo per workspace — wipe the git/session roots so each test
+  // starts from an empty workspace repo.
+  await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await fs.rm(path.join(tmpRoot, "sessions"), { recursive: true, force: true });
 });
 
 async function makeProject(title = "Test App") {
@@ -90,7 +94,7 @@ describe("project lifecycle", () => {
 
     const history = await projectHistory(project);
     expect(history).toHaveLength(1);
-    expect(history[0].subject).toBe("Initial scaffold");
+    expect(history[0].subject).toContain('Create app "Test App"');
 
     await deleteProject(project);
   });
@@ -118,7 +122,7 @@ describe("worktree writes + durability", () => {
     // change restored as UNCOMMITTED state on top of base.
     const recovered = await ensureWorktree(project, USER);
     const onDisk = await fs.readFile(
-      path.join(recovered.sessionDir, "src/note.ts"),
+      path.join(recovered.sessionDir, recovered.appRoot, "src/note.ts"),
       "utf8",
     );
     expect(onDisk).toBe("export const n = 1;\n");
@@ -204,7 +208,7 @@ describe("commit + conflicts", () => {
     const history = await projectHistory(project);
     expect(history.map(c => c.subject)).toEqual([
       "Add feature module",
-      "Initial scaffold",
+      'Create app "Test App" (apps/test-app)',
     ]);
 
     const status = await worktreeStatus(project, USER);
@@ -225,7 +229,7 @@ describe("commit + conflicts", () => {
     // Simulate a concurrent writer advancing the WIP ref behind our back:
     // build a different snapshot and move the ref to it with the CORRECT
     // expected old value, then make the doc stale again.
-    const repoDir = repoDirFor(WS, project._id.toString());
+    const repoDir = repoDirFor(WS);
     const wipRef = `refs/mako/worktrees/${handle.doc._id.toString()}`;
     const currentWip = await resolveCommit(repoDir, wipRef);
     if (!currentWip) throw new Error("expected a WIP ref after writeFile");
@@ -262,7 +266,7 @@ describe("commit + conflicts", () => {
     await writeFile(handle, "mine.txt", "mine\n");
 
     // Another actor commits directly to main.
-    const repoDir = repoDirFor(WS, project._id.toString());
+    const repoDir = repoDirFor(WS);
     const head = await resolveCommit(repoDir, "refs/heads/main");
     if (!head) throw new Error("expected a branch head");
     const tree = await treeOfCommit(repoDir, head);
@@ -353,7 +357,7 @@ describe("chat branches (Cursor-cloud model)", () => {
     const resumed = await ensureWorktree(project, USER);
     expect(resumed.doc.baseSha).not.toBe(initialBase);
     const onDisk = await fs.readFile(
-      path.join(resumed.sessionDir, "merged.txt"),
+      path.join(resumed.sessionDir, resumed.appRoot, "merged.txt"),
       "utf8",
     );
     expect(onDisk).toBe("hello\n");
@@ -424,7 +428,9 @@ describe("multi-actor isolation", () => {
     expect(viewerFiles).not.toContain("alice.txt");
     expect(viewerFiles).not.toContain("bob.txt");
 
-    const worktrees = await AppWorktreeV2.find({ projectId: project._id });
+    const worktrees = await AppWorktreeV2.find({
+      workspaceId: project.workspaceId,
+    });
     expect(worktrees).toHaveLength(2);
   });
 });
