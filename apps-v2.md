@@ -33,6 +33,7 @@ Two RFCs were written independently against the same brief and then merged. Wher
 | **End-state substrate: GitHub API reads + sandbox writes, NO API-host git (decided)** | The API host keeps **no git state at all** — it is stateless and serverless-correct (the local bare repos were exposed as a data-loss bug on Cloud Run: tmpfs, min-instances=0, no cross-instance sharing). Read path: explorer tree + file contents from **GitHub's Trees/Contents API with ETag caching** (304s are rate-limit-free). Write paths: (1) the agent works in the **sandbox, which is a real `git clone`**; every turn ends commit + `push --force-with-lease` — **GitHub is the ref authority**, which solves multi-instance coherence structurally; (2) sandbox-less edits (Monaco saves, scaffold) commit via the **Git Data API** (dbt's existing pattern — no git binary on the API). Merge-to-main/publish via the GitHub Merges API. `app2_grep/glob` run in the warm sandbox, or read the GitHub tree when cold. **WIP refs and the fenced-CAS machinery die as a concept**: the turn-end push is the durability watermark; crash window = at most the in-flight turn (accepted trade, matches commit-per-turn cadence). This also UNIFIES cloud and BYO tiers — the cloud repo is just another GitHub remote. Rollout: Phase A (bridge, built first): local repos demoted to a **rebuildable cache** — clone-on-miss from the cloud mirror + creation fails unless the initial durable push succeeds; Phase B (pivot): GitHub API becomes the primary read path, sandbox-clone lifecycle, delete the local substrate + WIP machinery. | User (2026-07-15): "use GitHub's API to render files in the tree and the sandbox's filesystem for the agent" |
 | **Data bindings v2 (bindings-as-files) — Phase 1 BUILT** | A v2 binding is repo content: `mako.json` declares `bindings: [{name, connectionId}]`, the SQL lives in `bindings/<name>.sql` — authored with the ordinary file tools, versioned/branchable with the app, no bespoke CRUD. Materialization reuses v1's read-only-enforced parquet pipeline (`buildQueryParquetFile` + artifact store), artifacts keyed `apps-v2/<projectId>/<name>.parquet`, via `POST /{id}/bindings/{name}/materialize`. The preview runtime serves `__data/<name>.parquet` app-relative (resolves under the token prefix in both static and dev previews), so app code fetches a relative URL and reads it with DuckDB-WASM — v1's useRows pattern ports with a URL change. Next: `app2_materialize` agent tool (+ bridge-policy entry), scheduled refresh, dbt-schema templating (`{{ dbt_schema }}`), live (non-parquet) bindings. | User (2026-07-15), unblocking the v1→v2 Engagement Score port |
 | **Mako Cloud storage (instant start) — BUILT** | Org **`mako-ai-cloud`** (github.com/mako-ai-cloud; "mako-cloud" was squatted) + private GitHub App **"Mako Cloud Storage"** (id 4300530, slug `mako-cloud-storage`, `administration:write` + `contents:write` + `metadata:read`), installed once org-wide (all current+future repos). **No per-user install flow exists on this path at all** — the entire setup-callback/stale-installation/wrong-slug bug class only applies to BYO repos. One org + one app serves every environment; repo names are namespaced per backing DB: `<prefix>-<workspaceId>-<projectId>` with prefix `ws` (prod) / `staging` (all PR previews) / `dev` (local). **One repo per app project** — mirrors the local one-bare-repo-per-project layout 1:1, so durability is a literal `git push --mirror` (auth via installation token in an HTTP header, never in the URL). Implemented: `cloud-app-auth.ts` (JWT + runtime-resolved installation id — private app ⇒ only possible install is the owner org), `cloud-repo.service.ts` (idempotent ensure-repo on app creation, delete-on-app-delete, per-project serialized+coalesced mirror pushes after commit/turn-commit/merge — not per WIP flush, too chatty), `canCreate` probe field (creation allowed = BYO binding ∨ cloud configured; the 409 link-first gate is gone). WIP refs may be pushed to cloud repos (we own the remote — the never-push-WIP-to-customer-remotes rule is BYO-only). E2E-verified 2026-07-15: create-app with no binding → private repo + scaffold on GitHub; commit → mirror lands the exact commit; delete app → repo deleted. | User's plan (2026-07-15), implemented same day |
+| **Workspace monorepo (radical simplification)** | ONE repo per workspace (the N-repo model + org/repo explorer tree dies); `dbt/`, `apps/`, `consoles/`, `skills/` are folders at the repo root and leave Mongo; branch state is **per-user-session** (not per-workspace — preserves branch-per-conversation), and switching it re-checkouts everything the session sees: explorer, open tabs, sandbox. Manual saves auto-commit (agent turns already do) — the Commit button and change-count badge die. Folder privacy remains organization-not-authorization (Mako's API is the ACL plane). Plan: §10. | User (2026-07-16) |
 
 ---
 
@@ -356,3 +357,79 @@ Everything lives in the binding file; nothing in Mongo except derived cache.
 **Block 5 — Runtime polish.** `__data/<name>.parquet`: Range support + ETag (Content-Length shipped 2026-07-15); skill guidance for hyparquet/duckdb-wasm; consider a tiny v2 SDK helper later.
 
 Order: 1 → 2 → 3; 4 needs 1; 5 independent. Adjacent, already recorded elsewhere: Phase B substrate pivot (GitHub API reads, sandbox clones, delete local git), dev GitHub App callback repoint to app.mako.ai at merge.
+
+## 10. Workspace monorepo refactor plan (agreed 2026-07-16)
+
+Target model: a workspace IS a git repo. One repo, top-level folders per
+content type, one branch per user session, auto-commit everywhere. Mongo keeps
+only identity/ACL/derived caches — no file content, no per-type repo bindings.
+
+**End-state invariants**
+- `workspace.repo` (singular). Cloud tier: `<prefix>-<workspaceId>` under
+  mako-ai-cloud, provisioned lazily. BYO: link/re-point an existing GitHub repo.
+- Repo layout: `apps/<slug>/`, `consoles/`, `skills/`, `dbt/`,
+  `users/<userId>/…` for personal content. Folders are organization, never
+  authorization (Mako's API stays the ACL plane; documented BYO semantics).
+- A user session is always on exactly ONE branch. Switching branch re-checkouts
+  explorer, open tabs, and the session sandbox atomically. Conversations keep
+  `chat/<chatId>` branches; opening a conversation switches the session onto
+  its branch. Merge to main = publish, unchanged.
+- Every mutation is a commit: agent turns (already), manual saves
+  (`edit: <path>`, consecutive saves by the same author to the same file
+  squashed within a short window). No staged/uncommitted UI state anywhere.
+
+**Block A — auto-commit manual edits (no migration, do first).**
+Worktree flush path (`worktree.service.ts flushWorktree` / file-save route)
+commits on save instead of accumulating; mirror-push coalescing already
+handles chattiness. Delete the Commit button + dirty badge from
+`AppsV2Explorer`; VERSION CONTROL collapses to branch picker + history.
+
+**Block B — one repo per workspace.**
+Schema: `workspace.repo` replaces `workspaceRepos[]` (migration takes
+`workspaceRepos[0]`; service-layer guard refuses adding a second). Cloud
+provisioning becomes one `ws-<workspaceId>` repo; apps live at `apps/<slug>`
+instead of repo-per-project (`cloud-repo.service.ts`,
+`repository.service.ts`, `worktree.service.ts` drop the per-project repo
+assumption). `AppProjectV2` demotes to a derived cache of `git glob
+apps/*/mako.json` (kept for ids/back-compat, rebuilt on fetch). Explorer
+flattens: rail shows the repo root, no org/repo grouping. Migration script
+consolidates existing per-project cloud repos into `apps/<slug>` as tree
+snapshots (old repos archived; full-history subtree import only if someone
+needs it).
+
+**Block C — per-session branch state + checkout propagation.**
+Frontend: single `branch` in the apps-v2 store root, persisted per
+(user, workspace); every read API call carries `?ref=` (explorer tree, file
+opens, binding state). Backend: read endpoints accept `ref`; session sandbox
+keyed (workspace, user) runs `git fetch && git checkout` on switch; realtime
+`app-v2.updated` pokes carry the branch so only sessions on that branch
+refetch. Branch picker lists main + conversation branches with friendly
+labels ("Chat: port engagement score").
+
+**Block D — content moves into the repo (staged, each shippable alone).**
+- D1 `skills/`: workspace skills as `skills/<name>/SKILL.md`; agent skill
+  discovery reads the repo (system skills stay in the API image).
+- D2 `consoles/`: `consoles/<name>.sql` with the SAME front-matter convention
+  as bindings (`-- connection:` etc.); `savedconsoles` migrates via script,
+  then becomes read-only fallback → deleted. DECISION recorded: consoles in
+  the repo are workspace-visible; personal ones go under
+  `users/<userId>/consoles/`.
+- D3 `dbt/`: dbt project folds into `dbt/` in the workspace repo; the
+  separate dbt repo binding + Mongo file mirror (`DbtFileDraft`) unwind onto
+  the session-branch model. Biggest migration, existing customers — LAST, own
+  RFC section when we get there.
+
+**Block E — decommission.** Delete: `workspaceRepos[]` array + service +
+Settings repo-list UI, org/repo explorer nodes, per-project cloud repos,
+remaining WIP/CAS remnants. Update skills + MCP docs.
+
+Order: A → B → C → D1 → D2 → E → D3. A is independent and instant. C
+technically works before B but the branch picker only becomes comprehensible
+once there is a single repo, so B first. The Phase B substrate pivot
+(GitHub-API reads) composes: single repo makes ETag caching and the ref
+authority story strictly simpler.
+
+Open questions: (1) history preservation when consolidating existing
+per-project repos — default is snapshot, not subtree; (2) console autosave
+cadence vs commit noise — squash window length; (3) whether `AppProjectV2`
+dies entirely or stays as an id-stable cache once explorer reads git directly.
