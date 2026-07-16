@@ -12,36 +12,53 @@ import {
 } from "./prompts";
 
 /**
- * Tools that are always active regardless of the enabled expertise mode:
- * the lifecycle/core tools plus the cross-cutting memory, skills, search, and
- * version-history tools that the legacy unified agent kept available in every
- * modality. The plan-mode gate still filters the mutating ones (e.g.
- * `update_self_directive`) because they are not in `READ_ONLY_TOOL_NAMES`.
+ * Tools that are always active regardless of the enabled expertise mode.
+ * Deliberately small — every entry here is paid for in context on every
+ * request. Rarely-used cross-cutting tools live in
+ * `DEFERRED_BUILTIN_TOOL_NAMES` instead: still registered and executable,
+ * but activated on demand via `search_tools`/`load_tools`. The plan-mode
+ * gate still filters the mutating ones (e.g. `update_self_directive`)
+ * because they are not in `READ_ONLY_TOOL_NAMES`.
  */
 export const CORE_ALWAYS_TOOL_NAMES: readonly string[] = [
-  // Lifecycle / mode-switching (shared with the plan-mode gate allowlist)
+  // Lifecycle / mode-switching + tool discovery (shared with the plan-mode
+  // gate allowlist: enable_mode, todo_write, ask_clarifying_questions,
+  // submit_plan, search_tools, load_tools)
   ...PLAN_GATE_ALLOWED_TOOL_NAMES,
   // Persistent memory
   "read_self_directive",
   "update_self_directive",
-  // Skills
-  "save_skill",
-  "delete_skill",
-  "list_skills",
+  // Skills retrieval (skill *writes* are deferred)
   "get_relevant_skills",
   "load_skill",
-  "read_skill_resource",
-  "search_skills",
-  // Cross-surface search (parity: both are discovery, not modality work)
-  "search_consoles",
-  "search_dashboards",
   // Public web access (useful in every modality, not modality-specific)
   "fetch_url",
   "web_search",
-  // Version history
-  "browse_version_history",
-  "get_version_snapshot",
 ];
+
+/**
+ * Built-in tools demoted out of the always-active set: registered and
+ * executable but sent to the provider only after `load_tools` (or the
+ * per-turn relevance preload). Anything here must be classified — the
+ * tier-policy test fails when a built-in tool is neither core, in a mode's
+ * toolNames, nor listed here. The map value is the catalog domain label
+ * shown in `search_tools` results.
+ */
+export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
+  // Skill management (retrieval stays core)
+  save_skill: "skills",
+  delete_skill: "skills",
+  list_skills: "skills",
+  search_skills: "skills",
+  read_skill_resource: "skills",
+  // Version history
+  browse_version_history: "version-history",
+  get_version_snapshot: "version-history",
+};
+
+export const DEFERRED_BUILTIN_TOOL_NAMES: readonly string[] = Object.keys(
+  DEFERRED_BUILTIN_TOOL_DOMAINS,
+);
 
 const QUERY_MODE_TOOL_NAMES: string[] = [
   // Client console tools
@@ -56,7 +73,9 @@ const QUERY_MODE_TOOL_NAMES: string[] = [
   "modify_chart_spec",
   "get_chart_template",
   "capture_screenshot",
-  // Discovery
+  // Discovery (search_consoles was core before tiering; query is the
+  // default mode, so keep console lookup available without a load step)
+  "search_consoles",
   "list_connections",
   // MongoDB
   "mongo_list_connections",
@@ -70,6 +89,9 @@ const QUERY_MODE_TOOL_NAMES: string[] = [
   "sql_list_tables",
   "sql_inspect_table",
   "sql_execute_query",
+  // Long-running query lifecycle (pairs with sql_execute_query / run_console)
+  "check_query_status",
+  "cancel_query",
 ];
 
 const DASHBOARD_MODE_TOOL_NAMES: string[] = [
@@ -161,6 +183,8 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "sql_list_tables",
   "sql_inspect_table",
   "sql_execute_query",
+  "check_query_status",
+  "cancel_query",
   "mongo_list_connections",
   "mongo_list_databases",
   "mongo_list_collections",
@@ -217,6 +241,8 @@ const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   "sql_list_tables",
   "sql_inspect_table",
   "sql_execute_query",
+  "check_query_status",
+  "cancel_query",
 ];
 
 const EXPLORE_MODE_TOOL_NAMES: string[] = [

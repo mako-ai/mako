@@ -21,11 +21,21 @@ import type { AgentContext } from "../types";
 import { unifiedAgentFactory } from "../unified";
 import { buildCurrentScreenContext } from "../unified/prompt";
 import { createModeTools } from "../../agent-lib/tools/mode-tools";
+import { createToolDiscoveryTools } from "../../agent-lib/tools/tool-discovery-tools";
+import {
+  effectiveToolCountLimit,
+  estimateToolSetTokens,
+  preloadToolNames,
+  MAX_ACTIVE_TOOLS,
+  MAX_ACTIVE_TOOL_TOKENS,
+  type ToolCatalogEntry,
+} from "../../agent-lib/tool-catalog";
 import {
   modeRegistry,
   defaultExpertiseMode,
   toolNamesForModes,
   resolveExpertiseModeId,
+  DEFERRED_BUILTIN_TOOL_DOMAINS,
 } from "./registry";
 import {
   BASE_SYSTEM_PROMPT,
@@ -65,9 +75,21 @@ export function deriveModeState(
   defaultMode: ExpertiseModeId,
 ): ModeState {
   const enabledModes = new Set<ExpertiseModeId>([defaultMode]);
+  const loadedToolNames: string[] = [];
   let planSubmitted = false;
   let planApproved = false;
   let lastPlanDecision: unknown;
+
+  const recordLoadedTools = (names: unknown) => {
+    if (!Array.isArray(names)) return;
+    for (const name of names) {
+      if (typeof name !== "string") continue;
+      // Re-load moves the tool to the newest LRU position.
+      const idx = loadedToolNames.indexOf(name);
+      if (idx !== -1) loadedToolNames.splice(idx, 1);
+      loadedToolNames.push(name);
+    }
+  };
 
   for (const message of messages) {
     // A new user turn normally starts a fresh plan cycle: any previous
@@ -97,6 +119,13 @@ export function deriveModeState(
         const mode = (part.input as { mode?: unknown } | undefined)?.mode;
         const resolved = resolveExpertiseModeId(mode);
         if (resolved) enabledModes.add(resolved);
+      } else if (toolName === "load_tools") {
+        // Deferred-tool loads persist across turns like modes. Unknown names
+        // are harmless here: computeActiveTools intersects with the live
+        // tool set, so stale loads (e.g. a disconnected MCP server) drop out.
+        recordLoadedTools(
+          (part.input as { names?: unknown } | undefined)?.names,
+        );
       } else if (toolName === "submit_plan") {
         planSubmitted = true;
         const decision = (part.output as { decision?: unknown } | undefined)
@@ -109,12 +138,58 @@ export function deriveModeState(
     }
   }
 
-  return { enabledModes, planSubmitted, planApproved };
+  return { enabledModes, planSubmitted, planApproved, loadedToolNames };
+}
+
+/**
+ * One-line-per-source inventory of deferred tools for the dynamic system
+ * block: the model must know what *exists* without paying for schemas.
+ * Rendered only when paging is active (otherwise everything is loaded).
+ */
+export function buildDeferredInventoryBlock(
+  catalog: ToolCatalogEntry[],
+): string | null {
+  if (catalog.length === 0) return null;
+
+  const mcpCounts = new Map<string, number>();
+  const builtinCounts = new Map<string, number>();
+  for (const entry of catalog) {
+    if (entry.tier !== "deferred") continue;
+    if (entry.source.kind === "mcp") {
+      const key = entry.source.serverName;
+      mcpCounts.set(key, (mcpCounts.get(key) ?? 0) + 1);
+    } else {
+      const key = entry.source.domain;
+      builtinCounts.set(key, (builtinCounts.get(key) ?? 0) + 1);
+    }
+  }
+  if (mcpCounts.size === 0 && builtinCounts.size === 0) return null;
+
+  const lines: string[] = [];
+  for (const [server, count] of mcpCounts) {
+    lines.push(`- ${server} (${count} tools via MCP)`);
+  }
+  if (builtinCounts.size > 0) {
+    const parts = Array.from(builtinCounts.entries()).map(
+      ([domain, count]) => `${domain} (${count})`,
+    );
+    lines.push(`- built-in: ${parts.join(", ")}`);
+  }
+
+  return [
+    "## Additional tools (not loaded)",
+    "",
+    "More tools are available but not currently active:",
+    ...lines,
+    "",
+    "Find them with `search_tools` and activate with `load_tools` — never guess or call unloaded tool names directly.",
+  ].join("\n");
 }
 
 function buildModeSystem(
   context: AgentContext,
   modeState: ModeState,
+  deferredInventoryBlock?: string | null,
 ): SystemModelMessage[] {
   const dynamicParts: string[] = [];
 
@@ -130,6 +205,8 @@ function buildModeSystem(
         : PLAN_GATE_SYSTEM_PROMPT,
     );
   }
+
+  if (deferredInventoryBlock) dynamicParts.push(deferredInventoryBlock);
 
   dynamicParts.push(buildCurrentScreenContext(context));
 
@@ -148,42 +225,109 @@ function buildModeSystem(
   ];
 }
 
+/** Working-set knobs for `computeActiveTools`. */
+export interface WorkingSetOptions {
+  /**
+   * True when the registered surface exceeds the budget: deferred tools
+   * (all MCP + demoted built-ins) activate only via load/preload. False =
+   * hybrid bypass — everything fits, so everything is active (small
+   * workspaces keep the zero-friction behavior).
+   */
+  pagingActive: boolean;
+  /** Binding tool-count limit (soft budget ∧ provider hard cap). */
+  maxActiveTools: number;
+  /** Token budget for definitions, applied to the evictable tail only. */
+  maxActiveToolTokens?: number;
+  /** Estimated definition tokens per tool name (from the full ToolSet). */
+  tokenWeights?: Map<string, number>;
+  /** Deterministic per-turn relevance preload (deferred names). */
+  preloadedToolNames?: string[];
+}
+
+const DEFAULT_WORKING_SET: WorkingSetOptions = {
+  pagingActive: false,
+  maxActiveTools: MAX_ACTIVE_TOOLS,
+};
+
 /**
  * Compute the active tool allowlist for the current step from the live
- * `ModeState`. Implements the plan hard gate: once the model has submitted a
- * plan this turn and the user has not approved it, only read-only tools and
- * the lifecycle tools (clarify / re-plan / switch modes / todos) remain.
+ * `ModeState`.
+ *
+ * Assembly order doubles as eviction priority (cut from the end, never the
+ * base): core+mode tools, then — paging off — the full MCP set, then loaded
+ * deferred tools newest-first, then the relevance preload. The plan hard
+ * gate still applies: once a plan is submitted and unapproved, only
+ * read-only + lifecycle tools survive, whatever tier they came from.
  */
 export function computeActiveTools(
   modeState: ModeState,
   allToolNames: Set<string>,
   mcp?: { toolNames: string[]; readOnlyToolNames: string[] },
+  options: WorkingSetOptions = DEFAULT_WORKING_SET,
 ): string[] {
-  let names = new Set<string>();
+  const base: string[] = [];
+  const seen = new Set<string>();
+  const push = (list: string[], name: string) => {
+    if (!allToolNames.has(name) || seen.has(name)) return;
+    seen.add(name);
+    list.push(name);
+  };
+
   for (const name of toolNamesForModes(modeState.enabledModes)) {
-    if (allToolNames.has(name)) names.add(name);
+    push(base, name);
   }
-  // MCP tools are cross-cutting (not tied to an expertise mode): always
-  // active. Their own write gating happens via `needsApproval`, not modes.
-  for (const name of mcp?.toolNames ?? []) {
-    if (allToolNames.has(name)) names.add(name);
+
+  const evictable: string[] = [];
+  if (!options.pagingActive) {
+    // Hybrid bypass: the whole surface fits the budget. MCP tools stay
+    // cross-cutting (their write gating is `needsApproval`, not modes) and
+    // loaded/deferred names are honored too — this keeps behavior identical
+    // for small workspaces while remaining trim-safe under a provider cap.
+    for (const name of mcp?.toolNames ?? []) push(evictable, name);
   }
+  // Loaded newest-first: the most recent load is the most relevant, so the
+  // end-of-list cut evicts the oldest loads first (LRU).
+  for (const name of [...modeState.loadedToolNames].reverse()) {
+    push(evictable, name);
+  }
+  for (const name of options.preloadedToolNames ?? []) push(evictable, name);
+
+  let names = [...base, ...evictable];
 
   if (isPlanGateActive(modeState)) {
-    const gated = new Set<string>();
     const mcpReadOnly = new Set(mcp?.readOnlyToolNames ?? []);
-    for (const name of names) {
-      if (READ_ONLY_TOOL_NAMES.has(name) || mcpReadOnly.has(name)) {
-        gated.add(name);
-      }
-    }
-    for (const allowed of PLAN_GATE_ALLOWED_TOOL_NAMES) {
-      if (allToolNames.has(allowed)) gated.add(allowed);
-    }
-    names = gated;
+    names = names.filter(
+      name =>
+        READ_ONLY_TOOL_NAMES.has(name) ||
+        mcpReadOnly.has(name) ||
+        PLAN_GATE_ALLOWED_TOOL_NAMES.has(name),
+    );
   }
 
-  return Array.from(names);
+  // Count budget: trim the evictable tail; base is never evicted (it is
+  // bounded by the mode registry, far under every provider cap).
+  if (names.length > options.maxActiveTools) {
+    names = names.slice(0, Math.max(options.maxActiveTools, base.length));
+  }
+
+  // Token budget: applied to the tail as well, so one bloated connector
+  // schema cannot crowd out the product's own tools.
+  const { tokenWeights, maxActiveToolTokens } = options;
+  if (tokenWeights && maxActiveToolTokens) {
+    const kept: string[] = [];
+    let tokens = 0;
+    const baseSet = new Set(base);
+    for (const name of names) {
+      const weight = tokenWeights.get(name) ?? 0;
+      if (baseSet.has(name) || tokens + weight <= maxActiveToolTokens) {
+        kept.push(name);
+        tokens += weight;
+      }
+    }
+    names = kept;
+  }
+
+  return names;
 }
 
 export interface UnifiedModeRuntime {
@@ -193,18 +337,47 @@ export interface UnifiedModeRuntime {
   prepareStep: (options: {
     stepNumber: number;
   }) => { activeTools: string[]; system: SystemModelMessage[] } | undefined;
+  /** Working-set telemetry for the request log. */
+  workingSet: {
+    pagingActive: boolean;
+    totalRegisteredTools: number;
+    maxActiveTools: number;
+    activeToolCount: number;
+    /** Estimated definition tokens of the initial active set. */
+    activeToolTokens: number;
+    preloadedToolNames: string[];
+  };
+}
+
+/** Text of the latest user message — the input to the relevance preload. */
+function lastUserMessageText(messages: UIMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role !== "user") continue;
+    return ((message.parts ?? []) as UIMessagePart[])
+      .map(part =>
+        part.type === "text" &&
+        typeof (part as { text?: unknown }).text === "string"
+          ? (part as { text: string }).text
+          : "",
+      )
+      .join(" ");
+  }
+  return "";
 }
 
 /**
- * Build the full tool union, derived mode state, initial system, and the
- * per-step `prepareStep` for the unified agent.
+ * Build the full tool union, derived mode state, tool catalog, initial
+ * system, and the per-step `prepareStep` for the unified agent.
  */
 export function buildUnifiedModeRuntime(params: {
   context: AgentContext;
   messages: UIMessage[];
   tabKind?: string;
+  /** Gateway model id (e.g. "xai/grok-4.5") — drives the provider tool cap. */
+  modelId?: string;
 }): UnifiedModeRuntime {
-  const { context, messages, tabKind } = params;
+  const { context, messages, tabKind, modelId } = params;
 
   const defaultMode = defaultExpertiseMode(context, tabKind);
   const modeState = deriveModeState(messages, defaultMode);
@@ -215,10 +388,43 @@ export function buildUnifiedModeRuntime(params: {
   const { tools: domainTools } = unifiedAgentFactory(context);
   const modeTools = createModeTools(modeState);
 
+  // Deferred-tool catalog: demoted built-ins (descriptions read from the
+  // live tool objects) + every MCP tool (full descriptions from the DB
+  // cache, via context). This is what search_tools ranks and what the
+  // system-prompt inventory summarizes.
+  const catalog: ToolCatalogEntry[] = [];
+  for (const [name, domain] of Object.entries(DEFERRED_BUILTIN_TOOL_DOMAINS)) {
+    const tool = (domainTools as ToolSet)[name];
+    if (!tool) continue;
+    catalog.push({
+      name,
+      source: { kind: "builtin", domain },
+      description: tool.description ?? name,
+      readOnly: READ_ONLY_TOOL_NAMES.has(name),
+      tier: "deferred",
+    });
+  }
+  for (const info of context.mcpToolCatalog ?? []) {
+    catalog.push({
+      name: info.name,
+      source: {
+        kind: "mcp",
+        serverId: info.serverId,
+        serverName: info.serverName,
+      },
+      description: info.description,
+      readOnly: info.readOnly,
+      tier: "deferred",
+    });
+  }
+
+  const discoveryTools = createToolDiscoveryTools({ modeState, catalog });
+
   const tools: ToolSet = {
     ...domainTools,
     ...clientPlanTools,
     ...modeTools,
+    ...discoveryTools,
   } as ToolSet;
 
   const allToolNames = new Set<string>(Object.keys(tools));
@@ -227,15 +433,60 @@ export function buildUnifiedModeRuntime(params: {
     readOnlyToolNames: context.mcpReadOnlyToolNames ?? [],
   };
 
+  // Hybrid bypass: paging engages only when the registered surface cannot
+  // fit the working-set budget for this model. Deterministic per request,
+  // so resumed chats reconstruct the same behavior.
+  const maxActiveTools = effectiveToolCountLimit(modelId);
+  const pagingActive = allToolNames.size > maxActiveTools;
+  const tokenWeights = estimateToolSetTokens(tools);
+  const preloadedToolNames = pagingActive
+    ? preloadToolNames(catalog, lastUserMessageText(messages))
+    : [];
+
+  const workingSetOptions: WorkingSetOptions = {
+    pagingActive,
+    maxActiveTools,
+    maxActiveToolTokens: MAX_ACTIVE_TOOL_TOKENS,
+    tokenWeights,
+    preloadedToolNames,
+  };
+
+  const deferredInventoryBlock = pagingActive
+    ? buildDeferredInventoryBlock(catalog)
+    : null;
+
   const prepareStep = () => ({
-    activeTools: computeActiveTools(modeState, allToolNames, mcpAllowlist),
-    system: buildModeSystem(context, modeState),
+    activeTools: computeActiveTools(
+      modeState,
+      allToolNames,
+      mcpAllowlist,
+      workingSetOptions,
+    ),
+    system: buildModeSystem(context, modeState, deferredInventoryBlock),
   });
+
+  const initialActiveTools = computeActiveTools(
+    modeState,
+    allToolNames,
+    mcpAllowlist,
+    workingSetOptions,
+  );
 
   return {
     tools,
     modeState,
-    system: buildModeSystem(context, modeState),
+    system: buildModeSystem(context, modeState, deferredInventoryBlock),
     prepareStep,
+    workingSet: {
+      pagingActive,
+      totalRegisteredTools: allToolNames.size,
+      maxActiveTools,
+      activeToolCount: initialActiveTools.length,
+      activeToolTokens: initialActiveTools.reduce(
+        (sum, name) => sum + (tokenWeights.get(name) ?? 0),
+        0,
+      ),
+      preloadedToolNames,
+    },
   };
 }

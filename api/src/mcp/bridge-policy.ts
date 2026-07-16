@@ -52,10 +52,11 @@ const bridge = (
   opts: Omit<Extract<McpBridgeEntry, { status: "bridge" }>, "status"> = {},
 ): McpBridgeEntry => ({ status: "bridge", ...opts });
 
-const exclude = (
-  why: McpBridgeExclusionWhy,
-  note: string,
-): McpBridgeEntry => ({ status: "exclude", why, note });
+const exclude = (why: McpBridgeExclusionWhy, note: string): McpBridgeEntry => ({
+  status: "exclude",
+  why,
+  note,
+});
 
 const mcpOnly = (
   opts: Omit<Extract<McpBridgeEntry, { status: "mcp-only" }>, "status"> = {},
@@ -230,7 +231,10 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "deferred",
     "Unnamespaced flow discovery duplicate of sql_list_tables.",
   ),
-  set_form_field: exclude("client-only", "Writes the open flow form in the UI."),
+  set_form_field: exclude(
+    "client-only",
+    "Writes the open flow form in the UI.",
+  ),
   set_multiple_fields: exclude(
     "client-only",
     "Writes the open flow form in the UI.",
@@ -258,8 +262,14 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "Dashboard versioning stays in-product until dashboards are MCP-bridged.",
   ),
   enter_edit_mode: exclude("client-only", "Dashboard builder UI."),
-  get_dashboard_state: exclude("client-only", "Reads open dashboard tab state."),
-  import_console_as_data_source: exclude("client-only", "Dashboard builder UI."),
+  get_dashboard_state: exclude(
+    "client-only",
+    "Reads open dashboard tab state.",
+  ),
+  import_console_as_data_source: exclude(
+    "client-only",
+    "Dashboard builder UI.",
+  ),
   link_tables: exclude("client-only", "Dashboard builder UI."),
   list_open_dashboards: exclude(
     "client-only",
@@ -326,7 +336,10 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   dbt_switch_branch: exclude("deferred", "Transform mode not yet on MCP."),
   dbt_sync_from_repo: exclude("deferred", "Transform mode not yet on MCP."),
   dbt_update_job: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_update_pull_request: exclude("deferred", "Transform mode not yet on MCP."),
+  dbt_update_pull_request: exclude(
+    "deferred",
+    "Transform mode not yet on MCP.",
+  ),
   delete_dbt_file: exclude("deferred", "Transform mode not yet on MCP."),
   edit_dbt_file: exclude("deferred", "Transform mode not yet on MCP."),
   modify_dbt_file: exclude("deferred", "Transform mode not yet on MCP."),
@@ -349,6 +362,10 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   get_relevant_skills: bridge(),
   list_skills: bridge(),
   load_skill: bridge(),
+  load_tools: exclude(
+    "in-product-only",
+    "Deferred-tool working set is the in-product agent runtime; MCP exposes a fixed curated surface.",
+  ),
   read_self_directive: exclude(
     "in-product-only",
     "Workspace self-directive memory is chat-agent scoped.",
@@ -359,6 +376,10 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "Skill writes stay in-product; MCP is read-only for skills.",
   ),
   search_skills: bridge(),
+  search_tools: exclude(
+    "in-product-only",
+    "Deferred-tool working set is the in-product agent runtime; MCP exposes a fixed curated surface.",
+  ),
   submit_plan: exclude("in-product-only", "Plan UX is chat-UI specific."),
   todo_write: exclude(
     "in-product-only",
@@ -409,7 +430,9 @@ export function summarizeBridgeGaps(): Array<{
     .filter(why => byWhy.has(why))
     .map(why => ({
       why,
-      tools: (byWhy.get(why) ?? []).sort((a, b) => a.name.localeCompare(b.name)),
+      tools: (byWhy.get(why) ?? []).sort((a, b) =>
+        a.name.localeCompare(b.name),
+      ),
     }));
 }
 

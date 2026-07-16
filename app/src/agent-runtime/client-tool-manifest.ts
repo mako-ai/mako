@@ -1145,6 +1145,28 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Asking clarifying questions",
     icon: "help-circle",
   },
+  // Tool discovery meta-tools (deferred-tool working set; see
+  // api/src/agent-lib/tools/tool-discovery-tools.ts).
+  search_tools: {
+    domain: "search",
+    execution: "server",
+    getLabel: input => {
+      const query = (input as Record<string, unknown>)?.query;
+      return query ? `Searching tools: ${query}` : "Searching tools";
+    },
+    icon: "search",
+  },
+  load_tools: {
+    domain: "search",
+    execution: "server",
+    getLabel: input => {
+      const names = (input as Record<string, unknown>)?.names;
+      return Array.isArray(names) && names.length > 0
+        ? `Loading ${names.length} tool${names.length === 1 ? "" : "s"}`
+        : "Loading tools";
+    },
+    icon: "download",
+  },
   submit_plan: {
     domain: "plan",
     execution: "client",
