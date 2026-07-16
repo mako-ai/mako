@@ -79,10 +79,11 @@ describe("connect / list / disconnect", () => {
       linkedBy: "u1",
     });
     expect(root.subdirectory).toBe("");
+    // Re-connecting the SAME repo with "/" normalizes to root.
     const slash = await connectWorkspaceRepo({
       workspaceId,
       owner: "o",
-      repo: "r2",
+      repo: "r",
       defaultBranch: "main",
       subdirectory: "/",
       linkedBy: "u1",
@@ -90,7 +91,7 @@ describe("connect / list / disconnect", () => {
     expect(slash.subdirectory).toBe("");
   });
 
-  it("supports multiple repos and upserts by owner/repo", async () => {
+  it("enforces one repo per workspace (§10) and upserts the same repo in place", async () => {
     await connectWorkspaceRepo({
       workspaceId,
       owner: "o",
@@ -98,13 +99,16 @@ describe("connect / list / disconnect", () => {
       defaultBranch: "main",
       linkedBy: "u1",
     });
-    await connectWorkspaceRepo({
-      workspaceId,
-      owner: "o",
-      repo: "b",
-      defaultBranch: "main",
-      linkedBy: "u1",
-    });
+    // Connecting a DIFFERENT repo while one exists is refused.
+    await expect(
+      connectWorkspaceRepo({
+        workspaceId,
+        owner: "o",
+        repo: "b",
+        defaultBranch: "main",
+        linkedBy: "u1",
+      }),
+    ).rejects.toThrow(/exactly one repository/);
     // Reconnecting "a" with a new root updates in place, no duplicate.
     await connectWorkspaceRepo({
       workspaceId,
@@ -115,10 +119,12 @@ describe("connect / list / disconnect", () => {
       linkedBy: "u1",
     });
     const repos = await listWorkspaceRepos(workspaceId);
-    expect(repos).toHaveLength(2);
-    const a = repos.find(r => r.repo === "a");
-    expect(a?.defaultBranch).toBe("dev");
-    expect(a?.subdirectory).toBe("mako");
+    expect(repos).toHaveLength(1);
+    expect(repos[0].defaultBranch).toBe("dev");
+    expect(repos[0].subdirectory).toBe("mako");
+    // getWorkspaceRepo is the singular read API.
+    const { getWorkspaceRepo } = await import("./workspace-repos.service");
+    expect((await getWorkspaceRepo(workspaceId))?.repo).toBe("a");
   });
 
   it("falls back to the legacy appsV2Repo binding until migrated", async () => {
@@ -139,7 +145,18 @@ describe("connect / list / disconnect", () => {
     const repos = await listWorkspaceRepos(workspaceId);
     expect(repos).toHaveLength(1);
     expect(repos[0].owner).toBe("legacy");
-    // Any write migrates off the legacy field.
+    // §10: the legacy binding counts as THE workspace repo — a different
+    // repo is refused until it is disconnected.
+    await expect(
+      connectWorkspaceRepo({
+        workspaceId,
+        owner: "o",
+        repo: "new",
+        defaultBranch: "main",
+        linkedBy: "u1",
+      }),
+    ).rejects.toThrow(/exactly one repository/);
+    await disconnectWorkspaceRepo(workspaceId, "legacy", "old");
     await connectWorkspaceRepo({
       workspaceId,
       owner: "o",
@@ -149,7 +166,8 @@ describe("connect / list / disconnect", () => {
     });
     const ws = await Workspace.findById(workspaceId).lean();
     expect(ws?.appsV2Repo).toBeUndefined();
-    expect(ws?.workspaceRepos).toHaveLength(2);
+    expect(ws?.workspaceRepos).toHaveLength(1);
+    expect(ws?.workspaceRepos?.[0].repo).toBe("new");
   });
 
   it("rejects invalid owner/repo names", async () => {

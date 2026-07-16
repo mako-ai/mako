@@ -1,15 +1,13 @@
 /**
- * Workspace repos — the workspace ↔ GitHub-repos link (0..N, default 1).
+ * Workspace repo — the workspace ↔ GitHub-repo link.
  *
- * Repos are WORKSPACE infrastructure, not an apps-v2 detail: apps (and later
- * consoles and dbt projects) mount into them. Mako stores nothing in Mongo
- * except these links — the repos are the durable store. Layout convention
- * inside a repo: `subdirectory` is the MAKO ROOT ("" = repo root); workspace
- * apps live under `<root>/apps/<app>`, personal content under
- * `<root>/users/<userId>/apps/<app>`.
- *
- * Supersedes apps-v2's single `appsV2Repo` binding (read-time fallback kept
- * until the 2026-07-15 migration has run everywhere).
+ * §10 (2026-07-16): ONE repo per workspace. The workspace IS a git repo;
+ * `dbt/`, `apps/`, `consoles/`, `skills/` are folders at its root and
+ * personal content lives under `users/<userId>/…`. The storage field is
+ * still the `workspaceRepos` array for back-compat, but the service refuses
+ * to hold more than one binding — `getWorkspaceRepo` is the read API.
+ * (Legacy `appsV2Repo` read-time fallback kept until the 2026-07-15
+ * migration has run everywhere.)
  */
 import { Types } from "mongoose";
 import {
@@ -27,6 +25,15 @@ export function isValidRepoSegment(value: string): boolean {
   return SEGMENT_RE.test(value) && !value.includes("..");
 }
 
+/** §10: the single workspace repo, or null when none is linked. */
+export async function getWorkspaceRepo(
+  workspaceId: string,
+): Promise<IWorkspaceRepoBinding | null> {
+  const repos = await listWorkspaceRepos(workspaceId);
+  return repos[0] ?? null;
+}
+
+/** @deprecated §10 makes the repo singular — use getWorkspaceRepo. */
 export async function listWorkspaceRepos(
   workspaceId: string,
 ): Promise<IWorkspaceRepoBinding[]> {
@@ -87,12 +94,18 @@ export async function connectWorkspaceRepo(
     linkedAt: new Date(),
   };
 
-  // Upsert by (owner, repo): reconnecting updates branch/root in place.
+  // §10: one repo per workspace. Re-connecting the SAME repo updates the
+  // binding in place; connecting a different repo while one exists is
+  // refused (disconnect first — a silent swap would orphan every app).
   const existing = await listWorkspaceRepos(input.workspaceId);
-  const next = [
-    ...existing.filter(r => !(r.owner === owner && r.repo === repo)),
-    binding,
-  ];
+  const other = existing.find(r => !(r.owner === owner && r.repo === repo));
+  if (other) {
+    throw new Error(
+      `This workspace is already connected to ${other.owner}/${other.repo}. ` +
+        "A workspace has exactly one repository — disconnect it first.",
+    );
+  }
+  const next = [binding];
   await Workspace.updateOne(
     { _id: new Types.ObjectId(input.workspaceId) },
     { $set: { workspaceRepos: next }, $unset: { appsV2Repo: "" } },
