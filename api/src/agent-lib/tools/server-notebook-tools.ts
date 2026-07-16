@@ -102,6 +102,20 @@ export function createNotebookServerTools({
     return updated.version;
   };
 
+  // Ask the window viewing this chat to open the notebook in the editor. The
+  // client tool that used to do this on create no longer runs (notebook tools
+  // are server-executed now), so the server signals the intent instead.
+  const publishOpenIntent = (notebookId: string, title: string) => {
+    if (!chatId) return;
+    publishRealtimeEvent(workspaceId, {
+      type: "chat.ui-intent",
+      chatId,
+      intent: "open_notebook",
+      notebookId,
+      title,
+    });
+  };
+
   return {
     create_notebook: tool({
       description:
@@ -120,6 +134,8 @@ export function createNotebookServerTools({
           clientId: agentClientId,
           origin: "agent",
         });
+        // Surface it: refresh the explorer list + open it in the editor.
+        publishOpenIntent(doc.id, doc.name);
         return { success: true, notebookId: doc.id, name: doc.name, cellCount: 0 };
       },
     }),

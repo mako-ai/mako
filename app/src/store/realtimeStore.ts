@@ -27,6 +27,7 @@ import { useAppStore } from "./appStore";
 import { useDashboardStore } from "./dashboardStore";
 import { useDbtStore } from "./dbtStore";
 import { useNotebookStore } from "./notebookStore";
+import { focusNotebookTab } from "../notebook-runtime/shell";
 import { useNotebookPresenceStore } from "./notebookPresenceStore";
 import { computeDashboardStateHash } from "../utils/stateHash";
 import { decideRemoteApply } from "./lib/remoteApplyGate";
@@ -58,6 +59,13 @@ export type RealtimeEvent =
       chatId: string;
       intent: "open_console";
       consoleId: string;
+    }
+  | {
+      type: "chat.ui-intent";
+      chatId: string;
+      intent: "open_notebook";
+      notebookId: string;
+      title?: string;
     }
   | { type: "chat.activity"; chatId: string; state: "streaming" | "idle" }
   | {
@@ -386,8 +394,20 @@ export const useRealtimeStore = create<RealtimeStore>()(
       // other chats replay their intents on reattach (console restore).
       if (!get().activeChatId || event.chatId !== get().activeChatId) return;
       const workspaceId = get().workspaceId;
-      if (!workspaceId || event.intent !== "open_console") return;
+      if (!workspaceId) return;
 
+      // A server-executed create_notebook ran: refresh the explorer list so the
+      // new notebook appears, and open it in the editor (the client tool that
+      // used to do this no longer runs now that notebook tools are
+      // server-executed).
+      if (event.intent === "open_notebook") {
+        const nb = useNotebookStore.getState();
+        void nb.loadNotebooks();
+        focusNotebookTab(event.notebookId, event.title || "Untitled notebook");
+        return;
+      }
+
+      if (event.intent !== "open_console") return;
       const consoleStore = useConsoleStore.getState();
       void (async () => {
         if (consoleStore.tabs[event.consoleId]) {

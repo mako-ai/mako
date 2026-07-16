@@ -49,11 +49,22 @@ export type RealtimeEvent =
       durationMs?: number;
       error?: string;
     }
+  // A server-executed agent tool asks the window viewing this chat to open a
+  // tab (e.g. after creating a console/notebook the user can't otherwise see or
+  // open, since the tool ran server-side). Addressed to `chatId`; only the
+  // window on that chat acts.
   | {
       type: "chat.ui-intent";
       chatId: string;
       intent: "open_console";
       consoleId: string;
+    }
+  | {
+      type: "chat.ui-intent";
+      chatId: string;
+      intent: "open_notebook";
+      notebookId: string;
+      title?: string;
     }
   | {
       type: "chat.activity";
