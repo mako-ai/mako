@@ -52,6 +52,15 @@ KERNEL_MAX_NODES="${KERNEL_MAX_NODES:-5}"
 # not a new one — the kernel image is just another tag under it.
 ARTIFACT_REPO="${ARTIFACT_REPO:-revops}"
 ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-${PROJECT_ID}-notebook-artifacts}"
+# The Cloud Run runtime service account (the control-plane `mako` service runs
+# as this). It must reach the GKE cluster + the notebook bucket. Prod runs as a
+# dedicated least-privilege SA (e.g. `mako-runtime@<project>.iam...`); dev/
+# preview run as the default compute SA, which is already broad — so this is
+# OPTIONAL and skipped with a note when unset.
+RUNTIME_SA="${RUNTIME_SA:-}"
+# Cloud Run's VPC-egress subnet — the SOURCE range for kernel ingress on :8888.
+# (Distinct from KERNEL_SUBNET, which is the cluster's own subnet.)
+CLOUD_RUN_SUBNET="${CLOUD_RUN_SUBNET:-mako-subnet}"
 
 if [[ -z "${PROJECT_ID}" ]]; then
   echo "PROJECT_ID is not set and no gcloud default project is configured." >&2
@@ -137,7 +146,7 @@ else
   echo "✓ Node pool ${KERNEL_NODE_POOL} exists"
 fi
 
-# --- 6. GCS bucket for outputs + snapshots ----------------------------------
+# --- 6. GCS bucket for notebook docs + outputs + snapshots ------------------
 if ! gcloud storage buckets describe "gs://${ARTIFACT_BUCKET}" >/dev/null 2>&1; then
   echo "→ Creating GCS bucket ${ARTIFACT_BUCKET}"
   gcloud storage buckets create "gs://${ARTIFACT_BUCKET}" \
@@ -145,6 +154,11 @@ if ! gcloud storage buckets describe "gs://${ARTIFACT_BUCKET}" >/dev/null 2>&1; 
 else
   echo "✓ Bucket ${ARTIFACT_BUCKET} exists"
 fi
+# Object versioning keeps prior generations of notebook documents (the version-
+# history feature reads them) and protects offloaded cell outputs from an
+# accidental overwrite. Idempotent — enabling when already on is a no-op.
+gcloud storage buckets update "gs://${ARTIFACT_BUCKET}" --versioning --quiet >/dev/null
+echo "✓ Object versioning enabled on ${ARTIFACT_BUCKET}"
 
 # --- 7. IAM: let the node service account read images + use the bucket ------
 # Pools created without an explicit SA report "default"; in that case the nodes
@@ -163,6 +177,52 @@ gcloud artifacts repositories add-iam-policy-binding "${ARTIFACT_REPO}" \
 gcloud storage buckets add-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
   --member="serviceAccount:${NODE_SA}" \
   --role="roles/storage.objectAdmin" --quiet >/dev/null
+
+# --- 8. Cloud Run RUNTIME service account: reach GKE + the notebook bucket ---
+# The control-plane `mako` service (Cloud Run) drives the kernel plane and owns
+# the notebook store. Its runtime SA must (a) call the cluster's k8s API to
+# spawn/scale kernels and (b) read/write the notebook bucket. This is a DIFFERENT
+# SA from the node SA above. Prod runs as a dedicated least-privilege SA
+# (RUNTIME_SA); dev/preview run as the default compute SA (already broad), so
+# RUNTIME_SA is optional and skipped with a note when unset.
+if [[ -n "${RUNTIME_SA}" ]]; then
+  echo "→ Granting Cloud Run runtime SA ${RUNTIME_SA} GKE + bucket access (idempotent)"
+  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member="serviceAccount:${RUNTIME_SA}" \
+    --role="roles/container.developer" --condition=None --quiet >/dev/null
+  gcloud storage buckets add-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
+    --member="serviceAccount:${RUNTIME_SA}" \
+    --role="roles/storage.objectAdmin" --quiet >/dev/null
+else
+  echo "! RUNTIME_SA not set — skipping Cloud Run runtime-SA grants."
+  echo "  In prod, set RUNTIME_SA=<cloud-run-sa> to grant roles/container.developer"
+  echo "  (spawn kernels) + roles/storage.objectAdmin on the bucket (notebook store)."
+fi
+
+# --- 9. Firewall: let Cloud Run reach kernel gateways on :8888 --------------
+# Cloud Run egresses into ${NETWORK} via ${CLOUD_RUN_SUBNET}; kernel pods listen
+# on :8888. Allow that specific path (the k8s NetworkPolicy is the second
+# layer). The source is the Cloud Run subnet range; the target is the kernel
+# cluster's node tag (GKE auto-tags nodes `gke-<cluster>-<hash>-node`).
+FW_NAME="mako-notebooks-cr-to-kernels"
+if gcloud compute firewall-rules describe "${FW_NAME}" >/dev/null 2>&1; then
+  echo "✓ Firewall ${FW_NAME} exists"
+else
+  CR_RANGE="$(gcloud compute networks subnets describe "${CLOUD_RUN_SUBNET}" \
+    --region="${REGION}" --format='value(ipCidrRange)' 2>/dev/null || true)"
+  NODE_TAG="$(gcloud compute firewall-rules list \
+    --filter="network=${NETWORK} AND name~^gke-${CLUSTER}-" \
+    --format='value(targetTags[0])' 2>/dev/null | head -1)"
+  if [[ -n "${CR_RANGE}" && -n "${NODE_TAG}" ]]; then
+    echo "→ Creating firewall ${FW_NAME} (${CR_RANGE} → ${NODE_TAG}:8888)"
+    gcloud compute firewall-rules create "${FW_NAME}" \
+      --network="${NETWORK}" --direction=INGRESS --action=ALLOW \
+      --rules=tcp:8888 --source-ranges="${CR_RANGE}" --target-tags="${NODE_TAG}"
+  else
+    echo "! Skipping ${FW_NAME}: could not resolve Cloud Run range (${CR_RANGE:-?})"
+    echo "  or the kernel node tag (${NODE_TAG:-?}). Create it once the cluster exists."
+  fi
+fi
 
 cat <<EOF
 
