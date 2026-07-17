@@ -128,7 +128,7 @@ For **consoles and dashboards**, an unsaved draft has no version history yet, so
 
 ## AI Agent Tools
 
-The assistant can inspect version history through two dedicated tools, which are part of the always-on core toolset. See [AI Agent](/ai-agent/) for the full tool surface.
+The assistant can inspect version history through two dedicated tools. They are _deferred_ tools — activated on demand via tool discovery (`search_tools`/`load_tools`) rather than always loaded. See [AI Agent](/ai-agent/#tool-paging) for how tool paging works.
 
 ### `browse_version_history`
 

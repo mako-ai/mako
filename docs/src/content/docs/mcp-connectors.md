@@ -79,6 +79,8 @@ Grants are per-user and per-tool. Manage or revoke them under **Settings → MCP
 
 Tools are namespaced `mcp_<server>_<tool>` in the agent runtime, and are treated as cross-cutting across modes. The [plan gate](/skills/) keeps only read-tier MCP tools available during planning.
 
+MCP tools are **deferred** in the agent's [tool working set](/ai-agent/#tool-paging): they stay registered and executable (approval flow intact) but are sent to the model only after discovery (`search_tools`/`load_tools`) or a per-turn relevance preload. This keeps workspaces with many connectors under provider tool-count caps and context budgets — adding MCP servers no longer bloats every request. Workspaces whose whole tool surface fits the budget bypass paging and behave as before.
+
 ## Security
 
 - Server URLs are SSRF-guarded (no internal/loopback targets).
