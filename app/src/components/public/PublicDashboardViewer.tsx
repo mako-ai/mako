@@ -3,6 +3,7 @@ import {
   Box,
   Button,
   CircularProgress,
+  LinearProgress,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -94,6 +95,37 @@ function latestMaterializedAt(content: PublicDashboardContent): string | null {
     }
   }
   return latest;
+}
+
+function parquetMaterializedAts(
+  content: PublicDashboardContent,
+): Map<string, string | null> {
+  return new Map(
+    content.dataSources
+      .filter(ds => ds.materialization !== "live")
+      .map(ds => [ds.id, ds.materializedAt]),
+  );
+}
+
+/**
+ * True once every parquet data source has a new ready snapshot vs `before`.
+ * A single global "latest" timestamp would refresh as soon as the first
+ * source finishes while others are still building.
+ */
+function allParquetSourcesRefreshed(
+  before: Map<string, string | null>,
+  content: PublicDashboardContent,
+): boolean {
+  const parquet = content.dataSources.filter(
+    ds => ds.materialization !== "live",
+  );
+  if (parquet.length === 0) return true;
+  return parquet.every(ds => {
+    if (!ds.ready || !ds.materializedAt) return false;
+    const previous = before.get(ds.id) ?? null;
+    if (previous == null) return true;
+    return ds.materializedAt !== previous;
+  });
 }
 
 export default function PublicDashboardViewer({
@@ -205,12 +237,13 @@ export default function PublicDashboardViewer({
       }
 
       setRefreshNote("Refreshing data…");
-      const before = latestMaterializedAt(contentRef.current);
-      // Poll for the new snapshot (server materializes in the background).
+      const before = parquetMaterializedAts(contentRef.current);
+      // Poll until every parquet source has a fresh snapshot — never remount
+      // the dashboard mid-flight when only the first source has finished.
       for (let attempt = 0; attempt < 15; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 8000));
         const fresh = await reloadContent();
-        if (fresh && latestMaterializedAt(fresh) !== before) {
+        if (fresh && allParquetSourcesRefreshed(before, fresh)) {
           setDataVersion(v => v + 1);
           setRefreshNote(null);
           return;
@@ -295,11 +328,25 @@ export default function PublicDashboardViewer({
               disabled={refreshing}
               onClick={() => void handleRefresh()}
             >
-              Refresh data
+              {refreshing ? "Refreshing…" : "Refresh data"}
             </Button>
           </span>
         </Tooltip>
       </Box>
+
+      {refreshing && (
+        <Box sx={{ borderBottom: "1px solid", borderColor: "divider" }}>
+          <LinearProgress />
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ display: "block", px: 3, py: 0.75 }}
+          >
+            Waiting for every data source to finish rebuilding before refreshing
+            the dashboard…
+          </Typography>
+        </Box>
+      )}
 
       <Box ref={gridContainerRef} sx={{ p: 2 }}>
         {loadError ? (

@@ -4,6 +4,7 @@ import {
   Box,
   Button,
   CircularProgress,
+  LinearProgress,
   Typography,
 } from "@mui/material";
 import { RefreshCw } from "lucide-react";
@@ -79,12 +80,36 @@ function toLoadableBinding(
   } as AppDataBinding;
 }
 
-function latestMaterializedAt(content: PublicAppContent): string | null {
-  const timestamps = content.dataBindings
-    .map(binding => binding.materializedAt)
-    .filter((value): value is string => !!value)
-    .sort();
-  return timestamps[timestamps.length - 1] ?? null;
+/** Per-binding snapshot timestamps used to detect when a refresh has finished. */
+function parquetMaterializedAts(
+  content: PublicAppContent,
+): Map<string, string | null> {
+  return new Map(
+    content.dataBindings
+      .filter(binding => binding.materialization === "parquet")
+      .map(binding => [binding.id, binding.materializedAt]),
+  );
+}
+
+/**
+ * True once every parquet binding has a new ready snapshot vs `before`.
+ * Waiting on a single "latest" timestamp would refresh mid-flight when the
+ * first binding finishes while siblings are still building.
+ */
+function allParquetBindingsRefreshed(
+  before: Map<string, string | null>,
+  content: PublicAppContent,
+): boolean {
+  const parquet = content.dataBindings.filter(
+    binding => binding.materialization === "parquet",
+  );
+  if (parquet.length === 0) return true;
+  return parquet.every(binding => {
+    if (!binding.ready || !binding.materializedAt) return false;
+    const previous = before.get(binding.id) ?? null;
+    if (previous == null) return true;
+    return binding.materializedAt !== previous;
+  });
 }
 
 export default function PublicAppViewer({
@@ -393,11 +418,11 @@ export default function PublicAppViewer({
       }
 
       setRefreshNote("Refreshing data…");
-      const before = latestMaterializedAt(contentRef.current);
+      const before = parquetMaterializedAts(contentRef.current);
       for (let attempt = 0; attempt < 15; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 8000));
         const fresh = await reloadContent();
-        if (fresh && latestMaterializedAt(fresh) !== before) {
+        if (fresh && allParquetBindingsRefreshed(before, fresh)) {
           // Pull the new snapshots into DuckDB *before* telling the booted app
           // to re-query — otherwise its hooks could read the previous table.
           // ensureBindingLoaded reloads in place (revision changed), and the
@@ -471,6 +496,20 @@ export default function PublicAppViewer({
           {refreshing ? "Refreshing…" : "Refresh data"}
         </Button>
       </Box>
+
+      {refreshing && (
+        <Box sx={{ borderBottom: "1px solid", borderColor: "divider" }}>
+          <LinearProgress />
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ display: "block", px: 1.5, py: 0.5 }}
+          >
+            Waiting for every data binding to finish rebuilding before
+            refreshing the app…
+          </Typography>
+        </Box>
+      )}
 
       {previewError && (
         <Alert severity="error" sx={{ borderRadius: 0, py: 0.25 }}>

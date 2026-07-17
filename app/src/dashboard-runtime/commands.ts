@@ -576,17 +576,16 @@ export async function refreshDashboardDataSourceCommand(options: {
       force: true,
       dataSourceIds: [options.dataSourceId],
     });
+  // Explicit Materialize: wait until the build finishes, then swap runtime
+  // data — including in edit mode. Background rematerialize still defers.
   await waitForDashboardMaterialization({
     workspaceId: options.workspaceId,
     dashboardId: dashboard._id,
   });
-  if (isDashboardInEditMode(dashboard._id)) {
-    return;
-  }
   await applyDashboardMaterializedData({
     workspaceId: options.workspaceId,
     dashboardId: dashboard._id,
-    runtimeContext: "viewer",
+    runtimeContext: isDashboardInEditMode(dashboard._id) ? "builder" : "viewer",
   });
 }
 
@@ -600,17 +599,16 @@ export async function reloadDashboardDataSourcesCommand(
     .materializeDashboard(workspaceId, dashboard._id, {
       force: true,
     });
+  // Explicit "Reload data" / "Refresh All": wait for every source to finish
+  // building, then refresh the runtime once — never swap mid-flight.
   await waitForDashboardMaterialization({
     workspaceId,
     dashboardId: dashboard._id,
   });
-  if (isDashboardInEditMode(dashboard._id)) {
-    return;
-  }
   await applyDashboardMaterializedData({
     workspaceId,
     dashboardId: dashboard._id,
-    runtimeContext: "viewer",
+    runtimeContext: isDashboardInEditMode(dashboard._id) ? "builder" : "viewer",
   });
 }
 

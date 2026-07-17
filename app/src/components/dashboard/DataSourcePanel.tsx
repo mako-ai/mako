@@ -201,6 +201,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
     [],
   );
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [refreshingAll, setRefreshingAll] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedRunDetail, setSelectedRunDetail] =
     useState<MaterializationRunRecord | null>(null);
@@ -1199,15 +1200,25 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
               size="small"
               fullWidth
               variant="outlined"
-              startIcon={<RefreshCw size={14} />}
-              disabled={hasBuildingMaterialization}
+              startIcon={
+                refreshingAll || hasBuildingMaterialization ? (
+                  <CircularProgress size={14} />
+                ) : (
+                  <RefreshCw size={14} />
+                )
+              }
+              disabled={refreshingAll || hasBuildingMaterialization}
               onClick={() => {
-                if (workspaceId) {
-                  void reloadDashboardDataSourcesCommand(workspaceId);
-                }
+                if (!workspaceId || refreshingAll) return;
+                setRefreshingAll(true);
+                void reloadDashboardDataSourcesCommand(workspaceId)
+                  .catch(() => undefined)
+                  .finally(() => setRefreshingAll(false));
               }}
             >
-              Refresh All
+              {refreshingAll || hasBuildingMaterialization
+                ? "Refreshing…"
+                : "Refresh All"}
             </Button>
           </Box>
         </>
