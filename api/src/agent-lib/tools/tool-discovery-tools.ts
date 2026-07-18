@@ -40,6 +40,63 @@ const loadToolsSchema = z.object({
     .describe("Exact tool names from search_tools results to activate."),
 });
 
+/** Build the search_tools note so already-loaded hits don't re-trigger load loops. */
+export function buildSearchToolsNote(params: {
+  hitCount: number;
+  unloadedCount: number;
+  loadedCount: number;
+}): string {
+  const { hitCount, unloadedCount, loadedCount } = params;
+  if (hitCount === 0) {
+    return "No matching tools. Try different terms (e.g. the connector's name) — or the capability may not be connected to this workspace.";
+  }
+  if (unloadedCount === 0) {
+    return (
+      "Matching tool(s) are already active — call them directly now. " +
+      "Do NOT call load_tools again for these names."
+    );
+  }
+  if (loadedCount === 0) {
+    return "Call load_tools with the exact names you need; their full input schemas become available on your next step. Then call the tool itself — do not keep searching.";
+  }
+  return (
+    "Some matches are already active (call those directly). " +
+    "For the rest, call load_tools once with the exact unloaded names, then call the tool itself."
+  );
+}
+
+/** Build the load_tools note so alreadyLoaded doesn't look like a no-op failure. */
+export function buildLoadToolsNote(params: {
+  loadedNow: string[];
+  alreadyActive: string[];
+  unknown: string[];
+}): string | undefined {
+  const { loadedNow, alreadyActive, unknown } = params;
+  if (
+    unknown.length > 0 &&
+    loadedNow.length === 0 &&
+    alreadyActive.length === 0
+  ) {
+    return undefined;
+  }
+  if (loadedNow.length > 0 && alreadyActive.length === 0) {
+    return "Loaded. Call these tools directly on your next step — do not call load_tools again for the same names.";
+  }
+  if (loadedNow.length === 0 && alreadyActive.length > 0) {
+    return (
+      "Already active — call them directly now (schemas are already available). " +
+      "Do NOT call load_tools or search_tools again for these names."
+    );
+  }
+  if (loadedNow.length > 0 && alreadyActive.length > 0) {
+    return (
+      "Some tools were loaded and some were already active. " +
+      "Call all of them directly on your next step — do not call load_tools again for these names."
+    );
+  }
+  return undefined;
+}
+
 /**
  * Create the discovery meta-tools bound to a per-request mutable `ModeState`
  * and the request's tool catalog (deferred entries only — core and mode
@@ -59,26 +116,31 @@ export function createToolDiscoveryTools(params: {
       description:
         "Search the workspace's full tool catalog (connected MCP servers + " +
         "additional built-ins) for tools that are not currently loaded. " +
-        "Returns compact matches; activate the ones you need with load_tools. " +
+        "Returns compact matches; activate unloaded ones with load_tools, " +
+        "then call the tool itself. If a result already has loaded:true, " +
+        "call that tool directly — do not load_tools again. " +
         "Use this whenever the user asks for something your current tools " +
         "don't cover — never guess tool names.",
       inputSchema: searchToolsSchema,
       execute: async ({ query, limit }: z.infer<typeof searchToolsSchema>) => {
         const hits = searchToolCatalog(catalog, query, limit ?? 10);
         const loaded = new Set(modeState.loadedToolNames);
+        const results = hits.map(hit => ({
+          name: hit.name,
+          description: hit.description,
+          source: hit.source,
+          readOnly: hit.readOnly,
+          loaded: loaded.has(hit.name),
+        }));
+        const loadedCount = results.filter(r => r.loaded).length;
         return {
           success: true,
-          results: hits.map(hit => ({
-            name: hit.name,
-            description: hit.description,
-            source: hit.source,
-            readOnly: hit.readOnly,
-            loaded: loaded.has(hit.name),
-          })),
-          note:
-            hits.length === 0
-              ? "No matching tools. Try different terms (e.g. the connector's name) — or the capability may not be connected to this workspace."
-              : "Call load_tools with the exact names you need; their full input schemas become available on your next step.",
+          results,
+          note: buildSearchToolsNote({
+            hitCount: results.length,
+            unloadedCount: results.length - loadedCount,
+            loadedCount,
+          }),
         };
       },
     }),
@@ -87,7 +149,8 @@ export function createToolDiscoveryTools(params: {
       description:
         "Activate tools found via search_tools so they become callable on " +
         "your next step. Load only what you need — the working set is " +
-        "bounded and rarely-used tools are evicted first.",
+        "bounded and rarely-used tools are evicted first. If a tool is " +
+        "alreadyLoaded, call it directly — do not keep calling load_tools.",
       inputSchema: loadToolsSchema,
       execute: async ({ names }: z.infer<typeof loadToolsSchema>) => {
         const loadedNow: string[] = [];
@@ -123,10 +186,7 @@ export function createToolDiscoveryTools(params: {
                   "Unknown tool name(s). Use exact names from search_tools results — do not guess.",
               }
             : {}),
-          note:
-            loadedNow.length > 0
-              ? "Loaded. The tools are callable from your next step."
-              : undefined,
+          note: buildLoadToolsNote({ loadedNow, alreadyActive, unknown }),
         };
       },
     }),

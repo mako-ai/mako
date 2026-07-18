@@ -28,9 +28,12 @@ export const CORE_ALWAYS_TOOL_NAMES: readonly string[] = [
   // Persistent memory
   "read_self_directive",
   "update_self_directive",
-  // Skills retrieval (skill *writes* are deferred)
+  // Skills: retrieval + save stay core (skills prompt names them every turn;
+  // deferring save_skill caused search/load loops). list/delete/search/read
+  // resource stay deferred.
   "get_relevant_skills",
   "load_skill",
+  "save_skill",
   // Public web access (useful in every modality, not modality-specific)
   "fetch_url",
   "web_search",
@@ -45,8 +48,7 @@ export const CORE_ALWAYS_TOOL_NAMES: readonly string[] = [
  * shown in `search_tools` results.
  */
 export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
-  // Skill management (retrieval stays core)
-  save_skill: "skills",
+  // Skill management (retrieval + save stay core; rarer ops are deferred)
   delete_skill: "skills",
   list_skills: "skills",
   search_skills: "skills",
