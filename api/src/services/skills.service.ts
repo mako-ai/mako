@@ -652,12 +652,10 @@ export function renderSkillsPromptBlock(result: SkillRetrievalResult): string {
   lines.push(
     "Skills extend or refine the self-directive for specific contexts. " +
       "If a skill conflicts with the directive, follow the directive. " +
-      "Always available: `get_relevant_skills` (re-rank bodies mid-task), " +
-      "`load_skill` (pull any indexed skill), `save_skill` (record new " +
-      "workspace knowledge). Less common skill ops (`list_skills`, " +
-      "`delete_skill`, `search_skills`, `read_skill_resource`) may need " +
-      "`search_tools` + `load_tools` first — if a result is already loaded, " +
-      "call the tool directly; do not keep searching/loading.",
+      "Always available: `get_relevant_skills`, `load_skill`, `save_skill`, " +
+      "`read_skill_resource`. Less common ops (`list_skills`, " +
+      "`delete_skill`, `search_skills`) may need `search_tools` + " +
+      "`load_tools` first — if already loaded, call the tool directly.",
   );
   lines.push("");
   lines.push("#### Available skills (index)");

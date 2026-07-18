@@ -14,7 +14,7 @@ import {
   buildUnifiedModeRuntime,
   computeActiveTools,
   deriveModeState,
-  buildDeferredInventoryBlock,
+  buildToolInventoryBlock,
   type WorkingSetOptions,
 } from "./runtime";
 import {
@@ -256,10 +256,15 @@ const baseModeState = (loaded: string[] = []): ModeState => ({
   // Generic message: nothing clears the preload threshold.
   assert.deepEqual(preloadToolNames(catalog, "hello, how are you?"), []);
 
-  const inventory = buildDeferredInventoryBlock(catalog);
-  assert.ok(inventory?.includes("Slack (1 tools via MCP)"));
-  assert.ok(inventory?.includes("version-history (1)"));
-  assert.ok(inventory?.includes("search_tools"));
+  const inventory = buildToolInventoryBlock(catalog, ["query"]);
+  assert.ok(inventory.includes("Slack (1 tools via MCP)"));
+  assert.ok(inventory.includes("Close CRM (1 tools via MCP)"));
+  assert.ok(inventory.includes("### MCP servers"));
+  assert.ok(inventory.includes("`search_tools`"));
+  assert.ok(inventory.includes("`read_console`"));
+  // Built-in names are listed; individual MCP tool names are not.
+  assert.ok(!inventory.includes("mcp_slack_send_message"));
+  assert.ok(inventory.includes("active (schemas provided)"));
 }
 
 // --- MCP schema diet ------------------------------------------------------------
@@ -347,6 +352,14 @@ async function endToEnd() {
   assert.ok(
     inventoryMsg.includes("Slack (200 tools via MCP)"),
     "inventory block lists the server",
+  );
+  assert.ok(
+    inventoryMsg.includes("## Tool inventory (names only)"),
+    "name-only inventory always injected",
+  );
+  assert.ok(
+    !inventoryMsg.includes("mcp_slack_tool_0"),
+    "individual MCP tool names stay out of the system prompt",
   );
 
   // Live load via the actual tool, then the next step activates it.

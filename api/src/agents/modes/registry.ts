@@ -28,12 +28,12 @@ export const CORE_ALWAYS_TOOL_NAMES: readonly string[] = [
   // Persistent memory
   "read_self_directive",
   "update_self_directive",
-  // Skills: retrieval + save stay core (skills prompt names them every turn;
-  // deferring save_skill caused search/load loops). list/delete/search/read
-  // resource stay deferred.
+  // Skills: retrieval + save + tier-3 resource reads stay core (skills /
+  // mode prompts name them every turn). list/delete/search stay deferred.
   "get_relevant_skills",
   "load_skill",
   "save_skill",
+  "read_skill_resource",
   // Public web access (useful in every modality, not modality-specific)
   "fetch_url",
   "web_search",
@@ -48,14 +48,10 @@ export const CORE_ALWAYS_TOOL_NAMES: readonly string[] = [
  * shown in `search_tools` results.
  */
 export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
-  // Skill management (retrieval + save stay core; rarer ops are deferred)
+  // Skill management rarer ops (retrieval/save/read_skill_resource are core)
   delete_skill: "skills",
   list_skills: "skills",
   search_skills: "skills",
-  read_skill_resource: "skills",
-  // Version history
-  browse_version_history: "version-history",
-  get_version_snapshot: "version-history",
 };
 
 export const DEFERRED_BUILTIN_TOOL_NAMES: readonly string[] = Object.keys(
@@ -122,8 +118,11 @@ const DASHBOARD_MODE_TOOL_NAMES: string[] = [
   "get_chart_template",
   "dashboard_save_version",
   "dashboard_restore_version",
+  "browse_version_history",
+  "get_version_snapshot",
   "capture_screenshot",
   // Search + discovery for building data sources
+  "search_consoles",
   "search_dashboards",
   "list_connections",
   "sql_list_databases",
@@ -170,6 +169,8 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "app_set_binding_schedule",
   "app_save_version",
   "app_restore_version",
+  "browse_version_history",
+  "get_version_snapshot",
   "materialize_binding",
   "run_app",
   "app_set_preview_environment",
@@ -179,6 +180,7 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "query_duckdb",
   "capture_screenshot",
   // Discovery for validating binding queries
+  "search_consoles",
   "list_connections",
   "sql_list_connections",
   "sql_list_databases",
@@ -435,4 +437,34 @@ export function toolNamesForModes(
     for (const name of mode.toolNames) names.add(name);
   }
   return names;
+}
+
+/**
+ * Compact name-only inventory groups for the system prompt: every built-in
+ * tool name (no schemas), grouped so the model can see what exists without
+ * paying for definitions. MCP tools are intentionally omitted — those are
+ * discovered via `search_tools` from the server list.
+ */
+export function builtinToolInventoryGroups(): Array<{
+  label: string;
+  names: readonly string[];
+}> {
+  const groups: Array<{ label: string; names: readonly string[] }> = [
+    { label: "core (always on)", names: CORE_ALWAYS_TOOL_NAMES },
+  ];
+  for (const modeId of EXPERTISE_MODE_IDS) {
+    const mode = modeRegistry[modeId];
+    if (!mode) continue;
+    groups.push({
+      label: `${modeId} mode (enable_mode("${modeId}"))`,
+      names: mode.toolNames,
+    });
+  }
+  if (DEFERRED_BUILTIN_TOOL_NAMES.length > 0) {
+    groups.push({
+      label: "deferred built-ins (search_tools → load_tools, then call)",
+      names: DEFERRED_BUILTIN_TOOL_NAMES,
+    });
+  }
+  return groups;
 }
