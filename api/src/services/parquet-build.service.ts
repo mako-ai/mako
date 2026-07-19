@@ -109,13 +109,22 @@ export async function buildQueryParquetFile(
 
   assertReadOnlyMaterializationQuery(executableQuery, connection.type);
 
+  // The driver-level `readOnly` gate is a SQL analyzer: it requires string
+  // queries to be a single SELECT/WITH and fails closed for engines it can't
+  // validate (MongoDB JS-shell code, Cloudflare KV). Those sources can never
+  // pass it, so materializing them read-only errors out. They're exempted here
+  // exactly as `assertReadOnlyMaterializationQuery` exempts them above — their
+  // read-only safety is the source driver's own execution path, not this gate.
+  const enforceReadOnly =
+    connection.type !== "mongodb" && connection.type !== "cloudflare-kv";
+
   let fields: FieldMeta[] = [];
   try {
     const schemaResult =
       await databaseConnectionService.getStreamingQueryFields(
         connection,
         executableQuery,
-        { databaseId, databaseName, readOnly: true },
+        { databaseId, databaseName, readOnly: enforceReadOnly },
       );
     if (schemaResult.success && schemaResult.fields) {
       fields = schemaResult.fields;
@@ -150,7 +159,7 @@ export async function buildQueryParquetFile(
             databaseId,
             databaseName,
             onBatch: insertBatch,
-            readOnly: true,
+            readOnly: enforceReadOnly,
           },
         );
       // A mid-stream failure must fail the build — otherwise a silently
