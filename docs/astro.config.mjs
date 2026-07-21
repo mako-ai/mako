@@ -48,6 +48,7 @@ export default defineConfig({
             { label: "Apps", slug: "apps" },
             { label: "Transforms (dbt)", slug: "transforms" },
             { label: "Query Runner", slug: "query-runner" },
+            { label: "Notebooks", slug: "notebooks" },
             { label: "Self-Directive", slug: "self-directive" },
             { label: "Skills", slug: "skills" },
             { label: "MCP Connectors", slug: "mcp-connectors" },

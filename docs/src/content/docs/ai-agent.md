@@ -89,7 +89,7 @@ Every turn, Mako injects a compact index of every skill plus the top-3 auto-retr
 
 Mako runs a **single unified agent**, not a fleet of separate agents. Capability is loaded dynamically: the agent switches *expertise modes* mid-conversation via the `enable_mode` tool, and each mode unlocks a domain-specific toolset plus guidance. A set of core tools (memory, skills, search, web access, version history, planning, mode-switching) is always available regardless of mode.
 
-On a fresh request the default mode is picked from what you're looking at — a dashboard view opens in **Dashboard**, the flow editor in **Sync Flow**, an app in **React App**, a dbt file/job in **Transforms** — otherwise **Query**. The agent then switches as the task demands.
+On a fresh request the default mode is picked from what you're looking at — a dashboard view opens in **Dashboard**, the flow editor in **Sync Flow**, an app in **React App**, a dbt file/job in **Transforms**, a notebook in **Notebook** — otherwise **Query**. The agent then switches as the task demands.
 
 | Mode | Does |
 |------|------|
@@ -98,6 +98,7 @@ On a fresh request the default mode is picked from what you're looking at — a 
 | **Sync Flow** | Configure database-to-database sync flows, query templates, and schema mapping |
 | **React App** | Build [React apps](/apps/) wired to workspace data — edit files, add dependencies, create data bindings |
 | **Transforms** | Build and run [dbt transformations](/transforms/) — edit project files, compile, test, and run models against the warehouse |
+| **Notebook** | Build [notebooks](/notebooks/) — add SQL/Python/Markdown cells, run SQL against data sources and Python on the managed kernel, iterate on results |
 | **Explore** | Read-only investigation across connections, consoles, dashboards, and memory |
 
 `Explore` is read-only by design. Mode ids persist in chat history, so renames stay backward-compatible (the legacy `dbt` mode resolves to `transform`). Enabling a mode adds its tools — modes accumulate across a turn rather than replacing one another.
