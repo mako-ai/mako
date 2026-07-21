@@ -25,6 +25,18 @@ belongs in git-versioned system skills under `api/src/agent-skills/**`, not in
 always-on prompt literals. See `.cursor/rules/35-agent-prompts.mdc` and
 `api/src/agent-skills/README.md` before changing prompt content.
 
+## Agent tools: tier classification is mandatory
+
+The agent sends a _budgeted working set_ of tools to the provider, not every
+registered tool (`api/src/agent-lib/tool-catalog.ts`). Every built-in tool must
+be classified as **core** (always active), **mode** (in a mode's `toolNames` in
+`api/src/agents/modes/registry.ts`), or **deferred**
+(`DEFERRED_BUILTIN_TOOL_DOMAINS`) — the tier-policy test in
+`api/src/agents/modes/tool-working-set.test.ts` fails on unclassified tools.
+An unclassified tool is registered but never reaches the model (silently dead).
+MCP tools are always deferred; they activate via `search_tools`/`load_tools`.
+`pnpm --filter api tools:measure` prints per-tool token weights.
+
 ## Essential Commands
 
 ### Development

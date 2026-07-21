@@ -85,9 +85,11 @@ Beyond the always-on self-directive, Mako supports **skills** — named, workspa
 
 Every turn, Mako injects a compact index of every skill plus the top-3 auto-retrieved bodies (entity overlap 0.6 + semantic similarity 0.4). See [Skills](/skills/) for the full model, admin UI, and REST API.
 
+Skill _retrieval_ (`get_relevant_skills`, `load_skill`) is always active; skill _writes_ and long-tail lookups (`save_skill`, `delete_skill`, `list_skills`, `search_skills`, `read_skill_resource`) are deferred tools the agent activates on demand — see [Tool paging](#tool-paging) below.
+
 ## Expertise Modes
 
-Mako runs a **single unified agent**, not a fleet of separate agents. Capability is loaded dynamically: the agent switches *expertise modes* mid-conversation via the `enable_mode` tool, and each mode unlocks a domain-specific toolset plus guidance. A set of core tools (memory, skills, search, web access, version history, planning, mode-switching) is always available regardless of mode.
+Mako runs a **single unified agent**, not a fleet of separate agents. Capability is loaded dynamically: the agent switches *expertise modes* mid-conversation via the `enable_mode` tool, and each mode unlocks a domain-specific toolset plus guidance. A small set of core tools (memory, skill retrieval, web access, planning, mode-switching, tool discovery) is always available regardless of mode; everything else is either mode-scoped or deferred (see [Tool paging](#tool-paging)).
 
 On a fresh request the default mode is picked from what you're looking at — a dashboard view opens in **Dashboard**, the flow editor in **Sync Flow**, an app in **React App**, a dbt file/job in **Transforms**, a notebook in **Notebook** — otherwise **Query**. The agent then switches as the task demands.
 
@@ -103,9 +105,23 @@ On a fresh request the default mode is picked from what you're looking at — a 
 
 `Explore` is read-only by design. Mode ids persist in chat history, so renames stay backward-compatible (the legacy `dbt` mode resolves to `transform`). Enabling a mode adds its tools — modes accumulate across a turn rather than replacing one another.
 
+### Tool Paging
+
+The provider request carries a bounded **working set** of tools instead of every registered tool. Every tool sits in one of three tiers:
+
+- **core** — always active (lifecycle, memory, skill retrieval, web access, tool discovery)
+- **mode** — activates with an expertise mode
+- **deferred** — registered and executable (approval flow intact) but dormant: all MCP tools plus demoted built-ins (skill writes, version history)
+
+Deferred tools are discoverable via the `search_tools` meta-tool (compact cards, no schemas) and activated with `load_tools`, which mutates the active set exactly like `enable_mode` and replays statelessly from the chat transcript. A deterministic per-turn relevance preload activates obviously-relevant deferred tools from the last user message, so common cases need no search/load round-trip.
+
+Budgets: at most 110 active tools and ~12k tokens of tool definitions per step, whichever binds first — with per-provider hard caps as a backstop (xAI rejects requests above 250 tools, OpenAI above 128). Core and mode tools are never evicted; loaded deferred tools are evicted oldest-first. Small workspaces whose whole tool surface fits the budget bypass paging entirely and keep the zero-friction behavior. When paging is active, the system prompt lists deferred sources one line per connector, and provider-facing MCP tool descriptions are truncated (full descriptions stay in the search catalog).
+
+`pnpm --filter api tools:measure` prints per-tool token weights and per-mode totals.
+
 ### Plan Gate
 
-There is no user-facing plan/agent toggle. The model decides when planning is worthwhile: the moment it calls `submit_plan` in a turn, mutating tools are hard-gated until you approve the plan. Read-only and lifecycle tools (e.g. `enable_mode`, `todo_write`, `ask_clarifying_questions`) stay available throughout.
+There is no user-facing plan/agent toggle. The model decides when planning is worthwhile: the moment it calls `submit_plan` in a turn, mutating tools are hard-gated until you approve the plan. Read-only and lifecycle tools (e.g. `enable_mode`, `todo_write`, `ask_clarifying_questions`, `search_tools`, `load_tools`) stay available throughout — finding and loading a tool mutates nothing, and loaded write-tools remain gated.
 
 ### Dashboard specifics
 
@@ -121,7 +137,7 @@ Edit-mode locking is handled automatically so concurrent users cannot conflict.
 
 ## Version-Aware Tools
 
-All modes share two always-on tools for inspecting the history of saved consoles and dashboards:
+Two tools inspect the history of saved consoles and dashboards. They are deferred — the agent activates them via `search_tools`/`load_tools` (or the relevance preload) when a history question comes up:
 
 - `browse_version_history` — list past versions of a console or dashboard with author, timestamp, and comment.
 - `get_version_snapshot` — fetch the full snapshot of a specific version.
