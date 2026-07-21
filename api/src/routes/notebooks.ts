@@ -2,12 +2,12 @@
  * Notebook CRUD routes.
  *
  * `GET/POST/PATCH/DELETE /api/workspaces/:workspaceId/notebooks[/:id]` — the
- * document surface the app's notebook explorer + renderer use. Backed by the
- * durable notebook store (GCS objects in deployed envs, filesystem locally);
- * GitHub sync can layer on later. Distinct from the singular `/notebook/read`
- * data endpoint (that runs SQL, this manages the document).
+ * document surface the app's notebook explorer + renderer use. Notebook bodies
+ * live in object storage (GCS/filesystem); organization + ACL use Mongo
+ * (`NotebookFolder`, `NotebookIndex`).
  */
 import { createRoute, z } from "@hono/zod-openapi";
+import { Types } from "mongoose";
 
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { requireWorkspace } from "../middleware/workspace.middleware";
@@ -18,11 +18,19 @@ import {
   jsonBody,
   pathParam,
 } from "../openapi/core";
+import { NotebookFolder, NotebookIndex } from "../database/workspace-schema";
 import { getNotebookStore } from "../notebooks/store";
 import { offloadBlocks } from "../notebooks/offload";
 import type { NotebookBlock } from "../notebooks/types";
 import { loggers } from "../logging";
 import { publishRealtimeEvent } from "../services/realtime.service";
+import {
+  createNotebookIndex,
+  deleteNotebookIndex,
+  getNotebookIndex,
+  updateNotebookIndex,
+} from "../services/notebook-index.service";
+import { NotebookManager } from "../utils/notebook-manager";
 
 const logger = loggers.api("notebooks");
 
@@ -33,22 +41,28 @@ const wsIdParams = z.object({
   workspaceId: pathParam("workspaceId"),
   id: pathParam("id"),
 });
+const folderIdParams = z.object({
+  workspaceId: pathParam("workspaceId"),
+  id: pathParam("id"),
+});
 
 const BlockSchema = z.object({
   id: z.string(),
   type: z.enum(["code", "sql", "markdown"]),
   source: z.string(),
   connectionId: z.string().optional(),
-  // Persisted execution outputs (shape validated on the client; stored as-is
-  // so cell results survive reload). Kept permissive to avoid coupling the
-  // wire schema to the output union.
   outputs: z.array(z.unknown()).optional(),
   executionCount: z.number().optional(),
   executedAt: z.string().optional(),
 });
 
 const CreateNotebookSchema = z
-  .object({ name: z.string().optional(), clientId: z.string().optional() })
+  .object({
+    name: z.string().optional(),
+    clientId: z.string().optional(),
+    folderId: z.string().nullable().optional(),
+    access: z.enum(["private", "workspace"]).optional(),
+  })
   .openapi("CreateNotebookRequest");
 
 const UpdateNotebookSchema = z
@@ -69,7 +83,56 @@ function editorUserId(c: {
   return String(c.get("user")?.id ?? "system");
 }
 
-// GET / — list notebooks
+function memberRole(c: {
+  get: (k: "memberRole") => string | undefined;
+}): string {
+  return c.get("memberRole") ?? "member";
+}
+
+function isAdminRole(role: string): boolean {
+  return role === "owner" || role === "admin";
+}
+
+async function requireNotebookAccess(
+  workspaceIdStr: string,
+  notebookId: string,
+  userId: string,
+  role: string,
+  mode: "read" | "write",
+): Promise<
+  | {
+      ok: true;
+      index: NonNullable<Awaited<ReturnType<typeof getNotebookIndex>>>;
+    }
+  | { ok: false; status: 403 | 404 }
+> {
+  const index = await getNotebookIndex(workspaceIdStr, notebookId);
+  if (!index) return { ok: false, status: 404 };
+
+  const effectiveAccess = await NotebookManager.getEffectiveAccessForNotebook(
+    index,
+    workspaceIdStr,
+  );
+  const allowed =
+    mode === "read"
+      ? NotebookManager.canRead(index, userId, role, effectiveAccess)
+      : NotebookManager.canWrite(
+          index,
+          userId,
+          isAdminRole(role),
+          role,
+          effectiveAccess,
+        );
+
+  if (!allowed) return { ok: false, status: mode === "read" ? 404 : 403 };
+  return { ok: true, index };
+}
+
+function publishTreeUpdated(workspaceIdStr: string): void {
+  publishRealtimeEvent(workspaceIdStr, { type: "notebook.tree.updated" });
+}
+
+// GET / — list notebooks as My / Workspace trees
 notebookRoutes.openapi(
   createRoute({
     method: "get",
@@ -81,8 +144,13 @@ notebookRoutes.openapi(
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
-    const data = await getNotebookStore().list(workspaceId(c));
-    return c.json({ success: true, data });
+    const userId = editorUserId(c);
+    const data = await NotebookManager.listNotebooksSplit(
+      workspaceId(c),
+      userId,
+      memberRole(c),
+    );
+    return c.json({ success: true, ...data });
   },
 );
 
@@ -101,23 +169,37 @@ notebookRoutes.openapi(
     const body = (await c.req.json().catch(() => ({}))) as {
       name?: string;
       clientId?: string;
+      folderId?: string | null;
+      access?: "private" | "workspace";
     };
-    const doc = await getNotebookStore().create(workspaceId(c), {
-      name: body.name,
-    });
-    logger.info("Created notebook", {
-      workspaceId: workspaceId(c),
+    const ws = workspaceId(c);
+    const userId = editorUserId(c);
+
+    if (body.folderId && !Types.ObjectId.isValid(body.folderId)) {
+      return c.json({ success: false, error: "Invalid folderId" }, 400);
+    }
+
+    const doc = await getNotebookStore().create(ws, { name: body.name });
+    await createNotebookIndex({
+      workspaceId: ws,
       notebookId: doc.id,
+      name: doc.name,
+      ownerId: userId,
+      access: body.access ?? "private",
+      folderId: body.folderId ?? null,
+      updatedAt: new Date(doc.updatedAt),
     });
-    // Poke other clients so their explorer list picks up the new notebook.
-    publishRealtimeEvent(workspaceId(c), {
+
+    logger.info("Created notebook", { workspaceId: ws, notebookId: doc.id });
+    publishRealtimeEvent(ws, {
       type: "notebook.updated",
       notebookId: doc.id,
       version: doc.version,
-      updatedBy: editorUserId(c),
+      updatedBy: userId,
       clientId: typeof body.clientId === "string" ? body.clientId : undefined,
       origin: "save",
     });
+    publishTreeUpdated(ws);
     return c.json({ success: true, data: doc }, 201);
   },
 );
@@ -134,10 +216,23 @@ notebookRoutes.openapi(
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
-    const doc = await getNotebookStore().get(
-      workspaceId(c),
-      c.req.valid("param").id,
+    const ws = workspaceId(c);
+    const id = c.req.valid("param").id;
+    const access = await requireNotebookAccess(
+      ws,
+      id,
+      editorUserId(c),
+      memberRole(c),
+      "read",
     );
+    if (!access.ok) {
+      return c.json(
+        { success: false, error: "Notebook not found" },
+        access.status,
+      );
+    }
+
+    const doc = await getNotebookStore().get(ws, id);
     if (!doc) {
       return c.json({ success: false, error: "Notebook not found" }, 404);
     }
@@ -163,16 +258,26 @@ notebookRoutes.openapi(
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
+    const ws = workspaceId(c);
     const { id, artifactId } = c.req.valid("param");
-    const artifact = await getNotebookStore().getArtifact(
-      workspaceId(c),
+    const access = await requireNotebookAccess(
+      ws,
       id,
-      artifactId,
+      editorUserId(c),
+      memberRole(c),
+      "read",
     );
+    if (!access.ok) {
+      return c.json(
+        { success: false, error: "Artifact not found" },
+        access.status,
+      );
+    }
+
+    const artifact = await getNotebookStore().getArtifact(ws, id, artifactId);
     if (!artifact) {
       return c.json({ success: false, error: "Artifact not found" }, 404);
     }
-    // artifactId is unique per output, so the bytes are immutable — cache hard.
     return c.body(artifact.body, 200, {
       "Content-Type": artifact.contentType,
       "Cache-Control": "private, max-age=31536000, immutable",
@@ -192,10 +297,23 @@ notebookRoutes.openapi(
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
-    const data = await getNotebookStore().listVersions(
-      workspaceId(c),
-      c.req.valid("param").id,
+    const ws = workspaceId(c);
+    const id = c.req.valid("param").id;
+    const access = await requireNotebookAccess(
+      ws,
+      id,
+      editorUserId(c),
+      memberRole(c),
+      "read",
     );
+    if (!access.ok) {
+      return c.json(
+        { success: false, error: "Notebook not found" },
+        access.status,
+      );
+    }
+
+    const data = await getNotebookStore().listVersions(ws, id);
     return c.json({ success: true, data });
   },
 );
@@ -218,12 +336,23 @@ notebookRoutes.openapi(
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
+    const ws = workspaceId(c);
     const { id, versionId } = c.req.valid("param");
-    const doc = await getNotebookStore().getVersion(
-      workspaceId(c),
+    const access = await requireNotebookAccess(
+      ws,
       id,
-      versionId,
+      editorUserId(c),
+      memberRole(c),
+      "read",
     );
+    if (!access.ok) {
+      return c.json(
+        { success: false, error: "Version not found" },
+        access.status,
+      );
+    }
+
+    const doc = await getNotebookStore().getVersion(ws, id, versionId);
     if (!doc) {
       return c.json({ success: false, error: "Version not found" }, 404);
     }
@@ -246,36 +375,50 @@ notebookRoutes.openapi(
         versionId: pathParam("versionId"),
       }),
       body: jsonBody(
-        z.object({ clientId: z.string().optional() }).openapi(
-          "RestoreNotebookVersionRequest",
-        ),
+        z
+          .object({ clientId: z.string().optional() })
+          .openapi("RestoreNotebookVersionRequest"),
         true,
       ),
     },
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
+    const ws = workspaceId(c);
     const { id, versionId } = c.req.valid("param");
-    const body = (await c.req.json().catch(() => ({}))) as { clientId?: string };
-    const doc = await getNotebookStore().restoreVersion(
-      workspaceId(c),
+    const body = (await c.req.json().catch(() => ({}))) as {
+      clientId?: string;
+    };
+    const access = await requireNotebookAccess(
+      ws,
       id,
-      versionId,
+      editorUserId(c),
+      memberRole(c),
+      "write",
     );
+    if (!access.ok) {
+      return c.json(
+        { success: false, error: "Notebook or version not found" },
+        access.status === 403 ? 403 : 404,
+      );
+    }
+
+    const doc = await getNotebookStore().restoreVersion(ws, id, versionId);
     if (!doc) {
       return c.json(
         { success: false, error: "Notebook or version not found" },
         404,
       );
     }
+    await updateNotebookIndex(ws, id, { updatedAt: new Date(doc.updatedAt) });
+
     logger.info("Restored notebook version", {
-      workspaceId: workspaceId(c),
+      workspaceId: ws,
       notebookId: id,
       versionId,
       newVersion: doc.version,
     });
-    // Poke open tabs (including the actor's other windows) to pull the restore.
-    publishRealtimeEvent(workspaceId(c), {
+    publishRealtimeEvent(ws, {
       type: "notebook.updated",
       notebookId: doc.id,
       version: doc.version,
@@ -305,18 +448,43 @@ notebookRoutes.openapi(
       clientId?: string;
     };
     const store = getNotebookStore();
+    const ws = workspaceId(c);
     const id = c.req.valid("param").id;
-    // Offload large outputs (plots, HTML tables) to the store, keeping only a
-    // small ref inline, so the document stays lean and nothing is dropped.
+    const access = await requireNotebookAccess(
+      ws,
+      id,
+      editorUserId(c),
+      memberRole(c),
+      "write",
+    );
+    if (!access.ok) {
+      return c.json(
+        { success: false, error: "Notebook not found" },
+        access.status,
+      );
+    }
+
     const blocks = body.blocks
-      ? await offloadBlocks(store, workspaceId(c), id, body.blocks)
+      ? await offloadBlocks(store, ws, id, body.blocks)
       : undefined;
-    const doc = await store.update(workspaceId(c), id, { ...body, blocks });
+    const doc = await store.update(ws, id, { ...body, blocks });
     if (!doc) {
       return c.json({ success: false, error: "Notebook not found" }, 404);
     }
-    // Poke open tabs on other clients to pull the updated notebook.
-    publishRealtimeEvent(workspaceId(c), {
+
+    if (body.name !== undefined) {
+      await updateNotebookIndex(ws, id, {
+        name: doc.name,
+        updatedAt: new Date(doc.updatedAt),
+      });
+      publishTreeUpdated(ws);
+    } else {
+      await updateNotebookIndex(ws, id, {
+        updatedAt: new Date(doc.updatedAt),
+      });
+    }
+
+    publishRealtimeEvent(ws, {
       type: "notebook.updated",
       notebookId: doc.id,
       version: doc.version,
@@ -328,10 +496,7 @@ notebookRoutes.openapi(
   },
 );
 
-// POST /:id/presence — ephemeral "who's here" heartbeat (never persisted).
-// Broadcasts a notebook.presence event: the viewer + their focused cell (live
-// cursor / soft-lock). `gone: true` announces a departure so peers drop the
-// viewer without waiting for the TTL.
+// POST /:id/presence — ephemeral collaboration heartbeat
 notebookRoutes.openapi(
   createRoute({
     method: "post",
@@ -354,6 +519,22 @@ notebookRoutes.openapi(
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
+    const ws = workspaceId(c);
+    const id = c.req.valid("param").id;
+    const access = await requireNotebookAccess(
+      ws,
+      id,
+      editorUserId(c),
+      memberRole(c),
+      "read",
+    );
+    if (!access.ok) {
+      return c.json(
+        { success: false, error: "Notebook not found" },
+        access.status,
+      );
+    }
+
     const body = (await c.req.json().catch(() => ({}))) as {
       clientId?: string;
       activeCellId?: string | null;
@@ -365,9 +546,9 @@ notebookRoutes.openapi(
     const user = c.get("user") as
       | { id?: unknown; email?: string; name?: string }
       | undefined;
-    publishRealtimeEvent(workspaceId(c), {
+    publishRealtimeEvent(ws, {
       type: "notebook.presence",
-      notebookId: c.req.valid("param").id,
+      notebookId: id,
       clientId: body.clientId,
       userId: String(user?.id ?? "anon"),
       userName: user?.name || user?.email || "Someone",
@@ -390,13 +571,357 @@ notebookRoutes.openapi(
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
-    const ok = await getNotebookStore().remove(
-      workspaceId(c),
-      c.req.valid("param").id,
+    const ws = workspaceId(c);
+    const id = c.req.valid("param").id;
+    const access = await requireNotebookAccess(
+      ws,
+      id,
+      editorUserId(c),
+      memberRole(c),
+      "write",
     );
+    if (!access.ok) {
+      return c.json(
+        { success: false, error: "Notebook not found" },
+        access.status,
+      );
+    }
+
+    const ok = await getNotebookStore().remove(ws, id);
     if (!ok) {
       return c.json({ success: false, error: "Notebook not found" }, 404);
     }
+    await deleteNotebookIndex(ws, id);
+    publishTreeUpdated(ws);
+    return c.json({ success: true });
+  },
+);
+
+// PATCH /:id/move — move notebook to folder / change access
+notebookRoutes.openapi(
+  createRoute({
+    method: "patch",
+    path: "/{id}/move",
+    tags: ["Notebooks"],
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: wsIdParams,
+      body: jsonBody(
+        z
+          .object({
+            folderId: z.string().nullable().optional(),
+            access: z.enum(["private", "workspace"]).optional(),
+          })
+          .openapi("MoveNotebookRequest"),
+        true,
+      ),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const ws = workspaceId(c);
+    const notebookId = c.req.valid("param").id;
+    const userId = editorUserId(c);
+    const role = memberRole(c);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      folderId?: string | null;
+      access?: "private" | "workspace";
+    };
+
+    const access = await requireNotebookAccess(
+      ws,
+      notebookId,
+      userId,
+      role,
+      "write",
+    );
+    if (!access.ok) {
+      return c.json(
+        { success: false, error: "Notebook not found" },
+        access.status,
+      );
+    }
+
+    if (body.folderId && !Types.ObjectId.isValid(body.folderId)) {
+      return c.json({ success: false, error: "Invalid folderId" }, 400);
+    }
+
+    if (body.folderId) {
+      const folder = await NotebookFolder.findOne({
+        _id: new Types.ObjectId(body.folderId),
+        workspaceId: new Types.ObjectId(ws),
+      });
+      if (!folder) {
+        return c.json({ success: false, error: "Folder not found" }, 404);
+      }
+    }
+
+    await updateNotebookIndex(ws, notebookId, {
+      folderId: body.folderId ?? null,
+      access: body.access,
+    });
+    publishTreeUpdated(ws);
+    return c.json({ success: true });
+  },
+);
+
+// ── Folder endpoints ──
+
+notebookRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/folders",
+    tags: ["Notebooks"],
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: wsParams,
+      body: jsonBody(
+        z
+          .object({
+            name: z.string(),
+            parentId: z.string().nullable().optional(),
+            access: z.enum(["private", "workspace"]).optional(),
+          })
+          .openapi("CreateNotebookFolderRequest"),
+        true,
+      ),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const ws = workspaceId(c);
+    const userId = editorUserId(c);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      name?: string;
+      parentId?: string | null;
+      access?: "private" | "workspace";
+    };
+
+    if (!body.name?.trim()) {
+      return c.json({ success: false, error: "Folder name is required" }, 400);
+    }
+    if (body.parentId && !Types.ObjectId.isValid(body.parentId)) {
+      return c.json({ success: false, error: "Invalid parentId" }, 400);
+    }
+
+    const folder = await NotebookFolder.create({
+      workspaceId: new Types.ObjectId(ws),
+      name: body.name.trim(),
+      parentId: body.parentId ? new Types.ObjectId(body.parentId) : undefined,
+      ownerId: userId,
+      access: body.access ?? "private",
+    });
+
+    publishTreeUpdated(ws);
+    return c.json({
+      success: true,
+      data: {
+        id: folder._id.toString(),
+        name: folder.name,
+        parentId: folder.parentId?.toString() || null,
+        access: folder.access,
+        ownerId: folder.ownerId,
+      },
+    });
+  },
+);
+
+notebookRoutes.openapi(
+  createRoute({
+    method: "patch",
+    path: "/folders/{id}/rename",
+    tags: ["Notebooks"],
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: folderIdParams,
+      body: jsonBody(
+        z.object({ name: z.string() }).openapi("RenameNotebookFolderRequest"),
+      ),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const ws = workspaceId(c);
+    const folderId = c.req.valid("param").id;
+    const userId = editorUserId(c);
+    const role = memberRole(c);
+    const body = (await c.req.json().catch(() => ({}))) as { name?: string };
+
+    if (!body.name?.trim()) {
+      return c.json({ success: false, error: "Folder name is required" }, 400);
+    }
+
+    const folder = await NotebookFolder.findOne({
+      _id: new Types.ObjectId(folderId),
+      workspaceId: new Types.ObjectId(ws),
+    });
+    if (!folder) {
+      return c.json({ success: false, error: "Folder not found" }, 404);
+    }
+
+    const effectiveAccess = folder.access || "private";
+    if (
+      !NotebookManager.canWriteFolder(
+        folder,
+        userId,
+        isAdminRole(role),
+        role,
+        effectiveAccess,
+      )
+    ) {
+      return c.json({ success: false, error: "Access denied" }, 403);
+    }
+
+    folder.name = body.name.trim();
+    await folder.save();
+    publishTreeUpdated(ws);
+    return c.json({
+      success: true,
+      data: { id: folder._id.toString(), name: folder.name },
+    });
+  },
+);
+
+notebookRoutes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/folders/{id}",
+    tags: ["Notebooks"],
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: { params: folderIdParams },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const ws = workspaceId(c);
+    const folderId = c.req.valid("param").id;
+    const userId = editorUserId(c);
+    const role = memberRole(c);
+    const wsId = new Types.ObjectId(ws);
+
+    const folder = await NotebookFolder.findOne({
+      _id: new Types.ObjectId(folderId),
+      workspaceId: wsId,
+    });
+    if (!folder) {
+      return c.json({ success: false, error: "Folder not found" }, 404);
+    }
+
+    if (
+      !NotebookManager.canWriteFolder(
+        folder,
+        userId,
+        isAdminRole(role),
+        role,
+        folder.access,
+      )
+    ) {
+      return c.json({ success: false, error: "Access denied" }, 403);
+    }
+
+    const collectFolderIds = async (
+      parentId: Types.ObjectId,
+    ): Promise<Types.ObjectId[]> => {
+      const children = await NotebookFolder.find({
+        workspaceId: wsId,
+        parentId,
+      });
+      const ids: Types.ObjectId[] = [];
+      for (const child of children) {
+        ids.push(child._id);
+        ids.push(...(await collectFolderIds(child._id)));
+      }
+      return ids;
+    };
+
+    const descendantIds = await collectFolderIds(new Types.ObjectId(folderId));
+    const allFolderIds = [new Types.ObjectId(folderId), ...descendantIds];
+
+    await NotebookIndex.updateMany(
+      { workspaceId: wsId, folderId: { $in: allFolderIds } },
+      { $unset: { folderId: "" } },
+    );
+    await NotebookFolder.deleteMany({ _id: { $in: allFolderIds } });
+
+    publishTreeUpdated(ws);
+    return c.json({ success: true });
+  },
+);
+
+notebookRoutes.openapi(
+  createRoute({
+    method: "patch",
+    path: "/folders/{id}/move",
+    tags: ["Notebooks"],
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: folderIdParams,
+      body: jsonBody(
+        z
+          .object({
+            parentId: z.string().nullable().optional(),
+            access: z.enum(["private", "workspace"]).optional(),
+          })
+          .openapi("MoveNotebookFolderRequest"),
+        true,
+      ),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const ws = workspaceId(c);
+    const folderId = c.req.valid("param").id;
+    const userId = editorUserId(c);
+    const role = memberRole(c);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      parentId?: string | null;
+      access?: "private" | "workspace";
+    };
+
+    const folder = await NotebookFolder.findOne({
+      _id: new Types.ObjectId(folderId),
+      workspaceId: new Types.ObjectId(ws),
+    });
+    if (!folder) {
+      return c.json({ success: false, error: "Folder not found" }, 404);
+    }
+
+    if (
+      !NotebookManager.canWriteFolder(
+        folder,
+        userId,
+        isAdminRole(role),
+        role,
+        folder.access,
+      )
+    ) {
+      return c.json({ success: false, error: "Access denied" }, 403);
+    }
+
+    if (body.parentId && !Types.ObjectId.isValid(body.parentId)) {
+      return c.json({ success: false, error: "Invalid parentId" }, 400);
+    }
+
+    if (
+      body.parentId &&
+      (await NotebookManager.wouldCreateCycle(folderId, body.parentId, ws))
+    ) {
+      return c.json(
+        { success: false, error: "Cannot move folder into itself" },
+        400,
+      );
+    }
+
+    folder.parentId = body.parentId
+      ? new Types.ObjectId(body.parentId)
+      : undefined;
+    if (body.access) folder.access = body.access;
+    await folder.save();
+    publishTreeUpdated(ws);
     return c.json({ success: true });
   },
 );

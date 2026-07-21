@@ -34,6 +34,10 @@ interface ExplorerState {
     expandedFolders: ExpandedMap;
   };
 
+  notebook: {
+    expandedFolders: ExpandedMap;
+  };
+
   app: {
     expandedFolders: ExpandedMap;
   };
@@ -73,6 +77,11 @@ interface ExplorerActions {
   expandDashboardFolder: (folderKey: string) => void;
   isDashboardFolderExpanded: (folderKey: string) => boolean;
 
+  // Notebook explorer
+  toggleNotebookFolder: (folderKey: string) => void;
+  expandNotebookFolder: (folderKey: string) => void;
+  isNotebookFolderExpanded: (folderKey: string) => boolean;
+
   // App explorer
   toggleAppFolder: (folderKey: string) => void;
   expandAppFolder: (folderKey: string) => void;
@@ -106,6 +115,9 @@ const createInitialState = (): ExplorerState => ({
     expandedFolders: {},
   },
   dashboard: {
+    expandedFolders: {},
+  },
+  notebook: {
     expandedFolders: {},
   },
   app: {
@@ -201,6 +213,19 @@ export const useExplorerStore = create<ExplorerStore>()(
       isDashboardFolderExpanded: folderKey =>
         !!get().dashboard.expandedFolders[folderKey],
 
+      toggleNotebookFolder: folderKey =>
+        set(state => {
+          toggleKey(state.notebook.expandedFolders, folderKey);
+        }),
+
+      expandNotebookFolder: folderKey =>
+        set(state => {
+          state.notebook.expandedFolders[folderKey] = true;
+        }),
+
+      isNotebookFolderExpanded: folderKey =>
+        !!get().notebook.expandedFolders[folderKey],
+
       toggleAppFolder: folderKey =>
         set(state => {
           toggleKey(state.app.expandedFolders, folderKey);
@@ -289,6 +314,13 @@ export const useExplorerStore = create<ExplorerStore>()(
             );
           } else {
             s.dashboard = { expandedFolders: {} };
+          }
+          if (s?.notebook) {
+            s.notebook.expandedFolders = migrateArray(
+              s.notebook.expandedFolders,
+            );
+          } else {
+            s.notebook = { expandedFolders: {} };
           }
           if (s?.app) {
             s.app.expandedFolders = migrateArray(s.app.expandedFolders);

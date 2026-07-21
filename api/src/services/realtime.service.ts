@@ -162,6 +162,10 @@ export type RealtimeEvent =
       userName: string;
       activeCellId?: string | null;
       gone?: boolean;
+    }
+  // Explorer tree changed (folder CRUD, move, create, delete).
+  | {
+      type: "notebook.tree.updated";
     };
 
 function channelFor(workspaceId: string): string {

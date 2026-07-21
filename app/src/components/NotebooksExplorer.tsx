@@ -1,6 +1,12 @@
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import {
-  Box,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from "react";
+import {
   Button,
   Dialog,
   DialogActions,
@@ -8,25 +14,29 @@ import {
   DialogContentText,
   DialogTitle,
   IconButton,
-  InputBase,
-  Menu,
-  MenuItem,
   Tooltip,
-  Typography,
 } from "@mui/material";
 import {
-  Copy,
   Download,
-  MoreVertical,
+  Globe as GlobeIcon,
   Notebook as NotebookIcon,
-  Pencil,
   Plus,
-  Trash2,
+  RefreshCw as RefreshIcon,
   Upload,
+  User as UserIcon,
 } from "lucide-react";
 
 import ExplorerShell from "./ExplorerShell";
-import { useNotebookStore, type NotebookSummary } from "../store/notebookStore";
+import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
+import { useWorkspace } from "../contexts/workspace-context";
+import { useConsoleStore } from "../store/consoleStore";
+import { useExplorerStore } from "../store/explorerStore";
+import {
+  useExplorerRevealStore,
+  selectRevealFor,
+} from "../store/explorerRevealStore";
+import { useNotebookStore } from "../store/notebookStore";
+import { useNotebookTreeStore } from "../store/notebookTreeStore";
 import { focusNotebookTab } from "../notebook-runtime/shell";
 import {
   blocksFromIpynb,
@@ -35,45 +45,77 @@ import {
   type Ipynb,
 } from "../notebook-runtime/ipynb";
 
-/**
- * Left-pane explorer for Notebooks: lists the workspace's notebooks, creates a
- * new one (+), opens one on click, and renames/deletes via a per-row menu.
- */
+const EMPTY_TREE: ResourceTreeNode[] = [];
+
 export default function NotebooksExplorer() {
-  const notebooks = useNotebookStore(s => s.notebooks);
-  const isLoading = useNotebookStore(s => s.isLoading);
-  const error = useNotebookStore(s => s.error);
-  const loadNotebooks = useNotebookStore(s => s.loadNotebooks);
+  const { currentWorkspace } = useWorkspace();
+  const workspaceId = currentWorkspace?.id;
+
+  const myNotebooks = useNotebookTreeStore(
+    s => (workspaceId && s.myNotebooks[workspaceId]) || EMPTY_TREE,
+  );
+  const workspaceNotebooks = useNotebookTreeStore(
+    s => (workspaceId && s.workspaceNotebooks[workspaceId]) || EMPTY_TREE,
+  );
+  const loading = useNotebookTreeStore(s =>
+    workspaceId ? !!s.loading[workspaceId] : false,
+  );
+  const error = useNotebookTreeStore(s =>
+    workspaceId ? s.error[workspaceId] || null : null,
+  );
+  const fetchTree = useNotebookTreeStore(s => s.fetchTree);
+  const moveItem = useNotebookTreeStore(s => s.moveItem);
+  const moveFolder = useNotebookTreeStore(s => s.moveFolder);
+  const createFolder = useNotebookTreeStore(s => s.createFolder);
+  const renameItem = useNotebookTreeStore(s => s.renameItem);
+  const deleteItem = useNotebookTreeStore(s => s.deleteItem);
+  const resortItem = useNotebookTreeStore(s => s.resortItem);
+
   const createNotebook = useNotebookStore(s => s.createNotebook);
-  const updateNotebook = useNotebookStore(s => s.updateNotebook);
-  const deleteNotebook = useNotebookStore(s => s.deleteNotebook);
   const getNotebook = useNotebookStore(s => s.getNotebook);
   const importNotebook = useNotebookStore(s => s.importNotebook);
 
-  const [menu, setMenu] = useState<{
-    anchor: HTMLElement;
-    nb: NotebookSummary;
-  } | null>(null);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
-  const [deleteTarget, setDeleteTarget] = useState<NotebookSummary | null>(
-    null,
+  const notebookExpandedFolders = useExplorerStore(
+    s => s.notebook.expandedFolders,
+  );
+  const toggleNotebookFolder = useExplorerStore(s => s.toggleNotebookFolder);
+  const expandNotebookFolder = useExplorerStore(s => s.expandNotebookFolder);
+
+  const isNotebookFolderExpanded = useCallback(
+    (key: string) => !!notebookExpandedFolders[key],
+    [notebookExpandedFolders],
   );
 
-  useEffect(() => {
-    void loadNotebooks();
-  }, [loadNotebooks]);
+  const reveal = useExplorerRevealStore(selectRevealFor("notebooks"));
 
+  const { activeTabId, tabs } = useConsoleStore();
+
+  const [deleteTarget, setDeleteTarget] = useState<ResourceTreeNode | null>(
+    null,
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleCreate = async () => {
+  useEffect(() => {
+    if (workspaceId) {
+      void fetchTree(workspaceId);
+    }
+  }, [workspaceId, fetchTree]);
+
+  const handleRefresh = useCallback(async () => {
+    if (workspaceId) await fetchTree(workspaceId);
+  }, [workspaceId, fetchTree]);
+
+  const handleCreate = useCallback(async () => {
     const doc = await createNotebook();
-    if (doc) focusNotebookTab(doc.id, doc.name);
-  };
+    if (doc) {
+      focusNotebookTab(doc.id, doc.name);
+      if (workspaceId) void fetchTree(workspaceId);
+    }
+  }, [createNotebook, fetchTree, workspaceId]);
 
   const handleImportFile = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    e.target.value = ""; // allow re-importing the same file
+    e.target.value = "";
     if (!file) return;
     try {
       const json = JSON.parse(await file.text()) as Ipynb;
@@ -83,240 +125,267 @@ export default function NotebooksExplorer() {
         nameFromIpynb(json, fallback),
         blocksFromIpynb(json),
       );
-      if (doc) focusNotebookTab(doc.id, doc.name);
+      if (doc) {
+        focusNotebookTab(doc.id, doc.name);
+        if (workspaceId) void fetchTree(workspaceId);
+      }
     } catch {
-      // Malformed file — ignore; store errors surface via the explorer banner.
+      // Malformed file — ignore.
     }
   };
 
-  const handleExport = async (nb: NotebookSummary) => {
-    setMenu(null);
-    const doc = await getNotebook(nb.id);
-    if (!doc) return;
-    const json = JSON.stringify(notebookToIpynb(doc.name, doc.blocks), null, 2);
-    const url = URL.createObjectURL(
-      new Blob([json], { type: "application/json" }),
-    );
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${doc.name || "notebook"}.ipynb`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
+  const handleItemClick = useCallback((node: ResourceTreeNode) => {
+    if (node.isDirectory) return;
+    focusNotebookTab(node.id, node.name);
+  }, []);
 
-  const handleDuplicate = async (nb: NotebookSummary) => {
-    setMenu(null);
-    const doc = await getNotebook(nb.id);
-    if (!doc) return;
-    const copy = await importNotebook(
-      `${doc.name} (copy)`,
-      doc.blocks.map(b => ({ ...b, id: crypto.randomUUID() })),
-    );
-    if (copy) focusNotebookTab(copy.id, copy.name);
-  };
+  const handleDuplicate = useCallback(
+    async (node: ResourceTreeNode) => {
+      const doc = await getNotebook(node.id);
+      if (!doc) return;
+      const copy = await importNotebook(
+        `${doc.name} (copy)`,
+        doc.blocks.map(b => ({ ...b, id: crypto.randomUUID() })),
+      );
+      if (copy) {
+        focusNotebookTab(copy.id, copy.name);
+        if (workspaceId) void fetchTree(workspaceId);
+      }
+    },
+    [getNotebook, importNotebook, fetchTree, workspaceId],
+  );
 
-  const startRename = (nb: NotebookSummary) => {
-    setMenu(null);
-    setRenamingId(nb.id);
-    setRenameValue(nb.name);
-  };
+  const handleExport = useCallback(
+    async (node: ResourceTreeNode) => {
+      const doc = await getNotebook(node.id);
+      if (!doc) return;
+      const json = JSON.stringify(
+        notebookToIpynb(doc.name, doc.blocks),
+        null,
+        2,
+      );
+      const url = URL.createObjectURL(
+        new Blob([json], { type: "application/json" }),
+      );
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${doc.name || "notebook"}.ipynb`;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+    [getNotebook],
+  );
 
-  const commitRename = async (id: string) => {
-    const name = renameValue.trim();
-    const current = notebooks.find(n => n.id === id);
-    setRenamingId(null);
-    if (name && current && name !== current.name) {
-      await updateNotebook(id, { name });
-    }
-  };
+  const handleMoveItem = useCallback(
+    (itemId: string, targetFolderId: string | null, access?: string) => {
+      if (!workspaceId) return;
+      void moveItem(
+        workspaceId,
+        itemId,
+        targetFolderId,
+        (access as "private" | "workspace") || undefined,
+      );
+    },
+    [workspaceId, moveItem],
+  );
 
-  const confirmDelete = async () => {
-    if (!deleteTarget) return;
-    const id = deleteTarget.id;
+  const handleMoveFolder = useCallback(
+    (folderId: string, parentId: string | null, access?: string) => {
+      if (!workspaceId) return;
+      void moveFolder(
+        workspaceId,
+        folderId,
+        parentId,
+        (access as "private" | "workspace") || undefined,
+      );
+    },
+    [workspaceId, moveFolder],
+  );
+
+  const handleRenameItem = useCallback(
+    (itemId: string, name: string, isDirectory: boolean) => {
+      if (!workspaceId) return;
+      void renameItem(workspaceId, itemId, name, isDirectory);
+    },
+    [workspaceId, renameItem],
+  );
+
+  const handleDeleteItem = useCallback((node: ResourceTreeNode) => {
+    setDeleteTarget(node);
+  }, []);
+
+  const handleDeleteConfirm = useCallback(async () => {
+    if (!deleteTarget || !workspaceId) return;
+    await deleteItem(workspaceId, deleteTarget.id, deleteTarget.isDirectory);
     setDeleteTarget(null);
-    await deleteNotebook(id);
-  };
+  }, [deleteTarget, workspaceId, deleteItem]);
+
+  const handleCreateFolder = useCallback(
+    async (
+      parentId: string | null,
+      access?: string,
+    ): Promise<{ id: string; name: string } | null> => {
+      if (!workspaceId) return null;
+      const id = await createFolder(
+        workspaceId,
+        "New Folder",
+        parentId,
+        (access as "private" | "workspace") || undefined,
+      );
+      return id ? { id, name: "New Folder" } : null;
+    },
+    [workspaceId, createFolder],
+  );
+
+  const handleResortItem = useCallback(
+    (itemId: string) => {
+      if (!workspaceId) return;
+      resortItem(workspaceId, itemId);
+    },
+    [workspaceId, resortItem],
+  );
+
+  const sectionsDef = useMemo(
+    () => [
+      {
+        key: "my",
+        label: "My Notebooks",
+        icon: <UserIcon size={16} strokeWidth={1.5} />,
+        nodes: myNotebooks as ResourceTreeNode[],
+        droppableId: "__section_my",
+        defaultAccess: "private" as const,
+      },
+      {
+        key: "workspace",
+        label: "Workspace",
+        icon: <GlobeIcon size={16} strokeWidth={1.5} />,
+        nodes: workspaceNotebooks as ResourceTreeNode[],
+        droppableId: "__section_workspace",
+        defaultAccess: "workspace" as const,
+      },
+    ],
+    [myNotebooks, workspaceNotebooks],
+  );
+
+  const activeNotebookTabId = (() => {
+    if (!activeTabId) return null;
+    const tab = tabs[activeTabId];
+    if (tab?.kind === "notebook" && tab.metadata?.notebookId) {
+      return tab.metadata.notebookId as string;
+    }
+    return null;
+  })();
+
+  const getItemIcon = useCallback(
+    () => <NotebookIcon size={14} style={{ opacity: 0.75 }} />,
+    [],
+  );
+
+  const actions = (
+    <>
+      <Tooltip title="Import .ipynb">
+        <IconButton size="small" onClick={() => fileInputRef.current?.click()}>
+          <Upload size={17} />
+        </IconButton>
+      </Tooltip>
+      <Tooltip title="New notebook">
+        <IconButton size="small" onClick={() => void handleCreate()}>
+          <Plus size={18} />
+        </IconButton>
+      </Tooltip>
+      {activeNotebookTabId && (
+        <Tooltip title="Export active notebook as .ipynb">
+          <IconButton
+            size="small"
+            onClick={() => {
+              const node = [...myNotebooks, ...workspaceNotebooks]
+                .flatMap(function walk(n): ResourceTreeNode[] {
+                  if (!n.isDirectory) return [n as ResourceTreeNode];
+                  return (n.children ?? []).flatMap(walk);
+                })
+                .find(n => n.id === activeNotebookTabId);
+              if (node) void handleExport(node);
+            }}
+          >
+            <Download size={17} />
+          </IconButton>
+        </Tooltip>
+      )}
+      <Tooltip title="Refresh">
+        <IconButton
+          size="small"
+          onClick={() => void handleRefresh()}
+          disabled={loading}
+        >
+          <RefreshIcon size={20} strokeWidth={2} />
+        </IconButton>
+      </Tooltip>
+    </>
+  );
+
+  const isInitialLoading =
+    loading && myNotebooks.length === 0 && workspaceNotebooks.length === 0;
 
   return (
     <>
       <ExplorerShell
         title="Notebooks"
         searchPlaceholder="Search notebooks..."
-        loading={isLoading}
+        loading={isInitialLoading}
         error={error}
-        actions={
-          <>
-            <Tooltip title="Import .ipynb">
-              <IconButton
-                size="small"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <Upload size={17} />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title="New notebook">
-              <IconButton size="small" onClick={() => void handleCreate()}>
-                <Plus size={18} />
-              </IconButton>
-            </Tooltip>
-          </>
-        }
-      >
-        {({ searchQuery }) => {
-          const q = searchQuery.trim().toLowerCase();
-          const filtered = q
-            ? notebooks.filter(n => n.name.toLowerCase().includes(q))
-            : notebooks;
-
-          if (filtered.length === 0) {
-            return (
-              <Box
-                sx={{
-                  px: 3,
-                  py: 4,
-                  textAlign: "center",
-                  color: "text.secondary",
-                }}
-              >
-                <NotebookIcon size={28} style={{ opacity: 0.5 }} />
-                <Typography variant="body2" sx={{ mt: 1 }}>
-                  {notebooks.length === 0 ? "No notebooks yet" : "No matches"}
-                </Typography>
-                {notebooks.length === 0 && (
-                  <Typography
-                    variant="caption"
-                    sx={{ display: "block", mt: 0.5 }}
-                  >
-                    Click + to create your first notebook.
-                  </Typography>
-                )}
-              </Box>
-            );
+        onErrorClose={() => {
+          if (workspaceId) {
+            useNotebookTreeStore.setState(state => {
+              state.error[workspaceId] = null;
+            });
           }
-
-          return (
-            <Box sx={{ py: 0.5 }}>
-              {filtered.map(nb => {
-                const renaming = renamingId === nb.id;
-                return (
-                  <Box
-                    key={nb.id}
-                    onClick={() =>
-                      !renaming && focusNotebookTab(nb.id, nb.name)
-                    }
-                    sx={{
-                      px: 2,
-                      py: 0.75,
-                      fontSize: "0.85rem",
-                      cursor: renaming ? "default" : "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 1,
-                      "&:hover": { bgcolor: "action.hover" },
-                      "&:hover .nb-actions": { opacity: 1 },
-                    }}
-                  >
-                    <NotebookIcon
-                      size={15}
-                      style={{ opacity: 0.7, flexShrink: 0 }}
-                    />
-                    {renaming ? (
-                      <InputBase
-                        autoFocus
-                        value={renameValue}
-                        onChange={e => setRenameValue(e.target.value)}
-                        onClick={e => e.stopPropagation()}
-                        onKeyDown={e => {
-                          if (e.key === "Enter") void commitRename(nb.id);
-                          if (e.key === "Escape") setRenamingId(null);
-                        }}
-                        onBlur={() => void commitRename(nb.id)}
-                        sx={{ flex: 1, fontSize: "0.85rem" }}
-                      />
-                    ) : (
-                      <>
-                        <span
-                          style={{
-                            flex: 1,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {nb.name}
-                        </span>
-                        <IconButton
-                          className="nb-actions"
-                          size="small"
-                          sx={{
-                            opacity: 0,
-                            transition: "opacity 120ms",
-                            p: 0.25,
-                          }}
-                          onClick={e => {
-                            e.stopPropagation();
-                            setMenu({ anchor: e.currentTarget, nb });
-                          }}
-                        >
-                          <MoreVertical size={15} />
-                        </IconButton>
-                      </>
-                    )}
-                  </Box>
-                );
-              })}
-            </Box>
-          );
         }}
+        actions={actions}
+      >
+        {({ searchQuery }) => (
+          <ResourceTree
+            sections={sectionsDef}
+            mode="sidebar"
+            searchQuery={searchQuery}
+            activeItemId={activeNotebookTabId}
+            revealNodeId={reveal?.nodeId}
+            revealNonce={reveal?.nonce}
+            getItemIcon={getItemIcon}
+            enableDragDrop
+            enableRename
+            enableDuplicate
+            enableDelete
+            enableNewFolder
+            onItemClick={handleItemClick}
+            onMoveItem={handleMoveItem}
+            onMoveFolder={handleMoveFolder}
+            onRenameItem={handleRenameItem}
+            onDeleteItem={handleDeleteItem}
+            onDuplicateItem={handleDuplicate}
+            onCreateFolder={handleCreateFolder}
+            onResortItem={handleResortItem}
+            isFolderExpanded={isNotebookFolderExpanded}
+            onToggleFolder={toggleNotebookFolder}
+            onExpandFolder={expandNotebookFolder}
+            getFolderExpansionKey={node => node.id}
+          />
+        )}
       </ExplorerShell>
 
-      {/* Per-row actions menu — rendered once, anchored to the clicked row. */}
-      <Menu
-        anchorEl={menu?.anchor ?? null}
-        open={Boolean(menu)}
-        onClose={() => setMenu(null)}
-      >
-        <MenuItem onClick={() => menu && startRename(menu.nb)}>
-          <Pencil size={14} style={{ marginRight: 8 }} /> Rename
-        </MenuItem>
-        <MenuItem
-          onClick={() => {
-            if (menu) void handleDuplicate(menu.nb);
-          }}
-        >
-          <Copy size={14} style={{ marginRight: 8 }} /> Duplicate
-        </MenuItem>
-        <MenuItem
-          onClick={() => {
-            if (menu) void handleExport(menu.nb);
-          }}
-        >
-          <Download size={14} style={{ marginRight: 8 }} /> Export .ipynb
-        </MenuItem>
-        <MenuItem
-          onClick={() => {
-            if (menu) setDeleteTarget(menu.nb);
-            setMenu(null);
-          }}
-        >
-          <Trash2 size={14} style={{ marginRight: 8 }} /> Delete
-        </MenuItem>
-      </Menu>
-
-      <Dialog
-        open={Boolean(deleteTarget)}
-        onClose={() => setDeleteTarget(null)}
-      >
-        <DialogTitle>Delete notebook?</DialogTitle>
+      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
+        <DialogTitle>
+          Delete {deleteTarget?.isDirectory ? "Folder" : "Notebook"}?
+        </DialogTitle>
         <DialogContent>
           <DialogContentText>
-            “{deleteTarget?.name}” will be permanently deleted. This cannot be
-            undone.
+            {deleteTarget?.isDirectory
+              ? `"${deleteTarget.name}" and its subfolders will be deleted. Notebooks inside will move to the root level.`
+              : `"${deleteTarget?.name}" will be permanently deleted. This cannot be undone.`}
           </DialogContentText>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDeleteTarget(null)}>Cancel</Button>
-          <Button color="error" onClick={() => void confirmDelete()}>
+          <Button color="error" onClick={() => void handleDeleteConfirm()}>
             Delete
           </Button>
         </DialogActions>

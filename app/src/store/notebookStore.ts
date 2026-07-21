@@ -4,6 +4,7 @@ import { apiClient } from "../lib/api-client";
 import type { KernelOutput } from "../notebook-runtime/kernel";
 import { useUIStore } from "./uiStore";
 import { realtimeClientId } from "../lib/realtime-client-id";
+import { useNotebookTreeStore } from "./notebookTreeStore";
 
 /**
  * Notebook store — talks to the working-tree CRUD API
@@ -174,18 +175,7 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
     loadNotebooks: async () => {
       const ws = currentWorkspaceId();
       if (!ws) return;
-      set({ isLoading: true, error: null });
-      try {
-        const res = await apiClient.get<{ data: NotebookSummary[] }>(
-          `/workspaces/${ws}/notebooks`,
-        );
-        set({ notebooks: res.data ?? [], isLoading: false });
-      } catch (e) {
-        set({
-          isLoading: false,
-          error: e instanceof Error ? e.message : "Failed to load notebooks",
-        });
-      }
+      await useNotebookTreeStore.getState().refresh(ws);
     },
 
     createNotebook: async name => {
@@ -241,15 +231,11 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
           { ...patch, clientId: realtimeClientId },
         );
         const doc = res.data ?? null;
-        // Reflect a rename in the explorer list without a reload storm.
-        if (doc && patch.name !== undefined) {
-          set(state => ({
-            notebooks: state.notebooks.map(n =>
-              n.id === id
-                ? { ...n, name: doc.name, updatedAt: doc.updatedAt }
-                : n,
-            ),
-          }));
+        // Reflect a rename in the explorer tree without a full reload storm.
+        if (doc && patch.name !== undefined && ws) {
+          void useNotebookTreeStore
+            .getState()
+            .renameItem(ws, id, doc.name, false);
         }
         return doc;
       } catch (e) {

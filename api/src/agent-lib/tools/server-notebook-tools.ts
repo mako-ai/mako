@@ -16,6 +16,12 @@ import { Types } from "mongoose";
 
 import { getNotebookStore } from "../../notebooks/store";
 import { offloadOutputs } from "../../notebooks/offload";
+import {
+  createNotebookIndex,
+  getNotebookIndex,
+  updateNotebookIndex,
+} from "../../services/notebook-index.service";
+import { NotebookManager } from "../../utils/notebook-manager";
 import type {
   NotebookBlock,
   NotebookBlockType,
@@ -77,6 +83,55 @@ export function createNotebookServerTools({
   const resolveId = (input: { notebookId?: string }): string | null =>
     input.notebookId || defaultNotebookId || null;
 
+  const assertWriteAccess = async (notebookId: string) => {
+    const index = await getNotebookIndex(workspaceId, notebookId);
+    if (!index) {
+      return { ok: false as const, error: `Notebook ${notebookId} not found` };
+    }
+    const effectiveAccess = await NotebookManager.getEffectiveAccessForNotebook(
+      index,
+      workspaceId,
+    );
+    if (
+      !NotebookManager.canWrite(
+        index,
+        userId ?? "agent",
+        false,
+        undefined,
+        effectiveAccess,
+      )
+    ) {
+      return { ok: false as const, error: `Notebook ${notebookId} not found` };
+    }
+    return { ok: true as const, index };
+  };
+
+  const assertReadAccess = async (notebookId: string) => {
+    const index = await getNotebookIndex(workspaceId, notebookId);
+    if (!index) {
+      return { ok: false as const, error: `Notebook ${notebookId} not found` };
+    }
+    const effectiveAccess = await NotebookManager.getEffectiveAccessForNotebook(
+      index,
+      workspaceId,
+    );
+    if (
+      !NotebookManager.canRead(
+        index,
+        userId ?? "agent",
+        undefined,
+        effectiveAccess,
+      )
+    ) {
+      return { ok: false as const, error: `Notebook ${notebookId} not found` };
+    }
+    return { ok: true as const, index };
+  };
+
+  const publishTreeUpdated = () => {
+    publishRealtimeEvent(workspaceId, { type: "notebook.tree.updated" });
+  };
+
   const noNotebook = {
     success: false,
     error:
@@ -89,8 +144,13 @@ export function createNotebookServerTools({
     notebookId: string,
     blocks: NotebookBlock[],
   ): Promise<number | null> => {
+    const access = await assertWriteAccess(notebookId);
+    if (!access.ok) return null;
     const updated = await store.update(workspaceId, notebookId, { blocks });
     if (!updated) return null;
+    await updateNotebookIndex(workspaceId, notebookId, {
+      updatedAt: new Date(updated.updatedAt),
+    });
     publishRealtimeEvent(workspaceId, {
       type: "notebook.updated",
       notebookId,
@@ -122,10 +182,21 @@ export function createNotebookServerTools({
         "Create a new notebook and make it the target for subsequent cell " +
         "tools. Use when no notebook is open or the user asks for a new one.",
       inputSchema: z.object({
-        name: z.string().optional().describe("Title; defaults to 'Untitled notebook'."),
+        name: z
+          .string()
+          .optional()
+          .describe("Title; defaults to 'Untitled notebook'."),
       }),
       execute: async ({ name }) => {
         const doc = await store.create(workspaceId, { name });
+        await createNotebookIndex({
+          workspaceId,
+          notebookId: doc.id,
+          name: doc.name,
+          ownerId: userId ?? "agent",
+          access: "private",
+          updatedAt: new Date(doc.updatedAt),
+        });
         publishRealtimeEvent(workspaceId, {
           type: "notebook.updated",
           notebookId: doc.id,
@@ -134,9 +205,15 @@ export function createNotebookServerTools({
           clientId: agentClientId,
           origin: "agent",
         });
+        publishTreeUpdated();
         // Surface it: refresh the explorer list + open it in the editor.
         publishOpenIntent(doc.id, doc.name);
-        return { success: true, notebookId: doc.id, name: doc.name, cellCount: 0 };
+        return {
+          success: true,
+          notebookId: doc.id,
+          name: doc.name,
+          cellCount: 0,
+        };
       },
     }),
 
@@ -146,11 +223,42 @@ export function createNotebookServerTools({
         "to work on before reading or editing it.",
       inputSchema: z.object({}),
       execute: async () => {
-        const list = await store.list(workspaceId);
-        return {
-          success: true,
-          notebooks: list.map(n => ({ id: n.id, title: n.name })),
+        const split = await NotebookManager.listNotebooksSplit(
+          workspaceId,
+          userId ?? "agent",
+        );
+        const flatten = (
+          nodes: Array<{
+            id: string;
+            name: string;
+            isDirectory: boolean;
+            children?: unknown[];
+          }>,
+        ): Array<{ id: string; title: string }> => {
+          const out: Array<{ id: string; title: string }> = [];
+          for (const node of nodes) {
+            if (node.isDirectory && node.children) {
+              out.push(
+                ...flatten(
+                  node.children as Array<{
+                    id: string;
+                    name: string;
+                    isDirectory: boolean;
+                    children?: unknown[];
+                  }>,
+                ),
+              );
+            } else if (!node.isDirectory) {
+              out.push({ id: node.id, title: node.name });
+            }
+          }
+          return out;
         };
+        const notebooks = [
+          ...flatten(split.myNotebooks),
+          ...flatten(split.workspaceNotebooks),
+        ];
+        return { success: true, notebooks };
       },
     }),
 
@@ -162,6 +270,8 @@ export function createNotebookServerTools({
       execute: async input => {
         const id = resolveId(input);
         if (!id) return noNotebook;
+        const access = await assertReadAccess(id);
+        if (!access.ok) return { success: false, error: access.error };
         const doc = await store.get(workspaceId, id);
         if (!doc) return { success: false, error: `Notebook ${id} not found` };
         return {
@@ -186,12 +296,21 @@ export function createNotebookServerTools({
         notebookId: notebookIdField,
         type: cellTypeField,
         source: z.string().optional().describe("Cell contents"),
-        connectionId: z.string().optional().describe("Data source id for SQL cells"),
-        atIndex: z.number().int().optional().describe("Insert position; appends when omitted"),
+        connectionId: z
+          .string()
+          .optional()
+          .describe("Data source id for SQL cells"),
+        atIndex: z
+          .number()
+          .int()
+          .optional()
+          .describe("Insert position; appends when omitted"),
       }),
       execute: async input => {
         const id = resolveId(input);
         if (!id) return noNotebook;
+        const access = await assertWriteAccess(id);
+        if (!access.ok) return { success: false, error: access.error };
         const doc = await store.get(workspaceId, id);
         if (!doc) return { success: false, error: `Notebook ${id} not found` };
         const cell: NotebookBlock = {
@@ -203,7 +322,9 @@ export function createNotebookServerTools({
         const blocks = [...doc.blocks];
         blocks.splice(input.atIndex ?? blocks.length, 0, cell);
         const version = await saveBlocks(id, blocks);
-        if (version == null) return { success: false, error: "Failed to add cell" };
+        if (version == null) {
+          return { success: false, error: "Failed to add cell" };
+        }
         return { success: true, cellId: cell.id, type: cell.type };
       },
     }),
@@ -222,6 +343,8 @@ export function createNotebookServerTools({
       execute: async input => {
         const id = resolveId(input);
         if (!id) return noNotebook;
+        const access = await assertWriteAccess(id);
+        if (!access.ok) return { success: false, error: access.error };
         const doc = await store.get(workspaceId, id);
         if (!doc) return { success: false, error: `Notebook ${id} not found` };
         if (!doc.blocks.some(b => b.id === input.cellId)) {
@@ -232,7 +355,9 @@ export function createNotebookServerTools({
             ? {
                 ...b,
                 ...(input.source !== undefined ? { source: input.source } : {}),
-                ...(input.type ? { type: input.type as NotebookBlockType } : {}),
+                ...(input.type
+                  ? { type: input.type as NotebookBlockType }
+                  : {}),
                 ...(input.connectionId !== undefined
                   ? { connectionId: input.connectionId }
                   : {}),
@@ -240,7 +365,9 @@ export function createNotebookServerTools({
             : b,
         );
         const version = await saveBlocks(id, blocks);
-        if (version == null) return { success: false, error: "Failed to edit cell" };
+        if (version == null) {
+          return { success: false, error: "Failed to edit cell" };
+        }
         return { success: true, cellId: input.cellId };
       },
     }),
@@ -254,6 +381,8 @@ export function createNotebookServerTools({
       execute: async input => {
         const id = resolveId(input);
         if (!id) return noNotebook;
+        const access = await assertWriteAccess(id);
+        if (!access.ok) return { success: false, error: access.error };
         const doc = await store.get(workspaceId, id);
         if (!doc) return { success: false, error: `Notebook ${id} not found` };
         if (!doc.blocks.some(b => b.id === input.cellId)) {
@@ -263,7 +392,9 @@ export function createNotebookServerTools({
           id,
           doc.blocks.filter(b => b.id !== input.cellId),
         );
-        if (version == null) return { success: false, error: "Failed to delete cell" };
+        if (version == null) {
+          return { success: false, error: "Failed to delete cell" };
+        }
         return { success: true, cellId: input.cellId };
       },
     }),
@@ -280,35 +411,55 @@ export function createNotebookServerTools({
       execute: async input => {
         const id = resolveId(input);
         if (!id) return noNotebook;
+        const access = await assertWriteAccess(id);
+        if (!access.ok) return { success: false, error: access.error };
         const doc = await store.get(workspaceId, id);
         if (!doc) return { success: false, error: `Notebook ${id} not found` };
         const cell = doc.blocks.find(b => b.id === input.cellId);
-        if (!cell) return { success: false, error: `No cell with id "${input.cellId}"` };
+        if (!cell) {
+          return { success: false, error: `No cell with id "${input.cellId}"` };
+        }
         if (cell.type !== "sql") {
           return {
             success: false,
-            error: "run_notebook_sql_cell only runs SQL cells; use run_notebook_code_cell for Python.",
+            error:
+              "run_notebook_sql_cell only runs SQL cells; use run_notebook_code_cell for Python.",
           };
         }
         if (!cell.connectionId || !Types.ObjectId.isValid(cell.connectionId)) {
-          return { success: false, error: "Set a valid data source (connectionId) on the cell first." };
+          return {
+            success: false,
+            error: "Set a valid data source (connectionId) on the cell first.",
+          };
         }
         const database = await DatabaseConnection.findOne({
           _id: new Types.ObjectId(cell.connectionId),
           workspaceId: new Types.ObjectId(workspaceId),
         });
-        if (!database) return { success: false, error: "Data source not found in this workspace." };
+        if (!database) {
+          return {
+            success: false,
+            error: "Data source not found in this workspace.",
+          };
+        }
 
         const started = Date.now();
         const result = await databaseConnectionService.executeQuery(
-          database as Parameters<typeof databaseConnectionService.executeQuery>[0],
+          database as Parameters<
+            typeof databaseConnectionService.executeQuery
+          >[0],
           cell.source,
           { readOnly: true },
         );
         if (!result.success) {
           const message = result.error || "Query failed";
           await persistOutputs(id, doc.blocks, input.cellId, [
-            { type: "error", ename: "SQLError", evalue: message, traceback: [] },
+            {
+              type: "error",
+              ename: "SQLError",
+              evalue: message,
+              traceback: [],
+            },
           ]);
           return { success: false, error: message };
         }
@@ -316,8 +467,7 @@ export function createNotebookServerTools({
         const columns =
           (result as { fields?: Array<{ name?: string } | string> }).fields
             ?.map(f => (typeof f === "string" ? f : (f.name ?? "")))
-            .filter(Boolean) ??
-          (rows[0] ? Object.keys(rows[0]) : []);
+            .filter(Boolean) ?? (rows[0] ? Object.keys(rows[0]) : []);
         const truncated = rows.length > MAX_SQL_ROWS;
         await persistOutputs(id, doc.blocks, input.cellId, [
           {
@@ -351,33 +501,61 @@ export function createNotebookServerTools({
       execute: async input => {
         const id = resolveId(input);
         if (!id) return noNotebook;
+        const access = await assertWriteAccess(id);
+        if (!access.ok) return { success: false, error: access.error };
         const doc = await store.get(workspaceId, id);
         if (!doc) return { success: false, error: `Notebook ${id} not found` };
         const cell = doc.blocks.find(b => b.id === input.cellId);
-        if (!cell) return { success: false, error: `No cell with id "${input.cellId}"` };
+        if (!cell) {
+          return { success: false, error: `No cell with id "${input.cellId}"` };
+        }
         if (cell.type !== "code") {
           return {
             success: false,
-            error: "run_notebook_code_cell only runs Python cells; use run_notebook_sql_cell for SQL.",
+            error:
+              "run_notebook_code_cell only runs Python cells; use run_notebook_sql_cell for SQL.",
           };
         }
         const collected: KernelOutput[] = [];
         try {
-          await kernelSessionService.start({ workspaceId, notebookId: id, userId: userId ?? "agent" });
+          await kernelSessionService.start({
+            workspaceId,
+            notebookId: id,
+            userId: userId ?? "agent",
+          });
           const res = await kernelSessionService.execute(
             workspaceId,
             id,
             cell.source,
             o => collected.push(o),
           );
-          await persistOutputs(id, doc.blocks, input.cellId, capOutputs(collected), res.executionCount ?? undefined);
-          return { success: true, cellId: input.cellId, ...summarize(collected, res.status) };
+          await persistOutputs(
+            id,
+            doc.blocks,
+            input.cellId,
+            capOutputs(collected),
+            res.executionCount ?? undefined,
+          );
+          return {
+            success: true,
+            cellId: input.cellId,
+            ...summarize(collected, res.status),
+          };
         } catch (e) {
           if (e instanceof KernelUnavailableError) {
-            return { success: false, error: `Python kernel unavailable: ${e.message}` };
+            return {
+              success: false,
+              error: `Python kernel unavailable: ${e.message}`,
+            };
           }
-          logger.warn("run_notebook_code_cell failed", { error: e, notebookId: id });
-          return { success: false, error: e instanceof Error ? e.message : "Execution failed" };
+          logger.warn("run_notebook_code_cell failed", {
+            error: e,
+            notebookId: id,
+          });
+          return {
+            success: false,
+            error: e instanceof Error ? e.message : "Execution failed",
+          };
         }
       },
     }),
@@ -394,7 +572,12 @@ export function createNotebookServerTools({
   ) {
     // Offload large payloads (plots, HTML tables) to the store, keeping only a
     // small ref inline — same as the human PATCH path.
-    const offloaded = await offloadOutputs(store, workspaceId, notebookId, outputs);
+    const offloaded = await offloadOutputs(
+      store,
+      workspaceId,
+      notebookId,
+      outputs,
+    );
     const next = blocks.map(b =>
       b.id === cellId
         ? {
@@ -414,17 +597,23 @@ function summarize(
   outputs: KernelOutput[],
   status: "ok" | "error" | "abort",
 ): Record<string, unknown> {
-  const trunc = (s: string, n = 4000) => (s.length > n ? s.slice(0, n) + "\n… (truncated)" : s);
+  const trunc = (s: string, n = 4000) =>
+    s.length > n ? s.slice(0, n) + "\n… (truncated)" : s;
   const stream = (name: "stdout" | "stderr") =>
     outputs
       .filter(o => o.type === "stream" && o.name === name)
       .map(o => (o.type === "stream" ? o.text : ""))
       .join("");
   const err = outputs.find(o => o.type === "error");
-  const resultOut = [...outputs].reverse().find(o => o.type === "result" || o.type === "display");
+  const resultOut = [...outputs]
+    .reverse()
+    .find(o => o.type === "result" || o.type === "display");
   const resultText =
     resultOut && (resultOut.type === "result" || resultOut.type === "display")
-      ? String(resultOut.data["text/plain"] ?? Object.keys(resultOut.data).join(", "))
+      ? String(
+          resultOut.data["text/plain"] ??
+            Object.keys(resultOut.data).join(", "),
+        )
       : undefined;
   return {
     status,
@@ -432,7 +621,11 @@ function summarize(
     stderr: trunc(stream("stderr")),
     error:
       err && err.type === "error"
-        ? { ename: err.ename, evalue: err.evalue, traceback: err.traceback.slice(-20) }
+        ? {
+            ename: err.ename,
+            evalue: err.evalue,
+            traceback: err.traceback.slice(-20),
+          }
         : undefined,
     result: resultText ? trunc(resultText) : undefined,
   };
