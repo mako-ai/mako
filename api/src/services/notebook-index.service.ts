@@ -50,6 +50,49 @@ export async function getNotebookIndex(
   });
 }
 
+/**
+ * Ensure a Mongo index row exists for a notebook that is already in object
+ * storage (legacy / deep-link open before the tree list backfill runs).
+ */
+export async function ensureNotebookIndexFromStore(
+  workspaceId: string,
+  notebookId: string,
+): Promise<INotebookIndex | null> {
+  const existing = await getNotebookIndex(workspaceId, notebookId);
+  if (existing) return existing;
+
+  const store = getNotebookStore();
+  let doc: Awaited<ReturnType<typeof store.get>>;
+  try {
+    doc = await store.get(workspaceId, notebookId);
+  } catch (error) {
+    logger.warn("Failed to read notebook for index ensure", {
+      workspaceId,
+      notebookId,
+      error,
+    });
+    return null;
+  }
+  if (!doc) return null;
+
+  try {
+    return await createNotebookIndex({
+      workspaceId,
+      notebookId,
+      name: doc.name,
+      ownerId: "system",
+      access: "workspace",
+      workspaceRole: "editor",
+      updatedAt: new Date(doc.updatedAt),
+    });
+  } catch (error) {
+    if ((error as { code?: number }).code === 11000) {
+      return getNotebookIndex(workspaceId, notebookId);
+    }
+    throw error;
+  }
+}
+
 export async function updateNotebookIndex(
   workspaceId: string,
   notebookId: string,

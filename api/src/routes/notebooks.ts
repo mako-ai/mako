@@ -27,7 +27,7 @@ import { publishRealtimeEvent } from "../services/realtime.service";
 import {
   createNotebookIndex,
   deleteNotebookIndex,
-  getNotebookIndex,
+  ensureNotebookIndexFromStore,
   updateNotebookIndex,
 } from "../services/notebook-index.service";
 import { NotebookManager } from "../utils/notebook-manager";
@@ -102,11 +102,13 @@ async function requireNotebookAccess(
 ): Promise<
   | {
       ok: true;
-      index: NonNullable<Awaited<ReturnType<typeof getNotebookIndex>>>;
+      index: NonNullable<
+        Awaited<ReturnType<typeof ensureNotebookIndexFromStore>>
+      >;
     }
   | { ok: false; status: 403 | 404 }
 > {
-  const index = await getNotebookIndex(workspaceIdStr, notebookId);
+  const index = await ensureNotebookIndexFromStore(workspaceIdStr, notebookId);
   if (!index) return { ok: false, status: 404 };
 
   const effectiveAccess = await NotebookManager.getEffectiveAccessForNotebook(
