@@ -1207,6 +1207,9 @@
                   "none"
                 ]
               },
+              "anchorField": {
+                "type": "string"
+              },
               "perEntity": {
                 "type": "object",
                 "additionalProperties": {
