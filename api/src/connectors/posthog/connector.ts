@@ -78,7 +78,7 @@ export class PosthogConnector extends BaseConnector {
             placeholder:
               "SELECT event, count() AS cnt FROM events WHERE timestamp > now() - interval 7 day GROUP BY event ORDER BY cnt DESC",
             helperText:
-              "Optional placeholders: $limit and $offset. If omitted, pagination will be appended automatically.",
+              "Optional placeholders: $limit, $offset, and $since / {{since}}. If limit/offset are omitted, pagination will be appended automatically.",
           },
           {
             name: "batch_size",
@@ -186,7 +186,7 @@ export class PosthogConnector extends BaseConnector {
   }
 
   async fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState> {
-    const { entity, onBatch, onProgress, state } = options;
+    const { entity, onBatch, onProgress, since, state } = options;
     const maxIterations = options.maxIterations || 10;
 
     const q = this.getQueryConfig(entity);
@@ -215,7 +215,12 @@ export class PosthogConnector extends BaseConnector {
     if (!state && onProgress) onProgress(0, undefined);
 
     while (hasMore && iterations < maxIterations) {
-      const paginated = this.buildPaginatedQuery(q.query, batchSize, offset);
+      const paginated = this.buildPaginatedQuery(
+        q.query,
+        batchSize,
+        offset,
+        since instanceof Date ? since : undefined,
+      );
       const response = await this.executeWithRetry(() =>
         this.executeQuery(paginated),
       );
@@ -272,6 +277,7 @@ export class PosthogConnector extends BaseConnector {
     baseQuery: string,
     limit: number,
     offset: number,
+    since?: Date,
   ): string {
     let q = baseQuery;
 
@@ -280,6 +286,13 @@ export class PosthogConnector extends BaseConnector {
     q = q.replace(/\$offset\b/gi, String(offset));
     q = q.replace(/\{\{\s*limit\s*\}\}/gi, String(limit));
     q = q.replace(/\{\{\s*offset\s*\}\}/gi, String(offset));
+
+    const sinceValue =
+      since instanceof Date ? since.toISOString() : "1970-01-01T00:00:00.000Z";
+    if (/\$since\b|\{\{\s*since\s*\}\}/i.test(q)) {
+      q = q.replace(/\$since\b/gi, sinceValue);
+      q = q.replace(/\{\{\s*since\s*\}\}/gi, sinceValue);
+    }
 
     const hasExplicitLimit = /\blimit\b\s+\d+/i.test(q);
     const hasExplicitOffset = /\boffset\b\s+\d+/i.test(q);
@@ -366,8 +379,12 @@ export class PosthogConnector extends BaseConnector {
   }
 
   getIncrementalCapabilities(): IncrementalCapabilities {
-    // `since` is accepted by `FetchOptions` but never applied to any
-    // PostHog query — every poll re-fetches the full result set.
-    return { supported: false, mode: "none" };
+    return {
+      supported: true,
+      mode: "native",
+      anchorField: "$since",
+      warning:
+        "Incremental substitutes $since/{{since}} in your HogQL. Queries without that placeholder still full-repull every poll — add the placeholder or use Full Refresh.",
+    };
   }
 }

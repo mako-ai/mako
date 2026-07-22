@@ -47,14 +47,19 @@ import {
   Storage as DatabaseIcon,
   Webhook as WebhookIcon,
 } from "@mui/icons-material";
+import {
+  SYNC_MODE_COMBOS,
+  allowedModes,
+  effectiveIncrementalMode,
+  needsReconcileSuggestion,
+  type IncrementalCapabilities,
+} from "@mako/schemas";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore, type TreeNode } from "../store/schemaStore";
 import {
   useConnectorCatalogStore,
-  effectiveIncrementalMode,
   type WebhookCapabilities,
-  type IncrementalCapabilities,
 } from "../store/connectorCatalogStore";
 import {
   useAvailableEntitiesStore,
@@ -157,53 +162,6 @@ const SCHEDULE_PRESETS = [
   { label: "Daily at 6 AM", cron: "0 6 * * *" },
   { label: "Weekly on Sunday", cron: "0 0 * * 0" },
   { label: "Monthly on 1st", cron: "0 0 1 * *" },
-];
-
-interface SyncModeCombo {
-  value: string;
-  syncMode: "full" | "incremental";
-  writeMode: "append_dedup" | "append" | "overwrite";
-  label: string;
-  help: string;
-}
-
-/** Airbyte-style sync modes: read mode (Full Refresh / Incremental) | destination write mode. */
-const SYNC_MODE_COMBOS: SyncModeCombo[] = [
-  {
-    value: "incremental:append_dedup",
-    syncMode: "incremental",
-    writeMode: "append_dedup",
-    label: "Incremental | Append + Deduped",
-    help: "Fetch new or updated records and upsert by primary key — one deduplicated row per record.",
-  },
-  {
-    value: "incremental:append",
-    syncMode: "incremental",
-    writeMode: "append",
-    label: "Incremental | Append",
-    help: "Fetch new or updated records and add them as new rows — keeps every version (history).",
-  },
-  {
-    value: "full:append_dedup",
-    syncMode: "full",
-    writeMode: "append_dedup",
-    label: "Full Refresh | Deduped",
-    help: "Re-fetch everything each run and upsert by primary key (reconciles drift).",
-  },
-  {
-    value: "full:append",
-    syncMode: "full",
-    writeMode: "append",
-    label: "Full Refresh | Append",
-    help: "Re-fetch everything each run and add all rows — accumulates a snapshot per run.",
-  },
-  {
-    value: "full:overwrite",
-    syncMode: "full",
-    writeMode: "overwrite",
-    label: "Full Refresh | Overwrite",
-    help: "Re-fetch everything each run; the destination is cleared first and ends up an exact snapshot.",
-  },
 ];
 
 /**
@@ -329,6 +287,7 @@ export function SyncFlowForm({
   // guards against. Reset to false whenever a different existing flow loads;
   // always "touched" for brand-new flows (nothing saved to protect there).
   const formTouchedRef = useRef(isNew);
+  const reconcileAutoEnabledRef = useRef(false);
 
   const toggleStep = (stepIndex: number) => {
     setOpenSteps(prev => {
@@ -469,11 +428,32 @@ export function SyncFlowForm({
   // Engine-agnostic layout hints map to each destination's native physical
   // layout: BigQuery/ClickHouse partition+cluster DDL; Postgres/Mongo
   // secondary indexes on the same fields.
-  // Mirrors the server-side supportedCdcWriteModes capability.
-  const supportedWriteModes: Array<"append_dedup" | "append" | "overwrite"> =
-    !isCdcCapableDest || destType === "clickhouse"
-      ? ["append_dedup"]
-      : ["append_dedup", "append", "overwrite"];
+  // Shared FE/BE matrix (`@mako/schemas` allowedModes) — SyncFlowForm and
+  // validateSyncConfig cannot drift.
+  const incrementalCheckEntitiesKey = incrementalCheckEntities.join("\0");
+  const modesResult = useMemo(
+    () =>
+      allowedModes({
+        incrementalCap: selectedIncrementalCapabilities,
+        selectedEntities: incrementalCheckEntitiesKey
+          ? incrementalCheckEntitiesKey.split("\0")
+          : [],
+        destinationType: isCdcCapableDest ? destType : undefined,
+        webhookEnabled: watchWebhookEnabled,
+      }),
+    [
+      selectedIncrementalCapabilities,
+      incrementalCheckEntitiesKey,
+      isCdcCapableDest,
+      destType,
+      watchWebhookEnabled,
+    ],
+  );
+  const supportedWriteModes = useMemo(() => {
+    const modes = new Set(modesResult.combos.map(c => c.writeMode));
+    // Keep current selection visible even when orphaned (handled below).
+    return Array.from(modes) as Array<"append_dedup" | "append" | "overwrite">;
+  }, [modesResult.combos]);
 
   // Sync Mode dropdown options: the currently-loaded combo is ALWAYS kept
   // visible, even if it would otherwise be filtered out (e.g. an existing
@@ -484,12 +464,12 @@ export function SyncFlowForm({
   // `formTouchedRef` already protects the underlying value from being
   // rewritten on load. Only NEW selections are restricted to the visible
   // (supported) list.
-  const visibleSyncModeCombos = SYNC_MODE_COMBOS.filter(
-    combo =>
-      supportedWriteModes.includes(combo.writeMode) &&
-      !(combo.writeMode === "overwrite" && watchWebhookEnabled) &&
-      !(combo.syncMode === "incremental" && !connectorSupportsIncremental),
-  );
+  const visibleSyncModeCombos =
+    !selectedConnectorType || !selectedIncrementalCapabilities
+      ? SYNC_MODE_COMBOS.filter(combo =>
+          supportedWriteModes.includes(combo.writeMode),
+        )
+      : modesResult.combos;
   const currentSyncModeValue = `${watchSyncMode}:${watchWriteMode}`;
   const currentSyncModeCombo = SYNC_MODE_COMBOS.find(
     c => c.value === currentSyncModeValue,
@@ -501,6 +481,13 @@ export function SyncFlowForm({
     currentSyncModeIsOrphaned && currentSyncModeCombo
       ? [currentSyncModeCombo, ...visibleSyncModeCombos]
       : visibleSyncModeCombos;
+  const suggestReconcile =
+    isCdcCapableDest &&
+    needsReconcileSuggestion(
+      watchSyncMode,
+      selectedIncrementalCapabilities,
+      incrementalCheckEntities,
+    );
 
   const layoutMode: "partition" | "index" | "none" = hasStagingDest
     ? "partition"
@@ -605,6 +592,25 @@ export function SyncFlowForm({
     connectorSupportsIncremental,
     setValue,
   ]);
+
+  // Auto-suggest (and once soft-enable) periodic reconcile for Incremental
+  // flows whose selected entities are created-anchor or none — polls alone
+  // cannot catch updates / will silent-full-repull those streams.
+  useEffect(() => {
+    if (!suggestReconcile || !formTouchedRef.current) return;
+    if (watchBackfillScheduleEnabled) return;
+    if (reconcileAutoEnabledRef.current) return;
+    reconcileAutoEnabledRef.current = true;
+    setValue("backfillScheduleEnabled", true, { shouldDirty: true });
+    const cron = getValues("backfillScheduleCron");
+    if (!cron) {
+      setValue("backfillScheduleCron", "0 3 * * *", { shouldDirty: true });
+    }
+    const tz = getValues("backfillScheduleTimezone");
+    if (!tz) {
+      setValue("backfillScheduleTimezone", "UTC", { shouldDirty: true });
+    }
+  }, [suggestReconcile, watchBackfillScheduleEnabled, setValue, getValues]);
 
   // transferQueries schema (GraphQL/PostHog-style connectors)
   useEffect(() => {
@@ -1754,7 +1760,10 @@ export function SyncFlowForm({
                     <Box
                       sx={{
                         border: 1,
-                        borderColor: "divider",
+                        borderColor:
+                          suggestReconcile && !watchBackfillScheduleEnabled
+                            ? "warning.main"
+                            : "divider",
                         borderRadius: 1,
                         p: 2,
                       }}
@@ -1776,6 +1785,7 @@ export function SyncFlowForm({
                                   {showScheduleTrigger
                                     ? "Periodic full reconcile"
                                     : "Schedule (periodic full reconcile)"}
+                                  {suggestReconcile ? " (recommended)" : ""}
                                 </Typography>
                                 <Typography
                                   variant="caption"
@@ -1790,6 +1800,38 @@ export function SyncFlowForm({
                           />
                         )}
                       />
+                      {suggestReconcile && !watchBackfillScheduleEnabled && (
+                        <Alert
+                          severity="warning"
+                          sx={{ mt: 1 }}
+                          action={
+                            <Button
+                              color="inherit"
+                              size="small"
+                              onClick={() => {
+                                formTouchedRef.current = true;
+                                setValue("backfillScheduleEnabled", true, {
+                                  shouldDirty: true,
+                                });
+                                if (!getValues("backfillScheduleCron")) {
+                                  setValue(
+                                    "backfillScheduleCron",
+                                    "0 3 * * *",
+                                    { shouldDirty: true },
+                                  );
+                                }
+                              }}
+                            >
+                              Enable daily
+                            </Button>
+                          }
+                        >
+                          Incremental polls for the selected entities miss
+                          updates (created-only) or silently re-fetch
+                          everything. Enable a periodic full reconcile so the
+                          destination stays honest between webhook events.
+                        </Alert>
+                      )}
                       {watchBackfillScheduleEnabled &&
                         watchSyncMode === "incremental" &&
                         watchWriteMode === "append" && (
@@ -1926,6 +1968,37 @@ export function SyncFlowForm({
 
                   {watchSyncMode === "incremental" && incrementalWarning && (
                     <Alert severity="warning">{incrementalWarning}</Alert>
+                  )}
+
+                  {suggestReconcile && (
+                    <Alert
+                      severity="info"
+                      action={
+                        !watchBackfillScheduleEnabled ? (
+                          <Button
+                            color="inherit"
+                            size="small"
+                            onClick={() => {
+                              formTouchedRef.current = true;
+                              setValue("backfillScheduleEnabled", true, {
+                                shouldDirty: true,
+                              });
+                              setOpenSteps(prev => {
+                                const next = new Set(prev);
+                                next.add(2);
+                                return next;
+                              });
+                            }}
+                          >
+                            Enable reconcile
+                          </Button>
+                        ) : undefined
+                      }
+                    >
+                      {watchBackfillScheduleEnabled
+                        ? "Periodic full reconcile is on — it covers updates and snapshot entities that Incremental polls cannot see."
+                        : "Enable the periodic full reconcile trigger (step 3) so created-anchor / full-repull entities stay current."}
+                    </Alert>
                   )}
 
                   {isCdcCapableDest && (

@@ -315,7 +315,11 @@ export class PandaDocConnector extends BaseConnector {
     const api = this.getClient();
     const enriched = [...records];
 
-    for (let start = 0; start < enriched.length; start += DOCUMENT_DETAIL_CONCURRENCY) {
+    for (
+      let start = 0;
+      start < enriched.length;
+      start += DOCUMENT_DETAIL_CONCURRENCY
+    ) {
       const batch = enriched.slice(start, start + DOCUMENT_DETAIL_CONCURRENCY);
 
       await Promise.all(
@@ -489,7 +493,7 @@ export class PandaDocConnector extends BaseConnector {
           typeof item.date_modified === "string"
             ? new Date(item.date_modified).getTime()
             : NaN;
-        return Number.isFinite(modified) ? modified >= sinceMs : true;
+        return Number.isFinite(modified) ? modified >= sinceMs : false;
       });
     }
 
@@ -512,7 +516,9 @@ export class PandaDocConnector extends BaseConnector {
       entity === "documents" && this.shouldFetchDocumentDetails();
     const maxIterations = Math.min(
       options.maxIterations ?? 10,
-      hydrateDocuments ? DETAIL_HYDRATION_MAX_PAGES_PER_CHUNK : Number.MAX_SAFE_INTEGER,
+      hydrateDocuments
+        ? DETAIL_HYDRATION_MAX_PAGES_PER_CHUNK
+        : Number.MAX_SAFE_INTEGER,
     );
 
     let page = (state?.page as number | undefined) ?? 1;
@@ -535,7 +541,10 @@ export class PandaDocConnector extends BaseConnector {
       );
 
       if (hydrateDocuments) {
-        records = await this.enrichDocumentsWithDetails(records, rateLimitDelay);
+        records = await this.enrichDocumentsWithDetails(
+          records,
+          rateLimitDelay,
+        );
       }
 
       if (records.length > 0) {

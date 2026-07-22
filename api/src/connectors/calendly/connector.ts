@@ -552,7 +552,7 @@ export class CalendlyConnector extends BaseConnector {
             typeof item.updated_at === "string"
               ? new Date(item.updated_at).getTime()
               : NaN;
-          return Number.isFinite(updated) ? updated >= sinceMs : true;
+          return Number.isFinite(updated) ? updated >= sinceMs : false;
         });
       }
 

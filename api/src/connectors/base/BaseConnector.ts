@@ -152,6 +152,11 @@ export interface IncrementalCapabilities {
    * `perEntity`. Defaults to `"none"` so every connector must opt in.
    */
   mode: IncrementalMode;
+  /**
+   * Optional default anchor field/placeholder used by the fallback `mode`
+   * (e.g. PostHog `$since`). Per-entity overrides may set their own.
+   */
+  anchorField?: string;
   /** Per-entity overrides when different entities behave differently. */
   perEntity?: Record<string, { mode: IncrementalMode; anchorField?: string }>;
   /**

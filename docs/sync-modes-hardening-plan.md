@@ -1,7 +1,8 @@
 # Sync modes hardening plan
 
-Status: proposal (2026-07-07). Companion to `docs/unified-sync-flow-proposal.md`
-and PR #676 (migrated-flow trigger/observability fixes).
+Status: in progress (2026-07-22). Companion to `docs/unified-sync-flow-proposal.md`
+and the migrated Sync flow UI. Phase 1/3/4 (+ most of Phase 5/6) shipped;
+Phase 2 (deletion reconcile) still open.
 
 ## Problem statement
 
@@ -12,17 +13,18 @@ destination, but three of its axes are not actually guaranteed by the backend:
 1. **Source capability** — "Incremental" requires the connector to pull
    changes-since-X. Audit result (chunked path, `fetchEntityChunk({ since })`):
 
-   | Connector         | `since` handling                                                                                                    | Effective incremental                    |
-   | ----------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-   | pandadoc          | `modified_from` (documents); client filter (templates/members); none (contacts)                                     | native / client-filter / none per entity |
-   | stripe            | `created[gte]` on all entities                                                                                      | **created-anchor: misses updates**       |
-   | claap             | `createdAfter` (recordings); none (workspace)                                                                       | created-anchor / none                    |
-   | calendly          | `min_start_time` (events); client `updated_at` filter (others); none (organizations)                                | partial                                  |
-   | close             | Search-API path (leads/contacts/opportunities/activities) ignores `since`; offset fallback uses `date_updated__gte` | **none for primary entities**            |
-   | rest              | injects `updated_after` + client filter; keeps records without timestamps                                           | depends on API                           |
-   | graphql           | client-side filter after full paginated fetch                                                                       | none (full re-pull)                      |
-   | posthog           | `since` unused                                                                                                      | none                                     |
-   | bigquery (source) | `since` unused                                                                                                      | none                                     |
+   | Connector         | `since` handling                                                                                         | Effective incremental                    |
+   | ----------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+   | pandadoc          | `modified_from` (documents); client filter (templates/members); none (contacts)                          | native / client-filter / none per entity |
+   | stripe            | `created[gte]` on all entities                                                                           | **created-anchor: misses updates**       |
+   | claap             | `createdAfter` (recordings); none (workspace)                                                            | created-anchor / none                    |
+   | calendly          | `min_start_time` (events); client `updated_at` filter (others); none (organizations)                     | partial                                  |
+   | close             | Search-API windows on `date_updated` when `since` set; else `date_created` walk; offset uses `date_updated__gte` | **native** (primary entities)   |
+   | rest              | injects `updated_after` + client filter; drops records without timestamps                                | client-filter                            |
+   | graphql           | injects `$since` when the query declares it; else client filter                                          | client-filter                            |
+   | posthog           | substitutes `$since` / `{{since}}` in HogQL                                                              | native (query must use placeholder)      |
+   | wise              | `createdDateStart` (transfers); client filter + newest-first early-stop (activities); none (snapshots)   | created-anchor / client-filter / none    |
+   | bigquery (source) | `since` unused                                                                                           | none                                     |
 
    "Client-filter" is _correct but not cheaper_ (full API scan);
    "created-anchor" is _cheaper but incorrect_ (updates to old records are
@@ -54,7 +56,7 @@ destination, but three of its axes are not actually guaranteed by the backend:
 
 ---
 
-## Phase 1 — Fix `Full Refresh | Overwrite` data loss (B1)
+## Phase 1 — Fix `Full Refresh | Overwrite` data loss (B1) ✅
 
 **Change**
 
@@ -120,7 +122,7 @@ _syncedAt < cutoff AND is_deleted IS NOT TRUE`; Mongo: `updateMany`.
   assert C `is_deleted=true` (soft) and physically gone after purge (hard).
   Run again → idempotent. Webhook-updated row during the run is not swept.
 
-## Phase 3 — Webhook stream honors `writeMode` (B3)
+## Phase 3 — Webhook stream honors `writeMode` (B3) ✅
 
 **Change**: `api/src/sync-cdc/consumer.ts` — pass
 `writeMode: flow.writeMode` into `buildCdcEntityLayout` (one line), so
@@ -134,7 +136,7 @@ _syncedAt < cutoff AND is_deleted IS NOT TRUE`; Mongo: `updateMany`.
   as a tombstone **row**, not an in-place update (already partially covered by
   the `synced-at`/write-sql suites; add the append-path case).
 
-## Phase 4 — Source incremental capability (the user-visible gap)
+## Phase 4 — Source incremental capability (the user-visible gap) ✅
 
 **Design**: mirror the webhook-capability pipeline
 (`getWebhookCapabilities()` → registry `metadata.webhook` →
@@ -199,26 +201,30 @@ _syncedAt < cutoff AND is_deleted IS NOT TRUE`; Mongo: `updateMany`.
   Refresh combos; Close shows the reconcile suggestion; screenshot/video
   artifacts.
 
-## Phase 5 — Trigger/mode UI consolidation (design)
+## Phase 5 — Trigger/mode UI consolidation (design) ✅ (partial)
 
 - When `syncMode` is Full Refresh, "Scheduled" and "Periodic full reconcile"
   are the same thing (the legacy→CDC migration literally converts one to the
   other). Collapse to **one cron** for full-refresh flows; keep reconcile as an
-  add-on trigger only for Incremental/Webhook flows.
-- Disable (or warn on) reconcile for `Incremental | Append` — a reconcile
-  appends a complete duplicate snapshot into a history table.
-- Copy fixes per Phase 2 outcome.
-- Tests: `SyncFlowForm` behavior is covered by the matrix tests (logic lives in
-  `packages/schemas`) + a computerUse walkthrough for each mode selection.
+  add-on trigger only for Incremental/Webhook flows. **Done.**
+- Warn on reconcile for `Incremental | Append` — a reconcile appends a complete
+  duplicate snapshot into a history table. **Done.**
+- Auto-suggest / soft-enable periodic reconcile for Incremental +
+  `created-anchor`/`none` entity selections via `needsReconcileSuggestion()`.
+  **Done.**
+- Copy fixes per Phase 2 outcome — still blocked on B2.
 
-## Phase 6 — Per-connector incremental upgrades (backlog, independent)
+## Phase 6 — Per-connector incremental upgrades
 
-| Connector                    | Upgrade                                                                                                                | Effort                           |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| close                        | use `date_updated` moment_range in the Search-API path when `since` is set                                             | contained in `fetchViaSearchApi` |
-| stripe                       | Events-API top-up for updated objects (or rely on webhook hybrid; keep `created-anchor` declaration until then)        | medium                           |
-| graphql / posthog / bigquery | optional `$since` / `{since}` variable injection into flow-level queries; declare `native` only when the query uses it | small, per connector             |
-| rest                         | drop the `return true` (keep-on-missing-timestamp) leak; make the injected param name configurable                     | small                            |
+| Connector                    | Upgrade                                                                                                                | Status                                      |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| close                        | use `date_updated` moment_range in the Search-API path when `since` is set                                             | ✅ done                                     |
+| rest                         | drop the keep-on-missing-timestamp leak; honest client-filter warning                                                  | ✅ done                                     |
+| graphql / posthog            | `$since` / `{{since}}` injection; declare client-filter / native accordingly                                           | ✅ done                                     |
+| wise                         | honest per-entity caps; transfers `createdDateStart`; activities newest-first early-stop                               | ✅ done                                     |
+| calendly / pandadoc          | drop keep-on-missing-timestamp on client filters                                                                       | ✅ done                                     |
+| stripe                       | Events-API top-up for updated objects (or rely on webhook hybrid; keep `created-anchor` declaration until then)        | backlog                                     |
+| bigquery (source)            | optional `{since}` injection into source SQL                                                                           | backlog                                     |
 
 Each ships with a connector test asserting the request contains the anchor and
 that the capability declaration flips accordingly.

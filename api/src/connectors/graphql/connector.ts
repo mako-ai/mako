@@ -362,6 +362,10 @@ export class GraphQLConnector extends BaseConnector {
         };
       }
 
+      if (queryConfig.query.includes("$since") && since instanceof Date) {
+        queryVariables.since = since.toISOString();
+      }
+
       // Execute query (timing already logged in executeGraphQLQuery)
       const queryStart = Date.now();
       const response = await this.executeWithRetry(
@@ -815,10 +819,11 @@ export class GraphQLConnector extends BaseConnector {
   }
 
   getIncrementalCapabilities(): IncrementalCapabilities {
-    // `since` is not threaded into the user-authored query/variables at all
-    // — every poll re-runs the full paginated query. Queries are flow-level
-    // configuration, not fixed entities, so there's nothing to scope this to
-    // per-entity yet (Phase 6 backlog: optional `$since` variable injection).
-    return { supported: false, mode: "none" };
+    return {
+      supported: true,
+      mode: "client-filter",
+      warning:
+        "Incremental client-filters on updated_at/updatedAt/modified_at. Add a $since variable to your GraphQL query for server-side filtering; queries without $since still paginate the full result set.",
+    };
   }
 }

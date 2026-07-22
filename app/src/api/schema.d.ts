@@ -4350,6 +4350,7 @@ export interface components {
                 supported: boolean;
                 /** @enum {string} */
                 mode: "native" | "client-filter" | "created-anchor" | "none";
+                anchorField?: string;
                 perEntity?: {
                     [key: string]: {
                         /** @enum {string} */

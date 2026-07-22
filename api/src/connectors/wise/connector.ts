@@ -828,12 +828,24 @@ export class WiseConnector extends BaseConnector {
         activities?: Array<Record<string, unknown>>;
         cursor?: string | null;
       };
-      let page = Array.isArray(body.activities) ? body.activities : [];
+      const rawPage = Array.isArray(body.activities) ? body.activities : [];
 
+      // Activities feed is newest-first. If every item on this page is older
+      // than `since`, remaining pages for this profile are also older — stop
+      // paging and advance to the next profile.
+      const profileExhaustedBySince =
+        sinceMs != null &&
+        rawPage.length > 0 &&
+        rawPage.every(item => {
+          const ts = parseWiseDate(item.updatedOn ?? item.createdOn);
+          return ts != null && ts.getTime() < sinceMs;
+        });
+
+      let page = rawPage;
       if (sinceMs != null) {
         page = page.filter(item => {
           const ts = parseWiseDate(item.updatedOn ?? item.createdOn);
-          return ts ? ts.getTime() >= sinceMs : true;
+          return ts ? ts.getTime() >= sinceMs : false;
         });
       }
 
@@ -853,10 +865,7 @@ export class WiseConnector extends BaseConnector {
           ? body.cursor
           : null;
 
-      if (
-        !nextCursor ||
-        (Array.isArray(body.activities) && body.activities.length === 0)
-      ) {
+      if (profileExhaustedBySince || !nextCursor || rawPage.length === 0) {
         profileIndex++;
         cursor = undefined;
       } else {

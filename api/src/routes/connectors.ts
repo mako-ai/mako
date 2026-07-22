@@ -37,6 +37,7 @@ const IncrementalModeSchema = z.enum([
 const IncrementalCapabilitiesSchema = z.object({
   supported: z.boolean(),
   mode: IncrementalModeSchema,
+  anchorField: z.string().optional(),
   perEntity: z
     .record(
       z.string(),

@@ -190,14 +190,26 @@ function testEveryConnectorReturnsWellFormedCapabilities() {
 }
 
 function testConnectorsWithNoRealIncrementalDeclareNone() {
-  // Audit result: `since` is accepted but never applied anywhere in the
-  // fetch path for these three — declaring anything but "none" would be a
-  // lie the UI would surface as a working Incremental option.
-  for (const label of ["graphql", "posthog", "bigquery"]) {
-    const capabilities = capabilitiesFor(label);
-    assert.equal(capabilities.supported, false, `${label}.supported`);
-    assert.equal(capabilities.mode, "none", `${label}.mode`);
-  }
+  // BigQuery still accepts `since` without applying it. GraphQL/PostHog now
+  // declare real incremental modes (client-filter / $since substitution).
+  const bigquery = capabilitiesFor("bigquery");
+  assert.equal(bigquery.supported, false, "bigquery.supported");
+  assert.equal(bigquery.mode, "none", "bigquery.mode");
+}
+
+function testGraphQLDeclaresClientFilterWithSinceInjection() {
+  const graphql = capabilitiesFor("graphql");
+  assert.equal(graphql.supported, true);
+  assert.equal(graphql.mode, "client-filter");
+  assert.ok(graphql.warning && graphql.warning.includes("$since"));
+}
+
+function testPosthogDeclaresNativeSincePlaceholder() {
+  const posthog = capabilitiesFor("posthog");
+  assert.equal(posthog.supported, true);
+  assert.equal(posthog.mode, "native");
+  assert.equal(posthog.anchorField, "$since");
+  assert.ok(posthog.warning && posthog.warning.includes("$since"));
 }
 
 function testCreatedAnchorConnectorsWarnAboutMissedUpdates() {
@@ -214,16 +226,13 @@ function testCreatedAnchorConnectorsWarnAboutMissedUpdates() {
   assert.equal(claap.perEntity?.recordings?.mode, "created-anchor");
 }
 
-function testCloseSearchApiEntitiesDeclareNone() {
-  // leads/contacts/opportunities/activities:* go through fetchViaSearchApi,
-  // which ignores `since` — only the offset-fallback entities (users,
-  // custom_fields) get a real server-side date_updated__gte filter.
+function testCloseSearchApiEntitiesDeclareNative() {
   const close = capabilitiesFor("close");
-  assert.equal(close.mode, "none");
+  assert.equal(close.mode, "native");
+  assert.equal(close.perEntity?.leads?.mode, "native");
+  assert.equal(close.perEntity?.leads?.anchorField, "date_updated");
   assert.equal(close.perEntity?.users?.mode, "native");
-  assert.equal(close.perEntity?.custom_fields?.mode, "native");
-  // No override for "leads" — resolves to the "none" fallback.
-  assert.equal(close.perEntity?.leads, undefined);
+  assert.equal(close.perEntity?.groups?.mode, "none");
 }
 
 function testPandadocDocumentsAreNativeContactsAreNot() {
@@ -249,14 +258,124 @@ function testWiseCreatedAnchorTransfersAndNoneFallback() {
   assert.ok(wise.warning && wise.warning.length > 0);
 }
 
-function main() {
+async function testCloseSearchApiUsesDateUpdatedWhenSinceSet() {
+  const connector = new CloseConnector({
+    id: "ds_close",
+    name: "Close",
+    type: "close",
+    config: { api_key: "test-key" },
+  } as any);
+
+  const bodies: any[] = [];
+  (connector as any).closeApi = {
+    post: async (_path: string, body: any) => {
+      bodies.push(body);
+      // Oldest/count probes and window pages
+      if (body.include_counts) {
+        return { data: { count: { total: 0 } } };
+      }
+      return {
+        data: {
+          data: [
+            {
+              id: "lead_1",
+              date_created: "2026-07-01T00:00:00.000Z",
+              date_updated: "2026-07-16T00:00:00.000Z",
+            },
+          ],
+          cursor: null,
+        },
+      };
+    },
+    get: async () => ({ data: { data: [] } }),
+  };
+
+  await connector.fetchEntityChunk({
+    entity: "leads",
+    since: new Date("2026-07-15T00:00:00.000Z"),
+    maxIterations: 1,
+    onBatch: async () => {},
+  } as any);
+
+  const windowed = bodies.find(body =>
+    body?.query?.queries?.some(
+      (q: any) =>
+        q?.type === "field_condition" &&
+        q?.field?.field_name === "date_updated",
+    ),
+  );
+  assert.ok(windowed, "expected Search body to filter on date_updated");
+  assert.equal(windowed.sort?.[0]?.field?.field_name, "date_updated");
+}
+
+async function testStripeCreatedGteWhenSinceSet() {
+  const connector = new StripeConnector({
+    id: "ds_stripe",
+    name: "Stripe",
+    type: "stripe",
+    config: { api_key: "sk_test_123" },
+  } as any);
+
+  let captured: any;
+  (connector as any).stripe = {
+    customers: {
+      list: async (params: any) => {
+        captured = params;
+        return { data: [], has_more: false };
+      },
+    },
+  };
+
+  await connector.fetchEntityChunk({
+    entity: "customers",
+    since: new Date("2026-07-15T00:00:00.000Z"),
+    onBatch: async () => {},
+  } as any);
+
+  assert.equal(typeof captured?.created?.gte, "number");
+  assert.ok(captured.created.gte > 0);
+}
+
+async function testWiseTransfersCreatedDateStartWhenSinceSet() {
+  const connector = new WiseConnector({
+    id: "ds_wise",
+    name: "Wise",
+    type: "wise",
+    config: { api_key: "test", profile_id: "1" },
+  } as any);
+
+  let captured: any;
+  (connector as any).wiseApi = {
+    get: async (_path: string, config?: { params?: any }) => {
+      captured = config?.params;
+      return { data: [] };
+    },
+  };
+
+  await connector.fetchEntityChunk({
+    entity: "transfers",
+    since: new Date("2026-07-15T12:00:00.000Z"),
+    onBatch: async () => {},
+  } as any);
+
+  assert.equal(captured.createdDateStart, "2026-07-15");
+}
+
+async function main() {
   testEveryConnectorReturnsWellFormedCapabilities();
   testConnectorsWithNoRealIncrementalDeclareNone();
+  testGraphQLDeclaresClientFilterWithSinceInjection();
+  testPosthogDeclaresNativeSincePlaceholder();
   testCreatedAnchorConnectorsWarnAboutMissedUpdates();
-  testCloseSearchApiEntitiesDeclareNone();
+  testCloseSearchApiEntitiesDeclareNative();
+  await testCloseSearchApiUsesDateUpdatedWhenSinceSet();
+  await testStripeCreatedGteWhenSinceSet();
+  await testWiseTransfersCreatedDateStartWhenSinceSet();
   testPandadocDocumentsAreNativeContactsAreNot();
   testRestDeclaresClientFilterWithWarning();
   testWiseCreatedAnchorTransfersAndNoneFallback();
 }
 
-main();
+main().catch((error: unknown) => {
+  throw error;
+});
