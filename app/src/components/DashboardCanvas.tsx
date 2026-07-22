@@ -192,16 +192,22 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     }
   }, [dashboard?.title]);
 
+  const [reloadingData, setReloadingData] = useState(false);
+
   const handleRefresh = useCallback(() => {
     if (!workspaceId) {
       return;
     }
     if (isEditMode) {
-      void reloadDashboardDataSourcesCommand(workspaceId, dashboardId);
+      if (reloadingData) return;
+      setReloadingData(true);
+      void reloadDashboardDataSourcesCommand(workspaceId, dashboardId)
+        .catch(() => undefined)
+        .finally(() => setReloadingData(false));
       return;
     }
     void refreshDashboardCommand(workspaceId, dashboardId);
-  }, [workspaceId, dashboardId, isEditMode]);
+  }, [workspaceId, dashboardId, isEditMode, reloadingData]);
 
   const dataFreshness = useMemo(() => {
     if (!dashboard || dashboard.dataSources.length === 0) return null;
@@ -259,15 +265,17 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   ]);
 
   const handleReloadData = useCallback(async () => {
-    if (workspaceId) {
-      setFreshnessDismissed(true);
-      try {
-        await reloadDashboardDataSourcesCommand(workspaceId, dashboardId);
-      } catch {
-        setFreshnessDismissed(false);
-      }
+    if (!workspaceId || reloadingData) return;
+    setFreshnessDismissed(true);
+    setReloadingData(true);
+    try {
+      await reloadDashboardDataSourcesCommand(workspaceId, dashboardId);
+    } catch {
+      setFreshnessDismissed(false);
+    } finally {
+      setReloadingData(false);
     }
-  }, [workspaceId, dashboardId]);
+  }, [workspaceId, dashboardId, reloadingData]);
 
   const handleDismissStaleLock = useCallback(async () => {
     if (workspaceId && dashboardId) {
@@ -375,27 +383,35 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         </Tooltip>
 
         <Tooltip title="Clear filters and rerun all widgets">
-          <Chip
-            icon={<RefreshCw size={14} />}
-            label="Refresh"
-            size="small"
-            variant="outlined"
-            onClick={handleRefresh}
-            sx={{ cursor: "pointer" }}
-          />
+          <span>
+            <Chip
+              icon={<RefreshCw size={14} />}
+              label={isEditMode && reloadingData ? "Reloading…" : "Refresh"}
+              size="small"
+              variant="outlined"
+              onClick={handleRefresh}
+              disabled={isEditMode && reloadingData}
+              sx={{
+                cursor: isEditMode && reloadingData ? "default" : "pointer",
+              }}
+            />
+          </span>
         </Tooltip>
 
         {isEditMode && (
           <>
             <Tooltip title="Reload data from source database">
-              <Chip
-                icon={<Database size={14} />}
-                label="Reload data"
-                size="small"
-                variant="outlined"
-                onClick={handleReloadData}
-                sx={{ cursor: "pointer" }}
-              />
+              <span>
+                <Chip
+                  icon={<Database size={14} />}
+                  label={reloadingData ? "Reloading…" : "Reload data"}
+                  size="small"
+                  variant="outlined"
+                  onClick={handleReloadData}
+                  disabled={reloadingData}
+                  sx={{ cursor: reloadingData ? "default" : "pointer" }}
+                />
+              </span>
             </Tooltip>
 
             <Tooltip title="Add widget">

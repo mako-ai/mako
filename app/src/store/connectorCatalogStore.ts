@@ -1,7 +1,15 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
+import {
+  effectiveIncrementalMode,
+  type IncrementalCapabilities,
+  type IncrementalMode,
+} from "@mako/schemas";
 import { api, unwrapBody } from "../api";
+
+export type { IncrementalCapabilities, IncrementalMode };
+export { effectiveIncrementalMode };
 
 export interface WebhookProvisioningCapability {
   supported: boolean;
@@ -23,6 +31,7 @@ export interface ConnectorType {
   description: string;
   supportedEntities: string[];
   webhook: WebhookCapabilities;
+  incremental: IncrementalCapabilities;
 }
 
 export interface ConnectorSchemaResponse {

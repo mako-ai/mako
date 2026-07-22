@@ -4715,6 +4715,20 @@ export interface components {
                 };
                 secretHelpText?: string;
             };
+            incremental: {
+                supported: boolean;
+                /** @enum {string} */
+                mode: "native" | "client-filter" | "created-anchor" | "none";
+                anchorField?: string;
+                perEntity?: {
+                    [key: string]: {
+                        /** @enum {string} */
+                        mode: "native" | "client-filter" | "created-anchor" | "none";
+                        anchorField?: string;
+                    };
+                };
+                warning?: string;
+            };
         };
         DatabaseType: {
             type: string;

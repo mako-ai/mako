@@ -111,12 +111,20 @@ function backfillChipProps(status: BackfillStatus): {
   }
 }
 
-function entityStreamChip(e: {
-  backlogCount: number;
-  lastMaterializedAt: string | null;
-}): { label: string; color: "success" | "info" | "default" } {
+function entityStreamChip(
+  e: {
+    backlogCount: number;
+    lastMaterializedAt: string | null;
+    backfillDone?: boolean;
+  },
+  streamState: StreamState,
+): { label: string; color: "success" | "info" | "default" } {
   if (e.backlogCount > 0) return { label: "Syncing", color: "info" };
-  if (e.lastMaterializedAt) return { label: "Live", color: "success" };
+  // A completed backfill means the destination is fully populated — with an
+  // active stream the entity is live (waiting for events), not "Pending".
+  if (e.lastMaterializedAt || (e.backfillDone && streamState === "active")) {
+    return { label: "Live", color: "success" };
+  }
   return { label: "Pending", color: "default" };
 }
 
@@ -396,6 +404,22 @@ export function BackfillPanel({
   eventsFilterRef.current = eventsFilter;
 
   const flow = (flowsMap[workspaceId] || []).find(f => f._id === flowId);
+
+  // A stream (continuous ingest) only exists when the flow has a webhook or
+  // poll-schedule trigger. Reconcile-only flows (e.g. migrated legacy
+  // full-refresh syncs) run entirely on the periodic full backfill — showing
+  // a stream status for them is misleading.
+  const hasWebhookTrigger = Boolean(
+    flow?.webhookConfig?.enabled && flow?.webhookConfig?.endpoint,
+  );
+  const hasPollTrigger = Boolean(
+    flow?.schedule?.enabled && flow?.schedule?.cron,
+  );
+  const hasReconcileTrigger = Boolean(
+    flow?.backfillSchedule?.enabled && flow?.backfillSchedule?.cron,
+  );
+  const isReconcileOnly =
+    hasReconcileTrigger && !hasWebhookTrigger && !hasPollTrigger;
 
   const streamState: StreamState = cdc?.streamState || "idle";
   const bfStatus: BackfillStatus = cdc?.backfillStatus || "idle";
@@ -860,6 +884,11 @@ export function BackfillPanel({
     (sum, e) => sum + Math.max(e.destinationRowCount || 0, 0),
     0,
   );
+  // Null counts mean the destination has no row-count support — show "—"
+  // rather than a misleading 0.
+  const hasAnyDestinationCount = entities.some(
+    e => typeof e.destinationRowCount === "number",
+  );
 
   const ss = streamChipProps(streamState);
   const bs = backfillChipProps(bfStatus);
@@ -968,108 +997,131 @@ export function BackfillPanel({
             {/* Stream */}
             <Box sx={kpi}>
               <Typography sx={kpiLabel}>Stream</Typography>
-              <Box
-                sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.75 }}
-              >
-                <Chip
-                  label={ss.label}
-                  color={ss.color}
-                  size="small"
-                  sx={{ fontWeight: 600, fontSize: "0.75rem" }}
-                />
-                {cdc.lagSeconds !== null && (
-                  <Typography
-                    variant="caption"
-                    color={
-                      cdc.lagSeconds >= 0 && cdc.lagSeconds <= 5
-                        ? "success.main"
-                        : "text.secondary"
-                    }
-                    sx={{
-                      fontSize: "0.72rem",
-                      fontWeight:
-                        cdc.lagSeconds >= 0 && cdc.lagSeconds <= 5 ? 600 : 400,
-                    }}
-                  >
-                    {cdc.lagSeconds < 0
-                      ? "catching up"
-                      : cdc.lagSeconds <= 5
-                        ? "live"
-                        : `${formatLag(cdc.lagSeconds)} lag`}
-                  </Typography>
-                )}
-              </Box>
-              {(cdc as any).failedWebhookCount > 0 && (
-                <Typography
-                  variant="caption"
-                  color="error.main"
-                  sx={{ fontSize: "0.72rem", fontWeight: 600, mb: 0.5 }}
-                >
-                  {(cdc as any).failedWebhookCount} webhook
-                  {(cdc as any).failedWebhookCount === 1 ? "" : "s"} failed to
-                  enqueue
-                </Typography>
-              )}
-              <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
-                {streamState === "idle" && (
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    startIcon={<ResumeIcon sx={{ fontSize: 14 }} />}
-                    onClick={handleStartStream}
-                    disabled={busy}
-                    sx={{ textTransform: "none", fontSize: "0.72rem" }}
-                  >
-                    Start
-                  </Button>
-                )}
-                {streamState === "active" && (
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    startIcon={<PauseIcon sx={{ fontSize: 14 }} />}
-                    onClick={handlePauseStream}
-                    disabled={busy}
-                    sx={{ textTransform: "none", fontSize: "0.72rem" }}
-                  >
-                    Pause
-                  </Button>
-                )}
-                {streamState === "paused" && (
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    startIcon={<ResumeIcon sx={{ fontSize: 14 }} />}
-                    onClick={handleResumeStream}
-                    disabled={busy}
-                    sx={{ textTransform: "none", fontSize: "0.72rem" }}
-                  >
-                    Resume
-                  </Button>
-                )}
-                {streamState === "error" && (
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    color="error"
-                    startIcon={<RecoverIcon sx={{ fontSize: 14 }} />}
-                    onClick={handleRecoverStream}
-                    disabled={busy}
-                    sx={{ textTransform: "none", fontSize: "0.72rem" }}
-                  >
-                    Recover
-                  </Button>
-                )}
-                {cdc.webhookPendingCount > 0 && streamState !== "idle" && (
+              {isReconcileOnly ? (
+                <>
+                  <Typography sx={kpiValue}>—</Typography>
                   <Typography
                     variant="caption"
                     color="text.secondary"
-                    sx={{ alignSelf: "center", fontSize: "0.72rem" }}
+                    sx={{ display: "block", mt: 0.25, fontSize: "0.68rem" }}
                   >
-                    {cdc.webhookPendingCount.toLocaleString()} pending
+                    No streaming trigger — this sync runs on the periodic full
+                    reconcile.
                   </Typography>
-                )}
-              </Box>
+                </>
+              ) : (
+                <>
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 1,
+                      mb: 0.75,
+                    }}
+                  >
+                    <Chip
+                      label={ss.label}
+                      color={ss.color}
+                      size="small"
+                      sx={{ fontWeight: 600, fontSize: "0.75rem" }}
+                    />
+                    {cdc.lagSeconds !== null && (
+                      <Typography
+                        variant="caption"
+                        color={
+                          cdc.lagSeconds >= 0 && cdc.lagSeconds <= 5
+                            ? "success.main"
+                            : "text.secondary"
+                        }
+                        sx={{
+                          fontSize: "0.72rem",
+                          fontWeight:
+                            cdc.lagSeconds >= 0 && cdc.lagSeconds <= 5
+                              ? 600
+                              : 400,
+                        }}
+                      >
+                        {cdc.lagSeconds < 0
+                          ? "catching up"
+                          : cdc.lagSeconds <= 5
+                            ? "live"
+                            : `${formatLag(cdc.lagSeconds)} lag`}
+                      </Typography>
+                    )}
+                  </Box>
+                  {(cdc as any).failedWebhookCount > 0 && (
+                    <Typography
+                      variant="caption"
+                      color="error.main"
+                      sx={{ fontSize: "0.72rem", fontWeight: 600, mb: 0.5 }}
+                    >
+                      {(cdc as any).failedWebhookCount} webhook
+                      {(cdc as any).failedWebhookCount === 1 ? "" : "s"} failed
+                      to enqueue
+                    </Typography>
+                  )}
+                  <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
+                    {streamState === "idle" && (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<ResumeIcon sx={{ fontSize: 14 }} />}
+                        onClick={handleStartStream}
+                        disabled={busy}
+                        sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                      >
+                        Start
+                      </Button>
+                    )}
+                    {streamState === "active" && (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<PauseIcon sx={{ fontSize: 14 }} />}
+                        onClick={handlePauseStream}
+                        disabled={busy}
+                        sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                      >
+                        Pause
+                      </Button>
+                    )}
+                    {streamState === "paused" && (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<ResumeIcon sx={{ fontSize: 14 }} />}
+                        onClick={handleResumeStream}
+                        disabled={busy}
+                        sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                      >
+                        Resume
+                      </Button>
+                    )}
+                    {streamState === "error" && (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="error"
+                        startIcon={<RecoverIcon sx={{ fontSize: 14 }} />}
+                        onClick={handleRecoverStream}
+                        disabled={busy}
+                        sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                      >
+                        Recover
+                      </Button>
+                    )}
+                    {cdc.webhookPendingCount > 0 && streamState !== "idle" && (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ alignSelf: "center", fontSize: "0.72rem" }}
+                      >
+                        {cdc.webhookPendingCount.toLocaleString()} pending
+                      </Typography>
+                    )}
+                  </Box>
+                </>
+              )}
             </Box>
 
             {/* Backfill */}
@@ -1177,7 +1229,7 @@ export function BackfillPanel({
                   sx={{ fontSize: "0.68rem" }}
                 >
                   Destination rows:{" "}
-                  {destinationCounts === null
+                  {destinationCounts === null || !hasAnyDestinationCount
                     ? "—"
                     : totalDestinationRows.toLocaleString()}
                 </Typography>
@@ -1315,7 +1367,7 @@ export function BackfillPanel({
                   </TableHead>
                   <TableBody>
                     {entities.map(e => {
-                      const sc = entityStreamChip(e);
+                      const sc = entityStreamChip(e, streamState);
                       // A repartition (layout change) in progress/failed takes
                       // precedence over the normal stream chip.
                       const repart = e.repartition as {
@@ -1325,13 +1377,15 @@ export function BackfillPanel({
                       const streamChip: {
                         label: string;
                         color: "success" | "info" | "default" | "error";
-                      } =
+                      } | null =
                         repart?.status === "pending" ||
                         repart?.status === "running"
                           ? { label: "Repartitioning…", color: "info" }
                           : repart?.status === "failed"
                             ? { label: "Repartition failed", color: "error" }
-                            : sc;
+                            : isReconcileOnly
+                              ? null
+                              : sc;
                       const bc = entityBackfillChip(e);
                       const backfillChip =
                         e.execStatus === "syncing"
@@ -1341,10 +1395,10 @@ export function BackfillPanel({
                             : e.execStatus === "pending"
                               ? { label: "Queued", color: "default" as const }
                               : bc;
-                      const destinationRows = Math.max(
-                        e.destinationRowCount || 0,
-                        0,
-                      );
+                      const destinationRows =
+                        typeof e.destinationRowCount === "number"
+                          ? Math.max(e.destinationRowCount, 0)
+                          : null;
                       const syncingRowsWritten = Math.max(e.execRows || 0, 0);
                       const eventCount = e.lifetimeEventsProcessed || 0;
                       const isExpanded = expandedEntity === e.entity;
@@ -1413,25 +1467,36 @@ export function BackfillPanel({
                               </Box>
                             </TableCell>
                             <TableCell>
-                              <Tooltip
-                                title={
-                                  repart?.status === "failed" && repart?.error
-                                    ? `Repartition failed: ${repart.error}`
-                                    : ""
-                                }
-                              >
-                                <Chip
-                                  label={streamChip.label}
-                                  color={streamChip.color}
-                                  size="small"
-                                  variant="outlined"
-                                  sx={{
-                                    height: 22,
-                                    fontSize: "0.68rem",
-                                    fontWeight: 500,
-                                  }}
-                                />
-                              </Tooltip>
+                              {streamChip === null ? (
+                                <Tooltip title="No streaming trigger — this sync runs on the periodic full reconcile">
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                  >
+                                    —
+                                  </Typography>
+                                </Tooltip>
+                              ) : (
+                                <Tooltip
+                                  title={
+                                    repart?.status === "failed" && repart?.error
+                                      ? `Repartition failed: ${repart.error}`
+                                      : ""
+                                  }
+                                >
+                                  <Chip
+                                    label={streamChip.label}
+                                    color={streamChip.color}
+                                    size="small"
+                                    variant="outlined"
+                                    sx={{
+                                      height: 22,
+                                      fontSize: "0.68rem",
+                                      fontWeight: 500,
+                                    }}
+                                  />
+                                </Tooltip>
+                              )}
                             </TableCell>
                             <TableCell>
                               <Box
@@ -1470,9 +1535,18 @@ export function BackfillPanel({
                             <TableCell align="right">
                               <Typography
                                 fontSize="0.8rem"
-                                fontWeight={destinationRows > 0 ? 600 : 400}
+                                fontWeight={
+                                  (destinationRows ?? 0) > 0 ? 600 : 400
+                                }
+                                color={
+                                  destinationRows === null
+                                    ? "text.secondary"
+                                    : undefined
+                                }
                               >
-                                {destinationRows.toLocaleString()}
+                                {destinationRows === null
+                                  ? "—"
+                                  : destinationRows.toLocaleString()}
                               </Typography>
                             </TableCell>
                             <TableCell align="right">

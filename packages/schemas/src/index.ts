@@ -63,3 +63,23 @@ export {
 export { DEFAULT_APP_SCAFFOLD, createAppScaffold } from "./app-scaffold";
 
 export * from "./db-flow-form.schema";
+
+export {
+  SYNC_MODE_COMBOS,
+  allowedModes,
+  connectorSupportsIncremental,
+  effectiveIncrementalMode,
+  needsReconcileSuggestion,
+  resolveEntityIncrementalModes,
+  supportedCdcWriteModesForDestination,
+  validateSyncConfig,
+  type AllowedModesInput,
+  type AllowedModesResult,
+  type IncrementalCapabilities,
+  type IncrementalMode,
+  type SyncMode,
+  type SyncModeCombo,
+  type SyncWriteMode,
+  type ValidateSyncConfigInput,
+  type ValidateSyncConfigResult,
+} from "./sync-mode-matrix";

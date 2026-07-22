@@ -1,4 +1,8 @@
-import { BaseConnector, type WebhookCapabilities } from "./base/BaseConnector";
+import {
+  BaseConnector,
+  type WebhookCapabilities,
+  type IncrementalCapabilities,
+} from "./base/BaseConnector";
 import { IConnector } from "../database/workspace-schema";
 import * as fs from "fs";
 import * as path from "path";
@@ -20,6 +24,7 @@ interface ConnectorRegistryMetadata {
     author?: string;
     supportedEntities: string[];
     webhook: WebhookCapabilities;
+    incremental: IncrementalCapabilities;
   };
 }
 
@@ -30,6 +35,11 @@ const DEFAULT_WEBHOOK_CAPABILITIES: WebhookCapabilities = {
     providerLabel: "Provider",
     storesSecretAutomatically: false,
   },
+};
+
+const DEFAULT_INCREMENTAL_CAPABILITIES: IncrementalCapabilities = {
+  supported: false,
+  mode: "none",
 };
 
 /**
@@ -151,6 +161,7 @@ class ConnectorRegistry {
         metadata = {
           ...tempConnector.getMetadata(),
           webhook: tempConnector.getWebhookCapabilities(),
+          incremental: tempConnector.getIncrementalCapabilities(),
         };
       } catch {
         // If constructor fails, try to get static metadata
@@ -160,6 +171,7 @@ class ConnectorRegistry {
           description: `${dirName} connector`,
           supportedEntities: [],
           webhook: DEFAULT_WEBHOOK_CAPABILITIES,
+          incremental: DEFAULT_INCREMENTAL_CAPABILITIES,
         };
       }
 

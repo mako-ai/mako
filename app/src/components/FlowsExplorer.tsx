@@ -68,8 +68,12 @@ const classifyTriggers = (flow: any): FlowTreeNode["triggerKind"] => {
     flow.webhookConfig?.enabled === true &&
     typeof flow.webhookConfig?.endpoint === "string" &&
     flow.webhookConfig.endpoint.length > 0;
+  // The periodic full reconcile (backfillSchedule) is a cron cadence too —
+  // migrated legacy full-refresh syncs run on it exclusively.
   const hasSchedule =
-    flow.schedule?.enabled === true && Boolean(flow.schedule?.cron);
+    (flow.schedule?.enabled === true && Boolean(flow.schedule?.cron)) ||
+    (flow.backfillSchedule?.enabled === true &&
+      Boolean(flow.backfillSchedule?.cron));
   if (hasWebhook && hasSchedule) return "hybrid";
   if (hasWebhook) return "webhook";
   return "schedule";
