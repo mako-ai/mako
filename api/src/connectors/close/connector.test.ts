@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { CloseConnector } from "./connector";
+import { CloseConnector, formatCloseApiErrorResponse } from "./connector";
 import { buildCloseSearchFieldSelection } from "./schema";
 
 function createConnector() {
@@ -9,6 +9,24 @@ function createConnector() {
     type: "close",
     config: { api_key: "test-key" },
   } as any);
+}
+
+function testCloseApiErrorResponseIsFormattedForLogs() {
+  const error = Object.assign(new Error("Request failed with status code 400"), {
+    isAxiosError: true,
+    response: {
+      status: 400,
+      data: {
+        error: "Invalid field selection",
+        "field-errors": { _fields: ["Unsupported field"] },
+      },
+    },
+  });
+
+  assert.equal(
+    formatCloseApiErrorResponse(error),
+    '{"error":"Invalid field selection","field-errors":{"_fields":["Unsupported field"]}}',
+  );
 }
 
 function testUserWebhookEventsAreSupported() {
@@ -590,6 +608,7 @@ async function testExistingWebhookFetchesDetailWhenListOmitsSignatureKey() {
 }
 
 async function main() {
+  testCloseApiErrorResponseIsFormattedForLogs();
   testUserWebhookEventsAreSupported();
   testUserWebhookEventsAreMapped();
   testUserWebhookPayloadIsExtractedForProcessing();
