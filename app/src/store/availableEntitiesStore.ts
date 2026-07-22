@@ -31,6 +31,8 @@ export interface ConnectorEntityMetadata {
   keyColumns?: string[];
   /** Per-entity incremental-pull capability (Airbyte-style stream badge). */
   incrementalMode?: EntityIncrementalMode;
+  /** API query param / field the connector uses for since-filtering, if any. */
+  anchorField?: string;
 }
 
 /** Older connectors may return a flat string list instead of metadata. */
@@ -45,6 +47,7 @@ export interface FlattenedConnectorEntity {
   fields?: ConnectorEntityField[];
   keyColumns: string[];
   incrementalMode?: EntityIncrementalMode;
+  anchorField?: string;
 }
 
 function fallbackLabel(name: string): string {
@@ -79,6 +82,7 @@ export function flattenConnectorEntities(
           fields: sub.fields ?? meta.fields,
           keyColumns: sub.keyColumns ?? meta.keyColumns ?? ["id"],
           incrementalMode: sub.incrementalMode ?? meta.incrementalMode,
+          anchorField: sub.anchorField ?? meta.anchorField,
         });
       }
       continue;
@@ -93,6 +97,7 @@ export function flattenConnectorEntities(
       fields: meta.fields,
       keyColumns: meta.keyColumns ?? ["id"],
       incrementalMode: meta.incrementalMode,
+      anchorField: meta.anchorField,
     });
   }
 

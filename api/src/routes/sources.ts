@@ -714,9 +714,13 @@ dataSourceRoutes.openapi(
           node.keyColumns = ["id"];
         }
         if (incrementalCapabilities) {
-          node.incrementalMode =
-            incrementalCapabilities.perEntity?.[schemaKey]?.mode ??
-            incrementalCapabilities.mode;
+          const override = incrementalCapabilities.perEntity?.[schemaKey];
+          node.incrementalMode = override?.mode ?? incrementalCapabilities.mode;
+          const anchor =
+            override?.anchorField ?? incrementalCapabilities.anchorField;
+          if (anchor) {
+            node.anchorField = anchor;
+          }
         }
       };
 

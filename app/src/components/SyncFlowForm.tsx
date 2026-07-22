@@ -169,16 +169,54 @@ const SCHEDULE_PRESETS = [
  * `IncrementalMode` (BaseConnector.getIncrementalCapabilities). Shown in the
  * Entities table regardless of the currently-selected Sync Mode so users can
  * see stream-level capability before deciding.
+ *
+ * Labels stay short so the Sync column doesn't truncate; the tooltip carries
+ * the mode-specific explanation (never the connector-level warning string —
+ * that was making every row sound identical).
  */
 const INCREMENTAL_MODE_BADGE: Record<
   string,
-  { label: string; color: "success" | "info" | "warning" | "default" }
+  {
+    label: string;
+    color: "success" | "info" | "warning" | "default";
+    tooltip: string;
+  }
 > = {
-  native: { label: "Incremental", color: "success" },
-  "client-filter": { label: "Incremental (full scan)", color: "info" },
-  "created-anchor": { label: "New records only", color: "warning" },
-  none: { label: "Full re-pull only", color: "default" },
+  native: {
+    label: "Incremental",
+    color: "success",
+    tooltip:
+      "API supports changes-since filtering. Incremental polls request only new/updated rows.",
+  },
+  "client-filter": {
+    label: "Scan + filter",
+    color: "info",
+    tooltip:
+      "Polls still download the stream, then Mako drops older rows client-side. Correct for updates, but not cheaper than a full refresh.",
+  },
+  "created-anchor": {
+    label: "Creates only",
+    color: "warning",
+    tooltip:
+      "Polls only see newly created rows. Updates to older rows are invisible to polls — use webhooks or a periodic full reconcile.",
+  },
+  none: {
+    label: "Snapshot",
+    color: "default",
+    tooltip:
+      "No changes-since filter. An Incremental poll re-fetches the full list (or this stream is webhook-only).",
+  },
 };
+
+function incrementalBadgeTooltip(
+  mode: string | undefined,
+  anchorField?: string,
+): string {
+  const badge = mode ? INCREMENTAL_MODE_BADGE[mode] : undefined;
+  if (!badge) return "Incremental capability unknown for this entity.";
+  if (!anchorField) return badge.tooltip;
+  return `${badge.tooltip} Anchor: ${anchorField}.`;
+}
 
 const STEPS = [
   { label: "Source", description: "Where the data comes from" },
@@ -515,10 +553,10 @@ export function SyncFlowForm({
   // layout-mode-specific columns (partition/index) or nothing ("none").
   const entityGridTemplate =
     layoutMode === "partition"
-      ? "36px minmax(110px, 1.3fr) minmax(70px, 0.6fr) minmax(120px, 0.9fr) minmax(100px, 1fr) 80px minmax(100px, 1fr)"
+      ? "36px minmax(110px, 1.3fr) minmax(70px, 0.6fr) minmax(110px, 0.85fr) minmax(100px, 1fr) 80px minmax(100px, 1fr)"
       : layoutMode === "index"
-        ? "36px minmax(110px, 1.3fr) minmax(70px, 0.6fr) minmax(120px, 0.9fr) minmax(100px, 1fr) minmax(100px, 1fr)"
-        : "36px minmax(110px, 1.3fr) minmax(70px, 0.6fr) minmax(120px, 0.9fr)";
+        ? "36px minmax(110px, 1.3fr) minmax(70px, 0.6fr) minmax(110px, 0.85fr) minmax(100px, 1fr) minmax(100px, 1fr)"
+        : "36px minmax(110px, 1.3fr) minmax(70px, 0.6fr) minmax(110px, 0.85fr)";
   const requiresQueries = !!transferQueriesSchema;
   const requiresDestinationDatabaseName =
     !isCdcCapableDest && availableDatabases.length > 0;
@@ -2017,19 +2055,17 @@ export function SyncFlowForm({
                                 </Tooltip>
                                 {incrementalBadge ? (
                                   <Tooltip
-                                    title={
-                                      incrementalCheckEntities.includes(
-                                        layout.entity,
-                                      ) && incrementalWarning
-                                        ? incrementalWarning
-                                        : `Incremental capability for this entity: ${entityMeta?.incrementalMode}`
-                                    }
+                                    title={incrementalBadgeTooltip(
+                                      entityMeta?.incrementalMode,
+                                      entityMeta?.anchorField,
+                                    )}
                                   >
                                     <Chip
                                       size="small"
                                       variant="outlined"
                                       label={incrementalBadge.label}
                                       color={incrementalBadge.color}
+                                      sx={{ maxWidth: "100%" }}
                                     />
                                   </Tooltip>
                                 ) : (
