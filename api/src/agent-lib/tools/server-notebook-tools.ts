@@ -218,8 +218,9 @@ export function createNotebookServerTools({
         const blocks = [...doc.blocks];
         blocks.splice(input.atIndex ?? blocks.length, 0, cell);
         const version = await saveBlocks(id, blocks);
-        if (version == null)
+        if (version == null) {
           return { success: false, error: "Failed to add cell" };
+        }
         return { success: true, cellId: cell.id, type: cell.type };
       },
     }),
@@ -258,8 +259,9 @@ export function createNotebookServerTools({
             : b,
         );
         const version = await saveBlocks(id, blocks);
-        if (version == null)
+        if (version == null) {
           return { success: false, error: "Failed to edit cell" };
+        }
         return { success: true, cellId: input.cellId };
       },
     }),
@@ -282,8 +284,9 @@ export function createNotebookServerTools({
           id,
           doc.blocks.filter(b => b.id !== input.cellId),
         );
-        if (version == null)
+        if (version == null) {
           return { success: false, error: "Failed to delete cell" };
+        }
         return { success: true, cellId: input.cellId };
       },
     }),
@@ -303,8 +306,9 @@ export function createNotebookServerTools({
         const doc = await store.get(workspaceId, id);
         if (!doc) return { success: false, error: `Notebook ${id} not found` };
         const cell = doc.blocks.find(b => b.id === input.cellId);
-        if (!cell)
+        if (!cell) {
           return { success: false, error: `No cell with id "${input.cellId}"` };
+        }
         if (cell.type !== "sql") {
           return {
             success: false,
@@ -322,11 +326,12 @@ export function createNotebookServerTools({
           _id: new Types.ObjectId(cell.connectionId),
           workspaceId: new Types.ObjectId(workspaceId),
         });
-        if (!database)
+        if (!database) {
           return {
             success: false,
             error: "Data source not found in this workspace.",
           };
+        }
 
         const started = Date.now();
         const result = await databaseConnectionService.executeQuery(
@@ -389,8 +394,9 @@ export function createNotebookServerTools({
         const doc = await store.get(workspaceId, id);
         if (!doc) return { success: false, error: `Notebook ${id} not found` };
         const cell = doc.blocks.find(b => b.id === input.cellId);
-        if (!cell)
+        if (!cell) {
           return { success: false, error: `No cell with id "${input.cellId}"` };
+        }
         if (cell.type !== "code") {
           return {
             success: false,
