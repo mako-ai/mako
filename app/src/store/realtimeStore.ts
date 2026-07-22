@@ -27,6 +27,7 @@ import { useAppStore } from "./appStore";
 import { useDashboardStore } from "./dashboardStore";
 import { useDbtStore } from "./dbtStore";
 import { useNotebookStore } from "./notebookStore";
+import { useNotebookTreeStore } from "./notebookTreeStore";
 import { focusNotebookTab } from "../notebook-runtime/shell";
 import { useNotebookPresenceStore } from "./notebookPresenceStore";
 import { computeDashboardStateHash } from "../utils/stateHash";
@@ -135,6 +136,9 @@ export type RealtimeEvent =
       userName: string;
       activeCellId?: string | null;
       gone?: boolean;
+    }
+  | {
+      type: "notebook.tree.updated";
     };
 
 export type RealtimeStatus = "idle" | "connecting" | "open" | "reconnecting";
@@ -632,6 +636,11 @@ export const useRealtimeStore = create<RealtimeStore>()(
       });
     };
 
+    const handleNotebookTreeUpdated = () => {
+      const ws = get().workspaceId;
+      if (ws) void useNotebookTreeStore.getState().refresh(ws);
+    };
+
     const handleEvent = (event: RealtimeEvent) => {
       switch (event.type) {
         case "console.updated":
@@ -645,6 +654,9 @@ export const useRealtimeStore = create<RealtimeStore>()(
           break;
         case "notebook.updated":
           handleNotebookUpdated(event);
+          break;
+        case "notebook.tree.updated":
+          handleNotebookTreeUpdated();
           break;
         case "notebook.presence":
           handleNotebookPresence(event);

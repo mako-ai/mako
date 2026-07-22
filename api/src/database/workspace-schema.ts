@@ -3287,6 +3287,37 @@ export interface IDashboard extends Document {
 }
 
 /**
+ * NotebookFolder model interface — organizational folders for notebooks
+ * (My Notebooks vs Workspace sections mirror dashboards/consoles).
+ */
+export interface INotebookFolder extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  name: string;
+  parentId?: Types.ObjectId;
+  ownerId?: string;
+  access: "private" | "workspace";
+  createdAt: Date;
+}
+
+/**
+ * NotebookIndex — Mongo metadata sidecar for GCS/filesystem notebook bodies.
+ * One row per notebook id (UUID string matching the object-store filename).
+ */
+export interface INotebookIndex extends Document {
+  notebookId: string;
+  workspaceId: Types.ObjectId;
+  name: string;
+  folderId?: Types.ObjectId;
+  ownerId: string;
+  access: "private" | "workspace";
+  /** Role workspace members get when `access === "workspace"`. */
+  workspaceRole?: ResourceShareRole;
+  sharedWith?: IResourceShareEntry[];
+  updatedAt: Date;
+}
+
+/**
  * DashboardFolder model interface
  */
 export interface IDashboardFolder extends Document {
@@ -3669,6 +3700,85 @@ DashboardSchema.index(
 );
 
 /**
+ * NotebookFolder Schema
+ */
+const NotebookFolderSchema = new Schema<INotebookFolder>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    parentId: {
+      type: Schema.Types.ObjectId,
+      ref: "NotebookFolder",
+    },
+    ownerId: {
+      type: String,
+      ref: "User",
+    },
+    access: {
+      type: String,
+      enum: ["private", "workspace"],
+      default: "private",
+    },
+  },
+  {
+    timestamps: { createdAt: true, updatedAt: false },
+  },
+);
+
+NotebookFolderSchema.index({ workspaceId: 1, parentId: 1 });
+NotebookFolderSchema.index({ workspaceId: 1, access: 1 });
+
+/**
+ * NotebookIndex Schema
+ */
+const NotebookIndexSchema = new Schema<INotebookIndex>(
+  {
+    notebookId: { type: String, required: true },
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    name: { type: String, required: true, trim: true },
+    folderId: {
+      type: Schema.Types.ObjectId,
+      ref: "NotebookFolder",
+    },
+    ownerId: { type: String, ref: "User", required: true },
+    access: {
+      type: String,
+      enum: ["private", "workspace"],
+      default: "private",
+    },
+    workspaceRole: {
+      type: String,
+      enum: ["viewer", "editor"],
+      default: "viewer",
+    },
+    sharedWith: {
+      type: [ResourceShareEntrySchema],
+      default: [],
+    },
+    updatedAt: { type: Date, default: Date.now },
+  },
+  {
+    timestamps: false,
+  },
+);
+
+NotebookIndexSchema.index({ workspaceId: 1, notebookId: 1 }, { unique: true });
+NotebookIndexSchema.index({ workspaceId: 1, folderId: 1 });
+NotebookIndexSchema.index({ workspaceId: 1, access: 1, ownerId: 1 });
+
+/**
  * DashboardFolder Schema
  */
 const DashboardFolderSchema = new Schema<IDashboardFolder>(
@@ -3873,6 +3983,14 @@ export const MaterializationRun = mongoose.model<IMaterializationRun>(
 export const DashboardFolder = mongoose.model<IDashboardFolder>(
   "DashboardFolder",
   DashboardFolderSchema,
+);
+export const NotebookFolder = mongoose.model<INotebookFolder>(
+  "NotebookFolder",
+  NotebookFolderSchema,
+);
+export const NotebookIndex = mongoose.model<INotebookIndex>(
+  "NotebookIndex",
+  NotebookIndexSchema,
 );
 export const Dashboard = mongoose.model<IDashboard>(
   "Dashboard",
