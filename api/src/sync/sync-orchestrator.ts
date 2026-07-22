@@ -1437,10 +1437,10 @@ export async function performOverwriteTruncate(
   });
 
   await cdcAdapter.truncateLiveTable(cdcLayout);
-  orchestratorLogger.info(
-    "Overwrite mode: cleared live table (once per run)",
-    { entity, flowId },
-  );
+  orchestratorLogger.info("Overwrite mode: cleared live table (once per run)", {
+    entity,
+    flowId,
+  });
 }
 
 export async function performPrepareStaging(

@@ -416,6 +416,77 @@ async function testOpportunitySearchBackfillRequestsAndFlattensCustomFields() {
   );
 }
 
+async function testExpiredCursorRetriesWithNormalizedWindowStart() {
+  const connector = createConnector();
+  const searchBodies: Record<string, unknown>[] = [];
+  let requestCount = 0;
+
+  (connector as any).closeApi = {
+    get: async () => ({ data: { fields: [] } }),
+    post: async (_url: string, body: Record<string, unknown>) => {
+      searchBodies.push(body);
+      requestCount++;
+
+      if (requestCount === 1) {
+        throw Object.assign(new Error("Request failed with status code 400"), {
+          isAxiosError: true,
+          response: {
+            status: 400,
+            headers: {},
+            data: { "field-errors": { cursor: ["Invalid cursor"] } },
+          },
+        });
+      }
+
+      return {
+        data: {
+          data: [
+            {
+              id: "lead_1",
+              name: "Lead 1",
+              date_created: "2025-03-18T15:49:15.000000+00:00",
+              date_updated: "2025-03-18T15:49:15.000000+00:00",
+            },
+          ],
+          cursor: null,
+        },
+      };
+    },
+  };
+
+  const state = await connector.fetchEntityChunk({
+    entity: "leads",
+    state: {
+      totalProcessed: 40_117,
+      hasMore: true,
+      iterationsInChunk: 0,
+      metadata: {
+        pageCursor: "expired-close-cursor",
+        lastSeenDateCreated: "2025-03-18T15:49:14.689000+00:00",
+        windowStart: "2025-03-18T08:13:38.996Z",
+        windowEnd: "2025-03-25T08:13:38.996Z",
+      },
+    },
+    onBatch: async () => {},
+    maxIterations: 1,
+    rateLimitDelay: 1,
+  });
+
+  assert.equal(searchBodies.length, 2);
+  assert.equal(searchBodies[0].cursor, "expired-close-cursor");
+  assert.ok(!("cursor" in searchBodies[1]));
+  const retriedQuery = searchBodies[1].query as {
+    queries: Array<{
+      condition?: { on_or_after?: { value?: string } };
+    }>;
+  };
+  assert.equal(
+    retriedQuery.queries[1].condition?.on_or_after?.value,
+    "2025-03-18T15:49:14.689Z",
+  );
+  assert.equal(state.metadata?.pageCursor, null);
+}
+
 async function testCreateWebhookSubscriptionReturnsSignatureKey() {
   const connector = createConnector();
   const endpointUrl = "https://app.mako.ai/api/webhooks/ws/flow";
@@ -534,6 +605,7 @@ async function main() {
   testContactBackfillFlattensCustomFields();
   testSearchFieldSelectionIncludesCustomFieldSelectors();
   await testOpportunitySearchBackfillRequestsAndFlattensCustomFields();
+  await testExpiredCursorRetriesWithNormalizedWindowStart();
   await testCreateWebhookSubscriptionReturnsSignatureKey();
   await testExistingWebhookSubscriptionReturnsSignatureKey();
   await testExistingWebhookFetchesDetailWhenListOmitsSignatureKey();

@@ -45,10 +45,9 @@ const fakeAdapter = {
 };
 
 vi.mock("./adapters/registry", async () => {
-  const actual =
-    await vi.importActual<typeof import("./adapters/registry")>(
-      "./adapters/registry",
-    );
+  const actual = await vi.importActual<typeof import("./adapters/registry")>(
+    "./adapters/registry",
+  );
   return {
     ...actual,
     resolveCdcDestinationAdapter: vi.fn(() => fakeAdapter),
@@ -105,9 +104,7 @@ describe("CdcConsumerService.materializeEntity — writeMode propagation (bug B3
         flowId: FLOW_ID,
         entity: "users",
       });
-      expect(spy).toHaveBeenCalledWith(
-        expect.objectContaining({ writeMode }),
-      );
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ writeMode }));
       spy.mockRestore();
     }
     flowDoc.writeMode = "append";

@@ -1507,7 +1507,7 @@ export class CloseConnector extends BaseConnector {
           const lastRow = data[data.length - 1];
           const lastValue = lastRow?.[windowField];
           if (typeof lastValue === "string" && lastValue.length > 0) {
-            lastSeenWindowValue = lastValue;
+            lastSeenWindowValue = new Date(lastValue).toISOString();
           }
         }
 
@@ -1583,6 +1583,9 @@ export class CloseConnector extends BaseConnector {
           // value so we don't re-emit rows already sent via onBatch.
           // If we haven't fetched anything yet in this window, halve the span.
           if (lastSeenWindowValue) {
+            const normalizedLastSeenWindowValue = new Date(
+              lastSeenWindowValue,
+            ).toISOString();
             this.emitSyncLog(
               "info",
               "Close cursor limit reached, advancing past fetched rows",
@@ -1591,11 +1594,11 @@ export class CloseConnector extends BaseConnector {
                 recordsFetched: recordCount,
                 windowStart,
                 windowEnd,
-                advancingTo: lastSeenWindowValue,
+                advancingTo: normalizedLastSeenWindowValue,
                 windowField,
               },
             );
-            windowStart = lastSeenWindowValue;
+            windowStart = normalizedLastSeenWindowValue;
             lastSeenWindowValue = null;
           } else {
             this.emitSyncLog(
