@@ -479,6 +479,8 @@ export const cdcBackfillCheckpointService = {
     runId: string;
     entity: string;
     fetchState?: FetchState;
+    /** Rows this backfill run wrote to the destination for this entity. */
+    rowsWritten?: number;
   }) => {
     const cursor = {
       ...(params.fetchState || {
@@ -496,12 +498,28 @@ export const cdcBackfillCheckpointService = {
       cursor,
     });
 
+    // Backfills write directly via the adapter (applyBatch / staging merge),
+    // bypassing the event-store consumer that normally maintains
+    // lifetimeRowsApplied — account for those rows here so the UI's
+    // "Rows applied" reflects backfilled data too.
+    const rowsWritten =
+      typeof params.rowsWritten === "number" &&
+      Number.isFinite(params.rowsWritten) &&
+      params.rowsWritten > 0
+        ? params.rowsWritten
+        : 0;
+
     await CdcEntityState.updateOne(
       {
         flowId: new Types.ObjectId(params.flowId),
         entity: params.entity,
       },
-      { $set: { backfillCompletedAt: new Date() } },
+      {
+        $set: { backfillCompletedAt: new Date() },
+        ...(rowsWritten > 0
+          ? { $inc: { lifetimeRowsApplied: rowsWritten } }
+          : {}),
+      },
     );
   },
   clearRun: async (params: {

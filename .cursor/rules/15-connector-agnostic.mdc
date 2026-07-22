@@ -57,9 +57,45 @@ The frontend reads `schema.transferQueries` and dynamically renders the query ed
 - **Every field in `getConfigSchema()` must be read at runtime.** If the schema exposes `api_base_url`, the connector client must use `this.dataSource.config.api_base_url` — never hardcode the URL.
 - Credentials live on `this.dataSource.config` (decrypted at sync time). Fields with `type: "password"` or `encrypted: true` are encrypted at rest automatically.
 
+## Incremental poll honesty (`getIncrementalCapabilities`)
+
+Periodic Incremental sync is only correct when the connector can pull
+changes-since-X. Declare capability honestly via
+`getIncrementalCapabilities()` (wired through the registry →
+`GET /api/connectors/types` → SyncFlowForm). Shared combo/validation logic
+lives in `@mako/schemas` (`allowedModes` / `validateSyncConfig`) — do not
+duplicate mode matrices in the UI.
+
+| `mode` | Meaning | UI / validation |
+| --- | --- | --- |
+| `native` | Request includes a real since/updated filter the API honors | Incremental allowed |
+| `client-filter` | Full API scan, then drop older rows client-side | Incremental allowed (warn: not cheaper) |
+| `created-anchor` | API only filters by created-at — **misses updates** | Incremental + warn; suggest reconcile/webhooks |
+| `none` | `since` ignored / full re-pull | Hide Incremental for that entity |
+
+Rules for connector authors:
+
+- **Declare per entity** when modes differ (`perEntity`). Fallback `mode` is
+  the worst case for undeclared entities.
+- **`native` requires a real request param.** Spot-check in
+  `incremental-capability.test.ts` that `fetchEntityChunk({ since })` puts the
+  anchor into the HTTP call (e.g. Wise `createdDateStart`, Close
+  `date_updated`, Stripe `created.gte`).
+- **Never keep records missing a timestamp** during client filters
+  (`return ts ? … : false`). Keeping them silently turns Incremental into a
+  full re-pull of undated rows.
+- **Do not branch on connector type in SyncFlowForm** for incremental UI —
+  read `entry.incremental` from the catalog. Reconcile suggestions use
+  `needsReconcileSuggestion()` from `@mako/schemas`.
+- Prefer webhooks + periodic full reconcile when the vendor API cannot expose
+  updated-since (created-anchor / none streams).
+
+See `docs/sync-modes-hardening-plan.md` Phase 4/6.
+
 ## Enforcement Guidance
 
 - During reviews, reject edits that add `if (type === "xyz")` checks outside connector folders.
 - Prefer updating connector schemas over UI code to change field order, visibility, or control types.
 - Check for `transferQueries` schema property presence, not connector type names.
 - Verify that all schema fields are wired to the connector client — dead schema fields confuse users.
+- Reject connectors that claim `native` incremental without applying `since` in the request.

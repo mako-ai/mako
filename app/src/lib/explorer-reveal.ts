@@ -38,7 +38,8 @@ export type RevealExplorer =
   | "apps"
   | "connectors"
   | "flows"
-  | "dbt";
+  | "dbt"
+  | "notebooks";
 
 export interface ExplorerRevealTarget {
   explorer: RevealExplorer;
@@ -109,11 +110,13 @@ export function tabRevealTarget(
       // Database explorer node ids depend on the (lazily-loaded) schema tree,
       // so there is no stable reveal id to scroll to.
       return null;
+    case "members":
+    case "notebook": {
+      const id = meta.notebookId as string | undefined;
+      return id ? { explorer: "notebooks", nodeId: id } : null;
+    }
     case "plan":
     case "settings":
-    case "members":
-    case "notebook":
-      // No sidebar tree row (notebook reveal lands with the list endpoint).
       return null;
     case "dbt-file": {
       const projectId = meta.projectId as string | undefined;

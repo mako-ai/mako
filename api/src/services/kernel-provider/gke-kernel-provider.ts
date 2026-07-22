@@ -30,7 +30,9 @@ const NAMESPACE = process.env.KERNEL_NAMESPACE || "mako-notebooks";
 const DEPLOYMENT = process.env.KERNEL_POOL_DEPLOYMENT || "kernel-pool";
 const GATEWAY_PORT = process.env.KERNEL_GATEWAY_PORT || "8888";
 const POD_LABEL = "app.kubernetes.io/name=mako-kernel";
-const ACQUIRE_TIMEOUT_MS = Number(process.env.KERNEL_ACQUIRE_TIMEOUT_MS || 180_000);
+const ACQUIRE_TIMEOUT_MS = Number(
+  process.env.KERNEL_ACQUIRE_TIMEOUT_MS || 180_000,
+);
 const POLL_INTERVAL_MS = 3_000;
 
 let googleAuth: GoogleAuth | null = null;
@@ -43,7 +45,9 @@ function auth(): GoogleAuth {
 
 /** True when the GKE provider has the endpoint/CA it needs to run. */
 export function isGkeProviderConfigured(): boolean {
-  return Boolean(process.env.KERNEL_GKE_ENDPOINT && process.env.KERNEL_GKE_CA_CERT);
+  return Boolean(
+    process.env.KERNEL_GKE_ENDPOINT && process.env.KERNEL_GKE_CA_CERT,
+  );
 }
 
 function podIsReady(pod: V1Pod): boolean {
@@ -151,7 +155,9 @@ export class GKEKernelProvider implements KernelProvider {
   release(endpoint: KernelEndpoint): Promise<void> {
     // v1: pods stay in the warm pool for reuse; the session service deletes the
     // kernel via the gateway, and the Inngest reaper scales the pool back down.
-    logger.debug("release (no-op, pod stays in pool)", { pod: endpoint.podName });
+    logger.debug("release (no-op, pod stays in pool)", {
+      pod: endpoint.podName,
+    });
     return Promise.resolve();
   }
 }

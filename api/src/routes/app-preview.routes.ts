@@ -74,9 +74,9 @@ appPreviewRoutes.get("/:token", async c => {
           contents: f.contents,
         })),
         dependencies: def.dependencies || {},
-        dataBindings: ((def.dataBindings || []) as Array<
-          Record<string, unknown>
-        >).map(b => ({
+        dataBindings: (
+          (def.dataBindings || []) as Array<Record<string, unknown>>
+        ).map(b => ({
           id: b.id,
           name: b.name,
           materialization: "live" as const,

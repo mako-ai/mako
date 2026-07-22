@@ -13,6 +13,7 @@ import {
   ProvisionWebhookResult,
   type WebhookCapabilities,
   type ConnectorEntitySchema,
+  type IncrementalCapabilities,
 } from "../base/BaseConnector";
 import {
   resolveCloseEntitySchema,
@@ -1082,7 +1083,7 @@ export class CloseConnector extends BaseConnector {
   private async fetchViaSearchApi(
     options: ResumableFetchOptions,
   ): Promise<FetchState> {
-    const { entity, onBatch, onProgress, state } = options;
+    const { entity, onBatch, onProgress, state, since } = options;
     const api = this.getCloseClient();
     const batchSize = 200;
     const rateLimitDelay = Math.max(
@@ -1093,6 +1094,12 @@ export class CloseConnector extends BaseConnector {
 
     let recordCount = state?.totalProcessed || 0;
     let iterations = 0;
+
+    // Incremental polls window on `date_updated` starting at `since`.
+    // Full backfills keep the historical `date_created` walk (oldest → now).
+    const windowField: "date_created" | "date_updated" = since
+      ? "date_updated"
+      : "date_created";
 
     // Date-window cursor: "before" boundary for descending pagination.
     // Close's Search API ignores _skip — we use native cursor tokens for
@@ -1296,19 +1303,40 @@ export class CloseConnector extends BaseConnector {
       state?.metadata?.windowStart ?? dateWindowCursor ?? null;
     let windowEnd: string | null = state?.metadata?.windowEnd ?? null;
     let pageCursor: string | null = state?.metadata?.pageCursor ?? null;
-    let lastSeenDateCreated: string | null =
-      state?.metadata?.lastSeenDateCreated ?? null;
+    let lastSeenWindowValue: string | null =
+      state?.metadata?.lastSeenWindowValue ??
+      state?.metadata?.lastSeenDateCreated ??
+      null;
 
     if (!state && onProgress) {
       try {
+        const countQueries: any[] = [
+          { negate: false, type: "object_type", object_type: objectType },
+        ];
+        if (since) {
+          countQueries.push({
+            type: "field_condition",
+            field: {
+              type: "regular_field",
+              object_type: objectType,
+              field_name: windowField,
+            },
+            condition: {
+              type: "moment_range",
+              on_or_after: {
+                type: "fixed_utc",
+                value: since.toISOString(),
+              },
+            },
+          });
+        } else {
+          countQueries.push({ negate: false, type: "match_all" });
+        }
         const countResp = await api.post("/data/search/", {
           query: {
             negate: false,
             type: "and",
-            queries: [
-              { negate: false, type: "object_type", object_type: objectType },
-              { negate: false, type: "match_all" },
-            ],
+            queries: countQueries,
           },
           include_counts: true,
           results_limit: 0,
@@ -1324,37 +1352,41 @@ export class CloseConnector extends BaseConnector {
 
     // Resolve the date range on first invocation
     if (!windowStart) {
-      const oldestResp = await api.post("/data/search/", {
-        query: {
-          negate: false,
-          type: "and",
-          queries: [
-            { negate: false, type: "object_type", object_type: objectType },
-            { negate: false, type: "match_all" },
-          ],
-        },
-        _limit: 1,
-        sort: [
-          {
-            direction: "asc",
-            field: {
-              object_type: objectType,
-              type: "regular_field",
-              field_name: "date_created",
-            },
+      if (since) {
+        windowStart = since.toISOString();
+      } else {
+        const oldestResp = await api.post("/data/search/", {
+          query: {
+            negate: false,
+            type: "and",
+            queries: [
+              { negate: false, type: "object_type", object_type: objectType },
+              { negate: false, type: "match_all" },
+            ],
           },
-        ],
-        _fields: { [objectType]: ["id", "date_created"] },
-      });
-      const oldestRow = oldestResp.data?.data?.[0];
-      if (!oldestRow) {
-        return {
-          totalProcessed: recordCount,
-          hasMore: false,
-          iterationsInChunk: 0,
-        };
+          _limit: 1,
+          sort: [
+            {
+              direction: "asc",
+              field: {
+                object_type: objectType,
+                type: "regular_field",
+                field_name: "date_created",
+              },
+            },
+          ],
+          _fields: { [objectType]: ["id", "date_created"] },
+        });
+        const oldestRow = oldestResp.data?.data?.[0];
+        if (!oldestRow) {
+          return {
+            totalProcessed: recordCount,
+            hasMore: false,
+            iterationsInChunk: 0,
+          };
+        }
+        windowStart = new Date(oldestRow.date_created).toISOString();
       }
-      windowStart = new Date(oldestRow.date_created).toISOString();
     }
 
     // Upper bound: far-future sentinel so the last window captures everything
@@ -1387,13 +1419,15 @@ export class CloseConnector extends BaseConnector {
             windowStart,
             windowEnd,
             pageCursor: null,
-            lastSeenDateCreated,
+            lastSeenWindowValue,
+            windowField,
           },
         };
       }
 
       try {
-        const secondarySortField = "date_updated";
+        const secondarySortField =
+          windowField === "date_updated" ? "date_created" : "date_updated";
         const body: any = {
           query: {
             negate: false,
@@ -1409,7 +1443,7 @@ export class CloseConnector extends BaseConnector {
                 field: {
                   type: "regular_field",
                   object_type: objectType,
-                  field_name: "date_created",
+                  field_name: windowField,
                 },
                 condition: {
                   type: "moment_range",
@@ -1426,7 +1460,7 @@ export class CloseConnector extends BaseConnector {
               field: {
                 object_type: objectType,
                 type: "regular_field",
-                field_name: "date_created",
+                field_name: windowField,
               },
             },
             {
@@ -1471,8 +1505,9 @@ export class CloseConnector extends BaseConnector {
           if (onProgress) onProgress(recordCount, undefined);
 
           const lastRow = data[data.length - 1];
-          if (lastRow?.date_created) {
-            lastSeenDateCreated = lastRow.date_created;
+          const lastValue = lastRow?.[windowField];
+          if (typeof lastValue === "string" && lastValue.length > 0) {
+            lastSeenWindowValue = new Date(lastValue).toISOString();
           }
         }
 
@@ -1493,6 +1528,7 @@ export class CloseConnector extends BaseConnector {
               windowStart,
               upperBound,
               WINDOW_DAYS,
+              windowField,
             );
             if (!nextStart) {
               // No more data until upperBound — done
@@ -1504,7 +1540,8 @@ export class CloseConnector extends BaseConnector {
                   windowStart,
                   windowEnd,
                   pageCursor: null,
-                  lastSeenDateCreated,
+                  lastSeenWindowValue,
+                  windowField,
                 },
               };
             }
@@ -1542,10 +1579,13 @@ export class CloseConnector extends BaseConnector {
           error.response?.data?.["field-errors"]?.cursor
         ) {
           // Cursor expired / limit reached inside a window.
-          // Advance windowStart to the last successfully fetched date_created
-          // so we don't re-emit rows already sent via onBatch.
+          // Advance windowStart to the last successfully fetched window
+          // value so we don't re-emit rows already sent via onBatch.
           // If we haven't fetched anything yet in this window, halve the span.
-          if (lastSeenDateCreated) {
+          if (lastSeenWindowValue) {
+            const normalizedLastSeenWindowValue = new Date(
+              lastSeenWindowValue,
+            ).toISOString();
             this.emitSyncLog(
               "info",
               "Close cursor limit reached, advancing past fetched rows",
@@ -1554,11 +1594,12 @@ export class CloseConnector extends BaseConnector {
                 recordsFetched: recordCount,
                 windowStart,
                 windowEnd,
-                advancingTo: lastSeenDateCreated,
+                advancingTo: normalizedLastSeenWindowValue,
+                windowField,
               },
             );
-            windowStart = lastSeenDateCreated;
-            lastSeenDateCreated = null;
+            windowStart = normalizedLastSeenWindowValue;
+            lastSeenWindowValue = null;
           } else {
             this.emitSyncLog(
               "info",
@@ -1588,7 +1629,13 @@ export class CloseConnector extends BaseConnector {
       totalProcessed: recordCount,
       hasMore: true,
       iterationsInChunk: iterations,
-      metadata: { windowStart, windowEnd, pageCursor, lastSeenDateCreated },
+      metadata: {
+        windowStart,
+        windowEnd,
+        pageCursor,
+        lastSeenWindowValue,
+        windowField,
+      },
     };
   }
 
@@ -1608,6 +1655,7 @@ export class CloseConnector extends BaseConnector {
     gapStart: string,
     upperBound: string,
     windowDays: number,
+    windowField: "date_created" | "date_updated" = "date_created",
   ): Promise<string | null> {
     let lo = new Date(gapStart).getTime();
     let hi = new Date(upperBound).getTime();
@@ -1621,6 +1669,7 @@ export class CloseConnector extends BaseConnector {
       objectType,
       new Date(lo).toISOString(),
       new Date(hi).toISOString(),
+      windowField,
     );
     if (!anyData) return null;
 
@@ -1632,6 +1681,7 @@ export class CloseConnector extends BaseConnector {
         objectType,
         new Date(lo).toISOString(),
         new Date(mid).toISOString(),
+        windowField,
       );
 
       if (hasDataInLeft) {
@@ -1650,6 +1700,7 @@ export class CloseConnector extends BaseConnector {
     objectType: string,
     rangeStart: string,
     rangeEnd: string,
+    windowField: "date_created" | "date_updated" = "date_created",
   ): Promise<boolean> {
     // eslint-disable-next-line no-constant-condition
     while (true) {
@@ -1665,7 +1716,7 @@ export class CloseConnector extends BaseConnector {
                 field: {
                   type: "regular_field",
                   object_type: objectType,
-                  field_name: "date_created",
+                  field_name: windowField,
                 },
                 condition: {
                   type: "moment_range",
@@ -2188,6 +2239,31 @@ export class CloseConnector extends BaseConnector {
         actionHint: "and stores its signing secret",
       },
       secretHelpText: "Enter the webhook signing secret from your provider",
+    };
+  }
+
+  getIncrementalCapabilities(): IncrementalCapabilities {
+    return {
+      supported: true,
+      // Search-API entities (leads/contacts/opportunities/activities:*) window
+      // on `date_updated` when `since` is set. Offset-fallback entities use
+      // `date_updated__gte`. Groups / lookup tables without a time filter
+      // stay on the connector fallback only when listed below as none.
+      mode: "native",
+      perEntity: {
+        users: { mode: "native", anchorField: "date_updated__gte" },
+        custom_fields: { mode: "native", anchorField: "date_updated__gte" },
+        leads: { mode: "native", anchorField: "date_updated" },
+        contacts: { mode: "native", anchorField: "date_updated" },
+        opportunities: { mode: "native", anchorField: "date_updated" },
+        groups: { mode: "none" },
+        lead_statuses: { mode: "none" },
+        opportunity_statuses: { mode: "none" },
+        outcomes: { mode: "none" },
+        custom_activity_types: { mode: "none" },
+        custom_object_types: { mode: "none" },
+        custom_objects: { mode: "none" },
+      },
     };
   }
 

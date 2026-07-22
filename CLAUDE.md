@@ -25,6 +25,18 @@ belongs in git-versioned system skills under `api/src/agent-skills/**`, not in
 always-on prompt literals. See `.cursor/rules/35-agent-prompts.mdc` and
 `api/src/agent-skills/README.md` before changing prompt content.
 
+## Agent tools: tier classification is mandatory
+
+The agent sends a _budgeted working set_ of tools to the provider, not every
+registered tool (`api/src/agent-lib/tool-catalog.ts`). Every built-in tool must
+be classified as **core** (always active), **mode** (in a mode's `toolNames` in
+`api/src/agents/modes/registry.ts`), or **deferred**
+(`DEFERRED_BUILTIN_TOOL_DOMAINS`) — the tier-policy test in
+`api/src/agents/modes/tool-working-set.test.ts` fails on unclassified tools.
+An unclassified tool is registered but never reaches the model (silently dead).
+MCP tools are always deferred; they activate via `search_tools`/`load_tools`.
+`pnpm --filter api tools:measure` prints per-tool token weights.
+
 ## Essential Commands
 
 ### Development
@@ -51,7 +63,7 @@ pnpm lint:fix:all          # Auto-fix linting issues across workspace
 ### Data Operations
 
 ```bash
-pnpm docker:up             # Start MongoDB and services (docker-compose up -d)
+pnpm docker:up             # Start the local notebook Python kernel sidecar (docker-compose up -d; dev DB is hosted Atlas)
 pnpm docker:down           # Stop all services
 pnpm docker:logs           # View service logs
 pnpm docker:rebuild        # Rebuild and restart containers
@@ -125,10 +137,18 @@ INNGEST_SIGNING_KEY=your_inngest_signing_key
 # (MCP render_app tool; unset = agents fall back to preview tokens)
 # RENDER_APP_BROWSER_PATH=/usr/bin/chromium
 
-# Redis (optional — resumable chat streams)
-# Unset: in-process stream buffer (local dev / single API instance).
+# Notebook Python kernel (local dev — see .env.example)
+# `code` cells run on a managed kernel; locally, `pnpm docker:up` starts the
+# sidecar and StaticKernelProvider drives it. Deployed envs auto-detect GKE.
+KERNEL_PROVIDER=static
+KERNEL_GATEWAY_URL=http://localhost:8888
+NOTEBOOK_KERNEL_API_URL=http://host.docker.internal:8080
+
+# Redis (optional — resumable chat streams + kernel session registry)
+# Unset: in-process buffers (local dev / single API instance).
 # Set when running multiple API instances so chat stream resume
-# (GET /api/agent/chat/:chatId/stream) works across instances.
+# (GET /api/agent/chat/:chatId/stream) and the shared kernel-session
+# registry (notebook kernels visible to every instance) work.
 REDIS_URL=redis://localhost:6379
 ```
 

@@ -122,6 +122,51 @@ export interface WebhookCapabilities {
   secretHelpText?: string;
 }
 
+/**
+ * How honestly a connector can answer "give me only what changed since X":
+ *
+ * - `native`         server-side filter on a real update timestamp (cheap, correct)
+ * - `client-filter`  full API scan, then dropped client-side (correct, not cheap)
+ * - `created-anchor` server-side filter on *creation* time only — updates to
+ *                     already-fetched records are never re-polled (cheap, incomplete)
+ * - `none`           `since` is ignored entirely; every poll re-fetches everything
+ */
+export type IncrementalMode =
+  | "native"
+  | "client-filter"
+  | "created-anchor"
+  | "none";
+
+/**
+ * Static, UI-facing description of a connector's ability to pull only
+ * changed records on a poll. Surfaced through connector metadata so
+ * `SyncFlowForm` can hide/gate the "Incremental" sync mode per connector
+ * (and per entity) instead of silently full-repulling or missing updates —
+ * see `docs/sync-modes-hardening-plan.md`, Phase 4.
+ */
+export interface IncrementalCapabilities {
+  /** True when at least one entity does better than `"none"`. */
+  supported: boolean;
+  /**
+   * Worst-case, honest fallback mode — used for any entity not listed in
+   * `perEntity`. Defaults to `"none"` so every connector must opt in.
+   */
+  mode: IncrementalMode;
+  /**
+   * Optional default anchor field/placeholder used by the fallback `mode`
+   * (e.g. PostHog `$since`). Per-entity overrides may set their own.
+   */
+  anchorField?: string;
+  /** Per-entity overrides when different entities behave differently. */
+  perEntity?: Record<string, { mode: IncrementalMode; anchorField?: string }>;
+  /**
+   * UI-facing warning shown when the effective mode for a selected entity is
+   * `"created-anchor"` or `"none"` but the connector still allows Incremental
+   * (e.g. paired with a webhook trigger to catch updates/deletes).
+   */
+  warning?: string;
+}
+
 export type NormalizedCdcRecord = Omit<NormalizedCdcEvent, "runId">;
 
 export type ConnectorLogicalType =
@@ -340,6 +385,16 @@ export abstract class BaseConnector {
       },
       secretHelpText: "Enter the webhook signing secret from your provider",
     };
+  }
+
+  /**
+   * Static, UI-facing incremental-pull capabilities. Default is `"none"` —
+   * connectors must explicitly opt in per the audit in
+   * `docs/sync-modes-hardening-plan.md`. Must be safe to call on a
+   * metadata-only (dummy) instance.
+   */
+  getIncrementalCapabilities(): IncrementalCapabilities {
+    return { supported: false, mode: "none" };
   }
 
   /**

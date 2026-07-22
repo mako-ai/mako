@@ -4,6 +4,8 @@ import { PostgreSQLDatabaseDriver } from "./postgresql/driver";
 import { CloudSQLPostgresDatabaseDriver } from "./cloudsql-postgres/driver";
 import { MySQLDatabaseDriver } from "./mysql/driver";
 import { RedshiftDatabaseDriver } from "./redshift/driver";
+import { ClickHouseDatabaseDriver } from "./clickhouse/driver";
+import { MongoDatabaseDriver } from "./mongodb/driver";
 import { BIGQUERY_WORKING_DATASET } from "../../utils/bigquery-working-dataset";
 import {
   runDestinationContract,
@@ -18,6 +20,20 @@ import { DatabaseDriver } from "../driver";
 
 const PG_ROWCOUNT_EXPECTED =
   "SELECT c.relname AS table_id, c.reltuples::bigint AS row_count FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname IN ('a''b','c')";
+
+// The MongoDB "query" is a JS expression evaluated by the mongodb executor
+// against `options.databaseName`; the schema arg is intentionally unused.
+const MONGO_ROWCOUNT_EXPECTED = `(async () => {
+  const names = ["a'b","c"];
+  const results = [];
+  for (const name of names) {
+    results.push({
+      table_id: name,
+      row_count: await db.collection(name).estimatedDocumentCount(),
+    });
+  }
+  return results;
+})()`;
 
 const BQ_MAP_COLUMN_CASES: Array<[string, string]> = [
   ["text", "STRING"],
@@ -141,6 +157,41 @@ const cases: Array<[DatabaseDriver, DestinationContractExpectations]> = [
           ["weird`name", "`weird``name`"],
         ],
       },
+    },
+  ],
+  [
+    new ClickHouseDatabaseDriver(),
+    {
+      type: "clickhouse",
+      stagingSchema: { absent: true },
+      softDeleteForCdc: { absent: true },
+      typedColumns: { absent: true },
+      mapColumnType: { absent: true },
+      formatTableRef: { absent: true },
+      rowCountBatchQuery: {
+        schema: "revops",
+        tables: ["a'b", "c"],
+        expected:
+          "SELECT name AS table_id, coalesce(total_rows, 0) AS row_count FROM system.tables WHERE database = 'revops' AND name IN ('a''b','c')",
+      },
+      quoteIdentifier: { absent: true },
+    },
+  ],
+  [
+    new MongoDatabaseDriver(),
+    {
+      type: "mongodb",
+      stagingSchema: { absent: true },
+      softDeleteForCdc: { absent: true },
+      typedColumns: { absent: true },
+      mapColumnType: { absent: true },
+      formatTableRef: { absent: true },
+      rowCountBatchQuery: {
+        schema: "revops",
+        tables: ["a'b", "c"],
+        expected: MONGO_ROWCOUNT_EXPECTED,
+      },
+      quoteIdentifier: { absent: true },
     },
   ],
   [

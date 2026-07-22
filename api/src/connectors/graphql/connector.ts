@@ -4,6 +4,7 @@ import {
   FetchOptions,
   ResumableFetchOptions,
   FetchState,
+  type IncrementalCapabilities,
 } from "../base/BaseConnector";
 import axios, { AxiosInstance } from "axios";
 import { loggers } from "../../logging";
@@ -359,6 +360,10 @@ export class GraphQLConnector extends BaseConnector {
           limit: Number(settings.batchSize),
           offset: Number(offset),
         };
+      }
+
+      if (queryConfig.query.includes("$since") && since instanceof Date) {
+        queryVariables.since = since.toISOString();
       }
 
       // Execute query (timing already logged in executeGraphQLQuery)
@@ -811,5 +816,14 @@ export class GraphQLConnector extends BaseConnector {
     return path.split(".").reduce((current, key) => {
       return current && current[key] !== undefined ? current[key] : null;
     }, obj);
+  }
+
+  getIncrementalCapabilities(): IncrementalCapabilities {
+    return {
+      supported: true,
+      mode: "client-filter",
+      warning:
+        "Incremental client-filters on updated_at/updatedAt/modified_at. Add a $since variable to your GraphQL query for server-side filtering; queries without $since still paginate the full result set.",
+    };
   }
 }

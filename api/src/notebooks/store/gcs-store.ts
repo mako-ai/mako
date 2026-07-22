@@ -17,12 +17,7 @@ import type {
   NotebookSummary,
   NotebookVersion,
 } from "../types";
-import {
-  ID_RE,
-  buildNewDoc,
-  mergePatch,
-  type NotebookStore,
-} from "./types";
+import { ID_RE, buildNewDoc, mergePatch, type NotebookStore } from "./types";
 
 const logger = loggers.api("notebooks");
 
@@ -60,7 +55,9 @@ export class GcsNotebookStore implements NotebookStore {
   }
 
   private file(workspaceId: string, id: string): File {
-    return this.storage.bucket(this.bucketName).file(this.objectKey(workspaceId, id));
+    return this.storage
+      .bucket(this.bucketName)
+      .file(this.objectKey(workspaceId, id));
   }
 
   /** Offloaded output artifacts live under `…/notebooks/<id>/outputs/<artifactId>`. */
@@ -113,7 +110,8 @@ export class GcsNotebookStore implements NotebookStore {
       summaries.push({
         id,
         name: meta.notebookName ?? "Untitled notebook",
-        updatedAt: meta.notebookUpdatedAt ?? String(file.metadata.updated ?? ""),
+        updatedAt:
+          meta.notebookUpdatedAt ?? String(file.metadata.updated ?? ""),
       });
     }
     return summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -257,7 +255,9 @@ export class GcsNotebookStore implements NotebookStore {
     try {
       const [buf] = await this.storage
         .bucket(this.bucketName)
-        .file(this.objectKey(workspaceId, id), { generation: Number(versionId) })
+        .file(this.objectKey(workspaceId, id), {
+          generation: Number(versionId),
+        })
         .download();
       return JSON.parse(buf.toString("utf8")) as NotebookDoc;
     } catch (err) {

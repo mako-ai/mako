@@ -99,6 +99,11 @@ export class CdcConsumerService {
       tableName,
       keyColumns: connectorSchema?.keyColumns,
       deleteMode: flow.deleteMode,
+      // Without this, applyEvents/applyBatch default to dedup-merge
+      // semantics even on `Incremental | Append` flows, silently
+      // overwriting instead of appending history rows (bug B3, see
+      // docs/sync-modes-hardening-plan.md).
+      writeMode: flow.writeMode,
       partitioning: resolveEntityPartitioning(
         entityLayout,
         flow.tableDestination?.partitioning,
