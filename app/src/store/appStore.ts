@@ -243,12 +243,21 @@ interface AppActions {
    * is ready, fails, or the bounded wait elapses. Never hangs: `timeoutMs`
    * caps the wait and `signal` aborts the polling (the build itself keeps
    * running server-side either way).
+   *
+   * `refreshPreview` (default true) refetches the app and bumps the preview
+   * when the binding becomes ready. Bulk rematerialize passes false so the
+   * preview refreshes once after every binding settles.
    */
   materializeBinding: (
     workspaceId: string,
     appId: string,
     bindingId: string,
-    options?: { force?: boolean; signal?: AbortSignal; timeoutMs?: number },
+    options?: {
+      force?: boolean;
+      signal?: AbortSignal;
+      timeoutMs?: number;
+      refreshPreview?: boolean;
+    },
   ) => Promise<{
     success: boolean;
     status: "ready" | "building" | "error";
@@ -261,11 +270,25 @@ interface AppActions {
    * default) and returns an aggregate summary. Used by the "Rebuild data"
    * toolbar action to recover an app whose artifact cache was lost (e.g. a DB
    * restore) without deleting/recreating bindings.
+   *
+   * Does not bump the preview mid-flight — callers should load fresh DuckDB
+   * tables and post a data-refresh (or bumpPreview) only after this resolves.
+   * `onProgress` reports settled binding counts while builds are still running.
    */
   materializeAllBindings: (
     workspaceId: string,
     appId: string,
-    options?: { force?: boolean; signal?: AbortSignal; timeoutMs?: number },
+    options?: {
+      force?: boolean;
+      signal?: AbortSignal;
+      timeoutMs?: number;
+      onProgress?: (progress: {
+        total: number;
+        settled: number;
+        ready: number;
+        failed: number;
+      }) => void;
+    },
   ) => Promise<{
     total: number;
     ready: number;
@@ -815,6 +838,7 @@ export const useAppStore = create<AppStore>()(
     materializeBinding: async (workspaceId, appId, bindingId, options) => {
       const signal = options?.signal;
       const timeoutMs = options?.timeoutMs ?? MATERIALIZE_DEFAULT_TIMEOUT_MS;
+      const refreshPreview = options?.refreshPreview !== false;
 
       // Mirror the server-reported status onto the open app so UI chips
       // (binding editor, explorer) update live while the build runs.
@@ -836,8 +860,10 @@ export const useAppStore = create<AppStore>()(
       };
 
       const finishReady = async () => {
-        await get().fetchApp(workspaceId, appId);
-        get().bumpPreview(appId);
+        if (refreshPreview) {
+          await get().fetchApp(workspaceId, appId);
+          get().bumpPreview(appId);
+        }
         return { success: true, status: "ready" as const };
       };
 
@@ -867,10 +893,17 @@ export const useAppStore = create<AppStore>()(
         // Cache hit — artifact already built, nothing queued.
         if (res.status?.status === "ready") {
           if (res.app) {
-            set(state => {
-              state.openApps[appId] = res.app as AppEntity;
-            });
-            get().bumpPreview(appId);
+            // Only replace the open app when refreshing the preview. During
+            // bulk rematerialize, a cache-hit response may carry stale sibling
+            // binding caches and would clobber in-flight status updates.
+            if (refreshPreview) {
+              set(state => {
+                state.openApps[appId] = res.app as AppEntity;
+              });
+              get().bumpPreview(appId);
+            } else {
+              setLocalStatus("ready");
+            }
             return { success: true, status: "ready" };
           }
           return await finishReady();
@@ -941,10 +974,17 @@ export const useAppStore = create<AppStore>()(
         return { total: 0, ready: 0, failed: 0, errors: [] };
       }
 
+      const total = parquetBindings.length;
+      let settled = 0;
+      let ready = 0;
+      let failed = 0;
+      options?.onProgress?.({ total, settled, ready, failed });
+
       // Build every binding concurrently. Each call queues a background build
       // and polls to completion; the shared per-binding claim on the server
       // dedupes against any build already in flight. Default to a force rebuild
-      // so a lost/stale cache is always regenerated.
+      // so a lost/stale cache is always regenerated. Skip per-binding preview
+      // refreshes — the caller applies data once after every binding settles.
       const results = await Promise.all(
         parquetBindings.map(binding =>
           get()
@@ -952,19 +992,29 @@ export const useAppStore = create<AppStore>()(
               force: options?.force ?? true,
               signal: options?.signal,
               timeoutMs: options?.timeoutMs,
+              refreshPreview: false,
             })
-            .then(result => ({ name: binding.name, ...result })),
+            .then(result => {
+              settled += 1;
+              if (result.status === "ready") {
+                ready += 1;
+              } else {
+                failed += 1;
+              }
+              options?.onProgress?.({ total, settled, ready, failed });
+              return { name: binding.name, ...result };
+            }),
         ),
       );
 
       // Ensure the open app reflects the freshly hydrated cache (parquetUrl)
-      // once all builds settle, so the preview can load every table.
+      // once all builds settle, so the preview can load every table. Do not
+      // bumpPreview here — AppRenderer loads DuckDB then posts data-refresh.
       await get().fetchApp(workspaceId, appId);
-      get().bumpPreview(appId);
 
       const failures = results.filter(r => r.status !== "ready");
       return {
-        total: parquetBindings.length,
+        total,
         ready: results.length - failures.length,
         failed: failures.length,
         errors: failures.map(f => `${f.name}: ${f.error ?? f.status}`),

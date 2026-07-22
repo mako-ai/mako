@@ -27,7 +27,11 @@ function fixture(overrides: Partial<StoredSession> = {}): StoredSession {
     notebookId: "n",
     userId: "u",
     provider: "gke",
-    endpoint: { baseUrl: "http://10.0.0.1:8888", podIp: "10.0.0.1", podName: "pod-1" },
+    endpoint: {
+      baseUrl: "http://10.0.0.1:8888",
+      podIp: "10.0.0.1",
+      podName: "pod-1",
+    },
     kernelId: "k1",
     kernelToken: "mnk_abc.def",
     tokenExpMs: now + 900_000,

@@ -18,6 +18,34 @@ export class MongoDatabaseDriver implements DatabaseDriver {
     } as any;
   }
 
+  /**
+   * Batch row-count "query" for sync destination observability. MongoDB has no
+   * SQL metadata path, so this returns a JS expression (evaluated by the
+   * MongoDB query executor) yielding `{ table_id, row_count }` rows from
+   * `estimatedDocumentCount()` (metadata-based, cheap; 0 for missing
+   * collections). The `schema` here is the target DATABASE name — callers must
+   * route it via `options.databaseName` since the expression runs against the
+   * connection's active db.
+   */
+  buildRowCountBatchQuery(
+    _schema: string,
+    tableNames: string[],
+  ): string | null {
+    if (tableNames.length === 0) return null;
+    const names = JSON.stringify(tableNames);
+    return `(async () => {
+  const names = ${names};
+  const results = [];
+  for (const name of names) {
+    results.push({
+      table_id: name,
+      row_count: await db.collection(name).estimatedDocumentCount(),
+    });
+  }
+  return results;
+})()`;
+  }
+
   async getTreeRoot(
     database: IDatabaseConnection,
   ): Promise<DatabaseTreeNode[]> {

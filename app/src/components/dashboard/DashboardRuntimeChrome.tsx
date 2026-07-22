@@ -163,6 +163,32 @@ const DashboardRuntimeChrome: React.FC<DashboardRuntimeChromeProps> = ({
     [runtimeSession?.eventLog],
   );
 
+  const materializationProgress = useMemo(() => {
+    if (!runtimeSession?.materializationPolling || !dashboard) return null;
+    const parquetSources = dashboard.dataSources.filter(
+      ds => ds.materialization !== "live",
+    );
+    if (parquetSources.length === 0) return null;
+    let settled = 0;
+    let building = 0;
+    for (const source of parquetSources) {
+      const status =
+        runtimeSession.dataSources[source.id]?.materializationStatus;
+      if (status === "queued" || status === "building") {
+        building += 1;
+      } else {
+        settled += 1;
+      }
+    }
+    return {
+      total: parquetSources.length,
+      settled,
+      building,
+      progress:
+        parquetSources.length > 0 ? (settled / parquetSources.length) * 100 : 0,
+    };
+  }, [dashboard, runtimeSession]);
+
   return (
     <>
       {lockError && (
@@ -319,21 +345,33 @@ const DashboardRuntimeChrome: React.FC<DashboardRuntimeChromeProps> = ({
         </Box>
       )}
       {runtimeSession?.materializationPolling && (
-        <Box
-          sx={{
-            px: 1.5,
-            py: 0.75,
-            borderBottom: "1px solid",
-            borderColor: "divider",
-            backgroundColor: "warning.light",
-            color: "warning.contrastText",
-          }}
-        >
-          <Typography variant="caption" sx={{ display: "block" }}>
-            {isEditMode
-              ? "Building a fresh published artifact in the background. Edit mode keeps the currently loaded draft/view data until you leave edit mode or rerun a source."
-              : "Refreshing data sources in the background. The dashboard is using the previous materialized snapshot until fresh data is ready."}
-          </Typography>
+        <Box sx={{ borderBottom: "1px solid", borderColor: "divider" }}>
+          <LinearProgress
+            variant={
+              materializationProgress != null ? "determinate" : "indeterminate"
+            }
+            value={materializationProgress?.progress ?? undefined}
+          />
+          <Box
+            sx={{
+              px: 1.5,
+              py: 0.75,
+              backgroundColor: "warning.light",
+              color: "warning.contrastText",
+            }}
+          >
+            <Typography variant="caption" sx={{ display: "block" }}>
+              {materializationProgress
+                ? `Rebuilding data ${materializationProgress.settled}/${materializationProgress.total}` +
+                  (materializationProgress.building > 0
+                    ? ` · ${materializationProgress.building} still building`
+                    : "") +
+                  ". Dashboard refreshes when every data source is ready."
+                : isEditMode
+                  ? "Rebuilding materialized data… The dashboard will refresh when every data source is ready."
+                  : "Refreshing data sources… The dashboard is using the previous snapshot until all fresh data is ready."}
+            </Typography>
+          </Box>
         </Box>
       )}
       {runtimeSession?.freshDataAvailable && workspaceId && dashboardId && (

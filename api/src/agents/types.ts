@@ -8,6 +8,7 @@
 
 import type { SystemModelMessage, ToolSet } from "ai";
 import type { ConsoleDataV2 } from "../agent-lib/types";
+import type { McpToolCatalogInfo } from "../services/mcp-client.service";
 
 export interface AgentToolExecutionContext {
   /** Abort signal for the active chat request */
@@ -178,6 +179,11 @@ export interface AgentContext {
   mcpReadOnlyToolNames?: string[];
   /** All prefixed MCP tool names (added to the mode-runtime allowlist). */
   mcpToolNames?: string[];
+  /**
+   * Full-description catalog entries for MCP tools (search_tools ranking +
+   * the deferred-tool inventory in the system prompt).
+   */
+  mcpToolCatalog?: McpToolCatalogInfo[];
   /**
    * Actor may attach cron schedules to saved consoles (workspace owner/admin),
    * or API-key requests act as workspace-scoped automation (same as HTTP schedule routes).

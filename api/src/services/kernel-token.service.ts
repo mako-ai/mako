@@ -97,7 +97,10 @@ export function mintKernelTokenWithExpiry(input: MintKernelTokenInput): {
     exp,
   };
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  return { token: `${TOKEN_PREFIX}${body}.${sign(body, secret)}`, expMs: exp * 1000 };
+  return {
+    token: `${TOKEN_PREFIX}${body}.${sign(body, secret)}`,
+    expMs: exp * 1000,
+  };
 }
 
 export function mintKernelToken(input: MintKernelTokenInput): string {

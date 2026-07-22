@@ -18,12 +18,7 @@ import type {
   NotebookSummary,
   NotebookVersion,
 } from "../types";
-import {
-  ID_RE,
-  buildNewDoc,
-  mergePatch,
-  type NotebookStore,
-} from "./types";
+import { ID_RE, buildNewDoc, mergePatch, type NotebookStore } from "./types";
 
 const logger = loggers.api("notebooks");
 
@@ -51,7 +46,12 @@ function artifactPath(
 ): string {
   if (!ID_RE.test(notebookId)) throw new Error("Invalid notebook id");
   if (!ID_RE.test(artifactId)) throw new Error("Invalid artifact id");
-  return path.join(workspaceDir(workspaceId), notebookId, "outputs", artifactId);
+  return path.join(
+    workspaceDir(workspaceId),
+    notebookId,
+    "outputs",
+    artifactId,
+  );
 }
 
 function versionsDir(workspaceId: string, id: string): string {
@@ -79,7 +79,11 @@ export class FilesystemNotebookStore implements NotebookStore {
         const doc = JSON.parse(
           await fs.readFile(path.join(dir, file), "utf8"),
         ) as NotebookDoc;
-        summaries.push({ id: doc.id, name: doc.name, updatedAt: doc.updatedAt });
+        summaries.push({
+          id: doc.id,
+          name: doc.name,
+          updatedAt: doc.updatedAt,
+        });
       } catch (err) {
         logger.warn("Skipping unreadable notebook file", { file, error: err });
       }

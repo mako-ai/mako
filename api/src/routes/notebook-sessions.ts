@@ -79,7 +79,8 @@ notebookSessionRoutes.openapi(
       return c.json(
         {
           success: false,
-          error: error instanceof Error ? error.message : "Failed to start kernel",
+          error:
+            error instanceof Error ? error.message : "Failed to start kernel",
         },
         500,
       );

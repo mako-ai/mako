@@ -331,6 +331,10 @@ React apps built inside the workspace ([Apps](/apps/)). Private apps are owner-o
 | `GET`    | `/api/workspaces/:wid/apps/:id/bindings/:bid/materialization`           | Poll a binding's materialization status                  |
 | `GET`    | `/api/workspaces/:wid/apps/:id/bindings/:bid/materialization/artifact`  | Stream the materialized Parquet artifact                 |
 
+## Notebooks
+
+Notebook CRUD, kernel sessions, executions, versions, presence, and the kernel's read-only data plane live under `/api/workspaces/:workspaceId/notebooks` and `…/notebook/*`. See [Notebooks](/notebooks/#api-surface) for the route table and the OpenAPI spec for full schemas.
+
 ## Public Shares
 
 Token-gated, **read-only** endpoints for published dashboard/app links. These are intentionally unauthenticated (no session or API key) and serve only materialized snapshots.

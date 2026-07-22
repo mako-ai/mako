@@ -13,6 +13,12 @@ export interface ConnectorEntityField {
   type: string;
 }
 
+export type EntityIncrementalMode =
+  | "native"
+  | "client-filter"
+  | "created-anchor"
+  | "none";
+
 export interface ConnectorEntityMetadata {
   name: string;
   label?: string;
@@ -21,6 +27,10 @@ export interface ConnectorEntityMetadata {
   layoutSuggestion?: ConnectorEntityLayoutSuggestion;
   /** Field list resolved from the connector schema (name + logical type). */
   fields?: ConnectorEntityField[];
+  /** Dedup/merge key columns this entity syncs on (defaults to ["id"]). */
+  keyColumns?: string[];
+  /** Per-entity incremental-pull capability (Airbyte-style stream badge). */
+  incrementalMode?: EntityIncrementalMode;
 }
 
 /** Older connectors may return a flat string list instead of metadata. */
@@ -33,6 +43,8 @@ export interface FlattenedConnectorEntity {
   partitionGranularity: "day" | "hour" | "month" | "year";
   clusterFields: string[];
   fields?: ConnectorEntityField[];
+  keyColumns: string[];
+  incrementalMode?: EntityIncrementalMode;
 }
 
 function fallbackLabel(name: string): string {
@@ -65,6 +77,8 @@ export function flattenConnectorEntities(
           partitionGranularity: subLayout?.partitionGranularity || "day",
           clusterFields: subLayout?.clusterFields ?? [],
           fields: sub.fields ?? meta.fields,
+          keyColumns: sub.keyColumns ?? meta.keyColumns ?? ["id"],
+          incrementalMode: sub.incrementalMode ?? meta.incrementalMode,
         });
       }
       continue;
@@ -77,6 +91,8 @@ export function flattenConnectorEntities(
       partitionGranularity: layout?.partitionGranularity || "day",
       clusterFields: layout?.clusterFields ?? [],
       fields: meta.fields,
+      keyColumns: meta.keyColumns ?? ["id"],
+      incrementalMode: meta.incrementalMode,
     });
   }
 

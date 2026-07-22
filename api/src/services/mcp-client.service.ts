@@ -309,6 +309,69 @@ export interface McpChatTools {
   readOnlyToolNames: string[];
   /** All prefixed MCP tool names (for the mode-runtime allowlist). */
   allToolNames: string[];
+  /**
+   * Catalog entries for the deferred-tool working set: full (undieted)
+   * descriptions for `search_tools` ranking, grouped by server for the
+   * system-prompt inventory. Order matches `allToolNames`.
+   */
+  catalog: McpToolCatalogInfo[];
+}
+
+/** Search/inventory metadata for one MCP tool (no schema — cards only). */
+export interface McpToolCatalogInfo {
+  /** Prefixed provider-facing name (`mcp_<server>_<tool>`). */
+  name: string;
+  serverId: string;
+  serverName: string;
+  /** Full upstream description (the provider-facing one is dieted). */
+  description: string;
+  readOnly: boolean;
+}
+
+/**
+ * Schema diet: MCP servers routinely ship 1–2k-token descriptions and
+ * schemas. The provider-facing definition gets a truncated description and a
+ * schema stripped of prose bloat; the full description stays available to
+ * `search_tools` via the catalog, where it is actually useful.
+ */
+const MCP_TOOL_DESCRIPTION_MAX_CHARS = 200;
+const MCP_SCHEMA_DESCRIPTION_MAX_CHARS = 160;
+
+export function dietMcpDescription(description: string): string {
+  const trimmed = description.trim();
+  if (trimmed.length <= MCP_TOOL_DESCRIPTION_MAX_CHARS) return trimmed;
+  return `${trimmed.slice(0, MCP_TOOL_DESCRIPTION_MAX_CHARS - 1)}…`;
+}
+
+/**
+ * Deep-copy a JSON schema, truncating verbose nested `description` strings
+ * and dropping documentation-only keys (`examples`, `$comment`) that cost
+ * context without improving argument quality. Structural keywords are
+ * untouched, so validation behavior is identical.
+ */
+export function dietMcpInputSchema(
+  schema: Record<string, unknown>,
+): Record<string, unknown> {
+  const dietValue = (value: unknown, key?: string): unknown => {
+    if (Array.isArray(value)) return value.map(item => dietValue(item));
+    if (value && typeof value === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value)) {
+        if (k === "examples" || k === "$comment") continue;
+        out[k] = dietValue(v, k);
+      }
+      return out;
+    }
+    if (
+      key === "description" &&
+      typeof value === "string" &&
+      value.length > MCP_SCHEMA_DESCRIPTION_MAX_CHARS
+    ) {
+      return `${value.slice(0, MCP_SCHEMA_DESCRIPTION_MAX_CHARS - 1)}…`;
+    }
+    return value;
+  };
+  return dietValue(schema) as Record<string, unknown>;
 }
 
 interface ResolvedMcpServer {
@@ -412,6 +475,7 @@ export async function buildMcpToolsForChat(params: {
     tools: {},
     readOnlyToolNames: [],
     allToolNames: [],
+    catalog: [],
   };
 
   let resolved: ResolvedMcpServer[];
@@ -429,20 +493,24 @@ export async function buildMcpToolsForChat(params: {
   const tools: ToolSet = {};
   const readOnlyToolNames: string[] = [];
   const allToolNames: string[] = [];
+  const catalog: McpToolCatalogInfo[] = [];
 
   for (const { server, encryptedHeaders, configUserId } of resolved) {
     for (const cachedTool of mcpAllowedCachedTools(server)) {
       const prefixedName = mcpPrefixedToolName(server.name, cachedTool.name);
       if (tools[prefixedName]) continue; // name collision: first wins
       const riskTier = mcpToolRiskTier(server, cachedTool);
+      const fullDescription = cachedTool.description ?? cachedTool.name;
 
       tools[prefixedName] = dynamicTool({
-        description: `[${server.name} via MCP] ${cachedTool.description ?? cachedTool.name}`,
+        description: `[${server.name} via MCP] ${dietMcpDescription(fullDescription)}`,
         inputSchema: jsonSchema(
-          (cachedTool.inputSchema ?? {
-            type: "object",
-            properties: {},
-          }) as Parameters<typeof jsonSchema>[0],
+          dietMcpInputSchema(
+            cachedTool.inputSchema ?? {
+              type: "object",
+              properties: {},
+            },
+          ) as Parameters<typeof jsonSchema>[0],
         ),
         needsApproval: async () =>
           mcpNeedsApproval({
@@ -537,10 +605,17 @@ export async function buildMcpToolsForChat(params: {
 
       allToolNames.push(prefixedName);
       if (riskTier === "read") readOnlyToolNames.push(prefixedName);
+      catalog.push({
+        name: prefixedName,
+        serverId: server._id.toString(),
+        serverName: server.name,
+        description: fullDescription,
+        readOnly: riskTier === "read",
+      });
     }
   }
 
-  return { tools, readOnlyToolNames, allToolNames };
+  return { tools, readOnlyToolNames, allToolNames, catalog };
 }
 
 /**

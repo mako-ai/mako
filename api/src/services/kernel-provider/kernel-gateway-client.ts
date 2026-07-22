@@ -219,7 +219,9 @@ export class KernelGatewayClient {
         if (isIdleFor(msg, msgId)) finish({ status, executionCount });
       });
 
-      ws.on("error", err => fail(err instanceof Error ? err : new Error(String(err))));
+      ws.on("error", err =>
+        fail(err instanceof Error ? err : new Error(String(err))),
+      );
       ws.on("close", () => {
         if (!settled) fail(new Error("kernel socket closed before idle"));
       });

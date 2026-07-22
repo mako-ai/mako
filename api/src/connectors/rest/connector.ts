@@ -4,6 +4,7 @@ import {
   FetchOptions,
   ResumableFetchOptions,
   FetchState,
+  type IncrementalCapabilities,
 } from "../base/BaseConnector";
 import axios, { AxiosInstance, AxiosRequestConfig } from "axios";
 
@@ -335,7 +336,7 @@ export class RestConnector extends BaseConnector {
         filtered = items.filter((r: any) => {
           const ts =
             r.updated_at || r.updatedAt || r.modified_at || r.modifiedAt;
-          return ts ? new Date(ts) > since : true;
+          return ts ? new Date(ts) > since : false;
         });
       }
 
@@ -479,5 +480,19 @@ export class RestConnector extends BaseConnector {
     return path.split(".").reduce((current, key) => {
       return current && current[key] !== undefined ? current[key] : null;
     }, obj);
+  }
+
+  getIncrementalCapabilities(): IncrementalCapabilities {
+    return {
+      // Entities are user-defined API endpoints, so this can't be scoped
+      // per entity. `performRequest` injects `updated_after`/`updatedAfter`
+      // (best-effort — the target API may ignore it) and the fetch loop then
+      // client-filters by `updated_at`/`updatedAt`/`modified_at`/
+      // `modifiedAt`. Records without a timestamp field are excluded.
+      supported: true,
+      mode: "client-filter",
+      warning:
+        "Incremental depends on the target API returning an updated_at/modified_at field and honoring updated_after; records without updated_at/modified_at are excluded during incremental polls.",
+    };
   }
 }

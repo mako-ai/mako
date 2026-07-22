@@ -669,27 +669,18 @@ export const useFlowStore = create<FlowStore>()(
       init: async (workspaceId: string) => {
         const existingFlows = get().flows[workspaceId];
 
-        // If we have cached flows, check if any are missing the 'type' field
-        // This indicates stale data from before webhooks were implemented
-        if (existingFlows && existingFlows.length > 0) {
-          const hasStaleData = existingFlows.some(
-            flow => flow.type === undefined,
-          );
-          if (hasStaleData) {
-            // Clear stale data from the store before refreshing
-            set(state => {
-              state.flows[workspaceId] = [];
-            });
-            // Now refresh from API
-            await get().refresh(workspaceId);
-            return;
-          }
-        }
-
-        // If no data exists, fetch it
+        // If no data exists, fetch it (blocking — nothing to render yet).
         if (!existingFlows || existingFlows.length === 0) {
           await get().refresh(workspaceId);
+          return;
         }
+
+        // Stale-while-revalidate: render the persisted flows immediately, but
+        // always refresh in the background. The persisted copy can lag the API
+        // payload (e.g. fields added to the list projection like
+        // `backfillSchedule`, or state changed by schedulers/migrations), and
+        // trigger/engine displays depend on those fields being current.
+        void get().refresh(workspaceId);
       },
 
       createFlow: async (workspaceId: string, data: Partial<Flow>) => {
