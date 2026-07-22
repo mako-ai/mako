@@ -3311,6 +3311,8 @@ export interface INotebookIndex extends Document {
   folderId?: Types.ObjectId;
   ownerId: string;
   access: "private" | "workspace";
+  /** Role workspace members get when `access === "workspace"`. */
+  workspaceRole?: ResourceShareRole;
   sharedWith?: IResourceShareEntry[];
   updatedAt: Date;
 }
@@ -3755,6 +3757,11 @@ const NotebookIndexSchema = new Schema<INotebookIndex>(
       type: String,
       enum: ["private", "workspace"],
       default: "private",
+    },
+    workspaceRole: {
+      type: String,
+      enum: ["viewer", "editor"],
+      default: "viewer",
     },
     sharedWith: {
       type: [ResourceShareEntrySchema],

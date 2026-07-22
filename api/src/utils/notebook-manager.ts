@@ -34,6 +34,7 @@ function indexAsResource(index: INotebookIndex): ShareableResourceLike {
   return {
     owner_id: index.ownerId,
     access: index.access,
+    workspaceRole: index.workspaceRole,
     sharedWith: index.sharedWith,
   };
 }
