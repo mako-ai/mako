@@ -8,6 +8,9 @@
  * factories the in-product agent uses — this module only bridges AI SDK
  * tool definitions (zod input schema + execute) into MCP registrations.
  *
+ * Which agent tools are exposed is decided by bridge-policy.ts (not by
+ * hand-picking in this file). Unclassified tools fail the inventory test.
+ *
  * One Server instance is built per HTTP request (stateless Streamable HTTP,
  * JSON response mode) — see stateless-transport.ts and mcp-server.routes.ts.
  */
@@ -28,8 +31,10 @@ import { createMongoToolsV2 } from "../agent-lib/tools/mongodb-tools";
 import { createUniversalTools } from "../agent-lib/tools/universal-tools";
 import { createServerConsoleTools } from "../agent-lib/tools/server-console-tools";
 import { createConsoleSearchTools } from "../agent-lib/tools/console-search-tools";
+import { createDashboardSearchTools } from "../agent-lib/tools/dashboard-search-tools";
 import { createVersionHistoryTools } from "../agent-lib/tools/version-history-tools";
 import { createSkillTools } from "../agent-lib/tools/skill-tools";
+import { createWebTools } from "../agent-lib/tools/web-tools";
 import {
   getSystemSkillIndex,
   getSystemSkillFullText,
@@ -41,6 +46,12 @@ import {
   type WorkspaceApiKeyScope,
 } from "../auth/api-key-scopes";
 import { loggers } from "../logging";
+import {
+  MCP_BRIDGE_POLICY,
+  mcpDestructiveHint,
+  mcpOpenWorldHint,
+  mcpReadOnlyHint,
+} from "./bridge-policy";
 
 const logger = loggers.api("mcp-server");
 
@@ -61,7 +72,12 @@ Typical loop:
 4. Verify with render_app after edits. Pass includeScreenshot: false when you only need status/errors — it is much cheaper than the screenshot.
 5. app_save_version to snapshot/publish.
 
-Before writing app code, read the authoring playbook: resource mako://skills/apps (or the load_skill tool).`;
+Skills (same knowledge as the in-product agent):
+- list_skills → compact index (workspace + system).
+- get_relevant_skills({ query }) → ranked bodies for your task (call this early).
+- load_skill / read_skill_resource / mako://skills/{name} for specifics.
+Before writing app code: get_relevant_skills("build a Mako app") or resource mako://skills/apps.
+Optional: search_dashboards, web_search / fetch_url for public docs.`;
 
 /** Defensive cap so a huge query result cannot blow up the JSON response. */
 const MAX_TOOL_RESULT_CHARS = 200_000;
@@ -76,14 +92,16 @@ export interface MakoMcpContext {
   scopes?: readonly WorkspaceApiKeyScope[];
 }
 
-type BridgeableTool = Pick<AiTool, "description" | "inputSchema" | "execute">;
+export type BridgeableTool = Pick<
+  AiTool,
+  "description" | "inputSchema" | "execute"
+>;
 
 /**
- * The toolset exposed over MCP. Same implementations the in-product agent
- * uses; assembled per request so every execution is bound to the caller's
- * workspace + acting user.
+ * Assemble every server-side candidate the MCP bridge *could* expose.
+ * `buildMakoMcpToolset` then filters by MCP_BRIDGE_POLICY.
  */
-export function buildMakoMcpToolset(
+export function buildMakoMcpCandidateTools(
   context: MakoMcpContext,
 ): Record<string, BridgeableTool> {
   const { workspaceId, userId } = context;
@@ -101,12 +119,6 @@ export function buildMakoMcpToolset(
     queryAccess,
   });
 
-  // Long-running query escape hatch: sql_execute_query enforces a short
-  // exploration timeout and points at the resumable console path
-  // (create_console → run_console → check_query_status) for slow
-  // warehouses — without these, binding validation on e.g. BigQuery
-  // dead-ends. read_console also lets the agent inspect a console found
-  // via search_consoles before seeding a binding from it.
   const consoleTools = createServerConsoleTools({
     workspaceId,
     userId,
@@ -123,8 +135,6 @@ export function buildMakoMcpToolset(
     queryAccess,
   );
   const mongoTools = createMongoToolsV2(workspaceId, [], undefined, userId);
-  // Cross-database discovery: one call that spans SQL + MongoDB connections
-  // (the same entry point the in-product app mode starts from).
   const { list_connections } = createUniversalTools(
     workspaceId,
     [],
@@ -132,104 +142,64 @@ export function buildMakoMcpToolset(
     userId,
   );
   const consoleSearchTools = createConsoleSearchTools(workspaceId);
+  const dashboardSearchTools = createDashboardSearchTools(workspaceId);
   const versionHistoryTools = createVersionHistoryTools(workspaceId);
-  // Read-only skill access; the write tools (save/delete) stay in-product.
-  const { load_skill, read_skill_resource } = createSkillTools(
-    workspaceId,
-    userId,
-  );
+  const skillTools = createSkillTools(workspaceId, userId);
+  const webTools = createWebTools();
 
   return {
     ...appTools,
+    ...consoleTools,
     list_connections,
-    sql_list_connections: sqlTools.sql_list_connections,
-    sql_list_databases: sqlTools.sql_list_databases,
-    sql_list_tables: sqlTools.sql_list_tables,
-    sql_inspect_table: sqlTools.sql_inspect_table,
-    ...(queryAccess !== "none"
-      ? { sql_execute_query: sqlTools.sql_execute_query }
-      : {}),
-    // Arbitrary MongoDB JavaScript (mongo_execute_query) is deliberately NOT
-    // bridged: MCP data access is read-only and Mongo has no reliable
-    // per-query read-only mode.
+    ...sqlTools,
+    // Namespace mongo the same way the unified agent does.
     mongo_list_connections: mongoTools.list_connections,
     mongo_list_databases: mongoTools.list_databases,
     mongo_list_collections: mongoTools.list_collections,
     mongo_inspect_collection: mongoTools.inspect_collection,
-    // Reuse existing validated queries as binding sources
-    // (app_create_data_binding accepts a consoleId to seed from).
-    search_consoles: consoleSearchTools.search_consoles,
-    read_console: consoleTools.read_console,
-    create_console: consoleTools.create_console,
-    modify_console: consoleTools.modify_console,
-    set_console_connection: consoleTools.set_console_connection,
-    ...(queryAccess !== "none"
-      ? {
-          run_console: consoleTools.run_console,
-          check_query_status: consoleTools.check_query_status,
-          cancel_query: consoleTools.cancel_query,
-        }
-      : {}),
-    // Version history: app_restore_version needs these to be discoverable.
-    browse_version_history: versionHistoryTools.browse_version_history,
-    get_version_snapshot: versionHistoryTools.get_version_snapshot,
-    // Authoring guidance (apps playbook, SQL dialects) — same knowledge the
-    // in-product agent retrieves; also exposed as mako://skills resources.
-    load_skill,
-    read_skill_resource,
+    // Included in candidates so the policy can deliberately exclude it;
+    // buildMakoMcpToolset will strip it.
+    mongo_execute_query: mongoTools.execute_query,
+    ...consoleSearchTools,
+    ...dashboardSearchTools,
+    ...versionHistoryTools,
+    ...skillTools,
+    ...webTools,
   };
 }
 
 /**
- * Tools that never mutate workspace state. Clients (Claude Code, Cursor)
- * use readOnlyHint to auto-approve these without prompting the user, so
- * discovery/verification loops run uninterrupted.
+ * The toolset exposed over MCP. Same implementations the in-product agent
+ * uses; assembled per request so every execution is bound to the caller's
+ * workspace + acting user. Filtering is driven by bridge-policy.ts.
  */
-const READ_ONLY_TOOLS = new Set([
-  "list_open_apps",
-  "get_app_state",
-  "app_read_file",
-  "list_connections",
-  "sql_list_connections",
-  "sql_list_databases",
-  "sql_list_tables",
-  "sql_inspect_table",
-  "mongo_list_connections",
-  "mongo_list_databases",
-  "mongo_list_collections",
-  "mongo_inspect_collection",
-  "search_consoles",
-  "read_console",
-  "check_query_status",
-  "browse_version_history",
-  "get_version_snapshot",
-  "load_skill",
-  "read_skill_resource",
-  "render_app",
-  "create_preview_token",
-]);
+export function buildMakoMcpToolset(
+  context: MakoMcpContext,
+): Record<string, BridgeableTool> {
+  const scopes = resolveWorkspaceApiKeyScopes(context.scopes);
+  const queryAccess = queryAccessFromScopes(scopes);
+  const candidates = buildMakoMcpCandidateTools(context);
+  const exposed: Record<string, BridgeableTool> = {};
 
-/** Irreversible deletions (destructiveHint defaults to true in the spec). */
-const DESTRUCTIVE_TOOLS = new Set([
-  "app_delete_file",
-  "app_delete_data_binding",
-  "app_remove_dependency",
-]);
+  for (const [name, tool] of Object.entries(candidates)) {
+    const entry = MCP_BRIDGE_POLICY[name];
+    if (!entry || entry.status !== "bridge") continue;
+    if (entry.requiresQueryAccess && queryAccess === "none") continue;
+    exposed[name] = tool;
+  }
+
+  return exposed;
+}
 
 function toolAnnotations(
   name: string,
   queryAccess: QueryAccess,
 ): Record<string, unknown> {
-  // Under a query:read key these run inside an enforced read-only envelope,
-  // so clients can safely auto-approve the whole query loop.
-  const readOnly =
-    READ_ONLY_TOOLS.has(name) ||
-    (queryAccess === "read" &&
-      (name === "sql_execute_query" || name === "run_console"));
+  const readOnly = mcpReadOnlyHint(name, queryAccess);
   return {
     readOnlyHint: readOnly,
-    destructiveHint: !readOnly && DESTRUCTIVE_TOOLS.has(name),
-    openWorldHint: false,
+    destructiveHint: !readOnly && mcpDestructiveHint(name),
+    openWorldHint: mcpOpenWorldHint(name),
   };
 }
 

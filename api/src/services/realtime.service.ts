@@ -49,11 +49,22 @@ export type RealtimeEvent =
       durationMs?: number;
       error?: string;
     }
+  // A server-executed agent tool asks the window viewing this chat to open a
+  // tab (e.g. after creating a console/notebook the user can't otherwise see or
+  // open, since the tool ran server-side). Addressed to `chatId`; only the
+  // window on that chat acts.
   | {
       type: "chat.ui-intent";
       chatId: string;
       intent: "open_console";
       consoleId: string;
+    }
+  | {
+      type: "chat.ui-intent";
+      chatId: string;
+      intent: "open_notebook";
+      notebookId: string;
+      title?: string;
     }
   | {
       type: "chat.activity";
@@ -127,6 +138,30 @@ export type RealtimeEvent =
       updatedBy: string;
       clientId?: string;
       origin: "agent" | "save";
+    }
+  // Notebook document changed (human or agent save). Open tabs pull the
+  // authoritative notebook over HTTP when the carried version is newer than
+  // what they hold; `clientId` suppresses the writer's own echo.
+  | {
+      type: "notebook.updated";
+      notebookId: string;
+      version: number;
+      updatedBy: string;
+      clientId?: string;
+      origin: "agent" | "save";
+    }
+  // Ephemeral presence for an open notebook: a periodic heartbeat carrying who
+  // the viewer is and which cell they're focused on (live cursor / soft-lock).
+  // Never persisted; other clients TTL-expire a viewer whose beats stop, or
+  // drop it immediately on a `gone` beat (tab closed).
+  | {
+      type: "notebook.presence";
+      notebookId: string;
+      clientId: string;
+      userId: string;
+      userName: string;
+      activeCellId?: string | null;
+      gone?: boolean;
     };
 
 function channelFor(workspaceId: string): string {

@@ -31,6 +31,7 @@ import {
   KeySquare,
   MessageCircleMore,
   MessageSquareText,
+  Notebook,
   Palette,
   Plug,
   Settings,
@@ -59,6 +60,7 @@ export const EXPLORER_ICONS = {
   connectors: Plug,
   dashboards: ChartPie,
   apps: AppWindow,
+  notebooks: Notebook,
   settings: Settings,
 } as const satisfies Record<LeftPaneView, LucideIcon>;
 
@@ -87,6 +89,7 @@ export const TAB_KIND_ICONS = {
   "dbt-job": CalendarClock,
   "dbt-console": Terminal,
   "dbt-runs": History,
+  notebook: Notebook,
 } as const satisfies Record<NonNullable<TabKind>, LucideIcon>;
 
 export function tabKindIcon(kind: TabKind | undefined): LucideIcon {

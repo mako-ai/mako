@@ -92,6 +92,7 @@ import { ToolDetailsDialog } from "./chat/ToolDetailsDialog";
 import { useChatSessionLoader } from "./chat/hooks/useChatSessionLoader";
 import { useQueuedPrompts } from "./chat/hooks/useQueuedPrompts";
 import { useChatScroll } from "./chat/hooks/useChatScroll";
+import { useNotebookAutoOpen } from "./chat/hooks/useNotebookAutoOpen";
 import { ChatMessageRow, MessageVirtuosoList } from "./chat/ChatMessageRow";
 import { QueuedPromptList } from "./chat/QueuedPrompts";
 import { ChatInputArea } from "./chat/ChatInputArea";
@@ -514,6 +515,10 @@ const Chat: React.FC<ChatProps> = ({
   // re-bound to a fresh Chat instance whenever chatId changes.
   const resumeStreamRef = useRef(resumeStream);
   resumeStreamRef.current = resumeStream;
+
+  // Open + list-refresh a notebook the agent creates, driven off the chat
+  // stream (reliable) rather than the ephemeral workspace realtime poke.
+  useNotebookAutoOpen(messages);
 
   // Latest status for use inside stable event-listener / callback closures
   // (the wake handler and onError) without re-installing listeners every turn.

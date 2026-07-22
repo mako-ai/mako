@@ -8,8 +8,12 @@ description: Deploy Mako to production with Docker, Google Cloud Run, or Cloudfl
 Mako ships with a production-ready Dockerfile.
 
 ```bash
-# Build the image
+# Build the image from source (default)
 docker build -t mako .
+
+# Or: build packages on the host, then package only (what CI does)
+pnpm run build:ci
+docker build --build-arg USE_PREBUILT=1 -t mako .
 
 # Run it
 docker run -p 8080:8080 \
@@ -21,6 +25,8 @@ docker run -p 8080:8080 \
 ```
 
 The image bundles both the API and the pre-built React frontend. The API serves the frontend from `/public`.
+
+CI (`deploy-app.yml`) builds once on the runner with `pnpm run build:ci`, then packages with `USE_PREBUILT=1` and BuildKit registry cache so apt/dbt/pnpm layers are reused across deploys.
 
 ### Docker Compose (Development)
 
@@ -69,6 +75,7 @@ Set these in Cloud Run's environment configuration (or via `cloud-run-env.yaml`)
 | `OPENAI_API_KEY`               | Optional    | Text embeddings only                     |
 | `GOOGLE_CLIENT_ID` + `SECRET`  | Optional    | Google OAuth                             |
 | `GH_CLIENT_ID` + `SECRET`      | Optional    | GitHub OAuth                             |
+| `SLACK_MCP_CLIENT_ID` + `SECRET` | Optional  | Deployment-wide Slack app for one-click MCP connect (`mcp.slack.com`). Redirect URI must be `${PUBLIC_URL \|\| CLIENT_URL}/api/mcp/oauth/callback`. |
 | `SENDGRID_API_KEY`             | Optional    | Email invitations                        |
 | `EMAIL_LOGO_URL`               | Optional    | Logo for run-notification emails (default: `https://app.mako.ai/email/mako-logo.png`). Override for self-hosted/staging. |
 | `BILLING_ENABLED`              | Optional    | Set `true` to enable Stripe billing (default: `false`) |

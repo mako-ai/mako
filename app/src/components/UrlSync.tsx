@@ -23,6 +23,7 @@ import {
 import { useDbtStore } from "../store/dbtStore";
 import { useMcpStore } from "../store/mcpStore";
 import { focusDashboardDataSourceTab } from "../dashboard-runtime/shell";
+import { focusNotebookTab } from "../notebook-runtime/shell";
 import {
   TAB_DEEP_LINK_PATTERNS,
   decodePathSegments,
@@ -107,6 +108,7 @@ export function UrlSync() {
     const dbtJobMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-job"]);
     const dbtRunsMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-runs"]);
     const dbtConsoleMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-console"]);
+    const notebookMatch = path.match(TAB_DEEP_LINK_PATTERNS.notebook);
     const planMatch = path.match(TAB_DEEP_LINK_PATTERNS.plan);
     const settingsSectionMatch = path.match(TAB_DEEP_LINK_PATTERNS.settings);
     const settingsMatch = path.match(/^\/settings\/?$/);
@@ -314,6 +316,13 @@ export function UrlSync() {
       const projectId = dbtConsoleMatch[1];
       setLeftPane("dbt");
       focusDbtConsoleTab(projectId, "Console");
+    } else if (notebookMatch) {
+      // /n/:notebookId — focusNotebookTab dedupes against an existing tab and
+      // activates it. NotebookRenderer loads the doc by id and syncs the real
+      // name onto the tab, so a placeholder title is fine on cold load.
+      const notebookId = notebookMatch[1];
+      setLeftPane("notebooks");
+      focusNotebookTab(notebookId, "Untitled notebook");
     } else if (planMatch) {
       // /p/:chatId — plans only exist within a chat session, so we can only
       // focus a plan tab that is already present in this browser's state.

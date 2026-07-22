@@ -6,6 +6,10 @@ import {
   Chip,
   Tooltip,
   IconButton,
+  ListItemIcon,
+  ListItemText,
+  Menu,
+  MenuItem,
   Popover,
   Divider,
 } from "@mui/material";
@@ -16,16 +20,19 @@ import {
   Eye as PreviewIcon,
   CheckCircle2 as SuccessIcon,
   XCircle as ErrorIcon,
+  MoreVertical as MoreIcon,
 } from "lucide-react";
 import MaterializationScheduleControls from "./MaterializationScheduleControls";
 import type { MaterializationScheduleValue } from "../lib/materializationSchedule";
 
 /**
  * Shared materialization toolbar for app data bindings and dashboard data
- * sources. Both surfaces present the same controls — Materialize button, build
- * status chip, freshness badge, snapshot preview, schedule popover, and history
- * popover — so the two editors look and behave identically. Surface-specific
- * wiring (where the schedule/cache live, how history is loaded) is passed in.
+ * sources. Both surfaces present the same controls — Materialize button, one
+ * combined status/freshness chip, and a ⋮ menu holding the snapshot preview,
+ * schedule, and history — so the two editors look and behave identically and
+ * the (already crowded) data-source toolbar keeps a small footprint.
+ * Surface-specific wiring (where the schedule/cache live, how history is
+ * loaded) is passed in.
  */
 
 export type MaterializationBuildStatus =
@@ -115,6 +122,7 @@ export default function DataSourceMaterializationControls({
   onOpenHistory,
   showHistory = true,
 }: Props) {
+  const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [scheduleAnchor, setScheduleAnchor] = useState<HTMLElement | null>(
     null,
   );
@@ -128,7 +136,7 @@ export default function DataSourceMaterializationControls({
     [onOpenHistory],
   );
 
-  // Freshness badge: only meaningful once a snapshot exists. Stale when the
+  // Freshness: only meaningful once a snapshot exists. Stale when the
   // artifact is older than the freshness window (default 24h, matching the
   // dashboard canvas badge).
   let freshness: { label: string; stale: boolean } | null = null;
@@ -136,6 +144,38 @@ export default function DataSourceMaterializationControls({
     const ageMs = Date.now() - builtAtMs;
     const ttl = dataFreshnessTtlMs ?? DEFAULT_FRESHNESS_TTL_MS;
     freshness = { label: formatRelative(ageMs), stale: ageMs > ttl };
+  }
+
+  // One combined chip carries build status + row count + freshness (the old
+  // separate chips ate too much toolbar width on normal screens).
+  let statusChip: {
+    label: string;
+    color: "success" | "error" | "warning" | "default";
+    tooltip: string;
+  } | null = null;
+  if (buildStatus === "ready") {
+    const rows = rowCount != null ? `${rowCount.toLocaleString()} rows` : null;
+    const age = freshness
+      ? freshness.stale
+        ? `stale · ${freshness.label}`
+        : freshness.label
+      : null;
+    statusChip = {
+      label: [rows, age].filter(Boolean).join(" · ") || "ready",
+      color: freshness?.stale ? "warning" : "success",
+      tooltip: freshness?.stale
+        ? "The snapshot is older than its freshness window — click Materialize to refresh."
+        : "The snapshot is up to date.",
+    };
+  } else if (buildStatus) {
+    statusChip = {
+      label: buildStatus,
+      color: buildStatus === "error" ? "error" : "default",
+      tooltip:
+        buildStatus === "error"
+          ? "The last materialization failed — see the history for details."
+          : "Snapshot build status.",
+    };
   }
 
   return (
@@ -158,78 +198,76 @@ export default function DataSourceMaterializationControls({
               </Button>
             </span>
           </Tooltip>
-          {buildStatus && (
-            <Chip
-              size="small"
-              variant="outlined"
-              color={
-                buildStatus === "ready"
-                  ? "success"
-                  : buildStatus === "error"
-                    ? "error"
-                    : "default"
-              }
-              label={
-                buildStatus === "ready" && rowCount != null
-                  ? `${rowCount.toLocaleString()} rows`
-                  : buildStatus
-              }
-            />
-          )}
-          {freshness && (
-            <Tooltip
-              title={
-                freshness.stale
-                  ? "The snapshot is older than its freshness window — click Materialize to refresh."
-                  : "The snapshot is up to date."
-              }
-            >
+          {statusChip && (
+            <Tooltip title={statusChip.tooltip}>
               <Chip
                 size="small"
                 variant="outlined"
-                color={freshness.stale ? "warning" : "default"}
-                label={
-                  freshness.stale
-                    ? `Stale · ${freshness.label}`
-                    : `Updated ${freshness.label}`
-                }
+                color={statusChip.color}
+                label={statusChip.label}
               />
             </Tooltip>
           )}
-          {canPreview && onPreviewSnapshot && (
-            <Tooltip title="Preview the materialized data">
-              <span>
-                <IconButton
-                  size="small"
-                  onClick={() => onPreviewSnapshot()}
-                  disabled={previewing}
-                >
-                  <PreviewIcon size={18} strokeWidth={1.5} />
-                </IconButton>
-              </span>
-            </Tooltip>
-          )}
-          <Tooltip title="Materialization schedule">
+          <Tooltip title="Snapshot options">
             <IconButton
               size="small"
-              onClick={e => setScheduleAnchor(e.currentTarget)}
+              onClick={e => setMenuAnchor(e.currentTarget)}
             >
-              <ScheduleIcon size={18} strokeWidth={1.5} />
+              <MoreIcon size={18} strokeWidth={1.5} />
             </IconButton>
           </Tooltip>
-          {showHistory && (
-            <Tooltip title="Materialization history">
-              <span>
-                <IconButton
-                  size="small"
-                  onClick={e => openHistory(e.currentTarget)}
-                  disabled={history.length === 0 && !onOpenHistory}
-                >
-                  <HistoryIcon size={18} strokeWidth={1.5} />
-                </IconButton>
-              </span>
-            </Tooltip>
-          )}
+          <Menu
+            anchorEl={menuAnchor}
+            open={!!menuAnchor}
+            onClose={() => setMenuAnchor(null)}
+          >
+            {onPreviewSnapshot && (
+              <MenuItem
+                disabled={!canPreview || previewing}
+                onClick={() => {
+                  setMenuAnchor(null);
+                  onPreviewSnapshot();
+                }}
+              >
+                <ListItemIcon>
+                  <PreviewIcon size={16} strokeWidth={1.5} />
+                </ListItemIcon>
+                <ListItemText
+                  primary="Preview snapshot"
+                  secondary={
+                    canPreview ? undefined : "Materialize the data first"
+                  }
+                />
+              </MenuItem>
+            )}
+            {/* Popovers anchor on the ⋮ button (menuAnchor): menu items
+                unmount when the menu closes, so they can't be anchors. */}
+            <MenuItem
+              onClick={() => {
+                setScheduleAnchor(menuAnchor);
+                setMenuAnchor(null);
+              }}
+            >
+              <ListItemIcon>
+                <ScheduleIcon size={16} strokeWidth={1.5} />
+              </ListItemIcon>
+              <ListItemText>Schedule…</ListItemText>
+            </MenuItem>
+            {showHistory && (
+              <MenuItem
+                disabled={history.length === 0 && !onOpenHistory}
+                onClick={() => {
+                  if (menuAnchor) openHistory(menuAnchor);
+                  setMenuAnchor(null);
+                }}
+              >
+                <ListItemIcon>
+                  <HistoryIcon size={16} strokeWidth={1.5} />
+                </ListItemIcon>
+                <ListItemText>History…</ListItemText>
+              </MenuItem>
+            )}
+          </Menu>
         </>
       )}
 

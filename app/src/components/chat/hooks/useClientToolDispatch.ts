@@ -14,12 +14,14 @@ import { executeConsoleAgentTool } from "../../../agent-runtime/console-agent-to
 import { executeDashboardAgentTool } from "../../../dashboard-runtime/agent-tools";
 import { executeAppAgentTool } from "../../../app-runtime/agent-tools";
 import { executeDbtAgentTool } from "../../../dbt-runtime/agent-tools";
+import { executeNotebookAgentTool } from "../../../notebook-runtime/agent-tools";
 import { executeDataSourceTool } from "../../../agent-runtime/data-source-tools";
 import {
   DASHBOARD_EXECUTOR_TOOL_NAMES,
   APP_EXECUTOR_TOOL_NAMES,
   DBT_EXECUTOR_TOOL_NAMES,
   DATA_SOURCE_EXECUTOR_TOOL_NAMES,
+  NOTEBOOK_EXECUTOR_TOOL_NAMES,
   getAgentToolManifestEntry,
   type AgentToolName,
 } from "../../../agent-runtime/client-tool-manifest";
@@ -307,6 +309,51 @@ export function useClientToolDispatch({
           return;
         }
 
+        // --- Notebook tools (client-side) ---
+        if (NOTEBOOK_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
+          const activeNotebookTool = registerActiveClientToolCall(
+            toolName,
+            toolCall.toolCallId,
+          );
+          // Fire-and-forget, same rationale as app tools above.
+          void (async () => {
+            try {
+              const notebookOutput = await executeNotebookAgentTool(
+                toolName,
+                input,
+                {
+                  executionId: activeNotebookTool.executionId,
+                  signal: activeNotebookTool.abortController.signal,
+                },
+              );
+              if (activeNotebookTool.abortController.signal.aborted) return;
+              void settleActiveClientToolCall(
+                toolName,
+                toolCall.toolCallId,
+                notebookOutput ?? {
+                  success: false,
+                  error: `Notebook tool "${toolName}" did not return a result.`,
+                },
+              );
+            } catch (notebookError) {
+              if (
+                manualStopRequestedRef.current ||
+                activeNotebookTool.abortController.signal.aborted
+              ) {
+                return;
+              }
+              void settleActiveClientToolCall(toolName, toolCall.toolCallId, {
+                success: false,
+                error:
+                  notebookError instanceof Error
+                    ? notebookError.message
+                    : "Notebook tool execution failed",
+              });
+            }
+          })();
+          return;
+        }
+
         // --- Shared data source tools (apps + dashboards) ---
         if (DATA_SOURCE_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
           const activeDataTool = registerActiveClientToolCall(
@@ -584,6 +631,9 @@ export function useClientToolDispatch({
         run = () => executeDbtAgentTool(toolName, input);
       } else if (DATA_SOURCE_EXECUTOR_TOOL_NAMES.has(name)) {
         run = () => executeDataSourceTool(toolName, input);
+      } else if (NOTEBOOK_EXECUTOR_TOOL_NAMES.has(name)) {
+        run = ({ executionId, signal }) =>
+          executeNotebookAgentTool(toolName, input, { executionId, signal });
       }
       if (!run) return false;
 

@@ -1,0 +1,11 @@
+# Analytics stack baked into the kernel image. Pinned to majors for
+# reproducible builds; bump deliberately. pyarrow/pandas also come from the
+# mako SDK's own deps but are listed here to pin the kernel's versions.
+numpy>=1.26,<3
+pandas>=2.2,<3
+polars>=1.0,<2
+pyarrow>=16,<19
+duckdb>=1.0,<2
+matplotlib>=3.8,<4
+plotly>=5.20,<6
+requests>=2.31,<3

@@ -3,7 +3,7 @@
  *
  * Replaces the ScheduledFlowForm / WebhookFlowForm split: the trigger set
  * (scheduled poll and/or webhook push) is a property of one Sync, chosen in
- * step 3, instead of a flow "type" picked up-front. Composed from the proven
+ * the last step, instead of a flow "type" picked up-front. Composed from the proven
  * pieces of both legacy forms (destination + schema/prefix, entity layout
  * table, webhook secret/provisioning block, cron presets).
  */
@@ -184,15 +184,15 @@ const STEPS = [
   { label: "Source", description: "Where the data comes from" },
   { label: "Destination", description: "Where the data is written" },
   {
-    label: "Triggers",
-    description:
-      "How the sync is triggered — schedule, webhook, or periodic reconcile",
-  },
-  {
     label: "Sync Configuration",
     description: "Sync mode and delete behavior",
   },
   { label: "Entities", description: "What data is synced" },
+  {
+    label: "Triggers",
+    description:
+      "How the sync is triggered — schedule, webhook, or periodic reconcile",
+  },
 ];
 
 export function SyncFlowForm({
@@ -258,6 +258,10 @@ export function SyncFlowForm({
   const [webhookUrl, setWebhookUrl] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isProvisioningWebhook, setIsProvisioningWebhook] = useState(false);
+  /** Keep Triggers expanded after create until the user can see provision result. */
+  const [pinTriggersOpen, setPinTriggersOpen] = useState(false);
+  const [webhookProvisionSucceeded, setWebhookProvisionSucceeded] =
+    useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(
     flowId,
@@ -290,10 +294,21 @@ export function SyncFlowForm({
   const reconcileAutoEnabledRef = useRef(false);
 
   const toggleStep = (stepIndex: number) => {
+    // Keep Triggers open while provisioning, and after success until the
+    // user dismisses the confirmation (pinTriggersOpen). Failures stay open
+    // but can be collapsed once the error is visible (!isProvisioningWebhook).
+    if (stepIndex === 4 && openSteps.has(4)) {
+      if (isProvisioningWebhook) return;
+      if (pinTriggersOpen && !error) return;
+    }
     setOpenSteps(prev => {
       const next = new Set(prev);
-      if (next.has(stepIndex)) next.delete(stepIndex);
-      else next.add(stepIndex);
+      if (next.has(stepIndex)) {
+        next.delete(stepIndex);
+        if (stepIndex === 4) setPinTriggersOpen(false);
+      } else {
+        next.add(stepIndex);
+      }
       return next;
     });
   };
@@ -758,7 +773,11 @@ export function SyncFlowForm({
       scheduleCron: flow.schedule?.cron || "0 * * * *",
       scheduleTimezone: flow.schedule?.timezone || "UTC",
       webhookEnabled: hasWebhookTrigger,
-      webhookSecret: flow.webhookConfig?.secret || "",
+      // Prefer the server secret when present. If a flows refresh races with
+      // one-click provisioning (secret just set in the form, not yet visible
+      // on the list payload), keep the in-form value instead of blanking it.
+      webhookSecret:
+        flow.webhookConfig?.secret || getValues("webhookSecret") || "",
       syncMode: (flow.syncMode as "full" | "incremental") || "full",
       writeMode:
         (flow.writeMode as "append_dedup" | "append" | "overwrite") ||
@@ -793,7 +812,7 @@ export function SyncFlowForm({
     );
     formTouchedRef.current = false;
     reset(formData);
-  }, [isNewMode, currentFlowId, flows, reset]);
+  }, [isNewMode, currentFlowId, flows, reset, getValues]);
 
   useEffect(() => {
     return () => {
@@ -855,17 +874,17 @@ export function SyncFlowForm({
       setError(
         "Enable at least one trigger — a schedule, a webhook, or a periodic full reconcile.",
       );
-      setOpenSteps(prev => new Set([...prev, 2]));
+      setOpenSteps(prev => new Set([...prev, 4]));
       return;
     }
     if (data.scheduleEnabled && !data.scheduleCron.trim()) {
       setError("A cron expression is required for the scheduled trigger.");
-      setOpenSteps(prev => new Set([...prev, 2]));
+      setOpenSteps(prev => new Set([...prev, 4]));
       return;
     }
     if (data.webhookEnabled && !connectorSupportsWebhook) {
       setError("This connector does not provide webhooks — use a schedule.");
-      setOpenSteps(prev => new Set([...prev, 2]));
+      setOpenSteps(prev => new Set([...prev, 4]));
       return;
     }
     if (data.webhookEnabled && !isCdcCapableDest) {
@@ -896,7 +915,7 @@ export function SyncFlowForm({
     }
     if (requiresQueries && (!data.queries || data.queries.length === 0)) {
       setError("Please add at least one query to define what data to sync");
-      setOpenSteps(prev => new Set([...prev, 4]));
+      setOpenSteps(prev => new Set([...prev, 3]));
       return;
     }
     const backfillSchedule = {
@@ -911,7 +930,7 @@ export function SyncFlowForm({
       setError(
         "A valid cron expression is required to enable the periodic full reconcile.",
       );
-      setOpenSteps(prev => new Set([...prev, 2]));
+      setOpenSteps(prev => new Set([...prev, 4]));
       return;
     }
 
@@ -1004,6 +1023,20 @@ export function SyncFlowForm({
         onSaved?.(newFlow._id);
         reset(data);
         onSave?.();
+
+        // Triggers is last: stay on it after create so webhook URL/secret are
+        // visible. Pin open until provisioning finishes (or URL is shown).
+        if (data.webhookEnabled) {
+          setPinTriggersOpen(true);
+          setWebhookProvisionSucceeded(false);
+          setOpenSteps(new Set([4]));
+          if (provisioning?.supported) {
+            const ok = await provisionWebhookForFlow(newFlow._id);
+            if (ok) {
+              setWebhookProvisionSucceeded(true);
+            }
+          }
+        }
       } else if (currentFlowId) {
         await updateFlow(currentWorkspace.id, currentFlowId, payload);
 
@@ -1047,19 +1080,22 @@ export function SyncFlowForm({
     }
   };
 
-  const handleProvisionWebhook = async () => {
-    if (!currentWorkspace?.id || !currentFlowId) {
+  const provisionWebhookForFlow = async (
+    flowIdToProvision: string,
+  ): Promise<boolean> => {
+    if (!currentWorkspace?.id) {
       setError("Save the sync first before creating the provider webhook");
-      return;
+      return false;
     }
     setIsProvisioningWebhook(true);
     setError(null);
+    setWebhookProvisionSucceeded(false);
     try {
       const publicBaseUrl =
         typeof window !== "undefined" ? window.location.origin : undefined;
       const provisioned = await provisionFlowWebhook(
         currentWorkspace.id,
-        currentFlowId,
+        flowIdToProvision,
         { verifySsl: true, publicBaseUrl },
       );
       if (!provisioned) {
@@ -1072,14 +1108,39 @@ export function SyncFlowForm({
         });
       }
       await useFlowStore.getState().fetchFlows(currentWorkspace.id);
+      // fetchFlows triggers the flows→reset useEffect. Re-apply after that
+      // paint so a missing/racy list secret can't wipe the provisioned value.
+      if (provisioned.webhookSecret) {
+        const secret = provisioned.webhookSecret;
+        setTimeout(() => {
+          setValue("webhookSecret", secret, {
+            shouldDirty: true,
+          });
+        }, 0);
+      }
+      return Boolean(provisioned.endpoint && provisioned.webhookSecret);
     } catch (err) {
       setError(
         err instanceof Error
           ? err.message
           : `Failed to create webhook in ${provisionProviderLabel}`,
       );
+      return false;
     } finally {
       setIsProvisioningWebhook(false);
+    }
+  };
+
+  const handleProvisionWebhook = async () => {
+    if (!currentFlowId) {
+      setError("Save the sync first before creating the provider webhook");
+      return;
+    }
+    setPinTriggersOpen(true);
+    setOpenSteps(prev => new Set([...prev, 4]));
+    const ok = await provisionWebhookForFlow(currentFlowId);
+    if (ok) {
+      setWebhookProvisionSucceeded(true);
     }
   };
 
@@ -1100,9 +1161,9 @@ export function SyncFlowForm({
     const errorStepFields: string[][] = [
       ["dataSourceId"],
       ["destinationDatabaseId", "tableDestination", "destinationDatabaseName"],
+      [],
+      [],
       ["scheduleCron"],
-      [],
-      [],
     ];
     const firstErrorStep = errorStepFields.findIndex(fields =>
       fields.some(f => f in fieldErrors),
@@ -1486,413 +1547,6 @@ export function SyncFlowForm({
                       onClick={() => openNextStep(1)}
                       disabled={!watchDestinationId}
                     >
-                      Continue to Triggers
-                    </Button>
-                  </Box>
-                </Stack>
-              </AccordionDetails>
-            </Accordion>
-
-            {/* Step 3: Triggers */}
-            <Accordion
-              expanded={openSteps.has(2)}
-              onChange={() => toggleStep(2)}
-              sx={{ mb: 1 }}
-            >
-              {renderStepHeader(2)}
-              <AccordionDetails>
-                <Stack spacing={2}>
-                  {!watchScheduleEnabled &&
-                    !watchWebhookEnabled &&
-                    !(isCdcCapableDest && watchBackfillScheduleEnabled) && (
-                      <Alert severity="warning">
-                        Enable at least one trigger — a schedule, a webhook, or
-                        a periodic full reconcile.
-                      </Alert>
-                    )}
-
-                  {/* Scheduled trigger. Hidden for Full Refresh on CDC
-                      destinations: "poll on a cron" and "periodic full
-                      reconcile" are the same operation there (a full
-                      backfill), so showing both would just be two cron
-                      controls for one behavior. The reconcile trigger below
-                      becomes the sync's single cron in that case. */}
-                  {showScheduleTrigger && (
-                    <Box
-                      sx={{
-                        border: 1,
-                        borderColor: "divider",
-                        borderRadius: 1,
-                        p: 2,
-                      }}
-                    >
-                      <Controller
-                        name="scheduleEnabled"
-                        control={control}
-                        render={({ field }) => (
-                          <FormControlLabel
-                            control={
-                              <Checkbox
-                                checked={Boolean(field.value)}
-                                onChange={e => field.onChange(e.target.checked)}
-                              />
-                            }
-                            label={
-                              <Box>
-                                <Typography variant="subtitle2">
-                                  Scheduled
-                                </Typography>
-                                <Typography
-                                  variant="caption"
-                                  color="text.secondary"
-                                >
-                                  Poll the source on a cron cadence.
-                                </Typography>
-                              </Box>
-                            }
-                          />
-                        )}
-                      />
-                      {watchScheduleEnabled && (
-                        <Stack
-                          direction={{ xs: "column", sm: "row" }}
-                          spacing={2}
-                          sx={{ mt: 1 }}
-                        >
-                          <FormControl size="small" fullWidth>
-                            <InputLabel>Cadence</InputLabel>
-                            <Select
-                              label="Cadence"
-                              value={
-                                scheduleCronMode === "custom"
-                                  ? "__custom__"
-                                  : cronPresetValue
-                              }
-                              onChange={e => {
-                                const value = e.target.value;
-                                if (value === "__custom__") {
-                                  setScheduleCronMode("custom");
-                                } else {
-                                  setScheduleCronMode("preset");
-                                  setValue("scheduleCron", value, {
-                                    shouldDirty: true,
-                                  });
-                                }
-                              }}
-                            >
-                              {SCHEDULE_PRESETS.map(preset => (
-                                <MenuItem key={preset.cron} value={preset.cron}>
-                                  {preset.label}
-                                </MenuItem>
-                              ))}
-                              <MenuItem value="__custom__">
-                                Custom cron…
-                              </MenuItem>
-                            </Select>
-                          </FormControl>
-                          {scheduleCronMode === "custom" && (
-                            <Controller
-                              name="scheduleCron"
-                              control={control}
-                              render={({ field }) => (
-                                <TextField
-                                  {...field}
-                                  label="Cron Expression"
-                                  placeholder="0 * * * *"
-                                  size="small"
-                                  fullWidth
-                                  helperText="Format: minute hour day month weekday"
-                                />
-                              )}
-                            />
-                          )}
-                          <Controller
-                            name="scheduleTimezone"
-                            control={control}
-                            render={({ field }) => (
-                              <TextField
-                                {...field}
-                                label="Timezone"
-                                placeholder="UTC"
-                                size="small"
-                                fullWidth
-                              />
-                            )}
-                          />
-                        </Stack>
-                      )}
-                    </Box>
-                  )}
-
-                  {/* Webhook trigger */}
-                  <Tooltip
-                    title={
-                      !watchDataSourceId
-                        ? "Select a data source first"
-                        : connectorSupportsWebhook
-                          ? ""
-                          : "This connector does not provide webhooks — use a schedule"
-                    }
-                    placement="top-start"
-                  >
-                    <Box
-                      sx={{
-                        border: 1,
-                        borderColor: "divider",
-                        borderRadius: 1,
-                        p: 2,
-                        opacity: connectorSupportsWebhook ? 1 : 0.55,
-                      }}
-                    >
-                      <Controller
-                        name="webhookEnabled"
-                        control={control}
-                        render={({ field }) => (
-                          <FormControlLabel
-                            control={
-                              <Checkbox
-                                checked={Boolean(field.value)}
-                                disabled={!connectorSupportsWebhook}
-                                onChange={e => field.onChange(e.target.checked)}
-                              />
-                            }
-                            label={
-                              <Box>
-                                <Typography variant="subtitle2">
-                                  Webhook
-                                </Typography>
-                                <Typography
-                                  variant="caption"
-                                  color="text.secondary"
-                                >
-                                  Receive pushed changes in real time
-                                  {connectorSupportsWebhook
-                                    ? "."
-                                    : " (unavailable for this connector)."}
-                                </Typography>
-                              </Box>
-                            }
-                          />
-                        )}
-                      />
-
-                      {watchWebhookEnabled && (
-                        <Stack spacing={2} sx={{ mt: 1 }}>
-                          {!isCdcCapableDest && (
-                            <Alert severity="warning">
-                              Webhook-triggered syncs require a CDC-capable
-                              destination (BigQuery, PostgreSQL, ClickHouse, or
-                              MongoDB).
-                            </Alert>
-                          )}
-                          {isNewMode ? (
-                            <Alert severity="info" icon={<WebhookIcon />}>
-                              Save the sync to generate the webhook URL and
-                              secret.
-                            </Alert>
-                          ) : (
-                            <>
-                              {webhookUrl && (
-                                <TextField
-                                  value={webhookUrl}
-                                  label="Webhook URL"
-                                  fullWidth
-                                  size="small"
-                                  InputProps={{
-                                    readOnly: true,
-                                    endAdornment: (
-                                      <Button
-                                        size="small"
-                                        onClick={() =>
-                                          navigator.clipboard.writeText(
-                                            webhookUrl,
-                                          )
-                                        }
-                                      >
-                                        <CopyIcon fontSize="small" />
-                                      </Button>
-                                    ),
-                                  }}
-                                />
-                              )}
-                              <Controller
-                                name="webhookSecret"
-                                control={control}
-                                render={({ field }) => (
-                                  <TextField
-                                    {...field}
-                                    label="Webhook Secret"
-                                    placeholder="Enter webhook secret"
-                                    fullWidth
-                                    size="small"
-                                    helperText={webhookSecretHelpText}
-                                  />
-                                )}
-                              />
-                              {canProvisionWebhook && (
-                                <Box>
-                                  <Button
-                                    size="small"
-                                    variant="outlined"
-                                    onClick={handleProvisionWebhook}
-                                    disabled={
-                                      isSubmitting || isProvisioningWebhook
-                                    }
-                                  >
-                                    {isProvisioningWebhook
-                                      ? `Creating in ${provisionProviderLabel}...`
-                                      : `Create in ${provisionProviderLabel}`}
-                                  </Button>
-                                </Box>
-                              )}
-                            </>
-                          )}
-                        </Stack>
-                      )}
-                    </Box>
-                  </Tooltip>
-
-                  {/* Periodic full reconcile trigger (CDC destinations).
-                      For Full Refresh, this IS the schedule (see
-                      showScheduleTrigger above) — the label and helper text
-                      reflect that instead of duplicating a second cron. */}
-                  {isCdcCapableDest && (
-                    <Box
-                      sx={{
-                        border: 1,
-                        borderColor:
-                          suggestReconcile && !watchBackfillScheduleEnabled
-                            ? "warning.main"
-                            : "divider",
-                        borderRadius: 1,
-                        p: 2,
-                      }}
-                    >
-                      <Controller
-                        name="backfillScheduleEnabled"
-                        control={control}
-                        render={({ field }) => (
-                          <FormControlLabel
-                            control={
-                              <Checkbox
-                                checked={Boolean(field.value)}
-                                onChange={e => field.onChange(e.target.checked)}
-                              />
-                            }
-                            label={
-                              <Box>
-                                <Typography variant="subtitle2">
-                                  {showScheduleTrigger
-                                    ? "Periodic full reconcile"
-                                    : "Schedule (periodic full reconcile)"}
-                                  {suggestReconcile ? " (recommended)" : ""}
-                                </Typography>
-                                <Typography
-                                  variant="caption"
-                                  color="text.secondary"
-                                >
-                                  {reconcileDescription}
-                                  {showScheduleTrigger &&
-                                    " Other triggers stay active between runs."}
-                                </Typography>
-                              </Box>
-                            }
-                          />
-                        )}
-                      />
-                      {suggestReconcile && !watchBackfillScheduleEnabled && (
-                        <Alert
-                          severity="warning"
-                          sx={{ mt: 1 }}
-                          action={
-                            <Button
-                              color="inherit"
-                              size="small"
-                              onClick={() => {
-                                formTouchedRef.current = true;
-                                setValue("backfillScheduleEnabled", true, {
-                                  shouldDirty: true,
-                                });
-                                if (!getValues("backfillScheduleCron")) {
-                                  setValue(
-                                    "backfillScheduleCron",
-                                    "0 3 * * *",
-                                    { shouldDirty: true },
-                                  );
-                                }
-                              }}
-                            >
-                              Enable daily
-                            </Button>
-                          }
-                        >
-                          Incremental polls for the selected entities miss
-                          updates (created-only) or silently re-fetch
-                          everything. Enable a periodic full reconcile so the
-                          destination stays honest between webhook events.
-                        </Alert>
-                      )}
-                      {watchBackfillScheduleEnabled &&
-                        watchSyncMode === "incremental" &&
-                        watchWriteMode === "append" && (
-                          <Alert severity="warning" sx={{ mt: 1 }}>
-                            Combined with Incremental | Append, each reconcile
-                            run appends a full duplicate snapshot into the
-                            history table. Consider Full Refresh | Append (a
-                            snapshot-per-run table) or Deduped instead.
-                          </Alert>
-                        )}
-                      {watchBackfillScheduleEnabled && (
-                        <Stack
-                          direction={{ xs: "column", sm: "row" }}
-                          spacing={2}
-                          sx={{ mt: 2 }}
-                        >
-                          <Controller
-                            name="backfillScheduleCron"
-                            control={control}
-                            render={({ field }) => (
-                              <TextField
-                                {...field}
-                                label="Cron expression"
-                                placeholder="0 3 * * *"
-                                size="small"
-                                fullWidth
-                                helperText="e.g. '0 3 * * *' = daily at 03:00"
-                              />
-                            )}
-                          />
-                          <Controller
-                            name="backfillScheduleTimezone"
-                            control={control}
-                            render={({ field }) => (
-                              <TextField
-                                {...field}
-                                label="Timezone"
-                                placeholder="UTC"
-                                size="small"
-                                fullWidth
-                              />
-                            )}
-                          />
-                        </Stack>
-                      )}
-                    </Box>
-                  )}
-
-                  <Box
-                    sx={{ display: "flex", justifyContent: "flex-end", pt: 1 }}
-                  >
-                    <Button
-                      variant="contained"
-                      endIcon={<NextIcon />}
-                      onClick={() => openNextStep(2)}
-                      disabled={
-                        !watchScheduleEnabled &&
-                        !watchWebhookEnabled &&
-                        !(isCdcCapableDest && watchBackfillScheduleEnabled)
-                      }
-                    >
                       Continue to Sync Configuration
                     </Button>
                   </Box>
@@ -1900,13 +1554,13 @@ export function SyncFlowForm({
               </AccordionDetails>
             </Accordion>
 
-            {/* Step 4: Sync Configuration */}
+            {/* Step 3: Sync Configuration */}
             <Accordion
-              expanded={openSteps.has(3)}
-              onChange={() => toggleStep(3)}
+              expanded={openSteps.has(2)}
+              onChange={() => toggleStep(2)}
               sx={{ mb: 1 }}
             >
-              {renderStepHeader(3)}
+              {renderStepHeader(2)}
               <AccordionDetails>
                 <Stack spacing={3}>
                   <FormControl fullWidth>
@@ -1985,7 +1639,7 @@ export function SyncFlowForm({
                               });
                               setOpenSteps(prev => {
                                 const next = new Set(prev);
-                                next.add(2);
+                                next.add(4);
                                 return next;
                               });
                             }}
@@ -2041,7 +1695,7 @@ export function SyncFlowForm({
                     <Button
                       variant="contained"
                       endIcon={<NextIcon />}
-                      onClick={() => openNextStep(3)}
+                      onClick={() => openNextStep(2)}
                     >
                       Continue to Entities
                     </Button>
@@ -2050,13 +1704,13 @@ export function SyncFlowForm({
               </AccordionDetails>
             </Accordion>
 
-            {/* Step 5: Entities */}
+            {/* Step 4: Entities */}
             <Accordion
-              expanded={openSteps.has(4)}
-              onChange={() => toggleStep(4)}
+              expanded={openSteps.has(3)}
+              onChange={() => toggleStep(3)}
               sx={{ mb: 1 }}
             >
-              {renderStepHeader(4)}
+              {renderStepHeader(3)}
               <AccordionDetails>
                 <Stack spacing={3}>
                   {/* Query-based connectors (GraphQL / PostHog) */}
@@ -2503,16 +2157,471 @@ export function SyncFlowForm({
                     />
                   )}
 
-                  {isNewMode && (
+                  <Box
+                    sx={{ display: "flex", justifyContent: "flex-end", pt: 1 }}
+                  >
+                    <Button
+                      variant="contained"
+                      endIcon={<NextIcon />}
+                      onClick={() => openNextStep(3)}
+                    >
+                      Continue to Triggers
+                    </Button>
+                  </Box>
+                </Stack>
+              </AccordionDetails>
+            </Accordion>
+            {/* Step 5: Triggers */}
+            <Accordion
+              expanded={
+                openSteps.has(4) || pinTriggersOpen || isProvisioningWebhook
+              }
+              onChange={() => toggleStep(4)}
+              sx={{ mb: 1 }}
+            >
+              {renderStepHeader(4)}
+              <AccordionDetails>
+                <Stack spacing={2}>
+                  {!watchScheduleEnabled &&
+                    !watchWebhookEnabled &&
+                    !(isCdcCapableDest && watchBackfillScheduleEnabled) && (
+                      <Alert severity="warning">
+                        Enable at least one trigger — a schedule, a webhook, or
+                        a periodic full reconcile.
+                      </Alert>
+                    )}
+
+                  {/* Scheduled trigger. Hidden for Full Refresh on CDC
+                      destinations: "poll on a cron" and "periodic full
+                      reconcile" are the same operation there (a full
+                      backfill), so showing both would just be two cron
+                      controls for one behavior. The reconcile trigger below
+                      becomes the sync's single cron in that case. */}
+                  {showScheduleTrigger && (
+                    <Box
+                      sx={{
+                        border: 1,
+                        borderColor: "divider",
+                        borderRadius: 1,
+                        p: 2,
+                      }}
+                    >
+                      <Controller
+                        name="scheduleEnabled"
+                        control={control}
+                        render={({ field }) => (
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={Boolean(field.value)}
+                                onChange={e => field.onChange(e.target.checked)}
+                              />
+                            }
+                            label={
+                              <Box>
+                                <Typography variant="subtitle2">
+                                  Scheduled
+                                </Typography>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                >
+                                  Poll the source on a cron cadence.
+                                </Typography>
+                              </Box>
+                            }
+                          />
+                        )}
+                      />
+                      {watchScheduleEnabled && (
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={2}
+                          sx={{ mt: 1 }}
+                        >
+                          <FormControl size="small" fullWidth>
+                            <InputLabel>Cadence</InputLabel>
+                            <Select
+                              label="Cadence"
+                              value={
+                                scheduleCronMode === "custom"
+                                  ? "__custom__"
+                                  : cronPresetValue
+                              }
+                              onChange={e => {
+                                const value = e.target.value;
+                                if (value === "__custom__") {
+                                  setScheduleCronMode("custom");
+                                } else {
+                                  setScheduleCronMode("preset");
+                                  setValue("scheduleCron", value, {
+                                    shouldDirty: true,
+                                  });
+                                }
+                              }}
+                            >
+                              {SCHEDULE_PRESETS.map(preset => (
+                                <MenuItem key={preset.cron} value={preset.cron}>
+                                  {preset.label}
+                                </MenuItem>
+                              ))}
+                              <MenuItem value="__custom__">
+                                Custom cron…
+                              </MenuItem>
+                            </Select>
+                          </FormControl>
+                          {scheduleCronMode === "custom" && (
+                            <Controller
+                              name="scheduleCron"
+                              control={control}
+                              render={({ field }) => (
+                                <TextField
+                                  {...field}
+                                  label="Cron Expression"
+                                  placeholder="0 * * * *"
+                                  size="small"
+                                  fullWidth
+                                  helperText="Format: minute hour day month weekday"
+                                />
+                              )}
+                            />
+                          )}
+                          <Controller
+                            name="scheduleTimezone"
+                            control={control}
+                            render={({ field }) => (
+                              <TextField
+                                {...field}
+                                label="Timezone"
+                                placeholder="UTC"
+                                size="small"
+                                fullWidth
+                              />
+                            )}
+                          />
+                        </Stack>
+                      )}
+                    </Box>
+                  )}
+
+                  {/* Webhook trigger */}
+                  <Tooltip
+                    title={
+                      !watchDataSourceId
+                        ? "Select a data source first"
+                        : connectorSupportsWebhook
+                          ? ""
+                          : "This connector does not provide webhooks — use a schedule"
+                    }
+                    placement="top-start"
+                  >
+                    <Box
+                      sx={{
+                        border: 1,
+                        borderColor: "divider",
+                        borderRadius: 1,
+                        p: 2,
+                        opacity: connectorSupportsWebhook ? 1 : 0.55,
+                      }}
+                    >
+                      <Controller
+                        name="webhookEnabled"
+                        control={control}
+                        render={({ field }) => (
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={Boolean(field.value)}
+                                disabled={!connectorSupportsWebhook}
+                                onChange={e => field.onChange(e.target.checked)}
+                              />
+                            }
+                            label={
+                              <Box>
+                                <Typography variant="subtitle2">
+                                  Webhook
+                                </Typography>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                >
+                                  Receive pushed changes in real time
+                                  {connectorSupportsWebhook
+                                    ? "."
+                                    : " (unavailable for this connector)."}
+                                </Typography>
+                              </Box>
+                            }
+                          />
+                        )}
+                      />
+
+                      {watchWebhookEnabled && (
+                        <Stack spacing={2} sx={{ mt: 1 }}>
+                          {!isCdcCapableDest && (
+                            <Alert severity="warning">
+                              Webhook-triggered syncs require a CDC-capable
+                              destination (BigQuery, PostgreSQL, ClickHouse, or
+                              MongoDB).
+                            </Alert>
+                          )}
+                          {isNewMode ? (
+                            <Alert severity="info" icon={<WebhookIcon />}>
+                              {provisioning?.supported
+                                ? `Create the sync below — we'll generate the webhook URL and create it in ${provisionProviderLabel} automatically.`
+                                : "Create the sync below to generate the webhook URL, then paste the signing secret from your provider."}
+                            </Alert>
+                          ) : (
+                            <>
+                              {isProvisioningWebhook && (
+                                <Alert severity="info" icon={<WebhookIcon />}>
+                                  Creating webhook in {provisionProviderLabel}…
+                                </Alert>
+                              )}
+                              {webhookProvisionSucceeded &&
+                                !isProvisioningWebhook && (
+                                  <Alert
+                                    severity="success"
+                                    onClose={() => {
+                                      setWebhookProvisionSucceeded(false);
+                                      setPinTriggersOpen(false);
+                                    }}
+                                  >
+                                    Webhook created in {provisionProviderLabel}.
+                                    URL and signing secret are filled below —
+                                    save if you change anything.
+                                  </Alert>
+                                )}
+                              {webhookUrl && (
+                                <TextField
+                                  value={webhookUrl}
+                                  label="Webhook URL"
+                                  fullWidth
+                                  size="small"
+                                  InputProps={{
+                                    readOnly: true,
+                                    endAdornment: (
+                                      <Button
+                                        size="small"
+                                        onClick={() =>
+                                          navigator.clipboard.writeText(
+                                            webhookUrl,
+                                          )
+                                        }
+                                      >
+                                        <CopyIcon fontSize="small" />
+                                      </Button>
+                                    ),
+                                  }}
+                                />
+                              )}
+                              <Controller
+                                name="webhookSecret"
+                                control={control}
+                                render={({ field }) => (
+                                  <TextField
+                                    {...field}
+                                    label="Webhook Secret"
+                                    placeholder="Enter webhook secret"
+                                    fullWidth
+                                    size="small"
+                                    helperText={webhookSecretHelpText}
+                                  />
+                                )}
+                              />
+                              {canProvisionWebhook && (
+                                <Box>
+                                  <Button
+                                    size="small"
+                                    variant="outlined"
+                                    onClick={handleProvisionWebhook}
+                                    disabled={
+                                      isSubmitting || isProvisioningWebhook
+                                    }
+                                  >
+                                    {isProvisioningWebhook
+                                      ? `Creating in ${provisionProviderLabel}...`
+                                      : webhookProvisionSucceeded
+                                        ? `Recreate in ${provisionProviderLabel}`
+                                        : `Create in ${provisionProviderLabel}`}
+                                  </Button>
+                                </Box>
+                              )}
+                            </>
+                          )}
+                        </Stack>
+                      )}
+                    </Box>
+                  </Tooltip>
+
+                  {/* Periodic full reconcile trigger (CDC destinations).
+                      For Full Refresh, this IS the schedule (see
+                      showScheduleTrigger above) — the label and helper text
+                      reflect that instead of duplicating a second cron. */}
+                  {isCdcCapableDest && (
+                    <Box
+                      sx={{
+                        border: 1,
+                        borderColor:
+                          suggestReconcile && !watchBackfillScheduleEnabled
+                            ? "warning.main"
+                            : "divider",
+                        borderRadius: 1,
+                        p: 2,
+                      }}
+                    >
+                      <Controller
+                        name="backfillScheduleEnabled"
+                        control={control}
+                        render={({ field }) => (
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={Boolean(field.value)}
+                                onChange={e => field.onChange(e.target.checked)}
+                              />
+                            }
+                            label={
+                              <Box>
+                                <Typography variant="subtitle2">
+                                  {showScheduleTrigger
+                                    ? "Periodic full reconcile"
+                                    : "Schedule (periodic full reconcile)"}
+                                  {suggestReconcile ? " (recommended)" : ""}
+                                </Typography>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                >
+                                  {reconcileDescription}
+                                  {showScheduleTrigger &&
+                                    " Other triggers stay active between runs."}
+                                </Typography>
+                              </Box>
+                            }
+                          />
+                        )}
+                      />
+                      {suggestReconcile && !watchBackfillScheduleEnabled && (
+                        <Alert
+                          severity="warning"
+                          sx={{ mt: 1 }}
+                          action={
+                            <Button
+                              color="inherit"
+                              size="small"
+                              onClick={() => {
+                                formTouchedRef.current = true;
+                                setValue("backfillScheduleEnabled", true, {
+                                  shouldDirty: true,
+                                });
+                                if (!getValues("backfillScheduleCron")) {
+                                  setValue(
+                                    "backfillScheduleCron",
+                                    "0 3 * * *",
+                                    { shouldDirty: true },
+                                  );
+                                }
+                              }}
+                            >
+                              Enable daily
+                            </Button>
+                          }
+                        >
+                          Incremental polls for the selected entities miss
+                          updates (created-only) or silently re-fetch
+                          everything. Enable a periodic full reconcile so the
+                          destination stays honest between webhook events.
+                        </Alert>
+                      )}
+                      {watchBackfillScheduleEnabled &&
+                        watchSyncMode === "incremental" &&
+                        watchWriteMode === "append" && (
+                          <Alert severity="warning" sx={{ mt: 1 }}>
+                            Combined with Incremental | Append, each reconcile
+                            run appends a full duplicate snapshot into the
+                            history table. Consider Full Refresh | Append (a
+                            snapshot-per-run table) or Deduped instead.
+                          </Alert>
+                        )}
+                      {watchBackfillScheduleEnabled && (
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={2}
+                          sx={{ mt: 2 }}
+                        >
+                          <Controller
+                            name="backfillScheduleCron"
+                            control={control}
+                            render={({ field }) => (
+                              <TextField
+                                {...field}
+                                label="Cron expression"
+                                placeholder="0 3 * * *"
+                                size="small"
+                                fullWidth
+                                helperText="e.g. '0 3 * * *' = daily at 03:00"
+                              />
+                            )}
+                          />
+                          <Controller
+                            name="backfillScheduleTimezone"
+                            control={control}
+                            render={({ field }) => (
+                              <TextField
+                                {...field}
+                                label="Timezone"
+                                placeholder="UTC"
+                                size="small"
+                                fullWidth
+                              />
+                            )}
+                          />
+                        </Stack>
+                      )}
+                    </Box>
+                  )}
+
+                  {isNewMode ? (
                     <Button
                       variant="contained"
                       startIcon={<AddIcon />}
                       onClick={handleFormSubmit}
-                      disabled={isSubmitting}
+                      disabled={
+                        isSubmitting ||
+                        (!watchScheduleEnabled &&
+                          !watchWebhookEnabled &&
+                          !(isCdcCapableDest && watchBackfillScheduleEnabled))
+                      }
                       fullWidth
                     >
-                      {isSubmitting ? "Creating..." : "Create Sync"}
+                      {isSubmitting
+                        ? "Creating..."
+                        : watchWebhookEnabled && provisioning?.supported
+                          ? `Create Sync & connect ${provisionProviderLabel}`
+                          : "Create Sync"}
                     </Button>
+                  ) : (
+                    <Box
+                      sx={{
+                        display: "flex",
+                        justifyContent: "flex-end",
+                        pt: 1,
+                      }}
+                    >
+                      <Button
+                        variant="contained"
+                        onClick={handleFormSubmit}
+                        disabled={
+                          isSubmitting ||
+                          (!watchScheduleEnabled &&
+                            !watchWebhookEnabled &&
+                            !(isCdcCapableDest && watchBackfillScheduleEnabled))
+                        }
+                      >
+                        {isSubmitting ? "Saving..." : "Save triggers"}
+                      </Button>
+                    </Box>
                   )}
                 </Stack>
               </AccordionDetails>

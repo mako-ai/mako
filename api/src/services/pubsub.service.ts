@@ -181,6 +181,55 @@ export function getPubSubBackendKind(): "redis" | "memory" {
   return process.env.REDIS_URL ? "redis" : "memory";
 }
 
+// resumable-stream's Publisher/Subscriber interfaces are node-redis-shaped:
+// `subscribe(channel, cb)` must invoke `cb` for every message, and
+// `set(key, value, { EX })` takes an options object. ioredis differs on both —
+// its `subscribe` callback only signals subscription confirmation (messages
+// arrive via the "message" event) and its `set` takes positional `"EX", secs`.
+// These thin adapters bridge ioredis to the interface; a bare
+// `new Redis() as unknown as Subscriber` cast type-checks but silently drops
+// every subscribed message in Redis mode (workspace realtime + cross-instance
+// stream resume), which is exactly the outage this comment prevents recurring.
+
+/** Wrap an ioredis connection as a resumable-stream Publisher. */
+function redisPublisher(redis: Redis): Publisher {
+  return {
+    connect: async () => undefined,
+    publish: (channel: string, message: string) =>
+      redis.publish(channel, message),
+    set: async (key: string, value: string, options?: { EX?: number }) =>
+      options?.EX != null
+        ? redis.set(key, value, "EX", options.EX)
+        : redis.set(key, value),
+    get: (key: string) => redis.get(key),
+    incr: (key: string) => redis.incr(key),
+  };
+}
+
+/**
+ * Wrap an ioredis connection as a resumable-stream Subscriber. ioredis delivers
+ * messages through a single "message" event, so route it to per-channel
+ * handlers — mirroring the in-process impl (one handler per channel, last wins,
+ * which matches how both consumers subscribe each channel exactly once).
+ */
+function redisSubscriber(redis: Redis): Subscriber {
+  const handlers = new Map<string, (message: string) => void>();
+  redis.on("message", (channel: string, message: string) => {
+    handlers.get(channel)?.(message);
+  });
+  return {
+    connect: async () => undefined,
+    subscribe: async (channel: string, callback: (message: string) => void) => {
+      handlers.set(channel, callback);
+      await redis.subscribe(channel);
+    },
+    unsubscribe: async (channel: string) => {
+      handlers.delete(channel);
+      await redis.unsubscribe(channel);
+    },
+  };
+}
+
 /**
  * Create a publisher handle. Redis mode: a fresh connection the caller owns.
  * Memory mode: a handle onto the shared in-process backend.
@@ -188,10 +237,9 @@ export function getPubSubBackendKind(): "redis" | "memory" {
 export function createPubSubPublisher(): Publisher {
   const redisUrl = process.env.REDIS_URL;
   if (redisUrl) {
-    return attachRedisErrorListener(
-      new Redis(redisUrl),
-      "publisher",
-    ) as unknown as Publisher;
+    return redisPublisher(
+      attachRedisErrorListener(new Redis(redisUrl), "publisher"),
+    );
   }
   return getInMemoryPubSub().createPublisher();
 }
@@ -204,10 +252,9 @@ export function createPubSubPublisher(): Publisher {
 export function createPubSubSubscriber(): Subscriber {
   const redisUrl = process.env.REDIS_URL;
   if (redisUrl) {
-    return attachRedisErrorListener(
-      new Redis(redisUrl),
-      "subscriber",
-    ) as unknown as Subscriber;
+    return redisSubscriber(
+      attachRedisErrorListener(new Redis(redisUrl), "subscriber"),
+    );
   }
   return getInMemoryPubSub().createSubscriber();
 }

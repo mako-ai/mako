@@ -13,7 +13,7 @@ Connectors pull data from external services and sync it into your connected data
 
 | Connector     | Source          | Entities                                                                         |
 | ------------- | --------------- | -------------------------------------------------------------------------------- |
-| **Stripe**    | Stripe API      | Customers, Subscriptions, Charges, Invoices, Products, Prices, Plans, Payment Intents. *Supports backfill and CDC webhooks (auto-provisioning via Stripe webhook endpoints).* |
+| **Stripe**    | Stripe API      | Customers, Subscriptions, Disputes, Charges, Invoices, Products, Prices, Plans, Payment Intents. *Supports backfill and CDC webhooks (auto-provisioning via Stripe webhook endpoints).* |
 | **Close CRM** | Close API       | Leads, Opportunities, Activities (10+ sub-types), Contacts, Users, Custom Fields. *Webhooks are automatically scoped to synced entities only.* |
 | **Claap**     | Claap API       | Recordings, Workspace. *Supports backfill and CDC webhooks (auto-provisioning via "Create in Claap").* |
 | **Calendly**  | Calendly API    | Organizations, Users, Groups, Event Types, Scheduled Events, Invitees, Contacts. *Real-time invitee + event-type webhooks (auto-provisioned); scheduled backfill covers the rest.* |

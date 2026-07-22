@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Box,
-  Chip,
   MenuItem,
   Select,
   Typography,
@@ -277,25 +276,12 @@ export default function AppBindingEditor({
     binding.dbtProjectId && !containsDbtSchemaToken(binding.code),
   );
 
+  // Deliberately compact: the data-source toolbar shares one row with the
+  // Console's run/save/connection controls and hardly fits on normal screens.
+  // No caption labels; the Live/Materialized explanation lives in a tooltip on
+  // the toggle itself, and the dbt token warning is an icon, not a chip.
   const leadingControls = (
     <>
-      <Typography variant="caption" color="text.secondary">
-        Data
-      </Typography>
-      <ToggleButtonGroup
-        size="small"
-        exclusive
-        value={binding.materialization}
-        onChange={(_e, value) => {
-          if (value && workspaceId) {
-            updateBinding(appId, bindingId, { materialization: value });
-            void persistApp(workspaceId, appId);
-          }
-        }}
-      >
-        <ToggleButton value="live">Live</ToggleButton>
-        <ToggleButton value="parquet">Materialized</ToggleButton>
-      </ToggleButtonGroup>
       <Tooltip
         title={
           <Box sx={{ p: 0.5 }}>
@@ -312,30 +298,39 @@ export default function AppBindingEditor({
           </Box>
         }
       >
-        <InfoIcon
-          size={15}
-          strokeWidth={1.5}
-          style={{ opacity: 0.6, cursor: "help" }}
-        />
+        <ToggleButtonGroup
+          size="small"
+          exclusive
+          value={binding.materialization}
+          onChange={(_e, value) => {
+            if (value && workspaceId) {
+              updateBinding(appId, bindingId, { materialization: value });
+              void persistApp(workspaceId, appId);
+            }
+          }}
+        >
+          <ToggleButton value="live">Live</ToggleButton>
+          <ToggleButton value="parquet">Materialized</ToggleButton>
+        </ToggleButtonGroup>
       </Tooltip>
       {showDbtLink && (
         <>
-          <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-            dbt
-          </Typography>
+          {/* NOTE: deliberately NOT wrapped in a Tooltip — a tooltip anchored
+              on the Select stays visible while its menu is open and covers the
+              first menu items. The info icon carries the explanation. */}
           <Select
             size="small"
             variant="outlined"
             displayEmpty
             value={binding.dbtProjectId ?? ""}
             onChange={e => handleDbtLinkChange(e.target.value)}
-            sx={{ fontSize: "0.72rem", height: 26, minWidth: 110 }}
+            sx={{ fontSize: "0.72rem", height: 26, minWidth: 90, ml: 0.5 }}
             renderValue={value => {
-              if (!value) return "Not linked";
-              return (
+              if (!value) return "dbt: not linked";
+              return `dbt: ${
                 dbtProjects.find(p => p._id === value)?.name ??
-                (linkedDbtProjectMissing ? "Deleted project" : "…")
-              );
+                (linkedDbtProjectMissing ? "deleted project" : "…")
+              }`;
             }}
           >
             <MenuItem value="">Not linked</MenuItem>
@@ -378,12 +373,15 @@ export default function AppBindingEditor({
                 "in the app preview."
               }
             >
-              <Chip
-                size="small"
-                color="warning"
-                variant="outlined"
-                label="No {{ dbt_schema }} token"
-              />
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  color: "warning.main",
+                }}
+              >
+                <InfoIcon size={15} strokeWidth={1.5} />
+              </Box>
             </Tooltip>
           )}
         </>

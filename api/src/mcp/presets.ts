@@ -22,6 +22,41 @@ export interface McpPresetHeaderField {
   helperText?: string;
 }
 
+/**
+ * How the OAuth client for a preset gets registered with the provider.
+ *
+ * - "dcr" (default): Dynamic Client Registration per the MCP authorization
+ *   spec — Mako registers itself automatically on first connect (Close).
+ * - "manual": the provider only accepts pre-registered confidential OAuth
+ *   apps (Slack). A workspace admin must create an app with the provider and
+ *   save its client ID + secret before members can connect.
+ */
+export interface McpPresetOAuthConfig {
+  clientMode: "dcr" | "manual";
+  /** Shown next to the client ID/secret form for manual-mode presets. */
+  helperText?: string;
+  /** Where the admin registers the OAuth app (manual mode). */
+  docsUrl?: string;
+  /**
+   * Environment variables holding a deployment-wide OAuth client for this
+   * preset (Claude-connectors model: the operator registers ONE provider app
+   * and every workspace just clicks Connect). When set, workspaces skip the
+   * client ID/secret form entirely; a workspace-saved client still wins so
+   * self-hosters can override per workspace.
+   */
+  clientEnvVars?: {
+    clientId: string;
+    clientSecret: string;
+  };
+  /**
+   * OAuth scopes requested per Mako write scope (least-privilege). When
+   * absent, the SDK falls back to the provider's advertised
+   * `scopes_supported` — fine for providers that scope via headers instead
+   * (Close), wrong for providers whose scopes gate capability (Slack).
+   */
+  scopes?: Record<McpWriteScope, string[]>;
+}
+
 export interface McpPreset {
   type: string;
   label: string;
@@ -46,6 +81,8 @@ export interface McpPreset {
     name: string;
     scopeValues: Record<McpWriteScope, string>;
   };
+  /** OAuth client registration behavior; absent = DCR (the spec default). */
+  oauth?: McpPresetOAuthConfig;
 }
 
 export const CLOSE_MCP_PRESET: McpPreset = {
@@ -77,6 +114,119 @@ export const CLOSE_MCP_PRESET: McpPreset = {
   },
 };
 
+/**
+ * Slack's official hosted MCP server (`mcp.slack.com`).
+ *
+ * Slack does not support Dynamic Client Registration — it only accepts
+ * pre-registered confidential OAuth apps. A workspace admin creates a Slack
+ * app (internal, or Marketplace-published), enables "Agents & AI Apps → MCP",
+ * adds Mako's callback as a redirect URL, and saves the app's client ID +
+ * secret here. Each member then signs in with their own Slack account, so
+ * the agent only sees what that member can see.
+ *
+ * Slack gates capability through granular OAuth scopes (there is no scope
+ * *header* like Close's) — the requested scope set below is derived from the
+ * connection's write scope so a read-only connection never even holds a
+ * `chat:write` token.
+ */
+export const SLACK_MCP_PRESET: McpPreset = {
+  type: "slack",
+  label: "Slack",
+  description:
+    "Lets the agent search messages, read channel and thread history, look up users, and (with write access) send messages and reactions in your Slack workspace.",
+  icon: "/api/mcp/presets/slack/icon.svg",
+  url: "https://mcp.slack.com/mcp",
+  urlEditable: false,
+  authType: "oauth",
+  authOptions: ["oauth"],
+  headerFields: [],
+  oauth: {
+    clientMode: "manual",
+    helperText:
+      "Create a Slack app at api.slack.com/apps, enable MCP under “Agents & AI Apps”, add Mako's OAuth callback as a redirect URL, then paste the app's Client ID and Client Secret.",
+    docsUrl: "https://api.slack.com/apps",
+    clientEnvVars: {
+      clientId: "SLACK_MCP_CLIENT_ID",
+      clientSecret: "SLACK_MCP_CLIENT_SECRET",
+    },
+    scopes: {
+      read: [
+        "search:read.public",
+        "search:read.private",
+        "search:read.im",
+        "search:read.mpim",
+        "search:read.files",
+        "search:read.users",
+        "channels:history",
+        "groups:history",
+        "im:history",
+        "mpim:history",
+        "channels:read",
+        "groups:read",
+        "mpim:read",
+        "users:read",
+        "users:read.email",
+        "canvases:read",
+        "reactions:read",
+        "emoji:read",
+        "files:read",
+      ],
+      write_safe: [
+        "search:read.public",
+        "search:read.private",
+        "search:read.im",
+        "search:read.mpim",
+        "search:read.files",
+        "search:read.users",
+        "channels:history",
+        "groups:history",
+        "im:history",
+        "mpim:history",
+        "channels:read",
+        "groups:read",
+        "mpim:read",
+        "users:read",
+        "users:read.email",
+        "canvases:read",
+        "reactions:read",
+        "emoji:read",
+        "files:read",
+        "chat:write",
+        "reactions:write",
+        "canvases:write",
+      ],
+      write_destructive: [
+        "search:read.public",
+        "search:read.private",
+        "search:read.im",
+        "search:read.mpim",
+        "search:read.files",
+        "search:read.users",
+        "channels:history",
+        "groups:history",
+        "im:history",
+        "mpim:history",
+        "channels:read",
+        "groups:read",
+        "mpim:read",
+        "users:read",
+        "users:read.email",
+        "canvases:read",
+        "reactions:read",
+        "emoji:read",
+        "files:read",
+        "chat:write",
+        "reactions:write",
+        "canvases:write",
+        "channels:write",
+        "groups:write",
+        "im:write",
+        "mpim:write",
+      ],
+    },
+  },
+};
+
 export const CUSTOM_MCP_PRESET: McpPreset = {
   type: "custom",
   label: "Custom MCP server",
@@ -91,9 +241,38 @@ export const CUSTOM_MCP_PRESET: McpPreset = {
 
 export const MCP_PRESETS: Record<string, McpPreset> = {
   close: CLOSE_MCP_PRESET,
+  slack: SLACK_MCP_PRESET,
   custom: CUSTOM_MCP_PRESET,
 };
 
 export function getMcpPreset(type: string): McpPreset {
   return MCP_PRESETS[type] ?? CUSTOM_MCP_PRESET;
+}
+
+/** OAuth scopes to request for a server, per its preset + write scope. */
+export function mcpPresetOAuthScope(
+  preset: McpPreset,
+  writeScope: McpWriteScope,
+): string | undefined {
+  const scopes = preset.oauth?.scopes?.[writeScope];
+  return scopes && scopes.length > 0 ? scopes.join(" ") : undefined;
+}
+
+/**
+ * The deployment-wide OAuth client for a preset, read from the environment
+ * (e.g. `SLACK_MCP_CLIENT_ID` / `SLACK_MCP_CLIENT_SECRET`). Undefined when
+ * the preset has no env client configured — workspaces then supply their own.
+ */
+export function mcpPresetEnvOAuthClient(
+  preset: McpPreset,
+): { client_id: string; client_secret?: string } | undefined {
+  const vars = preset.oauth?.clientEnvVars;
+  if (!vars) return undefined;
+  const clientId = process.env[vars.clientId]?.trim();
+  if (!clientId) return undefined;
+  const clientSecret = process.env[vars.clientSecret]?.trim();
+  return {
+    client_id: clientId,
+    ...(clientSecret ? { client_secret: clientSecret } : {}),
+  };
 }

@@ -67,6 +67,9 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   "search_consoles",
   "search_dashboards",
   "search_skills",
+  "search_tools",
+  "list_skills",
+  "get_relevant_skills",
   "fetch_url",
   "web_search",
   // Memory reads
@@ -94,6 +97,10 @@ export const PLAN_GATE_ALLOWED_TOOL_NAMES: ReadonlySet<string> =
     "todo_write",
     "ask_clarifying_questions",
     "submit_plan",
+    // Tool discovery stays available while the gate is closed: finding and
+    // loading a tool mutates nothing (loaded write-tools are still gated).
+    "search_tools",
+    "load_tools",
   ]);
 
 export function isReadOnlyToolName(toolName: string): boolean {

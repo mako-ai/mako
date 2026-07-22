@@ -31,6 +31,7 @@ export type AgentToolDomain =
   | "search"
   | "memory"
   | "database"
+  | "notebook"
   | "plan";
 
 export type ClientToolExecutor =
@@ -39,7 +40,8 @@ export type ClientToolExecutor =
   | "flow"
   | "app"
   | "dbt"
-  | "data";
+  | "data"
+  | "notebook";
 
 export interface ToolUiConfig {
   getLabel: (input?: unknown) => string;
@@ -1143,6 +1145,28 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Asking clarifying questions",
     icon: "help-circle",
   },
+  // Tool discovery meta-tools (deferred-tool working set; see
+  // api/src/agent-lib/tools/tool-discovery-tools.ts).
+  search_tools: {
+    domain: "search",
+    execution: "server",
+    getLabel: input => {
+      const query = (input as Record<string, unknown>)?.query;
+      return query ? `Searching tools: ${query}` : "Searching tools";
+    },
+    icon: "search",
+  },
+  load_tools: {
+    domain: "search",
+    execution: "server",
+    getLabel: input => {
+      const names = (input as Record<string, unknown>)?.names;
+      return Array.isArray(names) && names.length > 0
+        ? `Loading ${names.length} tool${names.length === 1 ? "" : "s"}`
+        : "Loading tools";
+    },
+    icon: "download",
+  },
   submit_plan: {
     domain: "plan",
     execution: "client",
@@ -1151,6 +1175,68 @@ export const AGENT_TOOL_MANIFEST = {
       return title ? `Plan: ${title}` : "Submitting plan";
     },
     icon: "shield-check",
+  },
+  // Notebook tools execute SERVER-SIDE (Phase A durable runs; see
+  // api/src/agent-lib/tools/server-notebook-tools.ts). They mutate the durable
+  // GCS notebook + kernel and poke open tabs over the realtime channel
+  // (notebook.updated), so a run survives the tab closing — and the browser
+  // must NOT also run them, or every call would happen twice (two notebooks per
+  // create_notebook). Entries kept only for the tool-card UI.
+  create_notebook: {
+    domain: "notebook",
+    execution: "server",
+    getLabel: () => "Creating notebook",
+    icon: "plus",
+  },
+  list_open_notebooks: {
+    domain: "notebook",
+    execution: "server",
+    getLabel: () => "Listing notebooks",
+    icon: "list",
+  },
+  read_notebook: {
+    domain: "notebook",
+    execution: "server",
+    getLabel: () => "Reading notebook",
+    icon: "eye",
+  },
+  add_notebook_cell: {
+    domain: "notebook",
+    execution: "server",
+    getLabel: input => {
+      const type = (input as Record<string, unknown>)?.type;
+      return `Adding ${typeof type === "string" ? type : ""} cell`.replace(
+        "  ",
+        " ",
+      );
+    },
+    icon: "plus",
+    preview: { field: "source", language: "sql" },
+  },
+  edit_notebook_cell: {
+    domain: "notebook",
+    execution: "server",
+    getLabel: () => "Editing cell",
+    icon: "pencil",
+    preview: { field: "source", language: "sql" },
+  },
+  delete_notebook_cell: {
+    domain: "notebook",
+    execution: "server",
+    getLabel: () => "Deleting cell",
+    icon: "trash",
+  },
+  run_notebook_sql_cell: {
+    domain: "notebook",
+    execution: "server",
+    getLabel: () => "Running SQL cell",
+    icon: "play",
+  },
+  run_notebook_code_cell: {
+    domain: "notebook",
+    execution: "server",
+    getLabel: () => "Running Python cell",
+    icon: "play",
   },
 } as const satisfies Record<string, AgentToolManifestEntry>;
 
@@ -1205,6 +1291,10 @@ export const DBT_EXECUTOR_TOOL_NAMES = createToolNameSet(
 
 export const DATA_SOURCE_EXECUTOR_TOOL_NAMES = createToolNameSet(
   entry => entry.execution === "client" && entry.clientExecutor === "data",
+);
+
+export const NOTEBOOK_EXECUTOR_TOOL_NAMES = createToolNameSet(
+  entry => entry.execution === "client" && entry.clientExecutor === "notebook",
 );
 
 export const LONG_RUNNING_DASHBOARD_TOOL_NAMES = createToolNameSet(

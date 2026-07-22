@@ -148,3 +148,6 @@ packages/desktop/release/
 # Python bytecode (embedded dbt engine helpers)
 __pycache__/
 *.pyc
+
+# Local-only notebooks design doc (kept out of the repo intentionally)
+/NOTEBOOKS_ARCHITECTURE.md

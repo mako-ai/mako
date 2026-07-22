@@ -130,6 +130,25 @@ async function main() {
     "non-SQL engines must still fail closed under read-only",
   );
 
+  // 5. Regression for MongoDB materialization (broken by PR #688): because
+  //    MongoDB fails closed under `readOnly` (test 4 above), the materialization
+  //    core must NOT force read-only for Mongo — the binding's JS-shell code
+  //    (e.g. `db.client.db('x').collection('y').aggregate([...])`) can never
+  //    pass the SQL read-only analyzer. Without read-only, the streaming path
+  //    reaches the Mongo driver (and fails on the credential-less connection),
+  //    rather than being rejected by the SELECT/WITH gate.
+  const mongoStream = await databaseConnectionService.executeStreamingQuery(
+    fakeConnection("mongodb"),
+    "db.client.db('production').collection('users').aggregate([]).toArray()",
+    { readOnly: false, batchSize: 1, onBatch: async () => {} },
+  );
+  assert.equal(mongoStream.success, false);
+  assert.doesNotMatch(
+    mongoStream.error ?? "",
+    /SELECT or WITH|read-only|not supported/i,
+    "Mongo materialization streaming must reach the driver, not the SQL read-only gate",
+  );
+
   // eslint-disable-next-line no-console
   console.log("parquet-build/read-only regression tests passed");
 }

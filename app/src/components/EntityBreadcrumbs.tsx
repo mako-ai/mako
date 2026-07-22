@@ -137,6 +137,8 @@ function segmentsForTab(
       return plain(["Transforms", ctx.dbtProjectName, tab.title || "Console"]);
     case "dbt-runs":
       return plain(["Transforms", ctx.dbtProjectName, tab.title || "Runs"]);
+    case "notebook":
+      return plain(["Notebooks", tab.title || "Notebook"]);
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.
       // Runtime still degrades gracefully for stale persisted tabs.

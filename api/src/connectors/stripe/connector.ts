@@ -31,6 +31,7 @@ const STRIPE_DEFAULT_HOST = "api.stripe.com";
 const STRIPE_ENTITIES = [
   "customers",
   "subscriptions",
+  "disputes",
   "charges",
   "invoices",
   "products",
@@ -224,6 +225,7 @@ export class StripeConnector extends BaseConnector {
     return [
       { name: "customers", label: "Customers", layoutSuggestion },
       { name: "subscriptions", label: "Subscriptions", layoutSuggestion },
+      { name: "disputes", label: "Disputes", layoutSuggestion },
       { name: "charges", label: "Charges", layoutSuggestion },
       { name: "invoices", label: "Invoices", layoutSuggestion },
       { name: "products", label: "Products", layoutSuggestion },
@@ -293,6 +295,16 @@ export class StripeConnector extends BaseConnector {
 
         case "charges":
           response = await stripe.charges.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "disputes":
+          response = await stripe.disputes.list({
             limit: batchSize,
             ...(startingAfter && { starting_after: startingAfter }),
             ...(since && {
@@ -435,6 +447,16 @@ export class StripeConnector extends BaseConnector {
 
         case "charges":
           response = await stripe.charges.list({
+            limit: batchSize,
+            ...(startingAfter && { starting_after: startingAfter }),
+            ...(since && {
+              created: { gte: Math.floor(since.getTime() / 1000) },
+            }),
+          });
+          break;
+
+        case "disputes":
+          response = await stripe.disputes.list({
             limit: batchSize,
             ...(startingAfter && { starting_after: startingAfter }),
             ...(since && {
@@ -635,6 +657,19 @@ export class StripeConnector extends BaseConnector {
       "charge.refunded": { entity: "charges", operation: "upsert" },
       "charge.updated": { entity: "charges", operation: "upsert" },
 
+      // Disputes (status lost/won/open + amount for revenue netting)
+      "charge.dispute.created": { entity: "disputes", operation: "upsert" },
+      "charge.dispute.updated": { entity: "disputes", operation: "upsert" },
+      "charge.dispute.closed": { entity: "disputes", operation: "upsert" },
+      "charge.dispute.funds_withdrawn": {
+        entity: "disputes",
+        operation: "upsert",
+      },
+      "charge.dispute.funds_reinstated": {
+        entity: "disputes",
+        operation: "upsert",
+      },
+
       // Payment Intents
       "payment_intent.succeeded": {
         entity: "payment_intents",
@@ -698,6 +733,12 @@ export class StripeConnector extends BaseConnector {
       "charge.captured",
       "charge.refunded",
       "charge.updated",
+      // Disputes
+      "charge.dispute.created",
+      "charge.dispute.updated",
+      "charge.dispute.closed",
+      "charge.dispute.funds_withdrawn",
+      "charge.dispute.funds_reinstated",
       // Payment Intents
       "payment_intent.succeeded",
       "payment_intent.payment_failed",

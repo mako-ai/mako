@@ -12,6 +12,7 @@ MCP servers are agent-runtime tooling, deliberately separate from data-sync conn
 Go to **Settings → MCP Servers** (workspace admins only) and choose a preset:
 
 - **Close CRM** — the official `mcp.close.com` server. Lets the agent search leads, manage opportunities, create contacts, and log activities in your Close organization. Defaults to OAuth login; API-key auth is also supported.
+- **Slack** — the official `mcp.slack.com` server. Lets the agent search messages, read channel and thread history, look up users, and (with write access) send messages and reactions. OAuth only; requires a pre-registered Slack app (see below).
 - **Custom MCP server** — connect any MCP server reachable over Streamable HTTP. Provide the server URL and choose OAuth, API-key, or no authentication.
 
 After adding a server, use **Test connection** to verify credentials and discover the server's tool list. Discovered tools are cached in the workspace so chat startup never blocks on an MCP round-trip.
@@ -27,9 +28,26 @@ Two credential modes, both encrypted at rest (AES-256-CBC):
 For OAuth servers, every user must complete their own sign-in before the agent can use that server's tools on their behalf. Credentials are never shared across accounts for OAuth connections.
 :::
 
+### OAuth client registration: DCR vs. pre-registered apps
+
+Providers register Mako as an OAuth client in one of two ways:
+
+- **Dynamic Client Registration (DCR)** — the MCP-spec default (Close). Mako registers itself automatically on the first connect; no admin setup beyond adding the server.
+- **Pre-registered app** (Slack) — the provider only accepts confidential OAuth apps registered in advance. There are two ways to supply one:
+  - **Deployment-wide app (recommended, one-click)** — the Mako operator registers a single provider app and sets `SLACK_MCP_CLIENT_ID` / `SLACK_MCP_CLIENT_SECRET` in the server environment. Every workspace then connects Claude-style: add Slack, click **Connect Slack**, approve on slack.com. No form, no per-workspace app.
+  - **Per-workspace app (self-host fallback)** — when no environment client is configured, a workspace admin creates the app with the provider and saves its **Client ID** and **Client Secret** on the connection before members can sign in. Rotating the app credentials invalidates previously issued member tokens; everyone reconnects.
+
+#### Slack app setup (operators / self-hosters)
+
+1. Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps) (internal to your org, or Marketplace-published — Slack requires one of the two for MCP).
+2. Enable MCP under **Agents & AI Apps** in the app settings.
+3. Add Mako's OAuth callback as a redirect URL. It must match what the API sends: `${PUBLIC_URL || CLIENT_URL}/api/mcp/oauth/callback` (shown in the connection dialog). Local default: `http://localhost:5173/api/mcp/oauth/callback`. Production: `https://app.mako.ai/api/mcp/oauth/callback`.
+4. Add the user scopes matching the write scope you'll pick in Mako — the connection dialog requests them automatically: read-only connections request only `search:read.*`, history, and read scopes; `write_safe` adds `chat:write`, `reactions:write`, `canvases:write`; `write_destructive` adds channel/conversation management scopes.
+5. Either set `SLACK_MCP_CLIENT_ID` / `SLACK_MCP_CLIENT_SECRET` in Mako's environment (deployment-wide, one-click for every workspace), or paste the app's Client ID and Client Secret in **Settings → MCP Servers → Slack**. Each member then clicks **Connect Slack account**.
+
 ## Write scope and risk tiers
 
-Each connection carries a **write scope** that caps what its tools can do. For Close, this maps to the provider's `Close-Scope` header:
+Each connection carries a **write scope** that caps what its tools can do. For Close, this maps to the provider's `Close-Scope` header; for Slack, it selects the OAuth scope set requested at sign-in (a read-only connection never even holds a `chat:write` token):
 
 | Write scope | Meaning |
 | --- | --- |
@@ -61,6 +79,8 @@ Grants are per-user and per-tool. Manage or revoke them under **Settings → MCP
 
 Tools are namespaced `mcp_<server>_<tool>` in the agent runtime, and are treated as cross-cutting across modes. The [plan gate](/skills/) keeps only read-tier MCP tools available during planning.
 
+MCP tools are **deferred** in the agent's [tool working set](/ai-agent/#tool-paging): they stay registered and executable (approval flow intact) but are sent to the model only after discovery (`search_tools`/`load_tools`) or a per-turn relevance preload. This keeps workspaces with many connectors under provider tool-count caps and context budgets — adding MCP servers no longer bloats every request. Workspaces whose whole tool surface fits the budget bypass paging and behave as before.
+
 ## Security
 
 - Server URLs are SSRF-guarded (no internal/loopback targets).
@@ -80,6 +100,7 @@ Server management lives under `/api/workspaces/:workspaceId/mcp-servers` (admin-
 | `PATCH` | `/api/workspaces/:workspaceId/mcp-servers/:id` | Update a server |
 | `DELETE` | `/api/workspaces/:workspaceId/mcp-servers/:id` | Delete a server |
 | `PUT` | `/api/workspaces/:workspaceId/mcp-servers/:id/credentials` | Save credentials |
+| `PUT` | `/api/workspaces/:workspaceId/mcp-servers/:id/oauth/client` | Save a pre-registered OAuth app (client ID + secret; admin) |
 | `POST` | `/api/workspaces/:workspaceId/mcp-servers/:id/oauth/connect` | Start OAuth flow (returns authorization URL) |
 | `POST` | `/api/workspaces/:workspaceId/mcp-servers/:id/test` | Test connection and refresh tool list |
 | `GET` | `/api/workspaces/:workspaceId/mcp-servers/tool-info` | Tool metadata for the chat UI |

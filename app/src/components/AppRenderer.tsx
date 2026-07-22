@@ -3,12 +3,15 @@ import {
   Box,
   Button,
   CircularProgress,
+  Divider,
   IconButton,
+  ListItemIcon,
+  ListItemText,
+  Menu,
   MenuItem,
   Select,
   Tooltip,
   Typography,
-  Chip,
   Alert,
   Snackbar,
 } from "@mui/material";
@@ -19,6 +22,8 @@ import {
   UploadCloud as PublishIcon,
   CheckCircle2 as PublishedIcon,
   DatabaseZap as RematerializeIcon,
+  MoreVertical as MoreIcon,
+  Info as InfoIcon,
 } from "lucide-react";
 import { containsDbtSchemaToken } from "@mako/schemas";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -66,6 +71,7 @@ export default function AppRenderer({
   const workspaceId = currentWorkspace?.id;
   const [shareOpen, setShareOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [moreAnchor, setMoreAnchor] = useState<HTMLElement | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const publishSuggestion = useSaveCommentSuggestion();
@@ -550,7 +556,9 @@ export default function AppRenderer({
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {/* Slim toolbar */}
+      {/* Slim toolbar. Kept deliberately sparse so it fits narrow screens:
+          secondary info (runtime) and rare actions (materialize, history)
+          live in the overflow menu; draft state is a dot, not a chip. */}
       <Box
         sx={{
           display: "flex",
@@ -558,29 +566,36 @@ export default function AppRenderer({
           gap: 1,
           px: 1.5,
           py: 0.5,
+          minWidth: 0,
+          overflow: "hidden",
           borderBottom: "1px solid",
           borderColor: "divider",
         }}
       >
-        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+        <Typography
+          variant="body2"
+          noWrap
+          sx={{ fontWeight: 600, minWidth: 0, flexShrink: 1 }}
+        >
           {appEntity.title}
         </Typography>
-        <Chip
-          size="small"
-          variant="outlined"
-          label={appEntity.runtime === "cdn" ? "CDN preview" : "WebContainer"}
-        />
         {appEntity.hasUnpublishedChanges && (
-          <Chip
-            size="small"
-            color="warning"
-            variant="outlined"
-            label="Unpublished changes"
-          />
+          <Tooltip title="Unpublished changes — viewers still see the last published version">
+            <Box
+              sx={{
+                width: 8,
+                height: 8,
+                borderRadius: "50%",
+                bgcolor: "warning.main",
+                flexShrink: 0,
+              }}
+            />
+          </Tooltip>
         )}
         {/* NOTE: deliberately NOT wrapped in a Tooltip — a tooltip anchored on
             the Select stays visible while its menu is open and covers the
-            first menu items. The chip below carries the explanation. */}
+            first menu items. The info icon next to it carries the
+            explanation while an override is active. */}
         {dbtProjectId && dbtEnvInfo && effectiveDbtEnv && (
           <Select
             size="small"
@@ -592,7 +607,13 @@ export default function AppRenderer({
                 e.target.value === prodEnvName ? null : e.target.value,
               )
             }
-            sx={{ fontSize: "0.72rem", height: 26, ml: 0.5 }}
+            sx={{
+              fontSize: "0.72rem",
+              height: 26,
+              ml: 0.5,
+              flexShrink: 0,
+              ...(dbtOverrideActive && { color: "info.main" }),
+            }}
           >
             {dbtEnvInfo.environments
               .filter(
@@ -615,16 +636,20 @@ export default function AppRenderer({
         {dbtOverrideActive && (
           <Tooltip
             title={
-              "dbt data environment for THIS preview only (your view). " +
-              "Published/shared viewers always read prod."
+              `Previewing dbt env "${effectiveDbtEnv}" — for THIS preview ` +
+              "only (your view). Published/shared viewers always read prod."
             }
           >
-            <Chip
-              size="small"
-              color="info"
-              variant="outlined"
-              label={`Previewing dbt env: ${effectiveDbtEnv}`}
-            />
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                color: "info.main",
+                flexShrink: 0,
+              }}
+            >
+              <InfoIcon size={15} strokeWidth={1.5} />
+            </Box>
           </Tooltip>
         )}
         <Box sx={{ flex: 1 }} />
@@ -635,51 +660,24 @@ export default function AppRenderer({
               variant="contained"
               startIcon={<PublishIcon size={16} strokeWidth={1.5} />}
               onClick={openPublishDialog}
+              sx={{ flexShrink: 0 }}
             >
               Publish
             </Button>
           ) : (
-            <Tooltip title="Draft matches the published version">
-              <span>
-                <Button
-                  size="small"
-                  variant="outlined"
-                  color="inherit"
-                  disabled
-                  startIcon={<PublishedIcon size={16} strokeWidth={1.5} />}
-                >
-                  Published
-                </Button>
-              </span>
+            <Tooltip title="Published — draft matches the published version">
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  color: "success.main",
+                  flexShrink: 0,
+                }}
+              >
+                <PublishedIcon size={18} strokeWidth={1.5} />
+              </Box>
             </Tooltip>
           ))}
-        {canManage && hasParquetBindings && (
-          <Tooltip title="Re-materialize every query's Parquet file">
-            <span>
-              <Button
-                size="small"
-                variant="outlined"
-                color="inherit"
-                disabled={rematerializing}
-                startIcon={
-                  rematerializing ? (
-                    <CircularProgress size={14} />
-                  ) : (
-                    <RematerializeIcon size={16} strokeWidth={1.5} />
-                  )
-                }
-                onClick={() => void handleRematerialize()}
-              >
-                {rematerializing ? "Materializing…" : "Materialize"}
-              </Button>
-            </span>
-          </Tooltip>
-        )}
-        <Tooltip title="Version history">
-          <IconButton size="small" onClick={() => setHistoryOpen(true)}>
-            <HistoryIcon size={18} strokeWidth={1.5} />
-          </IconButton>
-        </Tooltip>
         <Tooltip title="Share">
           <IconButton size="small" onClick={() => setShareOpen(true)}>
             <ShareIcon size={18} strokeWidth={1.5} />
@@ -690,7 +688,62 @@ export default function AppRenderer({
             <RefreshIcon size={18} strokeWidth={1.5} />
           </IconButton>
         </Tooltip>
+        <Tooltip title="More">
+          <IconButton
+            size="small"
+            onClick={e => setMoreAnchor(e.currentTarget)}
+          >
+            <MoreIcon size={18} strokeWidth={1.5} />
+          </IconButton>
+        </Tooltip>
       </Box>
+
+      <Menu
+        anchorEl={moreAnchor}
+        open={!!moreAnchor}
+        onClose={() => setMoreAnchor(null)}
+      >
+        <MenuItem
+          onClick={() => {
+            setMoreAnchor(null);
+            setHistoryOpen(true);
+          }}
+        >
+          <ListItemIcon>
+            <HistoryIcon size={16} strokeWidth={1.5} />
+          </ListItemIcon>
+          <ListItemText>Version history</ListItemText>
+        </MenuItem>
+        {canManage && hasParquetBindings && (
+          <MenuItem
+            disabled={rematerializing}
+            onClick={() => {
+              setMoreAnchor(null);
+              void handleRematerialize();
+            }}
+          >
+            <ListItemIcon>
+              {rematerializing ? (
+                <CircularProgress size={14} />
+              ) : (
+                <RematerializeIcon size={16} strokeWidth={1.5} />
+              )}
+            </ListItemIcon>
+            <ListItemText
+              primary={rematerializing ? "Materializing…" : "Materialize data"}
+              secondary="Rebuild every query's Parquet file"
+            />
+          </MenuItem>
+        )}
+        <Divider />
+        <MenuItem disabled sx={{ "&.Mui-disabled": { opacity: 1 } }}>
+          <ListItemText
+            secondary={`Runtime: ${
+              appEntity.runtime === "cdn" ? "CDN preview" : "WebContainer"
+            }`}
+          />
+        </MenuItem>
+      </Menu>
 
       <VersionHistoryPanel
         open={historyOpen}
@@ -773,7 +826,7 @@ export default function AppRenderer({
           title={`app-preview-${appId}`}
           data-mako-app-preview={appId}
           srcDoc={srcDoc}
-          sandbox="allow-scripts allow-downloads allow-popups allow-popups-to-escape-sandbox"
+          sandbox="allow-scripts allow-downloads allow-popups"
           style={{ width: "100%", height: "100%", border: "none" }}
         />
         {booting && errors.length === 0 && (
