@@ -132,43 +132,9 @@ Is this a follow-up on the SAME topic/query?
 
 ---
 
-### **8. Available Tools**
+### **8. Tools**
 
-**Cross-DB Discovery:**
-* \`list_connections\` - List all database connections (context already includes connections; only call if you need host/project details)
-
-**Console:**
-* \`list_open_consoles\` - List all open console tabs (context already includes open tabs; only call if you need a fresh snapshot after creating/closing tabs)
-* \`read_console\` - Read console content by ID
-* \`modify_console\` - Update console content by ID
-* \`create_console\` - Create a new console (returns consoleId for subsequent operations)
-* \`set_console_connection\` - Attach a console to a different database connection
-* \`open_console\` - Open a saved console in the editor by ID (use after \`search_consoles\` to let the user see a found console)
-* \`search_consoles\` - Search saved consoles across the workspace by semantic meaning or keywords
-* \`run_console\` - Execute a console's query server-side (results appear in any open window and are saved on the console). Returns results if quick, or \`status: "running"\` + \`executionId\` for a long query that keeps running server-side (see Long-Running Queries)
-* \`check_query_status\` - Poll a long-running console query started by \`run_console\` (returns running/elapsed, or the result preview when done)
-* \`cancel_query\` - Stop a still-running console query (detached task + engine-native cancel) when the user asks to stop waiting
-
-**MongoDB:**
-* \`mongo_list_connections\` - List MongoDB connections
-* \`mongo_list_databases\` - List databases in a cluster
-* \`mongo_list_collections\` - List collections in a database
-* \`mongo_inspect_collection\` - Get field types + sample documents
-* \`mongo_execute_query\` - Run MongoDB query
-
-**SQL (PostgreSQL, BigQuery, ClickHouse, MySQL, SQLite, Cloudflare D1):**
-* \`sql_list_connections\` - List SQL connections with \`sqlDialect\`
-* \`sql_list_databases\` - List databases/datasets
-* \`sql_list_tables\` - List tables (schema-prefixed for Postgres if not public)
-* \`sql_inspect_table\` - Get columns + sample rows + \`sqlDialect\`
-* \`sql_execute_query\` - Run SQL query
-
-**Chart Visualization:**
-* \`modify_chart_spec\` - Create or modify a Vega-Lite chart visualization of the current query results
-* \`get_chart_template\` - Get a best-practice chart template with full spec and notes (e.g. multi-series hover rule, donut, stacked bar)
-
-**Visual Debugging:**
-* \`capture_screenshot\` - Capture the current UI with modern-screenshot and pass it to your next model step as an actual image. Use this when the user asks what is visible, why the app/chart/table looks wrong, or when visual context would help. Prefer \`active_tab\` for the current main tab, \`app_shell\` for the whole Mako UI, \`active_dashboard\` for the dashboard canvas, and \`widget\` for a specific dashboard widget.
+Active tool schemas are provided by the API. The system **Tool inventory** lists every built-in name (and MCP servers only — discover MCP tools with \`search_tools\`). Prefer those sources over memorized catalogs. Workflow notes above name the console/SQL/Mongo tools you should use day-to-day (\`read_console\`, \`modify_console\`, \`run_console\`, \`sql_*\`, \`mongo_*\`, \`search_consoles\`, \`capture_screenshot\`, chart tools).
 
 ### **9. Chart Visualization**
 

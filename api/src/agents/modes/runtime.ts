@@ -36,6 +36,7 @@ import {
   toolNamesForModes,
   resolveExpertiseModeId,
   DEFERRED_BUILTIN_TOOL_DOMAINS,
+  builtinToolInventoryGroups,
 } from "./registry";
 import {
   BASE_SYSTEM_PROMPT,
@@ -142,54 +143,72 @@ export function deriveModeState(
 }
 
 /**
- * One-line-per-source inventory of deferred tools for the dynamic system
- * block: the model must know what *exists* without paying for schemas.
- * Rendered only when paging is active (otherwise everything is loaded).
+ * Compact system-prompt inventory:
+ * - every **built-in** tool name (no schemas), grouped by core / mode / deferred
+ * - **MCP servers only** (name + count) — never individual MCP tool names
+ *
+ * Schemas for the active working set are already sent via the provider tools
+ * API. This block exists so the model knows what else exists without paying
+ * for those definitions. MCP tools must be discovered with `search_tools`.
  */
-export function buildDeferredInventoryBlock(
+export function buildToolInventoryBlock(
   catalog: ToolCatalogEntry[],
-): string | null {
-  if (catalog.length === 0) return null;
+  enabledModes: Iterable<ExpertiseModeId>,
+): string {
+  const enabled = new Set(enabledModes);
+  const lines: string[] = [
+    "## Tool inventory (names only)",
+    "",
+    "Schemas for **currently active** tools are already provided by the API.",
+    "Names below are a map of what exists — do not invent names.",
+    "",
+  ];
+
+  for (const group of builtinToolInventoryGroups()) {
+    const modeMatch = /^(\w+) mode \(enable_mode/.exec(group.label);
+    const modeId = modeMatch?.[1] as ExpertiseModeId | undefined;
+    const active =
+      group.label.startsWith("core ") ||
+      (modeId !== undefined && enabled.has(modeId));
+    const suffix = active
+      ? " — active (schemas provided)"
+      : group.label.startsWith("deferred")
+        ? ""
+        : " — not enabled; call enable_mode first";
+    lines.push(`### ${group.label}${suffix}`);
+    lines.push(group.names.map(n => `\`${n}\``).join(", "));
+    lines.push("");
+  }
 
   const mcpCounts = new Map<string, number>();
-  const builtinCounts = new Map<string, number>();
   for (const entry of catalog) {
-    if (entry.tier !== "deferred") continue;
     if (entry.source.kind === "mcp") {
       const key = entry.source.serverName;
       mcpCounts.set(key, (mcpCounts.get(key) ?? 0) + 1);
-    } else {
-      const key = entry.source.domain;
-      builtinCounts.set(key, (builtinCounts.get(key) ?? 0) + 1);
     }
   }
-  if (mcpCounts.size === 0 && builtinCounts.size === 0) return null;
 
-  const lines: string[] = [];
-  for (const [server, count] of mcpCounts) {
-    lines.push(`- ${server} (${count} tools via MCP)`);
-  }
-  if (builtinCounts.size > 0) {
-    const parts = Array.from(builtinCounts.entries()).map(
-      ([domain, count]) => `${domain} (${count})`,
+  lines.push("### MCP servers");
+  if (mcpCounts.size === 0) {
+    lines.push("None connected.");
+  } else {
+    lines.push(
+      "Individual MCP tool names are **not** listed. Discover with " +
+        "`search_tools`, activate with `load_tools`, then call — never guess " +
+        "MCP tool names from the server name alone.",
     );
-    lines.push(`- built-in: ${parts.join(", ")}`);
+    for (const [server, count] of mcpCounts) {
+      lines.push(`- ${server} (${count} tools via MCP)`);
+    }
   }
 
-  return [
-    "## Additional tools (not loaded)",
-    "",
-    "More tools are available but not currently active:",
-    ...lines,
-    "",
-    "Find them with `search_tools` and activate with `load_tools` — never guess or call unloaded tool names directly.",
-  ].join("\n");
+  return lines.join("\n");
 }
 
 function buildModeSystem(
   context: AgentContext,
   modeState: ModeState,
-  deferredInventoryBlock?: string | null,
+  toolInventoryBlock?: string | null,
 ): SystemModelMessage[] {
   const dynamicParts: string[] = [];
 
@@ -206,7 +225,7 @@ function buildModeSystem(
     );
   }
 
-  if (deferredInventoryBlock) dynamicParts.push(deferredInventoryBlock);
+  if (toolInventoryBlock) dynamicParts.push(toolInventoryBlock);
 
   dynamicParts.push(buildCurrentScreenContext(context));
 
@@ -451,9 +470,11 @@ export function buildUnifiedModeRuntime(params: {
     preloadedToolNames,
   };
 
-  const deferredInventoryBlock = pagingActive
-    ? buildDeferredInventoryBlock(catalog)
-    : null;
+  // Always inject the name-only inventory (built-ins + MCP server list).
+  // Schemas still come only from the active working set via the provider API.
+  // Rebuild per step so enable_mode flips the "active" labels.
+  const inventoryFor = () =>
+    buildToolInventoryBlock(catalog, modeState.enabledModes);
 
   const prepareStep = () => ({
     activeTools: computeActiveTools(
@@ -462,7 +483,7 @@ export function buildUnifiedModeRuntime(params: {
       mcpAllowlist,
       workingSetOptions,
     ),
-    system: buildModeSystem(context, modeState, deferredInventoryBlock),
+    system: buildModeSystem(context, modeState, inventoryFor()),
   });
 
   const initialActiveTools = computeActiveTools(
@@ -475,7 +496,7 @@ export function buildUnifiedModeRuntime(params: {
   return {
     tools,
     modeState,
-    system: buildModeSystem(context, modeState, deferredInventoryBlock),
+    system: buildModeSystem(context, modeState, inventoryFor()),
     prepareStep,
     workingSet: {
       pagingActive,
