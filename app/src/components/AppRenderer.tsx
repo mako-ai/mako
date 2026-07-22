@@ -5,6 +5,7 @@ import {
   CircularProgress,
   Divider,
   IconButton,
+  LinearProgress,
   ListItemIcon,
   ListItemText,
   Menu,
@@ -77,6 +78,13 @@ export default function AppRenderer({
   const publishSuggestion = useSaveCommentSuggestion();
   const [publishedNotice, setPublishedNotice] = useState<string | null>(null);
   const [rematerializing, setRematerializing] = useState(false);
+  const [rematerializeProgress, setRematerializeProgress] = useState<{
+    total: number;
+    settled: number;
+    ready: number;
+    failed: number;
+    phase: "building" | "loading";
+  } | null>(null);
 
   // The sandboxed preview inherits the host theme: the current mode seeds the
   // srcdoc, and later toggles are pushed via postMessage (rebuilding the
@@ -224,15 +232,56 @@ export default function AppRenderer({
   // Rebuild every parquet binding's artifact in one shot. Recovers an app whose
   // materialized cache was lost (e.g. a DB restore) — the query definitions and
   // bindings are untouched; only the Parquet artifacts + cache are regenerated.
+  // Wait for every binding to settle, load fresh DuckDB tables, then post a
+  // data-refresh — never rebuild the preview mid-flight with partial data.
   const handleRematerialize = useCallback(async () => {
     if (!workspaceId || rematerializing) return;
     setRematerializing(true);
+    setRematerializeProgress({
+      total: 0,
+      settled: 0,
+      ready: 0,
+      failed: 0,
+      phase: "building",
+    });
     setPublishedNotice("Rebuilding data for all bindings…");
     try {
-      const result = await materializeAllBindings(workspaceId, appId);
+      const result = await materializeAllBindings(workspaceId, appId, {
+        onProgress: progress =>
+          setRematerializeProgress({ ...progress, phase: "building" }),
+      });
       if (result.total === 0) {
         setPublishedNotice("No materialized bindings to rebuild.");
-      } else if (result.failed === 0) {
+        return;
+      }
+
+      // Pull every ready snapshot into DuckDB before telling the booted app
+      // to re-query — same pattern as the public share refresh path.
+      setRematerializeProgress(prev =>
+        prev ? { ...prev, phase: "loading" } : prev,
+      );
+      setPublishedNotice("Loading refreshed data…");
+      const freshApp = useAppStore.getState().openApps[appId];
+      if (freshApp) {
+        await Promise.all(
+          freshApp.dataBindings
+            .filter(binding => binding.materialization === "parquet")
+            .map(binding => {
+              const load = ensureBindingLoadedForPreview(
+                workspaceId,
+                appId,
+                binding,
+              );
+              return load.catch(() => false);
+            }),
+        );
+      }
+      iframeRef.current?.contentWindow?.postMessage(
+        { type: PREVIEW_MESSAGE.dataRefresh },
+        "*",
+      );
+
+      if (result.failed === 0) {
         setPublishedNotice(
           `Rebuilt data for ${result.ready} binding${result.ready === 1 ? "" : "s"}.`,
         );
@@ -247,6 +296,7 @@ export default function AppRenderer({
       );
     } finally {
       setRematerializing(false);
+      setRematerializeProgress(null);
     }
   }, [workspaceId, appId, rematerializing, materializeAllBindings]);
 
@@ -790,12 +840,46 @@ export default function AppRenderer({
       />
 
       <Snackbar
-        open={!!publishedNotice}
+        open={!!publishedNotice && !rematerializing}
         autoHideDuration={4000}
         onClose={() => setPublishedNotice(null)}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
         message={publishedNotice ?? ""}
       />
+
+      {rematerializeProgress && (
+        <Box sx={{ borderBottom: "1px solid", borderColor: "divider" }}>
+          <LinearProgress
+            variant={
+              rematerializeProgress.total > 0 &&
+              rematerializeProgress.phase === "building"
+                ? "determinate"
+                : "indeterminate"
+            }
+            value={
+              rematerializeProgress.total > 0
+                ? (rematerializeProgress.settled /
+                    rematerializeProgress.total) *
+                  100
+                : undefined
+            }
+          />
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ display: "block", px: 1.5, py: 0.5 }}
+          >
+            {rematerializeProgress.phase === "loading"
+              ? "Loading refreshed data into the preview…"
+              : rematerializeProgress.total > 0
+                ? `Rebuilding data ${rematerializeProgress.settled}/${rematerializeProgress.total}` +
+                  (rematerializeProgress.failed > 0
+                    ? ` (${rematerializeProgress.failed} failed)`
+                    : "")
+                : "Rebuilding data for all bindings…"}
+          </Typography>
+        </Box>
+      )}
 
       {errors.length > 0 && (
         <Alert severity="error" sx={{ borderRadius: 0, py: 0.25 }}>
