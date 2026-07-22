@@ -4,7 +4,10 @@
  * else the provider is unavailable and notebook execution reports "not
  * configured" instead of crashing.
  */
-import { GKEKernelProvider, isGkeProviderConfigured } from "./gke-kernel-provider";
+import {
+  GKEKernelProvider,
+  isGkeProviderConfigured,
+} from "./gke-kernel-provider";
 import {
   StaticKernelProvider,
   isStaticProviderConfigured,

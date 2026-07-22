@@ -207,7 +207,10 @@ export function planLegacyFlowMigration(
 
   if (scheduleEnabled && syncMode === "full") {
     // A scheduled FULL sync is a periodic complete re-pull — exactly what the
-    // CDC reconcile trigger does (checkpointed + delete reconciliation).
+    // CDC reconcile trigger does (checkpointed). Note: for `append_dedup`
+    // writeMode this only upserts current records — it does NOT remove rows
+    // deleted at the source (only Overwrite mode or delete webhooks do
+    // that today; see docs/sync-modes-hardening-plan.md, Phase 2).
     updates.backfillSchedule = {
       enabled: true,
       cron: String(flow.schedule?.cron),
@@ -221,7 +224,7 @@ export function planLegacyFlowMigration(
     notes.push("incremental scheduled sync → CDC incremental poll (kept)");
     if (!flow.backfillSchedule?.enabled) {
       notes.push(
-        "recommendation: enable a periodic full reconcile to pick up source deletions",
+        "recommendation: enable the webhook trigger or Full Refresh | Overwrite to pick up source deletions — a periodic full reconcile in Deduped mode does not remove them",
       );
     }
   } else {

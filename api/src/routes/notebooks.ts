@@ -246,9 +246,9 @@ notebookRoutes.openapi(
         versionId: pathParam("versionId"),
       }),
       body: jsonBody(
-        z.object({ clientId: z.string().optional() }).openapi(
-          "RestoreNotebookVersionRequest",
-        ),
+        z
+          .object({ clientId: z.string().optional() })
+          .openapi("RestoreNotebookVersionRequest"),
         true,
       ),
     },
@@ -256,7 +256,9 @@ notebookRoutes.openapi(
   }),
   async c => {
     const { id, versionId } = c.req.valid("param");
-    const body = (await c.req.json().catch(() => ({}))) as { clientId?: string };
+    const body = (await c.req.json().catch(() => ({}))) as {
+      clientId?: string;
+    };
     const doc = await getNotebookStore().restoreVersion(
       workspaceId(c),
       id,

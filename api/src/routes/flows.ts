@@ -36,6 +36,11 @@ import {
 } from "../sync-cdc/adapters/registry";
 import { resolveDefaultSyncEngine } from "../services/flow-triggers.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import { connectorRegistry } from "../connectors/registry";
+import {
+  validateSyncConfig,
+  type IncrementalCapabilities,
+} from "@mako/schemas";
 
 const logger = loggers.inngest("flow");
 
@@ -235,8 +240,18 @@ async function getDestinationEntityRowCountsBatch(params: {
   const result: Record<string, number | null> = {};
   for (const entity of params.entities) result[entity] = 0;
 
+  // For MongoDB the tableDestination "schema" IS the target database name and
+  // the count expression runs against the connection's active db, so it must
+  // be routed explicitly. SQL engines fully qualify inside the query instead.
+  const isMongoDestination =
+    String(params.destination.type || "").toLowerCase() === "mongodb";
+
   try {
-    const queryResult = await driver.executeQuery(params.destination, query);
+    const queryResult = await driver.executeQuery(
+      params.destination,
+      query,
+      isMongoDestination ? { databaseName: params.schema } : undefined,
+    );
     if (!queryResult.success) {
       if (isTableMissingError(queryResult.error)) {
         destinationCountBatchCache.set(cacheKey, {
@@ -454,6 +469,8 @@ flowRoutes.openapi(
             entityFilter: 1,
             queries: 1,
             syncMode: 1,
+            writeMode: 1,
+            backfillSchedule: 1,
             syncEngine: 1,
             syncState: 1,
             syncStateUpdatedAt: 1,
@@ -540,35 +557,91 @@ flowRoutes.openapi(
  * Validate an Airbyte-style write mode against the read mode, trigger set,
  * and destination capability. Returns an error string or null.
  */
+function selectedEntitiesFromFlowBody(body: {
+  entityFilter?: unknown;
+  entityLayouts?: unknown;
+}): string[] {
+  const fromFilter = Array.isArray(body.entityFilter)
+    ? body.entityFilter.map(String).filter(Boolean)
+    : [];
+  if (fromFilter.length > 0) return fromFilter;
+
+  if (Array.isArray(body.entityLayouts)) {
+    return body.entityLayouts
+      .filter(
+        (layout: { enabled?: boolean; entity?: string }) =>
+          layout?.enabled !== false && typeof layout?.entity === "string",
+      )
+      .map((layout: { entity: string }) => layout.entity);
+  }
+  return [];
+}
+
+function resolveConnectorIncrementalCapabilities(
+  dataSource:
+    | { type?: string; config?: Record<string, unknown> }
+    | null
+    | undefined,
+): IncrementalCapabilities | undefined {
+  if (!dataSource?.type) return undefined;
+  try {
+    const connector = connectorRegistry.getConnector({
+      id: "validation",
+      name: dataSource.type,
+      type: dataSource.type,
+      config: dataSource.config || {},
+    } as any);
+    return connector?.getIncrementalCapabilities?.();
+  } catch {
+    const meta = connectorRegistry
+      .getAllMetadata()
+      .find(entry => entry.type === dataSource.type);
+    return meta?.metadata?.incremental;
+  }
+}
+
+/**
+ * Write-mode + incremental-capability validation. Delegates to the shared
+ * `@mako/schemas` matrix so SyncFlowForm and the API cannot drift.
+ */
 function validateWriteMode(params: {
   writeMode?: unknown;
   syncMode: string;
   destinationType?: string;
   syncEngine: string;
   webhookEnabled: boolean;
-}): string | null {
-  const { writeMode } = params;
-  if (writeMode === undefined || writeMode === null) return null;
+  selectedEntities?: string[];
+  incremental?: IncrementalCapabilities;
+  enforceIncrementalCapability?: boolean;
+}): { error: string | null; warnings: string[] } {
+  // Prefer the destination-adapter registry's supported modes when available
+  // (keeps ClickHouse / new adapters honest), then fall through to the
+  // shared pure validator for the rest of the rules.
   if (
-    writeMode !== "append_dedup" &&
-    writeMode !== "append" &&
-    writeMode !== "overwrite"
+    params.writeMode !== undefined &&
+    params.writeMode !== null &&
+    params.syncEngine === "cdc" &&
+    params.writeMode !== "append_dedup"
   ) {
-    return "writeMode must be 'append_dedup', 'append', or 'overwrite'";
-  }
-  if (writeMode === "overwrite" && params.syncMode !== "full") {
-    return "writeMode 'overwrite' requires a Full Refresh (syncMode 'full')";
-  }
-  if (writeMode === "overwrite" && params.webhookEnabled) {
-    return "writeMode 'overwrite' cannot be combined with a webhook trigger";
-  }
-  if (params.syncEngine === "cdc" && writeMode !== "append_dedup") {
     const supported = supportedCdcWriteModes(params.destinationType);
-    if (!supported.includes(writeMode)) {
-      return `writeMode '${writeMode}' is not supported by '${params.destinationType}' destinations (supported: ${supported.join(", ") || "none"})`;
+    if (!supported.includes(params.writeMode as any)) {
+      return {
+        error: `writeMode '${params.writeMode}' is not supported by '${params.destinationType}' destinations (supported: ${supported.join(", ") || "none"})`,
+        warnings: [],
+      };
     }
   }
-  return null;
+
+  return validateSyncConfig({
+    syncMode: params.syncMode,
+    writeMode: params.writeMode,
+    syncEngine: params.syncEngine,
+    destinationType: params.destinationType,
+    webhookEnabled: params.webhookEnabled,
+    selectedEntities: params.selectedEntities,
+    incremental: params.incremental,
+    enforceIncrementalCapability: params.enforceIncrementalCapability,
+  });
 }
 
 // POST /api/workspaces/:workspaceId/flows - Create a new flow
@@ -902,16 +975,31 @@ flowRoutes.openapi(
         };
       }
 
-      const writeModeError = validateWriteMode({
+      let createIncremental: IncrementalCapabilities | undefined;
+      if (sourceType !== "database" && body.dataSourceId) {
+        const ds = await DataSource.findById(body.dataSourceId)
+          .select({ type: 1, config: 1 })
+          .lean();
+        createIncremental = resolveConnectorIncrementalCapabilities(ds as any);
+      }
+      const createValidation = validateWriteMode({
         writeMode: flowData.writeMode,
         syncMode: flowData.syncMode,
         destinationType,
         syncEngine: flowData.syncEngine,
-        webhookEnabled: flowType === "webhook",
+        webhookEnabled:
+          flowType === "webhook" || Boolean(flowData.webhookConfig?.enabled),
+        selectedEntities: selectedEntitiesFromFlowBody({
+          entityFilter: flowData.entityFilter,
+          entityLayouts: flowData.entityLayouts,
+        }),
+        incremental: createIncremental,
+        enforceIncrementalCapability: true,
       });
-      if (writeModeError) {
-        return c.json({ success: false, error: writeModeError }, 400);
+      if (createValidation.error) {
+        return c.json({ success: false, error: createValidation.error }, 400);
       }
+      const syncConfigWarnings = createValidation.warnings;
 
       const flow = new Flow(flowData);
 
@@ -967,6 +1055,9 @@ flowRoutes.openapi(
       return c.json({
         success: true,
         data: flow,
+        ...(syncConfigWarnings.length > 0
+          ? { warnings: syncConfigWarnings }
+          : {}),
       });
     } catch (error) {
       logger.error("Error creating flow", { error });
@@ -1104,26 +1195,68 @@ flowRoutes.openapi(
             ? body.destinationDatabaseName.trim()
             : undefined;
       }
+      const previousSyncMode = flow.syncMode;
       if (body.syncMode) flow.syncMode = body.syncMode;
+      const syncConfigTouched =
+        body.syncMode !== undefined ||
+        body.writeMode !== undefined ||
+        body.entityFilter !== undefined ||
+        body.entityLayouts !== undefined ||
+        body.dataSourceId !== undefined;
+
       if (body.writeMode !== undefined) {
+        (flow as any).writeMode = body.writeMode;
+      }
+
+      let syncConfigWarnings: string[] = [];
+      if (syncConfigTouched) {
         const destForWriteMode = await DatabaseConnection.findById(
           flow.tableDestination?.connectionId || flow.destinationDatabaseId,
         )
           .select({ type: 1 })
           .lean();
-        const writeModeError = validateWriteMode({
-          writeMode: body.writeMode,
+
+        let updateIncremental: IncrementalCapabilities | undefined;
+        if (flow.sourceType !== "database" && flow.dataSourceId) {
+          const ds = await DataSource.findById(flow.dataSourceId)
+            .select({ type: 1, config: 1 })
+            .lean();
+          updateIncremental = resolveConnectorIncrementalCapabilities(
+            ds as any,
+          );
+        }
+
+        const selectedEntities = selectedEntitiesFromFlowBody({
+          entityFilter: body.entityFilter ?? flow.entityFilter,
+          entityLayouts: body.entityLayouts ?? (flow as any).entityLayouts,
+        });
+
+        // Hard-reject incremental+none only when the client is actively
+        // editing sync mode / entities — don't break unrelated updates of
+        // legacy flows that were saved as Incremental before capability
+        // declarations existed.
+        const enforceIncrementalCapability =
+          body.syncMode !== undefined ||
+          body.entityFilter !== undefined ||
+          body.entityLayouts !== undefined ||
+          previousSyncMode !== "incremental";
+
+        const updateValidation = validateWriteMode({
+          writeMode: (flow as any).writeMode,
           syncMode: flow.syncMode,
           destinationType: destForWriteMode?.type,
           syncEngine: flow.syncEngine,
           webhookEnabled: Boolean(
             flow.webhookConfig?.enabled && flow.webhookConfig?.endpoint,
           ),
+          selectedEntities,
+          incremental: updateIncremental,
+          enforceIncrementalCapability,
         });
-        if (writeModeError) {
-          return c.json({ success: false, error: writeModeError }, 400);
+        if (updateValidation.error) {
+          return c.json({ success: false, error: updateValidation.error }, 400);
         }
-        (flow as any).writeMode = body.writeMode;
+        syncConfigWarnings = updateValidation.warnings;
       }
 
       // Update connector source specific fields
@@ -1338,6 +1471,9 @@ flowRoutes.openapi(
       return c.json({
         success: true,
         data: flow,
+        ...(syncConfigWarnings.length > 0
+          ? { warnings: syncConfigWarnings }
+          : {}),
       });
     } catch (error) {
       logger.error("Error updating flow", { error });

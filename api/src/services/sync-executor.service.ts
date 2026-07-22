@@ -3,6 +3,7 @@ import {
   performSyncChunk as performSyncChunkOrchestrated,
   performBulkFlush as performBulkFlushOrchestrated,
   performPrepareStaging as performPrepareStagingOrchestrated,
+  performOverwriteTruncate as performOverwriteTruncateOrchestrated,
   getTempCollectionCount as getTempCollectionCountOrchestrated,
   performStagingMerge as performStagingMergeOrchestrated,
   performStagingCleanup as performStagingCleanupOrchestrated,
@@ -42,6 +43,12 @@ export async function performPrepareStaging(
   options: SyncChunkOptions,
 ): Promise<void> {
   return performPrepareStagingOrchestrated(options);
+}
+
+export async function performOverwriteTruncate(
+  options: SyncChunkOptions,
+): Promise<void> {
+  return performOverwriteTruncateOrchestrated(options);
 }
 
 export function getTempCollectionCount(

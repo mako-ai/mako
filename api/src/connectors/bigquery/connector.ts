@@ -4,6 +4,7 @@ import {
   FetchOptions,
   ResumableFetchOptions,
   FetchState,
+  type IncrementalCapabilities,
 } from "../base/BaseConnector";
 import axios, { AxiosInstance } from "axios";
 import * as crypto from "crypto";
@@ -497,5 +498,11 @@ export class BigQueryConnector extends BaseConnector {
       default:
         return value;
     }
+  }
+
+  getIncrementalCapabilities(): IncrementalCapabilities {
+    // `since` is accepted by `FetchOptions` but never applied to the
+    // configured BigQuery query — every poll re-runs the full query.
+    return { supported: false, mode: "none" };
   }
 }

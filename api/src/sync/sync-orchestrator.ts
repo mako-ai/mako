@@ -1409,6 +1409,40 @@ export async function performBulkFlush(
   );
 }
 
+/**
+ * Clears the live table for `writeMode: "overwrite"` bulk-staging runs.
+ *
+ * Callers MUST invoke this exactly once per entity sync run (from the
+ * initial `prepare-staging-*` step only). It is deliberately NOT called from
+ * `performPrepareStaging`, which runs once per flush cycle (0..N times per
+ * run) — truncating there wiped rows written by earlier flushes of the same
+ * run, leaving only the last flush's rows in the live table (see
+ * `docs/sync-modes-hardening-plan.md`, Phase 1 / bug B1).
+ */
+export async function performOverwriteTruncate(
+  options: SyncChunkOptions,
+): Promise<void> {
+  if (!options.tableDestination?.connectionId || !options.flowId) return;
+  if (options.writeMode !== "overwrite") return;
+  const flowId = options.flowId;
+  const { entity, entityTableName, cdcAdapter } =
+    await resolveAdapterContext(options);
+
+  if (!cdcAdapter.truncateLiveTable) return;
+
+  const cdcLayout = buildCdcEntityLayout({
+    entity,
+    tableName: entityTableName,
+    writeMode: options.writeMode,
+  });
+
+  await cdcAdapter.truncateLiveTable(cdcLayout);
+  orchestratorLogger.info(
+    "Overwrite mode: cleared live table (once per run)",
+    { entity, flowId },
+  );
+}
+
 export async function performPrepareStaging(
   options: SyncChunkOptions,
 ): Promise<void> {
@@ -1424,14 +1458,6 @@ export async function performPrepareStaging(
     tableName: entityTableName,
     writeMode: options.writeMode,
   });
-
-  if (options.writeMode === "overwrite" && cdcAdapter.truncateLiveTable) {
-    await cdcAdapter.truncateLiveTable(cdcLayout);
-    orchestratorLogger.info("Overwrite mode: cleared live table", {
-      entity,
-      flowId,
-    });
-  }
 
   orchestratorLogger.info(
     "performPrepareStaging: dropping staging table for fresh load",
