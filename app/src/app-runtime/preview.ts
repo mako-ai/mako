@@ -213,7 +213,10 @@ export function buildPreviewHtml(
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <!-- The frame is an opaque origin (no allow-same-origin), so a plain
          <a href> can't navigate the top frame. Default every link to a new
-         tab so app links open externally instead of silently no-opping. -->
+         tab so app links open externally instead of silently no-opping.
+         Host iframes must include allow-popups + allow-popups-to-escape-sandbox
+         or the new tab inherits the sandbox and sites like Close refuse with
+         ERR_BLOCKED_BY_RESPONSE. -->
     <base target="_blank" />
     <script type="importmap">${importMap}</script>
     <script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"></script>
