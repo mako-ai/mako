@@ -233,6 +233,20 @@ function testWebhookCapabilitiesNoAutoProvision() {
   assert.ok(caps.secretHelpText?.toLowerCase().includes("rsa"));
 }
 
+function testIncrementalCapabilitiesHonest() {
+  const connector = createConnector();
+  const caps = connector.getIncrementalCapabilities();
+  assert.equal(caps.supported, true);
+  assert.equal(caps.mode, "none");
+  assert.equal(caps.perEntity?.transfers?.mode, "created-anchor");
+  assert.equal(caps.perEntity?.transfers?.anchorField, "createdDateStart");
+  assert.equal(caps.perEntity?.activities?.mode, "client-filter");
+  assert.equal(caps.perEntity?.profiles, undefined);
+  assert.equal(caps.perEntity?.balances, undefined);
+  assert.equal(caps.perEntity?.recipients, undefined);
+  assert.ok(caps.warning && caps.warning.length > 0);
+}
+
 async function testVerifyWebhookMissingSignature() {
   const connector = createConnector();
   const result = await connector.verifyWebhook({
@@ -361,6 +375,31 @@ async function testTransfersChunkUsesOffsetAndProfile() {
   assert.equal(state.totalProcessed, 1);
 }
 
+async function testTransfersIncrementalPassesCreatedDateStart() {
+  const connector = createConnector({ profile_id: "12636519" });
+  const captured: Array<Record<string, unknown>> = [];
+
+  (connector as any).wiseApi = {
+    get: async (
+      path: string,
+      config?: { params?: Record<string, unknown> },
+    ) => {
+      captured.push({ path, ...(config?.params ?? {}) });
+      return { data: [] };
+    },
+  };
+
+  await connector.fetchEntityChunk({
+    entity: "transfers",
+    since: new Date("2026-07-15T12:34:56.000Z"),
+    onBatch: async () => {},
+  } as any);
+
+  assert.equal(captured[0].createdDateStart, "2026-07-15");
+  // No updated_* filter exists on Wise list transfers — created-anchor only.
+  assert.equal(captured[0].updatedAfter, undefined);
+}
+
 async function testRecipientsChunkUsesSeekPosition() {
   const connector = createConnector({ profile_id: "12636519" });
   let calls = 0;
@@ -454,11 +493,13 @@ async function main() {
   testExtractWebhookCdcRecordsParity();
   testNormalizeBackfillRecord();
   testWebhookCapabilitiesNoAutoProvision();
+  testIncrementalCapabilitiesHonest();
   await testVerifyWebhookMissingSignature();
   await testVerifyWebhookValidSignature();
   await testVerifyWebhookRejectsBadSignature();
   await testBalanceUpdatesBackfillIsNoop();
   await testTransfersChunkUsesOffsetAndProfile();
+  await testTransfersIncrementalPassesCreatedDateStart();
   await testRecipientsChunkUsesSeekPosition();
   await testProfilesChunkFiltersConfiguredProfile();
 }

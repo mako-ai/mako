@@ -12,6 +12,7 @@ import {
   EntityMetadata,
   NormalizedCdcRecord,
   type WebhookCapabilities,
+  type IncrementalCapabilities,
   type ConnectorEntitySchema,
 } from "../base/BaseConnector";
 import { resolveWiseEntitySchema } from "./schema";
@@ -914,6 +915,31 @@ export class WiseConnector extends BaseConnector {
       },
       secretHelpText:
         'Optional. Wise verifies webhooks with RSA public keys (not a shared secret). Leave blank for production, or set to "sandbox" when using the sandbox API.',
+    };
+  }
+
+  getIncrementalCapabilities(): IncrementalCapabilities {
+    return {
+      supported: true,
+      // profiles / balances / recipients / balance_updates ignore `since`
+      // entirely (full snapshot or webhook-only).
+      mode: "none",
+      perEntity: {
+        // Wise list transfers only exposes createdDateStart/End — status
+        // changes on older transfers are invisible to polls.
+        transfers: {
+          mode: "created-anchor",
+          anchorField: "createdDateStart",
+        },
+        // Activities feed is newest-first; we drop rows older than `since`
+        // client-side but still page the API until the chunk budget ends.
+        activities: {
+          mode: "client-filter",
+          anchorField: "createdOn",
+        },
+      },
+      warning:
+        "Wise transfer polls only see newly created transfers; status updates on existing transfers (and all balance/recipient changes) require the webhook trigger or a periodic full reconcile.",
     };
   }
 

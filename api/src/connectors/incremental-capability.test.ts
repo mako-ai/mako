@@ -8,6 +8,7 @@ import { RestConnector } from "./rest/connector";
 import { GraphQLConnector } from "./graphql/connector";
 import { PosthogConnector } from "./posthog/connector";
 import { BigQueryConnector } from "./bigquery/connector";
+import { WiseConnector } from "./wise/connector";
 import {
   BaseConnector,
   type IncrementalCapabilities,
@@ -104,7 +105,10 @@ const connectors: Array<{
         id: "ds_claap",
         name: "Claap",
         type: "claap",
-        config: { api_key: "cla_test_key", api_base_url: "https://api.claap.io" },
+        config: {
+          api_key: "cla_test_key",
+          api_base_url: "https://api.claap.io",
+        },
       } as any),
   },
   {
@@ -158,6 +162,16 @@ const connectors: Array<{
         name: "BigQuery",
         type: "bigquery",
         config: {},
+      } as any),
+  },
+  {
+    label: "wise",
+    make: () =>
+      new WiseConnector({
+        id: "ds_wise",
+        name: "Wise",
+        type: "wise",
+        config: { api_key: "test-token" },
       } as any),
   },
 ];
@@ -225,6 +239,16 @@ function testRestDeclaresClientFilterWithWarning() {
   assert.ok(rest.warning && rest.warning.length > 0);
 }
 
+function testWiseCreatedAnchorTransfersAndNoneFallback() {
+  const wise = capabilitiesFor("wise");
+  assert.equal(wise.supported, true);
+  assert.equal(wise.mode, "none");
+  assert.equal(wise.perEntity?.transfers?.mode, "created-anchor");
+  assert.equal(wise.perEntity?.transfers?.anchorField, "createdDateStart");
+  assert.equal(wise.perEntity?.activities?.mode, "client-filter");
+  assert.ok(wise.warning && wise.warning.length > 0);
+}
+
 function main() {
   testEveryConnectorReturnsWellFormedCapabilities();
   testConnectorsWithNoRealIncrementalDeclareNone();
@@ -232,6 +256,7 @@ function main() {
   testCloseSearchApiEntitiesDeclareNone();
   testPandadocDocumentsAreNativeContactsAreNot();
   testRestDeclaresClientFilterWithWarning();
+  testWiseCreatedAnchorTransfersAndNoneFallback();
 }
 
 main();
