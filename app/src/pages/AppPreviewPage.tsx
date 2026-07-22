@@ -310,7 +310,7 @@ export default function AppPreviewPage() {
           ref={iframeRef}
           title={`preview-app-${token}`}
           srcDoc={srcDoc}
-          sandbox="allow-scripts allow-downloads allow-popups"
+          sandbox="allow-scripts allow-downloads allow-popups allow-popups-to-escape-sandbox"
           style={{ width: "100%", height: "100%", border: "none" }}
         />
         {booting && !previewError && (

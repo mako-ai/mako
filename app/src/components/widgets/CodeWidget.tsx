@@ -123,7 +123,7 @@ const CodeWidget: React.FC<CodeWidgetProps> = ({
       )}
       <iframe
         ref={iframeRef}
-        sandbox="allow-scripts allow-downloads allow-popups"
+        sandbox="allow-scripts allow-downloads allow-popups allow-popups-to-escape-sandbox"
         style={{
           width: "100%",
           height: "100%",
