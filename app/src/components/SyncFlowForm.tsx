@@ -1689,7 +1689,7 @@ export function SyncFlowForm({
                     >
                       {watchBackfillScheduleEnabled
                         ? "Periodic full reconcile is on — it covers updates and snapshot entities that Incremental polls cannot see."
-                        : "Enable the periodic full reconcile trigger (step 3) so created-anchor / full-repull entities stay current."}
+                        : "Scheduled (incremental poll) is not a full snapshot. Enable Periodic full reconcile in Triggers so updates and snapshot entities stay current."}
                     </Alert>
                   )}
 
@@ -2257,12 +2257,17 @@ export function SyncFlowForm({
                               <Box>
                                 <Typography variant="subtitle2">
                                   Scheduled
+                                  {watchSyncMode === "incremental"
+                                    ? " (incremental poll)"
+                                    : ""}
                                 </Typography>
                                 <Typography
                                   variant="caption"
                                   color="text.secondary"
                                 >
-                                  Poll the source on a cron cadence.
+                                  {watchSyncMode === "incremental"
+                                    ? "Runs an Incremental poll on this cron — only what the connector can fetch as changes-since (e.g. newly created rows). Not a full snapshot."
+                                    : "Poll the source on a cron cadence."}
                                 </Typography>
                               </Box>
                             }
@@ -2564,10 +2569,13 @@ export function SyncFlowForm({
                             </Button>
                           }
                         >
-                          Incremental polls for the selected entities miss
-                          updates (created-only) or silently re-fetch
-                          everything. Enable a periodic full reconcile so the
-                          destination stays honest between webhook events.
+                          Scheduled alone is not enough here: your Incremental
+                          poll only sees creates (or re-fetches snapshot
+                          streams). It will not pick up updates to older rows.
+                          Periodic full reconcile is a separate full upsert on
+                          its own cron — that&apos;s what closes the gap
+                          {watchWebhookEnabled ? " between webhook events" : ""}
+                          .
                         </Alert>
                       )}
                       {watchBackfillScheduleEnabled &&
