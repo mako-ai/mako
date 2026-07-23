@@ -26,6 +26,13 @@ import {
   isAcpConnectionClosedError,
 } from "./connection-errors";
 import { launchTerminalAuth } from "./terminal-auth";
+import {
+  currentModelFromConfigOptions,
+  modelChoicesFromConfigOptions,
+  parseConfigOptions,
+  type AcpConfigOptionSnapshot,
+  type AcpModelChoice,
+} from "./session-config";
 import type {
   AcpAuthenticateResult,
   AcpBridgeEvent,
@@ -69,6 +76,13 @@ interface ManagedSession {
   listeners: Set<Listener>;
   /** Transcript/events for SSE reconnect replay (in-memory for process lifetime). */
   eventLog: AcpBridgeEvent[];
+  /** Latest session/configOptions snapshot from the adapter. */
+  configOptions: AcpConfigOptionSnapshot[];
+}
+
+interface ProviderModelCache {
+  availableModels: AcpModelChoice[];
+  currentModel: string | null;
 }
 
 function nowIso(): string {
@@ -92,12 +106,38 @@ export class AcpSessionManager {
   /** Global listeners (all sessions) — used by tests. */
   private globalListeners = new Set<Listener>();
   private lastAdapterError: string | null = null;
+  /** Last-known model picker state per provider (survives session close). */
+  private providerModels = new Map<AcpProviderId, ProviderModelCache>();
+
+  private rememberProviderModels(
+    providerId: AcpProviderId,
+    configOptions: AcpConfigOptionSnapshot[],
+  ): void {
+    const availableModels = modelChoicesFromConfigOptions(configOptions);
+    if (availableModels.length === 0) return;
+    this.providerModels.set(providerId, {
+      availableModels,
+      currentModel: currentModelFromConfigOptions(configOptions),
+    });
+  }
+
+  private applyConfigOptionsToSession(
+    session: ManagedSession,
+    rawConfigOptions: unknown,
+  ): void {
+    const configOptions = parseConfigOptions(rawConfigOptions);
+    session.configOptions = configOptions;
+    session.info.availableModels = modelChoicesFromConfigOptions(configOptions);
+    session.info.currentModel = currentModelFromConfigOptions(configOptions);
+    this.rememberProviderModels(session.info.providerId, configOptions);
+  }
 
   getStatus(): AcpStatusResponse {
     const providers: AcpProviderStatus[] = ACP_PROVIDER_IDS.map(id => {
       const def = ACP_PROVIDERS[id];
       const launch = resolveAdapterCommand(def);
       const conn = this.connections.get(id);
+      const models = this.providerModels.get(id);
       return {
         id,
         label: def.label,
@@ -117,6 +157,8 @@ export class AcpSessionManager {
           type: m.type,
           terminalCommand: m.terminalCommand,
         })),
+        availableModels: models?.availableModels,
+        currentModel: models?.currentModel ?? null,
       };
     });
 
@@ -125,10 +167,11 @@ export class AcpSessionManager {
       defaultCwd: defaultCwd(),
       providers,
       acpBridge: {
-        version: 2,
+        version: 3,
         terminalAuth: true,
         mcpProbe: true,
         reconnect: true,
+        sessionConfig: true,
       },
       lastAdapterError: this.lastAdapterError,
     };
@@ -634,21 +677,44 @@ export class AcpSessionManager {
         makoMcpAttached: attachMakoMcp,
       };
 
-      this.sessions.set(id, {
+      const managed: ManagedSession = {
         info,
         active,
         busy: false,
         listeners: new Set(),
         eventLog: [],
-      });
+        configOptions: [],
+      };
+      this.sessions.set(id, managed);
+      this.applyConfigOptionsToSession(
+        managed,
+        active.newSessionResponse?.configOptions,
+      );
+
+      const preferredModel = body.model?.trim();
+      if (preferredModel) {
+        try {
+          await this.setSessionConfig(id, {
+            configId: "model",
+            value: preferredModel,
+          });
+        } catch (error) {
+          acpLog.info("ACP preferred model not applied at session/new", {
+            sessionId: id,
+            preferredModel,
+            error: String(error),
+          });
+        }
+      }
 
       acpLog.info("Created ACP session", {
         sessionId: id,
         providerId,
         cwd,
         makoMcpAttached: attachMakoMcp,
+        currentModel: managed.info.currentModel,
       });
-      return info;
+      return { ...managed.info, busy: managed.busy };
     } catch (error) {
       if (allowRetry && isAcpConnectionClosedError(error)) {
         this.invalidateProvider(
@@ -805,6 +871,72 @@ export class AcpSessionManager {
     const conn = this.connections.get(session.info.providerId);
     if (!conn) return;
     await conn.agent.notify(acp.methods.agent.session.cancel, { sessionId });
+  }
+
+  /**
+   * Apply `session/set_config_option` (model, mode, thought level, …).
+   * Chat uses this so Desktop can switch Sonnet → Fable without Terminal `/model`.
+   */
+  async setSessionConfig(
+    sessionId: string,
+    body: { configId?: string; value: string | boolean },
+  ): Promise<AcpSessionInfo> {
+    const session = this.sessions.get(sessionId);
+    if (!session?.active) {
+      throw new Error(
+        `Unknown or expired ACP session: ${sessionId}. Send again to reconnect.`,
+      );
+    }
+    const configId = body.configId?.trim() || "model";
+    const value = body.value;
+    if (
+      (typeof value !== "string" || !value.trim()) &&
+      typeof value !== "boolean"
+    ) {
+      throw new Error("Config value is required");
+    }
+
+    const conn = this.connections.get(session.info.providerId);
+    if (!isConnectionAlive(conn) || !conn) {
+      this.invalidateProvider(
+        session.info.providerId,
+        "adapter not alive before set_config_option",
+      );
+      throw new Error(
+        acpReconnectMessage(ACP_PROVIDERS[session.info.providerId].label),
+      );
+    }
+
+    const acp = await loadAcpSdk();
+    const params =
+      typeof value === "boolean"
+        ? {
+            sessionId,
+            configId,
+            type: "boolean" as const,
+            value,
+          }
+        : {
+            sessionId,
+            configId,
+            value: value.trim(),
+          };
+
+    // ClientContext exposes typed helpers inconsistently across SDK builds —
+    // use the JSON-RPC method name (same pattern as cancel/close).
+    const response = (await conn.agent.request(
+      acp.methods.agent.session.setConfigOption,
+      params,
+    )) as { configOptions?: unknown };
+    this.applyConfigOptionsToSession(session, response?.configOptions);
+    session.info.updatedAt = nowIso();
+    acpLog.info("Updated ACP session config", {
+      sessionId,
+      configId,
+      value,
+      currentModel: session.info.currentModel,
+    });
+    return { ...session.info, busy: session.busy };
   }
 
   respondPermission(

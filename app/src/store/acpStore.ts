@@ -78,7 +78,14 @@ interface AcpState {
     workspaceId?: string;
     /** When true (Chat path), fail if Mako MCP cannot be attached. */
     requireMakoMcp?: boolean;
+    /** Preferred Claude/Codex model alias or id (e.g. `fable`). */
+    model?: string;
   }) => Promise<AcpSessionInfo | null>;
+  /** Switch model/mode on an existing ACP session via session/set_config_option. */
+  setSessionModel: (
+    sessionId: string,
+    model: string,
+  ) => Promise<AcpSessionInfo | null>;
   /** Drop a dead ACP session from local state (adapter crash / invalidate). */
   forgetSession: (sessionId: string) => void;
   /** Record an ACP permission prompt for Chat / Coding Agents HITL. */
@@ -338,6 +345,7 @@ export const useAcpStore = create<AcpState>()(
           mcpAuthorization: creds.mcpAuthorization,
           mcpServerName: creds.mcpServerName,
           systemPromptAppend,
+          model: options?.model?.trim() || undefined,
         });
         if (requireMakoMcp && !session.makoMcpAttached) {
           throw new Error(
@@ -353,12 +361,42 @@ export const useAcpStore = create<AcpState>()(
           s.messagesBySession[session.id] ??= [];
           s.error = null;
         });
+        // Refresh status so Chat's model picker picks up availableModels.
+        void get().refreshStatus();
         get().ensureEventSubscription(session.id);
         return session;
       } catch (error) {
         set(s => {
           s.error =
             error instanceof Error ? error.message : "Failed to create session";
+        });
+        return null;
+      }
+    },
+
+    setSessionModel: async (sessionId, model) => {
+      const value = model.trim();
+      if (!sessionId || !value) return null;
+      set(s => {
+        s.error = null;
+      });
+      try {
+        const session = await acpClient.setSessionConfig(sessionId, {
+          configId: "model",
+          value,
+        });
+        set(s => {
+          s.sessions = s.sessions.map(x => (x.id === session.id ? session : x));
+          s.error = null;
+        });
+        void get().refreshStatus();
+        return session;
+      } catch (error) {
+        set(s => {
+          s.error =
+            error instanceof Error
+              ? error.message
+              : "Failed to switch local model";
         });
         return null;
       }

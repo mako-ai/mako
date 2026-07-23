@@ -237,6 +237,35 @@ describe("AcpSessionManager with mock agent", () => {
     await manager.closeSession(session.id);
   });
 
+  it("exposes and switches models via session configOptions", async () => {
+    const session = await manager.createSession({
+      providerId: "claude",
+      cwd: process.cwd(),
+      title: "model-test",
+    });
+    assert.ok(session.availableModels?.some(m => m.value === "fable"));
+    assert.equal(session.currentModel, "sonnet");
+
+    const updated = await manager.setSessionConfig(session.id, {
+      configId: "model",
+      value: "fable",
+    });
+    assert.equal(updated.currentModel, "fable");
+    assert.equal(manager.getStatus().providers.find(p => p.id === "claude")
+      ?.currentModel, "fable");
+
+    const withPreferred = await manager.createSession({
+      providerId: "claude",
+      cwd: process.cwd(),
+      title: "model-pref",
+      model: "opus",
+    });
+    assert.equal(withPreferred.currentModel, "opus");
+
+    await manager.closeSession(session.id);
+    await manager.closeSession(withPreferred.id);
+  });
+
   it("cancels a busy turn instead of rejecting overlapping prompts", async () => {
     const session = await manager.createSession({
       providerId: "claude",

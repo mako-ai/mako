@@ -25,6 +25,8 @@ import { useWorkspace } from "../contexts/workspace-context";
 import type { AIModel } from "../lib/api-types";
 import {
   isLocalAcpModelId,
+  localAcpModelIdToProviderId,
+  localAcpModelPreference,
   localAcpModelsFromProviders,
 } from "../lib/local-acp-models";
 import { getModelBillingState } from "./model-selector-utils";
@@ -112,6 +114,25 @@ export const ModelSelector: React.FC = () => {
   const handleSelectModel = (modelId: string) => {
     setSelectedModelId(modelId);
     handleClose();
+    // If a Claude/Codex ACP session is already live, switch its model now so
+    // the next Chat turn doesn't keep running Sonnet after picking Fable.
+    if (!isLocalAcpModelId(modelId)) return;
+    const providerId = localAcpModelIdToProviderId(modelId);
+    const preference = localAcpModelPreference(modelId);
+    if (!providerId || !preference) return;
+    const store = useAcpStore.getState();
+    const session =
+      store.sessions.find(
+        s =>
+          s.id === store.activeSessionId &&
+          s.providerId === providerId &&
+          s.makoMcpAttached,
+      ) ||
+      store.sessions.find(
+        s => s.providerId === providerId && s.makoMcpAttached,
+      );
+    if (!session) return;
+    void store.setSessionModel(session.id, preference);
   };
 
   const localModels = useMemo(

@@ -2,6 +2,12 @@
 
 export type AcpProviderId = "claude" | "codex";
 
+export interface AcpModelChoice {
+  value: string;
+  name: string;
+  description?: string;
+}
+
 export interface AcpProviderStatus {
   id: AcpProviderId;
   label: string;
@@ -20,6 +26,8 @@ export interface AcpProviderStatus {
     terminalCommand?: string;
   }>;
   error?: string;
+  availableModels?: AcpModelChoice[];
+  currentModel?: string | null;
 }
 
 export interface AcpAuthenticateResult {
@@ -40,6 +48,7 @@ export interface AcpStatus {
     terminalAuth?: boolean;
     mcpProbe?: boolean;
     reconnect?: boolean;
+    sessionConfig?: boolean;
   };
   lastAdapterError?: string | null;
 }
@@ -54,6 +63,8 @@ export interface AcpSessionInfo {
   busy: boolean;
   /** True when Mako `/api/mcp` was attached on session/new. */
   makoMcpAttached?: boolean;
+  currentModel?: string | null;
+  availableModels?: AcpModelChoice[];
 }
 
 export type AcpBridgeEvent =

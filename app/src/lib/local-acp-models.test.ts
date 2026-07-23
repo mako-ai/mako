@@ -1,25 +1,36 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildLocalAcpModelId,
   isLocalAcpModelId,
   localAcpModelIdToProviderId,
+  localAcpModelPreference,
   localAcpModelsFromProviders,
   LOCAL_ACP_CLAUDE_MODEL_ID,
 } from "./local-acp-models";
 
 describe("local-acp-models", () => {
-  it("detects local ACP model ids", () => {
+  it("detects local ACP model ids and preferences", () => {
     expect(isLocalAcpModelId(LOCAL_ACP_CLAUDE_MODEL_ID)).toBe(true);
+    expect(isLocalAcpModelId("local-acp/claude/fable")).toBe(true);
     expect(isLocalAcpModelId("anthropic/claude-sonnet-4")).toBe(false);
     expect(localAcpModelIdToProviderId(LOCAL_ACP_CLAUDE_MODEL_ID)).toBe(
       "claude",
     );
+    expect(localAcpModelIdToProviderId("local-acp/claude/fable")).toBe(
+      "claude",
+    );
+    expect(localAcpModelPreference(LOCAL_ACP_CLAUDE_MODEL_ID)).toBeNull();
+    expect(localAcpModelPreference("local-acp/claude/default")).toBeNull();
+    expect(localAcpModelPreference("local-acp/claude/fable")).toBe("fable");
+    expect(buildLocalAcpModelId("claude", "fable")).toBe(
+      "local-acp/claude/fable",
+    );
   });
 
-  it("always lists Claude Code + Codex, enriching from status", () => {
+  it("expands Claude Code into Sonnet/Opus/Fable rows when adapter found", () => {
     const offline = localAcpModelsFromProviders(null);
     expect(offline).toHaveLength(2);
     expect(offline.map(m => m.id)).toContain(LOCAL_ACP_CLAUDE_MODEL_ID);
-    expect(offline[0].description).toMatch(/start Local Agent/i);
 
     const models = localAcpModelsFromProviders([
       {
@@ -34,10 +45,54 @@ describe("local-acp-models", () => {
         authRequired: false,
         authMethods: [],
       },
+      {
+        id: "codex",
+        label: "Codex",
+        description: "y",
+        authProduct: "ChatGPT",
+        installHint: "npm i -g @zed-industries/codex-acp",
+        adapterCommand: "codex-acp",
+        adapterFound: false,
+        connected: false,
+        authRequired: false,
+        authMethods: [],
+      },
     ]);
-    expect(models).toHaveLength(2);
-    const claude = models.find(m => m.id === LOCAL_ACP_CLAUDE_MODEL_ID);
-    expect(claude?.provider).toBe("local");
-    expect(claude?.description).not.toMatch(/adapter missing/i);
+    const ids = models.map(m => m.id);
+    expect(ids).toContain("local-acp/claude/fable");
+    expect(ids).toContain("local-acp/claude/sonnet");
+    expect(ids.some(id => id.startsWith("local-acp/claude"))).toBe(true);
+    expect(models.find(m => m.id === "local-acp/claude/fable")?.name).toMatch(
+      /Fable/i,
+    );
+    // Codex adapter missing → single placeholder row
+    expect(ids.filter(id => id.startsWith("local-acp/codex"))).toEqual([
+      "local-acp/codex",
+    ]);
+  });
+
+  it("prefers adapter-advertised model ids over short aliases", () => {
+    const models = localAcpModelsFromProviders([
+      {
+        id: "claude",
+        label: "Claude Code",
+        description: "x",
+        authProduct: "Claude",
+        installHint: "hint",
+        adapterCommand: "claude-agent-acp",
+        adapterFound: true,
+        connected: true,
+        authRequired: false,
+        authMethods: [],
+        availableModels: [
+          { value: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
+          { value: "claude-fable-5", name: "Claude Fable 5" },
+        ],
+      },
+    ]);
+    const ids = models.map(m => m.id);
+    expect(ids).toContain("local-acp/claude/claude-fable-5");
+    expect(ids).not.toContain("local-acp/claude/fable");
+    expect(ids).not.toContain("local-acp/claude/sonnet");
   });
 });

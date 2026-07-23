@@ -31,8 +31,10 @@ This is the reverse of [MCP Server](/mcp-server/):
 1. Ensure Local Agent is running and adapters are installed (above).
 2. Optional: **Settings → Coding Agents** to sign in and set the default
    working directory.
-3. Open **Chat**, open the model dropdown, and pick **Claude Code (local)** or
-   **Codex (local)** under **On this machine**.
+3. Open **Chat**, open the model dropdown, and under **On this machine** pick
+   **Claude Code · Fable (local)** (or Sonnet / Opus / Haiku / Default), or
+   **Codex (local)**. Mako applies the choice via ACP
+   `session/set_config_option` — no Terminal `/model` required.
 4. Send messages in the normal Chat composer. Mako starts the local ACP session
    automatically and attaches workspace data tools.
 

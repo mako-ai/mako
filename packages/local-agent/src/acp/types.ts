@@ -41,6 +41,12 @@ export type AcpBridgeEvent =
       at: string;
     };
 
+export interface AcpModelChoice {
+  value: string;
+  name: string;
+  description?: string;
+}
+
 export interface AcpSessionInfo {
   id: string;
   providerId: AcpProviderId;
@@ -51,6 +57,10 @@ export interface AcpSessionInfo {
   busy: boolean;
   /** True when Mako `/api/mcp` was attached on session/new. */
   makoMcpAttached?: boolean;
+  /** Current Claude/Codex model id from session configOptions (when known). */
+  currentModel?: string | null;
+  /** Selectable models advertised by the adapter for this session. */
+  availableModels?: AcpModelChoice[];
 }
 
 export interface AcpProviderStatus {
@@ -71,6 +81,12 @@ export interface AcpProviderStatus {
     terminalCommand?: string;
   }>;
   error?: string;
+  /**
+   * Models last seen from session/new configOptions for this provider.
+   * Used by Chat's model picker before/without opening Settings.
+   */
+  availableModels?: AcpModelChoice[];
+  currentModel?: string | null;
 }
 
 export interface AcpAuthenticateResult {
@@ -92,10 +108,11 @@ export interface AcpStatusResponse {
    * agent (raw "ACP connection closed" with no rewrite / no terminal auth).
    */
   acpBridge?: {
-    version: 2;
+    version: 3;
     terminalAuth: true;
     mcpProbe: true;
     reconnect: true;
+    sessionConfig: true;
   };
   /** Last Claude/Codex adapter stderr snippet (when a connection died). */
   lastAdapterError?: string | null;
@@ -122,6 +139,17 @@ export interface CreateAcpSessionRequest {
    * Codex adapters often ignore this until they support instruction _meta.
    */
   systemPromptAppend?: string;
+  /**
+   * Preferred model value for `session/set_config_option` (e.g. `fable`,
+   * `sonnet`, or a full id like `claude-fable-5`). Applied after session/new.
+   */
+  model?: string;
+}
+
+export interface SetAcpSessionConfigRequest {
+  configId?: string;
+  /** Select option value id, or boolean for boolean options. */
+  value: string | boolean;
 }
 
 export interface PromptAcpSessionRequest {

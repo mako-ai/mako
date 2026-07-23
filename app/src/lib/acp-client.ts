@@ -61,12 +61,25 @@ export const acpClient = {
     mcpServerName?: string;
     /** Lean workspace guidance for Claude systemPrompt.append (not full skills). */
     systemPromptAppend?: string;
+    /** Preferred Claude/Codex model (`fable`, `sonnet`, …). */
+    model?: string;
   }): Promise<AcpSessionInfo> {
     const body = await localAgentClient.post<Envelope<AcpSessionInfo>>(
       "/acp/sessions",
       input,
     );
     return unwrap(body, "Failed to create ACP session");
+  },
+
+  async setSessionConfig(
+    sessionId: string,
+    input: { configId?: string; value: string | boolean },
+  ): Promise<AcpSessionInfo> {
+    const body = await localAgentClient.post<Envelope<AcpSessionInfo>>(
+      `/acp/sessions/${encodeURIComponent(sessionId)}/config`,
+      input,
+    );
+    return unwrap(body, "Failed to update session config");
   },
 
   async prompt(

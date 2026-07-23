@@ -9,6 +9,7 @@ import type {
   CreateAcpSessionRequest,
   PermissionResponseRequest,
   PromptAcpSessionRequest,
+  SetAcpSessionConfigRequest,
 } from "./types";
 
 function jsonError(c: Context, message: string, status: 400 | 404 | 500) {
@@ -108,6 +109,32 @@ export function registerAcpRoutes(app: Hono): void {
       const message =
         error instanceof Error ? error.message : "Cancel failed";
       return jsonError(c, message, 400);
+    }
+  });
+
+  app.post("/acp/sessions/:id/config", async c => {
+    try {
+      const body = (await c.req.json()) as SetAcpSessionConfigRequest;
+      if (
+        body?.value === undefined ||
+        body?.value === null ||
+        (typeof body.value !== "string" && typeof body.value !== "boolean")
+      ) {
+        return jsonError(c, "value is required", 400);
+      }
+      const session = await acpSessionManager.setSessionConfig(
+        c.req.param("id"),
+        {
+          configId: body.configId,
+          value: body.value,
+        },
+      );
+      return c.json({ success: true, data: session });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to update session config";
+      const status = message.includes("Unknown") ? 404 : 400;
+      return jsonError(c, message, status);
     }
   });
 

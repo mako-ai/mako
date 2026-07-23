@@ -15,8 +15,28 @@ async function main(): Promise<void> {
 
   const sessions = new Map<
     string,
-    { pending?: AbortController; mcpServers?: unknown[] }
+    {
+      pending?: AbortController;
+      mcpServers?: unknown[];
+      currentModel: string;
+    }
   >();
+
+  const modelConfigOptions = (currentModel: string) => [
+    {
+      id: "model",
+      name: "Model",
+      category: "model" as const,
+      type: "select" as const,
+      currentValue: currentModel,
+      options: [
+        { value: "sonnet", name: "Sonnet" },
+        { value: "opus", name: "Opus" },
+        { value: "fable", name: "Fable" },
+        { value: "haiku", name: "Haiku" },
+      ],
+    },
+  ];
 
   await acp
     .agent({ name: "mako-mock-acp-agent" })
@@ -36,10 +56,12 @@ async function main(): Promise<void> {
       )
         ? (ctx.params as { mcpServers: unknown[] }).mcpServers
         : [];
-      sessions.set(sessionId, { mcpServers });
+      const currentModel = "sonnet";
+      sessions.set(sessionId, { mcpServers, currentModel });
       // Echo attached MCP names in a well-known place for tests.
       return {
         sessionId,
+        configOptions: modelConfigOptions(currentModel),
         _meta: {
           makoMockMcpServerCount: mcpServers.length,
           makoMockMcpServerNames: mcpServers.map(server =>
@@ -52,6 +74,19 @@ async function main(): Promise<void> {
           ),
         },
       };
+    })
+    .onRequest(acp.methods.agent.session.setConfigOption, async ctx => {
+      const params = ctx.params as {
+        sessionId?: string;
+        configId?: string;
+        value?: string | boolean;
+      };
+      const session = sessions.get(String(params.sessionId || ""));
+      if (!session) throw new Error(`Unknown session ${params.sessionId}`);
+      if (params.configId === "model" && typeof params.value === "string") {
+        session.currentModel = params.value;
+      }
+      return { configOptions: modelConfigOptions(session.currentModel) };
     })
     .onRequest(acp.methods.agent.session.close, async ctx => {
       sessions.delete(String(ctx.params.sessionId));

@@ -9,6 +9,7 @@ import { acpClient } from "./acp-client";
 import {
   isLocalAcpModelId,
   localAcpModelIdToProviderId,
+  localAcpModelPreference,
 } from "./local-acp-models";
 import {
   appendAssistantText,
@@ -67,11 +68,38 @@ function maybeOpenCreatedApp(
     });
 }
 
+async function applyModelPreference(
+  sessionId: string,
+  modelPreference: string | null | undefined,
+): Promise<void> {
+  const preferred = modelPreference?.trim();
+  if (!preferred) return;
+  const session = useAcpStore.getState().sessions.find(s => s.id === sessionId);
+  // Skip no-op switches (adapter may already be on this model / alias).
+  if (
+    session?.currentModel &&
+    (session.currentModel === preferred ||
+      session.currentModel.toLowerCase().includes(preferred.toLowerCase()) ||
+      preferred.toLowerCase().includes(session.currentModel.toLowerCase()))
+  ) {
+    return;
+  }
+  const updated = await useAcpStore
+    .getState()
+    .setSessionModel(sessionId, preferred);
+  if (!updated) {
+    throw new Error(
+      useAcpStore.getState().error ||
+        `Failed to switch local model to ${preferred}`,
+    );
+  }
+}
+
 export async function ensureAcpSessionForProvider(
   providerId: AcpProviderId,
   workspaceId?: string,
   preferredSessionId?: string,
-  options?: { forceNew?: boolean },
+  options?: { forceNew?: boolean; model?: string | null },
 ): Promise<string> {
   const store = useAcpStore.getState();
   if (!store.status) {
@@ -90,6 +118,7 @@ export async function ensureAcpSessionForProvider(
   // Always reconcile with Local Agent — Desktop/agent restarts leave stale ids.
   await useAcpStore.getState().refreshSessions();
   const liveIds = new Set(useAcpStore.getState().sessions.map(s => s.id));
+  const modelPreference = options?.model?.trim() || null;
 
   if (
     !options?.forceNew &&
@@ -106,6 +135,7 @@ export async function ensureAcpSessionForProvider(
       );
     if (preferred) {
       useAcpStore.getState().setActiveSession(preferred.id);
+      await applyModelPreference(preferred.id, modelPreference);
       return preferred.id;
     }
   }
@@ -116,6 +146,7 @@ export async function ensureAcpSessionForProvider(
       .sessions.find(s => s.providerId === providerId && s.makoMcpAttached);
     if (withMcp && liveIds.has(withMcp.id)) {
       useAcpStore.getState().setActiveSession(withMcp.id);
+      await applyModelPreference(withMcp.id, modelPreference);
       return withMcp.id;
     }
   }
@@ -124,6 +155,7 @@ export async function ensureAcpSessionForProvider(
   const created = await useAcpStore.getState().createSession({
     workspaceId,
     requireMakoMcp: true,
+    model: modelPreference || undefined,
   });
   if (!created) {
     throw new Error(
@@ -239,12 +271,14 @@ export async function runLocalAcpChatTurn(
     if (ok) onPersisted?.(binding);
   };
 
+  const modelPreference = localAcpModelPreference(modelId);
+
   const runAgainstSession = async (forceNew: boolean) => {
     sessionId = await ensureAcpSessionForProvider(
       providerId,
       workspaceId,
       forceNew ? undefined : preferredSessionId,
-      { forceNew },
+      { forceNew, model: modelPreference },
     );
     useAcpStore.getState().ensureEventSubscription(sessionId);
 

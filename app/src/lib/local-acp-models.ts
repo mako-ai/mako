@@ -1,16 +1,43 @@
 /**
  * Client-only synthetic model ids for Local Agent ACP providers.
  * These never go through /api/agent/chat or the AI Gateway.
+ *
+ * Id shapes:
+ * - `local-acp/claude` — Claude Code with adapter default model
+ * - `local-acp/claude/fable` — Claude Code forced to Fable (alias or full id)
+ * - `local-acp/codex` / `local-acp/codex/<model>` — same for Codex
  */
 import type { AIModel } from "./api-types";
-import type { AcpProviderId, AcpProviderStatus } from "./acp-types";
+import type {
+  AcpModelChoice,
+  AcpProviderId,
+  AcpProviderStatus,
+} from "./acp-types";
 
 export const LOCAL_ACP_MODEL_PREFIX = "local-acp/";
 
 export const LOCAL_ACP_CLAUDE_MODEL_ID = `${LOCAL_ACP_MODEL_PREFIX}claude`;
 export const LOCAL_ACP_CODEX_MODEL_ID = `${LOCAL_ACP_MODEL_PREFIX}codex`;
 
-const LOCAL_ACP_MODEL_DEFS: Record<
+/** Shown in Chat before a session reports adapter model lists. */
+export const CLAUDE_CODE_MODEL_FALLBACKS: AcpModelChoice[] = [
+  {
+    value: "default",
+    name: "Default",
+    description: "Claude Code’s current default",
+  },
+  { value: "sonnet", name: "Sonnet" },
+  { value: "opus", name: "Opus" },
+  { value: "fable", name: "Fable" },
+  { value: "haiku", name: "Haiku" },
+];
+
+const PROVIDER_LABEL: Record<AcpProviderId, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+};
+
+const PROVIDER_BASE: Record<
   AcpProviderId,
   Omit<AIModel, "id"> & { id: string }
 > = {
@@ -39,34 +66,123 @@ export function isLocalAcpModelId(modelId: string | null | undefined): boolean {
 export function localAcpModelIdToProviderId(
   modelId: string,
 ): AcpProviderId | null {
-  if (modelId === LOCAL_ACP_CLAUDE_MODEL_ID) return "claude";
-  if (modelId === LOCAL_ACP_CODEX_MODEL_ID) return "codex";
+  if (!isLocalAcpModelId(modelId)) return null;
+  const rest = modelId.slice(LOCAL_ACP_MODEL_PREFIX.length);
+  const provider = rest.split("/")[0];
+  if (provider === "claude" || provider === "codex") return provider;
   return null;
 }
 
-const LOCAL_ACP_PROVIDER_IDS = Object.keys(
-  LOCAL_ACP_MODEL_DEFS,
-) as AcpProviderId[];
+/**
+ * Model preference for `session/set_config_option`.
+ * `null` means leave the adapter default alone.
+ */
+export function localAcpModelPreference(
+  modelId: string | null | undefined,
+): string | null {
+  if (!modelId || !isLocalAcpModelId(modelId)) return null;
+  const rest = modelId.slice(LOCAL_ACP_MODEL_PREFIX.length);
+  const slash = rest.indexOf("/");
+  if (slash < 0) return null;
+  const value = rest.slice(slash + 1).trim();
+  if (!value || value === "default") return null;
+  return value;
+}
+
+export function buildLocalAcpModelId(
+  providerId: AcpProviderId,
+  modelValue?: string | null,
+): string {
+  const base = `${LOCAL_ACP_MODEL_PREFIX}${providerId}`;
+  const value = modelValue?.trim();
+  if (!value || value === "default") return base;
+  return `${base}/${value}`;
+}
+
+function mergeModelChoices(
+  advertised: AcpModelChoice[] | undefined,
+  fallbacks: AcpModelChoice[],
+): AcpModelChoice[] {
+  const byValue = new Map<string, AcpModelChoice>();
+  for (const choice of fallbacks) {
+    byValue.set(choice.value.toLowerCase(), choice);
+  }
+  for (const choice of advertised ?? []) {
+    const key = choice.value.toLowerCase();
+    byValue.set(key, choice);
+    // Drop short-alias fallbacks when a full id for the same family exists.
+    for (const alias of ["sonnet", "opus", "fable", "haiku"]) {
+      if (key.includes(alias) && key !== alias) {
+        byValue.delete(alias);
+      }
+    }
+  }
+  // Keep Default first, then stable alphabetical by name.
+  const list = [...byValue.values()];
+  list.sort((a, b) => {
+    if (a.value === "default") return -1;
+    if (b.value === "default") return 1;
+    return a.name.localeCompare(b.name);
+  });
+  return list;
+}
+
+const LOCAL_ACP_PROVIDER_IDS = Object.keys(PROVIDER_BASE) as AcpProviderId[];
 
 /**
- * Always expose Claude Code + Codex in the Chat model picker under
- * "On this machine". Enrich descriptions from Local Agent ACP status when
- * available; when the agent is offline, still list them so users can select
- * their subscription-backed local sessions.
+ * Expand Claude Code / Codex into per-model Chat picker rows under
+ * "On this machine", so Desktop can switch Sonnet → Fable without Terminal.
  */
 export function localAcpModelsFromProviders(
   providers: AcpProviderStatus[] | undefined | null,
 ): AIModel[] {
   const byId = new Map((providers ?? []).map(p => [p.id, p]));
-  return LOCAL_ACP_PROVIDER_IDS.map(id => {
-    const def = LOCAL_ACP_MODEL_DEFS[id];
-    const status = byId.get(id);
-    let description = def.description;
+  const out: AIModel[] = [];
+
+  for (const providerId of LOCAL_ACP_PROVIDER_IDS) {
+    const def = PROVIDER_BASE[providerId];
+    const status = byId.get(providerId);
+    const label = PROVIDER_LABEL[providerId];
+
     if (!providers) {
-      description = `${def.description} — start Local Agent to use`;
-    } else if (status && !status.adapterFound) {
-      description = `${def.description} — adapter missing (${status.installHint})`;
+      out.push({
+        ...def,
+        description: `${def.description} — start Local Agent to use`,
+      });
+      continue;
     }
-    return { ...def, description };
-  });
+
+    if (status && !status.adapterFound) {
+      out.push({
+        ...def,
+        description: `${def.description} — adapter missing (${status.installHint})`,
+      });
+      continue;
+    }
+
+    const fallbacks =
+      providerId === "claude"
+        ? CLAUDE_CODE_MODEL_FALLBACKS
+        : [{ value: "default", name: "Default" }];
+    const choices = mergeModelChoices(status?.availableModels, fallbacks);
+
+    for (const choice of choices) {
+      const id = buildLocalAcpModelId(providerId, choice.value);
+      const isDefault = choice.value === "default";
+      out.push({
+        id,
+        name: isDefault
+          ? `${label} (local)`
+          : `${label} · ${choice.name} (local)`,
+        provider: "local",
+        description: isDefault
+          ? def.description
+          : `${def.description} — model: ${choice.name}`,
+        tier: "free",
+        supportsTools: true,
+      });
+    }
+  }
+
+  return out;
 }
