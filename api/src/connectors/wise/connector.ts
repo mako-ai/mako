@@ -758,11 +758,12 @@ export class WiseConnector extends BaseConnector {
       iterations++;
       const nextSeek = body.seekPositionForNext;
 
-      // End of profile when: empty page, short page, missing next cursor, or
-      // Wise echoes the same seekPositionForNext (no forward progress).
+      // End of profile when: empty page, missing next seek, or Wise echoes
+      // the same seekPositionForNext (no forward progress).
+      // Do NOT treat short pages as terminal — Wise caps `size` (often at 20)
+      // below our requested page size while still returning seekPositionForNext.
       if (
         page.length === 0 ||
-        page.length < size ||
         nextSeek == null ||
         String(nextSeek) === String(seekPosition)
       ) {
@@ -805,7 +806,6 @@ export class WiseConnector extends BaseConnector {
     let recordCount = state?.totalProcessed ?? 0;
     let iterations = 0;
     const size = this.resolvePageSize(batchSize, ACTIVITY_PAGE_LIMIT);
-    const sinceMs = since instanceof Date ? since.getTime() : null;
 
     const api = this.getClient();
 
@@ -814,9 +814,17 @@ export class WiseConnector extends BaseConnector {
       iterations < maxIterations
     ) {
       const profileId = multi.profileIds[profileIndex];
+      // Wise paginates with response `cursor` → next request `nextCursor`
+      // (not `cursor`). Sending the wrong param ignores pagination and
+      // re-fetches page 1 forever.
       const params: Record<string, string | number> = { size };
       if (cursor) {
-        params.cursor = cursor;
+        params.nextCursor = cursor;
+      }
+      // Native server-side filter (ISO 8601). Prefer this over client-side
+      // scanning of the newest-first feed.
+      if (since instanceof Date) {
+        params.since = since.toISOString();
       }
 
       const response = await this.executeWithRetry(() =>
@@ -828,26 +836,7 @@ export class WiseConnector extends BaseConnector {
         activities?: Array<Record<string, unknown>>;
         cursor?: string | null;
       };
-      const rawPage = Array.isArray(body.activities) ? body.activities : [];
-
-      // Activities feed is newest-first. If every item on this page is older
-      // than `since`, remaining pages for this profile are also older — stop
-      // paging and advance to the next profile.
-      const profileExhaustedBySince =
-        sinceMs != null &&
-        rawPage.length > 0 &&
-        rawPage.every(item => {
-          const ts = parseWiseDate(item.updatedOn ?? item.createdOn);
-          return ts != null && ts.getTime() < sinceMs;
-        });
-
-      let page = rawPage;
-      if (sinceMs != null) {
-        page = page.filter(item => {
-          const ts = parseWiseDate(item.updatedOn ?? item.createdOn);
-          return ts ? ts.getTime() >= sinceMs : false;
-        });
-      }
+      const page = Array.isArray(body.activities) ? body.activities : [];
 
       const records = page.map(activity =>
         withStringId({ ...activity, profileId: String(profileId) }),
@@ -865,7 +854,13 @@ export class WiseConnector extends BaseConnector {
           ? body.cursor
           : null;
 
-      if (profileExhaustedBySince || !nextCursor || rawPage.length === 0) {
+      // End of profile when: empty page, missing next cursor, or Wise echoes
+      // the same cursor (no forward progress — otherwise backfill never ends).
+      if (
+        page.length === 0 ||
+        !nextCursor ||
+        (cursor != null && nextCursor === cursor)
+      ) {
         profileIndex++;
         cursor = undefined;
       } else {
@@ -940,11 +935,10 @@ export class WiseConnector extends BaseConnector {
           mode: "created-anchor",
           anchorField: "createdDateStart",
         },
-        // Activities feed is newest-first; we drop rows older than `since`
-        // client-side but still page the API until the chunk budget ends.
+        // Activities list accepts a native ISO `since` query param.
         activities: {
-          mode: "client-filter",
-          anchorField: "createdOn",
+          mode: "native",
+          anchorField: "since",
         },
       },
       warning:
