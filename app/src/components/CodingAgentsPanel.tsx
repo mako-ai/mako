@@ -236,13 +236,22 @@ export function CodingAgentsPanel() {
                   () => setUpdating(false),
                 );
               }}
-              disabled={loadingStatus || updating || signingIn}
+              disabled={
+                loadingStatus ||
+                updating ||
+                signingIn ||
+                !(
+                  acpStatus.acpBridge?.adapterEnsure ||
+                  (acpStatus.acpBridge?.version &&
+                    acpStatus.acpBridge.version >= 6)
+                )
+              }
             >
               {updating
                 ? "Updating…"
                 : provider?.adapterFound
-                  ? "Update adapter"
-                  : "Install / update"}
+                  ? `Update ${provider.label}`
+                  : `Install ${provider?.label || "adapter"}`}
             </Button>
             <Button
               variant="outlined"
@@ -257,19 +266,35 @@ export function CodingAgentsPanel() {
                 : `Sign in with ${provider?.authProduct || "provider"}`}
             </Button>
             <Typography variant="body2" color="text.secondary">
-              {readyProviders.length > 0
-                ? "Update keeps Codex/Claude ACP current. Sign in opens Terminal for CLI login."
-                : "Install the adapter here — no Terminal npm required."}
+              {!(
+                acpStatus.acpBridge?.adapterEnsure ||
+                (acpStatus.acpBridge?.version &&
+                  acpStatus.acpBridge.version >= 6)
+              )
+                ? "Local Agent is outdated for one-click Update — install Desktop 0.3.9+ and fully quit/reopen Mako."
+                : readyProviders.length > 0
+                  ? `Update keeps ${provider?.label || "the adapter"} current. Sign in opens Terminal for CLI login.`
+                  : "Install the adapter here — no Terminal npm required."}
             </Typography>
           </Stack>
 
           <Typography variant="caption" color="text.secondary" component="div">
-            Prefer the CLI? Run <code>claude auth login</code> (or{" "}
-            <code>
-              npx --yes @agentclientprotocol/claude-agent-acp --cli auth login
-              --claudeai
-            </code>
-            ), then return here and use Chat → Enable workspace tools.
+            {selectedProviderId === "codex" ? (
+              <>
+                Prefer the CLI? Run <code>codex</code> login (ChatGPT), or{" "}
+                <code>npm i -g @openai/codex @agentclientprotocol/codex-acp</code>
+                , then return here and use Chat → Enable workspace tools.
+              </>
+            ) : (
+              <>
+                Prefer the CLI? Run <code>claude auth login</code> (or{" "}
+                <code>
+                  npx --yes @agentclientprotocol/claude-agent-acp --cli auth
+                  login --claudeai
+                </code>
+                ), then return here and use Chat → Enable workspace tools.
+              </>
+            )}
           </Typography>
         </Stack>
       </Paper>
@@ -283,14 +308,13 @@ export function CodingAgentsPanel() {
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
           {error}
-          {/ACP connection closed/i.test(error) && !bridgeOk ? (
+          {/ACP connection closed|outdated for this action|missing ACP route/i.test(
+            error,
+          ) ? (
             <Typography variant="body2" sx={{ mt: 1 }}>
-              This exact message usually means the <strong>old</strong> Local
-              Agent is still on port 41720. Quit Desktop completely (Cmd+Q),
-              confirm nothing listens with <code>lsof -i :41720</code>,
-              install/reopen desktop-canary, then run{" "}
-              <code>claude auth login</code> in Terminal before Enable workspace
-              tools.
+              Local Agent is stale on port 41720. Fully quit Desktop (Cmd+Q /
+              Quit), confirm with <code>lsof -i :41720</code>, reopen Desktop
+              0.3.9+, then retry Update / Enable workspace tools.
             </Typography>
           ) : null}
           {/ENOTEMPTY|_npx/i.test(`${error}\n${lastAdapterError || ""}`) ? (
@@ -299,7 +323,11 @@ export function CodingAgentsPanel() {
               <br />
               <code>rm -rf ~/.npm/_npx</code>
               <br />
-              <code>npm i -g @agentclientprotocol/claude-agent-acp</code>
+              <code>
+                {selectedProviderId === "codex"
+                  ? "npm i -g @openai/codex @agentclientprotocol/codex-acp"
+                  : "npm i -g @agentclientprotocol/claude-agent-acp"}
+              </code>
               <br />
               then retry Enable workspace tools (global install avoids npx).
             </Typography>
