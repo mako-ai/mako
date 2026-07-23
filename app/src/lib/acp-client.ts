@@ -72,7 +72,9 @@ export const acpClient = {
     options?: { force?: boolean },
   ): Promise<AcpEnsureAdapterResult> {
     try {
-      const body = await localAgentClient.post<Envelope<AcpEnsureAdapterResult>>(
+      const body = await localAgentClient.post<
+        Envelope<AcpEnsureAdapterResult>
+      >(
         `/acp/adapters/${encodeURIComponent(providerId)}/ensure`,
         { force: Boolean(options?.force) },
         { timeoutMs: 4 * 60 * 1000 },

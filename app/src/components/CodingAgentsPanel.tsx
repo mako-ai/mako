@@ -282,7 +282,9 @@ export function CodingAgentsPanel() {
             {selectedProviderId === "codex" ? (
               <>
                 Prefer the CLI? Run <code>codex</code> login (ChatGPT), or{" "}
-                <code>npm i -g @openai/codex @agentclientprotocol/codex-acp</code>
+                <code>
+                  npm i -g @openai/codex @agentclientprotocol/codex-acp
+                </code>
                 , then return here and use Chat → Enable workspace tools.
               </>
             ) : (

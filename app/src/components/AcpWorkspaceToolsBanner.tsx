@@ -183,16 +183,16 @@ export function AcpWorkspaceToolsBanner(props: {
         sx={{ mb: 1 }}
         action={
           canEnsureAdapter ? (
-          <Button
-            size="small"
-            variant="contained"
-            disabled={busy || ensureRunning}
-            onClick={() => void installAdapter()}
-          >
-            {busy || ensureRunning
-              ? busyLabel || ensureLabel || "Installing…"
-              : "Install"}
-          </Button>
+            <Button
+              size="small"
+              variant="contained"
+              disabled={busy || ensureRunning}
+              onClick={() => void installAdapter()}
+            >
+              {busy || ensureRunning
+                ? busyLabel || ensureLabel || "Installing…"
+                : "Install"}
+            </Button>
           ) : undefined
         }
       >
