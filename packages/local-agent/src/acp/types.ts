@@ -82,6 +82,12 @@ export interface CreateAcpSessionRequest {
    * Default `mako-workspace` — avoid `mako` which collides with Claude.ai connectors.
    */
   mcpServerName?: string;
+  /**
+   * Extra text appended to Claude ACP systemPrompt (workspace custom prompt,
+   * etc.). Skills stay on demand via MCP — do not stuff full skill bodies here.
+   * Codex adapters often ignore this until they support instruction _meta.
+   */
+  systemPromptAppend?: string;
 }
 
 export interface PromptAcpSessionRequest {

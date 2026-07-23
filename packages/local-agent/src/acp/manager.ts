@@ -19,6 +19,7 @@ import {
 import { resolveAdapterCommand } from "./resolve-command";
 import { shouldAutoApprovePermission } from "./permissions";
 import { probeMakoMcpHttp } from "./mcp-probe";
+import { buildMakoSystemPromptAppend } from "./mako-system-append";
 import type {
   AcpBridgeEvent,
   AcpProviderStatus,
@@ -350,24 +351,36 @@ export class AcpSessionManager {
       body.mcpServerName?.trim() || "mako-workspace"
     ).replace(/[^a-zA-Z0-9_-]/g, "-");
     const makoToolPrefix = `mcp__${mcpServerName}__`;
+    const systemAppend = attachMakoMcp
+      ? buildMakoSystemPromptAppend({
+          mcpServerName,
+          extraAppend: body.systemPromptAppend,
+        })
+      : body.systemPromptAppend?.trim() || "";
 
     // For Claude ACP, allowlist our attached server so the Agent SDK does not
-    // prompt on every Mako tool (acceptEdits does NOT cover MCP).
+    // prompt on every Mako tool (acceptEdits does NOT cover MCP). Skills +
+    // workspace guidance are lean appends — full skill bodies stay on MCP.
     let builder =
-      attachMakoMcp && providerId === "claude"
+      systemAppend && providerId === "claude"
         ? conn.agent.buildSession({
             cwd,
             mcpServers: [],
             _meta: {
               claudeCode: {
                 options: {
-                  allowedTools: [`${makoToolPrefix}*`, `mcp__${mcpServerName}`],
-                  // Prefer the Bearer-authenticated workspace MCP we attach —
-                  // not Claude.ai's optional "Mako" connector (needs separate OAuth).
+                  ...(attachMakoMcp
+                    ? {
+                        allowedTools: [
+                          `${makoToolPrefix}*`,
+                          `mcp__${mcpServerName}`,
+                        ],
+                      }
+                    : {}),
                   systemPrompt: {
                     type: "preset",
                     preset: "claude_code",
-                    append: `\n\n# Mako workspace\nYou are running inside Mako. Workspace databases, SQL, connections, consoles, and apps are available via the already-authenticated MCP server \`${mcpServerName}\` (tools named \`${makoToolPrefix}*\`, e.g. list_connections, sql_execute_query, run_console). Prefer those tools. Do not ask the user to run \`claude mcp\` or authorize a Claude.ai "Mako" connector — that is a different, unauthenticated connector. Do not use Gmail/Drive for questions about data in Mako.`,
+                    append: systemAppend,
                   },
                 },
               },

@@ -54,6 +54,12 @@ To feel like the in-app agent, Mako:
 - Allowlists `mcp__mako-workspace__*` so Mako tools don’t require a click
 - Auto-approves those tools + read/search kinds in the Local Agent
 - Shows **Allow / Deny in the Chat composer** for Bash and file edits (HITL)
+- **Claude ACP:** appends a lean Mako + skills workflow to
+  `systemPrompt` (prefer MCP tools; call `get_relevant_skills` early). Full
+  skill bodies stay on demand via MCP / `mako://skills/{name}` — not stuffed
+  into the system prompt. Workspace **custom prompt** is appended when set.
+- **Codex ACP:** skills/tools come from MCP server instructions (Codex adapters
+  often ignore Claude-style `systemPrompt` `_meta` today)
 
 If attach fails (offline API, missing workspace), Chat shows an **Enable
 workspace tools** banner — one click remints the token and starts a fresh ACP

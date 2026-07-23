@@ -12,6 +12,7 @@ import {
   getActiveWorkspaceId,
   mintMakoMcpAttach,
 } from "../lib/mako-mcp-attach";
+import { fetchWorkspaceGuidanceForAcp } from "../lib/acp-system-append";
 
 function messageId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -302,6 +303,8 @@ export const useAcpStore = create<AcpState>()(
         }
 
         const creds = await mintMakoMcpAttach(workspaceId);
+        const systemPromptAppend =
+          await fetchWorkspaceGuidanceForAcp(workspaceId);
         const session = await acpClient.createSession({
           providerId: selectedProviderId,
           cwd: cwdDraft || undefined,
@@ -309,6 +312,7 @@ export const useAcpStore = create<AcpState>()(
           mcpUrl: creds.mcpUrl,
           mcpAuthorization: creds.mcpAuthorization,
           mcpServerName: creds.mcpServerName,
+          systemPromptAppend,
         });
         if (requireMakoMcp && !session.makoMcpAttached) {
           throw new Error(

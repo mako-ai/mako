@@ -57,6 +57,8 @@ export const acpClient = {
     mcpUrl?: string;
     mcpAuthorization?: string;
     mcpServerName?: string;
+    /** Lean workspace guidance for Claude systemPrompt.append (not full skills). */
+    systemPromptAppend?: string;
   }): Promise<AcpSessionInfo> {
     const body = await localAgentClient.post<Envelope<AcpSessionInfo>>(
       "/acp/sessions",
