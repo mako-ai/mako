@@ -2,9 +2,12 @@ import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { acpClient } from "../lib/acp-client";
 import {
+  ACP_REQUIRED_DESKTOP_VERSION,
+  acpDesktopOutdatedSummary,
   acpSupportsAdapterEnsure,
   acpSupportsModelWarm,
 } from "../lib/acp-capabilities";
+import { acpProviderLabel } from "../lib/acp-provider-label";
 import type {
   AcpChatMessage,
   AcpEnsureAdapterResult,
@@ -348,9 +351,10 @@ export const useAcpStore = create<AcpState>()(
           options?.workspaceId?.trim() || getActiveWorkspaceId();
         if (!workspaceId) {
           throw new Error(
-            `Select a workspace before starting ${
-              selectedProviderId === "codex" ? "Codex" : "Claude Code"
-            } (local).`,
+            `Select a workspace before starting ${acpProviderLabel(
+              selectedProviderId,
+              get().status,
+            )} (local).`,
           );
         }
 
@@ -461,9 +465,10 @@ export const useAcpStore = create<AcpState>()(
       const id = providerId || get().selectedProviderId;
       if (!acpSupportsAdapterEnsure(get().status)) {
         const message =
-          "One-click Update needs Mako Desktop 0.3.9+ — fully quit and reopen so Local Agent restarts. " +
-          "If the adapter is already found, use Chat → Enable workspace tools (Update is optional).";
-        // Only surface when the user explicitly clicked Update/Install.
+          `One-click Update needs Mako Desktop ${ACP_REQUIRED_DESKTOP_VERSION}+. ` +
+          acpDesktopOutdatedSummary();
+        // Only surface when the user explicitly clicked Update/Install —
+        // the sticky Desktop-outdated banner already explains the path.
         if (options?.force) {
           set(s => {
             s.error = message;

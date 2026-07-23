@@ -14,10 +14,19 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { acpSupportsAdapterEnsure } from "../lib/acp-capabilities";
+import {
+  ACP_REQUIRED_DESKTOP_VERSION,
+  acpDesktopOutdatedSummary,
+  acpSupportsAdapterEnsure,
+} from "../lib/acp-capabilities";
+import {
+  isAcpDesktopOutdatedError,
+  isBareLocalAgentNotFound,
+} from "../lib/acp-user-errors";
 import { useAcpStore } from "../store/acpStore";
 import { useLocalAgentStore } from "../store/localAgentStore";
 import type { AcpProviderId } from "../lib/acp-types";
+import { AcpDesktopOutdatedBanner } from "./AcpDesktopOutdatedBanner";
 
 /**
  * Settings setup for Local Agent ACP providers.
@@ -76,26 +85,33 @@ export function CodingAgentsPanel() {
   }
 
   if (agentStatus === "offline" || statusError || !acpStatus) {
-    const hint =
-      statusError?.includes("404") || statusError?.includes("Not Found")
-        ? "Your Local Agent build does not include ACP yet. From the PR branch run: pnpm agent:start"
-        : null;
+    const outdated =
+      isAcpDesktopOutdatedError(statusError) ||
+      isBareLocalAgentNotFound(statusError);
 
     return (
       <Alert severity="warning">
-        Coding agents run on your machine via the Mako Local Agent (loopback ACP
-        bridge). Start <strong>Mako Desktop</strong> (PR build) or run{" "}
-        <code>pnpm agent:start</code> from the ACP branch, then retry.
-        {statusError ? (
-          <Typography variant="body2" sx={{ mt: 1 }}>
-            {statusError}
-          </Typography>
-        ) : null}
-        {hint ? (
-          <Typography variant="body2" sx={{ mt: 1 }}>
-            {hint}
-          </Typography>
-        ) : null}
+        {outdated ? (
+          <>
+            <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+              Local Agent needs Desktop {ACP_REQUIRED_DESKTOP_VERSION}+
+            </Typography>
+            <Typography variant="body2" sx={{ mt: 1 }}>
+              {acpDesktopOutdatedSummary()}
+            </Typography>
+          </>
+        ) : (
+          <>
+            Coding agents run on your machine via the Mako Local Agent (loopback
+            ACP bridge). Start <strong>Mako Desktop</strong> or run{" "}
+            <code>pnpm agent:start</code> (developers), then retry.
+            {statusError && !isBareLocalAgentNotFound(statusError) ? (
+              <Typography variant="body2" sx={{ mt: 1 }}>
+                {statusError}
+              </Typography>
+            ) : null}
+          </>
+        )}
         <Box sx={{ mt: 2 }}>
           <Button size="small" variant="outlined" onClick={retry}>
             Retry
@@ -109,37 +125,12 @@ export function CodingAgentsPanel() {
   const provider = providers.find(p => p.id === selectedProviderId);
   const selectValue = provider ? selectedProviderId : "";
   const readyProviders = providers.filter(p => p.adapterFound);
-  const bridgeOk = Boolean(
-    acpStatus.acpBridge?.version && acpStatus.acpBridge.version >= 2,
-  );
+  const canEnsure = acpSupportsAdapterEnsure(acpStatus);
   const lastAdapterError = acpStatus.lastAdapterError;
 
   return (
     <Box>
-      {!bridgeOk ? (
-        <Alert severity="warning" sx={{ mb: 2 }}>
-          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-            Local Agent is outdated for Coding Agents
-          </Typography>
-          <Typography variant="body2" sx={{ mb: 1 }}>
-            You&apos;re still running an older Desktop-bundled agent (it reports
-            raw &quot;ACP connection closed&quot;). Install the latest{" "}
-            <strong>desktop-canary</strong>, fully quit Mako (Cmd+Q), and reopen
-            — or for developers: quit Desktop and run{" "}
-            <code>pnpm agent:start</code> from this PR branch.
-          </Typography>
-          <Typography variant="caption" component="div">
-            Canary:{" "}
-            <a
-              href="https://github.com/mako-ai/mako/releases/tag/desktop-canary"
-              target="_blank"
-              rel="noreferrer"
-            >
-              github.com/mako-ai/mako/releases/tag/desktop-canary
-            </a>
-          </Typography>
-        </Alert>
-      ) : null}
+      <AcpDesktopOutdatedBanner status={acpStatus} />
 
       <Alert severity="info" sx={{ mb: 2 }}>
         Chat with Claude Code or Codex from the <strong>main Chat</strong> model
@@ -237,12 +228,7 @@ export function CodingAgentsPanel() {
                   () => setUpdating(false),
                 );
               }}
-              disabled={
-                loadingStatus ||
-                updating ||
-                signingIn ||
-                !acpSupportsAdapterEnsure(acpStatus)
-              }
+              disabled={loadingStatus || updating || signingIn || !canEnsure}
             >
               {updating
                 ? "Updating…"
@@ -263,8 +249,8 @@ export function CodingAgentsPanel() {
                 : `Sign in with ${provider?.authProduct || "provider"}`}
             </Button>
             <Typography variant="body2" color="text.secondary">
-              {!acpSupportsAdapterEnsure(acpStatus)
-                ? "One-click Update needs Desktop 0.3.9+ (fully quit/reopen). Adapter already found — use Chat → Enable workspace tools."
+              {!canEnsure
+                ? `Update disabled until Desktop ${ACP_REQUIRED_DESKTOP_VERSION}+. ${acpDesktopOutdatedSummary()}`
                 : readyProviders.length > 0
                   ? `Update keeps ${provider?.label || "the adapter"} current. Sign in opens Terminal for CLI login.`
                   : "Install the adapter here — no Terminal npm required."}
@@ -300,13 +286,16 @@ export function CodingAgentsPanel() {
         </Alert>
       )}
 
-      {error && !/missing ACP route|outdated for this action/i.test(error) && (
+      {error &&
+      !isAcpDesktopOutdatedError(error) &&
+      !isBareLocalAgentNotFound(error) ? (
         <Alert severity="error" sx={{ mb: 2 }}>
           {error}
           {/ACP connection closed/i.test(error) ? (
             <Typography variant="body2" sx={{ mt: 1 }}>
               Local Agent process may be stale on port 41720. Fully quit Desktop
-              (Cmd+Q / Quit), reopen Desktop 0.3.9+, then retry.
+              (Cmd+Q / Quit), reopen Desktop {ACP_REQUIRED_DESKTOP_VERSION}+,
+              then retry.
             </Typography>
           ) : null}
           {/ENOTEMPTY|_npx/i.test(`${error}\n${lastAdapterError || ""}`) ? (
@@ -334,7 +323,7 @@ export function CodingAgentsPanel() {
             </Typography>
           ) : null}
         </Alert>
-      )}
+      ) : null}
 
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>

@@ -26,9 +26,17 @@ function unwrap<T>(body: Envelope<T>, fallback: string): T {
   return body.data;
 }
 
-/** Old Local Agents return bare "Not Found" for new ACP routes. */
-function rewriteLocalAgentNotFound(message: string): string {
-  if (!/^not found$/i.test(message.trim())) return message;
+/**
+ * Old Local Agents return bare "Not Found" (or HTTP 404) for ensure/warm
+ * routes. Always rewrite — never surface raw 404 copy in Chat/Settings.
+ */
+export function rewriteLocalAgentNotFound(message: string): string {
+  const trimmed = message.trim();
+  const bareNotFound =
+    /^not found$/i.test(trimmed) ||
+    /^agent error \(http 404\)$/i.test(trimmed) ||
+    /\(not found\)$/i.test(trimmed);
+  if (!bareNotFound) return message;
   return (
     "Local Agent is outdated for this action (missing ACP route). " +
     "Fully quit and reopen Mako Desktop 0.3.9+ so the bundled agent restarts, " +
@@ -36,31 +44,49 @@ function rewriteLocalAgentNotFound(message: string): string {
   );
 }
 
+async function withNotFoundRewrite<T>(
+  run: () => Promise<T>,
+  fallback: string,
+): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : fallback;
+    throw new Error(rewriteLocalAgentNotFound(message));
+  }
+}
+
 export const acpClient = {
   async getStatus(signal?: AbortSignal): Promise<AcpStatus> {
-    const body = await localAgentClient.get<Envelope<AcpStatus>>(
-      "/acp/status",
-      undefined,
-      { signal, timeoutMs: 5000 },
-    );
-    return unwrap(body, "Failed to load ACP status");
+    return withNotFoundRewrite(async () => {
+      const body = await localAgentClient.get<Envelope<AcpStatus>>(
+        "/acp/status",
+        undefined,
+        { signal, timeoutMs: 5000 },
+      );
+      return unwrap(body, "Failed to load ACP status");
+    }, "Failed to load ACP status");
   },
 
   async listSessions(): Promise<AcpSessionInfo[]> {
-    const body =
-      await localAgentClient.get<Envelope<AcpSessionInfo[]>>("/acp/sessions");
-    return unwrap(body, "Failed to list ACP sessions");
+    return withNotFoundRewrite(async () => {
+      const body =
+        await localAgentClient.get<Envelope<AcpSessionInfo[]>>("/acp/sessions");
+      return unwrap(body, "Failed to list ACP sessions");
+    }, "Failed to list ACP sessions");
   },
 
   async authenticate(
     providerId: AcpProviderId,
     methodId?: string,
   ): Promise<AcpAuthenticateResult> {
-    const body = await localAgentClient.post<Envelope<AcpAuthenticateResult>>(
-      "/acp/authenticate",
-      { providerId, methodId },
-    );
-    return unwrap(body, "Authentication failed");
+    return withNotFoundRewrite(async () => {
+      const body = await localAgentClient.post<Envelope<AcpAuthenticateResult>>(
+        "/acp/authenticate",
+        { providerId, methodId },
+      );
+      return unwrap(body, "Authentication failed");
+    }, "Authentication failed");
   },
 
   /**
@@ -71,7 +97,7 @@ export const acpClient = {
     providerId: AcpProviderId,
     options?: { force?: boolean },
   ): Promise<AcpEnsureAdapterResult> {
-    try {
+    return withNotFoundRewrite(async () => {
       const body = await localAgentClient.post<
         Envelope<AcpEnsureAdapterResult>
       >(
@@ -80,27 +106,21 @@ export const acpClient = {
         { timeoutMs: 4 * 60 * 1000 },
       );
       return unwrap(body, "Failed to update local adapter");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(rewriteLocalAgentNotFound(message));
-    }
+    }, "Failed to update local adapter");
   },
 
   /** Populate real Claude/Codex model ids without starting a Chat turn. */
   async warmProviderModels(
     providerId: AcpProviderId,
   ): Promise<AcpWarmModelsResult> {
-    try {
+    return withNotFoundRewrite(async () => {
       const body = await localAgentClient.post<Envelope<AcpWarmModelsResult>>(
         `/acp/providers/${encodeURIComponent(providerId)}/warm-models`,
         {},
         { timeoutMs: 2 * 60 * 1000 },
       );
       return unwrap(body, "Failed to load local models");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(rewriteLocalAgentNotFound(message));
-    }
+    }, "Failed to load local models");
   },
 
   async createSession(input: {
@@ -117,45 +137,58 @@ export const acpClient = {
     model?: string;
   }): Promise<AcpSessionInfo> {
     // session/new may `npm i -g` Codex/Claude adapters before connecting.
-    const body = await localAgentClient.post<Envelope<AcpSessionInfo>>(
-      "/acp/sessions",
-      input,
-      { timeoutMs: 4 * 60 * 1000 },
-    );
-    return unwrap(body, "Failed to create ACP session");
+    return withNotFoundRewrite(async () => {
+      const body = await localAgentClient.post<Envelope<AcpSessionInfo>>(
+        "/acp/sessions",
+        input,
+        { timeoutMs: 4 * 60 * 1000 },
+      );
+      return unwrap(body, "Failed to create ACP session");
+    }, "Failed to create ACP session");
   },
 
   async setSessionConfig(
     sessionId: string,
     input: { configId?: string; value: string | boolean },
   ): Promise<AcpSessionInfo> {
-    const body = await localAgentClient.post<Envelope<AcpSessionInfo>>(
-      `/acp/sessions/${encodeURIComponent(sessionId)}/config`,
-      input,
-    );
-    return unwrap(body, "Failed to update session config");
+    return withNotFoundRewrite(async () => {
+      const body = await localAgentClient.post<Envelope<AcpSessionInfo>>(
+        `/acp/sessions/${encodeURIComponent(sessionId)}/config`,
+        input,
+      );
+      return unwrap(body, "Failed to update session config");
+    }, "Failed to update session config");
   },
 
   async prompt(
     sessionId: string,
     text: string,
   ): Promise<{ stopReason: string }> {
-    const body = await localAgentClient.post<Envelope<{ stopReason: string }>>(
-      `/acp/sessions/${encodeURIComponent(sessionId)}/prompt`,
-      { text },
-    );
-    return unwrap(body, "Prompt failed");
+    return withNotFoundRewrite(async () => {
+      const body = await localAgentClient.post<
+        Envelope<{ stopReason: string }>
+      >(`/acp/sessions/${encodeURIComponent(sessionId)}/prompt`, { text });
+      return unwrap(body, "Prompt failed");
+    }, "Prompt failed");
   },
 
   async cancel(sessionId: string): Promise<void> {
-    await localAgentClient.post(
-      `/acp/sessions/${encodeURIComponent(sessionId)}/cancel`,
+    await withNotFoundRewrite(
+      () =>
+        localAgentClient.post(
+          `/acp/sessions/${encodeURIComponent(sessionId)}/cancel`,
+        ),
+      "Cancel failed",
     );
   },
 
   async closeSession(sessionId: string): Promise<void> {
-    await localAgentClient.delete(
-      `/acp/sessions/${encodeURIComponent(sessionId)}`,
+    await withNotFoundRewrite(
+      () =>
+        localAgentClient.delete(
+          `/acp/sessions/${encodeURIComponent(sessionId)}`,
+        ),
+      "Close session failed",
     );
   },
 
@@ -164,11 +197,13 @@ export const acpClient = {
     requestId: string,
     outcome: { outcome: "cancelled" | "selected"; optionId?: string },
   ): Promise<void> {
-    const body = await localAgentClient.post<Envelope<{ ok: true }>>(
-      `/acp/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}`,
-      outcome,
-    );
-    unwrap(body, "Failed to respond to permission");
+    await withNotFoundRewrite(async () => {
+      const body = await localAgentClient.post<Envelope<{ ok: true }>>(
+        `/acp/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}`,
+        outcome,
+      );
+      unwrap(body, "Failed to respond to permission");
+    }, "Failed to respond to permission");
   },
 
   /**

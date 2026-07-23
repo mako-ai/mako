@@ -34,6 +34,11 @@ vi.mock("../store/acpStore", () => {
         authMethods: [],
       },
     ],
+    acpBridge: {
+      version: 7,
+      adapterEnsure: true,
+      modelWarm: true,
+    },
   };
   const state = {
     status,

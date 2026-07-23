@@ -1,4 +1,5 @@
 import { Alert, Button, Stack, Typography } from "@mui/material";
+import { acpProviderLabel } from "../lib/acp-provider-label";
 import { useAcpStore } from "../store/acpStore";
 
 function toolLabel(toolCall: unknown): string {
@@ -9,13 +10,15 @@ function toolLabel(toolCall: unknown): string {
     kind?: unknown;
     _meta?: { claudeCode?: { toolName?: unknown } };
   };
+  // Prefer Claude `_meta` when present; Codex often only has title/name/kind.
   const name =
     (typeof tc._meta?.claudeCode?.toolName === "string" &&
       tc._meta.claudeCode.toolName) ||
-    (typeof tc.name === "string" && tc.name) ||
     (typeof tc.title === "string" && tc.title) ||
+    (typeof tc.name === "string" && tc.name) ||
+    (typeof tc.kind === "string" && tc.kind) ||
     "tool";
-  const kind = typeof tc.kind === "string" ? tc.kind : "";
+  const kind = typeof tc.kind === "string" && tc.kind !== name ? tc.kind : "";
   return kind ? `${name} (${kind})` : name;
 }
 
@@ -40,16 +43,14 @@ export function AcpPermissionBanner() {
   const setActiveSession = useAcpStore(s => s.setActiveSession);
   const sessions = useAcpStore(s => s.sessions);
   const selectedProviderId = useAcpStore(s => s.selectedProviderId);
-  const providers = useAcpStore(s => s.status?.providers);
+  const status = useAcpStore(s => s.status);
 
   if (!pending) return null;
 
   const { sessionId, prompt } = pending;
   const providerId =
     sessions.find(x => x.id === sessionId)?.providerId || selectedProviderId;
-  const providerLabel =
-    providers?.find(p => p.id === providerId)?.label ||
-    (providerId === "codex" ? "Codex" : "Claude Code");
+  const providerLabel = acpProviderLabel(providerId, status);
 
   return (
     <Alert

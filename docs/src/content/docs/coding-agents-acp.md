@@ -90,9 +90,13 @@ not need to restart Desktop for a single adapter crash.
 The Chat UI updates with every cloud deploy. The **Local Agent inside Desktop**
 only updates when a new Desktop release ships (or when you install a
 [desktop-canary](https://github.com/mako-ai/mako/releases/tag/desktop-canary)
-build from a PR). If Coding Agents features misbehave on an older Desktop,
-install the latest Desktop / canary — do not rely on `pnpm agent:start`
-unless you are developing the agent itself.
+build from a PR).
+
+**If Chat says Local Agent is outdated (or Update / model warm is disabled):**
+install Desktop **0.3.9+** (or the latest canary) → **fully quit** Mako
+(Cmd+Q / Quit — closing the window is not enough) → reopen → Chat →
+**Enable workspace tools**. Do not rely on `pnpm agent:start` unless you are
+developing the agent itself.
 
 ## Security notes
 

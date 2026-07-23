@@ -6,16 +6,23 @@
 import { useEffect, useState } from "react";
 import { Alert, Button, Stack, Typography } from "@mui/material";
 import {
+  ACP_REQUIRED_DESKTOP_VERSION,
+  acpDesktopOutdatedSummary,
   acpSupportsAdapterEnsure,
   acpSupportsModelWarm,
   acpSupportsWorkspaceMcp,
 } from "../lib/acp-capabilities";
+import {
+  isAcpDesktopOutdatedError,
+  isBareLocalAgentNotFound,
+} from "../lib/acp-user-errors";
 import {
   isLocalAcpModelId,
   localAcpModelIdToProviderId,
 } from "../lib/local-acp-models";
 import { useAcpStore } from "../store/acpStore";
 import { useLocalAgentStore } from "../store/localAgentStore";
+import { AcpDesktopOutdatedBanner } from "./AcpDesktopOutdatedBanner";
 
 export function AcpWorkspaceToolsBanner(props: {
   modelId: string | null | undefined;
@@ -143,8 +150,13 @@ export function AcpWorkspaceToolsBanner(props: {
     setBusyLabel("Installing…");
     try {
       await checkAgent();
+      if (!acpSupportsAdapterEnsure(useAcpStore.getState().status)) {
+        return;
+      }
       await ensureAdapter(providerId, { force: true });
-      await warmProviderModels(providerId);
+      if (acpSupportsModelWarm(useAcpStore.getState().status)) {
+        await warmProviderModels(providerId);
+      }
       await refreshStatus();
     } finally {
       setBusy(false);
@@ -153,16 +165,22 @@ export function AcpWorkspaceToolsBanner(props: {
   };
 
   if (agentStatus === "offline" || statusError) {
+    const outdated =
+      isAcpDesktopOutdatedError(statusError) ||
+      isBareLocalAgentNotFound(statusError);
     return (
       <Alert severity="warning" sx={{ mb: 1 }}>
         <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-          Local Agent required for workspace tools
+          {outdated
+            ? `Local Agent needs Desktop ${ACP_REQUIRED_DESKTOP_VERSION}+`
+            : "Local Agent required for workspace tools"}
         </Typography>
         <Typography variant="body2" sx={{ mb: 1 }}>
-          Start Mako Desktop or run <code>pnpm agent:start</code> on this
-          machine, then enable tools below.
+          {outdated
+            ? acpDesktopOutdatedSummary()
+            : "Start Mako Desktop or run pnpm agent:start on this machine, then enable tools below."}
         </Typography>
-        {statusError ? (
+        {statusError && !outdated && !isBareLocalAgentNotFound(statusError) ? (
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
             {statusError}
           </Typography>
@@ -186,141 +204,142 @@ export function AcpWorkspaceToolsBanner(props: {
 
   if (provider && !provider.adapterFound) {
     return (
-      <Alert
-        severity="warning"
-        sx={{ mb: 1 }}
-        action={
-          canEnsureAdapter ? (
-            <Button
-              size="small"
-              variant="contained"
-              disabled={busy || ensureRunning}
-              onClick={() => void installAdapter()}
-            >
-              {busy || ensureRunning
-                ? busyLabel || ensureLabel || "Installing…"
-                : "Install"}
-            </Button>
-          ) : undefined
-        }
-      >
-        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-          Install the {provider.label} adapter
-        </Typography>
-        <Typography variant="body2">
-          {canEnsureAdapter
-            ? "Mako can install it on this machine (npm global). One click — no Terminal required."
-            : provider.installHint}
-        </Typography>
-        {!canEnsureAdapter ? (
-          <Typography variant="body2" sx={{ mt: 1 }}>
-            Local Agent is outdated for one-click install — update Desktop to
-            0.3.9+, quit/reopen Mako, then retry.
+      <>
+        <AcpDesktopOutdatedBanner status={acpStatus} compact />
+        <Alert
+          severity="warning"
+          sx={{ mb: 1 }}
+          action={
+            canEnsureAdapter ? (
+              <Button
+                size="small"
+                variant="contained"
+                disabled={busy || ensureRunning}
+                onClick={() => void installAdapter()}
+              >
+                {busy || ensureRunning
+                  ? busyLabel || ensureLabel || "Installing…"
+                  : "Install"}
+              </Button>
+            ) : undefined
+          }
+        >
+          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+            Install the {provider.label} adapter
           </Typography>
-        ) : null}
-      </Alert>
+          <Typography variant="body2">
+            {canEnsureAdapter
+              ? "Mako can install it on this machine (npm global). One click — no Terminal required."
+              : provider.installHint}
+          </Typography>
+        </Alert>
+      </>
     );
   }
 
   if (provider?.authRequired && !provider.connected) {
     return (
-      <Alert
-        severity="info"
-        sx={{ mb: 1 }}
-        action={
-          <Button
-            size="small"
-            variant="contained"
-            disabled={busy}
-            onClick={() => {
-              setBusy(true);
-              void authenticate(providerId).finally(() => setBusy(false));
-            }}
-          >
-            Sign in
-          </Button>
-        }
-      >
-        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-          Sign in to {provider.authProduct}
-        </Typography>
-        <Typography variant="body2">
-          Then enable Mako workspace tools (BigQuery, SQL, connections) in one
-          click — no terminal MCP setup.
-        </Typography>
-      </Alert>
+      <>
+        <AcpDesktopOutdatedBanner status={acpStatus} compact />
+        <Alert
+          severity="info"
+          sx={{ mb: 1 }}
+          action={
+            <Button
+              size="small"
+              variant="contained"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                void authenticate(providerId).finally(() => setBusy(false));
+              }}
+            >
+              Sign in
+            </Button>
+          }
+        >
+          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+            Sign in to {provider.authProduct}
+          </Typography>
+          <Typography variant="body2">
+            Then enable Mako workspace tools (BigQuery, SQL, connections) in one
+            click — no terminal MCP setup.
+          </Typography>
+        </Alert>
+      </>
     );
   }
 
   if (attached && !error) {
-    if (dismissedReady) return null;
+    if (dismissedReady) {
+      return <AcpDesktopOutdatedBanner status={acpStatus} compact />;
+    }
     return (
-      <Alert
-        severity="success"
-        sx={{ mb: 1 }}
-        onClose={() => setDismissedReady(true)}
-      >
-        <Typography variant="body2">
-          Workspace tools connected (<code>mako-workspace</code>). Ask{" "}
-          {provider?.label || "the local agent"} about your data — it should
-          call Mako tools directly (no Terminal MCP setup).
-        </Typography>
-      </Alert>
+      <>
+        <AcpDesktopOutdatedBanner status={acpStatus} compact />
+        <Alert
+          severity="success"
+          sx={{ mb: 1 }}
+          onClose={() => setDismissedReady(true)}
+        >
+          <Typography variant="body2">
+            Workspace tools connected (<code>mako-workspace</code>). Ask{" "}
+            {provider?.label || "the local agent"} about your data — it should
+            call Mako tools directly (no Terminal MCP setup).
+          </Typography>
+        </Alert>
+      </>
     );
   }
 
   return (
-    <Alert
-      severity={error ? "error" : "info"}
-      sx={{ mb: 1 }}
-      action={
-        <Stack direction="row" spacing={1}>
-          <Button
-            size="small"
-            variant="contained"
-            disabled={busy || ensureRunning || !workspaceId || !bridgeOk}
-            onClick={() => void enable()}
-          >
-            {busy || ensureRunning
-              ? busyLabel || ensureLabel || "Connecting…"
-              : "Enable workspace tools"}
-          </Button>
-        </Stack>
-      }
-    >
-      <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-        Activate Mako data tools for this local session
-      </Typography>
-      <Typography variant="body2">
-        Mints a short-lived token and attaches authenticated workspace MCP (SQL,
-        connections, consoles) for {provider?.label || "this local agent"}. If
-        it asked for Mako auth, click Enable, then send a new message — or start
-        a New chat.
-      </Typography>
-      {ensureRunning || ensureStatus?.state === "error" ? (
-        <Typography variant="body2" sx={{ mt: 1 }}>
-          {ensureLabel}
+    <>
+      <AcpDesktopOutdatedBanner status={acpStatus} compact />
+      <Alert
+        severity={error ? "error" : "info"}
+        sx={{ mb: 1 }}
+        action={
+          <Stack direction="row" spacing={1}>
+            <Button
+              size="small"
+              variant="contained"
+              disabled={busy || ensureRunning || !workspaceId || !bridgeOk}
+              onClick={() => void enable()}
+            >
+              {busy || ensureRunning
+                ? busyLabel || ensureLabel || "Connecting…"
+                : "Enable workspace tools"}
+            </Button>
+          </Stack>
+        }
+      >
+        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+          Activate Mako data tools for this local session
         </Typography>
-      ) : null}
-      {!bridgeOk ? (
-        <Typography variant="body2" sx={{ mt: 1 }}>
-          Local Agent is outdated for MCP attach — install Desktop 0.3.9+ and
-          fully quit/reopen Mako before enabling tools.
+        <Typography variant="body2">
+          Mints a short-lived token and attaches authenticated workspace MCP
+          (SQL, connections, consoles) for{" "}
+          {provider?.label || "this local agent"}. If it asked for Mako auth,
+          click Enable, then send a new message — or start a New chat.
         </Typography>
-      ) : null}
-      {error &&
-      !/missing ACP route|outdated for this action|One-click Update needs/i.test(
-        error,
-      ) ? (
-        <Typography variant="body2" sx={{ mt: 1 }}>
-          {error}
-        </Typography>
-      ) : null}
-      {!workspaceId ? (
-        <Typography variant="body2" sx={{ mt: 1 }}>
-          Select a workspace first.
-        </Typography>
-      ) : null}
-    </Alert>
+        {ensureRunning || ensureStatus?.state === "error" ? (
+          <Typography variant="body2" sx={{ mt: 1 }}>
+            {ensureLabel}
+          </Typography>
+        ) : null}
+        {error &&
+        !isAcpDesktopOutdatedError(error) &&
+        !isBareLocalAgentNotFound(error) ? (
+          <Typography variant="body2" sx={{ mt: 1 }}>
+            {error}
+          </Typography>
+        ) : null}
+        {!workspaceId ? (
+          <Typography variant="body2" sx={{ mt: 1 }}>
+            Select a workspace first.
+          </Typography>
+        ) : null}
+      </Alert>
+    </>
   );
 }
