@@ -78,7 +78,7 @@ function nodeToWebStreams(child: ChildProcess): {
   };
 }
 
-function adapterEnv(): NodeJS.ProcessEnv {
+function adapterEnv(providerId: AcpProviderId): NodeJS.ProcessEnv {
   const allow = [
     "PATH",
     "HOME",
@@ -92,6 +92,9 @@ function adapterEnv(): NodeJS.ProcessEnv {
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
     "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_THINKING_DISPLAY",
+    "CLAUDE_CODE_EXTRA_BODY",
+    "MAX_THINKING_TOKENS",
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
     "CODEX_HOME",
@@ -108,6 +111,11 @@ function adapterEnv(): NodeJS.ProcessEnv {
       env[key] = process.env[key];
     }
   }
+  // Opus 4.7+ defaults thinking.display to "omitted" (empty agent_thought_chunk).
+  // Opt into summarized so Chat can render Thinking blocks like native Mako.
+  if (providerId === "claude" && !env.CLAUDE_CODE_THINKING_DISPLAY) {
+    env.CLAUDE_CODE_THINKING_DISPLAY = "summarized";
+  }
   return env;
 }
 
@@ -121,7 +129,7 @@ export async function openProviderConnection(options: {
 
   const child = spawn(launch.command, launch.args, {
     stdio: ["pipe", "pipe", "pipe"],
-    env: adapterEnv(),
+    env: adapterEnv(providerId),
     windowsHide: true,
   });
 

@@ -806,17 +806,18 @@ export class AcpSessionManager {
           })
         : body.systemPromptAppend?.trim() || "";
 
-      // For Claude ACP, allowlist our attached server so the Agent SDK does not
-      // prompt on every Mako tool (acceptEdits does NOT cover MCP). Skills +
-      // workspace guidance are lean appends — full skill bodies stay on MCP.
+      // For Claude ACP: allowlist Mako MCP tools, lean system append, and
+      // request summarized thinking (Opus 4.7+ defaults to omitted → empty
+      // agent_thought_chunk, so Chat shows no Thinking blocks).
       let builder =
-        systemAppend && providerId === "claude"
+        providerId === "claude"
           ? conn.agent.buildSession({
               cwd,
               mcpServers: [],
               _meta: {
                 claudeCode: {
                   options: {
+                    thinking: { type: "adaptive", display: "summarized" },
                     ...(attachMakoMcp
                       ? {
                           allowedTools: [
@@ -827,11 +828,15 @@ export class AcpSessionManager {
                           ],
                         }
                       : {}),
-                    systemPrompt: {
-                      type: "preset",
-                      preset: "claude_code",
-                      append: systemAppend,
-                    },
+                    ...(systemAppend
+                      ? {
+                          systemPrompt: {
+                            type: "preset",
+                            preset: "claude_code",
+                            append: systemAppend,
+                          },
+                        }
+                      : {}),
                   },
                 },
               },
