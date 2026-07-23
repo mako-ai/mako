@@ -37,6 +37,7 @@ export {
   runConsoleSchema,
   checkQueryStatusSchema,
   cancelQueryStatusSchema,
+  listConsoleExecutionsSchema,
 } from "./console-tools";
 export type {
   ModifyConsoleInput,
@@ -48,6 +49,7 @@ export type {
   RunConsoleInput,
   CheckQueryStatusInput,
   CancelQueryStatusInput,
+  ListConsoleExecutionsInput,
 } from "./console-tools";
 
 export { clientChartTools } from "./chart-tools";

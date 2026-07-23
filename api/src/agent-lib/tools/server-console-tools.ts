@@ -24,6 +24,7 @@ import {
   runConsoleSchema,
   checkQueryStatusSchema,
   cancelQueryStatusSchema,
+  listConsoleExecutionsSchema,
   applyModification,
   buildModificationDiff,
   type ConsoleModification,
@@ -40,6 +41,7 @@ import {
   startDetachedConsoleRun,
   cancelDetachedConsoleRun,
 } from "../../services/console-execution.service";
+import { queryExecutionService } from "../../services/query-execution.service";
 import {
   MONGO_QUERY_WRITE_SCOPE_REQUIRED,
   sqlReadOnlyAccessError,
@@ -768,6 +770,51 @@ export function createServerConsoleTools({
               error instanceof Error
                 ? error.message
                 : "Failed to cancel query.",
+          };
+        }
+      },
+    }),
+
+    list_console_executions: tool({
+      description:
+        "List recent query executions for a console (App UI, API key, MCP, in-app agent, schedule). Returns newest-first rows with source, status, duration, and rowCount. History is retained for ~90 days. Use this to see whether a console is used externally (source api/mcp) or only in-app.",
+      inputSchema: listConsoleExecutionsSchema,
+      execute: async ({ consoleId, limit }) => {
+        try {
+          const loaded = await loadConsole(consoleId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+
+          const executions = await queryExecutionService.getConsoleExecutions(
+            workspaceId,
+            consoleId,
+            { limit: limit ?? 10 },
+          );
+
+          return {
+            success: true,
+            consoleId,
+            executions: executions.map(execution => ({
+              id: execution._id.toString(),
+              executedAt: execution.executedAt,
+              source: execution.source,
+              status: execution.status,
+              executionTimeMs: execution.executionTimeMs,
+              rowCount: execution.rowCount ?? null,
+              errorType: execution.errorType ?? null,
+              apiKeyId: execution.apiKeyId
+                ? execution.apiKeyId.toString()
+                : null,
+              databaseType: execution.databaseType,
+              queryLanguage: execution.queryLanguage,
+            })),
+          };
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to list console executions",
           };
         }
       },

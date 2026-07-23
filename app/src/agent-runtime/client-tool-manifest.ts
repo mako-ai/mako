@@ -111,6 +111,12 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Executing console query",
     icon: "play",
   },
+  list_console_executions: {
+    domain: "console",
+    execution: "server",
+    getLabel: () => "Listing console executions",
+    icon: "list",
+  },
   sql_execute_query: {
     domain: "database",
     execution: "server",
