@@ -35,6 +35,7 @@ import { createConsoleSearchTools } from "../agent-lib/tools/console-search-tool
 import { createDashboardSearchTools } from "../agent-lib/tools/dashboard-search-tools";
 import { createVersionHistoryTools } from "../agent-lib/tools/version-history-tools";
 import { createSkillTools } from "../agent-lib/tools/skill-tools";
+import { createSelfDirectiveTools } from "../agent-lib/tools/self-directive-tool";
 import { createWebTools } from "../agent-lib/tools/web-tools";
 import {
   getSystemSkillIndex,
@@ -89,7 +90,8 @@ Typical loop:
 3. create_app → app_write_file / app_edit_file → app_create_data_binding (bind the validated query; pass consoleId to seed from a console).
 4. Desktop opens/refreshes the app tab automatically. Do NOT create_preview_token, render_app, or paste /preview/… URLs. Use mako-desktop run_app / get_preview_errors for iframe errors. For consoles use open_console / create_console; for notebooks use create_notebook / cell tools.
 5. Interactive UX: mako-desktop ask_clarifying_questions / submit_plan (docked Chat cards) — never ask as plain text.
-6. app_save_version to snapshot/publish.
+6. Durable memory: read_self_directive / update_self_directive only. Do NOT write .claude/**/MEMORY.md or other local Claude memory files.
+7. app_save_version to snapshot/publish.
 
 Skills (same knowledge as the in-product agent):
 - list_skills → compact index (workspace + system).
@@ -177,12 +179,14 @@ export function buildMakoMcpCandidateTools(
   const dashboardSearchTools = createDashboardSearchTools(workspaceId);
   const versionHistoryTools = createVersionHistoryTools(workspaceId);
   const skillTools = createSkillTools(workspaceId, userId);
+  const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
   const webTools = createWebTools();
 
   return {
     ...appTools,
     ...consoleTools,
     ...notebookTools,
+    ...selfDirectiveTools,
     list_connections,
     ...sqlTools,
     // Namespace mongo the same way the unified agent does.

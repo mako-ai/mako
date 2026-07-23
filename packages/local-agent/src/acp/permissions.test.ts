@@ -1,6 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  isClaudeLocalMemoryPath,
+  isClaudeLocalMemoryWrite,
   isMakoMcpToolName,
   pickAllowOptionId,
   shouldAutoApprovePermission,
@@ -58,5 +60,42 @@ describe("ACP permission auto-approve", () => {
       }),
       null,
     );
+  });
+
+  it("detects Claude local MEMORY.md paths", () => {
+    assert.equal(
+      isClaudeLocalMemoryPath(
+        "/Users/jonas/.claude/projects/-Users-jonas/memory/MEMORY.md",
+      ),
+      true,
+    );
+    assert.equal(isClaudeLocalMemoryPath("/tmp/notes.md"), false);
+  });
+
+  it("auto-rejects writes to Claude local memory", () => {
+    assert.equal(
+      isClaudeLocalMemoryWrite({
+        name: "Edit",
+        kind: "edit",
+        rawInput: {
+          path: "/Users/x/.claude/projects/-Users-x/memory/MEMORY.md",
+        },
+      }),
+      true,
+    );
+    const decision = shouldAutoApprovePermission({
+      toolCall: {
+        name: "Write",
+        kind: "write",
+        rawInput: {
+          file_path: "/Users/x/.claude/projects/-Users-x/memory/foo.md",
+        },
+      },
+      options: [
+        { optionId: "allow-once", kind: "allow_once" },
+        { optionId: "reject-once", kind: "reject_once" },
+      ],
+    });
+    assert.deepEqual(decision, { optionId: "reject-once" });
   });
 });

@@ -18,7 +18,10 @@ describe("buildMakoSystemPromptAppend", () => {
     assert.match(text, /mako-desktop__submit_plan/);
     assert.match(text, /open_console/);
     assert.match(text, /create_notebook/);
-    assert.ok(text.length < 5500);
+    assert.match(text, /read_self_directive/);
+    assert.match(text, /update_self_directive/);
+    assert.match(text, /MEMORY\.md/);
+    assert.ok(text.length < 6500);
   });
 
   it("appends workspace guidance when provided", () => {

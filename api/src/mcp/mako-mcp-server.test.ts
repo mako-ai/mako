@@ -253,6 +253,8 @@ async function main() {
       "browse_version_history",
       "get_version_snapshot",
       "load_skill",
+      "read_self_directive",
+      "update_self_directive",
       "read_skill_resource",
       "fetch_url",
     ]) {

@@ -41,6 +41,12 @@ The user can see apps in the Mako window. After \`${prefix}create_app\` / \`${pr
 - After edits, call \`${desktopPrefix}run_app\` with the appId to rebuild the iframe and read \`previewErrors\`. Use \`${desktopPrefix}get_preview_errors\` to poll without rebuilding.
 - Describe what changed in the in-app preview; ask the user to look at the app tab if you need visual confirmation.
 
+## Workspace memory (Mako — not local Claude files)
+Durable knowledge for this workspace lives in Mako's self-directive:
+- \`${prefix}read_self_directive\` — read learned rules / schema quirks / preferences
+- \`${prefix}update_self_directive\` — save updates (check read first to avoid duplicates)
+Do **not** write \`.claude/**/MEMORY.md\`, \`.claude/projects/**\`, or other on-disk Claude Code memory — that is local to this machine and invisible to Mako Chat / other sessions. Prefer Mako memory for anything the user or future sessions should retain.
+
 ## Skills (same knowledge as the in-product agent)
 Call these early when the task involves apps, SQL dialects, dashboards, or connectors:
 - \`${prefix}get_relevant_skills\` with a short query for your task

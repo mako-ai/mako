@@ -337,10 +337,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "in-product-only",
     "Deferred-tool working set is the in-product agent runtime; MCP exposes a fixed curated surface.",
   ),
-  read_self_directive: exclude(
-    "in-product-only",
-    "Workspace self-directive memory is chat-agent scoped.",
-  ),
+  read_self_directive: bridge(),
   read_skill_resource: bridge(),
   save_skill: exclude(
     "in-product-only",
@@ -356,10 +353,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "in-product-only",
     "In-product agent todo list; external MCP clients have their own planning.",
   ),
-  update_self_directive: exclude(
-    "in-product-only",
-    "Workspace self-directive memory is chat-agent scoped.",
-  ),
+  update_self_directive: bridge(),
 
   // ── Version history ───────────────────────────────────────────────────
   browse_version_history: bridge(),
