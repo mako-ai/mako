@@ -16,8 +16,9 @@ This is the reverse of [MCP Server](/mcp-server/):
 
 ## Requirements
 
-1. **Mako Local Agent** running on the machine (bundled with [Mako Desktop](/desktop/),
-   or `pnpm agent:start`).
+1. **Mako Desktop** (recommended) — bundles the Local Agent automatically. You
+   should **not** need `pnpm agent:start` for day-to-day use. That command is
+   only for developers testing an unreleased agent from a PR branch.
 2. An ACP adapter on `PATH`:
    - Claude: `npm i -g @agentclientprotocol/claude-agent-acp`
    - Codex: `npm i -g @zed-industries/codex-acp`
@@ -76,8 +77,16 @@ error instead of a silent local-only session.
 If the Claude/Codex adapter process dies mid-turn (“ACP connection closed”),
 Local Agent invalidates that provider’s sessions and Chat **automatically
 starts a fresh session on the next send** (one reconnect attempt). You should
-not need to restart Desktop for a single adapter crash — quit/reopen Desktop
-only when the Local Agent itself is the wrong (old) build.
+not need to restart Desktop for a single adapter crash.
+
+### Desktop updates vs web UI
+
+The Chat UI updates with every cloud deploy. The **Local Agent inside Desktop**
+only updates when a new Desktop release ships (or when you install a
+[desktop-canary](https://github.com/mako-ai/mako/releases/tag/desktop-canary)
+build from a PR). If Coding Agents features misbehave on an older Desktop,
+install the latest Desktop / canary — do not rely on `pnpm agent:start`
+unless you are developing the agent itself.
 
 ## Security notes
 
