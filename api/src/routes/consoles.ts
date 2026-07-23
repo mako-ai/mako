@@ -2878,7 +2878,8 @@ consoleRoutes.openapi(
         },
       );
 
-      // API-key executes are external use — durable signal for archive decisions.
+      // API-key executes count as external use (monitor integrations separately
+      // from in-app runs).
       if (apiKey) {
         void consoleManager.recordExternalUse(
           savedConsole._id.toString(),

@@ -327,7 +327,7 @@ async function runResolvedConsole(args: {
   });
 
   // External surfaces (REST API key / MCP) get a durable per-console signal
-  // for archive decisions. In-app agent runs stay on lastExecutedAt only.
+  // so integrations can be monitored separately from in-app agent runs.
   if (source === "api" || source === "mcp") {
     void consoleManager.recordExternalUse(
       consoleId,

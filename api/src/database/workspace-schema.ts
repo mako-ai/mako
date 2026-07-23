@@ -508,8 +508,8 @@ export interface ISavedConsole extends Document {
   executionCount: number;
   /**
    * Last time this console was used via an external surface (REST API key
-   * execute, or MCP read/run). Used to decide what is safe to archive.
-   * Distinct from lastExecutedAt, which also includes in-app UI / agent runs.
+   * execute, or MCP read/run). Distinct from lastExecutedAt, which also
+   * includes in-app UI / agent runs.
    */
   lastExternalUsedAt?: Date;
   /** Number of external executions (API key / MCP run_console). Reads do not increment. */

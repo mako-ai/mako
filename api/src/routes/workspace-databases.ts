@@ -2155,7 +2155,7 @@ workspaceExecuteRoutes.openapi(
 
         // When a saved console id is provided, keep console execution stats
         // current (UI runs historically omitted this). API-key runs also bump
-        // the durable external-use signal used for archive decisions.
+        // the durable external-use signal.
         if (validConsoleId) {
           void SavedConsole.updateOne(
             {

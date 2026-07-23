@@ -4,7 +4,7 @@ import { loggers } from "../logging";
 const log = loggers.migration();
 
 export const description =
-  "Index savedconsoles by workspaceId + lastExternalUsedAt for unused-console queries";
+  "Index savedconsoles by workspaceId + lastExternalUsedAt for external-usage queries";
 
 function hasIndexOnKeys(
   indexes: Array<{ key?: Record<string, unknown> }>,

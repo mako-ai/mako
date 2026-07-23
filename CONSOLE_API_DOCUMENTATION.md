@@ -53,7 +53,7 @@ Get a list of all consoles in the workspace.
 }
 ```
 
-**Usage fields for archival decisions:**
+**Usage fields (monitoring):**
 
 | Field | Meaning |
 |---|---|
@@ -61,7 +61,7 @@ Get a list of all consoles in the workspace.
 | `lastExternalUsedAt` / `externalUseCount` | External-only: REST API key execute, or MCP `run_console` / `read_console` / details |
 | `lastExternalSource` | `"api"` or `"mcp"` — which external surface last touched the console |
 
-Consoles with `lastExternalUsedAt: null` have never been used via API key or MCP (since this tracking shipped). Prefer that signal when deciding what is safe to archive from an external-integrations perspective.
+`lastExternalUsedAt: null` means the console has not been observed via API key or MCP since this tracking shipped.
 
 ### Get Console Details
 
