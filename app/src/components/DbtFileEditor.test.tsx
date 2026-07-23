@@ -152,6 +152,54 @@ describe("DbtFileEditor", () => {
     );
   });
 
+  it("defaults defer on for non-prod when a prod manifest exists and offers Build changed", async () => {
+    const user = userEvent.setup();
+    useDbtStore.setState({
+      projects: [
+        {
+          _id: "p1",
+          name: "P",
+          dbtVersion: "1.9",
+          environments: [{ name: "dev" }, { name: "prod" }],
+          defaultEnvironment: "dev",
+          lastProdManifestKey: "artifacts/prod-manifest",
+        },
+      ] as never,
+    });
+
+    render(<DbtFileEditor tabId="t1" projectId="p1" path="models/foo.sql" />);
+
+    const deferCheckbox = await screen.findByRole("checkbox", {
+      name: /defer to prod/i,
+    });
+    await waitFor(() =>
+      expect((deferCheckbox as HTMLInputElement).checked).toBe(true),
+    );
+
+    const runButton = await screen.findByRole("button", {
+      name: /build, run, or test this model/i,
+    });
+    await waitFor(() =>
+      expect((runButton as HTMLButtonElement).disabled).toBe(false),
+    );
+    await user.click(runButton);
+
+    const buildChanged = await screen.findByRole("menuitem", {
+      name: /build changed/i,
+    });
+    await user.click(buildChanged);
+
+    await waitFor(() =>
+      expect(runCommandMock).toHaveBeenCalledWith(
+        "ws1",
+        "p1",
+        "build --select state:modified+",
+        "dev",
+        true,
+      ),
+    );
+  });
+
   it("renders a markdown preview by default for .md files and toggles to the editor", async () => {
     const user = userEvent.setup();
     useDbtStore.setState({

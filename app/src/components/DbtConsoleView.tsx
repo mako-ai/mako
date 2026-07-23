@@ -45,7 +45,11 @@ import {
   type DbtRunLogLine,
 } from "../store/dbtStore";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
-import { resolveDevEnvName, resolveProdLikeEnvName } from "../lib/dbt-env";
+import {
+  resolveDevEnvName,
+  resolveProdLikeEnvName,
+  shouldDeferByDefault,
+} from "../lib/dbt-env";
 import EntityLoadErrorState, {
   EntityLoadingState,
 } from "./EntityLoadErrorState";
@@ -158,6 +162,13 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
       );
     }
   }, [project, environment, user?.id]);
+
+  // Match the editor/agent: defer on by default for non-prod when a prod
+  // manifest exists. Re-applies when env or manifest availability changes.
+  useEffect(() => {
+    if (!project || !environment) return;
+    setDefer(shouldDeferByDefault(project, environment));
+  }, [project, environment]);
 
   // Picking an environment is a per-user setting shared with the editor and
   // agent builds — persist it.
@@ -321,9 +332,14 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
             />
             <Tooltip
               title={
-                `Resolve unselected refs against the last ` +
-                `"${resolveProdLikeEnvName(project) ?? "prod"}" build ` +
-                "(dbt --defer). Change the defer target in Project settings."
+                project.lastProdManifestKey
+                  ? `Resolve unselected refs against the last ` +
+                    `"${resolveProdLikeEnvName(project) ?? "prod"}" build ` +
+                    "(dbt --defer). On by default for non-prod environments. " +
+                    "Change the defer target in Project settings."
+                  : `No "${resolveProdLikeEnvName(project) ?? "prod"}" ` +
+                    "manifest yet — run a job against that environment once " +
+                    "to enable defer."
               }
             >
               <FormControlLabel
@@ -331,6 +347,7 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
                   <Checkbox
                     size="small"
                     checked={defer}
+                    disabled={!project.lastProdManifestKey}
                     onChange={e => setDefer(e.target.checked)}
                   />
                 }

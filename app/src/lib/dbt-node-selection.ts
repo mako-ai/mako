@@ -36,3 +36,9 @@ export function buildDbtNodeCommand(
     options?.fullRefresh && verb !== "test" ? " --full-refresh" : "";
   return `${verb} --select ${buildDbtSelectArg(modelName, scope)}${fullRefresh}`;
 }
+
+/**
+ * Slim-CI style selection: only models changed vs the defer-state prod
+ * manifest (plus their downstream). Used by the editor "Build changed" action.
+ */
+export const DBT_BUILD_CHANGED_COMMAND = "build --select state:modified+";

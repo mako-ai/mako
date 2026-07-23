@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildDbtNodeCommand,
   buildDbtSelectArg,
+  DBT_BUILD_CHANGED_COMMAND,
   type DbtSelectScope,
 } from "./dbt-node-selection";
 
@@ -43,5 +44,11 @@ describe("buildDbtNodeCommand", () => {
     expect(
       buildDbtNodeCommand("build", "fct_orders", "", { fullRefresh: false }),
     ).toBe("build --select fct_orders");
+  });
+});
+
+describe("DBT_BUILD_CHANGED_COMMAND", () => {
+  it("selects state:modified+ for Slim-CI style local builds", () => {
+    expect(DBT_BUILD_CHANGED_COMMAND).toBe("build --select state:modified+");
   });
 });

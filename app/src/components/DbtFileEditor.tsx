@@ -61,6 +61,7 @@ import {
 import { dbtVersionLabel } from "../lib/dbt-versions";
 import {
   buildDbtNodeCommand,
+  DBT_BUILD_CHANGED_COMMAND,
   type DbtRunVerb,
   type DbtSelectScope,
 } from "../lib/dbt-node-selection";
@@ -72,7 +73,11 @@ import {
   modelNamesFromPaths,
   type Problem,
 } from "../lib/dbt-editor-logic";
-import { resolveDevEnvName, resolveProdLikeEnvName } from "../lib/dbt-env";
+import {
+  resolveDevEnvName,
+  resolveProdLikeEnvName,
+  shouldDeferByDefault,
+} from "../lib/dbt-env";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
 import EntityLoadErrorState, {
@@ -372,6 +377,14 @@ export default function DbtFileEditor({
     }
   }, [project, environment, user?.id]);
 
+  // Align with the agent: defer to the last prod manifest by default when
+  // iterating in a non-prod (personal/dev) environment. Re-applies when the
+  // env or prod-manifest availability changes; the user can still uncheck.
+  useEffect(() => {
+    if (!project || !environment) return;
+    setDefer(shouldDeferByDefault(project, environment));
+  }, [project, environment]);
+
   // Picking an environment is a per-user setting: persist it so the console,
   // the agent's builds, and other windows follow the same choice.
   const handleEnvironmentChange = useCallback(
@@ -569,6 +582,37 @@ export default function DbtFileEditor({
     runCommand,
     saveNow,
   ]);
+
+  /** Slim-CI style: build only models changed vs the last prod manifest. */
+  const runBuildChanged = useCallback(async () => {
+    if (!workspaceId) return;
+    const cmd = fullRefresh
+      ? `${DBT_BUILD_CHANGED_COMMAND} --full-refresh`
+      : DBT_BUILD_CHANGED_COMMAND;
+    if (
+      environment === "prod" &&
+      !window.confirm(`Run "dbt ${cmd}" against the prod environment?`)
+    ) {
+      return;
+    }
+    saveNow();
+    manualBusyRef.current = true;
+    setBusy("command");
+    setPanelOpen(true);
+    setPanelTab("results");
+    const res = await runCommand(
+      workspaceId,
+      projectId,
+      cmd,
+      environment || undefined,
+      // state:modified+ only makes sense with a prod state dir.
+      true,
+    );
+    setCommandResult(res);
+    if (res && res.stepResults.length === 0) setPanelTab("commands");
+    manualBusyRef.current = false;
+    setBusy(null);
+  }, [workspaceId, projectId, environment, fullRefresh, runCommand, saveNow]);
 
   const errorCount = useMemo(
     () => problems?.filter(p => p.severity === "error").length ?? 0,
@@ -917,8 +961,12 @@ export default function DbtFileEditor({
       </Tooltip>
       <Tooltip
         title={
-          `Resolve unselected refs against the last "${prodEnvName}" build ` +
-          "(dbt --defer). Change the defer target in Project settings."
+          project?.lastProdManifestKey
+            ? `Resolve unselected refs against the last "${prodEnvName}" build ` +
+              "(dbt --defer). On by default for non-prod environments. " +
+              "Change the defer target in Project settings."
+            : `No "${prodEnvName}" manifest yet — run a job against that ` +
+              "environment once to enable defer."
         }
       >
         <FormControlLabel
@@ -926,7 +974,11 @@ export default function DbtFileEditor({
             <Checkbox
               size="small"
               checked={defer}
+              disabled={!project?.lastProdManifestKey}
               onChange={e => setDefer(e.target.checked)}
+              inputProps={{
+                "aria-label": `Defer to ${prodEnvName}`,
+              }}
               sx={{ p: 0.25 }}
             />
           }
@@ -1044,6 +1096,23 @@ export default function DbtFileEditor({
       anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
       transformOrigin={{ vertical: "top", horizontal: "left" }}
     >
+      {project?.lastProdManifestKey ? (
+        <>
+          <ListSubheader sx={{ lineHeight: 2, fontSize: "0.7rem" }}>
+            Changed vs {prodEnvName}
+          </ListSubheader>
+          <MenuItem
+            dense
+            onClick={() => {
+              setRunMenuAnchor(null);
+              void runBuildChanged();
+            }}
+          >
+            Build changed (state:modified+)
+          </MenuItem>
+          <Divider />
+        </>
+      ) : null}
       {RUN_VERBS.flatMap(({ verb, label }, vi) => [
         vi > 0 ? <Divider key={`${verb}-div`} /> : null,
         <ListSubheader

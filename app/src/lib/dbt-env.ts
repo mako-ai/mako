@@ -3,6 +3,14 @@
  * prod-like environment resolution.
  */
 
+/** Fields needed to decide whether ad-hoc builds should `--defer` to prod. */
+export type DbtDeferProject = {
+  environments?: Array<{ name: string }>;
+  defaultEnvironment?: string;
+  prodEnvironment?: string;
+  lastProdManifestKey?: string;
+};
+
 /**
  * The environment treated as "production" (the defer target). Mirrors the
  * server's resolveProdLikeEnvironmentName: an explicit `prodEnvironment`
@@ -52,6 +60,20 @@ export function resolveDevEnvName(
     ? environments.find(env => env.ownerUserId === userId)
     : undefined;
   return personal?.name ?? project.defaultEnvironment;
+}
+
+/**
+ * Whether ad-hoc editor/console/agent builds should default to
+ * `--defer --state <last prod manifest>`. Mirrors the server agent helper
+ * `shouldDeferByDefault`: defer when a prod manifest exists and the target
+ * environment is not the prod-like one (personal/dev iteration).
+ */
+export function shouldDeferByDefault(
+  project: DbtDeferProject,
+  environmentName: string | undefined,
+): boolean {
+  if (!environmentName || !project.lastProdManifestKey) return false;
+  return environmentName !== resolveProdLikeEnvName(project);
 }
 
 /**
