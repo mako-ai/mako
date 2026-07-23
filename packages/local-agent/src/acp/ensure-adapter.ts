@@ -122,8 +122,11 @@ export function shouldSkipEnsure(opts: {
   if (opts.adapterVia === "npx" || opts.adapterVia === null) return false;
   // Env override (tests / custom) — don't fight it.
   if (opts.adapterVia === "env") return true;
+  // Global PATH install already present (brew/npm/manual). Never block Chat on
+  // a first-time `npm i -g` just because we have no ensure timestamp yet —
+  // that hang is what users see as "Installing/updating Codex tools…".
   const at = opts.lastSuccessAt ? Date.parse(opts.lastSuccessAt) : NaN;
-  if (!Number.isFinite(at)) return false;
+  if (!Number.isFinite(at)) return true;
   const now = opts.now ?? Date.now();
   const staleMs = opts.staleMs ?? ACP_ENSURE_STALE_MS;
   return now - at < staleMs;

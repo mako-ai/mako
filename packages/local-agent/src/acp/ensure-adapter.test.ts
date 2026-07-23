@@ -46,7 +46,7 @@ describe("ensure-adapter", () => {
     );
   });
 
-  it("skips only when a recent path install exists", () => {
+  it("skips when a path install exists (including first-time / no timestamp)", () => {
     const now = Date.parse("2026-07-23T12:00:00.000Z");
     assert.equal(
       shouldSkipEnsure({
@@ -56,6 +56,16 @@ describe("ensure-adapter", () => {
         now,
       }),
       true,
+    );
+    assert.equal(
+      shouldSkipEnsure({
+        force: false,
+        lastSuccessAt: null,
+        adapterVia: "path",
+        now,
+      }),
+      true,
+      "PATH install without ensure state must not block Chat on npm i -g",
     );
     assert.equal(
       shouldSkipEnsure({

@@ -784,9 +784,20 @@ export class AcpSessionManager {
       `${ACP_PROVIDERS[providerId].label} · ${cwd.split(/[/\\]/).pop() || cwd}`;
 
     try {
-      // Keep Codex/Claude ACP (+ Codex CLI) current without asking the user
-      // to run npm by hand. Skips when a recent global install already exists.
-      await this.ensureAdapter(providerId, { force: false });
+      // Keep adapters current, but never block session/new on `npm i -g` when
+      // a global binary is already on PATH (Codex hang: "Installing/updating…").
+      // Missing / npx-only installs still await ensure so first-run can recover.
+      const launch = resolveAdapterCommand(ACP_PROVIDERS[providerId]);
+      if (!launch || launch.via === "npx") {
+        await this.ensureAdapter(providerId, { force: false });
+      } else {
+        void this.ensureAdapter(providerId, { force: false }).catch(error => {
+          acpLog.info("Background ACP ensure failed", {
+            providerId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
       const conn = await this.ensureConnection(providerId);
       if (conn.authRequired && !conn.authenticated) {
         const terminalOnly = conn.authMethods.every(

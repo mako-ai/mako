@@ -82,6 +82,8 @@ export function AcpWorkspaceToolsBanner(props: {
   if (!isLocal || !providerId) return null;
 
   const provider = acpStatus?.providers.find(p => p.id === providerId);
+  // Background `npm i -g` while adapter is already on PATH must not freeze Enable.
+  const ensureBlocksUi = ensureRunning && !provider?.adapterFound;
   const attached = sessions.some(
     s => s.providerId === providerId && s.makoMcpAttached,
   );
@@ -114,8 +116,15 @@ export function AcpWorkspaceToolsBanner(props: {
       await checkAgent();
       await refreshStatus();
       setSelectedProvider(providerId);
-      // Optional on older Local Agents — missing ensure/warm must not block MCP attach.
-      if (acpSupportsAdapterEnsure(useAcpStore.getState().status)) {
+      // Only install when the adapter is missing — never block Enable on a
+      // slow/hung `npm i -g` when Codex/Claude is already on PATH.
+      const adapterMissing = !useAcpStore
+        .getState()
+        .status?.providers.find(p => p.id === providerId)?.adapterFound;
+      if (
+        adapterMissing &&
+        acpSupportsAdapterEnsure(useAcpStore.getState().status)
+      ) {
         setBusyLabel("Updating local tools…");
         await ensureAdapter(providerId, { force: false });
       }
@@ -193,10 +202,10 @@ export function AcpWorkspaceToolsBanner(props: {
           <Button
             size="small"
             variant="contained"
-            disabled={busy || ensureRunning}
+            disabled={busy || ensureBlocksUi}
             onClick={() => void installAdapter()}
           >
-            {busy || ensureRunning
+            {busy || ensureBlocksUi
               ? busyLabel || ensureLabel || "Installing…"
               : canEnsureAdapter
                 ? "Install"
@@ -272,10 +281,10 @@ export function AcpWorkspaceToolsBanner(props: {
           <Button
             size="small"
             variant="contained"
-            disabled={busy || ensureRunning || !workspaceId || !bridgeOk}
+            disabled={busy || ensureBlocksUi || !workspaceId || !bridgeOk}
             onClick={() => void enable()}
           >
-            {busy || ensureRunning
+            {busy || ensureBlocksUi
               ? busyLabel || ensureLabel || "Connecting…"
               : "Enable workspace tools"}
           </Button>
@@ -291,7 +300,7 @@ export function AcpWorkspaceToolsBanner(props: {
         it asked for Mako auth, click Enable, then send a new message — or start
         a New chat.
       </Typography>
-      {ensureRunning || ensureStatus?.state === "error" ? (
+      {ensureBlocksUi || ensureStatus?.state === "error" ? (
         <Typography variant="body2" sx={{ mt: 1 }}>
           {ensureLabel}
         </Typography>
