@@ -685,6 +685,38 @@ export function refreshDashboardWidgetCommand(options: {
     );
 }
 
+/**
+ * Widget Refresh: force-rebuild the widget's data source from upstream, wait
+ * until builds settle, apply into the runtime, then remount the widget
+ * (data → UI). Same contract as the dashboard toolbar Refresh, scoped to one
+ * source.
+ */
+export async function refreshDashboardWidgetDataCommand(options: {
+  workspaceId: string;
+  dashboardId?: string;
+  widgetId: string;
+}): Promise<void> {
+  const dashboard = getDashboardOrThrow(options.dashboardId);
+  const widget = dashboard.widgets.find(w => w.id === options.widgetId);
+  if (!widget?.dataSourceId) {
+    refreshDashboardWidgetCommand({
+      dashboardId: dashboard._id,
+      widgetId: options.widgetId,
+    });
+    return;
+  }
+
+  await refreshDashboardDataSourceCommand({
+    workspaceId: options.workspaceId,
+    dataSourceId: widget.dataSourceId,
+    dashboardId: dashboard._id,
+  });
+  refreshDashboardWidgetCommand({
+    dashboardId: dashboard._id,
+    widgetId: options.widgetId,
+  });
+}
+
 export function getDashboardStateSnapshot(dashboardId: string) {
   const dashboard = getDashboardOrThrow(dashboardId);
 

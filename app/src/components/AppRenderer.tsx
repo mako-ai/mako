@@ -95,6 +95,7 @@ export default function AppRenderer({
   const appEntity = useAppStore(s => s.openApps[appId]);
   const appLoadError = useAppStore(s => s.openAppErrors[appId]);
   const previewNonce = useAppStore(s => s.previewNonce[appId] ?? 0);
+  const dataRefreshNonce = useAppStore(s => s.dataRefreshNonce[appId] ?? 0);
   const previewErrors = useAppStore(s => s.previewErrors[appId]);
   const fetchApp = useAppStore(s => s.fetchApp);
   const bumpPreview = useAppStore(s => s.bumpPreview);
@@ -360,8 +361,8 @@ export default function AppRenderer({
       setPublishedNotice(`Building data for "${binding.name}"…`);
       void materializeBinding(workspaceId, appId, binding.id).then(result => {
         if (result.status === "ready") {
-          // materializeBinding already refetched the app and bumped the
-          // preview, so the fresh artifact loads on the rebuilt preview.
+          // materializeBinding refetches + requestDataRefresh so DuckDB loads
+          // before the running preview re-queries (data → UI).
           setPublishedNotice(`Data for "${binding.name}" is ready.`);
         } else if (result.status === "error") {
           setPublishedNotice(
@@ -568,6 +569,40 @@ export default function AppRenderer({
     }
     lastDbtEnvRef.current = current;
   }, [effectiveDbtEnv]);
+
+  // Explicit binding refresh settled: load every ready parquet table into
+  // DuckDB first, then poke the running preview once (data → UI).
+  const lastDataRefreshNonceRef = useRef(0);
+  useEffect(() => {
+    if (
+      !dataRefreshNonce ||
+      dataRefreshNonce === lastDataRefreshNonceRef.current
+    ) {
+      return;
+    }
+    lastDataRefreshNonceRef.current = dataRefreshNonce;
+    if (!workspaceId || !appEntity) return;
+    let cancelled = false;
+    void (async () => {
+      await Promise.all(
+        appEntity.dataBindings
+          .filter(binding => binding.materialization === "parquet")
+          .map(binding =>
+            ensureBindingLoadedForPreview(workspaceId, appId, binding).catch(
+              () => false,
+            ),
+          ),
+      );
+      if (cancelled) return;
+      iframeRef.current?.contentWindow?.postMessage(
+        { type: PREVIEW_MESSAGE.dataRefresh },
+        "*",
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [dataRefreshNonce, workspaceId, appId, appEntity]);
 
   // Rebuild the preview document whenever files/deps change (nonce bumps).
   // The theme is read from a ref on purpose: it only seeds the boot paint and

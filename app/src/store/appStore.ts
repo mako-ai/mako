@@ -130,6 +130,12 @@ interface AppState {
 
   /** Bumping the nonce forces the renderer to rebuild that app's preview. */
   previewNonce: Record<string, number>;
+  /**
+   * Bumping the nonce tells the renderer to reload DuckDB tables from the
+   * latest artifacts, then post a data-refresh to the running preview (data
+   * first, then UI — never a mid-flight iframe reboot).
+   */
+  dataRefreshNonce: Record<string, number>;
   previewErrors: Record<string, AppPreviewError[]>;
 
   /**
@@ -195,6 +201,11 @@ interface AppActions {
   setRuntime: (appId: string, runtime: "cdn" | "webcontainer") => void;
 
   bumpPreview: (appId: string) => void;
+  /**
+   * Ask the open preview to reload data into DuckDB and re-query — without
+   * rebuilding the iframe. Used after an explicit binding refresh settles.
+   */
+  requestDataRefresh: (appId: string) => void;
   setPreviewErrors: (appId: string, errors: AppPreviewError[]) => void;
 
   /** Sync sharing settings updated by the ShareDialog into the open app. */
@@ -244,9 +255,10 @@ interface AppActions {
    * caps the wait and `signal` aborts the polling (the build itself keeps
    * running server-side either way).
    *
-   * `refreshPreview` (default true) refetches the app and bumps the preview
-   * when the binding becomes ready. Bulk rematerialize passes false so the
-   * preview refreshes once after every binding settles.
+   * `refreshPreview` (default true) refetches the app and requests a
+   * data-then-UI refresh (DuckDB load + data-refresh) when the binding
+   * becomes ready. Bulk rematerialize passes false so the caller applies
+   * data once after every binding settles.
    */
   materializeBinding: (
     workspaceId: string,
@@ -310,6 +322,7 @@ const initialState: AppState = {
   openAppErrors: {},
   activeAppId: null,
   previewNonce: {},
+  dataRefreshNonce: {},
   previewErrors: {},
   previewDbtEnv: {},
   dbtEnvInfo: {},
@@ -452,6 +465,7 @@ export const useAppStore = create<AppStore>()(
           delete state.openApps[appId];
           delete state.openAppErrors[appId];
           delete state.previewNonce[appId];
+          delete state.dataRefreshNonce[appId];
           delete state.previewErrors[appId];
         });
         void get().fetchList(workspaceId);
@@ -703,6 +717,12 @@ export const useAppStore = create<AppStore>()(
         state.previewNonce[appId] = (state.previewNonce[appId] || 0) + 1;
       }),
 
+    requestDataRefresh: appId =>
+      set(state => {
+        state.dataRefreshNonce[appId] =
+          (state.dataRefreshNonce[appId] || 0) + 1;
+      }),
+
     applySharingChanges: (appId, changes) =>
       set(state => {
         const appEntity = state.openApps[appId];
@@ -861,8 +881,11 @@ export const useAppStore = create<AppStore>()(
 
       const finishReady = async () => {
         if (refreshPreview) {
+          // Data first, then UI: refetch binding caches, then ask the renderer
+          // to load DuckDB and post data-refresh. Do NOT bumpPreview — that
+          // reboots the iframe before tables are ready.
           await get().fetchApp(workspaceId, appId);
-          get().bumpPreview(appId);
+          get().requestDataRefresh(appId);
         }
         return { success: true, status: "ready" as const };
       };
@@ -900,7 +923,7 @@ export const useAppStore = create<AppStore>()(
               set(state => {
                 state.openApps[appId] = res.app as AppEntity;
               });
-              get().bumpPreview(appId);
+              get().requestDataRefresh(appId);
             } else {
               setLocalStatus("ready");
             }
