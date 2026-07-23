@@ -30,8 +30,7 @@ function ProviderSetupCard() {
 
   const providers = status?.providers ?? [];
   const provider = providers.find(p => p.id === selectedProviderId);
-  // MUI Select crashes the tree when `value` is set but no matching MenuItem
-  // exists yet (providers still loading). Only bind a known option.
+  // Only bind a value that exists as a MenuItem — empty list + value crashes MUI.
   const selectValue = provider ? selectedProviderId : "";
 
   return (
@@ -242,12 +241,16 @@ function Transcript() {
   );
 }
 
+async function bootCodingAgents(): Promise<void> {
+  const agentStatus = await useLocalAgentStore.getState().checkAgent();
+  if (agentStatus !== "online") return;
+  await useAcpStore.getState().refreshStatus();
+  await useAcpStore.getState().refreshSessions();
+}
+
 export function CodingAgentsPanel() {
   const agentStatus = useLocalAgentStore(s => s.status);
-  const checkAgent = useLocalAgentStore(s => s.checkAgent);
-  const refreshStatus = useAcpStore(s => s.refreshStatus);
-  const refreshSessions = useAcpStore(s => s.refreshSessions);
-  const loadingStatus = useAcpStore(s => s.loadingStatus);
+  const acpStatus = useAcpStore(s => s.status);
   const statusError = useAcpStore(s => s.statusError);
   const sessions = useAcpStore(s => s.sessions);
   const activeSessionId = useAcpStore(s => s.activeSessionId);
@@ -259,28 +262,27 @@ export function CodingAgentsPanel() {
   const error = useAcpStore(s => s.error);
 
   const [draft, setDraft] = useState("");
+  // Local boot flag — do NOT key a useEffect off zustand action identities
+  // (immer updates can churn them and re-fire the effect → React #185).
+  const [booting, setBooting] = useState(true);
 
   useEffect(() => {
-    void (async () => {
-      const status = await checkAgent();
-      if (status === "online") {
-        await refreshStatus();
-        await refreshSessions();
-      }
-    })();
-  }, [checkAgent, refreshStatus, refreshSessions]);
+    let cancelled = false;
+    setBooting(true);
+    void bootCodingAgents().finally(() => {
+      if (!cancelled) setBooting(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  // Subscribe to ACP status: Local Agent may already be "online" from
-  // Databases/etc. before `/acp/status` has loaded. Rendering the provider
-  // Select with value "claude" and zero MenuItems crashes MUI/React and
-  // blanks the settings pane.
-  const acpStatus = useAcpStore(s => s.status);
+  const retry = () => {
+    setBooting(true);
+    void bootCodingAgents().finally(() => setBooting(false));
+  };
 
-  if (
-    agentStatus === "unknown" ||
-    loadingStatus ||
-    (agentStatus === "online" && !statusError && !acpStatus)
-  ) {
+  if (booting || agentStatus === "unknown") {
     return (
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, py: 4 }}>
         <CircularProgress size={20} />
@@ -289,27 +291,29 @@ export function CodingAgentsPanel() {
     );
   }
 
-  if (agentStatus === "offline" || statusError) {
+  if (agentStatus === "offline" || statusError || !acpStatus) {
+    const hint =
+      statusError?.includes("404") || statusError?.includes("Not Found")
+        ? "Your Local Agent build does not include ACP yet. From the PR branch run: pnpm agent:start"
+        : null;
+
     return (
       <Alert severity="warning">
         Coding agents run on your machine via the Mako Local Agent (loopback ACP
-        bridge). Start <strong>Mako Desktop</strong> or run{" "}
-        <code>pnpm agent:start</code>, then refresh this page.
+        bridge). Start <strong>Mako Desktop</strong> (PR build) or run{" "}
+        <code>pnpm agent:start</code> from the ACP branch, then retry.
         {statusError ? (
           <Typography variant="body2" sx={{ mt: 1 }}>
             {statusError}
           </Typography>
         ) : null}
+        {hint ? (
+          <Typography variant="body2" sx={{ mt: 1 }}>
+            {hint}
+          </Typography>
+        ) : null}
         <Box sx={{ mt: 2 }}>
-          <Button
-            size="small"
-            variant="outlined"
-            onClick={() =>
-              void checkAgent().then(s => {
-                if (s === "online") void refreshStatus();
-              })
-            }
-          >
+          <Button size="small" variant="outlined" onClick={retry}>
             Retry
           </Button>
         </Box>
