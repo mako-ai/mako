@@ -459,9 +459,21 @@ export const useAcpStore = create<AcpState>()(
         });
         await get().refreshStatus();
       } catch (error) {
+        const raw =
+          error instanceof Error ? error.message : "Authentication failed";
+        // Older Local Agents surface Codex-not-logged-in as an API-key error
+        // instead of opening Terminal — give the user the real next step.
+        if (id === "codex" && /CODEX_API_KEY|OPENAI_API_KEY/i.test(raw)) {
+          set(s => {
+            s.error = null;
+            s.authGuidance =
+              "Codex needs ChatGPT login. Run this in Terminal, then retry Codex in Chat:\n\n" +
+              "codex login";
+          });
+          return;
+        }
         set(s => {
-          s.error =
-            error instanceof Error ? error.message : "Authentication failed";
+          s.error = raw;
         });
       }
     },

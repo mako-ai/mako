@@ -642,6 +642,24 @@ export class AcpSessionManager {
     providerId: AcpProviderId,
     methodId?: string,
   ): Promise<AcpAuthenticateResult> {
+    // Codex without ChatGPT login often cannot even initialize the ACP
+    // adapter (fails with CODEX_API_KEY / OPENAI_API_KEY). Open `codex login`
+    // first — do not require a live connection for Sign in.
+    if (providerId === "codex" && !methodId) {
+      const { commandLine, opened } = launchTerminalAuth(
+        defaultTerminalLoginLaunch("codex"),
+      );
+      return {
+        ok: true,
+        methodId: "codex-login",
+        launchedTerminal: opened,
+        terminalCommand: commandLine,
+        message: opened
+          ? "Complete ChatGPT sign-in in the Terminal window (`codex login`), then pick Codex in Chat and Enable workspace tools."
+          : `Run this in Terminal, then pick Codex in Chat:\n${commandLine}`,
+      };
+    }
+
     const acp = await loadAcpSdk();
     let conn;
     try {
@@ -650,6 +668,24 @@ export class AcpSessionManager {
       if (isAcpConnectionClosedError(error)) {
         this.invalidateProvider(providerId, "connection closed during auth");
         conn = await this.ensureConnection(providerId);
+      } else if (
+        providerId === "codex" &&
+        /CODEX_API_KEY|OPENAI_API_KEY/i.test(
+          error instanceof Error ? error.message : String(error),
+        )
+      ) {
+        const { commandLine, opened } = launchTerminalAuth(
+          defaultTerminalLoginLaunch("codex"),
+        );
+        return {
+          ok: true,
+          methodId: "codex-login",
+          launchedTerminal: opened,
+          terminalCommand: commandLine,
+          message: opened
+            ? "Codex needs ChatGPT login. Complete sign-in in the Terminal window (`codex login`), then retry."
+            : `Codex needs ChatGPT login. Run this in Terminal, then retry:\n${commandLine}`,
+        };
       } else {
         throw error;
       }
@@ -664,22 +700,6 @@ export class AcpSessionManager {
       conn.authMethods[0];
 
     if (!preferred) {
-      // No auth methods advertised — still open CLI login for Codex (ChatGPT),
-      // since missing ~/.codex auth surfaces as CODEX_API_KEY / OPENAI_API_KEY.
-      if (providerId === "codex") {
-        const { commandLine, opened } = launchTerminalAuth(
-          defaultTerminalLoginLaunch("codex"),
-        );
-        return {
-          ok: true,
-          methodId: "codex-login",
-          launchedTerminal: opened,
-          terminalCommand: commandLine,
-          message: opened
-            ? "Complete ChatGPT sign-in in the Terminal window (`codex login`), then retry Codex in Chat."
-            : `Run this in Terminal, then retry Codex in Chat:\n${commandLine}`,
-        };
-      }
       conn.authenticated = true;
       return {
         ok: true,
