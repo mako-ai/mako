@@ -3,6 +3,7 @@ import {
   appendAssistantText,
   mapAcpToolStatus,
   resolveAcpToolName,
+  resolveAcpToolTitle,
   upsertAcpToolPart,
 } from "./local-acp-parts";
 
@@ -21,6 +22,21 @@ describe("local-acp-parts", () => {
       }),
     ).toBe("sql_execute_query");
     expect(resolveAcpToolName({ name: "Bash" })).toBe("Bash");
+  });
+
+  it("drops raw MCP ids from tool titles so native labels/icons win", () => {
+    expect(
+      resolveAcpToolTitle(
+        {
+          title: "mcp__mako-workspace__app_edit_file",
+          name: "mcp__mako-workspace__app_edit_file",
+        },
+        "app_edit_file",
+      ),
+    ).toBeUndefined();
+    expect(
+      resolveAcpToolTitle({ title: "Editing App.tsx" }, "app_edit_file"),
+    ).toBe("Editing App.tsx");
   });
 
   it("maps ACP statuses to UIMessage tool states", () => {
@@ -57,5 +73,20 @@ describe("local-acp-parts", () => {
       output: { rows: [[1]] },
     });
     expect(parts[2]).toMatchObject({ type: "text", text: "world" });
+  });
+
+  it("does not keep mcp__* titles that would override native card labels", () => {
+    const parts = upsertAcpToolPart([], {
+      toolCallId: "t2",
+      name: "mcp__mako-workspace__app_edit_file",
+      title: "mcp__mako-workspace__app_edit_file",
+      status: "in_progress",
+      rawInput: { path: "src/App.tsx" },
+    });
+    expect(parts[0]).toMatchObject({
+      type: "dynamic-tool",
+      toolName: "app_edit_file",
+      title: undefined,
+    });
   });
 });

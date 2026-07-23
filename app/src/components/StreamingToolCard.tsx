@@ -37,7 +37,6 @@ import {
   Wrench,
   X,
   ExternalLink,
-  SquareTerminal,
 } from "lucide-react";
 import {
   getAgentToolManifestEntry,
@@ -549,9 +548,10 @@ export const StreamingToolCard = React.memo(
                   }}
                   draggable={false}
                 />
-              ) : labelOverride ? (
-                <SquareTerminal size={ICON_SIZE + 2} strokeWidth={1.6} />
               ) : (
+                // Prefer the tool manifest icon. A labelOverride alone (e.g. ACP
+                // human titles) must not force the terminal glyph — that made
+                // mcp__mako-workspace__* cards look worse than native Chat.
                 renderToolIcon(config.icon)
               )}
             </Box>

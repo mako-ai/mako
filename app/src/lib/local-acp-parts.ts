@@ -39,17 +39,50 @@ type AssistantPart =
   | DynamicToolPart
   | { type: string; [k: string]: unknown };
 
+/** Strip Claude/Codex MCP prefixes so AGENT_TOOL_MANIFEST icons/labels match. */
+export function stripMcpToolPrefix(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return trimmed;
+  for (const prefix of ["mcp__mako-workspace__", "mcp__mako__"]) {
+    if (trimmed.startsWith(prefix)) {
+      return trimmed.slice(prefix.length) || trimmed;
+    }
+  }
+  // Generic mcp__<server>__<tool> (other attached MCP servers).
+  const generic = /^mcp__[^_]+(?:_[^_]+)*__(.+)$/.exec(trimmed);
+  if (generic?.[1]) return generic[1];
+  return trimmed;
+}
+
 export function resolveAcpToolName(update: AcpToolUpdate): string {
   const raw =
     update._meta?.claudeCode?.toolName || update.name || update.title || "tool";
-  const name = String(raw).trim() || "tool";
-  // Strip Claude MCP prefix so AGENT_TOOL_MANIFEST icons/labels match.
-  for (const prefix of ["mcp__mako-workspace__", "mcp__mako__"]) {
-    if (name.startsWith(prefix)) {
-      return name.slice(prefix.length) || name;
-    }
+  return stripMcpToolPrefix(String(raw).trim() || "tool") || "tool";
+}
+
+/**
+ * ACP adapters often set `title` to the raw MCP tool id
+ * (`mcp__mako-workspace__app_edit_file`). That must NOT become StreamingToolCard
+ * `labelOverride` — it hides the native getLabel ("Editing …") and forces the
+ * terminal icon. Keep only human titles that differ from the tool id.
+ */
+export function resolveAcpToolTitle(
+  update: AcpToolUpdate,
+  toolName: string,
+): string | undefined {
+  const rawTitle = typeof update.title === "string" ? update.title.trim() : "";
+  if (!rawTitle) return undefined;
+  if (rawTitle.startsWith("mcp__")) return undefined;
+  const strippedTitle = stripMcpToolPrefix(rawTitle);
+  if (
+    strippedTitle === toolName ||
+    rawTitle === toolName ||
+    rawTitle === update.name ||
+    rawTitle === update._meta?.claudeCode?.toolName
+  ) {
+    return undefined;
   }
-  return name;
+  return rawTitle;
 }
 
 export function mapAcpToolStatus(
@@ -104,12 +137,22 @@ export function upsertAcpToolPart(
     (resolvedName !== "tool" ? resolvedName : null) ||
     existing?.toolName ||
     "tool";
+  // Prefer a fresh human title; never keep a stale raw MCP id from an
+  // earlier tool_call event (that forces terminal icon + ugly label).
+  const existingTitle =
+    typeof existing?.title === "string" && !existing.title.startsWith("mcp__")
+      ? existing.title
+      : undefined;
+  const freshTitle =
+    update.title !== undefined && update.title !== null
+      ? resolveAcpToolTitle(update, toolName)
+      : undefined;
   const title =
-    (typeof update.title === "string" && update.title.trim()
-      ? update.title
-      : null) ||
-    existing?.title ||
-    undefined;
+    freshTitle !== undefined
+      ? freshTitle
+      : update.title !== undefined && update.title !== null
+        ? undefined
+        : existingTitle;
   const input =
     update.rawInput !== undefined ? update.rawInput : (existing?.input ?? {});
 

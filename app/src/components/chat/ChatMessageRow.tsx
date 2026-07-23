@@ -306,7 +306,10 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
                 output={cardOutput}
                 labelOverride={
                   consoleToolPresentation?.title ||
-                  (typeof part.title === "string" ? part.title : undefined)
+                  (typeof part.title === "string" &&
+                  !part.title.startsWith("mcp__")
+                    ? part.title
+                    : undefined)
                 }
                 leadingIconUrl={consoleToolPresentation?.iconUrl}
                 leadingIconAlt={
