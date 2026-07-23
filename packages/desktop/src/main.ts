@@ -16,6 +16,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { autoUpdater } from "electron-updater";
 import { spawn, ChildProcess } from "child_process";
 import * as http from "http";
+import * as os from "os";
 import * as path from "path";
 import {
   DEEP_LINK_SCHEME,
@@ -101,6 +102,36 @@ function agentIsRunning(): Promise<boolean> {
 }
 
 /**
+ * Electron GUI apps inherit a stripped PATH. Prepend common npm-global /
+ * Homebrew bins so the Local Agent can find `claude-agent-acp` after
+ * `npm i -g` instead of relying on flaky `npx` cache installs.
+ */
+function agentSpawnEnv(): NodeJS.ProcessEnv {
+  const home = os.homedir();
+  const extras = [
+    path.join(home, ".npm-global", "bin"),
+    path.join(home, ".local", "bin"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+  ];
+  const delim = path.delimiter;
+  const existing = (process.env.PATH || "").split(delim).filter(Boolean);
+  const seen = new Set(existing);
+  const prepend: string[] = [];
+  for (const dir of extras) {
+    if (!seen.has(dir)) {
+      seen.add(dir);
+      prepend.push(dir);
+    }
+  }
+  return {
+    ...process.env,
+    PATH: [...prepend, ...existing].join(delim),
+    ELECTRON_RUN_AS_NODE: "1",
+  };
+}
+
+/**
  * Start the Mako Local Agent unless one is already running (e.g. the
  * standalone agent installed as a login item).
  *
@@ -116,16 +147,18 @@ async function startAgent(): Promise<void> {
     // Packaged agent sidecar is wired up by electron-builder extraResources.
     const bundledAgent = path.join(process.resourcesPath, "agent", "index.js");
     agentProcess = spawn(process.execPath, [bundledAgent], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      env: agentSpawnEnv(),
       stdio: "ignore",
     });
   } else {
     // Development: repo root is three levels up from packages/desktop/dist.
     const repoRoot = path.resolve(__dirname, "..", "..", "..");
+    const env = agentSpawnEnv();
+    delete env.ELECTRON_RUN_AS_NODE;
     agentProcess = spawn(
       "pnpm",
       ["--filter", "@mako/local-agent", "start"],
-      { cwd: repoRoot, stdio: "inherit" },
+      { cwd: repoRoot, stdio: "inherit", env },
     );
   }
 

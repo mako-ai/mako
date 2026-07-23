@@ -1,9 +1,12 @@
 import { accessSync, constants } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import type { AcpProviderDefinition } from "./providers";
+import { pathWithNpmGlobals } from "./path-env";
 
 /**
  * Resolve an executable on PATH (or absolute path). Returns null when missing.
+ * Searches an npm-global-augmented PATH so Desktop (stripped GUI PATH) still
+ * finds `claude-agent-acp` after `npm i -g`.
  */
 export function resolveOnPath(command: string): string | null {
   if (!command) return null;
@@ -16,7 +19,7 @@ export function resolveOnPath(command: string): string | null {
     }
   }
 
-  const pathEnv = process.env.PATH || "";
+  const pathEnv = pathWithNpmGlobals(process.env.PATH || "");
   for (const dir of pathEnv.split(delimiter)) {
     if (!dir) continue;
     const candidate = join(dir, command);

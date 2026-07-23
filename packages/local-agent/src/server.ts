@@ -31,8 +31,13 @@ import {
 import { registerDrivers, toDatabaseConnection } from "./database-bridge";
 import { registerAcpRoutes } from "./acp/routes";
 import { acpSessionManager } from "./acp/manager";
+import { ensureNpmGlobalPath } from "./acp/path-env";
 
 const logger = loggers.api("local-agent");
+
+// Desktop GUI PATH is often stripped; prepend Homebrew / npm-global bins so
+// `claude-agent-acp` resolves after `npm i -g` instead of falling back to npx.
+ensureNpmGlobalPath();
 
 export const DEFAULT_AGENT_PORT = 41720;
 
