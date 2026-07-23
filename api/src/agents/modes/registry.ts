@@ -90,6 +90,7 @@ const QUERY_MODE_TOOL_NAMES: string[] = [
   // Long-running query lifecycle (pairs with sql_execute_query / run_console)
   "check_query_status",
   "cancel_query",
+  "list_console_executions",
 ];
 
 const DASHBOARD_MODE_TOOL_NAMES: string[] = [

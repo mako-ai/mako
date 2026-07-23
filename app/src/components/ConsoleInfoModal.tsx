@@ -11,9 +11,18 @@ import {
   IconButton,
   Skeleton,
   Chip,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
 } from "@mui/material";
 import { ContentCopy } from "@mui/icons-material";
-import { apiClient } from "../lib/api-client";
+import { useConsoleStore } from "../store/consoleStore";
+import {
+  consoleExecutionSourceLabel,
+  isExternalConsoleExecutionSource,
+} from "../lib/console-execution-source";
 
 interface ConsoleInfoModalProps {
   open: boolean;
@@ -31,6 +40,17 @@ interface ConsoleDetails {
   updatedAt?: string;
   executionCount?: number;
   lastExecutedAt?: string;
+}
+
+interface ConsoleExecutionLog {
+  id: string;
+  executedAt: string;
+  source: string;
+  status: string;
+  executionTimeMs: number;
+  rowCount: number | null;
+  errorType: string | null;
+  apiKeyId: string | null;
 }
 
 interface MonospaceFieldProps {
@@ -77,14 +97,35 @@ const accessLabels: Record<string, string> = {
   workspace: "Shared with workspace",
 };
 
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(1)} s`;
+}
+
+function formatExecutedAt(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 export default function ConsoleInfoModal({
   open,
   onClose,
   consoleId,
   workspaceId,
 }: ConsoleInfoModalProps) {
+  const fetchConsoleDetails = useConsoleStore(s => s.fetchConsoleDetails);
+  const fetchConsoleExecutions = useConsoleStore(s => s.fetchConsoleExecutions);
   const [details, setDetails] = useState<ConsoleDetails | null>(null);
+  const [executions, setExecutions] = useState<ConsoleExecutionLog[]>([]);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const [loadingExecutions, setLoadingExecutions] = useState(false);
 
   const handleCopyToClipboard = useCallback((text: string) => {
     navigator.clipboard.writeText(text);
@@ -93,32 +134,40 @@ export default function ConsoleInfoModal({
   useEffect(() => {
     if (!open || !workspaceId || !consoleId) {
       setDetails(null);
+      setExecutions([]);
       return;
     }
 
     let cancelled = false;
     setLoadingDetails(true);
+    setLoadingExecutions(true);
 
-    apiClient
-      .get<{ success: boolean; console?: ConsoleDetails }>(
-        `/workspaces/${workspaceId}/consoles/${consoleId}/details`,
-      )
-      .then(data => {
-        if (!cancelled && data.console) {
-          setDetails(data.console);
-        }
-      })
-      .catch(() => {
-        // Ignore errors for details fetch
+    void fetchConsoleDetails(workspaceId, consoleId)
+      .then(consoleDetails => {
+        if (!cancelled) setDetails(consoleDetails);
       })
       .finally(() => {
         if (!cancelled) setLoadingDetails(false);
       });
 
+    void fetchConsoleExecutions(workspaceId, consoleId, { limit: 10 })
+      .then(rows => {
+        if (!cancelled) setExecutions(rows);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingExecutions(false);
+      });
+
     return () => {
       cancelled = true;
     };
-  }, [open, workspaceId, consoleId]);
+  }, [
+    open,
+    workspaceId,
+    consoleId,
+    fetchConsoleDetails,
+    fetchConsoleExecutions,
+  ]);
 
   const apiEndpoint = `/workspaces/${workspaceId || ":id"}/consoles/${consoleId}/execute`;
 
@@ -210,6 +259,97 @@ export default function ConsoleInfoModal({
               value={apiEndpoint}
               onCopy={() => handleCopyToClipboard(apiEndpoint)}
             />
+          </Box>
+
+          <Box>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              Recent executions
+            </Typography>
+            {loadingExecutions ? (
+              <Stack spacing={0.5}>
+                <Skeleton variant="rounded" height={28} />
+                <Skeleton variant="rounded" height={28} />
+                <Skeleton variant="rounded" height={28} />
+              </Stack>
+            ) : executions.length === 0 ? (
+              <Typography variant="body2" color="text.disabled">
+                No executions recorded in the last 90 days.
+              </Typography>
+            ) : (
+              <Box
+                sx={{
+                  border: 1,
+                  borderColor: "divider",
+                  borderRadius: 1,
+                  overflow: "hidden",
+                }}
+              >
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>When</TableCell>
+                      <TableCell>Trigger</TableCell>
+                      <TableCell>Status</TableCell>
+                      <TableCell align="right">Duration</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {executions.map(execution => (
+                      <TableRow key={execution.id}>
+                        <TableCell sx={{ whiteSpace: "nowrap" }}>
+                          {formatExecutedAt(execution.executedAt)}
+                        </TableCell>
+                        <TableCell>
+                          <Chip
+                            label={consoleExecutionSourceLabel(
+                              execution.source,
+                            )}
+                            size="small"
+                            color={
+                              isExternalConsoleExecutionSource(execution.source)
+                                ? "primary"
+                                : "default"
+                            }
+                            variant={
+                              isExternalConsoleExecutionSource(execution.source)
+                                ? "filled"
+                                : "outlined"
+                            }
+                            sx={{
+                              fontWeight: isExternalConsoleExecutionSource(
+                                execution.source,
+                              )
+                                ? 600
+                                : 500,
+                            }}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Typography
+                            variant="body2"
+                            color={
+                              execution.status === "success"
+                                ? "success.main"
+                                : execution.status === "cancelled"
+                                  ? "text.secondary"
+                                  : "error.main"
+                            }
+                          >
+                            {execution.status}
+                            {execution.errorType
+                              ? ` (${execution.errorType})`
+                              : ""}
+                          </Typography>
+                        </TableCell>
+                        <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                          {formatDuration(execution.executionTimeMs)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </Box>
+            )}
           </Box>
         </Stack>
       </DialogContent>

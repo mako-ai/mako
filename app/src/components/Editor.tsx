@@ -85,6 +85,9 @@ import type { LoadError } from "../api";
 import ScheduleConsoleModal from "./ScheduleConsoleModal";
 import ConsoleRemoteUpdateBanner from "./ConsoleRemoteUpdateBanner";
 import ScheduledRunsPanel from "./ScheduledRunsPanel";
+import ConsoleExecutionsPanel, {
+  type ConsoleExecutionRow,
+} from "./ConsoleExecutionsPanel";
 import type { DbFlowFormRef } from "./DbFlowForm";
 import ConflictResolutionDialog, {
   ConflictData,
@@ -504,6 +507,15 @@ function Editor({
   const [tabScheduledRunsError, setTabScheduledRunsError] = useState<
     Record<string, string | null>
   >({});
+  const [tabExecutions, setTabExecutions] = useState<
+    Record<string, ConsoleExecutionRow[]>
+  >({});
+  const [tabExecutionsLoading, setTabExecutionsLoading] = useState<
+    Record<string, boolean>
+  >({});
+  const [tabExecutionsError, setTabExecutionsError] = useState<
+    Record<string, string | null>
+  >({});
 
   // Conflict resolution state
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
@@ -564,6 +576,9 @@ function Editor({
   const removeSchedule = useConsoleStore(state => state.removeSchedule);
   const runScheduledNow = useConsoleStore(state => state.runScheduledNow);
   const listScheduledRuns = useConsoleStore(state => state.listScheduledRuns);
+  const fetchConsoleExecutions = useConsoleStore(
+    state => state.fetchConsoleExecutions,
+  );
   const updateTabScheduledRun = useConsoleStore(
     state => state.updateTabScheduledRun,
   );
@@ -1099,6 +1114,7 @@ function Editor({
     setCancellingTabs(prev => ({ ...prev, [tabId]: false }));
     const startTime = Date.now();
     try {
+      const consoleTab = tabs[tabId];
       const result = await executeQuery(
         currentWorkspace.id,
         connectionId,
@@ -1110,6 +1126,10 @@ function Editor({
           pageSize: options?.pageSize ?? 500,
           cursor: options?.cursor ?? null,
           confirmUnsafe: options?.confirmUnsafe,
+          // Console tab ids are Mongo ObjectIds (generateObjectId / server id).
+          ...(consoleTab?.kind === "console" || consoleTab?.kind === undefined
+            ? { consoleId: tabId }
+            : {}),
         },
       );
       const executionTime = Date.now() - startTime;
@@ -1158,6 +1178,14 @@ function Editor({
         // the user having to switch tabs manually.
         if (isMobile) {
           setMobileTab("results");
+        }
+        // Keep the Runs panel fresh when it's open (fire-and-forget).
+        if (currentWorkspace && tabBottomPanel[tabId] === "runs") {
+          void fetchConsoleExecutions(currentWorkspace.id, tabId, {
+            limit: 25,
+          }).then(rows => {
+            setTabExecutions(prev => ({ ...prev, [tabId]: rows }));
+          });
         }
       } else if (result.error !== "Query cancelled") {
         const errText =
@@ -1556,6 +1584,44 @@ function Editor({
     [currentWorkspace, listScheduledRuns, updateTabScheduledRun],
   );
 
+  const loadExecutionsForTab = useCallback(
+    async (tabId: string) => {
+      if (!currentWorkspace) return;
+
+      setTabExecutionsLoading(prev => ({ ...prev, [tabId]: true }));
+      setTabExecutionsError(prev => ({ ...prev, [tabId]: null }));
+
+      try {
+        const rows = await fetchConsoleExecutions(currentWorkspace.id, tabId, {
+          limit: 25,
+        });
+        setTabExecutions(prev => ({ ...prev, [tabId]: rows }));
+      } catch (error) {
+        setTabExecutionsError(prev => ({
+          ...prev,
+          [tabId]:
+            error instanceof Error
+              ? error.message
+              : "Failed to load executions",
+        }));
+      }
+
+      setTabExecutionsLoading(prev => ({ ...prev, [tabId]: false }));
+    },
+    [currentWorkspace, fetchConsoleExecutions],
+  );
+
+  const loadRunsPanelForTab = useCallback(
+    async (tabId: string) => {
+      const tab = useConsoleStore.getState().tabs[tabId];
+      await loadExecutionsForTab(tabId);
+      if (tab?.schedule) {
+        await loadScheduledRunsForTab(tabId);
+      }
+    },
+    [loadExecutionsForTab, loadScheduledRunsForTab],
+  );
+
   useEffect(() => {
     if (!activeTabId) return;
 
@@ -1565,7 +1631,7 @@ function Editor({
     setTabBottomPanel(prev =>
       prev[activeTabId] === "runs" ? prev : { ...prev, [activeTabId]: "runs" },
     );
-    void loadScheduledRunsForTab(activeTabId);
+    void loadRunsPanelForTab(activeTabId);
 
     const nextMetadata = { ...(activeTab.metadata || {}) };
     delete nextMetadata.openScheduledRuns;
@@ -1573,7 +1639,7 @@ function Editor({
       activeTabId,
       Object.keys(nextMetadata).length > 0 ? nextMetadata : undefined,
     );
-  }, [activeTabId, tabs, loadScheduledRunsForTab, updateMetadata]);
+  }, [activeTabId, tabs, loadRunsPanelForTab, updateMetadata]);
 
   const handleOpenScheduleModal = useCallback(
     (tabId: string, mode: "create" | "update") => {
@@ -1632,9 +1698,9 @@ function Editor({
       setTabBottomPanel(prev => ({ ...prev, [tabId]: "runs" }));
       setSnackbarMessage("Async query run queued");
       setSnackbarOpen(true);
-      await loadScheduledRunsForTab(tabId);
+      await loadRunsPanelForTab(tabId);
     },
-    [currentWorkspace, runScheduledNow, loadScheduledRunsForTab],
+    [currentWorkspace, runScheduledNow, loadRunsPanelForTab],
   );
 
   // Conflict resolution handlers
@@ -2534,7 +2600,7 @@ function Editor({
                           [tab.id]: value,
                         }));
                         if (value === "runs") {
-                          void loadScheduledRunsForTab(tab.id);
+                          void loadRunsPanelForTab(tab.id);
                         }
                       }}
                       sx={{
@@ -2564,7 +2630,7 @@ function Editor({
                       />
                       <Tab
                         value="runs"
-                        label={`Runs (${tab.scheduledRun?.runCount ?? 0})`}
+                        label="Runs"
                         disabled={!tab.isSaved}
                         disableRipple
                         sx={{
@@ -2588,11 +2654,51 @@ function Editor({
                   </Box>
                   <Box sx={{ flexGrow: 1, minHeight: 0 }}>
                     {(tabBottomPanel[tab.id] || "results") === "runs" ? (
-                      <ScheduledRunsPanel
-                        loading={tabScheduledRunsLoading[tab.id] || false}
-                        error={tabScheduledRunsError[tab.id]}
-                        runs={tabScheduledRuns[tab.id] || []}
-                      />
+                      <Box
+                        sx={{
+                          height: "100%",
+                          display: "flex",
+                          flexDirection: "column",
+                          minHeight: 0,
+                        }}
+                      >
+                        <Box sx={{ flex: 1, minHeight: 0 }}>
+                          <ConsoleExecutionsPanel
+                            loading={tabExecutionsLoading[tab.id] || false}
+                            error={tabExecutionsError[tab.id]}
+                            executions={tabExecutions[tab.id] || []}
+                          />
+                        </Box>
+                        {tab.schedule ? (
+                          <Box
+                            sx={{
+                              borderTop: 1,
+                              borderColor: "divider",
+                              maxHeight: "45%",
+                              minHeight: 120,
+                              display: "flex",
+                              flexDirection: "column",
+                            }}
+                          >
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              sx={{ px: 1.5, py: 0.75, fontWeight: 600 }}
+                            >
+                              Scheduled runs
+                            </Typography>
+                            <Box sx={{ flex: 1, minHeight: 0 }}>
+                              <ScheduledRunsPanel
+                                loading={
+                                  tabScheduledRunsLoading[tab.id] || false
+                                }
+                                error={tabScheduledRunsError[tab.id]}
+                                runs={tabScheduledRuns[tab.id] || []}
+                              />
+                            </Box>
+                          </Box>
+                        ) : null}
+                      </Box>
                     ) : (
                       <ResultsTable
                         results={tabResults[tab.id] || null}

@@ -155,6 +155,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   ),
   read_console: bridge(),
   run_console: bridge({ requiresQueryAccess: true }),
+  list_console_executions: bridge(),
   schedule_query: exclude(
     "in-product-only",
     "Scheduled writes need session auth + console ownership UX; not in MCP read-only apps loop.",

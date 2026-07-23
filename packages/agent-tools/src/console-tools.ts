@@ -128,6 +128,21 @@ export const cancelQueryStatusSchema = z.object({
     .describe("The executionId returned by run_console for the running query."),
 });
 
+export const listConsoleExecutionsSchema = z.object({
+  consoleId: z
+    .string()
+    .describe(
+      "Console ID whose recent execution history to list (from search_consoles / list_open_consoles).",
+    ),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .optional()
+    .describe("Max rows to return (default 10, max 50). Retained for 90 days."),
+});
+
 export const setConsoleConnectionSchema = z.object({
   consoleId: z
     .string()
@@ -175,3 +190,6 @@ export type OpenConsoleInput = z.infer<typeof openConsoleSchema>;
 export type RunConsoleInput = z.infer<typeof runConsoleSchema>;
 export type CheckQueryStatusInput = z.infer<typeof checkQueryStatusSchema>;
 export type CancelQueryStatusInput = z.infer<typeof cancelQueryStatusSchema>;
+export type ListConsoleExecutionsInput = z.infer<
+  typeof listConsoleExecutionsSchema
+>;

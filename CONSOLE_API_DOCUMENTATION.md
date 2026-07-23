@@ -43,12 +43,66 @@ Get a list of all consoles in the workspace.
       "createdAt": "2024-01-01T00:00:00Z",
       "updatedAt": "2024-01-01T00:00:00Z",
       "lastExecutedAt": "2024-01-01T00:00:00Z",
-      "executionCount": 10
+      "executionCount": 10,
+      "lastExternalUsedAt": "2024-01-01T00:00:00Z",
+      "externalUseCount": 3,
+      "lastExternalSource": "api"
     }
   ],
   "total": 1
 }
 ```
+
+**Usage fields (monitoring):**
+
+| Field | Meaning |
+|---|---|
+| `lastExecutedAt` / `executionCount` | Any execution (UI, API, MCP, in-app agent) |
+| `lastExternalUsedAt` / `externalUseCount` | External-only: REST API key execute, or MCP `run_console` / `read_console` / details |
+| `lastExternalSource` | `"api"` or `"mcp"` — which external surface last touched the console |
+
+`lastExternalUsedAt: null` means the console has not been observed via API key or MCP since this tracking shipped.
+
+### List Recent Console Executions
+
+Return the most recent query execution logs for a console (from `query_executions`, retained for 90 days).
+
+**Endpoint:** `GET /api/workspaces/{workspaceId}/consoles/{consoleId}/executions?limit=10`
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "executions": [
+    {
+      "id": "execution_id",
+      "executedAt": "2024-01-01T00:00:00Z",
+      "source": "api",
+      "sourceLabel": "API key",
+      "status": "success",
+      "executionTimeMs": 42,
+      "rowCount": 10,
+      "errorType": null,
+      "userId": "user_id",
+      "apiKeyId": "api_key_id",
+      "databaseType": "postgresql",
+      "queryLanguage": "sql"
+    }
+  ]
+}
+```
+
+`source` / `sourceLabel`:
+
+| source | sourceLabel |
+|---|---|
+| `console_ui` | App UI |
+| `api` | API key |
+| `mcp` | MCP |
+| `agent` | AI agent |
+| `scheduled_query` | Schedule |
+| `flow` | Flow |
 
 ### Get Console Details
 
@@ -76,7 +130,10 @@ Get detailed information about a specific console, including its code.
     "createdAt": "2024-01-01T00:00:00Z",
     "updatedAt": "2024-01-01T00:00:00Z",
     "lastExecutedAt": "2024-01-01T00:00:00Z",
-    "executionCount": 10
+    "executionCount": 10,
+    "lastExternalUsedAt": "2024-01-01T00:00:00Z",
+    "externalUseCount": 3,
+    "lastExternalSource": "api"
   }
 }
 ```

@@ -24,6 +24,7 @@ import {
   runConsoleSchema,
   checkQueryStatusSchema,
   cancelQueryStatusSchema,
+  listConsoleExecutionsSchema,
   applyModification,
   buildModificationDiff,
   type ConsoleModification,
@@ -40,6 +41,8 @@ import {
   startDetachedConsoleRun,
   cancelDetachedConsoleRun,
 } from "../../services/console-execution.service";
+import { queryExecutionService } from "../../services/query-execution.service";
+import { queryExecutionSourceLabel } from "../../services/query-execution-source";
 import {
   MONGO_QUERY_WRITE_SCOPE_REQUIRED,
   sqlReadOnlyAccessError,
@@ -82,6 +85,11 @@ export interface ServerConsoleToolsOptions {
   chatId?: string;
   /** Database capability granted by the calling API key. */
   queryAccess?: QueryAccess;
+  /**
+   * Where these tools are hosted. MCP is an external surface and updates
+   * lastExternalUsedAt; in-product agent stays internal (`agent`).
+   */
+  surface?: "agent" | "mcp";
 }
 
 interface LoadedConsole {
@@ -116,8 +124,10 @@ export function createServerConsoleTools({
   executionContext,
   chatId,
   queryAccess = "write",
+  surface = "agent",
 }: ServerConsoleToolsOptions) {
   const agentClientId = `agent:${chatId ?? "unknown"}`;
+  const runSource = surface === "mcp" ? ("mcp" as const) : ("agent" as const);
 
   const loadConsole = async (consoleId: string): Promise<LoadResult> => {
     if (!consoleId) {
@@ -191,6 +201,14 @@ export function createServerConsoleTools({
           const loaded = await loadConsole(consoleId);
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const { doc } = loaded;
+          if (surface === "mcp") {
+            void consoleManager.recordExternalUse(
+              doc._id.toString(),
+              workspaceId,
+              "mcp",
+              "access",
+            );
+          }
           const { content, totalLines } = withLineNumbers(doc.code);
           return {
             success: true,
@@ -616,7 +634,7 @@ export function createServerConsoleTools({
             workspaceId,
             consoleId,
             userId: userId ?? "agent",
-            source: "agent",
+            source: runSource,
             executionId,
             signal: executionContext?.signal,
             readOnly: queryAccess === "read",
@@ -753,6 +771,52 @@ export function createServerConsoleTools({
               error instanceof Error
                 ? error.message
                 : "Failed to cancel query.",
+          };
+        }
+      },
+    }),
+
+    list_console_executions: tool({
+      description:
+        "List recent query executions for a console. Each row includes source (raw) and sourceLabel (App UI / API key / MCP / AI agent / Schedule / Flow). Use sourceLabel when explaining to the user; source api|mcp means external. History is retained for ~90 days.",
+      inputSchema: listConsoleExecutionsSchema,
+      execute: async ({ consoleId, limit }) => {
+        try {
+          const loaded = await loadConsole(consoleId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+
+          const executions = await queryExecutionService.getConsoleExecutions(
+            workspaceId,
+            consoleId,
+            { limit: limit ?? 10 },
+          );
+
+          return {
+            success: true,
+            consoleId,
+            executions: executions.map(execution => ({
+              id: execution._id.toString(),
+              executedAt: execution.executedAt,
+              source: execution.source,
+              sourceLabel: queryExecutionSourceLabel(execution.source),
+              status: execution.status,
+              executionTimeMs: execution.executionTimeMs,
+              rowCount: execution.rowCount ?? null,
+              errorType: execution.errorType ?? null,
+              apiKeyId: execution.apiKeyId
+                ? execution.apiKeyId.toString()
+                : null,
+              databaseType: execution.databaseType,
+              queryLanguage: execution.queryLanguage,
+            })),
+          };
+        } catch (error) {
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to list console executions",
           };
         }
       },
