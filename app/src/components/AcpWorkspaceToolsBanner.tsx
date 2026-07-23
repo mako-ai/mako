@@ -22,6 +22,9 @@ export function AcpWorkspaceToolsBanner(props: {
   const acpStatus = useAcpStore(s => s.status);
   const statusError = useAcpStore(s => s.statusError);
   const error = useAcpStore(s => s.error);
+  const bridgeOk = Boolean(
+    acpStatus?.acpBridge?.version && acpStatus.acpBridge.version >= 2,
+  );
   const sessions = useAcpStore(s => s.sessions);
   const refreshStatus = useAcpStore(s => s.refreshStatus);
   const refreshSessions = useAcpStore(s => s.refreshSessions);
@@ -172,7 +175,7 @@ export function AcpWorkspaceToolsBanner(props: {
           <Button
             size="small"
             variant="contained"
-            disabled={busy || !workspaceId}
+            disabled={busy || !workspaceId || !bridgeOk}
             onClick={() => void enable()}
           >
             {busy ? "Connecting…" : "Enable workspace tools"}
@@ -188,6 +191,13 @@ export function AcpWorkspaceToolsBanner(props: {
         connections, consoles). If Claude already said Mako needs auth, click
         Enable, then send a new message — or start a New chat.
       </Typography>
+      {!bridgeOk ? (
+        <Typography variant="body2" sx={{ mt: 1 }}>
+          Local Agent is outdated — install desktop-canary and fully quit/reopen
+          Mako before enabling tools. Raw &quot;ACP connection closed&quot;
+          means the old agent is still on port 41720.
+        </Typography>
+      ) : null}
       {error ? (
         <Typography variant="body2" sx={{ mt: 1 }}>
           {error}

@@ -90,6 +90,7 @@ export class AcpSessionManager {
   private pendingPermissions = new Map<string, PendingPermission>();
   /** Global listeners (all sessions) — used by tests. */
   private globalListeners = new Set<Listener>();
+  private lastAdapterError: string | null = null;
 
   getStatus(): AcpStatusResponse {
     const providers: AcpProviderStatus[] = ACP_PROVIDER_IDS.map(id => {
@@ -122,6 +123,13 @@ export class AcpSessionManager {
       available: true,
       defaultCwd: defaultCwd(),
       providers,
+      acpBridge: {
+        version: 2,
+        terminalAuth: true,
+        mcpProbe: true,
+        reconnect: true,
+      },
+      lastAdapterError: this.lastAdapterError,
     };
   }
 
@@ -237,8 +245,14 @@ export class AcpSessionManager {
     reason: string,
   ): void {
     const label = ACP_PROVIDERS[providerId].label;
-    const message = `${acpReconnectMessage(label)} (${reason})`;
     const conn = this.connections.get(providerId);
+    const stderr = conn?.lastStderr?.trim();
+    if (stderr) {
+      this.lastAdapterError = stderr.slice(-800);
+    }
+    const message = stderr
+      ? `${acpReconnectMessage(label)} (${reason}). Adapter: ${stderr.slice(-400)}`
+      : `${acpReconnectMessage(label)} (${reason})`;
     if (conn) {
       this.connections.delete(providerId);
       try {

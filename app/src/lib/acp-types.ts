@@ -34,6 +34,14 @@ export interface AcpStatus {
   available: true;
   defaultCwd: string;
   providers: AcpProviderStatus[];
+  /** Present on Local Agent builds that include ACP MCP/reconnect/terminal auth. */
+  acpBridge?: {
+    version: number;
+    terminalAuth?: boolean;
+    mcpProbe?: boolean;
+    reconnect?: boolean;
+  };
+  lastAdapterError?: string | null;
 }
 
 export interface AcpSessionInfo {

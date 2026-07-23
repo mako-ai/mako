@@ -106,9 +106,38 @@ export function CodingAgentsPanel() {
   const provider = providers.find(p => p.id === selectedProviderId);
   const selectValue = provider ? selectedProviderId : "";
   const readyProviders = providers.filter(p => p.adapterFound);
+  const bridgeOk = Boolean(
+    acpStatus.acpBridge?.version && acpStatus.acpBridge.version >= 2,
+  );
+  const lastAdapterError = acpStatus.lastAdapterError;
 
   return (
     <Box>
+      {!bridgeOk ? (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+            Local Agent is outdated for Coding Agents
+          </Typography>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            You&apos;re still running an older Desktop-bundled agent (it reports
+            raw &quot;ACP connection closed&quot;). Install the latest{" "}
+            <strong>desktop-canary</strong>, fully quit Mako (Cmd+Q), and reopen
+            — or for developers: quit Desktop and run{" "}
+            <code>pnpm agent:start</code> from this PR branch.
+          </Typography>
+          <Typography variant="caption" component="div">
+            Canary:{" "}
+            <a
+              href="https://github.com/mako-ai/mako/releases/tag/desktop-canary"
+              target="_blank"
+              rel="noreferrer"
+            >
+              github.com/mako-ai/mako/releases/tag/desktop-canary
+            </a>
+          </Typography>
+        </Alert>
+      ) : null}
+
       <Alert severity="info" sx={{ mb: 2 }}>
         Chat with Claude Code or Codex from the <strong>main Chat</strong> model
         dropdown under <strong>On this machine</strong>. Tokens bill to your
@@ -230,14 +259,23 @@ export function CodingAgentsPanel() {
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
           {error}
-          {/ACP connection closed|connection dropped|without Mako data tools/i.test(
-            error,
-          ) ? (
+          {/ACP connection closed/i.test(error) && !bridgeOk ? (
             <Typography variant="body2" sx={{ mt: 1 }}>
-              Your Desktop app may be bundling an older Local Agent. Install the
-              latest Mako Desktop (or the PR desktop-canary build), quit and
-              reopen the app, then Sign in again. Developers testing a branch
-              can run <code>pnpm agent:start</code> instead.
+              This exact message usually means the <strong>old</strong> Local
+              Agent is still on port 41720. Quit Desktop completely (Cmd+Q),
+              confirm nothing listens with <code>lsof -i :41720</code>,
+              install/reopen desktop-canary, then run{" "}
+              <code>claude auth login</code> in Terminal before Enable workspace
+              tools.
+            </Typography>
+          ) : null}
+          {lastAdapterError ? (
+            <Typography
+              variant="caption"
+              component="pre"
+              sx={{ mt: 1, whiteSpace: "pre-wrap", opacity: 0.9 }}
+            >
+              {lastAdapterError}
             </Typography>
           ) : null}
         </Alert>

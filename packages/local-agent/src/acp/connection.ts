@@ -59,6 +59,8 @@ export interface AcpProviderConnection {
   authMethods: AcpAuthMethodInfo[];
   authRequired: boolean;
   authenticated: boolean;
+  /** Rolling stderr from the adapter process (for UI diagnostics). */
+  lastStderr: string;
   close: () => void;
 }
 
@@ -122,9 +124,13 @@ export async function openProviderConnection(options: {
     windowsHide: true,
   });
 
+  let lastStderr = "";
   child.stderr?.on("data", (buf: Buffer) => {
     const text = buf.toString("utf8").trim();
     if (text) {
+      lastStderr = `${lastStderr}\n${text}`.slice(-4000).trim();
+      // Keep the object field in sync for status/diagnostics.
+      if (connectionHolder) connectionHolder.lastStderr = lastStderr;
       acpLog.info("ACP adapter stderr", {
         providerId,
         text: text.slice(0, 2000),
@@ -135,6 +141,9 @@ export async function openProviderConnection(options: {
   child.on("exit", (code, signal) => {
     acpLog.info("ACP adapter exited", { providerId, code, signal });
   });
+
+  // Filled after connect so stderr handler can update it.
+  let connectionHolder: AcpProviderConnection | null = null;
 
   const { input, output } = nodeToWebStreams(child);
   const stream = acp.ndJsonStream(input, output);
@@ -193,26 +202,42 @@ export async function openProviderConnection(options: {
     .connect(stream);
 
   const agent = connection.agent;
-  const initResult = await agent.request(acp.methods.agent.initialize, {
-    protocolVersion: acp.PROTOCOL_VERSION,
-    clientInfo: {
-      name: "mako-local-agent",
-      version: "0.1.0",
-    },
-    clientCapabilities: {
-      fs: {
-        readTextFile: true,
-        writeTextFile: true,
+  let initResult;
+  try {
+    initResult = await agent.request(acp.methods.agent.initialize, {
+      protocolVersion: acp.PROTOCOL_VERSION,
+      clientInfo: {
+        name: "mako-local-agent",
+        version: "0.1.0",
       },
-      // Claude ACP advertises terminal login only when the client opts in.
-      auth: {
-        terminal: true,
+      clientCapabilities: {
+        fs: {
+          readTextFile: true,
+          writeTextFile: true,
+        },
+        // Claude ACP advertises terminal login only when the client opts in.
+        auth: {
+          terminal: true,
+        },
+        _meta: {
+          "terminal-auth": true,
+        },
       },
-      _meta: {
-        "terminal-auth": true,
-      },
-    },
-  });
+    });
+  } catch (error) {
+    const detail = lastStderr
+      ? ` Adapter stderr: ${lastStderr.slice(-800)}`
+      : "";
+    const base =
+      error instanceof Error ? error.message : "ACP initialize failed";
+    try {
+      connection.close?.();
+    } catch {
+      // ignore
+    }
+    if (!child.killed) child.kill("SIGTERM");
+    throw new Error(`${base}.${detail}`.trim());
+  }
 
   const authMethods: AcpAuthMethodInfo[] = Array.isArray(initResult.authMethods)
     ? initResult.authMethods.map(m => {
@@ -244,7 +269,7 @@ export async function openProviderConnection(options: {
       })
     : [];
 
-  return {
+  connectionHolder = {
     providerId,
     child,
     connection,
@@ -253,6 +278,7 @@ export async function openProviderConnection(options: {
     authMethods,
     authRequired: authMethods.length > 0,
     authenticated: authMethods.length === 0,
+    lastStderr,
     close: () => {
       try {
         connection.close?.();
@@ -267,4 +293,5 @@ export async function openProviderConnection(options: {
       }
     },
   };
+  return connectionHolder;
 }

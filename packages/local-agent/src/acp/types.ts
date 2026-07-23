@@ -87,6 +87,18 @@ export interface AcpStatusResponse {
   available: true;
   defaultCwd: string;
   providers: AcpProviderStatus[];
+  /**
+   * Capability marker so the web UI can detect an outdated Desktop-bundled
+   * agent (raw "ACP connection closed" with no rewrite / no terminal auth).
+   */
+  acpBridge?: {
+    version: 2;
+    terminalAuth: true;
+    mcpProbe: true;
+    reconnect: true;
+  };
+  /** Last Claude/Codex adapter stderr snippet (when a connection died). */
+  lastAdapterError?: string | null;
 }
 
 export interface CreateAcpSessionRequest {
