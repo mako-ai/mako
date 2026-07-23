@@ -198,13 +198,32 @@ export function CodingAgentsPanel() {
                 />
                 <Chip
                   size="small"
-                  label={`Auth: ${provider.authProduct}`}
+                  label={
+                    provider.authRequired && !provider.connected
+                      ? `Sign in needed (${provider.authProduct})`
+                      : provider.connected
+                        ? `Signed in (${provider.authProduct})`
+                        : provider.authProduct
+                  }
+                  color={
+                    provider.authRequired && !provider.connected
+                      ? "warning"
+                      : "default"
+                  }
                   variant="outlined"
                 />
                 {provider.connected && (
                   <Chip size="small" label="Connected" color="info" />
                 )}
               </Stack>
+              {selectedProviderId === "codex" &&
+              /CODEX_API_KEY|OPENAI_API_KEY/i.test(error || "") ? (
+                <Alert severity="warning" sx={{ mt: 1 }}>
+                  Codex needs ChatGPT login. Click{" "}
+                  <strong>Sign in with ChatGPT</strong> (opens Terminal →{" "}
+                  <code>codex login</code>), finish auth, then retry in Chat.
+                </Alert>
+              ) : null}{" "}
               {!provider.adapterFound && (
                 <Alert severity="info" sx={{ mt: 1 }}>
                   Adapter missing — use <strong>Install / update</strong> below

@@ -83,6 +83,14 @@ export function pickSafeCodexModel(
 
 export function explainCodexModelFailure(message: string): string | null {
   const text = message || "";
+  if (/CODEX_API_KEY|OPENAI_API_KEY/i.test(text)) {
+    return (
+      "Codex is not signed in. Click Sign in with ChatGPT (runs `codex login`), " +
+      "complete ChatGPT auth in Terminal, then retry. " +
+      "Alternatively set OPENAI_API_KEY / CODEX_API_KEY in the environment " +
+      "before starting Mako Desktop."
+    );
+  }
   if (/model metadata|not found/i.test(text)) {
     return (
       "Codex could not load model metadata (often an outdated Codex CLI or " +
@@ -92,9 +100,9 @@ export function explainCodexModelFailure(message: string): string | null {
   }
   if (/internal error/i.test(text)) {
     return (
-      "Codex ACP returned Internal error. Mako will try to update Codex CLI + " +
-      "ACP adapter on this machine — send again after it finishes. If it keeps " +
-      "failing, restart Local Agent and re-Enable workspace tools."
+      "Codex ACP returned Internal error. Usually ChatGPT login is missing " +
+      "(`codex login`) or Codex CLI is outdated — Sign in with ChatGPT, " +
+      "Update Codex, then retry."
     );
   }
   return null;

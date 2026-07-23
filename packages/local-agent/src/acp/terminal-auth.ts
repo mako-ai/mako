@@ -7,6 +7,7 @@
  */
 import { spawn } from "node:child_process";
 import { acpLog } from "./log";
+import type { AcpProviderId } from "./providers";
 
 export interface TerminalAuthLaunch {
   command: string;
@@ -75,6 +76,31 @@ export function formatTerminalAuthCommand(launch: TerminalAuthLaunch): string {
   return [launch.command, ...launch.args]
     .map(part => (/\s/.test(part) ? JSON.stringify(part) : part))
     .join(" ");
+}
+
+/** Default CLI login when the adapter omits terminal-auth metadata. */
+export function defaultTerminalLoginLaunch(
+  providerId: AcpProviderId,
+): TerminalAuthLaunch {
+  if (providerId === "codex") {
+    return {
+      command: "codex",
+      args: ["login"],
+      label: "Codex / ChatGPT Login",
+    };
+  }
+  return {
+    command: "npx",
+    args: [
+      "--yes",
+      "@agentclientprotocol/claude-agent-acp",
+      "--cli",
+      "auth",
+      "login",
+      "--claudeai",
+    ],
+    label: "Claude Login",
+  };
 }
 
 /**

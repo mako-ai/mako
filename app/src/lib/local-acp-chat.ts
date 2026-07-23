@@ -483,7 +483,12 @@ export async function runLocalAcpChatTurn(
     }
     let message =
       error instanceof Error ? error.message : "Local ACP prompt failed";
-    if (/^not found$/i.test(message.trim())) {
+    if (/CODEX_API_KEY|OPENAI_API_KEY/i.test(message)) {
+      message =
+        "Codex is not signed in. In Settings → Coding Agents click " +
+        "Sign in with ChatGPT (runs `codex login`), finish auth in Terminal, " +
+        "then retry. Or set OPENAI_API_KEY before starting Desktop.";
+    } else if (/^not found$/i.test(message.trim())) {
       message =
         providerId === "codex"
           ? "Codex could not apply that model (or Local Agent is outdated). " +
@@ -496,7 +501,8 @@ export async function runLocalAcpChatTurn(
     // force one more ensure from the app if the tip hasn't already.
     if (
       providerId === "codex" &&
-      /internal error|model metadata|not found/i.test(message)
+      /internal error|model metadata|not found/i.test(message) &&
+      !/CODEX_API_KEY|OPENAI_API_KEY|not signed in/i.test(message)
     ) {
       if (!/updated Codex|Mako will try to update/i.test(message)) {
         try {

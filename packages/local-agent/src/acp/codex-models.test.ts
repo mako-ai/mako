@@ -54,7 +54,7 @@ describe("codex-models", () => {
     assert.equal(picked, "gpt-5.6-sol");
   });
 
-  it("explains metadata / Internal error with auto-update tips", () => {
+  it("explains metadata / API key / Internal error", () => {
     assert.match(
       explainCodexModelFailure(
         "Model metadata for `gpt-5.6-sol` not found",
@@ -62,8 +62,14 @@ describe("codex-models", () => {
       /Mako will try to update|automatically/,
     );
     assert.match(
+      explainCodexModelFailure(
+        "Internal error: CODEX_API_KEY or OPENAI_API_KEY is not set",
+      ) || "",
+      /codex login|Sign in with ChatGPT/,
+    );
+    assert.match(
       explainCodexModelFailure("Internal error") || "",
-      /Mako will try to update/,
+      /codex login|Sign in|outdated/,
     );
   });
 });

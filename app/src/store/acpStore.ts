@@ -386,9 +386,18 @@ export const useAcpStore = create<AcpState>()(
         get().ensureEventSubscription(session.id);
         return session;
       } catch (error) {
+        let message =
+          error instanceof Error ? error.message : "Failed to create session";
+        if (
+          get().selectedProviderId === "codex" &&
+          /CODEX_API_KEY|OPENAI_API_KEY/i.test(message)
+        ) {
+          message =
+            "Codex is not signed in. Click Sign in with ChatGPT " +
+            "(runs `codex login`), finish auth in Terminal, then retry.";
+        }
         set(s => {
-          s.error =
-            error instanceof Error ? error.message : "Failed to create session";
+          s.error = message;
         });
         return null;
       }

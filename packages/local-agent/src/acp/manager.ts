@@ -25,7 +25,10 @@ import {
   explainAdapterLaunchFailure,
   isAcpConnectionClosedError,
 } from "./connection-errors";
-import { launchTerminalAuth } from "./terminal-auth";
+import {
+  defaultTerminalLoginLaunch,
+  launchTerminalAuth,
+} from "./terminal-auth";
 import {
   currentModelFromConfigOptions,
   modelChoicesFromConfigOptions,
@@ -661,32 +664,36 @@ export class AcpSessionManager {
       conn.authMethods[0];
 
     if (!preferred) {
-      // Adapter advertised no auth methods — typically already logged in via
-      // Claude Code CLI credentials on disk.
+      // No auth methods advertised — still open CLI login for Codex (ChatGPT),
+      // since missing ~/.codex auth surfaces as CODEX_API_KEY / OPENAI_API_KEY.
+      if (providerId === "codex") {
+        const { commandLine, opened } = launchTerminalAuth(
+          defaultTerminalLoginLaunch("codex"),
+        );
+        return {
+          ok: true,
+          methodId: "codex-login",
+          launchedTerminal: opened,
+          terminalCommand: commandLine,
+          message: opened
+            ? "Complete ChatGPT sign-in in the Terminal window (`codex login`), then retry Codex in Chat."
+            : `Run this in Terminal, then retry Codex in Chat:\n${commandLine}`,
+        };
+      }
       conn.authenticated = true;
       return {
         ok: true,
         methodId: "none",
         message:
-          "No sign-in required — Claude/Codex credentials look available. Open Chat and pick a local model.",
+          "No sign-in required — Claude credentials look available. Open Chat and pick a local model.",
       };
     }
 
-    // Modern Claude ACP uses terminal login; agent.authenticate(methodId)
-    // throws "Method not implemented." Open a real Terminal instead.
+    // Terminal login (Claude / Codex); agent.authenticate often throws
+    // "Method not implemented." Open a real Terminal instead.
     if (preferred.type === "terminal" || preferred.terminalAuth) {
-      const launch = preferred.terminalAuth || {
-        command: "npx",
-        args: [
-          "--yes",
-          "@agentclientprotocol/claude-agent-acp",
-          "--cli",
-          "auth",
-          "login",
-          "--claudeai",
-        ],
-        label: preferred.name || "Claude Login",
-      };
+      const launch =
+        preferred.terminalAuth || defaultTerminalLoginLaunch(providerId);
       const { commandLine, opened } = launchTerminalAuth(launch);
       return {
         ok: true,
@@ -716,20 +723,11 @@ export class AcpSessionManager {
       }
       const message =
         error instanceof Error ? error.message : "Authentication failed";
-      // Claude adapters that reject authenticate RPC — fall back to CLI login.
+      // Adapters that reject authenticate RPC — fall back to CLI login.
       if (/not implemented/i.test(message)) {
-        const { commandLine, opened } = launchTerminalAuth({
-          command: "npx",
-          args: [
-            "--yes",
-            "@agentclientprotocol/claude-agent-acp",
-            "--cli",
-            "auth",
-            "login",
-            "--claudeai",
-          ],
-          label: "Claude Login",
-        });
+        const { commandLine, opened } = launchTerminalAuth(
+          defaultTerminalLoginLaunch(providerId),
+        );
         return {
           ok: true,
           methodId: preferred.id,
