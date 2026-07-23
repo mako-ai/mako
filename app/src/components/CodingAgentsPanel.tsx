@@ -181,11 +181,16 @@ function PermissionCard() {
   );
 }
 
+/** Stable empty array — `|| []` inside a zustand selector is a new reference
+ * every render and triggers React #185 (max update depth). */
+const EMPTY_MESSAGES: import("../lib/acp-types").AcpChatMessage[] = [];
+
 function Transcript() {
   const activeSessionId = useAcpStore(s => s.activeSessionId);
-  const messages = useAcpStore(s =>
-    activeSessionId ? s.messagesBySession[activeSessionId] || [] : [],
-  );
+  const messages = useAcpStore(s => {
+    if (!activeSessionId) return EMPTY_MESSAGES;
+    return s.messagesBySession[activeSessionId] ?? EMPTY_MESSAGES;
+  });
 
   if (!activeSessionId) {
     return (
