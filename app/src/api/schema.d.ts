@@ -9588,6 +9588,7 @@ export interface operations {
                         /** @enum {boolean} */
                         success: true;
                         content: string;
+                        selfDirective?: string;
                     };
                 };
             };

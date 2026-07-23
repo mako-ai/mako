@@ -9761,6 +9761,9 @@
                     },
                     "content": {
                       "type": "string"
+                    },
+                    "selfDirective": {
+                      "type": "string"
                     }
                   },
                   "required": [
