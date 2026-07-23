@@ -37,6 +37,10 @@ Reads stream **Arrow IPC** back into pandas zero-copy. Queries must be read-only
 - **Streaming runs** — executions stream outputs over SSE, and a run continues server-side even if your tab disconnects.
 - **Version history** — prior generations of the document can be listed, inspected, and restored (see the API surface below).
 
+## Folders & Organization
+
+Notebooks are organized like dashboards and consoles: a **My Notebooks** section (private to you) and a **Workspace** section (shared), each supporting arbitrarily nested folders. Create, rename, and delete folders in the explorer; drag notebooks between folders or move them via `PATCH /api/workspaces/:wid/notebooks/:id/move` (set `folderId` and/or `access`). Folder structure updates in real time for everyone in the workspace.
+
 ## Building Notebooks with the AI Agent
 
 Notebooks have their own [expertise mode](/ai-agent/#expertise-modes) — opening a notebook tab defaults the agent to **Notebook** mode. The agent can create notebooks, add/edit/delete cells, run SQL cells against a data source, and run Python cells on the kernel, reading each run's stdout/result/error to iterate. Tools:
