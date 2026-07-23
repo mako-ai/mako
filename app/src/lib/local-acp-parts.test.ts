@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendAssistantReasoning,
   appendAssistantText,
   mapAcpToolStatus,
   resolveAcpToolName,
@@ -87,6 +88,31 @@ describe("local-acp-parts", () => {
       type: "dynamic-tool",
       toolName: "app_edit_file",
       title: undefined,
+    });
+  });
+
+  it("maps agent_thought_chunk text onto reasoning parts", () => {
+    let parts = appendAssistantReasoning(
+      [{ type: "text", text: "" }],
+      "Considering the schema…",
+    );
+    expect(parts).toEqual([
+      { type: "reasoning", text: "Considering the schema…" },
+    ]);
+    parts = appendAssistantReasoning(parts, " then joins.");
+    expect(parts).toEqual([
+      { type: "reasoning", text: "Considering the schema… then joins." },
+    ]);
+    parts = upsertAcpToolPart(parts, {
+      toolCallId: "t3",
+      name: "sql_execute_query",
+      status: "completed",
+      rawOutput: { ok: true },
+    });
+    parts = appendAssistantReasoning(parts, "Next step.");
+    expect(parts[2]).toMatchObject({
+      type: "reasoning",
+      text: "Next step.",
     });
   });
 });

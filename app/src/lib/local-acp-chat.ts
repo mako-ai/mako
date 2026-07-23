@@ -12,6 +12,7 @@ import {
   localAcpModelPreference,
 } from "./local-acp-models";
 import {
+  appendAssistantReasoning,
   appendAssistantText,
   getAssistantParts,
   setAssistantErrorText,
@@ -250,6 +251,16 @@ export async function runLocalAcpChatTurn(
             content?: { type?: string; text?: string };
           };
           if (
+            update.sessionUpdate === "agent_thought_chunk" &&
+            update.content?.type === "text" &&
+            typeof update.content.text === "string" &&
+            update.content.text
+          ) {
+            const chunk = update.content.text;
+            patchAssistantParts(parts =>
+              appendAssistantReasoning(parts, chunk),
+            );
+          } else if (
             update.sessionUpdate === "agent_message_chunk" &&
             update.content?.type === "text" &&
             typeof update.content.text === "string" &&

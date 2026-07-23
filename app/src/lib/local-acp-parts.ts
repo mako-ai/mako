@@ -34,8 +34,10 @@ export type DynamicToolPart = {
 };
 
 type TextPart = { type: "text"; text: string };
+type ReasoningPart = { type: "reasoning"; text: string };
 type AssistantPart =
   | TextPart
+  | ReasoningPart
   | DynamicToolPart
   | { type: string; [k: string]: unknown };
 
@@ -201,6 +203,37 @@ export function appendAssistantText(
     return copy;
   }
   return [...parts, { type: "text", text: chunk }];
+}
+
+/**
+ * Append ACP `agent_thought_chunk` text as UIMessage `reasoning` parts so Chat
+ * renders the same Thinking/ReasoningDisplay blocks as the in-app agent.
+ * Extends the trailing reasoning part; starts a new block after tools/text.
+ */
+export function appendAssistantReasoning(
+  parts: AssistantPart[],
+  chunk: string,
+): AssistantPart[] {
+  if (!chunk) return parts;
+  const last = parts[parts.length - 1];
+  if (last?.type === "reasoning") {
+    const copy = parts.slice();
+    copy[copy.length - 1] = {
+      type: "reasoning",
+      text: `${(last as ReasoningPart).text}${chunk}`,
+    };
+    return copy;
+  }
+  // Drop a leading empty text placeholder so the first visible part is the
+  // thinking block (matches cloud-agent streaming UX).
+  if (
+    parts.length === 1 &&
+    parts[0]?.type === "text" &&
+    !(parts[0] as TextPart).text.trim()
+  ) {
+    return [{ type: "reasoning", text: chunk }];
+  }
+  return [...parts, { type: "reasoning", text: chunk }];
 }
 
 export function setAssistantErrorText(
