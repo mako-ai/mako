@@ -460,14 +460,20 @@ export const useAcpStore = create<AcpState>()(
     ensureAdapter: async (providerId, options) => {
       const id = providerId || get().selectedProviderId;
       if (!acpSupportsAdapterEnsure(get().status)) {
+        const npmCmd =
+          id === "codex"
+            ? "npm i -g @openai/codex @agentclientprotocol/codex-acp"
+            : "npm i -g @agentclientprotocol/claude-agent-acp";
         const message =
-          "Update needs PR Desktop 0.3.9 (mako.ai/download is still 0.3.1). " +
-          "Kill port 41720, install that build, reopen. " +
-          "If the adapter is already found, use Chat → Enable workspace tools.";
-        // Only surface when the user explicitly clicked Update/Install.
+          "One-click Update needs PR Desktop 0.3.9 Local Agent " +
+          "(mako.ai/download is still 0.3.1). Until then, run this in Terminal, " +
+          "then click Retry / refresh status:\n\n" +
+          npmCmd;
+        // Explicit Update/Install: show Terminal fallback instead of a dead button.
         if (options?.force) {
           set(s => {
-            s.error = message;
+            s.error = null;
+            s.authGuidance = message;
           });
         }
         return {
@@ -475,7 +481,10 @@ export const useAcpStore = create<AcpState>()(
           providerId: id,
           skipped: true,
           updated: false,
-          packages: [],
+          packages:
+            id === "codex"
+              ? ["@openai/codex", "@agentclientprotocol/codex-acp"]
+              : ["@agentclientprotocol/claude-agent-acp"],
           message,
           adapterCommand: null,
           adapterVia: null,

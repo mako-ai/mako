@@ -19,18 +19,30 @@ export const LOCAL_ACP_MODEL_PREFIX = "local-acp/";
 export const LOCAL_ACP_CLAUDE_MODEL_ID = `${LOCAL_ACP_MODEL_PREFIX}claude`;
 export const LOCAL_ACP_CODEX_MODEL_ID = `${LOCAL_ACP_MODEL_PREFIX}codex`;
 
-/** Shown in Chat before a session reports adapter model lists. */
+/**
+ * Shown in Chat before a session reports adapter model lists.
+ * Use canonical ACP ids (not short aliases) — older Claude adapters reject
+ * bare `opus` / `sonnet` with "Not Found".
+ */
 export const CLAUDE_CODE_MODEL_FALLBACKS: AcpModelChoice[] = [
   {
     value: "default",
     name: "Default",
     description: "Claude Code’s current default",
   },
-  { value: "sonnet", name: "Sonnet" },
-  { value: "opus", name: "Opus" },
-  { value: "fable", name: "Fable" },
-  { value: "haiku", name: "Haiku" },
+  { value: "claude-sonnet-4-5", name: "Sonnet" },
+  { value: "claude-opus-4-6", name: "Opus" },
+  { value: "claude-fable-5", name: "Fable" },
+  { value: "claude-haiku-4-5", name: "Haiku" },
 ];
+
+/** Last-resort map when the adapter has not advertised models yet. */
+const CLAUDE_ALIAS_CANONICAL: Record<string, string> = {
+  sonnet: "claude-sonnet-4-5",
+  opus: "claude-opus-4-6",
+  fable: "claude-fable-5",
+  haiku: "claude-haiku-4-5",
+};
 
 /**
  * ChatGPT Codex models when the adapter has not advertised a list yet.
@@ -121,7 +133,9 @@ export function resolveLocalAcpModelValue(
   const pref = preferred.trim();
   if (!pref) return pref;
   const list = available ?? [];
-  if (list.length === 0) return pref;
+  if (list.length === 0) {
+    return CLAUDE_ALIAS_CANONICAL[pref.toLowerCase()] ?? pref;
+  }
 
   const prefLower = pref.toLowerCase();
   const exact = list.find(m => m.value.toLowerCase() === prefLower);

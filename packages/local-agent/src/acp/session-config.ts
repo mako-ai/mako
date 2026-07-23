@@ -107,6 +107,14 @@ export function currentModelFromConfigOptions(
  * model ids (`claude-opus-4-6`, …). Older Claude ACP builds reject aliases
  * with a bare "Not Found" / invalid value error.
  */
+/** When the adapter has not advertised models yet (warm failed / old agent). */
+const CLAUDE_ALIAS_CANONICAL: Record<string, string> = {
+  sonnet: "claude-sonnet-4-5",
+  opus: "claude-opus-4-6",
+  fable: "claude-fable-5",
+  haiku: "claude-haiku-4-5",
+};
+
 export function resolveModelConfigValue(
   preferred: string,
   available: AcpModelChoice[] | undefined | null,
@@ -114,7 +122,9 @@ export function resolveModelConfigValue(
   const pref = preferred.trim();
   if (!pref) return pref;
   const list = available ?? [];
-  if (list.length === 0) return pref;
+  if (list.length === 0) {
+    return CLAUDE_ALIAS_CANONICAL[pref.toLowerCase()] ?? pref;
+  }
 
   const prefLower = pref.toLowerCase();
   const exact = list.find(m => m.value.toLowerCase() === prefLower);

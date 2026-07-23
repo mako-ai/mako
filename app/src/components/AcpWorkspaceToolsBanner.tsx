@@ -190,18 +190,18 @@ export function AcpWorkspaceToolsBanner(props: {
         severity="warning"
         sx={{ mb: 1 }}
         action={
-          canEnsureAdapter ? (
-            <Button
-              size="small"
-              variant="contained"
-              disabled={busy || ensureRunning}
-              onClick={() => void installAdapter()}
-            >
-              {busy || ensureRunning
-                ? busyLabel || ensureLabel || "Installing…"
-                : "Install"}
-            </Button>
-          ) : undefined
+          <Button
+            size="small"
+            variant="contained"
+            disabled={busy || ensureRunning}
+            onClick={() => void installAdapter()}
+          >
+            {busy || ensureRunning
+              ? busyLabel || ensureLabel || "Installing…"
+              : canEnsureAdapter
+                ? "Install"
+                : "Show install command"}
+          </Button>
         }
       >
         <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
@@ -212,13 +212,6 @@ export function AcpWorkspaceToolsBanner(props: {
             ? "Mako can install it on this machine (npm global). One click — no Terminal required."
             : provider.installHint}
         </Typography>
-        {!canEnsureAdapter ? (
-          <Typography variant="body2" sx={{ mt: 1 }}>
-            One-click install needs the PR Desktop 0.3.9 Local Agent (not
-            mako.ai/download 0.3.1). Kill port 41720, install that .dmg, reopen,
-            then retry — or install via Terminal using the hint below.
-          </Typography>
-        ) : null}
       </Alert>
     );
   }

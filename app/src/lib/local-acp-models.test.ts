@@ -60,12 +60,13 @@ describe("local-acp-models", () => {
       },
     ]);
     const ids = models.map(m => m.id);
-    expect(ids).toContain("local-acp/claude/fable");
-    expect(ids).toContain("local-acp/claude/sonnet");
+    expect(ids).toContain("local-acp/claude/claude-fable-5");
+    expect(ids).toContain("local-acp/claude/claude-sonnet-4-5");
+    expect(ids).toContain("local-acp/claude/claude-opus-4-6");
     expect(ids.some(id => id.startsWith("local-acp/claude"))).toBe(true);
-    expect(models.find(m => m.id === "local-acp/claude/fable")?.name).toMatch(
-      /Fable/i,
-    );
+    expect(
+      models.find(m => m.id === "local-acp/claude/claude-fable-5")?.name,
+    ).toMatch(/Fable/i);
     // Codex adapter missing → single placeholder row
     expect(ids.filter(id => id.startsWith("local-acp/codex"))).toEqual([
       "local-acp/codex",
@@ -117,6 +118,7 @@ describe("local-acp-models", () => {
         { value: "claude-opus-4-6", name: "Opus" },
       ]),
     ).toBe("claude-opus-4-6");
+    expect(resolveLocalAcpModelValue("opus", [])).toBe("claude-opus-4-6");
   });
 
   it("prefers adapter-advertised model ids over short aliases", () => {

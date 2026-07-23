@@ -237,18 +237,15 @@ export function CodingAgentsPanel() {
                   () => setUpdating(false),
                 );
               }}
-              disabled={
-                loadingStatus ||
-                updating ||
-                signingIn ||
-                !acpSupportsAdapterEnsure(acpStatus)
-              }
+              disabled={loadingStatus || updating || signingIn}
             >
               {updating
                 ? "Updating…"
-                : provider?.adapterFound
-                  ? `Update ${provider.label}`
-                  : `Install ${provider?.label || "adapter"}`}
+                : !acpSupportsAdapterEnsure(acpStatus)
+                  ? `Install ${provider?.label || "adapter"} via Terminal`
+                  : provider?.adapterFound
+                    ? `Update ${provider.label}`
+                    : `Install ${provider?.label || "adapter"}`}
             </Button>
             <Button
               variant="outlined"
@@ -264,7 +261,7 @@ export function CodingAgentsPanel() {
             </Button>
             <Typography variant="body2" color="text.secondary">
               {!acpSupportsAdapterEnsure(acpStatus)
-                ? "Update needs PR Desktop 0.3.9 (mako.ai/download is still 0.3.1). Kill port 41720, install that .dmg, reopen. Adapter found — Chat → Enable workspace tools can still work."
+                ? "One-click Update isn’t available on this Local Agent — the button shows the npm command to run in Terminal."
                 : readyProviders.length > 0
                   ? `Update keeps ${provider?.label || "the adapter"} current. Sign in opens Terminal for CLI login.`
                   : "Install the adapter here — no Terminal npm required."}

@@ -51,6 +51,7 @@ describe("session-config", () => {
       resolveModelConfigValue("claude-opus-4-6", available),
       "claude-opus-4-6",
     );
-    assert.equal(resolveModelConfigValue("opus", []), "opus");
+    assert.equal(resolveModelConfigValue("opus", []), "claude-opus-4-6");
+    assert.equal(resolveModelConfigValue("fable", []), "claude-fable-5");
   });
 });
