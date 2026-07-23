@@ -313,19 +313,218 @@ connector clients is enough for internal RevOps replacement of n8n.
 
 ---
 
-## 9. Triggers
+## 9. Triggers — how they actually work
 
-| Trigger | MVP | Notes |
+A **trigger is not part of the TypeScript business logic**. It is platform
+config that answers: *when should we create a `WorkflowRun` and call
+`workflow.run(input)`?*
+
+The workflow body only sees a typed `input`. It does not register webhooks or
+crons itself.
+
+```
+[Calendly / cron / UI]
+        │
+        ▼
+ Mako ingress (verify / due check)
+        │
+        ▼
+ create WorkflowRun(input)
+        │
+        ▼
+ engine.execute(workflowName, input)   ← Hatchet/Inngest
+        │
+        ▼
+ user TS: async run(input, ctx) { await step(...) }
+```
+
+This is the same split Sync already uses (schedule/webhook on `IFlow`, executor
+elsewhere) — but Workflows **must not** drain into CDC materialization. Ingress
+enqueues a workflow run, not a warehouse MERGE.
+
+### 9.1 Trigger kinds (MVP)
+
+| Kind | Who fires it | What `input` is |
 | --- | --- | --- |
-| `connector_webhook` | ✅ | Reuse webhook ingress patterns from sync/CDC where possible |
-| `cron` | ✅ | Schedule stored on workflow publish config |
-| `manual` | ✅ | “Run now” from UI with optional JSON payload |
-| `flow.run.terminal` / sync completed | Later | Event bridge from existing Inngest bus |
-| `http` (signed URL) | Later | Generic ingress |
+| `connector_webhook` | External provider → Mako URL | Normalized event payload from the connector |
+| `cron` | Platform scheduler | Empty/`{}` or last-cursor bag (declared by workflow) |
+| `manual` | UI / API “Run now” | JSON the user pastes (often a fixture) |
 
-Trigger config lives with the workflow export (or sibling config in
-`mako_workflows.yml` for env-specific cron). Platform validates connector webhook
-capability at publish time.
+Later (not MVP): `http` signed URL, `on_sync_completed`, Slack events.
+
+### 9.2 Where trigger config lives
+
+**Declared in the workflow file** (source of truth for intent):
+
+```ts
+export default workflow({
+  name: "calendly_to_close_opportunity",
+  trigger: {
+    type: "connector_webhook",
+    connector: "calendly",           // logical name → workspace connector binding
+    event: "invitee.created",        // must be in connector webhook catalog
+  },
+  input: CalendlyInviteeCreated,
+  async run(input, ctx) { /* ... */ },
+});
+```
+
+**Bound at publish** into a `Workflow` deploy record:
+
+- resolve `connector: "calendly"` → workspace `connectorId`
+- allocate public endpoint + signing secret (if webhook)
+- optionally call `connector.createWebhookSubscription()` (same as Sync provision)
+- store `enabled`, cron expression, endpoint URL on the deploy record
+
+Draft edits do not move provider webhooks until **Publish**.
+
+Cron example:
+
+```ts
+trigger: { type: "cron", cron: "0 */6 * * *", timezone: "UTC" }
+```
+
+Manual:
+
+```ts
+trigger: { type: "manual" } // also always available as “Run now” even if primary trigger is webhook/cron
+```
+
+### 9.3 Connector webhook — end-to-end (Calendly → workflow)
+
+Today Sync uses:
+
+`POST /api/webhooks/:workspaceId/:flowId` → `WebhookEvent` → CDC cron (~5 min) → warehouse.
+
+Workflows get a **sibling ingress** that shares verification, not CDC:
+
+```
+POST /api/webhooks/:workspaceId/workflows/:workflowId
+```
+
+```mermaid
+sequenceDiagram
+  participant Cal as Calendly
+  participant API as Mako webhook route
+  participant Conn as Calendly connector
+  participant Run as WorkflowRun
+  participant Eng as Engine worker
+
+  Note over Cal,API: On publish: provision subscription to workflow URL
+  Cal->>API: POST signed invitee.created
+  API->>API: Load Workflow deploy (enabled)
+  API->>Conn: verifyWebhook(payload, headers, secret)
+  API->>API: Map payload → workflow input (Zod)
+  API->>Run: insert status=queued
+  API->>Eng: enqueue workflow.execute(runId)
+  API-->>Cal: 200 received
+  Eng->>Eng: run(input) with step() checkpoints
+  Eng->>Run: steps + succeeded/failed
+```
+
+**Important differences from Sync webhooks:**
+
+| | Sync webhook flow | Workflow webhook |
+| --- | --- | --- |
+| URL | `/api/webhooks/:ws/:flowId` | `/api/webhooks/:ws/workflows/:workflowId` |
+| After verify | Persist `WebhookEvent` → CDC batch | Create `WorkflowRun` → execute ASAP |
+| Latency | Up to ~5 min (scheduler drain) | Near-real-time enqueue (required for CRM actions) |
+| Outcome | Rows in destination table | Side effects inside TS steps |
+
+**Reuse from Sync:**
+
+- Connector `supportsWebhooks` / `verifyWebhook` / `createWebhookSubscription`
+- Calendly HMAC (`Calendly-Webhook-Signature`) already implemented
+- Ack-fast pattern (verify + persist + 200, work async)
+
+**Do not reuse:** `WebhookEvent` → `CdcChangeEvent` → materialize path.
+
+**Idempotency at the door:** store provider delivery id (or body hash) on
+`WorkflowRun` unique key so Calendly retries do not start a second run. Step-level
+idempotency keys still protect Close writes if a run is retried mid-flight.
+
+### 9.4 Cron — end-to-end
+
+Same bicycle Sync uses: **platform cron polls Mongo for due work** (not one
+Inngest cron registration per workflow).
+
+```
+every minute (or */5):
+  find Workflow where trigger.type=cron AND enabled
+                   AND nextRunAt <= now
+                   AND no running run (optional concurrency policy)
+  for each: create WorkflowRun → enqueue engine
+  update nextRunAt from cron expression
+```
+
+Align with `flowSchedulerFunction` / scheduled-query patterns
+(`api/src/inngest/functions/flow.ts`, `scheduled-query.ts`).
+
+Workflows that only run on cron (reverse-ETL) never need a public URL.
+
+### 9.5 Manual — end-to-end
+
+```
+POST /api/workspaces/:id/workflows/:wid/runs
+Body: { input: { ... } }
+
+→ validate against workflow Zod input
+→ WorkflowRun(triggerKind=manual)
+→ enqueue engine
+→ return run id for UI polling
+```
+
+Used for fixtures, debugging, and agent “try this payload.”
+
+### 9.6 Binding connectors for the run
+
+Triggers name **logical** connectors (`calendly`, `close`). The workflow project
+environment maps those to workspace resources:
+
+```yaml
+# mako_workflows.yml (or project settings UI)
+bindings:
+  calendly: { connectorId: "..." }   # source of webhooks + optional API reads
+  close:    { connectorId: "..." }   # injected as ctx.connectors.close()
+  warehouse:{ databaseConnectionId: "..." }
+```
+
+At run time:
+
+- Webhook secret / verify path uses the **trigger** connector binding
+- `ctx.connectors.*` uses the **action** bindings
+- Secrets never appear in the TS file or in run logs (redacted)
+
+### 9.7 What the author does vs what Mako does
+
+| Author writes | Mako does |
+| --- | --- |
+| `trigger: { type: "connector_webhook", connector: "calendly", event: "invitee.created" }` | On publish: create endpoint, secret, call Calendly provision API |
+| Zod `input` schema | Validate ingress payload before run starts |
+| `async run(input, ctx)` | Enqueue, inject connectors, record steps |
+| `step("create_opp", ...)` | Durable retry / checkpoint |
+
+Author never pastes a Calendly signing key into code. Author never opens n8n to
+“add a webhook node.”
+
+### 9.8 Failure modes (trigger layer)
+
+| Failure | Behavior |
+| --- | --- |
+| Bad signature | `401/403`, no run created |
+| Workflow disabled | `404/410`, no run |
+| Zod input mismatch | Run created as `failed` with validation error **or** reject at ingress (prefer reject for webhooks) |
+| Engine down | Run stays `queued`; retry dispatch; alert |
+| Step fails mid-run | Engine retries step; run `failed` if exhausted; trigger can fire again only if provider retries **and** ingress idempotency key differs |
+| Publish changes event filter | Re-provision or update subscription; old URL stays until cutover |
+
+### 9.9 Explicit non-design
+
+- Workflows do **not** share Sync’s `type: "webhook"` flow documents.
+- A Sync Calendly→BigQuery flow and a Workflow Calendly→Close job are **two
+  subscriptions** (or one fan-out later) — v1 keeps them independent to avoid
+  coupling CRM latency to CDC batching.
+- No “trigger node” inside the TS file beyond the declarative `trigger` field.
 
 ---
 
