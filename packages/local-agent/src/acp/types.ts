@@ -108,7 +108,7 @@ export interface AcpStatusResponse {
    * agent (raw "ACP connection closed" with no rewrite / no terminal auth).
    */
   acpBridge?: {
-    version: 3 | 4 | 5 | 6;
+    version: 3 | 4 | 5 | 6 | 7;
     terminalAuth: true;
     mcpProbe: true;
     reconnect: true;
@@ -117,9 +117,23 @@ export interface AcpStatusResponse {
     hitlTools?: true;
     /** Local Agent can `npm i -g` ACP adapter (+ Codex CLI) for the user. */
     adapterEnsure?: true;
+    /** Local Agent can warm model catalogs via a throwaway session/new. */
+    modelWarm?: true;
   };
   /** Last Claude/Codex adapter stderr snippet (when a connection died). */
   lastAdapterError?: string | null;
+  /** Live npm-ensure progress for Chat/Settings banners. */
+  ensureByProvider?: Partial<
+    Record<
+      AcpProviderId,
+      {
+        state: "idle" | "running" | "ok" | "error";
+        message?: string;
+        startedAt?: string;
+        errorCode?: string;
+      }
+    >
+  >;
 }
 
 export interface AcpEnsureAdapterResponse {
@@ -133,6 +147,14 @@ export interface AcpEnsureAdapterResponse {
   adapterVia: "env" | "path" | "npx" | null;
   stdoutTail?: string;
   stderrTail?: string;
+  errorCode?: string;
+}
+
+export interface AcpWarmModelsResponse {
+  providerId: AcpProviderId;
+  availableModels: AcpModelChoice[];
+  currentModel: string | null;
+  warmed: boolean;
 }
 
 export interface CreateAcpSessionRequest {

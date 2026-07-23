@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  classifyEnsureFailure,
   packagesForProvider,
   shouldSkipEnsure,
 } from "./ensure-adapter";
@@ -14,6 +15,35 @@ describe("ensure-adapter", () => {
     assert.deepEqual(packagesForProvider("claude"), [
       "@agentclientprotocol/claude-agent-acp",
     ]);
+  });
+
+  it("classifies npm ensure failures", () => {
+    assert.equal(
+      classifyEnsureFailure({
+        message: "npm not found on PATH",
+        code: 1,
+        adapterFound: false,
+      }),
+      "npm_missing",
+    );
+    assert.equal(
+      classifyEnsureFailure({
+        message: "fail",
+        code: null,
+        stderr: "npm install timed out after 3 minutes",
+        adapterFound: false,
+      }),
+      "timeout",
+    );
+    assert.equal(
+      classifyEnsureFailure({
+        message: "fail",
+        code: 1,
+        stderr: "npm ERR! code EACCES",
+        adapterFound: false,
+      }),
+      "eacces",
+    );
   });
 
   it("skips only when a recent path install exists", () => {

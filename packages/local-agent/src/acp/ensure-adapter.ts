@@ -19,6 +19,13 @@ import { resolveAdapterCommand, resolveOnPath } from "./resolve-command";
 /** Skip reinstall when a successful ensure ran within this window (unless force). */
 export const ACP_ENSURE_STALE_MS = 12 * 60 * 60 * 1000;
 
+export type AcpEnsureErrorCode =
+  | "npm_missing"
+  | "eacces"
+  | "timeout"
+  | "npm_failed"
+  | "adapter_missing";
+
 export interface AcpEnsureAdapterResult {
   ok: boolean;
   providerId: AcpProviderId;
@@ -30,6 +37,36 @@ export interface AcpEnsureAdapterResult {
   adapterVia: "env" | "path" | "npx" | null;
   stdoutTail?: string;
   stderrTail?: string;
+  errorCode?: AcpEnsureErrorCode;
+}
+
+export function classifyEnsureFailure(args: {
+  message: string;
+  code: number | null;
+  stderr?: string;
+  adapterFound: boolean;
+}): AcpEnsureErrorCode {
+  const text = `${args.message}\n${args.stderr || ""}`;
+  if (/npm not found/i.test(text)) return "npm_missing";
+  if (/EACCES|permission denied|EPERM/i.test(text)) return "eacces";
+  if (args.code === null || /timed out/i.test(text)) return "timeout";
+  if (!args.adapterFound && args.code === 0) return "adapter_missing";
+  return "npm_failed";
+}
+
+export function ensureErrorUserMessage(code: AcpEnsureErrorCode): string {
+  switch (code) {
+    case "npm_missing":
+      return "Node.js/npm is not on PATH. Install Node, restart Mako Desktop, then retry.";
+    case "eacces":
+      return "npm lacks permission to install globally. Fix npm permissions or run Install again after configuring a user npm prefix.";
+    case "timeout":
+      return "Installing Codex/Claude tools timed out. Check your network and retry Update adapter.";
+    case "adapter_missing":
+      return "Packages installed but the adapter binary is still missing from PATH. Restart Local Agent and retry.";
+    default:
+      return "Failed to install/update local coding-agent tools. See details and retry Update adapter.";
+  }
 }
 
 interface EnsureStateFile {
@@ -216,17 +253,23 @@ export async function ensureAdapterPackages(
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "npm install failed";
+    const errorCode = classifyEnsureFailure({
+      message,
+      code: 1,
+      adapterFound: Boolean(before),
+    });
     return {
       ok: false,
       providerId,
       skipped: false,
       updated: false,
       packages,
-      message,
+      message: `${ensureErrorUserMessage(errorCode)}\n${message}`,
       adapterCommand: before
         ? [before.command, ...before.args].join(" ")
         : null,
       adapterVia: before?.via ?? null,
+      errorCode,
     };
   }
 
@@ -245,9 +288,18 @@ export async function ensureAdapterPackages(
 
   const stdoutTail = installResult.stdout.trim().slice(-800) || undefined;
   const stderrTail = installResult.stderr.trim().slice(-800) || undefined;
+  const errorCode = ok
+    ? undefined
+    : classifyEnsureFailure({
+        message: stderrTail || "",
+        code: installResult.code,
+        stderr: stderrTail,
+        adapterFound: Boolean(after),
+      });
   const message = ok
     ? `Updated ${packages.join(", ")} for ${def.label}.`
-    : `Failed to update ${def.label} packages (${packages.join(", ")}).` +
+    : `${ensureErrorUserMessage(errorCode || "npm_failed")}\n` +
+      `Failed to update ${def.label} packages (${packages.join(", ")}).` +
       (stderrTail ? `\n${stderrTail}` : "");
 
   acpLog.info("ACP adapter ensure finished", {
@@ -255,6 +307,7 @@ export async function ensureAdapterPackages(
     ok,
     code: installResult.code,
     via: after?.via ?? null,
+    errorCode: errorCode ?? null,
   });
 
   return {
@@ -268,6 +321,7 @@ export async function ensureAdapterPackages(
     adapterVia: after?.via ?? null,
     stdoutTail,
     stderrTail,
+    errorCode,
   };
 }
 

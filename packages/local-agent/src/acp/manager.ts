@@ -40,6 +40,7 @@ import type {
   AcpProviderStatus,
   AcpSessionInfo,
   AcpStatusResponse,
+  AcpWarmModelsResponse,
   CreateAcpSessionRequest,
   PermissionResponseRequest,
 } from "./types";
@@ -57,6 +58,7 @@ import {
   ensureAdapterPackages,
   type AcpEnsureAdapterResult,
 } from "./ensure-adapter";
+import { applyNonClaudeGuidanceToPrompt } from "./prompt-guidance";
 
 /** Keep in sync with `DEFAULT_AGENT_PORT` in server.ts (avoid circular import). */
 const LOCAL_AGENT_PORT = 41720;
@@ -138,6 +140,21 @@ export class AcpSessionManager {
   >();
   /** Last forced ensure after a prompt/metadata failure (rate-limit). */
   private lastForceEnsureAt = new Map<AcpProviderId, number>();
+  /** Deduplicate throwaway session/new model warmups. */
+  private modelWarmInFlight = new Map<
+    AcpProviderId,
+    Promise<AcpWarmModelsResponse>
+  >();
+  /** Live ensure progress exposed on GET /acp/status. */
+  private ensureStatus = new Map<
+    AcpProviderId,
+    {
+      state: "idle" | "running" | "ok" | "error";
+      message?: string;
+      startedAt?: string;
+      errorCode?: string;
+    }
+  >();
 
   private rememberProviderModels(
     providerId: AcpProviderId,
@@ -192,12 +209,35 @@ export class AcpSessionManager {
       };
     });
 
+    // Warm model catalogs in the background so Chat's picker shows real
+    // Claude/Codex ids before the user starts a turn.
+    for (const p of providers) {
+      if (
+        p.adapterFound &&
+        (!p.availableModels || p.availableModels.length === 0) &&
+        !this.modelWarmInFlight.has(p.id)
+      ) {
+        void this.ensureProviderModels(p.id).catch(error => {
+          acpLog.info("Background ACP model warm failed", {
+            providerId: p.id,
+            error: String(error),
+          });
+        });
+      }
+    }
+
+    const ensureByProvider: AcpStatusResponse["ensureByProvider"] = {};
+    for (const id of ACP_PROVIDER_IDS) {
+      const st = this.ensureStatus.get(id);
+      if (st) ensureByProvider[id] = st;
+    }
+
     return {
       available: true,
       defaultCwd: defaultCwd(),
       providers,
       acpBridge: {
-        version: 6,
+        version: 7,
         terminalAuth: true,
         mcpProbe: true,
         reconnect: true,
@@ -205,9 +245,76 @@ export class AcpSessionManager {
         desktopMcp: true,
         hitlTools: true,
         adapterEnsure: true,
+        modelWarm: true,
       },
       lastAdapterError: this.lastAdapterError,
+      ensureByProvider,
     };
+  }
+
+  /**
+   * Populate `availableModels` via a throwaway session/new (no Mako MCP).
+   * Safe to call from status/warm endpoints and before model switches.
+   */
+  async ensureProviderModels(
+    providerId: AcpProviderId,
+  ): Promise<AcpWarmModelsResponse> {
+    const cached = this.providerModels.get(providerId);
+    if (cached?.availableModels?.length) {
+      return {
+        providerId,
+        availableModels: cached.availableModels,
+        currentModel: cached.currentModel,
+        warmed: false,
+      };
+    }
+
+    const existing = this.modelWarmInFlight.get(providerId);
+    if (existing) return existing;
+
+    const promise = (async (): Promise<AcpWarmModelsResponse> => {
+      acpLog.info("Warming ACP model catalog", { providerId });
+      const session = await this.createSessionInternal(
+        {
+          providerId,
+          cwd: defaultCwd(),
+          title: `${ACP_PROVIDERS[providerId].label} · model probe`,
+          attachMakoMcp: false,
+        },
+        true,
+      );
+      const models = this.providerModels.get(providerId);
+      try {
+        await this.closeSession(session.id);
+      } catch {
+        // best-effort — cache already populated
+      }
+      return {
+        providerId,
+        availableModels: models?.availableModels ?? session.availableModels ?? [],
+        currentModel: models?.currentModel ?? session.currentModel ?? null,
+        warmed: true,
+      };
+    })()
+      .catch(error => {
+        acpLog.info("ACP model warm failed", {
+          providerId,
+          error: String(error),
+        });
+        const fallback = this.providerModels.get(providerId);
+        return {
+          providerId,
+          availableModels: fallback?.availableModels ?? [],
+          currentModel: fallback?.currentModel ?? null,
+          warmed: false,
+        };
+      })
+      .finally(() => {
+        this.modelWarmInFlight.delete(providerId);
+      });
+
+    this.modelWarmInFlight.set(providerId, promise);
+    return promise;
   }
 
   /**
@@ -221,6 +328,12 @@ export class AcpSessionManager {
     const existing = this.ensureInFlight.get(providerId);
     if (existing) return existing;
 
+    this.ensureStatus.set(providerId, {
+      state: "running",
+      message: `Installing/updating ${ACP_PROVIDERS[providerId].label} tools…`,
+      startedAt: nowIso(),
+    });
+
     const promise = ensureAdapterPackages(providerId, {
       force: options?.force,
     })
@@ -229,7 +342,24 @@ export class AcpSessionManager {
           // Drop any stale adapter process so the next connect uses the new bin.
           this.invalidateProvider(providerId, "adapter packages updated");
         }
+        this.ensureStatus.set(providerId, {
+          state: result.ok ? "ok" : "error",
+          message: result.message,
+          startedAt: this.ensureStatus.get(providerId)?.startedAt,
+          errorCode: result.errorCode,
+        });
         return result;
+      })
+      .catch(error => {
+        const message =
+          error instanceof Error ? error.message : "Failed to update adapter";
+        this.ensureStatus.set(providerId, {
+          state: "error",
+          message,
+          startedAt: this.ensureStatus.get(providerId)?.startedAt,
+          errorCode: "npm_failed",
+        });
+        throw error;
       })
       .finally(() => {
         this.ensureInFlight.delete(providerId);
@@ -937,23 +1067,21 @@ export class AcpSessionManager {
     });
 
     let promptText = text.trim();
-    if (
-      session.guidanceAppend &&
-      !session.guidanceInjectedIntoPrompt
-    ) {
-      promptText = [
-        "[Mako workspace system guidance — follow for this session]",
-        session.guidanceAppend.trim(),
-        "[End Mako workspace system guidance]",
-        "",
-        promptText,
-      ].join("\n");
-      session.guidanceInjectedIntoPrompt = true;
-      acpLog.info("Injected Mako guidance into first ACP prompt", {
-        sessionId,
-        providerId,
-        guidanceChars: session.guidanceAppend.length,
+    if (session.guidanceAppend && providerId !== "claude") {
+      const guided = applyNonClaudeGuidanceToPrompt({
+        userText: promptText,
+        guidanceAppend: session.guidanceAppend,
+        alreadyInjected: session.guidanceInjectedIntoPrompt,
       });
+      promptText = guided.text;
+      if (!session.guidanceInjectedIntoPrompt && guided.injectedFull) {
+        acpLog.info("Injected Mako guidance into first ACP prompt", {
+          sessionId,
+          providerId,
+          guidanceChars: session.guidanceAppend.length,
+        });
+      }
+      session.guidanceInjectedIntoPrompt = true;
     }
 
     try {
@@ -1076,12 +1204,24 @@ export class AcpSessionManager {
 
     // Resolve opus/sonnet/fable → canonical ids from this session's model list.
     if (configId === "model" && typeof value === "string") {
-      const resolved = resolveModelConfigValue(
-        value,
+      let available =
         session.info.availableModels?.length
           ? session.info.availableModels
-          : this.providerModels.get(session.info.providerId)?.availableModels,
-      );
+          : this.providerModels.get(session.info.providerId)?.availableModels;
+      if (!available?.length) {
+        try {
+          const warmed = await this.ensureProviderModels(
+            session.info.providerId,
+          );
+          available = warmed.availableModels;
+          if (warmed.availableModels.length) {
+            session.info.availableModels = warmed.availableModels;
+          }
+        } catch {
+          // resolve with whatever we have
+        }
+      }
+      const resolved = resolveModelConfigValue(value, available);
       if (resolved !== value.trim()) {
         acpLog.info("Resolved ACP model alias", {
           sessionId,

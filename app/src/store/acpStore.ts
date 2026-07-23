@@ -8,6 +8,7 @@ import type {
   AcpProviderId,
   AcpSessionInfo,
   AcpStatus,
+  AcpWarmModelsResult,
 } from "../lib/acp-types";
 import {
   getActiveWorkspaceId,
@@ -107,6 +108,10 @@ interface AcpState {
     providerId?: AcpProviderId,
     options?: { force?: boolean },
   ) => Promise<AcpEnsureAdapterResult | null>;
+  /** Warm Claude/Codex model catalogs (throwaway session/new). */
+  warmProviderModels: (
+    providerId?: AcpProviderId,
+  ) => Promise<AcpWarmModelsResult | null>;
   /** Last auth guidance (Terminal opened / copy-paste command). */
   authGuidance: string | null;
   sendPrompt: (text: string) => Promise<void>;
@@ -401,11 +406,17 @@ export const useAcpStore = create<AcpState>()(
         void get().refreshStatus();
         return session;
       } catch (error) {
+        let message =
+          error instanceof Error
+            ? error.message
+            : "Failed to switch local model";
+        if (/^not found$/i.test(message.trim())) {
+          message =
+            `Could not switch to model "${value}". ` +
+            `Mako will reload the model list — pick Opus/Sonnet again, or send your message to start a fresh local session.`;
+        }
         set(s => {
-          s.error =
-            error instanceof Error
-              ? error.message
-              : "Failed to switch local model";
+          s.error = message;
         });
         return null;
       }
@@ -440,6 +451,16 @@ export const useAcpStore = create<AcpState>()(
       const id = providerId || get().selectedProviderId;
       set(s => {
         s.error = null;
+        if (s.status) {
+          s.status.ensureByProvider = {
+            ...s.status.ensureByProvider,
+            [id]: {
+              state: "running",
+              message: "Installing/updating local tools…",
+              startedAt: new Date().toISOString(),
+            },
+          };
+        }
       });
       try {
         const result = await acpClient.ensureAdapter(id, {
@@ -458,6 +479,24 @@ export const useAcpStore = create<AcpState>()(
             error instanceof Error
               ? error.message
               : "Failed to update local adapter";
+        });
+        void get().refreshStatus();
+        return null;
+      }
+    },
+
+    warmProviderModels: async providerId => {
+      const id = providerId || get().selectedProviderId;
+      try {
+        const result = await acpClient.warmProviderModels(id);
+        await get().refreshStatus();
+        return result;
+      } catch (error) {
+        set(s => {
+          s.error =
+            error instanceof Error
+              ? error.message
+              : "Failed to load local models";
         });
         return null;
       }

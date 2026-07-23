@@ -41,6 +41,21 @@ export function registerAcpRoutes(app: Hono): void {
     }
   });
 
+  app.post("/acp/providers/:providerId/warm-models", async c => {
+    try {
+      const raw = c.req.param("providerId");
+      if (!isAcpProviderId(raw)) {
+        return jsonError(c, `Unknown ACP provider: ${raw}`, 400);
+      }
+      const result = await acpSessionManager.ensureProviderModels(raw);
+      return c.json({ success: true, data: result });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to warm models";
+      return jsonError(c, message, 400);
+    }
+  });
+
   app.get("/acp/sessions", c => {
     return c.json({
       success: true,

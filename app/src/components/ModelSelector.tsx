@@ -65,7 +65,20 @@ const PROVIDER_PRIORITY: string[] = [
 async function probeLocalAcpProviders(): Promise<void> {
   const agentStatus = await useLocalAgentStore.getState().checkAgent();
   if (agentStatus !== "online") return;
-  await useAcpStore.getState().refreshStatus();
+  const store = useAcpStore.getState();
+  await store.refreshStatus();
+  // Warm real Claude/Codex model catalogs so Opus/Sonnet rows use canonical ids
+  // before the user starts a turn (status also kicks this in the background).
+  const providers = useAcpStore.getState().status?.providers ?? [];
+  await Promise.all(
+    providers
+      .filter(
+        p =>
+          p.adapterFound &&
+          (!p.availableModels || p.availableModels.length === 0),
+      )
+      .map(p => store.warmProviderModels(p.id).catch(() => null)),
+  );
 }
 
 export const ModelSelector: React.FC = () => {

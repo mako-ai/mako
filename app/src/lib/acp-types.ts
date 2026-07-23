@@ -52,8 +52,20 @@ export interface AcpStatus {
     desktopMcp?: boolean;
     hitlTools?: boolean;
     adapterEnsure?: boolean;
+    modelWarm?: boolean;
   };
   lastAdapterError?: string | null;
+  ensureByProvider?: Partial<
+    Record<
+      AcpProviderId,
+      {
+        state: "idle" | "running" | "ok" | "error";
+        message?: string;
+        startedAt?: string;
+        errorCode?: string;
+      }
+    >
+  >;
 }
 
 export interface AcpEnsureAdapterResult {
@@ -67,6 +79,14 @@ export interface AcpEnsureAdapterResult {
   adapterVia: "env" | "path" | "npx" | null;
   stdoutTail?: string;
   stderrTail?: string;
+  errorCode?: string;
+}
+
+export interface AcpWarmModelsResult {
+  providerId: AcpProviderId;
+  availableModels: AcpModelChoice[];
+  currentModel: string | null;
+  warmed: boolean;
 }
 
 export interface AcpSessionInfo {

@@ -36,6 +36,7 @@ export function AcpWorkspaceToolsBanner(props: {
   const createSession = useAcpStore(s => s.createSession);
   const authenticate = useAcpStore(s => s.authenticate);
   const ensureAdapter = useAcpStore(s => s.ensureAdapter);
+  const warmProviderModels = useAcpStore(s => s.warmProviderModels);
 
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
@@ -43,16 +44,37 @@ export function AcpWorkspaceToolsBanner(props: {
 
   const providerId = modelId ? localAcpModelIdToProviderId(modelId) : null;
   const isLocal = isLocalAcpModelId(modelId);
+  const ensureStatus = providerId
+    ? acpStatus?.ensureByProvider?.[providerId]
+    : undefined;
+  const ensureRunning = ensureStatus?.state === "running";
 
   useEffect(() => {
-    if (!isLocal) return;
+    if (!isLocal || !providerId) return;
     setDismissedReady(false);
     void (async () => {
       await checkAgent();
       await refreshStatus();
       await refreshSessions();
+      void warmProviderModels(providerId);
     })();
-  }, [isLocal, providerId, checkAgent, refreshStatus, refreshSessions]);
+  }, [
+    isLocal,
+    providerId,
+    checkAgent,
+    refreshStatus,
+    refreshSessions,
+    warmProviderModels,
+  ]);
+
+  // Poll status while npm ensure is running so the banner can show progress.
+  useEffect(() => {
+    if (!ensureRunning) return;
+    const timer = window.setInterval(() => {
+      void refreshStatus();
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [ensureRunning, refreshStatus]);
 
   if (!isLocal || !providerId) return null;
 
@@ -60,6 +82,26 @@ export function AcpWorkspaceToolsBanner(props: {
   const attached = sessions.some(
     s => s.providerId === providerId && s.makoMcpAttached,
   );
+
+  const ensureLabel = (() => {
+    if (!ensureStatus || ensureStatus.state === "idle") return null;
+    if (ensureStatus.state === "running") {
+      const started = ensureStatus.startedAt
+        ? Date.parse(ensureStatus.startedAt)
+        : NaN;
+      const secs = Number.isFinite(started)
+        ? Math.max(0, Math.round((Date.now() - started) / 1000))
+        : 0;
+      return (
+        ensureStatus.message ||
+        `Installing/updating local tools${secs ? ` (${secs}s)` : "…"}`
+      );
+    }
+    if (ensureStatus.state === "error") {
+      return ensureStatus.message || "Failed to update local tools";
+    }
+    return null;
+  })();
 
   const enable = async () => {
     if (!workspaceId) return;
@@ -71,6 +113,8 @@ export function AcpWorkspaceToolsBanner(props: {
       setSelectedProvider(providerId);
       // Local Agent installs/updates Codex CLI + ACP adapter as needed.
       await ensureAdapter(providerId, { force: false });
+      setBusyLabel("Loading models…");
+      await warmProviderModels(providerId);
       setBusyLabel("Connecting…");
       const session = await createSession({
         workspaceId,
@@ -92,6 +136,7 @@ export function AcpWorkspaceToolsBanner(props: {
     try {
       await checkAgent();
       await ensureAdapter(providerId, { force: true });
+      await warmProviderModels(providerId);
       await refreshStatus();
     } finally {
       setBusy(false);
@@ -139,14 +184,16 @@ export function AcpWorkspaceToolsBanner(props: {
         sx={{ mb: 1 }}
         action={
           canEnsureAdapter ? (
-            <Button
-              size="small"
-              variant="contained"
-              disabled={busy}
-              onClick={() => void installAdapter()}
-            >
-              {busy ? busyLabel || "Installing…" : "Install"}
-            </Button>
+          <Button
+            size="small"
+            variant="contained"
+            disabled={busy || ensureRunning}
+            onClick={() => void installAdapter()}
+          >
+            {busy || ensureRunning
+              ? busyLabel || ensureLabel || "Installing…"
+              : "Install"}
+          </Button>
           ) : undefined
         }
       >
@@ -161,7 +208,7 @@ export function AcpWorkspaceToolsBanner(props: {
         {!canEnsureAdapter ? (
           <Typography variant="body2" sx={{ mt: 1 }}>
             Local Agent is outdated for one-click install — update Desktop to
-            0.3.8+, quit/reopen Mako, then retry.
+            0.3.9+, quit/reopen Mako, then retry.
           </Typography>
         ) : null}
       </Alert>
@@ -224,10 +271,12 @@ export function AcpWorkspaceToolsBanner(props: {
           <Button
             size="small"
             variant="contained"
-            disabled={busy || !workspaceId || !bridgeOk}
+            disabled={busy || ensureRunning || !workspaceId || !bridgeOk}
             onClick={() => void enable()}
           >
-            {busy ? busyLabel || "Connecting…" : "Enable workspace tools"}
+            {busy || ensureRunning
+              ? busyLabel || ensureLabel || "Connecting…"
+              : "Enable workspace tools"}
           </Button>
         </Stack>
       }
@@ -240,9 +289,14 @@ export function AcpWorkspaceToolsBanner(props: {
         connections, consoles). If Claude already said Mako needs auth, click
         Enable, then send a new message — or start a New chat.
       </Typography>
+      {ensureRunning || ensureStatus?.state === "error" ? (
+        <Typography variant="body2" sx={{ mt: 1 }}>
+          {ensureLabel}
+        </Typography>
+      ) : null}
       {!bridgeOk ? (
         <Typography variant="body2" sx={{ mt: 1 }}>
-          Local Agent is outdated — install desktop-canary and fully quit/reopen
+          Local Agent is outdated — install Desktop 0.3.9+ and fully quit/reopen
           Mako before enabling tools. Raw &quot;ACP connection closed&quot;
           means the old agent is still on port 41720.
         </Typography>

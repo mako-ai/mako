@@ -1,6 +1,6 @@
 {
   "name": "@mako/desktop",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "private": true,
   "description": "Mako Desktop: a thin Electron shell that loads the Mako web app and bundles the Mako Local Agent, enabling connections to databases on this machine.",
   "main": "dist/main.js",

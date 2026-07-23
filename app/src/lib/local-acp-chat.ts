@@ -36,6 +36,19 @@ import {
   prependAcpPromptLayers,
 } from "./acp-continuity";
 
+function isAcpModelSwitchError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error ?? "");
+  if (
+    /could not switch to model|invalid value for config option model|failed to switch local model/i.test(
+      msg,
+    )
+  ) {
+    return true;
+  }
+  // Bare adapter "Not Found" during model switch — treat as recoverable.
+  return /^not found$/i.test(msg.trim()) || /\(Not Found\)/i.test(msg);
+}
+
 async function applyModelPreference(
   sessionId: string,
   modelPreference: string | null | undefined,
@@ -44,9 +57,20 @@ async function applyModelPreference(
   if (!preferred) return;
   const store = useAcpStore.getState();
   const session = store.sessions.find(s => s.id === sessionId);
-  const providerModels = store.status?.providers.find(
-    p => p.id === session?.providerId,
+  const providerId = session?.providerId;
+  let providerModels = store.status?.providers.find(
+    p => p.id === providerId,
   )?.availableModels;
+  if (
+    providerId &&
+    !session?.availableModels?.length &&
+    !providerModels?.length
+  ) {
+    await store.warmProviderModels(providerId);
+    providerModels = useAcpStore
+      .getState()
+      .status?.providers.find(p => p.id === providerId)?.availableModels;
+  }
   const resolved = resolveLocalAcpModelValue(
     preferred,
     session?.availableModels?.length ? session.availableModels : providerModels,
@@ -68,19 +92,10 @@ async function applyModelPreference(
     .getState()
     .setSessionModel(sessionId, resolved);
   if (!updated) {
-    const err =
+    throw new Error(
       useAcpStore.getState().error ||
-      `Failed to switch local model to ${resolved}`;
-    // Stale short alias on an old adapter — force a fresh session with the
-    // preferred model so session/new can resolve against a new model list.
-    if (/not found|invalid value|could not switch/i.test(err)) {
-      throw new Error(
-        `${err}\n\nTip: pick the full Opus/Sonnet row in the model menu ` +
-          `(after one successful Claude turn), or use Update adapter in ` +
-          `Settings → Coding Agents, then try again.`,
-      );
-    }
-    throw new Error(err);
+        `Failed to switch local model to ${resolved}`,
+    );
   }
 }
 
@@ -421,16 +436,26 @@ export async function runLocalAcpChatTurn(
     try {
       await runAgainstSession(false);
     } catch (error) {
-      if (signal?.aborted || !isAcpConnectionClosedError(error)) {
+      if (signal?.aborted) throw error;
+      const modelSwitch = isAcpModelSwitchError(error);
+      if (!isAcpConnectionClosedError(error) && !modelSwitch) {
         throw error;
       }
-      // Adapter died — drop the stale id and start a fresh MCP-attached session.
+      // Adapter died or model alias rejected — warm catalog + fresh session.
       if (sessionId) {
         useAcpStore.getState().forgetSession(sessionId);
       }
       sessionId = null;
+      if (modelSwitch) {
+        await useAcpStore.getState().warmProviderModels(providerId);
+      }
       patchAssistantParts(parts =>
-        setAssistantErrorText(parts, "_Reconnecting local Claude/Codex…_"),
+        setAssistantErrorText(
+          parts,
+          modelSwitch
+            ? "_Switching local model — starting a fresh session…_"
+            : "_Reconnecting local Claude/Codex…_",
+        ),
       );
       // Clear the reconnect notice before the retry streams real tokens.
       applyMessages(prev =>
@@ -456,6 +481,12 @@ export async function runLocalAcpChatTurn(
     }
     let message =
       error instanceof Error ? error.message : "Local ACP prompt failed";
+    if (/^not found$/i.test(message.trim())) {
+      message =
+        "Local Claude/Codex could not apply that model. " +
+        "Mako will reload models on the next send — try again, or pick the " +
+        "full Opus/Sonnet row after Update adapter in Settings.";
+    }
     // Codex often returns opaque "Internal error" / missing model metadata
     // when the CLI or ACP adapter is outdated. Local Agent auto-updates;
     // force one more ensure from the app if the tip hasn't already.

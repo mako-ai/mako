@@ -10,6 +10,7 @@ import type {
   AcpProviderId,
   AcpSessionInfo,
   AcpStatus,
+  AcpWarmModelsResult,
 } from "./acp-types";
 
 interface Envelope<T> {
@@ -66,6 +67,18 @@ export const acpClient = {
       { timeoutMs: 4 * 60 * 1000 },
     );
     return unwrap(body, "Failed to update local adapter");
+  },
+
+  /** Populate real Claude/Codex model ids without starting a Chat turn. */
+  async warmProviderModels(
+    providerId: AcpProviderId,
+  ): Promise<AcpWarmModelsResult> {
+    const body = await localAgentClient.post<Envelope<AcpWarmModelsResult>>(
+      `/acp/providers/${encodeURIComponent(providerId)}/warm-models`,
+      {},
+      { timeoutMs: 2 * 60 * 1000 },
+    );
+    return unwrap(body, "Failed to load local models");
   },
 
   async createSession(input: {
