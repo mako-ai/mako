@@ -461,8 +461,9 @@ export const useAcpStore = create<AcpState>()(
       const id = providerId || get().selectedProviderId;
       if (!acpSupportsAdapterEnsure(get().status)) {
         const message =
-          "One-click Update needs Mako Desktop 0.3.9+ — fully quit and reopen so Local Agent restarts. " +
-          "If the adapter is already found, use Chat → Enable workspace tools (Update is optional).";
+          "Update needs PR Desktop 0.3.9 (mako.ai/download is still 0.3.1). " +
+          "Kill port 41720, install that build, reopen. " +
+          "If the adapter is already found, use Chat → Enable workspace tools.";
         // Only surface when the user explicitly clicked Update/Install.
         if (options?.force) {
           set(s => {

@@ -14,7 +14,7 @@
  */
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { autoUpdater } from "electron-updater";
-import { spawn, ChildProcess } from "child_process";
+import { execFile, spawn, ChildProcess } from "child_process";
 import * as http from "http";
 import * as os from "os";
 import * as path from "path";
@@ -84,19 +84,90 @@ function handleDeepLink(rawUrl: string): void {
   mainWindow.loadURL(buildCompleteUrl(APP_URL, code, verifier));
 }
 
-function agentIsRunning(): Promise<boolean> {
+function agentHttpGet(pathname: string): Promise<{
+  statusCode: number;
+  body: string;
+} | null> {
   return new Promise(resolve => {
     const req = http.get(
-      { host: "127.0.0.1", port: AGENT_PORT, path: "/health", timeout: 1000 },
+      { host: "127.0.0.1", port: AGENT_PORT, path: pathname, timeout: 1500 },
       res => {
-        res.resume();
-        resolve(res.statusCode === 200);
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          resolve({
+            statusCode: res.statusCode || 0,
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
       },
     );
-    req.on("error", () => resolve(false));
+    req.on("error", () => resolve(null));
     req.on("timeout", () => {
       req.destroy();
-      resolve(false);
+      resolve(null);
+    });
+  });
+}
+
+function agentIsRunning(): Promise<boolean> {
+  return agentHttpGet("/health").then(
+    res => Boolean(res && res.statusCode === 200),
+  );
+}
+
+/**
+ * True when the agent on AGENT_PORT already includes one-click ACP
+ * ensure/warm routes (bridge ≥ 6 or adapterEnsure). Older agents must be
+ * replaced — otherwise Desktop skips spawn and the UI stays stuck on
+ * "missing ACP route" forever.
+ */
+async function agentHasModernAcpBridge(): Promise<boolean> {
+  const res = await agentHttpGet("/acp/status");
+  if (!res || res.statusCode !== 200) return false;
+  try {
+    const json = JSON.parse(res.body) as {
+      data?: { acpBridge?: { version?: number; adapterEnsure?: boolean } };
+      acpBridge?: { version?: number; adapterEnsure?: boolean };
+    };
+    const bridge = json.data?.acpBridge || json.acpBridge;
+    if (!bridge) return false;
+    return Boolean(
+      bridge.adapterEnsure || (bridge.version && bridge.version >= 6),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Kill whatever is listening on AGENT_PORT so we can spawn the bundled agent. */
+function killListenersOnAgentPort(): Promise<void> {
+  return new Promise(resolve => {
+    if (process.platform === "win32") {
+      execFile(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-Command",
+          `Get-NetTCPConnection -LocalPort ${AGENT_PORT} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }`,
+        ],
+        () => setTimeout(resolve, 400),
+      );
+      return;
+    }
+    execFile("lsof", ["-ti", `tcp:${AGENT_PORT}`], (err, stdout) => {
+      if (!err && stdout) {
+        for (const line of stdout.split(/\n/)) {
+          const pid = Number(line.trim());
+          if (!Number.isFinite(pid) || pid <= 0) continue;
+          try {
+            process.kill(pid, "SIGTERM");
+          } catch {
+            // already gone
+          }
+        }
+      }
+      setTimeout(resolve, 400);
     });
   });
 }
@@ -132,8 +203,9 @@ function agentSpawnEnv(): NodeJS.ProcessEnv {
 }
 
 /**
- * Start the Mako Local Agent unless one is already running (e.g. the
- * standalone agent installed as a login item).
+ * Start the Mako Local Agent. If an older agent is already bound to the
+ * port (previous Desktop, login-item agent, etc.), replace it so Coding
+ * Agents get ensure/warm routes from this build.
  *
  * Development: spawns the agent from the monorepo via pnpm.
  * Packaged builds: expects a bundled agent under resources/ (added by the
@@ -141,7 +213,16 @@ function agentSpawnEnv(): NodeJS.ProcessEnv {
  */
 async function startAgent(): Promise<void> {
   if (process.env.MAKO_AGENT_SPAWN === "0") return;
-  if (await agentIsRunning()) return;
+  if (await agentIsRunning()) {
+    if (await agentHasModernAcpBridge()) return;
+    console.warn(
+      `Mako Local Agent on :${AGENT_PORT} is outdated for ACP — replacing with bundled agent`,
+    );
+    stopAgent();
+    await killListenersOnAgentPort();
+    // Brief wait so the port is free before spawn.
+    await new Promise(r => setTimeout(r, 300));
+  }
 
   if (app.isPackaged) {
     // Packaged agent sidecar is wired up by electron-builder extraResources.

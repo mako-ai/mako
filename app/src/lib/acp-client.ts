@@ -30,9 +30,9 @@ function unwrap<T>(body: Envelope<T>, fallback: string): T {
 function rewriteLocalAgentNotFound(message: string): string {
   if (!/^not found$/i.test(message.trim())) return message;
   return (
-    "Local Agent is outdated for this action (missing ACP route). " +
-    "Fully quit and reopen Mako Desktop 0.3.9+ so the bundled agent restarts, " +
-    "then retry Update adapter / model switch."
+    "Local Agent is missing this ACP route. " +
+    "Install PR Desktop 0.3.9 (not mako.ai/download 0.3.1), " +
+    "kill port 41720, reopen, then retry Update / model switch."
   );
 }
 

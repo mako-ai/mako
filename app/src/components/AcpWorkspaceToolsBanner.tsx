@@ -214,8 +214,9 @@ export function AcpWorkspaceToolsBanner(props: {
         </Typography>
         {!canEnsureAdapter ? (
           <Typography variant="body2" sx={{ mt: 1 }}>
-            Local Agent is outdated for one-click install — update Desktop to
-            0.3.9+, quit/reopen Mako, then retry.
+            One-click install needs the PR Desktop 0.3.9 Local Agent (not
+            mako.ai/download 0.3.1). Kill port 41720, install that .dmg, reopen,
+            then retry — or install via Terminal using the hint below.
           </Typography>
         ) : null}
       </Alert>
@@ -309,7 +310,7 @@ export function AcpWorkspaceToolsBanner(props: {
         </Typography>
       ) : null}
       {error &&
-      !/missing ACP route|outdated for this action|One-click Update needs/i.test(
+      !/missing ACP route|outdated for this action|missing this ACP route|Update needs PR Desktop/i.test(
         error,
       ) ? (
         <Typography variant="body2" sx={{ mt: 1 }}>

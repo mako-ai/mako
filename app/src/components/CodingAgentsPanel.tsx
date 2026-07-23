@@ -264,7 +264,7 @@ export function CodingAgentsPanel() {
             </Button>
             <Typography variant="body2" color="text.secondary">
               {!acpSupportsAdapterEnsure(acpStatus)
-                ? "One-click Update needs Desktop 0.3.9+ (fully quit/reopen). Adapter already found — use Chat → Enable workspace tools."
+                ? "Update needs PR Desktop 0.3.9 (mako.ai/download is still 0.3.1). Kill port 41720, install that .dmg, reopen. Adapter found — Chat → Enable workspace tools can still work."
                 : readyProviders.length > 0
                   ? `Update keeps ${provider?.label || "the adapter"} current. Sign in opens Terminal for CLI login.`
                   : "Install the adapter here — no Terminal npm required."}
@@ -300,41 +300,44 @@ export function CodingAgentsPanel() {
         </Alert>
       )}
 
-      {error && !/missing ACP route|outdated for this action/i.test(error) && (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          {error}
-          {/ACP connection closed/i.test(error) ? (
-            <Typography variant="body2" sx={{ mt: 1 }}>
-              Local Agent process may be stale on port 41720. Fully quit Desktop
-              (Cmd+Q / Quit), reopen Desktop 0.3.9+, then retry.
-            </Typography>
-          ) : null}
-          {/ENOTEMPTY|_npx/i.test(`${error}\n${lastAdapterError || ""}`) ? (
-            <Typography variant="body2" sx={{ mt: 1 }}>
-              Broken npm/npx cache. In Terminal run:
-              <br />
-              <code>rm -rf ~/.npm/_npx</code>
-              <br />
-              <code>
-                {selectedProviderId === "codex"
-                  ? "npm i -g @openai/codex @agentclientprotocol/codex-acp"
-                  : "npm i -g @agentclientprotocol/claude-agent-acp"}
-              </code>
-              <br />
-              then retry Enable workspace tools (global install avoids npx).
-            </Typography>
-          ) : null}
-          {lastAdapterError ? (
-            <Typography
-              variant="caption"
-              component="pre"
-              sx={{ mt: 1, whiteSpace: "pre-wrap", opacity: 0.9 }}
-            >
-              {lastAdapterError}
-            </Typography>
-          ) : null}
-        </Alert>
-      )}
+      {error &&
+        !/missing ACP route|outdated for this action|missing this ACP route/i.test(
+          error,
+        ) && (
+          <Alert severity="error" sx={{ mb: 2 }}>
+            {error}
+            {/ACP connection closed/i.test(error) ? (
+              <Typography variant="body2" sx={{ mt: 1 }}>
+                Local Agent may be stale on port 41720. Quit Mako, kill that
+                port, install PR Desktop 0.3.9, reopen.
+              </Typography>
+            ) : null}
+            {/ENOTEMPTY|_npx/i.test(`${error}\n${lastAdapterError || ""}`) ? (
+              <Typography variant="body2" sx={{ mt: 1 }}>
+                Broken npm/npx cache. In Terminal run:
+                <br />
+                <code>rm -rf ~/.npm/_npx</code>
+                <br />
+                <code>
+                  {selectedProviderId === "codex"
+                    ? "npm i -g @openai/codex @agentclientprotocol/codex-acp"
+                    : "npm i -g @agentclientprotocol/claude-agent-acp"}
+                </code>
+                <br />
+                then retry Enable workspace tools (global install avoids npx).
+              </Typography>
+            ) : null}
+            {lastAdapterError ? (
+              <Typography
+                variant="caption"
+                component="pre"
+                sx={{ mt: 1, whiteSpace: "pre-wrap", opacity: 0.9 }}
+              >
+                {lastAdapterError}
+              </Typography>
+            ) : null}
+          </Alert>
+        )}
 
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>
