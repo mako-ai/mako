@@ -303,7 +303,7 @@ export function AcpWorkspaceToolsBanner(props: {
         </Typography>
       ) : null}
       {error &&
-      !/missing ACP route|outdated for this action|missing this ACP route|Update needs PR Desktop/i.test(
+      !/missing ACP route|outdated for this action|missing this ACP route|Update needs PR Desktop|CODEX_API_KEY|OPENAI_API_KEY/i.test(
         error,
       ) ? (
         <Typography variant="body2" sx={{ mt: 1 }}>
