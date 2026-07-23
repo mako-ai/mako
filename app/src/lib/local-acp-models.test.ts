@@ -5,6 +5,7 @@ import {
   localAcpModelIdToProviderId,
   localAcpModelPreference,
   localAcpModelsFromProviders,
+  resolveLocalAcpModelValue,
   LOCAL_ACP_CLAUDE_MODEL_ID,
 } from "./local-acp-models";
 
@@ -107,6 +108,15 @@ describe("local-acp-models", () => {
     expect(ids).toContain("local-acp/codex/gpt-5.6-terra");
     expect(ids).toContain("local-acp/codex/gpt-5.6-luna"); // fallback
     expect(ids).toContain("local-acp/codex"); // Default
+  });
+
+  it("resolves opus/sonnet aliases to canonical Claude ids", () => {
+    expect(
+      resolveLocalAcpModelValue("opus", [
+        { value: "claude-sonnet-4-5", name: "Sonnet" },
+        { value: "claude-opus-4-6", name: "Opus" },
+      ]),
+    ).toBe("claude-opus-4-6");
   });
 
   it("prefers adapter-advertised model ids over short aliases", () => {

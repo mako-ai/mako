@@ -30,6 +30,7 @@ import {
   currentModelFromConfigOptions,
   modelChoicesFromConfigOptions,
   parseConfigOptions,
+  resolveModelConfigValue,
   type AcpConfigOptionSnapshot,
   type AcpModelChoice,
 } from "./session-config";
@@ -801,7 +802,10 @@ export class AcpSessionManager {
           }
         }
       } else if (preferredModel) {
-        modelToApply = preferredModel;
+        modelToApply = resolveModelConfigValue(
+          preferredModel,
+          managed.info.availableModels,
+        );
       }
       if (modelToApply) {
         try {
@@ -815,8 +819,19 @@ export class AcpSessionManager {
             preferredModel: modelToApply,
             error: String(error),
           });
-          // Don't fail session/new — leave adapter default; prompt errors
-          // will surface upgrade tips via explainCodexModelFailure.
+          // Claude: fail clearly — silent fallback left users on Sonnet while
+          // Chat showed Opus. Codex: leave adapter default (metadata tips).
+          if (providerId === "claude") {
+            const raw =
+              error instanceof Error ? error.message : String(error);
+            throw new Error(
+              /not found|invalid value|unknown/i.test(raw)
+                ? `Claude could not switch to model "${modelToApply}". ` +
+                    `Pick a model from the adapter list (full id), or Update ` +
+                    `the Claude ACP adapter in Settings → Coding Agents. (${raw})`
+                : raw,
+            );
+          }
         }
       }
 
@@ -1051,12 +1066,30 @@ export class AcpSessionManager {
       );
     }
     const configId = body.configId?.trim() || "model";
-    const value = body.value;
+    let value = body.value;
     if (
       (typeof value !== "string" || !value.trim()) &&
       typeof value !== "boolean"
     ) {
       throw new Error("Config value is required");
+    }
+
+    // Resolve opus/sonnet/fable → canonical ids from this session's model list.
+    if (configId === "model" && typeof value === "string") {
+      const resolved = resolveModelConfigValue(
+        value,
+        session.info.availableModels?.length
+          ? session.info.availableModels
+          : this.providerModels.get(session.info.providerId)?.availableModels,
+      );
+      if (resolved !== value.trim()) {
+        acpLog.info("Resolved ACP model alias", {
+          sessionId,
+          from: value.trim(),
+          to: resolved,
+        });
+      }
+      value = resolved;
     }
 
     const conn = this.connections.get(session.info.providerId);
@@ -1087,10 +1120,27 @@ export class AcpSessionManager {
 
     // ClientContext exposes typed helpers inconsistently across SDK builds —
     // use the JSON-RPC method name (same pattern as cancel/close).
-    const response = (await conn.agent.request(
-      acp.methods.agent.session.setConfigOption,
-      params,
-    )) as { configOptions?: unknown };
+    let response: { configOptions?: unknown };
+    try {
+      response = (await conn.agent.request(
+        acp.methods.agent.session.setConfigOption,
+        params,
+      )) as { configOptions?: unknown };
+    } catch (error) {
+      const raw = error instanceof Error ? error.message : String(error);
+      if (
+        configId === "model" &&
+        typeof value === "string" &&
+        /not found|invalid value|unknown/i.test(raw)
+      ) {
+        throw new Error(
+          `Could not switch to model "${value}". ` +
+            `Use a model id from the Chat picker (not a stale alias), or ` +
+            `Update the ACP adapter in Settings → Coding Agents. (${raw})`,
+        );
+      }
+      throw error;
+    }
     this.applyConfigOptionsToSession(session, response?.configOptions);
     session.info.updatedAt = nowIso();
     acpLog.info("Updated ACP session config", {

@@ -10,6 +10,7 @@ import {
   isLocalAcpModelId,
   localAcpModelIdToProviderId,
   localAcpModelPreference,
+  resolveLocalAcpModelValue,
 } from "./local-acp-models";
 import {
   appendAssistantReasoning,
@@ -41,24 +42,45 @@ async function applyModelPreference(
 ): Promise<void> {
   const preferred = modelPreference?.trim();
   if (!preferred) return;
-  const session = useAcpStore.getState().sessions.find(s => s.id === sessionId);
+  const store = useAcpStore.getState();
+  const session = store.sessions.find(s => s.id === sessionId);
+  const providerModels = store.status?.providers.find(
+    p => p.id === session?.providerId,
+  )?.availableModels;
+  const resolved = resolveLocalAcpModelValue(
+    preferred,
+    session?.availableModels?.length ? session.availableModels : providerModels,
+  );
   // Skip no-op switches (adapter may already be on this model / alias).
   if (
     session?.currentModel &&
-    (session.currentModel === preferred ||
+    (session.currentModel === resolved ||
+      session.currentModel === preferred ||
       session.currentModel.toLowerCase().includes(preferred.toLowerCase()) ||
-      preferred.toLowerCase().includes(session.currentModel.toLowerCase()))
+      preferred.toLowerCase().includes(session.currentModel.toLowerCase()) ||
+      resolved
+        .toLowerCase()
+        .includes((session.currentModel || "").toLowerCase()))
   ) {
     return;
   }
   const updated = await useAcpStore
     .getState()
-    .setSessionModel(sessionId, preferred);
+    .setSessionModel(sessionId, resolved);
   if (!updated) {
-    throw new Error(
+    const err =
       useAcpStore.getState().error ||
-        `Failed to switch local model to ${preferred}`,
-    );
+      `Failed to switch local model to ${resolved}`;
+    // Stale short alias on an old adapter — force a fresh session with the
+    // preferred model so session/new can resolve against a new model list.
+    if (/not found|invalid value|could not switch/i.test(err)) {
+      throw new Error(
+        `${err}\n\nTip: pick the full Opus/Sonnet row in the model menu ` +
+          `(after one successful Claude turn), or use Update adapter in ` +
+          `Settings → Coding Agents, then try again.`,
+      );
+    }
+    throw new Error(err);
   }
 }
 

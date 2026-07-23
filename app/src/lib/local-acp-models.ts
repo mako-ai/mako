@@ -110,6 +110,58 @@ export function localAcpModelPreference(
   return value;
 }
 
+/**
+ * Map short Chat preferences (`opus`, `sonnet`) to adapter-canonical ids
+ * from the live model list. Older Claude ACP rejects bare aliases.
+ */
+export function resolveLocalAcpModelValue(
+  preferred: string,
+  available: AcpModelChoice[] | undefined | null,
+): string {
+  const pref = preferred.trim();
+  if (!pref) return pref;
+  const list = available ?? [];
+  if (list.length === 0) return pref;
+
+  const prefLower = pref.toLowerCase();
+  const exact = list.find(m => m.value.toLowerCase() === prefLower);
+  if (exact) return exact.value;
+
+  const token = prefLower.replace(/[^a-z0-9]+/g, "");
+  if (!token) return pref;
+
+  let best: { value: string; score: number } | null = null;
+  for (const choice of list) {
+    const value = choice.value.trim();
+    if (!value || value.toLowerCase() === "default") continue;
+    const v = value.toLowerCase();
+    const n = (choice.name || "").toLowerCase();
+    let score = 0;
+    if (
+      v.includes(`-${token}-`) ||
+      v.endsWith(`-${token}`) ||
+      v.startsWith(`${token}-`)
+    ) {
+      score = 80;
+    } else if (v.includes(token)) {
+      score = 60;
+    } else if (n === prefLower || n.split(/[^a-z0-9]+/).includes(token)) {
+      score = 50;
+    } else if (n.includes(prefLower)) {
+      score = 40;
+    }
+    if (score === 0) continue;
+    if (
+      !best ||
+      score > best.score ||
+      (score === best.score && value.length > best.value.length)
+    ) {
+      best = { value, score };
+    }
+  }
+  return best?.value ?? pref;
+}
+
 export function buildLocalAcpModelId(
   providerId: AcpProviderId,
   modelValue?: string | null,

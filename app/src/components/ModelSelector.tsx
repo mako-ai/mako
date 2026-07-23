@@ -28,6 +28,7 @@ import {
   localAcpModelIdToProviderId,
   localAcpModelPreference,
   localAcpModelsFromProviders,
+  resolveLocalAcpModelValue,
 } from "../lib/local-acp-models";
 import { getModelBillingState } from "./model-selector-utils";
 
@@ -132,7 +133,16 @@ export const ModelSelector: React.FC = () => {
         s => s.providerId === providerId && s.makoMcpAttached,
       );
     if (!session) return;
-    void store.setSessionModel(session.id, preference);
+    const providerModels = store.status?.providers.find(
+      p => p.id === providerId,
+    )?.availableModels;
+    const resolved = resolveLocalAcpModelValue(
+      preference,
+      session.availableModels?.length
+        ? session.availableModels
+        : providerModels,
+    );
+    void store.setSessionModel(session.id, resolved);
   };
 
   const localModels = useMemo(
