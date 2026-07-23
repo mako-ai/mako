@@ -72,6 +72,7 @@ export function supportsDesktopAcpCliLogin(): boolean {
 export async function startDesktopAcpCliLogin(
   providerId: "claude" | "codex",
 ): Promise<{ opened: boolean; commandLine: string } | null> {
-  if (!supportsDesktopAcpCliLogin()) return null;
-  return (await window.makoDesktop!.startAcpCliLogin!(providerId)) ?? null;
+  const start = window.makoDesktop?.startAcpCliLogin;
+  if (!start) return null;
+  return (await start(providerId)) ?? null;
 }
