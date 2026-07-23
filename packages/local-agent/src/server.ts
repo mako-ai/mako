@@ -32,6 +32,7 @@ import { registerDrivers, toDatabaseConnection } from "./database-bridge";
 import { registerAcpRoutes } from "./acp/routes";
 import { acpSessionManager } from "./acp/manager";
 import { ensureNpmGlobalPath } from "./acp/path-env";
+import { registerDesktopBridgeRoutes } from "./desktop-bridge/routes";
 
 const logger = loggers.api("local-agent");
 
@@ -485,6 +486,7 @@ export function createAgentApp(): Hono {
 
   // --- ACP coding agents (Claude Code / Codex via local stdio adapters) ---
   registerAcpRoutes(app);
+  registerDesktopBridgeRoutes(app);
 
   return app;
 }

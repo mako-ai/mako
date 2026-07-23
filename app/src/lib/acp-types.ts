@@ -49,6 +49,7 @@ export interface AcpStatus {
     mcpProbe?: boolean;
     reconnect?: boolean;
     sessionConfig?: boolean;
+    desktopMcp?: boolean;
   };
   lastAdapterError?: string | null;
 }

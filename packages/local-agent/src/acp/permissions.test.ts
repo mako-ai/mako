@@ -12,6 +12,7 @@ describe("ACP permission auto-approve", () => {
       isMakoMcpToolName("mcp__mako-workspace__list_connections"),
       true,
     );
+    assert.equal(isMakoMcpToolName("mcp__mako-desktop__run_app"), true);
     assert.equal(isMakoMcpToolName("mcp__mako__sql_execute_query"), true);
     assert.equal(isMakoMcpToolName("mcp__slack__post"), false);
     assert.equal(isMakoMcpToolName("Bash"), false);

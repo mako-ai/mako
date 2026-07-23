@@ -108,11 +108,12 @@ export interface AcpStatusResponse {
    * agent (raw "ACP connection closed" with no rewrite / no terminal auth).
    */
   acpBridge?: {
-    version: 3;
+    version: 3 | 4;
     terminalAuth: true;
     mcpProbe: true;
     reconnect: true;
     sessionConfig: true;
+    desktopMcp?: true;
   };
   /** Last Claude/Codex adapter stderr snippet (when a connection died). */
   lastAdapterError?: string | null;

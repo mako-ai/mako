@@ -49,6 +49,7 @@ import { useIsMobile } from "../hooks/useIsMobile";
 import { generateObjectId } from "../utils/objectId";
 import { isLocalAcpModelId } from "../lib/local-acp-models";
 import { runLocalAcpChatTurn } from "../lib/local-acp-chat";
+import { startDesktopAcpBridge } from "../lib/desktop-acp-bridge";
 import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { ClarifyingQuestionsCard } from "./ClarifyingQuestionsCard";
@@ -188,6 +189,9 @@ const Chat: React.FC<ChatProps> = ({
   useEffect(() => {
     void fetchDbTypes();
   }, [fetchDbTypes]);
+
+  // Local Agent mako-desktop MCP → iframe run_app / previewErrors.
+  useEffect(() => startDesktopAcpBridge(), []);
   const workspaceConnections = useMemo(
     () => (currentWorkspace ? connections[currentWorkspace.id] || [] : []),
     [connections, currentWorkspace],

@@ -38,9 +38,11 @@ export function isMakoMcpToolName(name: string): boolean {
   return (
     lower.startsWith("mcp__mako-workspace__") ||
     lower === "mcp__mako-workspace" ||
+    lower.startsWith("mcp__mako-desktop__") ||
+    lower === "mcp__mako-desktop" ||
     lower.startsWith("mcp__mako__") ||
     lower === "mcp__mako" ||
-    /\bmcp__mako(-workspace)?\b/i.test(name)
+    /\bmcp__mako(-workspace|-desktop)?\b/i.test(name)
   );
 }
 

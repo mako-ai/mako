@@ -27,6 +27,11 @@ import {
 import { useAcpStore } from "../store/acpStore";
 import type { AcpProviderId } from "./acp-types";
 import { maybeFocusAppFromAcpTool } from "./acp-app-focus";
+import { buildAcpUiContextBlock } from "./acp-ui-context";
+import {
+  buildAcpContinuitySeed,
+  prependAcpPromptLayers,
+} from "./acp-continuity";
 
 async function applyModelPreference(
   sessionId: string,
@@ -60,7 +65,7 @@ export async function ensureAcpSessionForProvider(
   workspaceId?: string,
   preferredSessionId?: string,
   options?: { forceNew?: boolean; model?: string | null },
-): Promise<string> {
+): Promise<{ sessionId: string; isFresh: boolean }> {
   const store = useAcpStore.getState();
   if (!store.status) {
     await store.refreshStatus();
@@ -96,18 +101,20 @@ export async function ensureAcpSessionForProvider(
     if (preferred) {
       useAcpStore.getState().setActiveSession(preferred.id);
       await applyModelPreference(preferred.id, modelPreference);
-      return preferred.id;
+      return { sessionId: preferred.id, isFresh: false };
     }
   }
 
-  if (!options?.forceNew) {
+  // Dead chat binding: do not reuse an unrelated ACP session (wrong memory).
+  // Fresh session + Mako transcript seed restores continuity instead.
+  if (!options?.forceNew && !preferredSessionId) {
     const withMcp = useAcpStore
       .getState()
       .sessions.find(s => s.providerId === providerId && s.makoMcpAttached);
     if (withMcp && liveIds.has(withMcp.id)) {
       useAcpStore.getState().setActiveSession(withMcp.id);
       await applyModelPreference(withMcp.id, modelPreference);
-      return withMcp.id;
+      return { sessionId: withMcp.id, isFresh: false };
     }
   }
 
@@ -122,7 +129,7 @@ export async function ensureAcpSessionForProvider(
       useAcpStore.getState().error || "Failed to create local ACP session",
     );
   }
-  return created.id;
+  return { sessionId: created.id, isFresh: true };
 }
 
 export interface LocalAcpChatTurnArgs {
@@ -183,21 +190,25 @@ export async function runLocalAcpChatTurn(
     });
   };
 
+  let priorMessages: UIMessage[] = [];
   const userId = generateObjectId();
   const assistantId = generateObjectId();
-  applyMessages(prev => [
-    ...prev,
-    {
-      id: userId,
-      role: "user",
-      parts: [{ type: "text", text: trimmed }],
-    },
-    {
-      id: assistantId,
-      role: "assistant",
-      parts: [{ type: "text", text: "" }],
-    },
-  ]);
+  applyMessages(prev => {
+    priorMessages = prev;
+    return [
+      ...prev,
+      {
+        id: userId,
+        role: "user",
+        parts: [{ type: "text", text: trimmed }],
+      },
+      {
+        id: assistantId,
+        role: "assistant",
+        parts: [{ type: "text", text: "" }],
+      },
+    ];
+  });
 
   const patchAssistantParts = (
     updater: (
@@ -232,15 +243,31 @@ export async function runLocalAcpChatTurn(
   };
 
   const modelPreference = localAcpModelPreference(modelId);
+  const uiContext = buildAcpUiContextBlock({
+    workspaceId,
+    chatId,
+    modelId,
+  });
 
   const runAgainstSession = async (forceNew: boolean) => {
-    sessionId = await ensureAcpSessionForProvider(
+    const ensured = await ensureAcpSessionForProvider(
       providerId,
       workspaceId,
       forceNew ? undefined : preferredSessionId,
       { forceNew, model: modelPreference },
     );
+    sessionId = ensured.sessionId;
     useAcpStore.getState().ensureEventSubscription(sessionId);
+
+    const continuitySeed =
+      ensured.isFresh && priorMessages.length > 0
+        ? buildAcpContinuitySeed(priorMessages)
+        : "";
+    const promptText = prependAcpPromptLayers({
+      userText: trimmed,
+      continuitySeed,
+      uiContext,
+    });
 
     const unsub = acpClient.subscribeEvents(
       sessionId,
@@ -317,7 +344,8 @@ export async function runLocalAcpChatTurn(
     signal?.addEventListener("abort", onAbort, { once: true });
 
     try {
-      await acpClient.prompt(activeSessionId, trimmed);
+      // Prompt includes UI context / continuity; transcript keeps raw user text.
+      await acpClient.prompt(activeSessionId, promptText);
       if (signal?.aborted) {
         throw new DOMException("Cancelled", "AbortError");
       }

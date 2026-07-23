@@ -43,6 +43,13 @@ import type {
   PermissionResponseRequest,
 } from "./types";
 import { acpLog } from "./log";
+import {
+  DESKTOP_MCP_PATH,
+  DESKTOP_MCP_SERVER_NAME,
+} from "../desktop-bridge/mcp";
+
+/** Keep in sync with `DEFAULT_AGENT_PORT` in server.ts (avoid circular import). */
+const LOCAL_AGENT_PORT = 41720;
 
 function isConnectionAlive(conn: AcpProviderConnection | undefined): boolean {
   if (!conn) return false;
@@ -167,11 +174,12 @@ export class AcpSessionManager {
       defaultCwd: defaultCwd(),
       providers,
       acpBridge: {
-        version: 3,
+        version: 4,
         terminalAuth: true,
         mcpProbe: true,
         reconnect: true,
         sessionConfig: true,
+        desktopMcp: true,
       },
       lastAdapterError: this.lastAdapterError,
     };
@@ -600,9 +608,11 @@ export class AcpSessionManager {
         body.mcpServerName?.trim() || "mako-workspace"
       ).replace(/[^a-zA-Z0-9_-]/g, "-");
       const makoToolPrefix = `mcp__${mcpServerName}__`;
+      const desktopToolPrefix = `mcp__${DESKTOP_MCP_SERVER_NAME}__`;
       const systemAppend = attachMakoMcp
         ? buildMakoSystemPromptAppend({
             mcpServerName,
+            desktopMcpServerName: DESKTOP_MCP_SERVER_NAME,
             extraAppend: body.systemPromptAppend,
           })
         : body.systemPromptAppend?.trim() || "";
@@ -623,6 +633,8 @@ export class AcpSessionManager {
                           allowedTools: [
                             `${makoToolPrefix}*`,
                             `mcp__${mcpServerName}`,
+                            `${desktopToolPrefix}*`,
+                            `mcp__${DESKTOP_MCP_SERVER_NAME}`,
                           ],
                         }
                       : {}),
@@ -657,10 +669,26 @@ export class AcpSessionManager {
           url: mcpUrl,
           headers: [{ name: "Authorization", value: authorization }],
         });
+        const parsedPort = Number.parseInt(
+          process.env.MAKO_AGENT_PORT || "",
+          10,
+        );
+        const agentPort =
+          Number.isFinite(parsedPort) && parsedPort > 0
+            ? parsedPort
+            : LOCAL_AGENT_PORT;
+        const desktopMcpUrl = `http://127.0.0.1:${agentPort}${DESKTOP_MCP_PATH}`;
+        builder = builder.withMcpServer({
+          type: "http",
+          name: DESKTOP_MCP_SERVER_NAME,
+          url: desktopMcpUrl,
+          headers: [],
+        });
         acpLog.info("Attaching Mako MCP to ACP session", {
           providerId,
           mcpUrl,
           mcpServerName,
+          desktopMcpUrl,
         });
       }
 
