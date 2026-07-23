@@ -40,12 +40,14 @@ export function CodingAgentsPanel() {
   const selectedProviderId = useAcpStore(s => s.selectedProviderId);
   const setSelectedProvider = useAcpStore(s => s.setSelectedProvider);
   const authenticate = useAcpStore(s => s.authenticate);
+  const ensureAdapter = useAcpStore(s => s.ensureAdapter);
   const cwdDraft = useAcpStore(s => s.cwdDraft);
   const setCwdDraft = useAcpStore(s => s.setCwdDraft);
   const loadingStatus = useAcpStore(s => s.loadingStatus);
 
   const [booting, setBooting] = useState(true);
   const [signingIn, setSigningIn] = useState(false);
+  const [updating, setUpdating] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -204,7 +206,8 @@ export function CodingAgentsPanel() {
               </Stack>
               {!provider.adapterFound && (
                 <Alert severity="info" sx={{ mt: 1 }}>
-                  {provider.installHint}
+                  Adapter missing — use <strong>Install / update</strong> below
+                  (Mako runs npm on this machine).
                 </Alert>
               )}
             </Box>
@@ -219,7 +222,28 @@ export function CodingAgentsPanel() {
             fullWidth
           />
 
-          <Stack direction="row" spacing={1} alignItems="center">
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="center"
+            flexWrap="wrap"
+          >
+            <Button
+              variant="contained"
+              onClick={() => {
+                setUpdating(true);
+                void ensureAdapter(selectedProviderId, { force: true }).finally(
+                  () => setUpdating(false),
+                );
+              }}
+              disabled={loadingStatus || updating || signingIn}
+            >
+              {updating
+                ? "Updating…"
+                : provider?.adapterFound
+                  ? "Update adapter"
+                  : "Install / update"}
+            </Button>
             <Button
               variant="outlined"
               onClick={() => {
@@ -234,8 +258,8 @@ export function CodingAgentsPanel() {
             </Button>
             <Typography variant="body2" color="text.secondary">
               {readyProviders.length > 0
-                ? "Opens Terminal for Claude CLI login (not a browser popup)."
-                : "Install an adapter to enable local models in Chat."}
+                ? "Update keeps Codex/Claude ACP current. Sign in opens Terminal for CLI login."
+                : "Install the adapter here — no Terminal npm required."}
             </Typography>
           </Stack>
 

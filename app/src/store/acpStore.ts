@@ -3,6 +3,7 @@ import { immer } from "zustand/middleware/immer";
 import { acpClient } from "../lib/acp-client";
 import type {
   AcpChatMessage,
+  AcpEnsureAdapterResult,
   AcpPermissionPrompt,
   AcpProviderId,
   AcpSessionInfo,
@@ -98,6 +99,14 @@ interface AcpState {
     },
   ) => void;
   authenticate: (providerId?: AcpProviderId) => Promise<void>;
+  /**
+   * Install/update ACP adapter (+ Codex CLI) on this machine via Local Agent.
+   * Prefer force when the adapter is missing or Codex metadata errors.
+   */
+  ensureAdapter: (
+    providerId?: AcpProviderId,
+    options?: { force?: boolean },
+  ) => Promise<AcpEnsureAdapterResult | null>;
   /** Last auth guidance (Terminal opened / copy-paste command). */
   authGuidance: string | null;
   sendPrompt: (text: string) => Promise<void>;
@@ -424,6 +433,33 @@ export const useAcpStore = create<AcpState>()(
           s.error =
             error instanceof Error ? error.message : "Authentication failed";
         });
+      }
+    },
+
+    ensureAdapter: async (providerId, options) => {
+      const id = providerId || get().selectedProviderId;
+      set(s => {
+        s.error = null;
+      });
+      try {
+        const result = await acpClient.ensureAdapter(id, {
+          force: options?.force,
+        });
+        await get().refreshStatus();
+        if (!result.ok) {
+          set(s => {
+            s.error = result.message;
+          });
+        }
+        return result;
+      } catch (error) {
+        set(s => {
+          s.error =
+            error instanceof Error
+              ? error.message
+              : "Failed to update local adapter";
+        });
+        return null;
       }
     },
 

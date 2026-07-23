@@ -25,14 +25,20 @@ export function AcpWorkspaceToolsBanner(props: {
   const bridgeOk = Boolean(
     acpStatus?.acpBridge?.version && acpStatus.acpBridge.version >= 2,
   );
+  const canEnsureAdapter = Boolean(
+    acpStatus?.acpBridge?.adapterEnsure ||
+      (acpStatus?.acpBridge?.version && acpStatus.acpBridge.version >= 6),
+  );
   const sessions = useAcpStore(s => s.sessions);
   const refreshStatus = useAcpStore(s => s.refreshStatus);
   const refreshSessions = useAcpStore(s => s.refreshSessions);
   const setSelectedProvider = useAcpStore(s => s.setSelectedProvider);
   const createSession = useAcpStore(s => s.createSession);
   const authenticate = useAcpStore(s => s.authenticate);
+  const ensureAdapter = useAcpStore(s => s.ensureAdapter);
 
   const [busy, setBusy] = useState(false);
+  const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [dismissedReady, setDismissedReady] = useState(false);
 
   const providerId = modelId ? localAcpModelIdToProviderId(modelId) : null;
@@ -58,10 +64,14 @@ export function AcpWorkspaceToolsBanner(props: {
   const enable = async () => {
     if (!workspaceId) return;
     setBusy(true);
+    setBusyLabel("Updating local tools…");
     try {
       await checkAgent();
       await refreshStatus();
       setSelectedProvider(providerId);
+      // Local Agent installs/updates Codex CLI + ACP adapter as needed.
+      await ensureAdapter(providerId, { force: false });
+      setBusyLabel("Connecting…");
       const session = await createSession({
         workspaceId,
         requireMakoMcp: true,
@@ -72,6 +82,20 @@ export function AcpWorkspaceToolsBanner(props: {
       await refreshSessions();
     } finally {
       setBusy(false);
+      setBusyLabel(null);
+    }
+  };
+
+  const installAdapter = async () => {
+    setBusy(true);
+    setBusyLabel("Installing…");
+    try {
+      await checkAgent();
+      await ensureAdapter(providerId, { force: true });
+      await refreshStatus();
+    } finally {
+      setBusy(false);
+      setBusyLabel(null);
     }
   };
 
@@ -110,11 +134,36 @@ export function AcpWorkspaceToolsBanner(props: {
 
   if (provider && !provider.adapterFound) {
     return (
-      <Alert severity="warning" sx={{ mb: 1 }}>
+      <Alert
+        severity="warning"
+        sx={{ mb: 1 }}
+        action={
+          canEnsureAdapter ? (
+            <Button
+              size="small"
+              variant="contained"
+              disabled={busy}
+              onClick={() => void installAdapter()}
+            >
+              {busy ? busyLabel || "Installing…" : "Install"}
+            </Button>
+          ) : undefined
+        }
+      >
         <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
           Install the {provider.label} adapter
         </Typography>
-        <Typography variant="body2">{provider.installHint}</Typography>
+        <Typography variant="body2">
+          {canEnsureAdapter
+            ? "Mako can install it on this machine (npm global). One click — no Terminal required."
+            : provider.installHint}
+        </Typography>
+        {!canEnsureAdapter ? (
+          <Typography variant="body2" sx={{ mt: 1 }}>
+            Local Agent is outdated for one-click install — update Desktop to
+            0.3.8+, quit/reopen Mako, then retry.
+          </Typography>
+        ) : null}
       </Alert>
     );
   }
@@ -178,7 +227,7 @@ export function AcpWorkspaceToolsBanner(props: {
             disabled={busy || !workspaceId || !bridgeOk}
             onClick={() => void enable()}
           >
-            {busy ? "Connecting…" : "Enable workspace tools"}
+            {busy ? busyLabel || "Connecting…" : "Enable workspace tools"}
           </Button>
         </Stack>
       }

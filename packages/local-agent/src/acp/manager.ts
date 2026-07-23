@@ -52,6 +52,10 @@ import {
   isForeignGatewayCodexModel,
   pickSafeCodexModel,
 } from "./codex-models";
+import {
+  ensureAdapterPackages,
+  type AcpEnsureAdapterResult,
+} from "./ensure-adapter";
 
 /** Keep in sync with `DEFAULT_AGENT_PORT` in server.ts (avoid circular import). */
 const LOCAL_AGENT_PORT = 41720;
@@ -126,6 +130,13 @@ export class AcpSessionManager {
   private lastAdapterError: string | null = null;
   /** Last-known model picker state per provider (survives session close). */
   private providerModels = new Map<AcpProviderId, ProviderModelCache>();
+  /** Deduplicate concurrent `npm i -g` ensures per provider. */
+  private ensureInFlight = new Map<
+    AcpProviderId,
+    Promise<AcpEnsureAdapterResult>
+  >();
+  /** Last forced ensure after a prompt/metadata failure (rate-limit). */
+  private lastForceEnsureAt = new Map<AcpProviderId, number>();
 
   private rememberProviderModels(
     providerId: AcpProviderId,
@@ -185,16 +196,45 @@ export class AcpSessionManager {
       defaultCwd: defaultCwd(),
       providers,
       acpBridge: {
-        version: 5,
+        version: 6,
         terminalAuth: true,
         mcpProbe: true,
         reconnect: true,
         sessionConfig: true,
         desktopMcp: true,
         hitlTools: true,
+        adapterEnsure: true,
       },
       lastAdapterError: this.lastAdapterError,
     };
+  }
+
+  /**
+   * Install/update ACP adapter (+ Codex CLI) via npm on this machine.
+   * Called automatically on session/new; Chat can also invoke explicitly.
+   */
+  async ensureAdapter(
+    providerId: AcpProviderId,
+    options?: { force?: boolean },
+  ): Promise<AcpEnsureAdapterResult> {
+    const existing = this.ensureInFlight.get(providerId);
+    if (existing) return existing;
+
+    const promise = ensureAdapterPackages(providerId, {
+      force: options?.force,
+    })
+      .then(result => {
+        if (result.updated) {
+          // Drop any stale adapter process so the next connect uses the new bin.
+          this.invalidateProvider(providerId, "adapter packages updated");
+        }
+        return result;
+      })
+      .finally(() => {
+        this.ensureInFlight.delete(providerId);
+      });
+    this.ensureInFlight.set(providerId, promise);
+    return promise;
   }
 
   listSessions(): AcpSessionInfo[] {
@@ -378,11 +418,16 @@ export class AcpSessionManager {
     }
 
     const def = ACP_PROVIDERS[providerId];
-    const launch = resolveAdapterCommand(def);
+    let launch = resolveAdapterCommand(def);
     if (!launch) {
-      throw new Error(
-        `${def.label} adapter not found. ${def.installHint}`,
-      );
+      const ensured = await this.ensureAdapter(providerId, { force: true });
+      launch = resolveAdapterCommand(def);
+      if (!launch) {
+        throw new Error(
+          ensured.message ||
+            `${def.label} adapter not found. ${def.installHint}`,
+        );
+      }
     }
 
     acpLog.info("Starting ACP adapter", {
@@ -590,6 +635,9 @@ export class AcpSessionManager {
       `${ACP_PROVIDERS[providerId].label} · ${cwd.split(/[/\\]/).pop() || cwd}`;
 
     try {
+      // Keep Codex/Claude ACP (+ Codex CLI) current without asking the user
+      // to run npm by hand. Skips when a recent global install already exists.
+      await this.ensureAdapter(providerId, { force: false });
       const conn = await this.ensureConnection(providerId);
       if (conn.authRequired && !conn.authenticated) {
         const terminalOnly = conn.authMethods.every(
@@ -935,7 +983,31 @@ export class AcpSessionManager {
       const combined = stderr ? `${raw}\n${stderr.slice(-600)}` : raw;
       const tip =
         providerId === "codex" ? explainCodexModelFailure(combined) : null;
-      const message = tip || raw;
+      let message = tip || raw;
+
+      // Stale Codex CLI / ACP adapter → force npm update once, then ask retry.
+      if (
+        providerId === "codex" &&
+        /model metadata|internal error|not found/i.test(combined)
+      ) {
+        const last = this.lastForceEnsureAt.get(providerId) || 0;
+        if (Date.now() - last > 60 * 60 * 1000) {
+          this.lastForceEnsureAt.set(providerId, Date.now());
+          try {
+            const ensured = await this.ensureAdapter(providerId, {
+              force: true,
+            });
+            if (ensured.ok) {
+              message =
+                `${message}\n\n` +
+                "Mako updated Codex on this machine. Send your message again.";
+            }
+          } catch {
+            // keep original tip
+          }
+        }
+      }
+
       this.emit(sessionId, {
         type: "error",
         sessionId,

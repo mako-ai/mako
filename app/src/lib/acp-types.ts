@@ -51,8 +51,22 @@ export interface AcpStatus {
     sessionConfig?: boolean;
     desktopMcp?: boolean;
     hitlTools?: boolean;
+    adapterEnsure?: boolean;
   };
   lastAdapterError?: string | null;
+}
+
+export interface AcpEnsureAdapterResult {
+  ok: boolean;
+  providerId: AcpProviderId;
+  skipped: boolean;
+  updated: boolean;
+  packages: string[];
+  message: string;
+  adapterCommand: string | null;
+  adapterVia: "env" | "path" | "npx" | null;
+  stdoutTail?: string;
+  stderrTail?: string;
 }
 
 export interface AcpSessionInfo {

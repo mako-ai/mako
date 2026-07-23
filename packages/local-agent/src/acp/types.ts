@@ -108,16 +108,31 @@ export interface AcpStatusResponse {
    * agent (raw "ACP connection closed" with no rewrite / no terminal auth).
    */
   acpBridge?: {
-    version: 3 | 4 | 5;
+    version: 3 | 4 | 5 | 6;
     terminalAuth: true;
     mcpProbe: true;
     reconnect: true;
     sessionConfig: true;
     desktopMcp?: true;
     hitlTools?: true;
+    /** Local Agent can `npm i -g` ACP adapter (+ Codex CLI) for the user. */
+    adapterEnsure?: true;
   };
   /** Last Claude/Codex adapter stderr snippet (when a connection died). */
   lastAdapterError?: string | null;
+}
+
+export interface AcpEnsureAdapterResponse {
+  ok: boolean;
+  providerId: AcpProviderId;
+  skipped: boolean;
+  updated: boolean;
+  packages: string[];
+  message: string;
+  adapterCommand: string | null;
+  adapterVia: "env" | "path" | "npx" | null;
+  stdoutTail?: string;
+  stderrTail?: string;
 }
 
 export interface CreateAcpSessionRequest {

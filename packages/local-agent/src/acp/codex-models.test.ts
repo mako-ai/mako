@@ -54,13 +54,16 @@ describe("codex-models", () => {
     assert.equal(picked, "gpt-5.6-sol");
   });
 
-  it("explains metadata / Internal error as upgrade tips", () => {
+  it("explains metadata / Internal error with auto-update tips", () => {
     assert.match(
       explainCodexModelFailure(
         "Model metadata for `gpt-5.6-sol` not found",
       ) || "",
-      /Upgrade|upgrade|codex-acp/,
+      /Mako will try to update|automatically/,
     );
-    assert.match(explainCodexModelFailure("Internal error") || "", /codex-acp/);
+    assert.match(
+      explainCodexModelFailure("Internal error") || "",
+      /Mako will try to update/,
+    );
   });
 });

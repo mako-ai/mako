@@ -21,6 +21,26 @@ export function registerAcpRoutes(app: Hono): void {
     return c.json({ success: true, data: acpSessionManager.getStatus() });
   });
 
+  app.post("/acp/adapters/:providerId/ensure", async c => {
+    try {
+      const raw = c.req.param("providerId");
+      if (!isAcpProviderId(raw)) {
+        return jsonError(c, `Unknown ACP provider: ${raw}`, 400);
+      }
+      const body = (await c.req.json().catch(() => ({}))) as {
+        force?: boolean;
+      };
+      const result = await acpSessionManager.ensureAdapter(raw, {
+        force: Boolean(body.force),
+      });
+      return c.json({ success: true, data: result });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to update adapter";
+      return jsonError(c, message, 400);
+    }
+  });
+
   app.get("/acp/sessions", c => {
     return c.json({
       success: true,

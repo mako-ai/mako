@@ -86,18 +86,15 @@ export function explainCodexModelFailure(message: string): string | null {
   if (/model metadata|not found/i.test(text)) {
     return (
       "Codex could not load model metadata (often an outdated Codex CLI or " +
-      "ACP adapter). Upgrade both, then retry:\n" +
-      "  npm i -g @openai/codex @agentclientprotocol/codex-acp\n" +
-      "GPT-5.6 Sol/Terra/Luna are the current ChatGPT Codex models — pick one " +
-      "in Chat after upgrading."
+      "ACP adapter). Mako will try to update them on this machine automatically " +
+      "— send your message again. GPT-5.6 Sol/Terra/Luna are the current models."
     );
   }
   if (/internal error/i.test(text)) {
     return (
-      "Codex ACP returned Internal error. Common fixes: upgrade " +
-      "`npm i -g @openai/codex @agentclientprotocol/codex-acp`, restart Local " +
-      "Agent, and re-Enable workspace tools. If ~/.codex/config.toml sets " +
-      "`model`, use a current Codex id (e.g. gpt-5.6-sol)."
+      "Codex ACP returned Internal error. Mako will try to update Codex CLI + " +
+      "ACP adapter on this machine — send again after it finishes. If it keeps " +
+      "failing, restart Local Agent and re-Enable workspace tools."
     );
   }
   return null;

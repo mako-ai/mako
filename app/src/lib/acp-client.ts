@@ -6,6 +6,7 @@ import { LOCAL_AGENT_BASE_URL, localAgentClient } from "./local-agent-client";
 import type {
   AcpAuthenticateResult,
   AcpBridgeEvent,
+  AcpEnsureAdapterResult,
   AcpProviderId,
   AcpSessionInfo,
   AcpStatus,
@@ -51,6 +52,22 @@ export const acpClient = {
     return unwrap(body, "Authentication failed");
   },
 
+  /**
+   * Install/update ACP adapter (+ Codex CLI) via Local Agent `npm i -g`.
+   * Long timeout — first install can take a minute.
+   */
+  async ensureAdapter(
+    providerId: AcpProviderId,
+    options?: { force?: boolean },
+  ): Promise<AcpEnsureAdapterResult> {
+    const body = await localAgentClient.post<Envelope<AcpEnsureAdapterResult>>(
+      `/acp/adapters/${encodeURIComponent(providerId)}/ensure`,
+      { force: Boolean(options?.force) },
+      { timeoutMs: 4 * 60 * 1000 },
+    );
+    return unwrap(body, "Failed to update local adapter");
+  },
+
   async createSession(input: {
     providerId: AcpProviderId;
     cwd?: string;
@@ -64,9 +81,11 @@ export const acpClient = {
     /** Preferred Claude/Codex model (`fable`, `sonnet`, …). */
     model?: string;
   }): Promise<AcpSessionInfo> {
+    // session/new may `npm i -g` Codex/Claude adapters before connecting.
     const body = await localAgentClient.post<Envelope<AcpSessionInfo>>(
       "/acp/sessions",
       input,
+      { timeoutMs: 4 * 60 * 1000 },
     );
     return unwrap(body, "Failed to create ACP session");
   },

@@ -33,7 +33,7 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderDefinition> = {
     ],
     npxPackage: "@agentclientprotocol/claude-agent-acp",
     installHint:
-      "Install Claude Code, then: npm i -g @agentclientprotocol/claude-agent-acp",
+      "Mako can install the Claude ACP adapter automatically — use Install in Chat, or: npm i -g @agentclientprotocol/claude-agent-acp",
     authProduct: "Claude Pro/Max",
   },
   codex: {
@@ -49,7 +49,7 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderDefinition> = {
     ],
     npxPackage: "@agentclientprotocol/codex-acp",
     installHint:
-      "Install Codex CLI, then: npm i -g @agentclientprotocol/codex-acp",
+      "Mako can install Codex CLI + ACP adapter automatically — use Install in Chat, or: npm i -g @openai/codex @agentclientprotocol/codex-acp",
     authProduct: "ChatGPT / OpenAI API",
   },
 };

@@ -72,14 +72,25 @@ export async function ensureAcpSessionForProvider(
   if (!store.status) {
     await store.refreshStatus();
   }
-  const provider = useAcpStore
+  let provider = useAcpStore
     .getState()
     .status?.providers.find(p => p.id === providerId);
   if (!provider?.adapterFound) {
-    throw new Error(
-      provider?.installHint ||
-        `${providerId} ACP adapter not found. Install it and restart the Local Agent.`,
-    );
+    // Local Agent can npm-install the adapter (+ Codex CLI) for the user.
+    const ensured = await useAcpStore
+      .getState()
+      .ensureAdapter(providerId, { force: true });
+    await useAcpStore.getState().refreshStatus();
+    provider = useAcpStore
+      .getState()
+      .status?.providers.find(p => p.id === providerId);
+    if (!provider?.adapterFound) {
+      throw new Error(
+        ensured?.message ||
+          provider?.installHint ||
+          `${providerId} ACP adapter not found. Use Install in Chat or restart Local Agent.`,
+      );
+    }
   }
 
   // Always reconcile with Local Agent — Desktop/agent restarts leave stale ids.
@@ -424,17 +435,26 @@ export async function runLocalAcpChatTurn(
     let message =
       error instanceof Error ? error.message : "Local ACP prompt failed";
     // Codex often returns opaque "Internal error" / missing model metadata
-    // when the CLI or ACP adapter is outdated relative to GPT-5.6 models.
+    // when the CLI or ACP adapter is outdated. Local Agent auto-updates;
+    // force one more ensure from the app if the tip hasn't already.
     if (
       providerId === "codex" &&
-      /internal error|model metadata|not found/i.test(message) &&
-      !/Upgrade both|codex-acp/i.test(message)
+      /internal error|model metadata|not found/i.test(message)
     ) {
-      message =
-        `${message}\n\n` +
-        "Codex tip: upgrade the CLI and ACP adapter, then retry:\n" +
-        "`npm i -g @openai/codex @agentclientprotocol/codex-acp`\n" +
-        "Then pick **Codex · GPT-5.6 Sol (local)** (or Terra/Luna) in Chat.";
+      if (!/updated Codex|Mako will try to update/i.test(message)) {
+        try {
+          const ensured = await useAcpStore
+            .getState()
+            .ensureAdapter(providerId, { force: true });
+          if (ensured?.ok) {
+            message =
+              `${message}\n\n` +
+              "Mako updated Codex on this machine. Send your message again.";
+          }
+        } catch {
+          // keep original
+        }
+      }
     }
     patchAssistantParts(parts =>
       setAssistantErrorText(parts, `Error: ${message}`),
