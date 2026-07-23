@@ -24,7 +24,9 @@ export async function fetchWorkspaceGuidanceForAcp(
       { params: { path: { workspaceId } } },
     );
     if (!response.ok || !data || typeof data !== "object") return undefined;
-    const content = (data as { content?: unknown }).content;
+    const body = data as { success?: boolean; content?: unknown };
+    if (body.success === false) return undefined;
+    const content = body.content;
     if (typeof content !== "string" || !content.trim()) return undefined;
     if (looksLikeDefaultCustomPrompt(content)) return undefined;
     const trimmed = content.trim();
