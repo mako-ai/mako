@@ -317,9 +317,19 @@ export interface DbtLineageNode {
   owner?: string;
 }
 
+/** Inferred same-name column edge across a table-level parent→child link. */
+export interface DbtColumnLineageEdge {
+  sourceNodeId: string;
+  sourceColumn: string;
+  targetNodeId: string;
+  targetColumn: string;
+  confidence: "name_match";
+}
+
 export interface DbtLineage {
   nodes: DbtLineageNode[];
   edges: Array<{ source: string; target: string }>;
+  columnEdges?: DbtColumnLineageEdge[];
   generatedAt: string | null;
 }
 

@@ -36,6 +36,7 @@ import "@xyflow/react/dist/style.css";
 import { useWorkspace } from "../contexts/workspace-context";
 import {
   useDbtStore,
+  type DbtColumnLineageEdge,
   type DbtLineage,
   type DbtLineageNode,
 } from "../store/dbtStore";
@@ -188,6 +189,47 @@ function resolveSelector(
   return result;
 }
 
+function ColumnEdgeList({
+  title,
+  edges,
+  nodeNameById,
+  direction,
+}: {
+  title: string;
+  edges: DbtColumnLineageEdge[];
+  nodeNameById: Map<string, string>;
+  direction: "upstream" | "downstream";
+}) {
+  return (
+    <Box sx={{ mb: 1 }}>
+      <Typography
+        variant="caption"
+        sx={{ fontWeight: 600, display: "block", mb: 0.25 }}
+      >
+        {title}
+      </Typography>
+      {edges.map(edge => {
+        const otherId =
+          direction === "upstream" ? edge.sourceNodeId : edge.targetNodeId;
+        const otherName = nodeNameById.get(otherId) ?? otherId;
+        const label =
+          direction === "upstream"
+            ? `${otherName}.${edge.sourceColumn} → ${edge.targetColumn}`
+            : `${edge.sourceColumn} → ${otherName}.${edge.targetColumn}`;
+        return (
+          <Typography
+            key={`${edge.sourceNodeId}.${edge.sourceColumn}->${edge.targetNodeId}.${edge.targetColumn}`}
+            variant="caption"
+            sx={{ display: "block", fontFamily: "monospace", mb: 0.25 }}
+          >
+            {label}
+          </Typography>
+        );
+      })}
+    </Box>
+  );
+}
+
 export default function DbtLineageView({ projectId }: { projectId: string }) {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
@@ -224,7 +266,10 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
     const edges = lineage.edges.filter(
       e => selected.has(e.source) && selected.has(e.target),
     );
-    return { ...lineage, nodes, edges };
+    const columnEdges = (lineage.columnEdges ?? []).filter(
+      e => selected.has(e.sourceNodeId) && selected.has(e.targetNodeId),
+    );
+    return { ...lineage, nodes, edges, columnEdges };
   }, [lineage, appliedSelector]);
 
   const applySelector = useCallback(() => {
@@ -235,6 +280,32 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
     setSelectorText("");
     setAppliedSelector("");
   }, []);
+
+  const nodeNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const node of visibleLineage?.nodes ?? []) {
+      map.set(node.id, node.name);
+    }
+    return map;
+  }, [visibleLineage]);
+
+  /** Column edges touching the selected node (upstream + downstream). */
+  const selectedColumnEdges = useMemo(() => {
+    if (!selectedNodeId || !visibleLineage?.columnEdges) return [];
+    return visibleLineage.columnEdges.filter(
+      e =>
+        e.sourceNodeId === selectedNodeId || e.targetNodeId === selectedNodeId,
+    );
+  }, [visibleLineage, selectedNodeId]);
+
+  /** Table edges that carry at least one inferred column match for the selection. */
+  const columnLinkedTableEdges = useMemo(() => {
+    const keys = new Set<string>();
+    for (const edge of selectedColumnEdges) {
+      keys.add(`${edge.sourceNodeId}->${edge.targetNodeId}`);
+    }
+    return keys;
+  }, [selectedColumnEdges]);
 
   const { nodes, edges } = useMemo<{ nodes: Node[]; edges: Edge[] }>(() => {
     if (!visibleLineage || visibleLineage.nodes.length === 0) {
@@ -283,16 +354,40 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
       };
     });
 
-    const flowEdges: Edge[] = visibleLineage.edges.map(edge => ({
-      id: `${edge.source}->${edge.target}`,
-      source: edge.source,
-      target: edge.target,
-      animated: false,
-      style: { stroke: theme.palette.divider },
-    }));
+    const flowEdges: Edge[] = visibleLineage.edges.map(edge => {
+      const key = `${edge.source}->${edge.target}`;
+      const columnLinked = columnLinkedTableEdges.has(key);
+      const matchCount = selectedColumnEdges.filter(
+        e => e.sourceNodeId === edge.source && e.targetNodeId === edge.target,
+      ).length;
+      return {
+        id: key,
+        source: edge.source,
+        target: edge.target,
+        animated: columnLinked,
+        label: columnLinked
+          ? `${matchCount} col${matchCount === 1 ? "" : "s"}`
+          : undefined,
+        style: {
+          stroke: columnLinked
+            ? theme.palette.primary.main
+            : theme.palette.divider,
+          strokeWidth: columnLinked ? 2 : 1,
+        },
+        labelStyle: columnLinked
+          ? { fill: theme.palette.primary.main, fontSize: 10 }
+          : undefined,
+      };
+    });
 
     return { nodes: flowNodes, edges: flowEdges };
-  }, [visibleLineage, theme, selectedNodeId]);
+  }, [
+    visibleLineage,
+    theme,
+    selectedNodeId,
+    columnLinkedTableEdges,
+    selectedColumnEdges,
+  ]);
 
   const handleNodeClick = useCallback((_event: unknown, node: Node) => {
     setSelectedNodeId(node.id);
@@ -301,6 +396,15 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
   const selectedNode: DbtLineageNode | undefined = useMemo(
     () => visibleLineage?.nodes.find(n => n.id === selectedNodeId),
     [visibleLineage, selectedNodeId],
+  );
+
+  const upstreamColumnEdges = useMemo(
+    () => selectedColumnEdges.filter(e => e.targetNodeId === selectedNodeId),
+    [selectedColumnEdges, selectedNodeId],
+  );
+  const downstreamColumnEdges = useMemo(
+    () => selectedColumnEdges.filter(e => e.sourceNodeId === selectedNodeId),
+    [selectedColumnEdges, selectedNodeId],
   );
 
   if (loading) {
@@ -526,6 +630,43 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
                   </Box>
                 ))}
               </Box>
+            </>
+          )}
+
+          {(upstreamColumnEdges.length > 0 ||
+            downstreamColumnEdges.length > 0) && (
+            <>
+              <Divider sx={{ my: 1 }} />
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ fontWeight: 600, display: "block" }}
+              >
+                Column lineage (inferred)
+              </Typography>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: "block", mb: 0.75 }}
+              >
+                Same-name matches across parent_map — not SQL-proven.
+              </Typography>
+              {upstreamColumnEdges.length > 0 && (
+                <ColumnEdgeList
+                  title="Upstream"
+                  edges={upstreamColumnEdges}
+                  nodeNameById={nodeNameById}
+                  direction="upstream"
+                />
+              )}
+              {downstreamColumnEdges.length > 0 && (
+                <ColumnEdgeList
+                  title="Downstream"
+                  edges={downstreamColumnEdges}
+                  nodeNameById={nodeNameById}
+                  direction="downstream"
+                />
+              )}
             </>
           )}
 

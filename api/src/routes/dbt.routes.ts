@@ -108,6 +108,11 @@ import {
 import { validateScheduledConsoleSchedule } from "../services/scheduled-query-schedule.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import {
+  buildNameMatchColumnEdges,
+  mergeCatalogColumns,
+  type CatalogNodeColumns,
+} from "../dbt/column-lineage";
+import {
   createVersion,
   getLatestVersionNumber,
   getUserDisplayName,
@@ -2477,11 +2482,29 @@ function mapColumns(
   columns: Record<string, ManifestColumn> | undefined,
 ): Array<{ name: string; type?: string; description?: string }> {
   if (!columns) return [];
-  return Object.values(columns).map(col => ({
-    name: col.name ?? "",
-    type: col.data_type ?? undefined,
-    description: col.description || undefined,
-  }));
+  return Object.values(columns)
+    .map(col => ({
+      name: col.name ?? "",
+      type: col.data_type ?? undefined,
+      description: col.description || undefined,
+    }))
+    .filter(col => col.name);
+}
+
+async function readArtifactJson<T>(key: string | undefined): Promise<T | null> {
+  if (!key) return null;
+  const store = getDashboardArtifactStore();
+  const stream = await store.openReadStream(key);
+  if (!stream) return null;
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.from(chunk as Buffer));
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
+  } catch {
+    return null;
+  }
 }
 
 dbtRoutes.get(
@@ -2503,21 +2526,27 @@ dbtRoutes.get(
       if (!run?.artifactKeys?.manifest) {
         return c.json({
           success: true,
-          lineage: { nodes: [], edges: [], generatedAt: null },
+          lineage: {
+            nodes: [],
+            edges: [],
+            columnEdges: [],
+            generatedAt: null,
+          },
         });
       }
-      const store = getDashboardArtifactStore();
-      const stream = await store.openReadStream(run.artifactKeys.manifest);
-      if (!stream) {
+      const manifest = await readArtifactJson<ManifestForLineage>(
+        run.artifactKeys.manifest,
+      );
+      if (!manifest) {
         return c.json({ success: false, error: "Manifest not found" }, 404);
       }
-      const chunks: Buffer[] = [];
-      for await (const chunk of stream) {
-        chunks.push(Buffer.from(chunk as Buffer));
-      }
-      const manifest = JSON.parse(
-        Buffer.concat(chunks).toString("utf8"),
-      ) as ManifestForLineage;
+
+      // Optional catalog.json from the same run — warehouse types + columns
+      // that were never documented in schema.yml.
+      const catalog = await readArtifactJson<{
+        nodes?: Record<string, CatalogNodeColumns>;
+        sources?: Record<string, CatalogNodeColumns>;
+      }>(run.artifactKeys.catalog ?? undefined);
 
       const statusByUniqueId = new Map(
         (run.stepResults ?? []).map(step => [step.uniqueId, step.status]),
@@ -2550,7 +2579,10 @@ dbtRoutes.get(
           description: node.description || undefined,
           materialized: node.config?.materialized,
           tags: node.tags?.length ? node.tags : undefined,
-          columns: mapColumns(node.columns),
+          columns: mergeCatalogColumns(
+            mapColumns(node.columns),
+            catalog?.nodes?.[id],
+          ),
         });
       }
       for (const [id, source] of Object.entries(manifest.sources ?? {})) {
@@ -2561,7 +2593,10 @@ dbtRoutes.get(
             : (source.name ?? id),
           resourceType: "source",
           description: source.description || undefined,
-          columns: mapColumns(source.columns),
+          columns: mergeCatalogColumns(
+            mapColumns(source.columns),
+            catalog?.sources?.[id],
+          ),
         });
       }
       // Exposures are leaf consumers (dashboards/apps) — render them as
@@ -2590,9 +2625,16 @@ dbtRoutes.get(
         }
       }
 
+      const columnEdges = buildNameMatchColumnEdges(nodes, edges);
+
       return c.json({
         success: true,
-        lineage: { nodes, edges, generatedAt: run.createdAt },
+        lineage: {
+          nodes,
+          edges,
+          columnEdges,
+          generatedAt: run.createdAt,
+        },
       });
     } catch (error) {
       return serverError(c, error, "Failed to build dbt lineage");
