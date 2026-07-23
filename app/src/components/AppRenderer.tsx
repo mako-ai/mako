@@ -17,7 +17,6 @@ import {
   Snackbar,
 } from "@mui/material";
 import {
-  RefreshCw as RefreshIcon,
   Share2 as ShareIcon,
   History as HistoryIcon,
   UploadCloud as PublishIcon,
@@ -40,6 +39,7 @@ import ShareDialog from "./ShareDialog";
 import { SaveCommentDialog } from "./SaveCommentDialog";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
 import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
+import ResourceRefreshControl from "./ResourceRefreshControl";
 import { buildPreviewHtml, PREVIEW_MESSAGE } from "../app-runtime/preview";
 import { appLocationFromHostSearch } from "../app-runtime/app-location";
 import {
@@ -765,28 +765,18 @@ export default function AppRenderer({
               </Box>
             </Tooltip>
           ))}
+        {canManage && hasAnyBindings && (
+          <ResourceRefreshControl
+            subject="binding"
+            busy={rematerializing}
+            onClick={() => void handleRefreshData()}
+          />
+        )}
         <Tooltip title="Share">
           <IconButton size="small" onClick={() => setShareOpen(true)}>
             <ShareIcon size={18} strokeWidth={1.5} />
           </IconButton>
         </Tooltip>
-        {canManage && hasAnyBindings && (
-          <Tooltip title="Refresh data from source (waits for every binding)">
-            <span>
-              <IconButton
-                size="small"
-                onClick={() => void handleRefreshData()}
-                disabled={rematerializing}
-              >
-                {rematerializing ? (
-                  <CircularProgress size={16} />
-                ) : (
-                  <RefreshIcon size={18} strokeWidth={1.5} />
-                )}
-              </IconButton>
-            </span>
-          </Tooltip>
-        )}
         <Tooltip title="More">
           <IconButton
             size="small"

@@ -16,7 +16,6 @@ import {
   Alert,
 } from "@mui/material";
 import {
-  RefreshCw,
   Save,
   Download,
   Database,
@@ -61,6 +60,7 @@ import WidgetInspector from "./dashboard/WidgetInspector";
 import { SaveCommentDialog } from "./SaveCommentDialog";
 import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
+import ResourceRefreshControl from "./ResourceRefreshControl";
 
 type ViewMode = "canvas" | "code";
 
@@ -365,22 +365,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           />
         </Tooltip>
 
-        <Tooltip title="Refresh data from source (waits for every data source)">
-          <span>
-            <Chip
-              icon={<RefreshCw size={14} />}
-              label={reloadingData ? "Refreshing…" : "Refresh"}
-              size="small"
-              variant="outlined"
-              onClick={handleRefresh}
-              disabled={reloadingData}
-              sx={{
-                cursor: reloadingData ? "default" : "pointer",
-              }}
-            />
-          </span>
-        </Tooltip>
-
         {isEditMode && (
           <>
             <Tooltip title="Add widget">
@@ -439,8 +423,16 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           </IconButton>
         </Tooltip>
 
+        <Box sx={{ flex: 1 }} />
+
+        <ResourceRefreshControl
+          subject="data source"
+          busy={reloadingData}
+          onClick={handleRefresh}
+        />
+
         {canManageShare && (
-          <Tooltip title="Share dashboard">
+          <Tooltip title="Share">
             <IconButton size="small" onClick={() => setShareOpen(true)}>
               <Share2 size={16} />
             </IconButton>
@@ -510,7 +502,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             label={`Logs ${recentEventLogCount}`}
             variant={showEventLog ? "filled" : "outlined"}
             onClick={() => setShowEventLog(prev => !prev)}
-            sx={{ cursor: "pointer", ml: "auto" }}
+            sx={{ cursor: "pointer" }}
           />
         </Tooltip>
       </Box>
