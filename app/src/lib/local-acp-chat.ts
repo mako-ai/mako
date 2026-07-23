@@ -1,5 +1,7 @@
 /**
  * Run one main-Chat turn through Local Agent ACP (Claude Code / Codex).
+ * Tool calls become `dynamic-tool` UIMessage parts so Chat uses the same
+ * StreamingToolCard UI as the in-app agent.
  */
 import type { UIMessage } from "ai";
 import { generateObjectId } from "../utils/objectId";
@@ -8,15 +10,15 @@ import {
   isLocalAcpModelId,
   localAcpModelIdToProviderId,
 } from "./local-acp-models";
+import {
+  appendAssistantText,
+  getAssistantParts,
+  setAssistantErrorText,
+  upsertAcpToolPart,
+  type AcpToolUpdate,
+} from "./local-acp-parts";
 import { useAcpStore } from "../store/acpStore";
 import type { AcpProviderId } from "./acp-types";
-
-function withAssistantText(message: UIMessage, text: string): UIMessage {
-  return {
-    ...message,
-    parts: [{ type: "text", text }],
-  };
-}
 
 export async function ensureAcpSessionForProvider(
   providerId: AcpProviderId,
@@ -49,6 +51,12 @@ export async function ensureAcpSessionForProvider(
   if (!created) {
     throw new Error(
       useAcpStore.getState().error || "Failed to create local ACP session",
+    );
+  }
+  if (!created.makoMcpAttached) {
+    throw new Error(
+      useAcpStore.getState().error ||
+        "Local session started without Mako data tools. Check that you are signed in and Local Agent can reach this workspace.",
     );
   }
   return created.id;
@@ -98,13 +106,19 @@ export async function runLocalAcpChatTurn(
     },
   ]);
 
-  let assistantText = "";
-  const patchAssistant = (nextText: string) => {
-    assistantText = nextText;
+  const patchAssistantParts = (
+    updater: (
+      parts: ReturnType<typeof getAssistantParts>,
+    ) => ReturnType<typeof getAssistantParts>,
+  ) => {
     setMessages(prev =>
-      prev.map(m =>
-        m.id === assistantId ? withAssistantText(m, nextText) : m,
-      ),
+      prev.map(m => {
+        if (m.id !== assistantId) return m;
+        return {
+          ...m,
+          parts: updater(getAssistantParts(m)) as UIMessage["parts"],
+        };
+      }),
     );
   };
 
@@ -114,44 +128,70 @@ export async function runLocalAcpChatTurn(
     }
 
     const sessionId = await ensureAcpSessionForProvider(providerId);
+    // Keep the store subscription alive for permission prompts in Chat.
+    useAcpStore.getState().ensureEventSubscription(sessionId);
 
     const unsub = acpClient.subscribeEvents(
       sessionId,
       event => {
         if (signal?.aborted) return;
         if (event.type === "session_update") {
-          const update = event.update as {
-            sessionUpdate?: string;
+          const update = event.update as AcpToolUpdate & {
             content?: { type?: string; text?: string };
-            title?: string;
-            status?: string;
           };
           if (
             update.sessionUpdate === "agent_message_chunk" &&
             update.content?.type === "text" &&
+            typeof update.content.text === "string" &&
             update.content.text
           ) {
-            patchAssistant(assistantText + update.content.text);
-          } else if (update.sessionUpdate === "tool_call") {
-            patchAssistant(
-              `${assistantText}\n\n🔧 ${update.title || "Tool"} (${update.status || "pending"})\n`,
-            );
+            const chunk = update.content.text;
+            patchAssistantParts(parts => appendAssistantText(parts, chunk));
+          } else if (
+            update.sessionUpdate === "tool_call" ||
+            update.sessionUpdate === "tool_call_update"
+          ) {
+            patchAssistantParts(parts => upsertAcpToolPart(parts, update));
           }
+        } else if (event.type === "permission_request") {
+          // Store path (ensureEventSubscription) also receives this; no-op here.
         } else if (event.type === "error") {
-          patchAssistant(`${assistantText}\n\nError: ${event.message}`);
+          patchAssistantParts(parts =>
+            setAssistantErrorText(parts, `Error: ${event.message}`),
+          );
         }
       },
       err => {
         if (signal?.aborted) return;
-        patchAssistant(`${assistantText}\n\n(${err.message})`);
+        patchAssistantParts(parts =>
+          setAssistantErrorText(parts, `(${err.message})`),
+        );
       },
     );
 
     try {
       await acpClient.prompt(sessionId, trimmed);
-      if (!assistantText.trim()) {
-        patchAssistant("(No response from local agent)");
-      }
+      setMessages(prev => {
+        const assistant = prev.find(m => m.id === assistantId);
+        const parts = getAssistantParts(assistant);
+        const hasText = parts.some(
+          p =>
+            p.type === "text" &&
+            String((p as { text?: string }).text || "").trim(),
+        );
+        const hasTool = parts.some(p => p.type === "dynamic-tool");
+        if (hasText || hasTool) return prev;
+        return prev.map(m =>
+          m.id === assistantId
+            ? {
+                ...m,
+                parts: [
+                  { type: "text", text: "(No response from local agent)" },
+                ] as UIMessage["parts"],
+              }
+            : m,
+        );
+      });
     } finally {
       unsub();
     }
@@ -160,17 +200,13 @@ export async function runLocalAcpChatTurn(
       signal?.aborted ||
       (error instanceof DOMException && error.name === "AbortError")
     ) {
-      patchAssistant(
-        assistantText ? `${assistantText}\n\n_Stopped._` : "_Stopped._",
-      );
+      patchAssistantParts(parts => setAssistantErrorText(parts, "_Stopped._"));
       return true;
     }
     const message =
       error instanceof Error ? error.message : "Local ACP prompt failed";
-    patchAssistant(
-      assistantText
-        ? `${assistantText}\n\nError: ${message}`
-        : `Error: ${message}`,
+    patchAssistantParts(parts =>
+      setAssistantErrorText(parts, `Error: ${message}`),
     );
     throw error;
   }

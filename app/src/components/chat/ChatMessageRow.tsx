@@ -304,7 +304,10 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
                 state={cardState}
                 input={part.input}
                 output={cardOutput}
-                labelOverride={consoleToolPresentation?.title}
+                labelOverride={
+                  consoleToolPresentation?.title ||
+                  (typeof part.title === "string" ? part.title : undefined)
+                }
                 leadingIconUrl={consoleToolPresentation?.iconUrl}
                 leadingIconAlt={
                   consoleToolPresentation ? "Database" : undefined

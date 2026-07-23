@@ -356,6 +356,14 @@ export class AcpSessionManager {
               claudeCode: {
                 options: {
                   allowedTools: ["mcp__mako__*", "mcp__mako"],
+                  // Nudge Claude toward Mako workspace tools for data questions
+                  // (otherwise it may prefer Claude.ai Gmail/Drive connectors).
+                  systemPrompt: {
+                    type: "preset",
+                    preset: "claude_code",
+                    append:
+                      "\n\n# Mako workspace\nYou are running inside Mako. For the user's workspace databases, SQL, connections, consoles, and apps, prefer the `mcp__mako__*` tools (list_connections, sql_list_tables, sql_execute_query, run_console, create_console, app_*, etc.). Use those before searching Gmail/Drive when the question is about data available in Mako.",
+                  },
                 },
               },
             },

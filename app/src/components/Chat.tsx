@@ -591,6 +591,9 @@ const Chat: React.FC<ChatProps> = ({
     chatId,
     setMessages,
     loadPersistedMessagesRef,
+    // Local ACP keeps useChat at "ready" while tools stream in — don't poison
+    // in-flight dynamic-tool parts as orphans.
+    suppressOrphanRescue: localAcpBusy,
   });
   onToolCallImplRef.current = dispatchClientToolCall;
 
@@ -1329,7 +1332,7 @@ const Chat: React.FC<ChatProps> = ({
               <ChatMessageRow
                 message={message}
                 isLastMessage={msgIdx === messages.length - 1}
-                isStreaming={status === "streaming"}
+                isStreaming={status === "streaming" || localAcpBusy}
                 onToolClick={handleToolClick}
                 onConsoleTitleClick={handleConsoleTitleClick}
                 onMcpApprovalResponse={handleMcpApprovalResponse}
