@@ -11,6 +11,7 @@ import {
   extractTerminalAuthLaunch,
   formatTerminalAuthCommand,
 } from "./terminal-auth";
+import { explainAdapterLaunchFailure } from "./connection-errors";
 import { acpLog } from "./log";
 
 export type AcpSdk = typeof import("@agentclientprotocol/sdk");
@@ -225,9 +226,12 @@ export async function openProviderConnection(options: {
       },
     });
   } catch (error) {
-    const detail = lastStderr
-      ? ` Adapter stderr: ${lastStderr.slice(-800)}`
-      : "";
+    const tip = explainAdapterLaunchFailure(lastStderr);
+    const detail = tip
+      ? `\n${tip}`
+      : lastStderr
+        ? ` Adapter stderr: ${lastStderr.slice(-800)}`
+        : "";
     const base =
       error instanceof Error ? error.message : "ACP initialize failed";
     try {

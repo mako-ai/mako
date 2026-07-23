@@ -22,6 +22,7 @@ import { probeMakoMcpHttp } from "./mcp-probe";
 import { buildMakoSystemPromptAppend } from "./mako-system-append";
 import {
   acpReconnectMessage,
+  explainAdapterLaunchFailure,
   isAcpConnectionClosedError,
 } from "./connection-errors";
 import { launchTerminalAuth } from "./terminal-auth";
@@ -250,9 +251,12 @@ export class AcpSessionManager {
     if (stderr) {
       this.lastAdapterError = stderr.slice(-800);
     }
-    const message = stderr
-      ? `${acpReconnectMessage(label)} (${reason}). Adapter: ${stderr.slice(-400)}`
-      : `${acpReconnectMessage(label)} (${reason})`;
+    const npxTip = stderr ? explainAdapterLaunchFailure(stderr) : null;
+    const message = npxTip
+      ? `${acpReconnectMessage(label)} (${reason}).\n${npxTip}`
+      : stderr
+        ? `${acpReconnectMessage(label)} (${reason}). Adapter: ${stderr.slice(-400)}`
+        : `${acpReconnectMessage(label)} (${reason})`;
     if (conn) {
       this.connections.delete(providerId);
       try {
