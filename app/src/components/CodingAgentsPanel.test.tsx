@@ -73,12 +73,17 @@ describe("CodingAgentsPanel", () => {
     vi.clearAllMocks();
   });
 
-  it("renders without hitting max update depth", async () => {
+  it("renders setup guidance without a parallel session chat UI", async () => {
     render(<CodingAgentsPanel />);
     await waitFor(() => {
-      expect(screen.getByText(/Tokens bill to your Claude/i)).toBeTruthy();
+      expect(screen.getByText(/main Chat/i)).toBeTruthy();
     });
-    expect(screen.getByText("New session")).toBeTruthy();
-    expect(screen.getByText(/Start a session to chat/i)).toBeTruthy();
+    expect(screen.getByText("Local setup")).toBeTruthy();
+    expect(screen.getByText(/Available in Chat/i)).toBeTruthy();
+    expect(screen.queryByText("Start session")).toBeNull();
+    expect(screen.queryByText("Sessions")).toBeNull();
+    expect(
+      screen.queryByPlaceholderText(/Message the coding agent/i),
+    ).toBeNull();
   });
 });

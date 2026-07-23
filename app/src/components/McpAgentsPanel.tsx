@@ -494,11 +494,12 @@ export function McpAgentsPanel() {
       <Alert severity="info" sx={{ mb: 2 }}>
         This page lets external agents (Claude Code, Cursor, Codex) call{" "}
         <strong>into</strong> Mako over MCP. To run Claude Code or Codex{" "}
-        <strong>inside</strong> Mako via ACP, open{" "}
+        <strong>inside</strong> Mako, pick them under{" "}
+        <strong>On this machine</strong> in the Chat model dropdown (setup:{" "}
         <Button size="small" onClick={openCodingAgents} sx={{ ml: 0.5 }}>
           Coding Agents
         </Button>
-        .
+        ).
       </Alert>
       <McpAgentConnectCard onCopy={copyToClipboard} />
       <McpConnectedAgents onNotify={notify} />

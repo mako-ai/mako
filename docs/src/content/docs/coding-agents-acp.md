@@ -25,11 +25,13 @@ This is the reverse of [MCP Server](/mcp-server/):
 
 ## How to use
 
-1. Open **Settings → Coding Agents**.
-2. Pick **Claude Code** or **Codex (ChatGPT)**.
-3. Set a working directory (absolute path on your machine).
-4. Click **Sign in** if needed, then **Start session**.
-5. Chat. Permission prompts appear when the agent wants to edit files or run tools.
+1. Ensure Local Agent is running and adapters are installed (above).
+2. Optional: **Settings → Coding Agents** to sign in and set the default
+   working directory.
+3. Open **Chat**, open the model dropdown, and pick **Claude Code (local)** or
+   **Codex (local)** under **On this machine**.
+4. Send messages in the normal Chat composer. Mako starts the local ACP session
+   automatically and attaches workspace data tools.
 
 ACP traffic stays on loopback (`127.0.0.1:41720`). Mako Cloud does **not** proxy
 the ACP stdio pipe — prompts and tool calls do not transit Mako servers.
