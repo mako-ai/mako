@@ -113,7 +113,7 @@ export async function ensureAcpSessionForProvider(
     .getState()
     .status?.providers.find(p => p.id === providerId);
   if (!provider?.adapterFound) {
-    // Local Agent can npm-install the adapter (+ Codex CLI) for the user.
+    // Local Agent can npm-install the adapter (+ Codex CLI) when the route exists.
     const ensured = await useAcpStore
       .getState()
       .ensureAdapter(providerId, { force: true });
@@ -123,9 +123,11 @@ export async function ensureAcpSessionForProvider(
       .status?.providers.find(p => p.id === providerId);
     if (!provider?.adapterFound) {
       throw new Error(
-        ensured?.message ||
-          provider?.installHint ||
-          `${providerId} ACP adapter not found. Use Install in Chat or restart Local Agent.`,
+        ensured?.skipped
+          ? `${ensured.message} Or install via Terminal, then retry.`
+          : ensured?.message ||
+            provider?.installHint ||
+            `${providerId} ACP adapter not found. Use Install in Chat or restart Local Agent.`,
       );
     }
   }

@@ -6,6 +6,11 @@
 import { useEffect, useState } from "react";
 import { Alert, Button, Stack, Typography } from "@mui/material";
 import {
+  acpSupportsAdapterEnsure,
+  acpSupportsModelWarm,
+  acpSupportsWorkspaceMcp,
+} from "../lib/acp-capabilities";
+import {
   isLocalAcpModelId,
   localAcpModelIdToProviderId,
 } from "../lib/local-acp-models";
@@ -22,13 +27,8 @@ export function AcpWorkspaceToolsBanner(props: {
   const acpStatus = useAcpStore(s => s.status);
   const statusError = useAcpStore(s => s.statusError);
   const error = useAcpStore(s => s.error);
-  const bridgeOk = Boolean(
-    acpStatus?.acpBridge?.version && acpStatus.acpBridge.version >= 2,
-  );
-  const canEnsureAdapter = Boolean(
-    acpStatus?.acpBridge?.adapterEnsure ||
-      (acpStatus?.acpBridge?.version && acpStatus.acpBridge.version >= 6),
-  );
+  const bridgeOk = acpSupportsWorkspaceMcp(acpStatus);
+  const canEnsureAdapter = acpSupportsAdapterEnsure(acpStatus);
   const sessions = useAcpStore(s => s.sessions);
   const refreshStatus = useAcpStore(s => s.refreshStatus);
   const refreshSessions = useAcpStore(s => s.refreshSessions);
@@ -56,7 +56,10 @@ export function AcpWorkspaceToolsBanner(props: {
       await checkAgent();
       await refreshStatus();
       await refreshSessions();
-      void warmProviderModels(providerId);
+      // Soft no-op on older agents (store skips when route unsupported).
+      if (acpSupportsModelWarm(useAcpStore.getState().status)) {
+        void warmProviderModels(providerId);
+      }
     })();
   }, [
     isLocal,
@@ -106,15 +109,20 @@ export function AcpWorkspaceToolsBanner(props: {
   const enable = async () => {
     if (!workspaceId) return;
     setBusy(true);
-    setBusyLabel("Updating local tools…");
+    setBusyLabel("Connecting…");
     try {
       await checkAgent();
       await refreshStatus();
       setSelectedProvider(providerId);
-      // Local Agent installs/updates Codex CLI + ACP adapter as needed.
-      await ensureAdapter(providerId, { force: false });
-      setBusyLabel("Loading models…");
-      await warmProviderModels(providerId);
+      // Optional on older Local Agents — missing ensure/warm must not block MCP attach.
+      if (acpSupportsAdapterEnsure(useAcpStore.getState().status)) {
+        setBusyLabel("Updating local tools…");
+        await ensureAdapter(providerId, { force: false });
+      }
+      if (acpSupportsModelWarm(useAcpStore.getState().status)) {
+        setBusyLabel("Loading models…");
+        await warmProviderModels(providerId);
+      }
       setBusyLabel("Connecting…");
       const session = await createSession({
         workspaceId,
@@ -296,12 +304,14 @@ export function AcpWorkspaceToolsBanner(props: {
       ) : null}
       {!bridgeOk ? (
         <Typography variant="body2" sx={{ mt: 1 }}>
-          Local Agent is outdated — install Desktop 0.3.9+ and fully quit/reopen
-          Mako before enabling tools. Raw &quot;ACP connection closed&quot;
-          means the old agent is still on port 41720.
+          Local Agent is outdated for MCP attach — install Desktop 0.3.9+ and
+          fully quit/reopen Mako before enabling tools.
         </Typography>
       ) : null}
-      {error ? (
+      {error &&
+      !/missing ACP route|outdated for this action|One-click Update needs/i.test(
+        error,
+      ) ? (
         <Typography variant="body2" sx={{ mt: 1 }}>
           {error}
         </Typography>

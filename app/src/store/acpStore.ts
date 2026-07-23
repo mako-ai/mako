@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { acpClient } from "../lib/acp-client";
+import {
+  acpSupportsAdapterEnsure,
+  acpSupportsModelWarm,
+} from "../lib/acp-capabilities";
 import type {
   AcpChatMessage,
   AcpEnsureAdapterResult,
@@ -455,6 +459,27 @@ export const useAcpStore = create<AcpState>()(
 
     ensureAdapter: async (providerId, options) => {
       const id = providerId || get().selectedProviderId;
+      if (!acpSupportsAdapterEnsure(get().status)) {
+        const message =
+          "One-click Update needs Mako Desktop 0.3.9+ — fully quit and reopen so Local Agent restarts. " +
+          "If the adapter is already found, use Chat → Enable workspace tools (Update is optional).";
+        // Only surface when the user explicitly clicked Update/Install.
+        if (options?.force) {
+          set(s => {
+            s.error = message;
+          });
+        }
+        return {
+          ok: false,
+          providerId: id,
+          skipped: true,
+          updated: false,
+          packages: [],
+          message,
+          adapterCommand: null,
+          adapterVia: null,
+        };
+      }
       set(s => {
         s.error = null;
         if (s.status) {
@@ -493,17 +518,16 @@ export const useAcpStore = create<AcpState>()(
 
     warmProviderModels: async providerId => {
       const id = providerId || get().selectedProviderId;
+      // Background warm must never poison Chat/Settings with a hard error —
+      // older Local Agents simply lack the route; chatting still works.
+      if (!acpSupportsModelWarm(get().status)) {
+        return null;
+      }
       try {
         const result = await acpClient.warmProviderModels(id);
         await get().refreshStatus();
         return result;
-      } catch (error) {
-        set(s => {
-          s.error =
-            error instanceof Error
-              ? error.message
-              : "Failed to load local models";
-        });
+      } catch {
         return null;
       }
     },

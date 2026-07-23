@@ -14,6 +14,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import { acpSupportsAdapterEnsure } from "../lib/acp-capabilities";
 import { useAcpStore } from "../store/acpStore";
 import { useLocalAgentStore } from "../store/localAgentStore";
 import type { AcpProviderId } from "../lib/acp-types";
@@ -240,11 +241,7 @@ export function CodingAgentsPanel() {
                 loadingStatus ||
                 updating ||
                 signingIn ||
-                !(
-                  acpStatus.acpBridge?.adapterEnsure ||
-                  (acpStatus.acpBridge?.version &&
-                    acpStatus.acpBridge.version >= 6)
-                )
+                !acpSupportsAdapterEnsure(acpStatus)
               }
             >
               {updating
@@ -266,12 +263,8 @@ export function CodingAgentsPanel() {
                 : `Sign in with ${provider?.authProduct || "provider"}`}
             </Button>
             <Typography variant="body2" color="text.secondary">
-              {!(
-                acpStatus.acpBridge?.adapterEnsure ||
-                (acpStatus.acpBridge?.version &&
-                  acpStatus.acpBridge.version >= 6)
-              )
-                ? "Local Agent is outdated for one-click Update — install Desktop 0.3.9+ and fully quit/reopen Mako."
+              {!acpSupportsAdapterEnsure(acpStatus)
+                ? "One-click Update needs Desktop 0.3.9+ (fully quit/reopen). Adapter already found — use Chat → Enable workspace tools."
                 : readyProviders.length > 0
                   ? `Update keeps ${provider?.label || "the adapter"} current. Sign in opens Terminal for CLI login.`
                   : "Install the adapter here — no Terminal npm required."}
@@ -307,16 +300,13 @@ export function CodingAgentsPanel() {
         </Alert>
       )}
 
-      {error && (
+      {error && !/missing ACP route|outdated for this action/i.test(error) && (
         <Alert severity="error" sx={{ mb: 2 }}>
           {error}
-          {/ACP connection closed|outdated for this action|missing ACP route/i.test(
-            error,
-          ) ? (
+          {/ACP connection closed/i.test(error) ? (
             <Typography variant="body2" sx={{ mt: 1 }}>
-              Local Agent is stale on port 41720. Fully quit Desktop (Cmd+Q /
-              Quit), confirm with <code>lsof -i :41720</code>, reopen Desktop
-              0.3.9+, then retry Update / Enable workspace tools.
+              Local Agent process may be stale on port 41720. Fully quit Desktop
+              (Cmd+Q / Quit), reopen Desktop 0.3.9+, then retry.
             </Typography>
           ) : null}
           {/ENOTEMPTY|_npx/i.test(`${error}\n${lastAdapterError || ""}`) ? (

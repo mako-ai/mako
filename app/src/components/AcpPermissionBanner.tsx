@@ -38,10 +38,18 @@ export function AcpPermissionBanner() {
   });
   const respondPermission = useAcpStore(s => s.respondPermission);
   const setActiveSession = useAcpStore(s => s.setActiveSession);
+  const sessions = useAcpStore(s => s.sessions);
+  const selectedProviderId = useAcpStore(s => s.selectedProviderId);
+  const providers = useAcpStore(s => s.status?.providers);
 
   if (!pending) return null;
 
   const { sessionId, prompt } = pending;
+  const providerId =
+    sessions.find(x => x.id === sessionId)?.providerId || selectedProviderId;
+  const providerLabel =
+    providers?.find(p => p.id === providerId)?.label ||
+    (providerId === "codex" ? "Codex" : "Claude Code");
 
   return (
     <Alert
@@ -92,7 +100,7 @@ export function AcpPermissionBanner() {
         Approval needed in Chat
       </Typography>
       <Typography variant="body2">
-        Claude Code wants to run: {toolLabel(prompt.toolCall)}
+        {providerLabel} wants to run: {toolLabel(prompt.toolCall)}
       </Typography>
     </Alert>
   );
