@@ -131,6 +131,43 @@ async function main() {
     );
   }
 
+  // 2b. ACP Desktop Chat: no headless preview workflow in instructions.
+  {
+    const server = buildMakoMcpServer({
+      workspaceId: WORKSPACE_ID,
+      scopes: ["mcp", "query:read"],
+      acpDesktop: true,
+    });
+    const transport = new StatelessMcpTransport();
+    await server.connect(transport);
+    try {
+      const [res] = (await transport.handle(
+        [
+          {
+            jsonrpc: "2.0",
+            id: 11,
+            method: "initialize",
+            params: {
+              protocolVersion: "2025-03-26",
+              capabilities: {},
+              clientInfo: { name: "acp-test", version: "0.0.0" },
+            },
+          },
+        ] as unknown as JSONRPCMessage[],
+        5_000,
+      )) as Record<string, unknown>[];
+      const result = res.result as { instructions?: string };
+      assert.match(result.instructions ?? "", /mako-desktop|Desktop Chat/i);
+      assert.doesNotMatch(
+        result.instructions ?? "",
+        /Verify with render_app/,
+        "ACP Desktop must not steer agents toward render_app",
+      );
+    } finally {
+      await server.close().catch(() => undefined);
+    }
+  }
+
   // 3. Stateless: tools/list works on a fresh exchange WITHOUT initialize
   //    (each HTTP POST builds a new Server; clients only initialize once).
   {

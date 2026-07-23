@@ -31,6 +31,7 @@ import {
 import { buildMakoMcpServer } from "../mcp/mako-mcp-server";
 import { createMcpPreviewTools } from "../mcp/preview-tools";
 import { StatelessMcpTransport } from "../mcp/stateless-transport";
+import { ACP_MCP_CLIENT_ID } from "../auth/mcp-oauth.service";
 import type { AuthEnv } from "../openapi/core";
 import { loggers } from "../logging";
 
@@ -131,14 +132,18 @@ mcpProtocolRoutes.post(
       );
     }
 
+    // Desktop ACP attaches via a fixed OAuth client. Those sessions already
+    // have a live iframe — hide headless create_preview_token / render_app.
+    const acpDesktop = c.get("mcpOAuthClientId") === ACP_MCP_CLIENT_ID;
     const mcpContext = {
       workspaceId,
       userId: user ? String(user.id) : undefined,
       scopes,
+      acpDesktop,
     };
     const server = buildMakoMcpServer(
       mcpContext,
-      createMcpPreviewTools(mcpContext),
+      acpDesktop ? undefined : createMcpPreviewTools(mcpContext),
     );
     const transport = new StatelessMcpTransport();
 

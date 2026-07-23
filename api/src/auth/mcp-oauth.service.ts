@@ -324,6 +324,8 @@ export interface ValidatedMcpToken {
   userId: string;
   workspaceId: string;
   scopes: WorkspaceApiKeyScope[];
+  /** OAuth client that minted the grant (e.g. `mako-acp-local`). */
+  clientId: string;
 }
 
 export async function validateMcpAccessToken(
@@ -350,5 +352,6 @@ export async function validateMcpAccessToken(
     userId: record.userId,
     workspaceId: record.workspaceId,
     scopes: resolveWorkspaceApiKeyScopes(record.scopes),
+    clientId: record.clientId,
   };
 }

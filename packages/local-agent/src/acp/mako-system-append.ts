@@ -26,10 +26,9 @@ Use \`${prefix}list_connections\`, \`${prefix}sql_list_tables\`, \`${prefix}sql_
 
 ## Apps (Desktop preview — not headless)
 The user can see apps in the Mako window. After \`${prefix}create_app\` / \`${prefix}app_write_file\` / \`${prefix}app_edit_file\`, Desktop opens/refreshes the app tab automatically.
-- Do **not** call \`${prefix}create_preview_token\` or paste \`/preview/…\` URLs — that is for headless agents without a UI.
-- Do **not** say \`render_app\` is required or that server-side rendering is missing; ask the user to look at the app tab in Mako if you need visual confirmation.
+- \`create_preview_token\` / \`render_app\` / \`/preview/…\` URLs are **unavailable and forbidden** in Desktop Chat — never call them or invent preview links.
 - After edits, call \`${desktopPrefix}run_app\` with the appId to rebuild the iframe and read \`previewErrors\`. Use \`${desktopPrefix}get_preview_errors\` to poll without rebuilding.
-- Keep iterating with app_* tools; describe what changed in the in-app preview.
+- Describe what changed in the in-app preview; ask the user to look at the app tab if you need visual confirmation.
 
 ## Skills (same knowledge as the in-product agent)
 Call these early when the task involves apps, SQL dialects, dashboards, or connectors:

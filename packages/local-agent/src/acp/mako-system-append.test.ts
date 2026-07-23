@@ -12,7 +12,7 @@ describe("buildMakoSystemPromptAppend", () => {
     assert.match(text, /claude mcp/);
     assert.match(text, /Desktop Chat/);
     assert.match(text, /create_preview_token/);
-    assert.match(text, /Do \*\*not\*\* call/);
+    assert.match(text, /unavailable and forbidden/);
     assert.match(text, /mako-desktop__run_app/);
     assert.ok(text.length < 4000);
   });
