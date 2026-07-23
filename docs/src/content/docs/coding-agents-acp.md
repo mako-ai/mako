@@ -55,8 +55,15 @@ To feel like the in-app agent, Mako:
 - Auto-approves those tools + read/search kinds in the Local Agent
 - Shows **Allow / Deny in the Chat composer** for Bash and file edits (HITL)
 
-If attach fails (offline API, missing workspace), the session still starts with
-local tools only; start a **new** session after fixing auth to pick up Mako MCP.
+If attach fails (offline API, missing workspace), Chat shows an **Enable
+workspace tools** banner — one click remints the token and starts a fresh ACP
+session with `mako-workspace`. You should **not** run `claude mcp` or authorize
+Claude.ai’s separate “Mako” connector.
+
+If Claude already replied that Mako needs auth, click **Enable workspace
+tools**, then send another message (or start a **New chat**). Local Agent also
+probes `/api/mcp` before session start so bad hosts/tokens fail with a clear
+error instead of a silent local-only session.
 
 ## Security notes
 

@@ -110,8 +110,9 @@ export function CodingAgentsPanel() {
       <Alert severity="info" sx={{ mb: 2 }}>
         Chat with Claude Code or Codex from the <strong>main Chat</strong> model
         dropdown under <strong>On this machine</strong>. Tokens bill to your
-        Claude Pro/Max or ChatGPT subscription. Mako attaches workspace data
-        tools automatically; file and shell tools run locally.
+        Claude Pro/Max or ChatGPT subscription. If workspace tools are not
+        active, Chat shows <strong>Enable workspace tools</strong> — one click,
+        no <code>claude mcp</code>. File and shell tools still run locally.
       </Alert>
 
       <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>

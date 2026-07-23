@@ -100,6 +100,7 @@ import { ChatMessageRow, MessageVirtuosoList } from "./chat/ChatMessageRow";
 import { QueuedPromptList } from "./chat/QueuedPrompts";
 import { ChatInputArea } from "./chat/ChatInputArea";
 import { AcpPermissionBanner } from "./AcpPermissionBanner";
+import { AcpWorkspaceToolsBanner } from "./AcpWorkspaceToolsBanner";
 import {
   onRenderDebug,
   useRenderCount,
@@ -1450,7 +1451,13 @@ const Chat: React.FC<ChatProps> = ({
         />
       </Collapse>
 
-      {/* Local Claude/Codex: Allow/Deny for Bash/edits (Mako MCP is auto-approved). */}
+      {/* Local Claude/Codex: activate workspace MCP + HITL for Bash/edits. */}
+      {isLocalAcpModelId(selectedModelId) ? (
+        <AcpWorkspaceToolsBanner
+          modelId={selectedModelId}
+          workspaceId={currentWorkspace?.id}
+        />
+      ) : null}
       {isLocalAcpModelId(selectedModelId) ? <AcpPermissionBanner /> : null}
 
       {/* Input — isolated component so keystrokes don't re-render messages */}

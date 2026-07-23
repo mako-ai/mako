@@ -93,17 +93,24 @@ describe("AcpSessionManager with mock agent", () => {
   });
 
   it("attaches Mako MCP on session/new when requested", async () => {
-    const session = await manager.createSession({
-      providerId: "claude",
-      cwd: process.cwd(),
-      title: "mcp-attach",
-      attachMakoMcp: true,
-      mcpUrl: "https://example.com/api/mcp",
-      mcpAuthorization: "Bearer mcpat_test",
-      mcpServerName: "mako-workspace",
-    });
-    assert.equal(session.makoMcpAttached, true);
-    await manager.closeSession(session.id);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response("{}", { status: 200 })) as typeof fetch;
+    try {
+      const session = await manager.createSession({
+        providerId: "claude",
+        cwd: process.cwd(),
+        title: "mcp-attach",
+        attachMakoMcp: true,
+        mcpUrl: "https://example.com/api/mcp",
+        mcpAuthorization: "Bearer mcpat_test",
+        mcpServerName: "mako-workspace",
+      });
+      assert.equal(session.makoMcpAttached, true);
+      await manager.closeSession(session.id);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
 
     const without = await manager.createSession({
       providerId: "claude",
@@ -111,6 +118,28 @@ describe("AcpSessionManager with mock agent", () => {
     });
     assert.equal(without.makoMcpAttached, false);
     await manager.closeSession(without.id);
+  });
+
+  it("fails session/new when Mako MCP probe returns 401", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response("unauthorized", { status: 401 })) as typeof fetch;
+    try {
+      await assert.rejects(
+        () =>
+          manager.createSession({
+            providerId: "claude",
+            cwd: process.cwd(),
+            attachMakoMcp: true,
+            mcpUrl: "https://example.com/api/mcp",
+            mcpAuthorization: "Bearer bad",
+            mcpServerName: "mako-workspace",
+          }),
+        /auth failed/i,
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("records an event log that can be replayed after subscribe", async () => {

@@ -18,6 +18,7 @@ import {
 } from "./providers";
 import { resolveAdapterCommand } from "./resolve-command";
 import { shouldAutoApprovePermission } from "./permissions";
+import { probeMakoMcpHttp } from "./mcp-probe";
 import type {
   AcpBridgeEvent,
   AcpProviderStatus,
@@ -378,6 +379,16 @@ export class AcpSessionManager {
       const authorization = normalizeBearerAuth(
         String(body.mcpAuthorization),
       );
+      // Fail before Claude/Codex starts if Local Agent can't reach Mako MCP
+      // (wrong host, 401, network). Surfaces as createSession error in Chat.
+      try {
+        await probeMakoMcpHttp({ mcpUrl, authorization });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Mako MCP probe failed";
+        acpLog.error("Mako MCP probe failed", { mcpUrl, message });
+        throw new Error(message);
+      }
       builder = builder.withMcpServer({
         type: "http",
         name: mcpServerName,
