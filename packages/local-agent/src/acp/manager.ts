@@ -49,7 +49,7 @@ import {
 } from "../desktop-bridge/mcp";
 import {
   explainCodexModelFailure,
-  isUnsupportedCodexChatGptModel,
+  isForeignGatewayCodexModel,
   pickSafeCodexModel,
 } from "./codex-models";
 
@@ -745,19 +745,12 @@ export class AcpSessionManager {
         );
         if (safe && safe.toLowerCase() !== (before || "").toLowerCase()) {
           modelToApply = safe;
-          if (before && isUnsupportedCodexChatGptModel(before)) {
+          if (before && isForeignGatewayCodexModel(before)) {
             acpLog.info(
-              "Codex session defaulted to an unsupported ChatGPT model — switching",
+              "Codex session had a foreign gateway model — switching",
               { sessionId: id, from: before, to: safe },
             );
           }
-        } else if (before && isUnsupportedCodexChatGptModel(before)) {
-          throw new Error(
-            explainCodexModelFailure(
-              `Model metadata for \`${before}\` not found`,
-            ) ||
-              `Codex model ${before} is not usable with ChatGPT login. Pick GPT-5.1 Codex (or similar) in Chat.`,
-          );
         }
       } else if (preferredModel) {
         modelToApply = preferredModel;
@@ -774,18 +767,8 @@ export class AcpSessionManager {
             preferredModel: modelToApply,
             error: String(error),
           });
-          if (
-            providerId === "codex" &&
-            managed.info.currentModel &&
-            isUnsupportedCodexChatGptModel(managed.info.currentModel)
-          ) {
-            throw new Error(
-              explainCodexModelFailure(
-                `Model metadata for \`${managed.info.currentModel}\` not found`,
-              ) ||
-                `Codex model ${managed.info.currentModel} is not usable with ChatGPT login. Pick a Codex ChatGPT model in Chat.`,
-            );
-          }
+          // Don't fail session/new — leave adapter default; prompt errors
+          // will surface upgrade tips via explainCodexModelFailure.
         }
       }
 

@@ -423,19 +423,18 @@ export async function runLocalAcpChatTurn(
     }
     let message =
       error instanceof Error ? error.message : "Local ACP prompt failed";
-    // Codex often returns opaque "Internal error" when config points at an
-    // API-only model (gpt-*-sol). Surface a actionable tip in Chat.
+    // Codex often returns opaque "Internal error" / missing model metadata
+    // when the CLI or ACP adapter is outdated relative to GPT-5.6 models.
     if (
       providerId === "codex" &&
-      /internal error|gpt-5\.?\d*-sol|model metadata/i.test(message) &&
-      !/ChatGPT-subscription|codex-acp/i.test(message)
+      /internal error|model metadata|not found/i.test(message) &&
+      !/Upgrade both|codex-acp/i.test(message)
     ) {
       message =
         `${message}\n\n` +
-        "Codex tip: ChatGPT login cannot use API/gateway models like " +
-        "`gpt-5.6-sol`. Pick **Codex · GPT-5.1 Codex (local)** in the model " +
-        "menu, or run `npm i -g @agentclientprotocol/codex-acp` and set a " +
-        "ChatGPT Codex model in `~/.codex/config.toml`.";
+        "Codex tip: upgrade the CLI and ACP adapter, then retry:\n" +
+        "`npm i -g @openai/codex @agentclientprotocol/codex-acp`\n" +
+        "Then pick **Codex · GPT-5.6 Sol (local)** (or Terra/Luna) in Chat.";
     }
     patchAssistantParts(parts =>
       setAssistantErrorText(parts, `Error: ${message}`),

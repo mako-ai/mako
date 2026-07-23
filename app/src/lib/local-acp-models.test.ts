@@ -71,7 +71,7 @@ describe("local-acp-models", () => {
     ]);
   });
 
-  it("expands Codex ChatGPT models and hides gateway *-sol ids", () => {
+  it("lists all Codex models including GPT-5.6 Sol/Terra/Luna", () => {
     const models = localAcpModelsFromProviders([
       {
         id: "claude",
@@ -98,13 +98,14 @@ describe("local-acp-models", () => {
         authMethods: [],
         availableModels: [
           { value: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
-          { value: "gpt-5.1-codex", name: "GPT-5.1 Codex" },
+          { value: "gpt-5.6-terra", name: "GPT-5.6 Terra" },
         ],
       },
     ]);
     const ids = models.map(m => m.id);
-    expect(ids).toContain("local-acp/codex/gpt-5.1-codex");
-    expect(ids).not.toContain("local-acp/codex/gpt-5.6-sol");
+    expect(ids).toContain("local-acp/codex/gpt-5.6-sol");
+    expect(ids).toContain("local-acp/codex/gpt-5.6-terra");
+    expect(ids).toContain("local-acp/codex/gpt-5.6-luna"); // fallback
     expect(ids).toContain("local-acp/codex"); // Default
   });
 
