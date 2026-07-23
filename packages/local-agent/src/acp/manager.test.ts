@@ -236,4 +236,29 @@ describe("AcpSessionManager with mock agent", () => {
     assert.equal(result.stopReason, "end_turn");
     await manager.closeSession(session.id);
   });
+
+  it("cancels a busy turn instead of rejecting overlapping prompts", async () => {
+    const session = await manager.createSession({
+      providerId: "claude",
+      cwd: process.cwd(),
+      title: "overlap-test",
+    });
+
+    const first = manager.prompt(session.id, "sleep 5000 first");
+    // Let the first turn mark busy.
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(manager.getSession(session.id)?.busy, true);
+
+    const second = await manager.prompt(session.id, "second turn wins");
+    assert.equal(second.stopReason, "end_turn");
+
+    const firstResult = await first;
+    assert.ok(
+      firstResult.stopReason === "cancelled" ||
+        firstResult.stopReason === "end_turn",
+    );
+    assert.equal(manager.getSession(session.id)?.busy, false);
+
+    await manager.closeSession(session.id);
+  });
 });

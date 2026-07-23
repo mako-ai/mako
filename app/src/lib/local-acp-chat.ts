@@ -15,6 +15,7 @@ import {
   getAssistantParts,
   setAssistantErrorText,
   upsertAcpToolPart,
+  resolveAcpToolName,
   type AcpToolUpdate,
 } from "./local-acp-parts";
 import { isAcpConnectionClosedError } from "./acp-connection-errors";
@@ -23,7 +24,48 @@ import {
   type LocalAcpChatBinding,
 } from "./persist-local-acp-chat";
 import { useAcpStore } from "../store/acpStore";
+import { useAppStore } from "../store/appStore";
+import { focusAppTab } from "../app-runtime/shell";
 import type { AcpProviderId } from "./acp-types";
+
+/** When MCP create_app completes, open the app tab so the user sees the scaffold. */
+function maybeOpenCreatedApp(
+  workspaceId: string | undefined,
+  update: AcpToolUpdate,
+): void {
+  if (!workspaceId || update.status !== "completed") return;
+  if (resolveAcpToolName(update) !== "create_app") return;
+  const output = update.rawOutput ?? update.content;
+  const rec =
+    output && typeof output === "object"
+      ? (output as Record<string, unknown>)
+      : null;
+  const nested =
+    rec?.data && typeof rec.data === "object"
+      ? (rec.data as Record<string, unknown>)
+      : null;
+  const appId =
+    (typeof rec?.appId === "string" && rec.appId) ||
+    (typeof nested?.appId === "string" && nested.appId) ||
+    null;
+  if (!appId) return;
+  const titleFromRec =
+    typeof rec?.title === "string" && rec.title.trim() ? rec.title : null;
+  const titleFromNested =
+    typeof nested?.title === "string" && nested.title.trim()
+      ? nested.title
+      : null;
+  const title = titleFromRec || titleFromNested || "App";
+  void useAppStore
+    .getState()
+    .fetchApp(workspaceId, appId)
+    .then(app => {
+      focusAppTab(appId, app?.title || title);
+    })
+    .catch(() => {
+      focusAppTab(appId, title);
+    });
+}
 
 export async function ensureAcpSessionForProvider(
   providerId: AcpProviderId,
@@ -227,6 +269,7 @@ export async function runLocalAcpChatTurn(
             update.sessionUpdate === "tool_call_update"
           ) {
             patchAssistantParts(parts => upsertAcpToolPart(parts, update));
+            maybeOpenCreatedApp(workspaceId, update);
           }
         } else if (event.type === "permission_request") {
           const activeSessionId = sessionId;
@@ -259,8 +302,21 @@ export async function runLocalAcpChatTurn(
       },
     );
 
+    const activeSessionId = sessionId;
+    const onAbort = () => {
+      void acpClient.cancel(activeSessionId).catch(() => undefined);
+    };
+    if (signal?.aborted) {
+      onAbort();
+      throw new DOMException("Cancelled", "AbortError");
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+
     try {
-      await acpClient.prompt(sessionId, trimmed);
+      await acpClient.prompt(activeSessionId, trimmed);
+      if (signal?.aborted) {
+        throw new DOMException("Cancelled", "AbortError");
+      }
       applyMessages(prev => {
         const assistant = prev.find(m => m.id === assistantId);
         const parts = getAssistantParts(assistant);
@@ -283,6 +339,7 @@ export async function runLocalAcpChatTurn(
         );
       });
     } finally {
+      signal?.removeEventListener("abort", onAbort);
       unsub();
     }
   };

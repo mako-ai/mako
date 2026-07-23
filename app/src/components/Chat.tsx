@@ -293,6 +293,8 @@ const Chat: React.FC<ChatProps> = ({
     sessionId: string;
     modelId: string;
   } | null>(null);
+  /** Bumps on each ACP send so overlapping finally blocks don't clear busy early. */
+  const localAcpGenerationRef = useRef(0);
   const [localAcpBusy, setLocalAcpBusy] = useState(false);
   // Client-tool registry: in-flight executions, cancel/interrupt plumbing,
   // and the per-chat toolCallId dispatch dedupe gate (the triplicate-tool
@@ -678,13 +680,23 @@ const Chat: React.FC<ChatProps> = ({
   isLoadingRef.current = isLoading;
 
   // Main Chat → Local Agent ACP when the dropdown selection is a local model.
+  // Generation counter: overlapping send/abort must not clear busy while an
+  // older turn is still awaiting the Local Agent (that race poisoned Skill
+  // cards as "Interrupted" and surfaced "Session is already processing").
   sendViaLocalAcpRef.current = async (text: string) => {
     const modelId = modelIdRef.current;
     if (!modelId || !isLocalAcpModelId(modelId)) return false;
 
     localAcpAbortRef.current?.abort();
+    // Cancel the in-flight ACP prompt so the next turn can start cleanly.
+    void useAcpStore
+      .getState()
+      .cancelActive()
+      .catch(() => undefined);
+
     const abort = new AbortController();
     localAcpAbortRef.current = abort;
+    const generation = ++localAcpGenerationRef.current;
     setLocalAcpBusy(true);
     isLoadingRef.current = true;
     try {
@@ -707,12 +719,14 @@ const Chat: React.FC<ChatProps> = ({
     } catch {
       // Transcript already includes the error text.
     } finally {
-      if (localAcpAbortRef.current === abort) {
-        localAcpAbortRef.current = null;
+      if (localAcpGenerationRef.current === generation) {
+        if (localAcpAbortRef.current === abort) {
+          localAcpAbortRef.current = null;
+        }
+        setLocalAcpBusy(false);
+        isLoadingRef.current = false;
+        queueMicrotask(() => drainQueuedPromptAfterTurnRef.current?.());
       }
-      setLocalAcpBusy(false);
-      isLoadingRef.current = false;
-      queueMicrotask(() => drainQueuedPromptAfterTurnRef.current?.());
     }
     return true;
   };

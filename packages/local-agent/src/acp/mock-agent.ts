@@ -88,6 +88,23 @@ async function main(): Promise<void> {
         },
       });
 
+      // "sleep N" keeps the turn busy so overlapping prompt/cancel can be tested.
+      const sleepMatch = /sleep\s+(\d+)/i.exec(userText);
+      if (sleepMatch) {
+        const ms = Math.min(Number(sleepMatch[1]) || 0, 30_000);
+        await new Promise<void>(resolve => {
+          const timer = setTimeout(resolve, ms);
+          signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            { once: true },
+          );
+        });
+      }
+
       if (signal.aborted) {
         return { stopReason: "cancelled" };
       }

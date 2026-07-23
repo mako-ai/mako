@@ -671,6 +671,27 @@ export class AcpSessionManager {
     }
   }
 
+  /**
+   * Wait until `session.busy` clears (e.g. after cancel), or throw on timeout.
+   * Chat can overlap abort+resend; hard-failing with "already processing"
+   * leaves the UI thinking the turn died while Claude is still working.
+   */
+  private async waitForSessionIdle(
+    session: ManagedSession,
+    timeoutMs = 15_000,
+  ): Promise<void> {
+    if (!session.busy) return;
+    const started = Date.now();
+    while (session.busy) {
+      if (Date.now() - started > timeoutMs) {
+        throw new Error(
+          "Session is still processing a previous prompt. Wait a moment and try again, or cancel the turn.",
+        );
+      }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+
   async prompt(
     sessionId: string,
     text: string,
@@ -681,11 +702,22 @@ export class AcpSessionManager {
         `Unknown or expired ACP session: ${sessionId}. Send again to reconnect.`,
       );
     }
-    if (session.busy) {
-      throw new Error("Session is already processing a prompt");
-    }
     if (!text.trim()) {
       throw new Error("Prompt text is required");
+    }
+
+    // Overlapping prompt (UI abort/resend, double-submit): cancel the in-flight
+    // turn and wait for busy to clear instead of failing immediately.
+    if (session.busy) {
+      acpLog.info("ACP prompt while busy — cancelling prior turn", {
+        sessionId,
+      });
+      try {
+        await this.cancel(sessionId);
+      } catch {
+        // cancel is best-effort; waitForSessionIdle still gates below
+      }
+      await this.waitForSessionIdle(session);
     }
 
     const providerId = session.info.providerId;
