@@ -17,6 +17,7 @@ import {
   upsertAcpToolPart,
   type AcpToolUpdate,
 } from "./local-acp-parts";
+import { isAcpConnectionClosedError } from "./acp-connection-errors";
 import {
   persistLocalAcpChat,
   type LocalAcpChatBinding,
@@ -28,6 +29,7 @@ export async function ensureAcpSessionForProvider(
   providerId: AcpProviderId,
   workspaceId?: string,
   preferredSessionId?: string,
+  options?: { forceNew?: boolean },
 ): Promise<string> {
   const store = useAcpStore.getState();
   if (!store.status) {
@@ -43,9 +45,16 @@ export async function ensureAcpSessionForProvider(
     );
   }
 
-  // Prefer the session bound to this History chat (reopen / continue).
-  if (preferredSessionId) {
-    let preferred = useAcpStore
+  // Always reconcile with Local Agent — Desktop/agent restarts leave stale ids.
+  await useAcpStore.getState().refreshSessions();
+  const liveIds = new Set(useAcpStore.getState().sessions.map(s => s.id));
+
+  if (
+    !options?.forceNew &&
+    preferredSessionId &&
+    liveIds.has(preferredSessionId)
+  ) {
+    const preferred = useAcpStore
       .getState()
       .sessions.find(
         s =>
@@ -53,31 +62,20 @@ export async function ensureAcpSessionForProvider(
           s.providerId === providerId &&
           s.makoMcpAttached,
       );
-    if (!preferred) {
-      await useAcpStore.getState().refreshSessions();
-      preferred = useAcpStore
-        .getState()
-        .sessions.find(
-          s =>
-            s.id === preferredSessionId &&
-            s.providerId === providerId &&
-            s.makoMcpAttached,
-        );
-    }
     if (preferred) {
       useAcpStore.getState().setActiveSession(preferred.id);
       return preferred.id;
     }
   }
 
-  // Prefer a session that already has Mako MCP attached so Chat gets DB tools.
-  // Ignore old sessions that used the unauthenticated Claude.ai "Mako" path.
-  const withMcp = useAcpStore
-    .getState()
-    .sessions.find(s => s.providerId === providerId && s.makoMcpAttached);
-  if (withMcp) {
-    useAcpStore.getState().setActiveSession(withMcp.id);
-    return withMcp.id;
+  if (!options?.forceNew) {
+    const withMcp = useAcpStore
+      .getState()
+      .sessions.find(s => s.providerId === providerId && s.makoMcpAttached);
+    if (withMcp && liveIds.has(withMcp.id)) {
+      useAcpStore.getState().setActiveSession(withMcp.id);
+      return withMcp.id;
+    }
   }
 
   useAcpStore.getState().setSelectedProvider(providerId);
@@ -199,17 +197,13 @@ export async function runLocalAcpChatTurn(
     if (ok) onPersisted?.(binding);
   };
 
-  try {
-    if (signal?.aborted) {
-      throw new DOMException("Cancelled", "AbortError");
-    }
-
+  const runAgainstSession = async (forceNew: boolean) => {
     sessionId = await ensureAcpSessionForProvider(
       providerId,
       workspaceId,
-      preferredSessionId,
+      forceNew ? undefined : preferredSessionId,
+      { forceNew },
     );
-    // Keep the store subscription alive for permission prompts in Chat.
     useAcpStore.getState().ensureEventSubscription(sessionId);
 
     const unsub = acpClient.subscribeEvents(
@@ -235,7 +229,6 @@ export async function runLocalAcpChatTurn(
             patchAssistantParts(parts => upsertAcpToolPart(parts, update));
           }
         } else if (event.type === "permission_request") {
-          // HITL in Chat — surface Allow/Deny above the composer.
           const activeSessionId = sessionId;
           if (!activeSessionId) return;
           useAcpStore.getState().ingestPermissionRequest(activeSessionId, {
@@ -243,17 +236,26 @@ export async function runLocalAcpChatTurn(
             toolCall: event.toolCall,
             options: event.options || [],
           });
-        } else if (event.type === "error") {
-          patchAssistantParts(parts =>
-            setAssistantErrorText(parts, `Error: ${event.message}`),
-          );
+        } else if (
+          event.type === "session_invalidated" ||
+          event.type === "error"
+        ) {
+          // Recoverable closes are retried below; avoid painting a fatal line
+          // that races the automatic reconnect.
+          if (!isAcpConnectionClosedError(event.message)) {
+            patchAssistantParts(parts =>
+              setAssistantErrorText(parts, `Error: ${event.message}`),
+            );
+          }
         }
       },
       err => {
         if (signal?.aborted) return;
-        patchAssistantParts(parts =>
-          setAssistantErrorText(parts, `(${err.message})`),
-        );
+        if (!isAcpConnectionClosedError(err)) {
+          patchAssistantParts(parts =>
+            setAssistantErrorText(parts, `(${err.message})`),
+          );
+        }
       },
     );
 
@@ -282,6 +284,40 @@ export async function runLocalAcpChatTurn(
       });
     } finally {
       unsub();
+    }
+  };
+
+  try {
+    if (signal?.aborted) {
+      throw new DOMException("Cancelled", "AbortError");
+    }
+
+    try {
+      await runAgainstSession(false);
+    } catch (error) {
+      if (signal?.aborted || !isAcpConnectionClosedError(error)) {
+        throw error;
+      }
+      // Adapter died — drop the stale id and start a fresh MCP-attached session.
+      if (sessionId) {
+        useAcpStore.getState().forgetSession(sessionId);
+      }
+      sessionId = null;
+      patchAssistantParts(parts =>
+        setAssistantErrorText(parts, "_Reconnecting local Claude/Codex…_"),
+      );
+      // Clear the reconnect notice before the retry streams real tokens.
+      applyMessages(prev =>
+        prev.map(m =>
+          m.id === assistantId
+            ? {
+                ...m,
+                parts: [{ type: "text", text: "" }] as UIMessage["parts"],
+              }
+            : m,
+        ),
+      );
+      await runAgainstSession(true);
     }
   } catch (error) {
     if (

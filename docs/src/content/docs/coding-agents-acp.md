@@ -71,6 +71,12 @@ tools**, then send another message (or start a **New chat**). Local Agent also
 probes `/api/mcp` before session start so bad hosts/tokens fail with a clear
 error instead of a silent local-only session.
 
+If the Claude/Codex adapter process dies mid-turn (“ACP connection closed”),
+Local Agent invalidates that provider’s sessions and Chat **automatically
+starts a fresh session on the next send** (one reconnect attempt). You should
+not need to restart Desktop for a single adapter crash — quit/reopen Desktop
+only when the Local Agent itself is the wrong (old) build.
+
 ## Security notes
 
 - File/shell tools execute **locally** via the adapter.

@@ -79,6 +79,8 @@ interface AcpState {
     /** When true (Chat path), fail if Mako MCP cannot be attached. */
     requireMakoMcp?: boolean;
   }) => Promise<AcpSessionInfo | null>;
+  /** Drop a dead ACP session from local state (adapter crash / invalidate). */
+  forgetSession: (sessionId: string) => void;
   /** Record an ACP permission prompt for Chat / Coding Agents HITL. */
   ingestPermissionRequest: (
     sessionId: string,
@@ -243,6 +245,12 @@ export const useAcpStore = create<AcpState>()(
                   };
                 }),
               };
+            } else if (event.type === "session_invalidated") {
+              s.sessions = s.sessions.filter(x => x.id !== sessionId);
+              if (s.activeSessionId === sessionId) s.activeSessionId = null;
+              s.permissionsBySession[sessionId] = null;
+              s.error = event.message;
+              s.sending = false;
             } else if (event.type === "error") {
               s.error = event.message;
             } else if (event.type === "turn_done") {
@@ -263,6 +271,20 @@ export const useAcpStore = create<AcpState>()(
         },
       );
       eventUnsubscribers.set(sessionId, unsub);
+    },
+
+    forgetSession: sessionId => {
+      const unsub = eventUnsubscribers.get(sessionId);
+      if (unsub) {
+        unsub();
+        eventUnsubscribers.delete(sessionId);
+      }
+      set(s => {
+        s.sessions = s.sessions.filter(x => x.id !== sessionId);
+        if (s.activeSessionId === sessionId) s.activeSessionId = null;
+        s.permissionsBySession[sessionId] = null;
+        delete s.messagesBySession[sessionId];
+      });
     },
 
     ingestPermissionRequest: (sessionId, request) => {

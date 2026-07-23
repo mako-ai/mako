@@ -33,6 +33,12 @@ export type AcpBridgeEvent =
       sessionId: string;
       message: string;
       at: string;
+    }
+  | {
+      type: "session_invalidated";
+      sessionId: string;
+      message: string;
+      at: string;
     };
 
 export interface AcpSessionInfo {

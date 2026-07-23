@@ -53,6 +53,7 @@ vi.mock("../store/acpStore", () => {
     setCwdDraft: vi.fn(),
     setActiveSession: vi.fn(),
     createSession: vi.fn(),
+    forgetSession: vi.fn(),
     authenticate: vi.fn(),
     sendPrompt: vi.fn(),
     cancelActive: vi.fn(),
