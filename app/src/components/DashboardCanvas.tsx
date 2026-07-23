@@ -41,7 +41,6 @@ import { useAuth } from "../contexts/auth-context";
 import {
   applyFreshMaterializationCommand,
   materializeDashboardInBackgroundCommand,
-  refreshDashboardCommand,
   reloadDashboardDataSourcesCommand,
   shouldAutoApplyFreshMaterialization,
 } from "../dashboard-runtime/commands";
@@ -193,21 +192,20 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   }, [dashboard?.title]);
 
   const [reloadingData, setReloadingData] = useState(false);
+  const [freshnessDismissed, setFreshnessDismissed] = useState(false);
 
+  // One Refresh action everywhere: force-rematerialize every data source,
+  // wait until ALL builds settle, then apply into the runtime once.
   const handleRefresh = useCallback(() => {
-    if (!workspaceId) {
-      return;
-    }
-    if (isEditMode) {
-      if (reloadingData) return;
-      setReloadingData(true);
-      void reloadDashboardDataSourcesCommand(workspaceId, dashboardId)
-        .catch(() => undefined)
-        .finally(() => setReloadingData(false));
-      return;
-    }
-    void refreshDashboardCommand(workspaceId, dashboardId);
-  }, [workspaceId, dashboardId, isEditMode, reloadingData]);
+    if (!workspaceId || reloadingData) return;
+    setFreshnessDismissed(true);
+    setReloadingData(true);
+    void reloadDashboardDataSourcesCommand(workspaceId, dashboardId)
+      .catch(() => {
+        setFreshnessDismissed(false);
+      })
+      .finally(() => setReloadingData(false));
+  }, [workspaceId, dashboardId, reloadingData]);
 
   const dataFreshness = useMemo(() => {
     if (!dashboard || dashboard.dataSources.length === 0) return null;
@@ -236,8 +234,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     return { ageMs, label };
   }, [dashboard]);
 
-  const [freshnessDismissed, setFreshnessDismissed] = useState(false);
-
   useEffect(() => {
     setFreshnessDismissed(false);
   }, [dataFreshness?.ageMs]);
@@ -263,19 +259,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     runtimeSession?.freshDataAvailable,
     workspaceId,
   ]);
-
-  const handleReloadData = useCallback(async () => {
-    if (!workspaceId || reloadingData) return;
-    setFreshnessDismissed(true);
-    setReloadingData(true);
-    try {
-      await reloadDashboardDataSourcesCommand(workspaceId, dashboardId);
-    } catch {
-      setFreshnessDismissed(false);
-    } finally {
-      setReloadingData(false);
-    }
-  }, [workspaceId, dashboardId, reloadingData]);
 
   const handleDismissStaleLock = useCallback(async () => {
     if (workspaceId && dashboardId) {
@@ -382,17 +365,17 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           />
         </Tooltip>
 
-        <Tooltip title="Clear filters and rerun all widgets">
+        <Tooltip title="Refresh data from source (waits for every data source)">
           <span>
             <Chip
               icon={<RefreshCw size={14} />}
-              label={isEditMode && reloadingData ? "Reloading…" : "Refresh"}
+              label={reloadingData ? "Refreshing…" : "Refresh"}
               size="small"
               variant="outlined"
               onClick={handleRefresh}
-              disabled={isEditMode && reloadingData}
+              disabled={reloadingData}
               sx={{
-                cursor: isEditMode && reloadingData ? "default" : "pointer",
+                cursor: reloadingData ? "default" : "pointer",
               }}
             />
           </span>
@@ -400,20 +383,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 
         {isEditMode && (
           <>
-            <Tooltip title="Reload data from source database">
-              <span>
-                <Chip
-                  icon={<Database size={14} />}
-                  label={reloadingData ? "Reloading…" : "Reload data"}
-                  size="small"
-                  variant="outlined"
-                  onClick={handleReloadData}
-                  disabled={reloadingData}
-                  sx={{ cursor: reloadingData ? "default" : "pointer" }}
-                />
-              </span>
-            </Tooltip>
-
             <Tooltip title="Add widget">
               <IconButton size="small" onClick={() => setAddWidgetOpen(true)}>
                 <Plus size={18} />
@@ -561,7 +530,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         onForceEditMode={handleForceEditMode}
         onDismissStaleLock={handleDismissStaleLock}
         onEditModeToggle={handleEditModeToggle}
-        onReloadData={handleReloadData}
+        onReloadData={handleRefresh}
         dataFreshness={freshnessDismissed ? null : dataFreshness}
       />
 

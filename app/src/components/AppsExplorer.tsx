@@ -30,7 +30,6 @@ import {
   ExternalLink as OpenIcon,
   Pencil as RenameIcon,
   Trash2 as DeleteIcon,
-  Database as MaterializeIcon,
   History as HistoryIcon,
   Save as SaveVersionIcon,
 } from "lucide-react";
@@ -606,14 +605,21 @@ export function AppsExplorer() {
             <MenuItem
               key="materialize"
               onClick={() => {
-                void materializeBinding(workspaceId, parsed.appId, parsed.path);
+                // Explicit refresh = rebuild now. Force past the definition-hash
+                // cache so unchanged queries still pick up new upstream data.
+                void materializeBinding(
+                  workspaceId,
+                  parsed.appId,
+                  parsed.path,
+                  { force: true },
+                );
                 helpers.closeMenu();
               }}
             >
               <ListItemIcon>
-                <MaterializeIcon size={16} strokeWidth={1.5} />
+                <RefreshIcon size={16} strokeWidth={1.5} />
               </ListItemIcon>
-              Materialize
+              Refresh
             </MenuItem>,
           );
         }

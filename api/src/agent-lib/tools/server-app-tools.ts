@@ -501,10 +501,15 @@ export function createServerAppTools({
                 "then call materialize_binding again. Do not delete/recreate it.",
             };
           }
+          // Explicit "rebuild" request: force past the definition-hash cache
+          // so the artifact is rebuilt from the current upstream data even when
+          // the binding query is unchanged. Without this, a rematerialize over
+          // an unchanged query is a no-op cache hit.
           const queued = await queueAppBindingMaterialization({
             workspaceId,
             appId,
             bindingId: binding.id,
+            force: true,
           });
           const waitMs = Math.min(Math.max(waitSeconds ?? 120, 0), 600) * 1000;
           const deadline = Date.now() + waitMs;

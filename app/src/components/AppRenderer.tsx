@@ -22,7 +22,6 @@ import {
   History as HistoryIcon,
   UploadCloud as PublishIcon,
   CheckCircle2 as PublishedIcon,
-  DatabaseZap as RematerializeIcon,
   MoreVertical as MoreIcon,
   Info as InfoIcon,
 } from "lucide-react";
@@ -225,16 +224,13 @@ export default function AppRenderer({
     [workspaceId, appId, persistApp, saveVersion, fetchApp, publishSuggestion],
   );
 
-  const hasParquetBindings = !!appEntity?.dataBindings.some(
-    b => b.materialization === "parquet",
-  );
+  const hasAnyBindings = (appEntity?.dataBindings.length ?? 0) > 0;
 
-  // Rebuild every parquet binding's artifact in one shot. Recovers an app whose
-  // materialized cache was lost (e.g. a DB restore) — the query definitions and
-  // bindings are untouched; only the Parquet artifacts + cache are regenerated.
-  // Wait for every binding to settle, load fresh DuckDB tables, then post a
-  // data-refresh — never rebuild the preview mid-flight with partial data.
-  const handleRematerialize = useCallback(async () => {
+  // Single "Refresh" action: force-rebuild every parquet binding, wait until
+  // ALL settle, load DuckDB tables, then poke the running app once. Never
+  // reload the preview mid-flight with partial data (parity with public share
+  // and dashboard Refresh).
+  const handleRefreshData = useCallback(async () => {
     if (!workspaceId || rematerializing) return;
     setRematerializing(true);
     setRematerializeProgress({
@@ -244,14 +240,20 @@ export default function AppRenderer({
       failed: 0,
       phase: "building",
     });
-    setPublishedNotice("Rebuilding data for all bindings…");
+    setPublishedNotice("Refreshing data for all bindings…");
     try {
       const result = await materializeAllBindings(workspaceId, appId, {
+        force: true,
         onProgress: progress =>
           setRematerializeProgress({ ...progress, phase: "building" }),
       });
       if (result.total === 0) {
-        setPublishedNotice("No materialized bindings to rebuild.");
+        // Live-only app: just re-query in the running preview.
+        iframeRef.current?.contentWindow?.postMessage(
+          { type: PREVIEW_MESSAGE.dataRefresh },
+          "*",
+        );
+        setPublishedNotice("Refreshed live bindings.");
         return;
       }
 
@@ -283,16 +285,16 @@ export default function AppRenderer({
 
       if (result.failed === 0) {
         setPublishedNotice(
-          `Rebuilt data for ${result.ready} binding${result.ready === 1 ? "" : "s"}.`,
+          `Refreshed data for ${result.ready} binding${result.ready === 1 ? "" : "s"}.`,
         );
       } else {
         setPublishedNotice(
-          `Rebuilt ${result.ready}/${result.total}. Failed: ${result.errors.join("; ")}`,
+          `Refreshed ${result.ready}/${result.total}. Failed: ${result.errors.join("; ")}`,
         );
       }
     } catch (error) {
       setPublishedNotice(
-        error instanceof Error ? error.message : "Failed to rebuild data.",
+        error instanceof Error ? error.message : "Failed to refresh data.",
       );
     } finally {
       setRematerializing(false);
@@ -733,11 +735,23 @@ export default function AppRenderer({
             <ShareIcon size={18} strokeWidth={1.5} />
           </IconButton>
         </Tooltip>
-        <Tooltip title="Rebuild preview">
-          <IconButton size="small" onClick={() => bumpPreview(appId)}>
-            <RefreshIcon size={18} strokeWidth={1.5} />
-          </IconButton>
-        </Tooltip>
+        {canManage && hasAnyBindings && (
+          <Tooltip title="Refresh data from source (waits for every binding)">
+            <span>
+              <IconButton
+                size="small"
+                onClick={() => void handleRefreshData()}
+                disabled={rematerializing}
+              >
+                {rematerializing ? (
+                  <CircularProgress size={16} />
+                ) : (
+                  <RefreshIcon size={18} strokeWidth={1.5} />
+                )}
+              </IconButton>
+            </span>
+          </Tooltip>
+        )}
         <Tooltip title="More">
           <IconButton
             size="small"
@@ -764,27 +778,6 @@ export default function AppRenderer({
           </ListItemIcon>
           <ListItemText>Version history</ListItemText>
         </MenuItem>
-        {canManage && hasParquetBindings && (
-          <MenuItem
-            disabled={rematerializing}
-            onClick={() => {
-              setMoreAnchor(null);
-              void handleRematerialize();
-            }}
-          >
-            <ListItemIcon>
-              {rematerializing ? (
-                <CircularProgress size={14} />
-              ) : (
-                <RematerializeIcon size={16} strokeWidth={1.5} />
-              )}
-            </ListItemIcon>
-            <ListItemText
-              primary={rematerializing ? "Materializing…" : "Materialize data"}
-              secondary="Rebuild every query's Parquet file"
-            />
-          </MenuItem>
-        )}
         <Divider />
         <MenuItem disabled sx={{ "&.Mui-disabled": { opacity: 1 } }}>
           <ListItemText
@@ -872,11 +865,12 @@ export default function AppRenderer({
             {rematerializeProgress.phase === "loading"
               ? "Loading refreshed data into the preview…"
               : rematerializeProgress.total > 0
-                ? `Rebuilding data ${rematerializeProgress.settled}/${rematerializeProgress.total}` +
+                ? `Refreshing data ${rematerializeProgress.settled}/${rematerializeProgress.total}` +
                   (rematerializeProgress.failed > 0
                     ? ` (${rematerializeProgress.failed} failed)`
-                    : "")
-                : "Rebuilding data for all bindings…"}
+                    : "") +
+                  ". App reloads when every binding is ready."
+                : "Refreshing data for all bindings…"}
           </Typography>
         </Box>
       )}
@@ -902,7 +896,7 @@ export default function AppRenderer({
         }}
       >
         <iframe
-          // Keyed on the nonce so "Rebuild preview" always reboots: with
+          // Keyed on the nonce so preview reboots after restore/publish: with
           // unchanged code the regenerated srcDoc string is identical, so a
           // srcdoc-prop update alone would be skipped by React entirely.
           key={previewNonce}
