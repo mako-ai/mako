@@ -1,0 +1,428 @@
+/**
+ * Session manager: one ACP adapter process per provider, many sessions.
+ */
+import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
+import { resolve as resolvePath } from "node:path";
+import type { ActiveSession } from "@agentclientprotocol/sdk";
+import {
+  openProviderConnection,
+  type AcpProviderConnection,
+  loadAcpSdk,
+} from "./connection";
+import {
+  ACP_PROVIDERS,
+  ACP_PROVIDER_IDS,
+  isAcpProviderId,
+  type AcpProviderId,
+} from "./providers";
+import { resolveAdapterCommand } from "./resolve-command";
+import type {
+  AcpBridgeEvent,
+  AcpProviderStatus,
+  AcpSessionInfo,
+  AcpStatusResponse,
+  CreateAcpSessionRequest,
+  PermissionResponseRequest,
+} from "./types";
+import { acpLog } from "./log";
+
+type Listener = (event: AcpBridgeEvent) => void;
+
+interface PendingPermission {
+  resolve: (value: {
+    outcome: "cancelled" | "selected";
+    optionId?: string;
+  }) => void;
+  sessionId: string;
+  toolCall: unknown;
+  options: unknown[];
+  createdAt: number;
+}
+
+interface ManagedSession {
+  info: AcpSessionInfo;
+  active: ActiveSession | null;
+  busy: boolean;
+  listeners: Set<Listener>;
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function defaultCwd(): string {
+  return process.env.MAKO_ACP_DEFAULT_CWD?.trim() || homedir();
+}
+
+export class AcpSessionManager {
+  private connections = new Map<AcpProviderId, AcpProviderConnection>();
+  private sessions = new Map<string, ManagedSession>();
+  private pendingPermissions = new Map<string, PendingPermission>();
+  /** Global listeners (all sessions) — used by tests. */
+  private globalListeners = new Set<Listener>();
+
+  getStatus(): AcpStatusResponse {
+    const providers: AcpProviderStatus[] = ACP_PROVIDER_IDS.map(id => {
+      const def = ACP_PROVIDERS[id];
+      const launch = resolveAdapterCommand(def);
+      const conn = this.connections.get(id);
+      return {
+        id,
+        label: def.label,
+        description: def.description,
+        authProduct: def.authProduct,
+        installHint: def.installHint,
+        adapterCommand: launch
+          ? [launch.command, ...launch.args].join(" ")
+          : null,
+        adapterFound: Boolean(launch),
+        connected: Boolean(conn),
+        authRequired: conn?.authRequired ?? false,
+        authMethods: conn?.authMethods ?? [],
+      };
+    });
+
+    return {
+      available: true,
+      defaultCwd: defaultCwd(),
+      providers,
+    };
+  }
+
+  listSessions(): AcpSessionInfo[] {
+    return [...this.sessions.values()]
+      .map(s => ({ ...s.info, busy: s.busy }))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  getSession(sessionId: string): AcpSessionInfo | null {
+    const s = this.sessions.get(sessionId);
+    return s ? { ...s.info, busy: s.busy } : null;
+  }
+
+  subscribe(sessionId: string, listener: Listener): () => void {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Unknown ACP session: ${sessionId}`);
+    }
+    session.listeners.add(listener);
+    return () => {
+      session.listeners.delete(listener);
+    };
+  }
+
+  subscribeAll(listener: Listener): () => void {
+    this.globalListeners.add(listener);
+    return () => {
+      this.globalListeners.delete(listener);
+    };
+  }
+
+  private emit(sessionId: string, event: AcpBridgeEvent): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      for (const listener of session.listeners) {
+        try {
+          listener(event);
+        } catch (error) {
+          acpLog.error("ACP session listener failed", {
+            error: String(error),
+            sessionId,
+          });
+        }
+      }
+    }
+    for (const listener of this.globalListeners) {
+      try {
+        listener(event);
+      } catch (error) {
+        acpLog.error("ACP global listener failed", {
+          error: String(error),
+          sessionId,
+        });
+      }
+    }
+  }
+
+  private async ensureConnection(
+    providerId: AcpProviderId,
+  ): Promise<AcpProviderConnection> {
+    const existing = this.connections.get(providerId);
+    if (existing && !existing.child.killed) {
+      return existing;
+    }
+
+    const def = ACP_PROVIDERS[providerId];
+    const launch = resolveAdapterCommand(def);
+    if (!launch) {
+      throw new Error(
+        `${def.label} adapter not found. ${def.installHint}`,
+      );
+    }
+
+    acpLog.info("Starting ACP adapter", {
+      providerId,
+      command: launch.command,
+      args: launch.args,
+      via: launch.via,
+    });
+
+    const conn = await openProviderConnection({
+      providerId,
+      launch,
+      onPermission: payload => this.handlePermission(payload),
+    });
+
+    this.connections.set(providerId, conn);
+    conn.child.on("exit", () => {
+      if (this.connections.get(providerId) === conn) {
+        this.connections.delete(providerId);
+      }
+    });
+    return conn;
+  }
+
+  private handlePermission(payload: {
+    sessionId: string;
+    requestId: string;
+    toolCall: unknown;
+    options: unknown[];
+  }): Promise<{ outcome: "cancelled" | "selected"; optionId?: string }> {
+    const timeoutMs = 5 * 60 * 1000;
+    return new Promise(resolve => {
+      const timer = setTimeout(() => {
+        this.pendingPermissions.delete(payload.requestId);
+        resolve({ outcome: "cancelled" });
+      }, timeoutMs);
+
+      this.pendingPermissions.set(payload.requestId, {
+        resolve: value => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        sessionId: payload.sessionId,
+        toolCall: payload.toolCall,
+        options: payload.options,
+        createdAt: Date.now(),
+      });
+
+      this.emit(payload.sessionId, {
+        type: "permission_request",
+        sessionId: payload.sessionId,
+        requestId: payload.requestId,
+        toolCall: payload.toolCall,
+        options: payload.options,
+        at: nowIso(),
+      });
+    });
+  }
+
+  async authenticate(
+    providerId: AcpProviderId,
+    methodId?: string,
+  ): Promise<{ ok: true; methodId: string }> {
+    const acp = await loadAcpSdk();
+    const conn = await this.ensureConnection(providerId);
+    const method =
+      methodId ||
+      conn.authMethods[0]?.id ||
+      (conn.authMethods.length === 0 ? null : null);
+    if (!method) {
+      conn.authenticated = true;
+      return { ok: true, methodId: "none" };
+    }
+    await conn.agent.request(acp.methods.agent.authenticate, {
+      methodId: method,
+    });
+    conn.authenticated = true;
+    return { ok: true, methodId: method };
+  }
+
+  async createSession(
+    body: CreateAcpSessionRequest,
+  ): Promise<AcpSessionInfo> {
+    const providerId: AcpProviderId = isAcpProviderId(
+      String(body.providerId || "claude"),
+    )
+      ? (body.providerId as AcpProviderId)
+      : "claude";
+
+    const cwd = resolvePath(body.cwd?.trim() || defaultCwd());
+    const title =
+      body.title?.trim() ||
+      `${ACP_PROVIDERS[providerId].label} · ${cwd.split(/[/\\]/).pop() || cwd}`;
+
+    const conn = await this.ensureConnection(providerId);
+    if (conn.authRequired && !conn.authenticated) {
+      // Best-effort: try first auth method (agent-login often opens a browser).
+      try {
+        await this.authenticate(providerId);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Authentication failed";
+        throw new Error(
+          `${ACP_PROVIDERS[providerId].label} requires sign-in (${ACP_PROVIDERS[providerId].authProduct}): ${message}`,
+        );
+      }
+    }
+
+    const active = await conn.agent.buildSession(cwd).start();
+    const id = active.sessionId;
+    const info: AcpSessionInfo = {
+      id,
+      providerId,
+      title,
+      cwd,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      busy: false,
+    };
+
+    this.sessions.set(id, {
+      info,
+      active,
+      busy: false,
+      listeners: new Set(),
+    });
+
+    acpLog.info("Created ACP session", { sessionId: id, providerId, cwd });
+    return info;
+  }
+
+  async prompt(
+    sessionId: string,
+    text: string,
+  ): Promise<{ stopReason: string }> {
+    const session = this.sessions.get(sessionId);
+    if (!session?.active) {
+      throw new Error(`Unknown ACP session: ${sessionId}`);
+    }
+    if (session.busy) {
+      throw new Error("Session is already processing a prompt");
+    }
+    if (!text.trim()) {
+      throw new Error("Prompt text is required");
+    }
+
+    session.busy = true;
+    session.info.busy = true;
+    session.info.updatedAt = nowIso();
+
+    try {
+      const promptPromise = session.active.prompt(text);
+      for (;;) {
+        const message = await session.active.nextUpdate();
+        if (message.kind === "session_update") {
+          this.emit(sessionId, {
+            type: "session_update",
+            sessionId,
+            update: message.update,
+            at: nowIso(),
+          });
+        } else {
+          this.emit(sessionId, {
+            type: "turn_done",
+            sessionId,
+            stopReason: message.stopReason,
+            at: nowIso(),
+          });
+          await promptPromise;
+          return { stopReason: message.stopReason };
+        }
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "ACP prompt failed";
+      this.emit(sessionId, {
+        type: "error",
+        sessionId,
+        message,
+        at: nowIso(),
+      });
+      throw error;
+    } finally {
+      session.busy = false;
+      session.info.busy = false;
+      session.info.updatedAt = nowIso();
+    }
+  }
+
+  async cancel(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Unknown ACP session: ${sessionId}`);
+    }
+    const acp = await loadAcpSdk();
+    const conn = this.connections.get(session.info.providerId);
+    if (!conn) return;
+    await conn.agent.notify(acp.methods.agent.session.cancel, { sessionId });
+  }
+
+  respondPermission(
+    sessionId: string,
+    requestId: string,
+    body: PermissionResponseRequest,
+  ): void {
+    const pending = this.pendingPermissions.get(requestId);
+    if (!pending) {
+      throw new Error(`Unknown permission request: ${requestId}`);
+    }
+    if (pending.sessionId && pending.sessionId !== sessionId) {
+      throw new Error("Permission request does not belong to this session");
+    }
+    this.pendingPermissions.delete(requestId);
+    if (body.outcome === "cancelled") {
+      pending.resolve({ outcome: "cancelled" });
+      return;
+    }
+    if (!body.optionId) {
+      throw new Error("optionId is required when outcome is selected");
+    }
+    pending.resolve({ outcome: "selected", optionId: body.optionId });
+  }
+
+  async closeSession(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    // Cancel any pending permissions for this session.
+    for (const [id, pending] of this.pendingPermissions) {
+      if (pending.sessionId === sessionId) {
+        this.pendingPermissions.delete(id);
+        pending.resolve({ outcome: "cancelled" });
+      }
+    }
+
+    try {
+      const acp = await loadAcpSdk();
+      const conn = this.connections.get(session.info.providerId);
+      if (conn) {
+        await conn.agent
+          .request(acp.methods.agent.session.close, { sessionId })
+          .catch(() => undefined);
+      }
+    } finally {
+      session.active?.dispose();
+      this.sessions.delete(sessionId);
+    }
+  }
+
+  /** Test helper — inject a pre-built session id label. */
+  nextLocalId(): string {
+    return randomUUID();
+  }
+
+  shutdown(): void {
+    for (const sessionId of [...this.sessions.keys()]) {
+      void this.closeSession(sessionId);
+    }
+    for (const conn of this.connections.values()) {
+      conn.close();
+    }
+    this.connections.clear();
+  }
+}
+
+/** Process-wide singleton used by HTTP routes. */
+export const acpSessionManager = new AcpSessionManager();

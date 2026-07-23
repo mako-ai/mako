@@ -27,6 +27,11 @@ import {
 import { formatDistanceToNow } from "date-fns";
 import { api, unwrapBody } from "../api";
 import { useWorkspace } from "../contexts/workspace-context";
+import {
+  selectTabBySettingsSection,
+  useConsoleStore,
+} from "../store/consoleStore";
+import { SECTION_LABELS } from "../pages/settings/sections";
 
 const MCP_STARTER_PROMPT =
   "Using the mako tools, explore my data and build an app showing revenue " +
@@ -468,8 +473,33 @@ export function McpAgentsPanel() {
     notify("Copied to clipboard", "success");
   };
 
+  const openCodingAgents = () => {
+    const state = useConsoleStore.getState();
+    const existing = selectTabBySettingsSection("coding-agents")(state);
+    if (existing) {
+      state.setActiveTab(existing.id);
+      return;
+    }
+    const id = state.openTab({
+      title: SECTION_LABELS["coding-agents"],
+      content: "",
+      kind: "settings",
+      settingsSection: "coding-agents",
+    });
+    state.setActiveTab(id);
+  };
+
   return (
     <Box>
+      <Alert severity="info" sx={{ mb: 2 }}>
+        This page lets external agents (Claude Code, Cursor, Codex) call{" "}
+        <strong>into</strong> Mako over MCP. To run Claude Code or Codex{" "}
+        <strong>inside</strong> Mako via ACP, open{" "}
+        <Button size="small" onClick={openCodingAgents} sx={{ ml: 0.5 }}>
+          Coding Agents
+        </Button>
+        .
+      </Alert>
       <McpAgentConnectCard onCopy={copyToClipboard} />
       <McpConnectedAgents onNotify={notify} />
       <Snackbar

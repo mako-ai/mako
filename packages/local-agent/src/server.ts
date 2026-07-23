@@ -29,6 +29,8 @@ import {
   updateConnection,
 } from "./connection-store";
 import { registerDrivers, toDatabaseConnection } from "./database-bridge";
+import { registerAcpRoutes } from "./acp/routes";
+import { acpSessionManager } from "./acp/manager";
 
 const logger = loggers.api("local-agent");
 
@@ -476,6 +478,9 @@ export function createAgentApp(): Hono {
     return c.json(result);
   });
 
+  // --- ACP coding agents (Claude Code / Codex via local stdio adapters) ---
+  registerAcpRoutes(app);
+
   return app;
 }
 
@@ -503,5 +508,11 @@ export function startAgent(port?: number): StartedAgent {
     host: "127.0.0.1",
   });
 
-  return { port: resolvedPort, close: () => server.close() };
+  return {
+    port: resolvedPort,
+    close: () => {
+      acpSessionManager.shutdown();
+      server.close();
+    },
+  };
 }
