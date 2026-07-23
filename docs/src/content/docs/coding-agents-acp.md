@@ -40,9 +40,16 @@ When you start a Coding Agents session (or select **Claude Code (local)** /
 **Codex (local)** in the main Chat model picker), Mako mints a short-lived MCP
 access token and attaches `POST /api/mcp` on ACP `session/new`.
 
-Claude Code / Codex then get the same **read-only** workspace tools as
-[Connect Agents](/mcp-server/): list connections, run SQL, consoles, etc. —
-while file/shell tools still run on your machine via the adapter.
+Claude Code / Codex then get the same workspace data tools as
+[Connect Agents](/mcp-server/): list connections, run SQL, consoles, apps, etc.
+Database queries stay **read-only**; apps/consoles can be authored over MCP.
+File and shell tools still run on your machine via the adapter.
+
+To feel like the in-app agent, Mako:
+
+- Allowlists `mcp__mako__*` for Claude ACP (no per-tool click tax on Mako tools)
+- Auto-approves Mako MCP + read/search tool kinds in the Local Agent
+- Still prompts in Chat / Coding Agents for Bash and file edits
 
 If attach fails (offline API, missing workspace), the session still starts with
 local tools only; start a **new** session after fixing auth to pick up Mako MCP.

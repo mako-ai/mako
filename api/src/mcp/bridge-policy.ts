@@ -494,8 +494,15 @@ export function mcpReadOnlyHint(
   }
   if (
     queryAccess === "read" &&
-    (name === "sql_execute_query" || name === "run_console")
+    (name === "sql_execute_query" ||
+      name === "run_console" ||
+      name === "check_query_status" ||
+      name === "list_console_executions" ||
+      name === "cancel_query")
   ) {
+    // Under query:read the SQL loop is forced read-only; status/cancel/list
+    // are part of that same lifecycle and should not look like writes to MCP
+    // clients (affects auto-approval annotations).
     return true;
   }
   return false;

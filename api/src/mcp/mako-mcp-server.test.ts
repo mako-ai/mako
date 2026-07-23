@@ -158,6 +158,9 @@ async function main() {
       "sql_execute_query",
       "run_console",
       "read_console",
+      "check_query_status",
+      "list_console_executions",
+      "cancel_query",
     ]) {
       assert.equal(
         byName.get(readOnlyTool)?.annotations?.readOnlyHint,

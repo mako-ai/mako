@@ -99,6 +99,7 @@ import { useNotebookAutoOpen } from "./chat/hooks/useNotebookAutoOpen";
 import { ChatMessageRow, MessageVirtuosoList } from "./chat/ChatMessageRow";
 import { QueuedPromptList } from "./chat/QueuedPrompts";
 import { ChatInputArea } from "./chat/ChatInputArea";
+import { AcpPermissionBanner } from "./AcpPermissionBanner";
 import {
   onRenderDebug,
   useRenderCount,
@@ -1427,6 +1428,9 @@ const Chat: React.FC<ChatProps> = ({
           onRemove={handleRemoveQueuedPrompt}
         />
       </Collapse>
+
+      {/* Local Claude/Codex: Allow/Deny for Bash/edits (Mako MCP is auto-approved). */}
+      {isLocalAcpModelId(selectedModelId) ? <AcpPermissionBanner /> : null}
 
       {/* Input — isolated component so keystrokes don't re-render messages */}
       <ChatInputArea

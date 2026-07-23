@@ -17,6 +17,7 @@ import {
   type AcpProviderId,
 } from "./providers";
 import { resolveAdapterCommand } from "./resolve-command";
+import { shouldAutoApprovePermission } from "./permissions";
 import type {
   AcpBridgeEvent,
   AcpProviderStatus,
@@ -248,6 +249,21 @@ export class AcpSessionManager {
     toolCall: unknown;
     options: unknown[];
   }): Promise<{ outcome: "cancelled" | "selected"; optionId?: string }> {
+    const auto = shouldAutoApprovePermission({
+      toolCall: payload.toolCall,
+      options: payload.options,
+    });
+    if (auto) {
+      acpLog.info("Auto-approving ACP permission", {
+        sessionId: payload.sessionId,
+        optionId: auto.optionId,
+      });
+      return Promise.resolve({
+        outcome: "selected",
+        optionId: auto.optionId,
+      });
+    }
+
     const timeoutMs = 5 * 60 * 1000;
     return new Promise(resolve => {
       const timer = setTimeout(() => {
@@ -329,7 +345,22 @@ export class AcpSessionManager {
     const attachMakoMcp = Boolean(
       body.attachMakoMcp && body.mcpUrl?.trim() && body.mcpAuthorization?.trim(),
     );
-    let builder = conn.agent.buildSession(cwd);
+    // For Claude ACP, also allowlist mcp__mako__* so the Agent SDK does not
+    // prompt on every Mako tool (acceptEdits does NOT cover MCP).
+    let builder =
+      attachMakoMcp && providerId === "claude"
+        ? conn.agent.buildSession({
+            cwd,
+            mcpServers: [],
+            _meta: {
+              claudeCode: {
+                options: {
+                  allowedTools: ["mcp__mako__*", "mcp__mako"],
+                },
+              },
+            },
+          })
+        : conn.agent.buildSession(cwd);
     if (attachMakoMcp) {
       const mcpUrl = String(body.mcpUrl).trim();
       const authorization = normalizeBearerAuth(
