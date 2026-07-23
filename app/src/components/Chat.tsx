@@ -287,6 +287,11 @@ const Chat: React.FC<ChatProps> = ({
     ((text: string) => Promise<boolean>) | null
   >(null);
   const localAcpAbortRef = useRef<AbortController | null>(null);
+  const localAcpBindingRef = useRef<{
+    providerId: string;
+    sessionId: string;
+    modelId: string;
+  } | null>(null);
   const [localAcpBusy, setLocalAcpBusy] = useState(false);
   // Client-tool registry: in-flight executions, cancel/interrupt plumbing,
   // and the per-chat toolCallId dispatch dedupe gate (the triplicate-tool
@@ -682,12 +687,21 @@ const Chat: React.FC<ChatProps> = ({
     setLocalAcpBusy(true);
     isLoadingRef.current = true;
     try {
+      const binding = localAcpBindingRef.current;
       await runLocalAcpChatTurn({
         modelId,
         text,
         workspaceId: workspaceIdRef.current,
+        chatId: chatIdRef.current,
+        preferredSessionId:
+          binding?.modelId === modelId ? binding.sessionId : undefined,
         setMessages,
         signal: abort.signal,
+        onPersisted: binding => {
+          if (binding) localAcpBindingRef.current = binding;
+          setIsExistingChat(true);
+          void fetchSessionsRef.current?.();
+        },
       });
     } catch {
       // Transcript already includes the error text.
@@ -781,6 +795,7 @@ const Chat: React.FC<ChatProps> = ({
     toolDispatchGateRef,
     loadPersistedMessagesRef,
     requestResumeRef,
+    localAcpBindingRef,
   });
 
   // Create new chat session - just generate a new ID locally (no API call needed)
@@ -788,6 +803,7 @@ const Chat: React.FC<ChatProps> = ({
     cancelActiveClientToolCalls("session-change");
     manualStopRequestedRef.current = false;
     clearQueuedPrompts();
+    localAcpBindingRef.current = null;
     setChatId(generateObjectId());
     setMessages([]);
     setIsExistingChat(false);
@@ -797,6 +813,7 @@ const Chat: React.FC<ChatProps> = ({
     cancelActiveClientToolCalls("session-change");
     manualStopRequestedRef.current = false;
     clearQueuedPrompts();
+    localAcpBindingRef.current = null;
     setChatId(id);
     setMessages([]);
     setIsExistingChat(true);

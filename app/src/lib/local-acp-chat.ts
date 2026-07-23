@@ -17,12 +17,17 @@ import {
   upsertAcpToolPart,
   type AcpToolUpdate,
 } from "./local-acp-parts";
+import {
+  persistLocalAcpChat,
+  type LocalAcpChatBinding,
+} from "./persist-local-acp-chat";
 import { useAcpStore } from "../store/acpStore";
 import type { AcpProviderId } from "./acp-types";
 
 export async function ensureAcpSessionForProvider(
   providerId: AcpProviderId,
   workspaceId?: string,
+  preferredSessionId?: string,
 ): Promise<string> {
   const store = useAcpStore.getState();
   if (!store.status) {
@@ -36,6 +41,33 @@ export async function ensureAcpSessionForProvider(
       provider?.installHint ||
         `${providerId} ACP adapter not found. Install it and restart the Local Agent.`,
     );
+  }
+
+  // Prefer the session bound to this History chat (reopen / continue).
+  if (preferredSessionId) {
+    let preferred = useAcpStore
+      .getState()
+      .sessions.find(
+        s =>
+          s.id === preferredSessionId &&
+          s.providerId === providerId &&
+          s.makoMcpAttached,
+      );
+    if (!preferred) {
+      await useAcpStore.getState().refreshSessions();
+      preferred = useAcpStore
+        .getState()
+        .sessions.find(
+          s =>
+            s.id === preferredSessionId &&
+            s.providerId === providerId &&
+            s.makoMcpAttached,
+        );
+    }
+    if (preferred) {
+      useAcpStore.getState().setActiveSession(preferred.id);
+      return preferred.id;
+    }
   }
 
   // Prefer a session that already has Mako MCP attached so Chat gets DB tools.
@@ -65,10 +97,16 @@ export interface LocalAcpChatTurnArgs {
   modelId: string;
   text: string;
   workspaceId?: string;
+  /** Mako History chat id — when set, transcript is persisted after the turn. */
+  chatId?: string;
+  /** Resume the ACP process session previously bound to this chat. */
+  preferredSessionId?: string;
   setMessages: (
     updater: UIMessage[] | ((prev: UIMessage[]) => UIMessage[]),
   ) => void;
   signal?: AbortSignal;
+  /** Called after a successful persist so History can refresh / rebind ACP. */
+  onPersisted?: (binding?: LocalAcpChatBinding) => void;
 }
 
 /**
@@ -79,7 +117,16 @@ export interface LocalAcpChatTurnArgs {
 export async function runLocalAcpChatTurn(
   args: LocalAcpChatTurnArgs,
 ): Promise<boolean> {
-  const { modelId, text, workspaceId, setMessages, signal } = args;
+  const {
+    modelId,
+    text,
+    workspaceId,
+    chatId,
+    preferredSessionId,
+    setMessages,
+    signal,
+    onPersisted,
+  } = args;
   if (!isLocalAcpModelId(modelId)) return false;
 
   const providerId = localAcpModelIdToProviderId(modelId);
@@ -90,9 +137,23 @@ export async function runLocalAcpChatTurn(
   const trimmed = text.trim();
   if (!trimmed) return true;
 
+  // Mirror message updates synchronously so we can persist after the turn
+  // without racing React's batched setState flush.
+  let mirrored: UIMessage[] | null = null;
+  const applyMessages = (
+    updater: UIMessage[] | ((prev: UIMessage[]) => UIMessage[]),
+  ) => {
+    setMessages(prev => {
+      const base = mirrored ?? prev;
+      const next = typeof updater === "function" ? updater(base) : updater;
+      mirrored = next;
+      return next;
+    });
+  };
+
   const userId = generateObjectId();
   const assistantId = generateObjectId();
-  setMessages(prev => [
+  applyMessages(prev => [
     ...prev,
     {
       id: userId,
@@ -111,7 +172,7 @@ export async function runLocalAcpChatTurn(
       parts: ReturnType<typeof getAssistantParts>,
     ) => ReturnType<typeof getAssistantParts>,
   ) => {
-    setMessages(prev =>
+    applyMessages(prev =>
       prev.map(m => {
         if (m.id !== assistantId) return m;
         return {
@@ -122,14 +183,31 @@ export async function runLocalAcpChatTurn(
     );
   };
 
+  let sessionId: string | null = null;
+
+  const persistIfPossible = async () => {
+    if (!workspaceId || !chatId || !mirrored || mirrored.length === 0) return;
+    const binding: LocalAcpChatBinding | undefined = sessionId
+      ? { providerId, sessionId, modelId }
+      : undefined;
+    const ok = await persistLocalAcpChat({
+      workspaceId,
+      chatId,
+      messages: mirrored,
+      localAcp: binding,
+    });
+    if (ok) onPersisted?.(binding);
+  };
+
   try {
     if (signal?.aborted) {
       throw new DOMException("Cancelled", "AbortError");
     }
 
-    const sessionId = await ensureAcpSessionForProvider(
+    sessionId = await ensureAcpSessionForProvider(
       providerId,
       workspaceId,
+      preferredSessionId,
     );
     // Keep the store subscription alive for permission prompts in Chat.
     useAcpStore.getState().ensureEventSubscription(sessionId);
@@ -158,7 +236,9 @@ export async function runLocalAcpChatTurn(
           }
         } else if (event.type === "permission_request") {
           // HITL in Chat — surface Allow/Deny above the composer.
-          useAcpStore.getState().ingestPermissionRequest(sessionId, {
+          const activeSessionId = sessionId;
+          if (!activeSessionId) return;
+          useAcpStore.getState().ingestPermissionRequest(activeSessionId, {
             requestId: event.requestId,
             toolCall: event.toolCall,
             options: event.options || [],
@@ -179,7 +259,7 @@ export async function runLocalAcpChatTurn(
 
     try {
       await acpClient.prompt(sessionId, trimmed);
-      setMessages(prev => {
+      applyMessages(prev => {
         const assistant = prev.find(m => m.id === assistantId);
         const parts = getAssistantParts(assistant);
         const hasText = parts.some(
@@ -209,6 +289,7 @@ export async function runLocalAcpChatTurn(
       (error instanceof DOMException && error.name === "AbortError")
     ) {
       patchAssistantParts(parts => setAssistantErrorText(parts, "_Stopped._"));
+      await persistIfPossible();
       return true;
     }
     const message =
@@ -216,8 +297,10 @@ export async function runLocalAcpChatTurn(
     patchAssistantParts(parts =>
       setAssistantErrorText(parts, `Error: ${message}`),
     );
+    await persistIfPossible();
     throw error;
   }
 
+  await persistIfPossible();
   return true;
 }

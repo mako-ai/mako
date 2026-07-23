@@ -3,7 +3,10 @@ import type { UseChatHelpers } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
 import type { VirtuosoHandle } from "react-virtuoso";
 import { api } from "../../../api/client";
+import type { LocalAcpChatBinding } from "../../../lib/persist-local-acp-chat";
+import { isLocalAcpModelId } from "../../../lib/local-acp-models";
 import { useConsoleStore } from "../../../store/consoleStore";
+import { useSettingsStore } from "../../../store/settingsStore";
 import { convertStoredMessages } from "../convert-stored-messages";
 import type { ToolDispatchGate } from "../tool-dispatch-gate";
 
@@ -105,6 +108,11 @@ export interface UseChatSessionLoaderArgs {
   requestResumeRef: MutableRefObject<
     ((opts?: { skipReload?: boolean }) => Promise<void>) | undefined
   >;
+  /**
+   * Bound Local Agent ACP session for this History chat (if any). Cleared by
+   * Chat on new-session; set here when a persisted localAcp payload is loaded.
+   */
+  localAcpBindingRef: MutableRefObject<LocalAcpChatBinding | null>;
 }
 
 /**
@@ -126,6 +134,7 @@ export function useChatSessionLoader({
   toolDispatchGateRef,
   loadPersistedMessagesRef,
   requestResumeRef,
+  localAcpBindingRef,
 }: UseChatSessionLoaderArgs): void {
   // Fetch the persisted chat and swap it into the hook state. Shared by the
   // history-load effect below and the resume manager's reload-before-replay
@@ -156,8 +165,27 @@ export function useChatSessionLoader({
         messages?: unknown[];
         consoles?: Array<{ id: string }>;
         activeStreamId?: string | null;
+        localAcp?: LocalAcpChatBinding | null;
       };
       if (chatIdRef.current !== targetChatId) return false;
+
+      // Rebind Local Agent ACP session + restore model when reopening History.
+      if (
+        data.localAcp?.sessionId &&
+        data.localAcp.providerId &&
+        data.localAcp.modelId
+      ) {
+        localAcpBindingRef.current = {
+          providerId: data.localAcp.providerId,
+          sessionId: data.localAcp.sessionId,
+          modelId: data.localAcp.modelId,
+        };
+        if (opts?.forHistoryLoad && isLocalAcpModelId(data.localAcp.modelId)) {
+          useSettingsStore.getState().setSelectedModelId(data.localAcp.modelId);
+        }
+      } else if (opts?.forHistoryLoad) {
+        localAcpBindingRef.current = null;
+      }
 
       const rawMessages = (data.messages ?? []) as Array<{
         role?: string;

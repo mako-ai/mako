@@ -698,6 +698,16 @@ export interface IChat extends Document {
   // Resume pointer for in-flight turns: the resumable-stream ID clients can
   // reattach to via GET /api/agent/chat/:chatId/stream. Null when idle.
   activeStreamId?: string | null;
+  /**
+   * Local Agent ACP binding for chats that run Claude Code / Codex on the
+   * user's machine. Lets History reopen + continue the same ACP session while
+   * the Local Agent process is still alive. Absent for cloud (gateway) chats.
+   */
+  localAcp?: {
+    providerId: string;
+    sessionId: string;
+    modelId: string;
+  };
   systemPrompt?: string; // System prompt used for this conversation
   workspacePrompt?: string; // Workspace custom prompt appended to system prompt
   usage?: IChatUsage; // Token usage tracking for billing
@@ -1955,6 +1965,11 @@ const ChatSchema = new Schema<IChat>(
     activeStreamId: {
       type: String,
       default: null,
+    },
+    localAcp: {
+      providerId: { type: String, required: false },
+      sessionId: { type: String, required: false },
+      modelId: { type: String, required: false },
     },
     systemPrompt: {
       type: String,

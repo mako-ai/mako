@@ -1,9 +1,11 @@
 import { createRoute, z } from "@hono/zod-openapi";
+import type { UIMessage } from "ai";
 import { Chat } from "../database/workspace-schema";
 import { ObjectId } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
-import { getConsolesByIds } from "../services/agent-thread.service";
+import { getConsolesByIds, saveChat } from "../services/agent-thread.service";
+import { generateChatTitle } from "../services/title-generator";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { workspaceService } from "../services/workspace.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
@@ -263,6 +265,153 @@ chatsRoutes.openapi(
     } catch (error) {
       logger.error("Error getting chat", { error });
       return c.json({ error: "Failed to get chat" }, 500);
+    }
+  },
+);
+
+/**
+ * Upsert full message history for a chat.
+ *
+ * Used by Local Agent ACP (Claude Code / Codex) turns that never hit
+ * /api/agent/chat — the browser streams the turn locally, then persists the
+ * UIMessage transcript here so History / reopen works like cloud chats.
+ * Does not set activeStreamId (ACP turns are not resumable server-side).
+ */
+chatsRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/messages",
+    tags: ["Chats"],
+    summary: "Upsert chat messages",
+    security: AUTH_SECURITY,
+    request: {
+      params: ChatIdParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({
+              messages: z.array(z.record(z.string(), z.unknown())),
+              localAcp: z
+                .object({
+                  providerId: z.string().min(1),
+                  sessionId: z.string().min(1),
+                  modelId: z.string().min(1),
+                })
+                .optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const user = c.get("user");
+      const userId = user?.id;
+      if (!userId) {
+        return c.json({ error: "User not authenticated" }, 401);
+      }
+
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+
+      if (!ObjectId.isValid(workspaceId)) {
+        return c.json({ error: "Invalid workspace id" }, 400);
+      }
+      if (!ObjectId.isValid(id)) {
+        return c.json({ error: "Invalid chat id" }, 400);
+      }
+
+      const body = c.req.valid("json");
+      const messages = body.messages as unknown as UIMessage[];
+      if (!Array.isArray(messages)) {
+        return c.json({ error: "'messages' must be an array" }, 400);
+      }
+
+      // Ownership: refuse to upsert into another user's chat. New chats
+      // (missing doc) are created by saveChat with this user as createdBy.
+      const existing = await Chat.findOne({
+        _id: new ObjectId(id),
+        workspaceId: new ObjectId(workspaceId),
+      }).select({ createdBy: 1, titleGenerated: 1 });
+
+      if (existing && existing.createdBy !== userId.toString()) {
+        return c.json({ error: "Chat not found" }, 404);
+      }
+
+      const saved = await saveChat(
+        id,
+        workspaceId,
+        userId.toString(),
+        messages,
+      );
+      if (!saved) {
+        return c.json({ error: "Failed to save chat" }, 500);
+      }
+
+      if (body.localAcp) {
+        await Chat.updateOne(
+          {
+            _id: new ObjectId(id),
+            workspaceId: new ObjectId(workspaceId),
+            createdBy: userId.toString(),
+          },
+          {
+            $set: {
+              localAcp: {
+                providerId: body.localAcp.providerId,
+                sessionId: body.localAcp.sessionId,
+                modelId: body.localAcp.modelId,
+              },
+            },
+          },
+        );
+      }
+
+      // Fire-and-forget title on first persist (same pattern as agent.routes).
+      const needsTitle = existing == null || existing.titleGenerated === false;
+      if (needsTitle) {
+        const firstUserMessage = messages.find(m => m.role === "user");
+        const userContent = firstUserMessage?.parts
+          ? firstUserMessage.parts
+              .filter(
+                (p): p is { type: "text"; text: string } => p.type === "text",
+              )
+              .map(p => p.text)
+              .join("")
+          : "";
+        if (userContent.length >= 3) {
+          void (async () => {
+            try {
+              const title = await generateChatTitle(userContent, {
+                workspaceId,
+                userId: userId.toString(),
+                userEmail: user?.email,
+              });
+              await Chat.updateOne(
+                { _id: new ObjectId(id), titleGenerated: false },
+                { title, titleGenerated: true },
+              );
+            } catch (err) {
+              logger.error("Background title generation failed", {
+                error: err,
+                chatId: id,
+              });
+            }
+          })();
+        }
+      }
+
+      return c.json({
+        success: true,
+        chatId: id,
+        updatedAt: saved.updatedAt,
+      });
+    } catch (error) {
+      logger.error("Error upserting chat messages", { error });
+      return c.json({ error: "Failed to save chat messages" }, 500);
     }
   },
 );
