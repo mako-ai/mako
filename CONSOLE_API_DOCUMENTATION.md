@@ -43,12 +43,25 @@ Get a list of all consoles in the workspace.
       "createdAt": "2024-01-01T00:00:00Z",
       "updatedAt": "2024-01-01T00:00:00Z",
       "lastExecutedAt": "2024-01-01T00:00:00Z",
-      "executionCount": 10
+      "executionCount": 10,
+      "lastExternalUsedAt": "2024-01-01T00:00:00Z",
+      "externalUseCount": 3,
+      "lastExternalSource": "api"
     }
   ],
   "total": 1
 }
 ```
+
+**Usage fields for archival decisions:**
+
+| Field | Meaning |
+|---|---|
+| `lastExecutedAt` / `executionCount` | Any execution (UI, API, MCP, in-app agent) |
+| `lastExternalUsedAt` / `externalUseCount` | External-only: REST API key execute, or MCP `run_console` / `read_console` / details |
+| `lastExternalSource` | `"api"` or `"mcp"` — which external surface last touched the console |
+
+Consoles with `lastExternalUsedAt: null` have never been used via API key or MCP (since this tracking shipped). Prefer that signal when deciding what is safe to archive from an external-integrations perspective.
 
 ### Get Console Details
 
@@ -76,7 +89,10 @@ Get detailed information about a specific console, including its code.
     "createdAt": "2024-01-01T00:00:00Z",
     "updatedAt": "2024-01-01T00:00:00Z",
     "lastExecutedAt": "2024-01-01T00:00:00Z",
-    "executionCount": 10
+    "executionCount": 10,
+    "lastExternalUsedAt": "2024-01-01T00:00:00Z",
+    "externalUseCount": 3,
+    "lastExternalSource": "api"
   }
 }
 ```

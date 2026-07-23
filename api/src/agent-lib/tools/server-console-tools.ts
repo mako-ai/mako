@@ -82,6 +82,11 @@ export interface ServerConsoleToolsOptions {
   chatId?: string;
   /** Database capability granted by the calling API key. */
   queryAccess?: QueryAccess;
+  /**
+   * Where these tools are hosted. MCP is an external surface and updates
+   * lastExternalUsedAt; in-product agent stays internal (`agent`).
+   */
+  surface?: "agent" | "mcp";
 }
 
 interface LoadedConsole {
@@ -116,8 +121,10 @@ export function createServerConsoleTools({
   executionContext,
   chatId,
   queryAccess = "write",
+  surface = "agent",
 }: ServerConsoleToolsOptions) {
   const agentClientId = `agent:${chatId ?? "unknown"}`;
+  const runSource = surface === "mcp" ? ("mcp" as const) : ("agent" as const);
 
   const loadConsole = async (consoleId: string): Promise<LoadResult> => {
     if (!consoleId) {
@@ -191,6 +198,14 @@ export function createServerConsoleTools({
           const loaded = await loadConsole(consoleId);
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const { doc } = loaded;
+          if (surface === "mcp") {
+            void consoleManager.recordExternalUse(
+              doc._id.toString(),
+              workspaceId,
+              "mcp",
+              "access",
+            );
+          }
           const { content, totalLines } = withLineNumbers(doc.code);
           return {
             success: true,
@@ -616,7 +631,7 @@ export function createServerConsoleTools({
             workspaceId,
             consoleId,
             userId: userId ?? "agent",
-            source: "agent",
+            source: runSource,
             executionId,
             signal: executionContext?.signal,
             readOnly: queryAccess === "read",

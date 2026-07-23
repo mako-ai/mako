@@ -2878,6 +2878,16 @@ consoleRoutes.openapi(
         },
       );
 
+      // API-key executes are external use — durable signal for archive decisions.
+      if (apiKey) {
+        void consoleManager.recordExternalUse(
+          savedConsole._id.toString(),
+          access.workspaceId,
+          "api",
+          "execute",
+        );
+      }
+
       // Return the result
       const previewRows =
         "rows" in result && Array.isArray(result.rows)
@@ -3239,7 +3249,7 @@ consoleRoutes.openapi(
         workspaceId: new Types.ObjectId(access.workspaceId),
       })
         .select(
-          "_id name description language connectionId databaseName createdAt updatedAt lastExecutedAt executionCount access owner_id createdBy",
+          "_id name description language connectionId databaseName createdAt updatedAt lastExecutedAt executionCount lastExternalUsedAt externalUseCount lastExternalSource access owner_id createdBy",
         )
         .populate("connectionId", "name type")
         .sort({ updatedAt: -1 });
@@ -3271,6 +3281,9 @@ consoleRoutes.openapi(
           updatedAt: console.updatedAt,
           lastExecutedAt: console.lastExecutedAt,
           executionCount: console.executionCount,
+          lastExternalUsedAt: console.lastExternalUsedAt ?? null,
+          externalUseCount: console.externalUseCount ?? 0,
+          lastExternalSource: console.lastExternalSource ?? null,
           access: ConsoleManager.resolveAccess(console),
           owner_id: console.owner_id || console.createdBy,
         })),
@@ -3366,6 +3379,16 @@ consoleRoutes.openapi(
         ownerDisplayName = ownerUser?.email;
       }
 
+      // API-key clients reading console details count as external access.
+      if (isApiKeyAuth(c)) {
+        void consoleManager.recordExternalUse(
+          savedConsole._id.toString(),
+          access.workspaceId,
+          "api",
+          "access",
+        );
+      }
+
       return c.json({
         success: true,
         console: {
@@ -3387,6 +3410,9 @@ consoleRoutes.openapi(
           updatedAt: savedConsole.updatedAt,
           lastExecutedAt: savedConsole.lastExecutedAt,
           executionCount: savedConsole.executionCount,
+          lastExternalUsedAt: savedConsole.lastExternalUsedAt ?? null,
+          externalUseCount: savedConsole.externalUseCount ?? 0,
+          lastExternalSource: savedConsole.lastExternalSource ?? null,
           access: resolvedAccess,
           owner_id: ownerId,
           ownerDisplayName,

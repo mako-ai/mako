@@ -1099,6 +1099,7 @@ function Editor({
     setCancellingTabs(prev => ({ ...prev, [tabId]: false }));
     const startTime = Date.now();
     try {
+      const consoleTab = tabs[tabId];
       const result = await executeQuery(
         currentWorkspace.id,
         connectionId,
@@ -1110,6 +1111,10 @@ function Editor({
           pageSize: options?.pageSize ?? 500,
           cursor: options?.cursor ?? null,
           confirmUnsafe: options?.confirmUnsafe,
+          // Console tab ids are Mongo ObjectIds (generateObjectId / server id).
+          ...(consoleTab?.kind === "console" || consoleTab?.kind === undefined
+            ? { consoleId: tabId }
+            : {}),
         },
       );
       const executionTime = Date.now() - startTime;

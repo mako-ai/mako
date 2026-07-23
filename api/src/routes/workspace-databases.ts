@@ -11,6 +11,7 @@ import {
   DatabaseConnection,
   IDatabaseConnection,
   Flow,
+  SavedConsole,
 } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
 import {
@@ -21,6 +22,7 @@ import {
 } from "../services/query-execution.service";
 import { Types } from "mongoose";
 import { loggers } from "../logging";
+import { ConsoleManager } from "../utils/console-manager";
 import { checkPreviewQuerySafety } from "../services/query-pagination.service";
 import { createStreamingExportResponse } from "../utils/query-export-stream";
 import { createArrowIPCStreamResponse } from "../utils/arrow-serializer";
@@ -31,6 +33,7 @@ import { promises as fsPromises } from "fs";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
 const logger = loggers.db();
+const consoleManager = new ConsoleManager();
 
 type WorkspaceDatabaseRouteError = {
   response: { success: false; error: string };
@@ -2149,6 +2152,36 @@ workspaceExecuteRoutes.openapi(
           rowCount,
           errorType,
         });
+
+        // When a saved console id is provided, keep console execution stats
+        // current (UI runs historically omitted this). API-key runs also bump
+        // the durable external-use signal used for archive decisions.
+        if (validConsoleId) {
+          void SavedConsole.updateOne(
+            {
+              _id: validConsoleId,
+              workspaceId: workspace._id,
+            },
+            {
+              $set: { lastExecutedAt: new Date() },
+              $inc: { executionCount: 1 },
+            },
+          ).catch(error => {
+            logger.warn("Failed to update console execution stats", {
+              error,
+              consoleId: validConsoleId.toString(),
+            });
+          });
+
+          if (apiKey) {
+            void consoleManager.recordExternalUse(
+              validConsoleId.toString(),
+              workspace._id.toString(),
+              "api",
+              "execute",
+            );
+          }
+        }
 
         if (
           isPreviewMode &&

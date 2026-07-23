@@ -11,6 +11,7 @@ export type QuerySource =
   | "console_ui"
   | "console_ui_admin_override"
   | "api"
+  | "mcp"
   | "agent"
   | "flow"
   | "scheduled_query";

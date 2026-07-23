@@ -124,6 +124,7 @@ export function buildMakoMcpCandidateTools(
     userId,
     chatId,
     queryAccess,
+    surface: "mcp",
   });
 
   const sqlTools = createSqlToolsV2(

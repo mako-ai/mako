@@ -506,6 +506,16 @@ export interface ISavedConsole extends Document {
   updatedAt: Date;
   lastExecutedAt?: Date;
   executionCount: number;
+  /**
+   * Last time this console was used via an external surface (REST API key
+   * execute, or MCP read/run). Used to decide what is safe to archive.
+   * Distinct from lastExecutedAt, which also includes in-app UI / agent runs.
+   */
+  lastExternalUsedAt?: Date;
+  /** Number of external executions (API key / MCP run_console). Reads do not increment. */
+  externalUseCount: number;
+  /** Which external surface last touched this console. */
+  lastExternalSource?: "api" | "mcp";
 }
 
 export interface IScheduledQueryRun extends Document {
@@ -1119,6 +1129,7 @@ export interface IQueryExecution extends Document {
     | "console_ui"
     | "console_ui_admin_override"
     | "api"
+    | "mcp"
     | "agent"
     | "flow"
     | "scheduled_query";
@@ -1731,6 +1742,18 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       type: Number,
       default: 0,
     },
+    lastExternalUsedAt: {
+      type: Date,
+    },
+    externalUseCount: {
+      type: Number,
+      default: 0,
+    },
+    lastExternalSource: {
+      type: String,
+      enum: ["api", "mcp"],
+      required: false,
+    },
     version: {
       type: Number,
       default: 1,
@@ -1796,6 +1819,10 @@ SavedConsoleSchema.index({ workspaceId: 1, access: 1, owner_id: 1 }); // Console
 SavedConsoleSchema.index(
   { workspaceId: 1, "scheduledRun.nextAt": 1 },
   { sparse: true },
+);
+SavedConsoleSchema.index(
+  { workspaceId: 1, lastExternalUsedAt: 1 },
+  { sparse: true, name: "savedconsoles_workspace_last_external_used" },
 );
 SavedConsoleSchema.index(
   { name: "text", description: "text" },
@@ -2788,6 +2815,7 @@ const QueryExecutionSchema = new Schema<IQueryExecution>(
         "console_ui",
         "console_ui_admin_override",
         "api",
+        "mcp",
         "agent",
         "flow",
         "scheduled_query",

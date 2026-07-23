@@ -229,6 +229,8 @@ interface ConsoleActions {
       pageSize?: number;
       cursor?: string | null;
       confirmUnsafe?: boolean;
+      /** When set, links the run to a saved console for usage stats. */
+      consoleId?: string;
     },
   ) => Promise<QueryExecuteResult>;
   cancelQuery: (
@@ -1533,6 +1535,7 @@ export const useConsoleStore = create<ConsoleStore>()(
             cursor: options?.cursor,
             mode: "preview" as const,
             source: "console_ui",
+            ...(options?.consoleId ? { consoleId: options.consoleId } : {}),
             ...(options?.confirmUnsafe ? { confirmUnsafe: true } : {}),
           };
 

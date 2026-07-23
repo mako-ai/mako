@@ -1204,6 +1204,65 @@ export class ConsoleManager {
   }
 
   /**
+   * Record external (API key / MCP) use of a console.
+   *
+   * - `execute`: bumps lastExternalUsedAt, externalUseCount, lastExternalSource
+   * - `access`: bumps lastExternalUsedAt / lastExternalSource only, throttled
+   *   to at most once per minute (reads/list details should not write-amplify)
+   */
+  async recordExternalUse(
+    consoleId: string,
+    workspaceId: string,
+    source: "api" | "mcp",
+    mode: "execute" | "access" = "execute",
+  ): Promise<void> {
+    if (!Types.ObjectId.isValid(consoleId)) return;
+    try {
+      const now = new Date();
+      const filter: Record<string, unknown> = {
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      };
+
+      if (mode === "access") {
+        // Throttle access bumps so chatty MCP/API clients don't hammer writes.
+        filter.$or = [
+          { lastExternalUsedAt: { $exists: false } },
+          { lastExternalUsedAt: null },
+          {
+            lastExternalUsedAt: {
+              $lte: new Date(now.getTime() - 60_000),
+            },
+          },
+        ];
+        await SavedConsole.updateOne(filter, {
+          $set: {
+            lastExternalUsedAt: now,
+            lastExternalSource: source,
+          },
+        });
+        return;
+      }
+
+      await SavedConsole.updateOne(filter, {
+        $set: {
+          lastExternalUsedAt: now,
+          lastExternalSource: source,
+        },
+        $inc: { externalUseCount: 1 },
+      });
+    } catch (error) {
+      logger.error("Error recording external console use", {
+        error,
+        consoleId,
+        workspaceId,
+        source,
+        mode,
+      });
+    }
+  }
+
+  /**
    * Ensure folder path exists, creating folders as needed
    * Returns the ID of the deepest folder in the path
    */

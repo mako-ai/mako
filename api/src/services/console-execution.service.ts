@@ -27,8 +27,10 @@ import {
 import { publishRealtimeEvent } from "./realtime.service";
 import { loggers } from "../logging";
 import { QUERY_HARD_MAX_EXECUTION_MS } from "../config/long-running-queries";
+import { ConsoleManager } from "../utils/console-manager";
 
 const logger = loggers.query();
+const consoleManager = new ConsoleManager();
 
 /** Caps applied to the persisted run artifact. */
 const ARTIFACT_MAX_ROWS = 50;
@@ -323,6 +325,17 @@ async function runResolvedConsole(args: {
     rowCount: result.success ? rowCount : undefined,
     errorType,
   });
+
+  // External surfaces (REST API key / MCP) get a durable per-console signal
+  // for archive decisions. In-app agent runs stay on lastExecutedAt only.
+  if (source === "api" || source === "mcp") {
+    void consoleManager.recordExternalUse(
+      consoleId,
+      workspaceId,
+      source,
+      "execute",
+    );
+  }
 
   // Poke attached windows: open tabs render the run artifact immediately.
   // The realtime event contract is success|error; the precise cancelled
