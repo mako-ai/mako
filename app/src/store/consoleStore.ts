@@ -200,6 +200,37 @@ interface ConsoleActions {
     consoleId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ConsoleContentResponse | null>;
+  /** Lightweight console metadata for the Console Information dialog. */
+  fetchConsoleDetails: (
+    workspaceId: string,
+    consoleId: string,
+  ) => Promise<{
+    description?: string;
+    ownerDisplayName?: string;
+    owner_id?: string;
+    access?: string;
+    createdAt?: string;
+    updatedAt?: string;
+    executionCount?: number;
+    lastExecutedAt?: string;
+  } | null>;
+  /** Recent query_executions rows for a console (90-day TTL). */
+  fetchConsoleExecutions: (
+    workspaceId: string,
+    consoleId: string,
+    options?: { limit?: number },
+  ) => Promise<
+    Array<{
+      id: string;
+      executedAt: string;
+      source: string;
+      status: string;
+      executionTimeMs: number;
+      rowCount: number | null;
+      errorType: string | null;
+      apiKeyId: string | null;
+    }>
+  >;
   saveConsole: (
     workspaceId: string,
     tabId: string,
@@ -1335,6 +1366,60 @@ export const useConsoleStore = create<ConsoleStore>()(
           }
           console.error("Failed to fetch console content", e);
           return null;
+        }
+      },
+
+      fetchConsoleDetails: async (workspaceId, consoleId) => {
+        try {
+          const data = await apiClient.get<{
+            success: boolean;
+            console?: {
+              description?: string;
+              ownerDisplayName?: string;
+              owner_id?: string;
+              access?: string;
+              createdAt?: string;
+              updatedAt?: string;
+              executionCount?: number;
+              lastExecutedAt?: string;
+            };
+          }>(`/workspaces/${workspaceId}/consoles/${consoleId}/details`);
+          return data.success && data.console ? data.console : null;
+        } catch {
+          return null;
+        }
+      },
+
+      fetchConsoleExecutions: async (workspaceId, consoleId, options) => {
+        try {
+          const limit = options?.limit ?? 10;
+          const data = await apiClient.get<{
+            success: boolean;
+            executions?: Array<{
+              id: string;
+              executedAt: string;
+              source: string;
+              status: string;
+              executionTimeMs: number;
+              rowCount: number | null;
+              errorType: string | null;
+              apiKeyId: string | null;
+            }>;
+          }>(
+            `/workspaces/${workspaceId}/consoles/${consoleId}/executions?limit=${limit}`,
+          );
+          if (!data.success || !Array.isArray(data.executions)) return [];
+          return data.executions.map(execution => ({
+            ...execution,
+            id: String(execution.id),
+            executedAt:
+              typeof execution.executedAt === "string"
+                ? execution.executedAt
+                : new Date(execution.executedAt).toISOString(),
+            apiKeyId: execution.apiKeyId ? String(execution.apiKeyId) : null,
+          }));
+        } catch {
+          return [];
         }
       },
 

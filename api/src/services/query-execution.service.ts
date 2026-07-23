@@ -176,6 +176,32 @@ export class QueryExecutionService {
   /**
    * Get usage summary for a workspace
    */
+
+  /**
+   * Recent executions for a single saved console (newest first).
+   * Relies on the 90-day TTL on query_executions.
+   */
+  async getConsoleExecutions(
+    workspaceId: Types.ObjectId | string,
+    consoleId: Types.ObjectId | string,
+    options: { limit?: number } = {},
+  ): Promise<IQueryExecution[]> {
+    const limit = Math.min(Math.max(options.limit ?? 10, 1), 50);
+
+    const executions = await QueryExecution.find({
+      workspaceId: new Types.ObjectId(workspaceId.toString()),
+      consoleId: new Types.ObjectId(consoleId.toString()),
+    })
+      .sort({ executedAt: -1 })
+      .limit(limit)
+      .select(
+        "executedAt source status executionTimeMs rowCount errorType userId apiKeyId databaseType queryLanguage",
+      )
+      .lean();
+
+    return executions as IQueryExecution[];
+  }
+
   async getWorkspaceUsageSummary(
     workspaceId: Types.ObjectId | string,
     startDate: Date,

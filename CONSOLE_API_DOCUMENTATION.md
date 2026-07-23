@@ -63,6 +63,37 @@ Get a list of all consoles in the workspace.
 
 `lastExternalUsedAt: null` means the console has not been observed via API key or MCP since this tracking shipped.
 
+### List Recent Console Executions
+
+Return the most recent query execution logs for a console (from `query_executions`, retained for 90 days).
+
+**Endpoint:** `GET /api/workspaces/{workspaceId}/consoles/{consoleId}/executions?limit=10`
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "executions": [
+    {
+      "id": "execution_id",
+      "executedAt": "2024-01-01T00:00:00Z",
+      "source": "api",
+      "status": "success",
+      "executionTimeMs": 42,
+      "rowCount": 10,
+      "errorType": null,
+      "userId": "user_id",
+      "apiKeyId": "api_key_id",
+      "databaseType": "postgresql",
+      "queryLanguage": "sql"
+    }
+  ]
+}
+```
+
+`source` is one of: `console_ui`, `console_ui_admin_override`, `api`, `mcp`, `agent`, `flow`, `scheduled_query`.
+
 ### Get Console Details
 
 Get detailed information about a specific console, including its code.

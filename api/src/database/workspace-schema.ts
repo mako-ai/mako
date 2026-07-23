@@ -2853,6 +2853,10 @@ QueryExecutionSchema.index({ workspaceId: 1, executedAt: -1 }); // Usage over ti
 QueryExecutionSchema.index({ userId: 1, executedAt: -1 }); // Per-user analytics
 QueryExecutionSchema.index({ apiKeyId: 1, executedAt: -1 }, { sparse: true }); // API key usage
 QueryExecutionSchema.index({ workspaceId: 1, status: 1 }); // Error rate monitoring
+QueryExecutionSchema.index(
+  { workspaceId: 1, consoleId: 1, executedAt: -1 },
+  { sparse: true, name: "query_executions_workspace_console_executed" },
+); // Per-console recent runs
 QueryExecutionSchema.index({ executedAt: 1 }, { expireAfterSeconds: 7776000 }); // TTL: 90 days
 
 const ScheduledQueryRunSchema = new Schema<IScheduledQueryRun>(

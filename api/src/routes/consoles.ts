@@ -3304,6 +3304,108 @@ consoleRoutes.openapi(
   },
 );
 
+// GET /api/workspaces/:workspaceId/consoles/:id/executions - Recent query execution logs
+consoleRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/executions",
+    tags: ["Consoles"],
+    summary: "GET /{id}/executions",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      query: z.object({
+        limit: z
+          .string()
+          .optional()
+          .openapi({ param: { name: "limit", in: "query" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const access = await verifyWorkspaceAccess(c);
+      if (!access) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+
+      const consoleId = c.req.param("id");
+      if (!Types.ObjectId.isValid(consoleId)) {
+        return c.json({ success: false, error: "Invalid console ID" }, 400);
+      }
+
+      const savedConsole = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(access.workspaceId),
+        $or: [
+          { is_deleted: { $ne: true } },
+          { is_deleted: { $exists: false } },
+        ],
+      });
+
+      if (!savedConsole) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      const user = c.get("user");
+      if (
+        user?.id &&
+        !(await consoleManager.canReadWithInheritance(savedConsole, user.id))
+      ) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      const limitParam = c.req.query("limit");
+      const parsedLimit = limitParam ? Number.parseInt(limitParam, 10) : 10;
+      const limit = Number.isFinite(parsedLimit) ? parsedLimit : 10;
+
+      const executions = await queryExecutionService.getConsoleExecutions(
+        access.workspaceId,
+        consoleId,
+        { limit },
+      );
+
+      return c.json({
+        success: true,
+        executions: executions.map(execution => ({
+          id: execution._id,
+          executedAt: execution.executedAt,
+          source: execution.source,
+          status: execution.status,
+          executionTimeMs: execution.executionTimeMs,
+          rowCount: execution.rowCount ?? null,
+          errorType: execution.errorType ?? null,
+          userId: execution.userId,
+          apiKeyId: execution.apiKeyId ?? null,
+          databaseType: execution.databaseType,
+          queryLanguage: execution.queryLanguage,
+        })),
+      });
+    } catch (error) {
+      logger.error("Error listing console executions", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to list console executions",
+        },
+        500,
+      );
+    }
+  },
+);
+
 // GET /api/workspaces/:workspaceId/consoles/:id/details - Get console details (for API clients)
 consoleRoutes.openapi(
   createRoute({
