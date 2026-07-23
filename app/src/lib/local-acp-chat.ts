@@ -35,12 +35,13 @@ export async function ensureAcpSessionForProvider(
     );
   }
 
-  const existing = useAcpStore
+  // Prefer a session that already has Mako MCP attached so Chat gets DB tools.
+  const withMcp = useAcpStore
     .getState()
-    .sessions.find(s => s.providerId === providerId);
-  if (existing) {
-    useAcpStore.getState().setActiveSession(existing.id);
-    return existing.id;
+    .sessions.find(s => s.providerId === providerId && s.makoMcpAttached);
+  if (withMcp) {
+    useAcpStore.getState().setActiveSession(withMcp.id);
+    return withMcp.id;
   }
 
   useAcpStore.getState().setSelectedProvider(providerId);

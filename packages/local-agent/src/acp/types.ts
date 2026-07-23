@@ -43,6 +43,8 @@ export interface AcpSessionInfo {
   createdAt: string;
   updatedAt: string;
   busy: boolean;
+  /** True when Mako `/api/mcp` was attached on session/new. */
+  makoMcpAttached?: boolean;
 }
 
 export interface AcpProviderStatus {
@@ -69,9 +71,11 @@ export interface CreateAcpSessionRequest {
   providerId?: AcpProviderId;
   cwd?: string;
   title?: string;
-  /** Reserved for Phase 3 — Mako MCP attach. Ignored in v1 bridge. */
+  /** Attach Mako HTTP MCP (`/api/mcp`) so Claude/Codex get workspace data tools. */
   attachMakoMcp?: boolean;
+  /** Absolute URL to Mako MCP, e.g. https://app.mako.ai/api/mcp */
   mcpUrl?: string;
+  /** `Bearer mcpat_…` (or raw token — normalized to Bearer). */
   mcpAuthorization?: string;
 }
 

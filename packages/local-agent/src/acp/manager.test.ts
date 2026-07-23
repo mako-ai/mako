@@ -92,6 +92,26 @@ describe("AcpSessionManager with mock agent", () => {
     await manager.closeSession(session.id);
   });
 
+  it("attaches Mako MCP on session/new when requested", async () => {
+    const session = await manager.createSession({
+      providerId: "claude",
+      cwd: process.cwd(),
+      title: "mcp-attach",
+      attachMakoMcp: true,
+      mcpUrl: "https://example.com/api/mcp",
+      mcpAuthorization: "Bearer mcpat_test",
+    });
+    assert.equal(session.makoMcpAttached, true);
+    await manager.closeSession(session.id);
+
+    const without = await manager.createSession({
+      providerId: "claude",
+      cwd: process.cwd(),
+    });
+    assert.equal(without.makoMcpAttached, false);
+    await manager.closeSession(without.id);
+  });
+
   it("records an event log that can be replayed after subscribe", async () => {
     const session = await manager.createSession({
       providerId: "claude",

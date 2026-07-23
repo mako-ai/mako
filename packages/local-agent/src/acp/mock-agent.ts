@@ -13,7 +13,10 @@ async function main(): Promise<void> {
   // Agent reads client→agent on stdin (output stream above) and writes on stdout.
   const stream = acp.ndJsonStream(input, output);
 
-  const sessions = new Map<string, { pending?: AbortController }>();
+  const sessions = new Map<
+    string,
+    { pending?: AbortController; mcpServers?: unknown[] }
+  >();
 
   await acp
     .agent({ name: "mako-mock-acp-agent" })
@@ -21,14 +24,34 @@ async function main(): Promise<void> {
       protocolVersion: acp.PROTOCOL_VERSION,
       agentCapabilities: {
         loadSession: false,
+        mcpCapabilities: { http: true, sse: false },
       },
       authMethods: [],
     }))
     .onRequest(acp.methods.agent.authenticate, async () => ({}))
-    .onRequest(acp.methods.agent.session.new, async () => {
+    .onRequest(acp.methods.agent.session.new, async ctx => {
       const sessionId = `mock_${crypto.randomUUID()}`;
-      sessions.set(sessionId, {});
-      return { sessionId };
+      const mcpServers = Array.isArray(
+        (ctx.params as { mcpServers?: unknown[] }).mcpServers,
+      )
+        ? (ctx.params as { mcpServers: unknown[] }).mcpServers
+        : [];
+      sessions.set(sessionId, { mcpServers });
+      // Echo attached MCP names in a well-known place for tests.
+      return {
+        sessionId,
+        _meta: {
+          makoMockMcpServerCount: mcpServers.length,
+          makoMockMcpServerNames: mcpServers.map(server =>
+            server &&
+            typeof server === "object" &&
+            "name" in server &&
+            typeof (server as { name: unknown }).name === "string"
+              ? (server as { name: string }).name
+              : "unknown",
+          ),
+        },
+      };
     })
     .onRequest(acp.methods.agent.session.close, async ctx => {
       sessions.delete(String(ctx.params.sessionId));

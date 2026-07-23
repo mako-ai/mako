@@ -60,6 +60,12 @@ function defaultCwd(): string {
   return process.env.MAKO_ACP_DEFAULT_CWD?.trim() || homedir();
 }
 
+function normalizeBearerAuth(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  return /^bearer\s+/i.test(trimmed) ? trimmed : `Bearer ${trimmed}`;
+}
+
 export class AcpSessionManager {
   private connections = new Map<AcpProviderId, AcpProviderConnection>();
   private sessions = new Map<string, ManagedSession>();
@@ -320,7 +326,28 @@ export class AcpSessionManager {
       }
     }
 
-    const active = await conn.agent.buildSession(cwd).start();
+    const attachMakoMcp = Boolean(
+      body.attachMakoMcp && body.mcpUrl?.trim() && body.mcpAuthorization?.trim(),
+    );
+    let builder = conn.agent.buildSession(cwd);
+    if (attachMakoMcp) {
+      const mcpUrl = String(body.mcpUrl).trim();
+      const authorization = normalizeBearerAuth(
+        String(body.mcpAuthorization),
+      );
+      builder = builder.withMcpServer({
+        type: "http",
+        name: "mako",
+        url: mcpUrl,
+        headers: [{ name: "Authorization", value: authorization }],
+      });
+      acpLog.info("Attaching Mako MCP to ACP session", {
+        providerId,
+        mcpUrl,
+      });
+    }
+
+    const active = await builder.start();
     const id = active.sessionId;
     const info: AcpSessionInfo = {
       id,
@@ -330,6 +357,7 @@ export class AcpSessionManager {
       createdAt: nowIso(),
       updatedAt: nowIso(),
       busy: false,
+      makoMcpAttached: attachMakoMcp,
     };
 
     this.sessions.set(id, {
@@ -340,7 +368,12 @@ export class AcpSessionManager {
       eventLog: [],
     });
 
-    acpLog.info("Created ACP session", { sessionId: id, providerId, cwd });
+    acpLog.info("Created ACP session", {
+      sessionId: id,
+      providerId,
+      cwd,
+      makoMcpAttached: attachMakoMcp,
+    });
     return info;
   }
 

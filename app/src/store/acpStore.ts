@@ -8,6 +8,10 @@ import type {
   AcpSessionInfo,
   AcpStatus,
 } from "../lib/acp-types";
+import {
+  getActiveWorkspaceId,
+  mintMakoMcpAttach,
+} from "../lib/mako-mcp-attach";
 
 function messageId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -253,9 +257,37 @@ export const useAcpStore = create<AcpState>()(
         s.error = null;
       });
       try {
+        const workspaceId = getActiveWorkspaceId();
+        let attach:
+          | {
+              attachMakoMcp: true;
+              mcpUrl: string;
+              mcpAuthorization: string;
+            }
+          | undefined;
+        if (workspaceId) {
+          try {
+            const creds = await mintMakoMcpAttach(workspaceId);
+            attach = {
+              attachMakoMcp: true,
+              mcpUrl: creds.mcpUrl,
+              mcpAuthorization: creds.mcpAuthorization,
+            };
+          } catch (attachError) {
+            // Non-fatal: session still works with FS/local tools only.
+            set(s => {
+              s.error =
+                attachError instanceof Error
+                  ? `Mako data tools unavailable: ${attachError.message}`
+                  : "Mako data tools unavailable";
+            });
+          }
+        }
+
         const session = await acpClient.createSession({
           providerId: selectedProviderId,
           cwd: cwdDraft || undefined,
+          ...attach,
         });
         set(s => {
           s.sessions = [
@@ -264,6 +296,8 @@ export const useAcpStore = create<AcpState>()(
           ];
           s.activeSessionId = session.id;
           s.messagesBySession[session.id] ??= [];
+          // Clear soft attach warning once the session exists.
+          if (session.makoMcpAttached) s.error = null;
         });
         get().ensureEventSubscription(session.id);
         return session;

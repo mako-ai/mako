@@ -147,6 +147,41 @@ async function issueTokens(grant: {
   };
 }
 
+/** Fixed public client used when Mako attaches `/api/mcp` to an ACP session. */
+export const ACP_MCP_CLIENT_ID = "mako-acp-local";
+export const ACP_MCP_CLIENT_NAME = "Mako Coding Agent (ACP)";
+
+async function ensureAcpMcpClient(): Promise<void> {
+  const existing = await McpOAuthClient.findOne({
+    clientId: ACP_MCP_CLIENT_ID,
+  }).lean();
+  if (existing) return;
+  await McpOAuthClient.create({
+    clientId: ACP_MCP_CLIENT_ID,
+    clientName: ACP_MCP_CLIENT_NAME,
+    // Session-minted grants never use the authorize redirect; keep a valid
+    // loopback URI so the client row satisfies registration constraints.
+    redirectUris: ["http://127.0.0.1/acp-callback"],
+  });
+}
+
+/**
+ * Mint a short-lived MCP access token for the signed-in user so Local Agent
+ * can attach Mako's HTTP MCP server on ACP `session/new`.
+ */
+export async function mintMcpAccessTokenForUser(input: {
+  userId: string;
+  workspaceId: string;
+}): Promise<IssuedTokens> {
+  await ensureAcpMcpClient();
+  return issueTokens({
+    clientId: ACP_MCP_CLIENT_ID,
+    userId: input.userId,
+    workspaceId: input.workspaceId,
+    scopes: [...DEFAULT_WORKSPACE_API_KEY_SCOPES],
+  });
+}
+
 /** PKCE S256: base64url(sha256(verifier)) must equal the stored challenge. */
 function verifyPkce(codeVerifier: string, codeChallenge: string): boolean {
   const computed = crypto

@@ -10,6 +10,7 @@ import {
 } from "../auth/api-key-scopes";
 import {
   listMcpConnections,
+  mintMcpAccessTokenForUser,
   revokeMcpConnection,
 } from "../auth/mcp-oauth.service";
 import { workspaceService } from "../services/workspace.service";
@@ -1548,6 +1549,72 @@ workspaceRoutes.openapi(
 const IdClientParam = IdParam.extend({
   clientId: z.string().openapi({ param: { name: "clientId", in: "path" } }),
 });
+
+// POST /api/workspaces/:id/mcp-access-token — mint MCP Bearer for ACP attach
+workspaceRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/mcp-access-token",
+    tags: ["Workspaces"],
+    summary:
+      "Mint a short-lived MCP access token for attaching Mako tools to a local ACP session",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: { params: IdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      if (!isSessionAuth(c)) {
+        return c.json(
+          {
+            success: false,
+            error: "MCP access tokens require a browser session",
+          },
+          403,
+        );
+      }
+      const workspace = c.get("workspace");
+      const user = c.get("user");
+      if (!user) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
+      if (c.req.param("id") !== workspace._id.toString()) {
+        return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
+      }
+
+      const tokens = await mintMcpAccessTokenForUser({
+        userId: user.id,
+        workspaceId: workspace._id.toString(),
+      });
+
+      // Client builds absolute mcpUrl from window.location.origin so preview
+      // proxies and custom hosts stay correct; we only mint the Bearer here.
+      return c.json({
+        success: true,
+        data: {
+          accessToken: tokens.accessToken,
+          expiresIn: tokens.expiresInSeconds,
+          scopes: tokens.scopes,
+          mcpPath: "/api/mcp",
+          authorization: `Bearer ${tokens.accessToken}`,
+        },
+      });
+    } catch (error) {
+      logger.error("Error minting MCP access token", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to mint MCP access token",
+        },
+        500,
+      );
+    }
+  },
+);
 
 /** Members see their own connected agents; owners/admins see everyone's. */
 function canSeeAllMcpConnections(role: string | undefined): boolean {

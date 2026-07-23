@@ -30,6 +30,8 @@ export interface AcpSessionInfo {
   createdAt: string;
   updatedAt: string;
   busy: boolean;
+  /** True when Mako `/api/mcp` was attached on session/new. */
+  makoMcpAttached?: boolean;
 }
 
 export type AcpBridgeEvent =

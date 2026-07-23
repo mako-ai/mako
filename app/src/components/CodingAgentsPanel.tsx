@@ -344,8 +344,8 @@ export function CodingAgentsPanel() {
     <Box>
       <Alert severity="info" sx={{ mb: 2 }}>
         Tokens bill to your Claude Pro/Max or ChatGPT subscription — not Mako.
-        File and shell tools run locally through the ACP adapter. Mako Cloud
-        never proxies the ACP stdio pipe.
+        New sessions also attach Mako MCP so Claude/Codex can query your
+        workspace databases (read-only). File and shell tools still run locally.
       </Alert>
 
       <ProviderSetupCard />
@@ -355,6 +355,16 @@ export function CodingAgentsPanel() {
           {error}
         </Alert>
       )}
+
+      {activeSessionId &&
+        sessions.find(s => s.id === activeSessionId) &&
+        !sessions.find(s => s.id === activeSessionId)?.makoMcpAttached && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            This session was started without Mako data tools. Click{" "}
+            <strong>Start session</strong> to create a new one with database
+            access.
+          </Alert>
+        )}
 
       <Box
         sx={{
