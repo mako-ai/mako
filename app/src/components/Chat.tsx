@@ -42,10 +42,13 @@ import type { ConsoleTab } from "../store/lib/types";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
+import { useAcpStore } from "../store/acpStore";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { useRealtimeStore } from "../store/realtimeStore";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { generateObjectId } from "../utils/objectId";
+import { isLocalAcpModelId } from "../lib/local-acp-models";
+import { runLocalAcpChatTurn } from "../lib/local-acp-chat";
 import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { ClarifyingQuestionsCard } from "./ClarifyingQuestionsCard";
@@ -279,6 +282,11 @@ const Chat: React.FC<ChatProps> = ({
   const chatIdRef = useRef(chatId);
   const manualStopRequestedRef = useRef(false);
   const drainQueuedPromptAfterTurnRef = useRef<(() => void) | null>(null);
+  const sendViaLocalAcpRef = useRef<
+    ((text: string) => Promise<boolean>) | null
+  >(null);
+  const localAcpAbortRef = useRef<AbortController | null>(null);
+  const [localAcpBusy, setLocalAcpBusy] = useState(false);
   // Client-tool registry: in-flight executions, cancel/interrupt plumbing,
   // and the per-chat toolCallId dispatch dedupe gate (the triplicate-tool
   // fix). Created before useChat — its register/settle callbacks are wired
@@ -628,6 +636,15 @@ const Chat: React.FC<ChatProps> = ({
   const interruptActiveTurn = useCallback(() => {
     manualStopRequestedRef.current = true;
 
+    // Abort an in-flight local ACP (Claude Code / Codex) turn if any.
+    localAcpAbortRef.current?.abort();
+    localAcpAbortRef.current = null;
+    setLocalAcpBusy(false);
+    void useAcpStore
+      .getState()
+      .cancelActive()
+      .catch(() => undefined);
+
     interruptActiveClientToolCalls();
     // With resumable streams, disconnecting no longer cancels the turn — the
     // server keeps generating for reconnecting clients. Stop must be explicit:
@@ -646,8 +663,39 @@ const Chat: React.FC<ChatProps> = ({
   const isLoading =
     status === "streaming" ||
     status === "submitted" ||
-    activeClientToolCallCount > 0;
+    activeClientToolCallCount > 0 ||
+    localAcpBusy;
   isLoadingRef.current = isLoading;
+
+  // Main Chat → Local Agent ACP when the dropdown selection is a local model.
+  sendViaLocalAcpRef.current = async (text: string) => {
+    const modelId = modelIdRef.current;
+    if (!modelId || !isLocalAcpModelId(modelId)) return false;
+
+    localAcpAbortRef.current?.abort();
+    const abort = new AbortController();
+    localAcpAbortRef.current = abort;
+    setLocalAcpBusy(true);
+    isLoadingRef.current = true;
+    try {
+      await runLocalAcpChatTurn({
+        modelId,
+        text,
+        setMessages,
+        signal: abort.signal,
+      });
+    } catch {
+      // Transcript already includes the error text.
+    } finally {
+      if (localAcpAbortRef.current === abort) {
+        localAcpAbortRef.current = null;
+      }
+      setLocalAcpBusy(false);
+      isLoadingRef.current = false;
+      queueMicrotask(() => drainQueuedPromptAfterTurnRef.current?.());
+    }
+    return true;
+  };
 
   // Bottom-pin / streaming-follow machinery (see useChatScroll).
   const { isAtBottom, setIsAtBottom, scrollerElRef, handleListHeightChanged } =
@@ -951,6 +999,7 @@ const Chat: React.FC<ChatProps> = ({
     autoSendWhenComplete,
     interruptActiveTurn,
     drainQueuedPromptAfterTurnRef,
+    sendViaLocalAcpRef,
   });
 
   const handleStop = useCallback(() => {

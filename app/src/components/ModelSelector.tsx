@@ -3,7 +3,7 @@
  * A dropdown component for selecting AI models, similar to Cursor's model picker
  */
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Box,
   Button,
@@ -18,13 +18,20 @@ import {
 import { KeyboardArrowDown, ArrowForward } from "@mui/icons-material";
 import { useSettingsStore } from "../store/settingsStore";
 import { useBillingStore } from "../store/billingStore";
+import { useLocalAgentStore } from "../store/localAgentStore";
+import { useAcpStore } from "../store/acpStore";
 import { useWorkspace } from "../contexts/workspace-context";
 
 import type { AIModel } from "../lib/api-types";
+import {
+  isLocalAcpModelId,
+  localAcpModelsFromProviders,
+} from "../lib/local-acp-models";
 import { getModelBillingState } from "./model-selector-utils";
 
 // Provider display names for grouping
 const PROVIDER_NAMES: Record<string, string> = {
+  local: "On this machine",
   openai: "OpenAI",
   anthropic: "Anthropic",
   google: "Google",
@@ -41,6 +48,7 @@ const PROVIDER_NAMES: Record<string, string> = {
 
 // Preferred provider order; unlisted providers appear at the end alphabetically
 const PROVIDER_PRIORITY: string[] = [
+  "local",
   "openai",
   "anthropic",
   "google",
@@ -51,6 +59,12 @@ const PROVIDER_PRIORITY: string[] = [
   "cohere",
 ];
 
+async function probeLocalAcpProviders(): Promise<void> {
+  const agentStatus = await useLocalAgentStore.getState().checkAgent();
+  if (agentStatus !== "online") return;
+  await useAcpStore.getState().refreshStatus();
+}
+
 export const ModelSelector: React.FC = () => {
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
@@ -59,6 +73,7 @@ export const ModelSelector: React.FC = () => {
   const loading = useSettingsStore(s => s.modelsLoading);
   const error = useSettingsStore(s => s.modelsError);
   const fetchModels = useSettingsStore(s => s.fetchModels);
+  const acpStatus = useAcpStore(s => s.status);
 
   const billingWorkspaceId = useBillingStore(s => s.workspaceId);
   const billingStatus = useBillingStore(s => s.status);
@@ -69,7 +84,8 @@ export const ModelSelector: React.FC = () => {
   const open = Boolean(anchorEl);
 
   useEffect(() => {
-    fetchModels();
+    void fetchModels();
+    void probeLocalAcpProviders();
   }, [fetchModels]);
 
   useEffect(() => {
@@ -85,6 +101,8 @@ export const ModelSelector: React.FC = () => {
 
   const handleClick = (event: React.MouseEvent<HTMLButtonElement>) => {
     setAnchorEl(event.currentTarget);
+    // Refresh ACP availability when opening the menu
+    void probeLocalAcpProviders();
   };
 
   const handleClose = () => {
@@ -96,14 +114,27 @@ export const ModelSelector: React.FC = () => {
     handleClose();
   };
 
+  const localModels = useMemo(
+    () => localAcpModelsFromProviders(acpStatus?.providers),
+    [acpStatus?.providers],
+  );
+
+  const allModels = useMemo(
+    () => [...localModels, ...models],
+    [localModels, models],
+  );
+
   // Get the currently selected model info
-  const selectedModel = models.find(m => m.id === selectedModelId);
-  const displayName = selectedModel?.name || selectedModelId || "Select Model";
+  const selectedModel = allModels.find(m => m.id === selectedModelId);
+  const displayName =
+    selectedModel?.name ||
+    (isLocalAcpModelId(selectedModelId) ? "Local agent" : selectedModelId) ||
+    "Select Model";
 
   // Group models by provider, ordered by priority
   const modelGroups = (() => {
     const byProvider: Record<string, AIModel[]> = {};
-    for (const m of models) {
+    for (const m of allModels) {
       if (!byProvider[m.provider]) {
         byProvider[m.provider] = [];
       }
@@ -127,7 +158,7 @@ export const ModelSelector: React.FC = () => {
     }));
   })();
 
-  if (loading) {
+  if (loading && allModels.length === 0) {
     return (
       <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
         <CircularProgress size={14} />
@@ -138,7 +169,7 @@ export const ModelSelector: React.FC = () => {
     );
   }
 
-  if (error || models.length === 0) {
+  if (error && allModels.length === 0) {
     return (
       <Tooltip title={error || "No models available"}>
         <Typography
@@ -288,15 +319,26 @@ export const ModelSelector: React.FC = () => {
                       )
                     )}
                   </Box>
-                  {isFreeModel && billingEnabled && (
+                  {model.provider === "local" && (
                     <Chip
-                      label="Free"
+                      label="Subscription"
                       size="small"
-                      color="success"
+                      color="info"
                       variant="outlined"
                       sx={{ height: 18, fontSize: 10 }}
                     />
                   )}
+                  {isFreeModel &&
+                    billingEnabled &&
+                    model.provider !== "local" && (
+                      <Chip
+                        label="Free"
+                        size="small"
+                        color="success"
+                        variant="outlined"
+                        sx={{ height: 18, fontSize: 10 }}
+                      />
+                    )}
                   {isProModel && billingEnabled && (
                     <Chip
                       label="Pro"

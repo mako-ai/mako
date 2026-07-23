@@ -87,7 +87,14 @@ export const useSettingsStore = create<SettingsState>()(
             if (models.length > 0) {
               modelsRetryCount = 0;
               const current = get().selectedModelId;
-              const isAvailable = models.some(model => model.id === current);
+              // Local ACP models (Claude Code / Codex on this machine) are
+              // client-only and never appear in the gateway catalog — keep them.
+              const { isLocalAcpModelId } = await import(
+                "../lib/local-acp-models"
+              );
+              const isAvailable =
+                models.some(model => model.id === current) ||
+                isLocalAcpModelId(current);
               if (!isAvailable) {
                 // Prefer the platform default surfaced by the server over
                 // the alphabetically-first model. This keeps free-plan users
