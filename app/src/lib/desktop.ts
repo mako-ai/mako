@@ -19,6 +19,13 @@ export interface MakoDesktopBridge {
    * Optional because older desktop builds may not expose it.
    */
   startBrowserAuth?: () => Promise<void>;
+  /**
+   * Open system Terminal with Claude/Codex CLI login (`codex login`, etc.).
+   * Optional — older Desktop builds lack this; Local Agent may still open Terminal.
+   */
+  startAcpCliLogin?: (
+    providerId: "claude" | "codex",
+  ) => Promise<{ opened: boolean; commandLine: string }>;
 }
 
 declare global {
@@ -48,4 +55,23 @@ export function supportsDesktopBrowserAuth(): boolean {
  */
 export async function startDesktopBrowserAuth(): Promise<void> {
   await window.makoDesktop?.startBrowserAuth?.();
+}
+
+/** True when Desktop can open Terminal for Claude/Codex CLI login. */
+export function supportsDesktopAcpCliLogin(): boolean {
+  return (
+    isMakoDesktop() &&
+    typeof window.makoDesktop?.startAcpCliLogin === "function"
+  );
+}
+
+/**
+ * Open Terminal with `codex login` / Claude CLI auth from the Desktop shell.
+ * Returns null when not running in a Desktop build that supports it.
+ */
+export async function startDesktopAcpCliLogin(
+  providerId: "claude" | "codex",
+): Promise<{ opened: boolean; commandLine: string } | null> {
+  if (!supportsDesktopAcpCliLogin()) return null;
+  return (await window.makoDesktop!.startAcpCliLogin!(providerId)) ?? null;
 }

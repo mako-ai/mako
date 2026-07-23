@@ -19,6 +19,7 @@ import {
   mintMakoMcpAttach,
 } from "../lib/mako-mcp-attach";
 import { fetchWorkspaceGuidanceForAcp } from "../lib/acp-system-append";
+import { startDesktopAcpCliLogin } from "../lib/desktop";
 
 function messageId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -447,6 +448,36 @@ export const useAcpStore = create<AcpState>()(
         s.error = null;
         s.authGuidance = null;
       });
+      // Codex: open Terminal + `codex login` from Desktop first (same UX as
+      // Claude). Older Local Agents fail authenticate before they can spawn
+      // Terminal (CODEX_API_KEY), so Desktop IPC is the reliable path.
+      if (id === "codex") {
+        try {
+          const desktopLogin = await startDesktopAcpCliLogin("codex");
+          if (desktopLogin?.opened) {
+            set(s => {
+              s.error = null;
+              s.authGuidance =
+                "Complete ChatGPT sign-in in the Terminal window (`codex login`), " +
+                "then pick Codex in Chat and Enable workspace tools.";
+            });
+            // Still nudge Local Agent in case it can refresh status afterward.
+            void acpClient.authenticate(id).catch(() => null);
+            return;
+          }
+          if (desktopLogin && !desktopLogin.opened) {
+            set(s => {
+              s.error = null;
+              s.authGuidance =
+                "Could not open Terminal automatically. Run this yourself, then retry Codex:\n\n" +
+                desktopLogin.commandLine;
+            });
+            return;
+          }
+        } catch {
+          // Fall through to Local Agent authenticate.
+        }
+      }
       try {
         const result = await acpClient.authenticate(id);
         set(s => {

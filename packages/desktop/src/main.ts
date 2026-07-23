@@ -57,6 +57,57 @@ function startBrowserAuth(): void {
   shell.openExternal(buildDesktopAuthUrl(APP_URL, challenge));
 }
 
+/**
+ * Open Terminal.app / cmd / a Linux terminal running a fixed login command.
+ * Mirrors Local Agent `launchTerminalAuth` so Codex Sign in works even when
+ * the bundled agent is older than the ensure/auth fixes.
+ */
+function launchCliLoginInTerminal(commandLine: string): {
+  opened: boolean;
+  commandLine: string;
+} {
+  try {
+    if (process.platform === "darwin") {
+      spawn(
+        "osascript",
+        [
+          "-e",
+          `tell application "Terminal" to do script ${JSON.stringify(commandLine)}`,
+          "-e",
+          'tell application "Terminal" to activate',
+        ],
+        { detached: true, stdio: "ignore" },
+      ).unref();
+      return { opened: true, commandLine };
+    }
+    if (process.platform === "win32") {
+      spawn("cmd.exe", ["/c", "start", "cmd.exe", "/k", commandLine], {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: false,
+      }).unref();
+      return { opened: true, commandLine };
+    }
+    const linuxTerminals: Array<[string, string[]]> = [
+      ["x-terminal-emulator", ["-e", "bash", "-lc", `${commandLine}; exec bash`]],
+      ["gnome-terminal", ["--", "bash", "-lc", `${commandLine}; exec bash`]],
+      ["konsole", ["-e", "bash", "-lc", `${commandLine}; exec bash`]],
+      ["xterm", ["-e", "bash", "-lc", `${commandLine}; exec bash`]],
+    ];
+    for (const [bin, args] of linuxTerminals) {
+      try {
+        spawn(bin, args, { detached: true, stdio: "ignore" }).unref();
+        return { opened: true, commandLine };
+      } catch {
+        // try next
+      }
+    }
+  } catch (error) {
+    console.error("Failed to open terminal for ACP CLI login:", error);
+  }
+  return { opened: false, commandLine };
+}
+
 function handleDeepLink(rawUrl: string): void {
   const code = parseDeepLinkAuthCode(rawUrl);
   if (!code) return;
@@ -442,6 +493,22 @@ if (!hasSingleInstanceLock) {
   ipcMain.handle("mako:start-browser-auth", () => {
     startBrowserAuth();
   });
+  /**
+   * Open system Terminal and run a fixed ACP CLI login command.
+   * Allowlist only — never accept arbitrary shell from the web app.
+   * Used when Local Agent can't spawn the Codex adapter before ChatGPT login.
+   */
+  ipcMain.handle(
+    "mako:start-acp-cli-login",
+    async (_event, providerId: unknown) => {
+      const id = providerId === "codex" ? "codex" : "claude";
+      const commandLine =
+        id === "codex"
+          ? "codex login"
+          : "npx --yes @agentclientprotocol/claude-agent-acp --cli auth login --claudeai";
+      return launchCliLoginInTerminal(commandLine);
+    },
+  );
   ipcMain.on("mako:get-app-metadata", event => {
     event.returnValue = {
       version: app.getVersion(),

@@ -19,4 +19,12 @@ contextBridge.exposeInMainWorld("makoDesktop", {
    */
   startBrowserAuth: (): Promise<void> =>
     ipcRenderer.invoke("mako:start-browser-auth"),
+  /**
+   * Open system Terminal with a fixed Claude/Codex CLI login command.
+   * Allowlisted in main — not an arbitrary shell.
+   */
+  startAcpCliLogin: (
+    providerId: "claude" | "codex",
+  ): Promise<{ opened: boolean; commandLine: string }> =>
+    ipcRenderer.invoke("mako:start-acp-cli-login", providerId),
 });
