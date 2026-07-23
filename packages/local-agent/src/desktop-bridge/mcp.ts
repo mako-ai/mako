@@ -4,11 +4,12 @@
  */
 import {
   desktopBridgeRegistry,
+  isDesktopHitlTool,
   type DesktopBridgeToolName,
 } from "./registry";
 
 const SERVER_NAME = "mako-desktop";
-const SERVER_VERSION = "0.1.0";
+const SERVER_VERSION = "0.2.0";
 const PROTOCOL_VERSION = "2024-11-05";
 
 type JsonRpcId = string | number | null;
@@ -56,7 +57,72 @@ const TOOLS: Array<{
       required: ["appId"],
     },
   },
+  {
+    name: "list_open_consoles",
+    description:
+      "List consoles currently open as tabs in Mako Desktop Chat (id, title, connection). Prefer these ids when the user says “this console”.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "ask_clarifying_questions",
+    description:
+      "Pause and show clarifying questions in the Mako Chat dock (same UI as the in-app agent). Use this instead of asking questions as plain text. Returns the user's answers.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        questions: {
+          type: "array",
+          minItems: 1,
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              prompt: { type: "string" },
+              type: { type: "string", enum: ["choice", "text"] },
+              options: { type: "array", items: { type: "string" } },
+              allowMultiple: { type: "boolean" },
+              allowOther: { type: "boolean" },
+              recommendedOption: { type: "string" },
+            },
+            required: ["id", "prompt", "type"],
+          },
+        },
+      },
+      required: ["questions"],
+    },
+  },
+  {
+    name: "submit_plan",
+    description:
+      "Present a reviewable plan in the Mako Chat dock for Approve / Request changes / Cancel. Use before large or multi-step work. Returns the user's decision.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        planMarkdown: { type: "string" },
+        todos: {
+          type: "array",
+          minItems: 1,
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              content: { type: "string" },
+              status: {
+                type: "string",
+                enum: ["pending", "in_progress", "completed", "cancelled"],
+              },
+            },
+            required: ["content"],
+          },
+        },
+      },
+      required: ["title", "planMarkdown", "todos"],
+    },
+  },
 ];
+
+const TOOL_NAMES = new Set(TOOLS.map(t => t.name));
 
 function ok(id: JsonRpcId, result: unknown): JsonRpcResponse {
   return { jsonrpc: "2.0", id, result };
@@ -70,12 +136,12 @@ async function callTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<{ text: string; isError?: boolean }> {
-  if (name !== "run_app" && name !== "get_preview_errors") {
+  if (!TOOL_NAMES.has(name as DesktopBridgeToolName)) {
     return { text: `Unknown tool: ${name}`, isError: true };
   }
   try {
     const result = await desktopBridgeRegistry.enqueue(
-      name,
+      name as DesktopBridgeToolName,
       args && typeof args === "object" ? args : {},
     );
     return {
@@ -89,7 +155,9 @@ async function callTool(
   }
 }
 
-async function handleOne(message: JsonRpcRequest): Promise<JsonRpcResponse | null> {
+async function handleOne(
+  message: JsonRpcRequest,
+): Promise<JsonRpcResponse | null> {
   const id = message.id ?? null;
   const method = message.method;
 
@@ -104,7 +172,7 @@ async function handleOne(message: JsonRpcRequest): Promise<JsonRpcResponse | nul
       capabilities: { tools: {} },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "Desktop preview tools for Mako Chat. Use run_app after app edits to read iframe errors.",
+        "Desktop tools for Mako Chat: run_app / preview errors, list_open_consoles, and interactive ask_clarifying_questions / submit_plan (docked cards).",
     });
   }
 
@@ -123,10 +191,17 @@ async function handleOne(message: JsonRpcRequest): Promise<JsonRpcResponse | nul
       params.arguments && typeof params.arguments === "object"
         ? (params.arguments as Record<string, unknown>)
         : {};
-    const result = await callTool(name, args);
+    // HITL tools block the HTTP exchange until Desktop completes — expected.
+    if (isDesktopHitlTool(name) || TOOL_NAMES.has(name as DesktopBridgeToolName)) {
+      const result = await callTool(name, args);
+      return ok(id, {
+        content: [{ type: "text", text: result.text }],
+        ...(result.isError ? { isError: true } : {}),
+      });
+    }
     return ok(id, {
-      content: [{ type: "text", text: result.text }],
-      ...(result.isError ? { isError: true } : {}),
+      content: [{ type: "text", text: `Unknown tool: ${name}` }],
+      isError: true,
     });
   }
 
@@ -149,7 +224,10 @@ export async function handleDesktopMcpExchange(
       body: {
         jsonrpc: "2.0",
         id: null,
-        error: { code: -32600, message: "Invalid Request: expected JSON-RPC 2.0" },
+        error: {
+          code: -32600,
+          message: "Invalid Request: expected JSON-RPC 2.0",
+        },
       },
     };
   }

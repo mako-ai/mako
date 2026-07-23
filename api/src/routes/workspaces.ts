@@ -544,6 +544,10 @@ workspaceRoutes.openapi(
             createdAt: authenticatedWorkspace.createdAt,
             updatedAt: authenticatedWorkspace.updatedAt,
             settings: authenticatedWorkspace.settings,
+            selfDirective:
+              typeof authenticatedWorkspace.selfDirective === "string"
+                ? authenticatedWorkspace.selfDirective
+                : "",
           },
         });
       }
@@ -571,6 +575,10 @@ workspaceRoutes.openapi(
           createdAt: workspace.createdAt,
           updatedAt: workspace.updatedAt,
           settings: workspace.settings,
+          selfDirective:
+            typeof workspace.selfDirective === "string"
+              ? workspace.selfDirective
+              : "",
         },
       });
     } catch (error) {

@@ -99,42 +99,15 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "Browser iframe preview; MCP uses render_app instead.",
   ),
 
-  // ── Notebooks (server) — durable, but not yet an MCP surface ──────────
-  // These run headless server-side (like apps), so they *could* bridge, but
-  // notebooks have no designed external MCP surface yet — keep in-product
-  // until that's decided, rather than silently exposing authoring over MCP.
-  add_notebook_cell: exclude(
-    "deferred",
-    "Notebook authoring stays in-product until notebooks get a dedicated MCP surface.",
-  ),
-  create_notebook: exclude(
-    "deferred",
-    "Notebook authoring stays in-product until notebooks get a dedicated MCP surface.",
-  ),
-  delete_notebook_cell: exclude(
-    "deferred",
-    "Notebook authoring stays in-product until notebooks get a dedicated MCP surface.",
-  ),
-  edit_notebook_cell: exclude(
-    "deferred",
-    "Notebook authoring stays in-product until notebooks get a dedicated MCP surface.",
-  ),
-  list_open_notebooks: exclude(
-    "deferred",
-    "Notebook discovery stays in-product until notebooks get a dedicated MCP surface.",
-  ),
-  read_notebook: exclude(
-    "deferred",
-    "Notebook reads stay in-product until notebooks get a dedicated MCP surface.",
-  ),
-  run_notebook_code_cell: exclude(
-    "deferred",
-    "Notebook kernel execution stays in-product until notebooks get a dedicated MCP surface.",
-  ),
-  run_notebook_sql_cell: exclude(
-    "deferred",
-    "Notebook SQL execution stays in-product until notebooks get a dedicated MCP surface.",
-  ),
+  // ── Notebooks (server) — durable GCS + kernel; Desktop opens tabs via focus ─
+  add_notebook_cell: bridge(),
+  create_notebook: bridge(),
+  delete_notebook_cell: bridge(),
+  edit_notebook_cell: bridge(),
+  list_open_notebooks: bridge(),
+  read_notebook: bridge(),
+  run_notebook_code_cell: bridge(),
+  run_notebook_sql_cell: bridge(),
 
   // ── MCP-only preview / render ─────────────────────────────────────────
   create_preview_token: mcpOnly(),
@@ -146,13 +119,10 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   create_console: bridge(),
   list_open_consoles: exclude(
     "client-only",
-    "Lists open browser tabs; MCP uses search_consoles for workspace discovery.",
+    "Open browser tabs; Desktop ACP uses mako-desktop list_open_consoles / UI context.",
   ),
   modify_console: bridge(),
-  open_console: exclude(
-    "client-only",
-    "Opens a UI tab; headless agents use consoleId directly.",
-  ),
+  open_console: bridge(),
   read_console: bridge(),
   run_console: bridge({ requiresQueryAccess: true }),
   list_console_executions: bridge(),

@@ -81,7 +81,7 @@ ChatGPT subscription — nothing is proxied through Mako Cloud.
 | POST | `/acp/sessions/:id/permissions/:requestId` | Answer a permission prompt |
 | POST | `/acp/sessions/:id/cancel` | Cancel the current turn |
 | DELETE | `/acp/sessions/:id` | Close a session |
-| POST | `/desktop/mcp` | Stateless MCP (`mako-desktop`) for `run_app` / `get_preview_errors` |
+| POST | `/desktop/mcp` | Stateless MCP (`mako-desktop`): `run_app`, preview errors, `list_open_consoles`, clarify/plan HITL |
 | POST | `/desktop/bridge/hello` | Desktop Chat heartbeat for the bridge |
 | POST | `/desktop/bridge/claim` | Long-poll for a pending Desktop tool job |
 | POST | `/desktop/bridge/jobs/:id/result` | Complete a claimed job |

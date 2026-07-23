@@ -28,17 +28,33 @@ export function useNotebookAutoOpen(messages: UIMessage[]): void {
       if (message.role !== "assistant") continue;
       for (const part of message.parts ?? []) {
         const partType = part.type as string;
-        if (toolNameFromPartType(partType) !== "create_notebook") continue;
-
         const record = part as Record<string, unknown>;
+        const toolName =
+          partType === "dynamic-tool"
+            ? String(record.toolName || "")
+            : toolNameFromPartType(partType);
+        if (toolName !== "create_notebook") continue;
+
         if (record.state !== "output-available") continue;
 
         const toolCallId = record.toolCallId as string | undefined;
         if (!toolCallId || handled.current.has(toolCallId)) continue;
 
-        const output = record.output as
+        let output = record.output as
           | { success?: boolean; notebookId?: string; name?: string }
+          | string
           | undefined;
+        if (typeof output === "string") {
+          try {
+            output = JSON.parse(output) as {
+              success?: boolean;
+              notebookId?: string;
+              name?: string;
+            };
+          } catch {
+            continue;
+          }
+        }
         if (!output?.notebookId) continue;
 
         handled.current.add(toolCallId);

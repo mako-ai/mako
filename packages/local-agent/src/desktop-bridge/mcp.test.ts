@@ -4,7 +4,7 @@ import { handleDesktopMcpExchange } from "./mcp";
 import { desktopBridgeRegistry } from "./registry";
 
 describe("desktop-bridge MCP", () => {
-  it("lists run_app and get_preview_errors", async () => {
+  it("lists desktop + HITL tools", async () => {
     const exchange = await handleDesktopMcpExchange({
       jsonrpc: "2.0",
       id: 1,
@@ -15,7 +15,13 @@ describe("desktop-bridge MCP", () => {
       result: { tools: Array<{ name: string }> };
     };
     const names = body.result.tools.map(t => t.name).sort();
-    assert.deepEqual(names, ["get_preview_errors", "run_app"]);
+    assert.deepEqual(names, [
+      "ask_clarifying_questions",
+      "get_preview_errors",
+      "list_open_consoles",
+      "run_app",
+      "submit_plan",
+    ]);
   });
 
   it("fails run_app when Desktop Chat is not connected", async () => {

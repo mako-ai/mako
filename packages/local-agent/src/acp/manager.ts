@@ -85,6 +85,12 @@ interface ManagedSession {
   eventLog: AcpBridgeEvent[];
   /** Latest session/configOptions snapshot from the adapter. */
   configOptions: AcpConfigOptionSnapshot[];
+  /**
+   * Mako system/workspace guidance. Claude gets it via systemPrompt.append;
+   * Codex (and any provider without append) gets it once on the first prompt.
+   */
+  guidanceAppend: string;
+  guidanceInjectedIntoPrompt: boolean;
 }
 
 interface ProviderModelCache {
@@ -174,12 +180,13 @@ export class AcpSessionManager {
       defaultCwd: defaultCwd(),
       providers,
       acpBridge: {
-        version: 4,
+        version: 5,
         terminalAuth: true,
         mcpProbe: true,
         reconnect: true,
         sessionConfig: true,
         desktopMcp: true,
+        hitlTools: true,
       },
       lastAdapterError: this.lastAdapterError,
     };
@@ -712,6 +719,9 @@ export class AcpSessionManager {
         listeners: new Set(),
         eventLog: [],
         configOptions: [],
+        guidanceAppend: systemAppend,
+        // Claude already has systemPrompt.append — don't double-inject on prompt.
+        guidanceInjectedIntoPrompt: providerId === "claude" && Boolean(systemAppend),
       };
       this.sessions.set(id, managed);
       this.applyConfigOptionsToSession(
@@ -836,8 +846,28 @@ export class AcpSessionManager {
       at: nowIso(),
     });
 
+    let promptText = text.trim();
+    if (
+      session.guidanceAppend &&
+      !session.guidanceInjectedIntoPrompt
+    ) {
+      promptText = [
+        "[Mako workspace system guidance — follow for this session]",
+        session.guidanceAppend.trim(),
+        "[End Mako workspace system guidance]",
+        "",
+        promptText,
+      ].join("\n");
+      session.guidanceInjectedIntoPrompt = true;
+      acpLog.info("Injected Mako guidance into first ACP prompt", {
+        sessionId,
+        providerId,
+        guidanceChars: session.guidanceAppend.length,
+      });
+    }
+
     try {
-      const promptPromise = session.active.prompt(text);
+      const promptPromise = session.active.prompt(promptText);
       for (;;) {
         const message = await session.active.nextUpdate();
         if (message.kind === "session_update") {

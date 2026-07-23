@@ -27,6 +27,8 @@ import {
 import { useAcpStore } from "../store/acpStore";
 import type { AcpProviderId } from "./acp-types";
 import { maybeFocusAppFromAcpTool } from "./acp-app-focus";
+import { maybeFocusConsoleFromAcpTool } from "./acp-console-focus";
+import { maybeFocusNotebookFromAcpTool } from "./acp-notebook-focus";
 import { buildAcpUiContextBlock } from "./acp-ui-context";
 import {
   buildAcpContinuitySeed,
@@ -301,6 +303,8 @@ export async function runLocalAcpChatTurn(
           ) {
             patchAssistantParts(parts => upsertAcpToolPart(parts, update));
             maybeFocusAppFromAcpTool(workspaceId, update);
+            maybeFocusConsoleFromAcpTool(workspaceId, update);
+            maybeFocusNotebookFromAcpTool(workspaceId, update);
           }
         } else if (event.type === "permission_request") {
           const activeSessionId = sessionId;

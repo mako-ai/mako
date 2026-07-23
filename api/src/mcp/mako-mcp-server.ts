@@ -30,6 +30,7 @@ import { createSqlToolsV2 } from "../agent-lib/tools/sql-tools";
 import { createMongoToolsV2 } from "../agent-lib/tools/mongodb-tools";
 import { createUniversalTools } from "../agent-lib/tools/universal-tools";
 import { createServerConsoleTools } from "../agent-lib/tools/server-console-tools";
+import { createNotebookServerTools } from "../agent-lib/tools/server-notebook-tools";
 import { createConsoleSearchTools } from "../agent-lib/tools/console-search-tools";
 import { createDashboardSearchTools } from "../agent-lib/tools/dashboard-search-tools";
 import { createVersionHistoryTools } from "../agent-lib/tools/version-history-tools";
@@ -86,8 +87,9 @@ Typical loop:
 1. Discover data: list_connections, then sql_list_tables / sql_inspect_table.
 2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
 3. create_app → app_write_file / app_edit_file → app_create_data_binding (bind the validated query; pass consoleId to seed from a console).
-4. Desktop opens/refreshes the app tab automatically. Do NOT create_preview_token, render_app, or paste /preview/… URLs. Use mako-desktop run_app / get_preview_errors for iframe errors.
-5. app_save_version to snapshot/publish.
+4. Desktop opens/refreshes the app tab automatically. Do NOT create_preview_token, render_app, or paste /preview/… URLs. Use mako-desktop run_app / get_preview_errors for iframe errors. For consoles use open_console / create_console; for notebooks use create_notebook / cell tools.
+5. Interactive UX: mako-desktop ask_clarifying_questions / submit_plan (docked Chat cards) — never ask as plain text.
+6. app_save_version to snapshot/publish.
 
 Skills (same knowledge as the in-product agent):
 - list_skills → compact index (workspace + system).
@@ -150,6 +152,12 @@ export function buildMakoMcpCandidateTools(
     surface: "mcp",
   });
 
+  const notebookTools = createNotebookServerTools({
+    workspaceId,
+    userId,
+    chatId,
+  });
+
   const sqlTools = createSqlToolsV2(
     workspaceId,
     [],
@@ -174,6 +182,7 @@ export function buildMakoMcpCandidateTools(
   return {
     ...appTools,
     ...consoleTools,
+    ...notebookTools,
     list_connections,
     ...sqlTools,
     // Namespace mongo the same way the unified agent does.

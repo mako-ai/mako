@@ -45,7 +45,11 @@ type AssistantPart =
 export function stripMcpToolPrefix(name: string): string {
   const trimmed = name.trim();
   if (!trimmed) return trimmed;
-  for (const prefix of ["mcp__mako-workspace__", "mcp__mako__"]) {
+  for (const prefix of [
+    "mcp__mako-workspace__",
+    "mcp__mako-desktop__",
+    "mcp__mako__",
+  ]) {
     if (trimmed.startsWith(prefix)) {
       return trimmed.slice(prefix.length) || trimmed;
     }
@@ -54,6 +58,18 @@ export function stripMcpToolPrefix(name: string): string {
   const generic = /^mcp__[^_]+(?:_[^_]+)*__(.+)$/.exec(trimmed);
   if (generic?.[1]) return generic[1];
   return trimmed;
+}
+
+/** ACP/MCP often delivers tool results as JSON text — coerce for UI sync. */
+export function coerceAcpToolPayload(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed || (trimmed[0] !== "{" && trimmed[0] !== "[")) return value;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
 }
 
 export function resolveAcpToolName(update: AcpToolUpdate): string {
@@ -156,7 +172,9 @@ export function upsertAcpToolPart(
         ? undefined
         : existingTitle;
   const input =
-    update.rawInput !== undefined ? update.rawInput : (existing?.input ?? {});
+    update.rawInput !== undefined
+      ? coerceAcpToolPayload(update.rawInput)
+      : (existing?.input ?? {});
 
   const next: DynamicToolPart = {
     type: "dynamic-tool",
@@ -168,10 +186,11 @@ export function upsertAcpToolPart(
   };
 
   if (state === "output-available") {
-    next.output =
+    const raw =
       update.rawOutput !== undefined
         ? update.rawOutput
         : (update.content ?? existing?.output ?? {});
+    next.output = coerceAcpToolPayload(raw);
   } else if (state === "output-error") {
     next.errorText =
       update.status === "cancelled"

@@ -27,6 +27,7 @@ import {
 } from "../../../agent-runtime/client-tool-manifest";
 import {
   isApprovalPendingState,
+  isHumanInTheLoopToolName,
   isHumanInTheLoopToolPartType,
   reportStreamInterruption,
   toolNameFromPartType,
@@ -747,7 +748,15 @@ export function useClientToolDispatch({
       const pt = p.type as string;
       if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
       if (isHumanInTheLoopToolPartType(pt)) return false;
-      const s = (p as Record<string, unknown>).state as string;
+      const rec = p as Record<string, unknown>;
+      const toolName =
+        pt === "dynamic-tool"
+          ? String(rec.toolName || "")
+          : pt.startsWith("tool-")
+            ? pt.slice("tool-".length)
+            : "";
+      if (isHumanInTheLoopToolName(toolName)) return false;
+      const s = rec.state as string;
       // MCP approval flow: the turn intentionally pauses here.
       if (isApprovalPendingState(s)) return false;
       return s !== "output-available" && s !== "output-error" && s !== "error";
@@ -830,6 +839,13 @@ export function useClientToolDispatch({
             const pt = p.type as string;
             if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return p;
             if (isHumanInTheLoopToolPartType(pt)) return p;
+            const toolName =
+              pt === "dynamic-tool"
+                ? String(record.toolName || "")
+                : pt.startsWith("tool-")
+                  ? pt.slice("tool-".length)
+                  : "";
+            if (isHumanInTheLoopToolName(toolName)) return p;
             // Leave parts we just handed to recovery untouched.
             if (recoveredCallIds.has(record.toolCallId as string)) return p;
             const s = record.state as string;

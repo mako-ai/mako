@@ -50,6 +50,7 @@ export interface AcpStatus {
     reconnect?: boolean;
     sessionConfig?: boolean;
     desktopMcp?: boolean;
+    hitlTools?: boolean;
   };
   lastAdapterError?: string | null;
 }

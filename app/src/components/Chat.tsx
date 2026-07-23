@@ -49,7 +49,10 @@ import { useIsMobile } from "../hooks/useIsMobile";
 import { generateObjectId } from "../utils/objectId";
 import { isLocalAcpModelId } from "../lib/local-acp-models";
 import { runLocalAcpChatTurn } from "../lib/local-acp-chat";
-import { startDesktopAcpBridge } from "../lib/desktop-acp-bridge";
+import {
+  completeDesktopHitlJob,
+  startDesktopAcpBridge,
+} from "../lib/desktop-acp-bridge";
 import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { ClarifyingQuestionsCard } from "./ClarifyingQuestionsCard";
@@ -60,6 +63,7 @@ import {
   usePlanStore,
   type PartialSubmitPlanInput,
 } from "../store/planStore";
+import { useDesktopHitlStore } from "../store/desktopHitlStore";
 import type {
   AskClarifyingQuestionsInput,
   SubmitPlanInput,
@@ -854,6 +858,10 @@ const Chat: React.FC<ChatProps> = ({
     setToolDialogOpen(true);
   }, []);
 
+  // Local ACP HITL: mako-desktop ask_clarifying_questions / submit_plan park
+  // here while Claude's MCP call waits on the Desktop bridge.
+  const desktopHitlPending = useDesktopHitlStore(s => s.pending);
+
   // Resolve a deferred interactive tool (clarifying questions / plan) with the
   // user's answer. Stable identity so the docked card doesn't remount.
   const handleResolveInteractiveTool = useCallback(
@@ -861,7 +869,12 @@ const Chat: React.FC<ChatProps> = ({
       tool: string;
       toolCallId: string;
       output: Record<string, unknown>;
+      viaAcpBridge?: boolean;
     }) => {
+      if (args.viaAcpBridge) {
+        void completeDesktopHitlJob(args.toolCallId, args.output);
+        return;
+      }
       void addToolOutput({
         tool: args.tool,
         toolCallId: args.toolCallId,
@@ -875,32 +888,43 @@ const Chat: React.FC<ChatProps> = ({
   // Rendered as a docked panel above the composer (Cursor-style) rather than
   // inline in the chat; the inline summary only appears once resolved.
   const pendingInteractiveTool = useMemo(() => {
+    if (desktopHitlPending) {
+      return {
+        toolName: desktopHitlPending.toolName,
+        toolCallId: desktopHitlPending.jobId,
+        input: desktopHitlPending.input,
+        streaming: false,
+        viaAcpBridge: true as const,
+      };
+    }
     const last = messages.at(-1);
     if (!last || last.role !== "assistant") return null;
     for (const part of (last.parts ?? []) as Array<Record<string, unknown>>) {
       const partType = part.type as string | undefined;
-      if (
-        partType !== "tool-ask_clarifying_questions" &&
-        partType !== "tool-submit_plan"
-      ) {
-        continue;
-      }
+      const dynamicName =
+        partType === "dynamic-tool" ? String(part.toolName || "") : "";
+      const isClarify =
+        partType === "tool-ask_clarifying_questions" ||
+        dynamicName === "ask_clarifying_questions";
+      const isPlan =
+        partType === "tool-submit_plan" || dynamicName === "submit_plan";
+      if (!isClarify && !isPlan) continue;
       // submit_plan also surfaces while its input is still streaming so the
       // plan tab and dock card can render the plan as the model writes it.
-      const isStreamingPlan =
-        partType === "tool-submit_plan" && part.state === "input-streaming";
+      const isStreamingPlan = isPlan && part.state === "input-streaming";
       if (part.state !== "input-available" && !isStreamingPlan) continue;
       return {
-        toolName: partType.slice("tool-".length) as
+        toolName: (isPlan ? "submit_plan" : "ask_clarifying_questions") as
           | "ask_clarifying_questions"
           | "submit_plan",
         toolCallId: (part.toolCallId as string) || "",
         input: part.input,
         streaming: isStreamingPlan,
+        viaAcpBridge: false as const,
       };
     }
     return null;
-  }, [messages]);
+  }, [messages, desktopHitlPending]);
 
   // While a submit_plan awaits review (input fully available, unresolved),
   // the chat composer becomes the plan-iteration channel: a sent message is
@@ -946,6 +970,7 @@ const Chat: React.FC<ChatProps> = ({
           tool: "submit_plan",
           toolCallId,
           output: output as unknown as Record<string, unknown>,
+          viaAcpBridge: pendingInteractiveTool.viaAcpBridge,
         });
       });
     }
@@ -1433,6 +1458,7 @@ const Chat: React.FC<ChatProps> = ({
                   tool: pendingInteractiveTool.toolName,
                   toolCallId: pendingInteractiveTool.toolCallId,
                   output: output as unknown as Record<string, unknown>,
+                  viaAcpBridge: pendingInteractiveTool.viaAcpBridge,
                 })
               }
             />

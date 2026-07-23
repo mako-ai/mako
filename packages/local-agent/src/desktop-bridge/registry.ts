@@ -3,7 +3,12 @@
  * Desktop-only tools; the Mako web/Desktop renderer claims and completes them.
  */
 
-export type DesktopBridgeToolName = "run_app" | "get_preview_errors";
+export type DesktopBridgeToolName =
+  | "run_app"
+  | "get_preview_errors"
+  | "list_open_consoles"
+  | "ask_clarifying_questions"
+  | "submit_plan";
 
 export interface DesktopBridgeJob {
   id: string;
@@ -23,8 +28,25 @@ interface ClaimWaiter {
   timer: ReturnType<typeof setTimeout>;
 }
 
-const JOB_TTL_MS = 25_000;
+const DEFAULT_JOB_TTL_MS = 25_000;
+/** Clarifying questions / plan approval — user may take minutes. */
+const HITL_JOB_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_CLAIM_WAIT_MS = 20_000;
+
+const HITL_TOOLS = new Set<DesktopBridgeToolName>([
+  "ask_clarifying_questions",
+  "submit_plan",
+]);
+
+export function isDesktopHitlTool(
+  tool: string,
+): tool is "ask_clarifying_questions" | "submit_plan" {
+  return HITL_TOOLS.has(tool as DesktopBridgeToolName);
+}
+
+function ttlForTool(tool: DesktopBridgeToolName): number {
+  return isDesktopHitlTool(tool) ? HITL_JOB_TTL_MS : DEFAULT_JOB_TTL_MS;
+}
 
 function newId(): string {
   return `dbj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -48,7 +70,7 @@ class DesktopBridgeRegistry {
   enqueue(
     tool: DesktopBridgeToolName,
     args: Record<string, unknown>,
-    timeoutMs = JOB_TTL_MS,
+    timeoutMs = ttlForTool(tool),
   ): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.hasRecentClient()) {

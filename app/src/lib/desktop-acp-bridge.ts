@@ -1,14 +1,25 @@
 /**
- * Polls Local Agent for mako-desktop MCP jobs (run_app / get_preview_errors)
- * and executes them against the live Desktop iframe preview store.
+ * Polls Local Agent for mako-desktop MCP jobs and fulfills them in the
+ * Desktop/web renderer (apps, consoles, HITL clarify/plan cards).
  */
 import { executeAppAgentTool } from "../app-runtime/agent-tools";
 import { useAppStore } from "../store/appStore";
+import { useConsoleStore } from "../store/consoleStore";
+import {
+  useDesktopHitlStore,
+  type DesktopHitlToolName,
+} from "../store/desktopHitlStore";
 import { localAgentClient } from "./local-agent-client";
+
+type BridgeToolName =
+  | "run_app"
+  | "get_preview_errors"
+  | "list_open_consoles"
+  | DesktopHitlToolName;
 
 interface BridgeJob {
   id: string;
-  tool: "run_app" | "get_preview_errors";
+  tool: BridgeToolName;
   arguments: Record<string, unknown>;
 }
 
@@ -18,10 +29,33 @@ interface ClaimEnvelope {
   error?: string;
 }
 
+const HITL_TOOLS = new Set<BridgeToolName>([
+  "ask_clarifying_questions",
+  "submit_plan",
+]);
+
 let running = false;
 let abort: AbortController | null = null;
 
-async function executeJob(job: BridgeJob): Promise<unknown> {
+function listOpenConsolesResult(): unknown {
+  const store = useConsoleStore.getState();
+  const consoles = Object.values(store.tabs)
+    .filter(t => !t.kind || t.kind === "console")
+    .map(t => ({
+      id: t.id,
+      title: t.title,
+      connectionId: t.connectionId,
+      databaseName: t.databaseName,
+      isActive: t.id === store.activeTabId,
+    }));
+  return { success: true, consoles };
+}
+
+async function executeImmediateJob(job: BridgeJob): Promise<unknown> {
+  if (job.tool === "list_open_consoles") {
+    return listOpenConsolesResult();
+  }
+
   const appId = String(job.arguments.appId || "").trim();
   if (!appId) {
     throw new Error("appId is required");
@@ -37,6 +71,28 @@ async function executeJob(job: BridgeJob): Promise<unknown> {
   }
 
   return executeAppAgentTool("run_app", { appId });
+}
+
+export async function completeDesktopHitlJob(
+  jobId: string,
+  result: unknown,
+): Promise<void> {
+  await localAgentClient.post(
+    `/desktop/bridge/jobs/${encodeURIComponent(jobId)}/result`,
+    { ok: true, result },
+  );
+  useDesktopHitlStore.getState().clearPending(jobId);
+}
+
+export async function failDesktopHitlJob(
+  jobId: string,
+  error: string,
+): Promise<void> {
+  await localAgentClient.post(
+    `/desktop/bridge/jobs/${encodeURIComponent(jobId)}/result`,
+    { ok: false, error },
+  );
+  useDesktopHitlStore.getState().clearPending(jobId);
 }
 
 async function completeJob(
@@ -67,8 +123,23 @@ async function pollLoop(): Promise<void> {
       );
       const job = body.data?.job;
       if (!job) continue;
+
+      if (HITL_TOOLS.has(job.tool)) {
+        useDesktopHitlStore.getState().setPending({
+          jobId: job.id,
+          toolName: job.tool as DesktopHitlToolName,
+          input:
+            job.arguments && typeof job.arguments === "object"
+              ? job.arguments
+              : {},
+          createdAt: Date.now(),
+        });
+        // Completes when Chat dock cards call completeDesktopHitlJob.
+        continue;
+      }
+
       try {
-        const result = await executeJob(job);
+        const result = await executeImmediateJob(job);
         await completeJob(job.id, { ok: true, result });
       } catch (error) {
         await completeJob(job.id, {
@@ -78,7 +149,6 @@ async function pollLoop(): Promise<void> {
       }
     } catch (error) {
       if (abort?.signal.aborted) return;
-      // Agent down / LNA — back off briefly.
       const message = error instanceof Error ? error.message : String(error);
       if (/abort|timeout/i.test(message)) {
         continue;

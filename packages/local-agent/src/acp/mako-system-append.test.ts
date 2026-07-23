@@ -14,7 +14,11 @@ describe("buildMakoSystemPromptAppend", () => {
     assert.match(text, /create_preview_token/);
     assert.match(text, /unavailable and forbidden/);
     assert.match(text, /mako-desktop__run_app/);
-    assert.ok(text.length < 4000);
+    assert.match(text, /mako-desktop__ask_clarifying_questions/);
+    assert.match(text, /mako-desktop__submit_plan/);
+    assert.match(text, /open_console/);
+    assert.match(text, /create_notebook/);
+    assert.ok(text.length < 5500);
   });
 
   it("appends workspace guidance when provided", () => {
