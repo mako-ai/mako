@@ -39,6 +39,7 @@ import {
   CheckCircle2 as OkIcon,
   ChevronDown as CollapseIcon,
   ChevronUp as ExpandIcon,
+  Eye as PreviewIcon,
   Hammer as CompileIcon,
   Play as RunIcon,
   Terminal as CommandIcon,
@@ -53,6 +54,7 @@ import {
   type DbtCompileResult,
   type DbtCommandRunResult,
   type DbtRunLogLine,
+  type DbtShowPreview,
 } from "../store/dbtStore";
 import {
   registerDbtJinjaLanguage,
@@ -179,6 +181,76 @@ function StepResultsTable({
           </Box>
         ))}
       </tbody>
+    </Box>
+  );
+}
+
+/** Compact data grid for `dbt show` preview rows (Studio-style Preview). */
+function PreviewResultsTable({ preview }: { preview: DbtShowPreview }) {
+  const { columns, rows } = preview;
+  if (columns.length === 0 && rows.length === 0) {
+    return (
+      <Typography variant="caption" color="text.secondary">
+        Preview returned 0 rows.
+      </Typography>
+    );
+  }
+  return (
+    <Box sx={{ overflow: "auto" }}>
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        sx={{ display: "block", mb: 0.5 }}
+      >
+        Preview · {rows.length} row{rows.length === 1 ? "" : "s"}
+      </Typography>
+      <Box
+        component="table"
+        sx={{
+          width: "100%",
+          fontSize: "0.75rem",
+          borderCollapse: "collapse",
+          whiteSpace: "nowrap",
+          "& td, & th": {
+            borderBottom: "1px solid",
+            borderColor: "divider",
+            p: 0.5,
+            textAlign: "left",
+            maxWidth: 280,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          },
+          "& th": { fontWeight: 600, color: "text.secondary" },
+        }}
+      >
+        <thead>
+          <tr>
+            {columns.map(col => (
+              <th key={col}>{col}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, ri) => (
+            <tr key={ri}>
+              {columns.map((col, ci) => {
+                const value = row[ci];
+                const text =
+                  value === null || value === undefined
+                    ? ""
+                    : typeof value === "object"
+                      ? JSON.stringify(value)
+                      : String(value);
+                return (
+                  <td key={col} title={text}>
+                    {text}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </Box>
     </Box>
   );
 }
@@ -495,11 +567,10 @@ export default function DbtFileEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, projectId, environment, modelName, file?.loaded]);
 
-  // Build/Run/Test the active model with dbt graph operators. `scope` maps to
-  // the `+` selectors: "" = node only, "down" = node+ (children), "up" =
-  // +node (parents), "both" = +node+ (both directions).
+  // Build/Run/Test/Preview the active model. For build/run/test, `scope` maps
+  // to dbt `+` selectors; Preview (`show`) always targets the single model.
   const runNodeSelection = useCallback(
-    async (verb: DbtRunVerb, scope: DbtSelectScope) => {
+    async (verb: DbtRunVerb, scope: DbtSelectScope = "") => {
       if (!workspaceId || !modelName) return;
       const cmd = buildDbtNodeCommand(verb, modelName, scope, { fullRefresh });
       if (
@@ -521,7 +592,11 @@ export default function DbtFileEditor({
         defer,
       );
       setCommandResult(res);
-      if (res && res.stepResults.length === 0) setPanelTab("commands");
+      // Preview success lands on the data grid; empty step summaries (and
+      // failed previews) fall back to the Commands log tab.
+      if (res && !res.preview && res.stepResults.length === 0) {
+        setPanelTab("commands");
+      }
       manualBusyRef.current = false;
       setBusy(null);
     },
@@ -588,6 +663,7 @@ export default function DbtFileEditor({
   );
 
   const resultSteps = commandResult?.stepResults;
+  const previewResult = commandResult?.preview;
   const commandLogs = commandResult?.logs ?? compileResult?.logs ?? [];
 
   // Status pill mirrors dbt Studio: it reflects the live compile state of the
@@ -692,6 +768,19 @@ export default function DbtFileEditor({
               </IconButton>
             </span>
           </Tooltip>
+          <Tooltip title="Preview this model's data (dbt show — no materialization)">
+            <span>
+              <IconButton
+                size="small"
+                color="primary"
+                aria-label="Preview this model"
+                disabled={busy !== null}
+                onClick={() => void runNodeSelection("show")}
+              >
+                <PreviewIcon size={15} />
+              </IconButton>
+            </span>
+          </Tooltip>
           <Tooltip title="Build / Run / Test this model (with upstream/downstream selectors)">
             <span>
               <IconButton
@@ -779,11 +868,13 @@ export default function DbtFileEditor({
 
       {panelTab === "results" && (
         <Box sx={{ p: 1 }}>
-          {!resultSteps || resultSteps.length === 0 ? (
+          {previewResult ? (
+            <PreviewResultsTable preview={previewResult} />
+          ) : !resultSteps || resultSteps.length === 0 ? (
             <Typography variant="caption" color="text.secondary">
               {busy === "run" || busy === "command"
                 ? "Running…"
-                : "Run a model or command to see node results."}
+                : "Preview or run a model to see results."}
             </Typography>
           ) : (
             <StepResultsTable steps={resultSteps} />

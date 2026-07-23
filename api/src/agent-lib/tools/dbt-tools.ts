@@ -1344,20 +1344,6 @@ export const createDbtServerTools = (
               : undefined,
             timeoutMs: 3 * 60 * 1000,
           });
-          // The preview table arrives as info-level log line(s) (ShowNode);
-          // anchor on the "Previewing" marker to drop dbt startup boilerplate,
-          // falling back to all info lines if the marker text ever changes.
-          const infoLines = result.logs
-            .filter(log => log.level === "info")
-            .map(log => log.line);
-          const markerIdx = infoLines.findIndex(line =>
-            line.includes("Previewing"),
-          );
-          const preview = (
-            markerIdx >= 0 ? infoLines.slice(markerIdx) : infoLines
-          )
-            .join("\n")
-            .slice(0, 8000);
           if (!result.success) {
             const reason = result.logs
               .filter(log => log.level === "error")
@@ -1369,9 +1355,29 @@ export const createDbtServerTools = (
               logs: summarizeLogs(result.logs),
             };
           }
+          // Prefer structured columns/rows from ShowNode; fall back to the
+          // scraped info-log text so older capture paths still return something.
+          if (result.preview) {
+            return {
+              success: true,
+              preview: result.preview,
+              logs: summarizeLogs(result.logs),
+            };
+          }
+          const infoLines = result.logs
+            .filter(log => log.level === "info")
+            .map(log => log.line);
+          const markerIdx = infoLines.findIndex(line =>
+            line.includes("Previewing"),
+          );
+          const previewText = (
+            markerIdx >= 0 ? infoLines.slice(markerIdx) : infoLines
+          )
+            .join("\n")
+            .slice(0, 8000);
           return {
             success: true,
-            preview,
+            preview: previewText,
             logs: summarizeLogs(result.logs),
           };
         } catch (error) {

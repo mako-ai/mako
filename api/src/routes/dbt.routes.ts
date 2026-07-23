@@ -2418,6 +2418,7 @@ dbtRoutes.post(
           subcommand: validated.subcommand,
           stepResults: result.stepResults,
           logs: noteDeferUnavailable(result.logs, !!defer, deferState),
+          ...(result.preview ? { preview: result.preview } : {}),
         },
       });
     } catch (error) {

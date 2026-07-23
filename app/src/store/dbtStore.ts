@@ -295,12 +295,19 @@ export interface DbtCompileResult {
   logs: DbtRunLogLine[];
 }
 
+/** Structured `dbt show` payload for the editor preview grid. */
+export interface DbtShowPreview {
+  columns: string[];
+  rows: unknown[][];
+}
+
 export interface DbtCommandRunResult {
   ok: boolean;
   exitCode: number;
   subcommand: string;
   stepResults: DbtStepResult[];
   logs: DbtRunLogLine[];
+  preview?: DbtShowPreview;
 }
 
 export interface DbtLineageNode {

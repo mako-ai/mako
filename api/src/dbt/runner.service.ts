@@ -23,6 +23,7 @@ import { loggers } from "../logging";
 import type { ParsedDbtCommand } from "./commands";
 import type { RenderedProfile } from "./adapter-map";
 import { buildDbtBaseEnv, resolveDbtBin } from "./dbt-bin";
+import { ensureShowJsonOutput } from "./show-preview";
 
 const logger = loggers.app();
 
@@ -30,6 +31,12 @@ export interface DbtLogLine {
   ts: Date;
   level: string;
   line: string;
+  /**
+   * Present on ShowNode events from `dbt show --output json` — the raw
+   * `data.preview` JSON string (array of row objects). Used to build a
+   * structured preview grid without scraping ASCII tables.
+   */
+  showPreview?: string;
 }
 
 export interface DbtRunRequest {
@@ -171,14 +178,27 @@ interface DbtJsonLogEvent {
   };
 }
 
+interface DbtJsonLogEventWithData extends DbtJsonLogEvent {
+  info?: DbtJsonLogEvent["info"] & { name?: string };
+  data?: { preview?: unknown };
+}
+
 function parseLogLine(raw: string): DbtLogLine {
   try {
-    const event = JSON.parse(raw) as DbtJsonLogEvent;
+    const event = JSON.parse(raw) as DbtJsonLogEventWithData;
     if (event.info) {
+      const preview = event.data?.preview;
+      const showPreview =
+        event.info.name === "ShowNode" && typeof preview === "string"
+          ? preview
+          : event.info.name === "ShowNode" && preview != null
+            ? JSON.stringify(preview)
+            : undefined;
       return {
         ts: event.info.ts ? new Date(event.info.ts) : new Date(),
         level: event.info.level ?? "info",
         line: event.info.msg ?? raw,
+        ...(showPreview !== undefined ? { showPreview } : {}),
       };
     }
   } catch {
@@ -787,9 +807,13 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
         vars: request.vars,
       });
 
+      // `dbt show` defaults to an ASCII table; force JSON so ShowNode carries
+      // a structured `data.preview` we can grid-render in the editor.
+      const commandArgv = ensureShowJsonOutput(command.argv);
+
       const args = [
         ...resolved.prefixArgs,
-        ...command.argv,
+        ...commandArgv,
         ...extraArgs,
         "--profiles-dir",
         projectDir,
@@ -830,7 +854,7 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
       }
 
       commandResults.push({
-        command: command.argv.join(" "),
+        command: commandArgv.join(" "),
         exitCode,
         logLines,
         runResults,

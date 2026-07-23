@@ -31,6 +31,7 @@ import {
   dbtEngineEnabled,
   engineCompile,
   enginePrepare,
+  engineShow,
 } from "./dbt-engine.service";
 import {
   computePackagesHash,
@@ -39,6 +40,7 @@ import {
   savePackagesCache,
 } from "./dbt-cache.service";
 import { warmDirsEnabled, withProjectDir } from "./workspace-dir.service";
+import { parseShowPreview, type DbtShowPreview } from "./show-preview";
 import { loggers } from "../logging";
 
 const logger = loggers.app();
@@ -141,6 +143,8 @@ export interface AdhocDbtResult {
   logs: DbtLogLine[];
   stepResults: ReturnType<typeof parseStepResults>;
   compiledSql?: string;
+  /** Structured `dbt show` rows for the editor preview grid. */
+  preview?: DbtShowPreview;
   raw: DbtRunResult;
 }
 
@@ -224,23 +228,29 @@ export async function runAdhocDbtCommand(params: {
   const packagesHash = computePackagesHash(snapshot.files);
   const caches = await loadDbtCaches(cacheScope, packagesHash);
 
-  // Resident-engine fast path: an offline `compile --select X` reuses an
-  // in-memory manifest (no interpreter cold start, no full re-parse) — the
-  // dbt Cloud "develop" feel. Held under the same adhoc warm-dir mutex so the
-  // tree can't mutate while the engine reads it. Any failure (engine down,
-  // package macros needing an install we don't have, introspective compile)
-  // falls through to the subprocess path below, so correctness never depends
-  // on the engine. Gated by DBT_ENGINE_ENABLED (default off).
+  // Resident-engine fast path: offline `compile` / `show` reuse an in-memory
+  // manifest (no interpreter cold start, no full re-parse) — the dbt Cloud
+  // "develop" feel. Held under the same adhoc warm-dir mutex so the tree can't
+  // mutate while the engine reads it. Any failure falls through to the
+  // subprocess path below. Gated by DBT_ENGINE_ENABLED (default off).
+  const showSelect = extractShowSelect(parsed);
+  const engineSelect =
+    parsed.subcommand === "compile"
+      ? params.select
+      : parsed.subcommand === "show"
+        ? showSelect
+        : undefined;
   if (
     dbtEngineEnabled() &&
     warmDirsEnabled() &&
-    parsed.subcommand === "compile" &&
-    params.select &&
+    engineSelect &&
+    (parsed.subcommand === "compile" || parsed.subcommand === "show") &&
     // The engine path does not apply --vars; skip it when the environment sets
     // vars so var() resolves correctly via the subprocess path below.
     Object.keys(snapshot.environment.vars ?? {}).length === 0
   ) {
-    const select = params.select;
+    const select = engineSelect;
+    const showLimit = extractShowLimit(parsed) ?? 100;
     try {
       const engineResult = await withProjectDir(adhocDirScope, async dir => {
         const { keyfileEnv } = await materializeDbtProject(dir, {
@@ -264,17 +274,27 @@ export async function runAdhocDbtCommand(params: {
           projectDir: dir,
         };
         // Re-parse to pick up edits (cheap via partial parse), then reuse the
-        // warm manifest to compile.
+        // warm manifest to compile / show.
         await enginePrepare(ctx, session);
-        return engineCompile(ctx, session, select);
+        if (parsed.subcommand === "show") {
+          return {
+            kind: "show" as const,
+            result: await engineShow(ctx, session, {
+              select,
+              limit: showLimit,
+            }),
+          };
+        }
+        return {
+          kind: "compile" as const,
+          result: await engineCompile(ctx, session, select),
+        };
       });
-      if (engineResult.ok) {
-        // info (not debug) so the hit rate is visible in prod once the engine
-        // flag is on — pairs with the fallback warns below for a hit/miss rate.
+      if (engineResult.kind === "compile" && engineResult.result.ok) {
         logger.info("dbt engine compile hit", {
           event: "dbt_engine_compile",
           outcome: "hit",
-          elapsedMs: engineResult.elapsed_ms,
+          elapsedMs: engineResult.result.elapsed_ms,
           projectId: cacheScope.projectId,
           environment: cacheScope.environment,
         });
@@ -283,7 +303,7 @@ export async function runAdhocDbtCommand(params: {
           exitCode: 0,
           logs: [],
           stepResults: [],
-          compiledSql: engineResult.compiled_sql ?? undefined,
+          compiledSql: engineResult.result.compiled_sql ?? undefined,
           raw: {
             success: true,
             commandResults: [],
@@ -292,17 +312,51 @@ export async function runAdhocDbtCommand(params: {
           },
         };
       }
-      logger.warn("dbt engine compile failed; falling back to subprocess", {
-        event: "dbt_engine_compile",
-        outcome: "fallback",
-        reason: "compile_failed",
-        error: engineResult.error,
-        projectId: cacheScope.projectId,
-        environment: cacheScope.environment,
-      });
+      if (engineResult.kind === "show" && engineResult.result.ok) {
+        logger.info("dbt engine show hit", {
+          event: "dbt_engine_show",
+          outcome: "hit",
+          elapsedMs: engineResult.result.elapsed_ms,
+          projectId: cacheScope.projectId,
+          environment: cacheScope.environment,
+        });
+        return {
+          success: true,
+          exitCode: 0,
+          logs: [],
+          stepResults: [],
+          preview: {
+            columns: engineResult.result.columns,
+            rows: engineResult.result.rows,
+          },
+          raw: {
+            success: true,
+            commandResults: [],
+            artifacts: {},
+            projectChanged: false,
+          },
+        };
+      }
+      logger.warn(
+        `dbt engine ${parsed.subcommand} failed; falling back to subprocess`,
+        {
+          event:
+            parsed.subcommand === "show"
+              ? "dbt_engine_show"
+              : "dbt_engine_compile",
+          outcome: "fallback",
+          reason: `${parsed.subcommand}_failed`,
+          error: engineResult.result.error,
+          projectId: cacheScope.projectId,
+          environment: cacheScope.environment,
+        },
+      );
     } catch (error) {
       logger.warn("dbt engine unavailable; falling back to subprocess", {
-        event: "dbt_engine_compile",
+        event:
+          parsed.subcommand === "show"
+            ? "dbt_engine_show"
+            : "dbt_engine_compile",
         outcome: "fallback",
         reason: "unavailable",
         error: String(error),
@@ -377,12 +431,38 @@ export async function runAdhocDbtCommand(params: {
   }
 
   const commandResult = raw.commandResults[0];
+  const logs = commandResult?.logLines ?? [];
   return {
     success: raw.success,
     exitCode: commandResult?.exitCode ?? 1,
-    logs: commandResult?.logLines ?? [],
+    logs,
     stepResults: parseStepResults(commandResult?.runResults),
     compiledSql: findCompiledSql(raw, params.select),
+    preview: parsed.subcommand === "show" ? parseShowPreview(logs) : undefined,
     raw,
   };
+}
+
+/** `--select` / `-s` value from a validated `show` command, if present. */
+function extractShowSelect(parsed: ParsedDbtCommand): string | undefined {
+  if (parsed.subcommand !== "show") return undefined;
+  for (let i = 1; i < parsed.argv.length; i++) {
+    const token = parsed.argv[i];
+    if (token === "--select" || token === "-s") {
+      return parsed.argv[i + 1];
+    }
+  }
+  return undefined;
+}
+
+/** `--limit` value from a validated `show` command (default handled by caller). */
+function extractShowLimit(parsed: ParsedDbtCommand): number | undefined {
+  if (parsed.subcommand !== "show") return undefined;
+  for (let i = 1; i < parsed.argv.length; i++) {
+    if (parsed.argv[i] === "--limit") {
+      const n = Number(parsed.argv[i + 1]);
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+    }
+  }
+  return undefined;
 }

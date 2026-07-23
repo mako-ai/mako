@@ -44,4 +44,16 @@ describe("buildDbtNodeCommand", () => {
       buildDbtNodeCommand("build", "fct_orders", "", { fullRefresh: false }),
     ).toBe("build --select fct_orders");
   });
+
+  it("builds show with --limit and ignores graph scope / full-refresh", () => {
+    expect(buildDbtNodeCommand("show", "stg_orders", "both")).toBe(
+      "show --select stg_orders --limit 100",
+    );
+    expect(
+      buildDbtNodeCommand("show", "stg_orders", "down", {
+        fullRefresh: true,
+        limit: 25,
+      }),
+    ).toBe("show --select stg_orders --limit 25");
+  });
 });

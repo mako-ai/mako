@@ -44,13 +44,22 @@ vi.mock("./EntityBreadcrumbs", () => ({
 import DbtFileEditor from "./DbtFileEditor";
 import { useDbtStore } from "../store/dbtStore";
 
-const runCommandMock = vi.fn(async () => ({
-  ok: true,
-  exitCode: 0,
-  subcommand: "build",
-  stepResults: [],
-  logs: [],
-}));
+const runCommandMock = vi.fn(
+  async (): Promise<{
+    ok: boolean;
+    exitCode: number;
+    subcommand: string;
+    stepResults: never[];
+    logs: never[];
+    preview?: { columns: string[]; rows: unknown[][] };
+  }> => ({
+    ok: true,
+    exitCode: 0,
+    subcommand: "build",
+    stepResults: [],
+    logs: [],
+  }),
+);
 const compileModelMock = vi.fn(async () => ({
   ok: true,
   exitCode: 0,
@@ -150,6 +159,38 @@ describe("DbtFileEditor", () => {
         false,
       ),
     );
+  });
+
+  it("Preview runs dbt show --select <model> --limit 100", async () => {
+    const user = userEvent.setup();
+    runCommandMock.mockResolvedValueOnce({
+      ok: true,
+      exitCode: 0,
+      subcommand: "show",
+      stepResults: [],
+      logs: [],
+      preview: { columns: ["id"], rows: [[1]] },
+    });
+    render(<DbtFileEditor tabId="t1" projectId="p1" path="models/foo.sql" />);
+
+    const previewButton = await screen.findByRole("button", {
+      name: /preview this model/i,
+    });
+    await waitFor(() =>
+      expect((previewButton as HTMLButtonElement).disabled).toBe(false),
+    );
+    await user.click(previewButton);
+
+    await waitFor(() =>
+      expect(runCommandMock).toHaveBeenCalledWith(
+        "ws1",
+        "p1",
+        "show --select foo --limit 100",
+        "dev",
+        false,
+      ),
+    );
+    expect(await screen.findByText(/Preview · 1 row/i)).toBeTruthy();
   });
 
   it("renders a markdown preview by default for .md files and toggles to the editor", async () => {
