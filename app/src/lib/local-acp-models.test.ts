@@ -50,7 +50,7 @@ describe("local-acp-models", () => {
         label: "Codex",
         description: "y",
         authProduct: "ChatGPT",
-        installHint: "npm i -g @zed-industries/codex-acp",
+        installHint: "npm i -g @agentclientprotocol/codex-acp",
         adapterCommand: "codex-acp",
         adapterFound: false,
         connected: false,
@@ -69,6 +69,43 @@ describe("local-acp-models", () => {
     expect(ids.filter(id => id.startsWith("local-acp/codex"))).toEqual([
       "local-acp/codex",
     ]);
+  });
+
+  it("expands Codex ChatGPT models and hides gateway *-sol ids", () => {
+    const models = localAcpModelsFromProviders([
+      {
+        id: "claude",
+        label: "Claude Code",
+        description: "x",
+        authProduct: "Claude",
+        installHint: "hint",
+        adapterCommand: "claude-agent-acp",
+        adapterFound: false,
+        connected: false,
+        authRequired: false,
+        authMethods: [],
+      },
+      {
+        id: "codex",
+        label: "Codex",
+        description: "y",
+        authProduct: "ChatGPT",
+        installHint: "npm i -g @agentclientprotocol/codex-acp",
+        adapterCommand: "codex-acp",
+        adapterFound: true,
+        connected: true,
+        authRequired: false,
+        authMethods: [],
+        availableModels: [
+          { value: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
+          { value: "gpt-5.1-codex", name: "GPT-5.1 Codex" },
+        ],
+      },
+    ]);
+    const ids = models.map(m => m.id);
+    expect(ids).toContain("local-acp/codex/gpt-5.1-codex");
+    expect(ids).not.toContain("local-acp/codex/gpt-5.6-sol");
+    expect(ids).toContain("local-acp/codex"); // Default
   });
 
   it("prefers adapter-advertised model ids over short aliases", () => {

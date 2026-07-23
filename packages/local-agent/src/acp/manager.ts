@@ -47,6 +47,11 @@ import {
   DESKTOP_MCP_PATH,
   DESKTOP_MCP_SERVER_NAME,
 } from "../desktop-bridge/mcp";
+import {
+  explainCodexModelFailure,
+  isUnsupportedCodexChatGptModel,
+  pickSafeCodexModel,
+} from "./codex-models";
 
 /** Keep in sync with `DEFAULT_AGENT_PORT` in server.ts (avoid circular import). */
 const LOCAL_AGENT_PORT = 41720;
@@ -730,18 +735,57 @@ export class AcpSessionManager {
       );
 
       const preferredModel = body.model?.trim();
-      if (preferredModel) {
+      let modelToApply: string | null = null;
+      if (providerId === "codex") {
+        const before = managed.info.currentModel;
+        const safe = pickSafeCodexModel(
+          preferredModel,
+          managed.info.availableModels,
+          before,
+        );
+        if (safe && safe.toLowerCase() !== (before || "").toLowerCase()) {
+          modelToApply = safe;
+          if (before && isUnsupportedCodexChatGptModel(before)) {
+            acpLog.info(
+              "Codex session defaulted to an unsupported ChatGPT model — switching",
+              { sessionId: id, from: before, to: safe },
+            );
+          }
+        } else if (before && isUnsupportedCodexChatGptModel(before)) {
+          throw new Error(
+            explainCodexModelFailure(
+              `Model metadata for \`${before}\` not found`,
+            ) ||
+              `Codex model ${before} is not usable with ChatGPT login. Pick GPT-5.1 Codex (or similar) in Chat.`,
+          );
+        }
+      } else if (preferredModel) {
+        modelToApply = preferredModel;
+      }
+      if (modelToApply) {
         try {
           await this.setSessionConfig(id, {
             configId: "model",
-            value: preferredModel,
+            value: modelToApply,
           });
         } catch (error) {
           acpLog.info("ACP preferred model not applied at session/new", {
             sessionId: id,
-            preferredModel,
+            preferredModel: modelToApply,
             error: String(error),
           });
+          if (
+            providerId === "codex" &&
+            managed.info.currentModel &&
+            isUnsupportedCodexChatGptModel(managed.info.currentModel)
+          ) {
+            throw new Error(
+              explainCodexModelFailure(
+                `Model metadata for \`${managed.info.currentModel}\` not found`,
+              ) ||
+                `Codex model ${managed.info.currentModel} is not usable with ChatGPT login. Pick a Codex ChatGPT model in Chat.`,
+            );
+          }
         }
       }
 
@@ -901,15 +945,21 @@ export class AcpSessionManager {
         });
         throw new Error(message);
       }
-      const message =
+      const raw =
         error instanceof Error ? error.message : "ACP prompt failed";
+      const conn = this.connections.get(providerId);
+      const stderr = conn?.lastStderr?.trim() || this.lastAdapterError || "";
+      const combined = stderr ? `${raw}\n${stderr.slice(-600)}` : raw;
+      const tip =
+        providerId === "codex" ? explainCodexModelFailure(combined) : null;
+      const message = tip || raw;
       this.emit(sessionId, {
         type: "error",
         sessionId,
         message,
         at: nowIso(),
       });
-      throw error;
+      throw new Error(message);
     } finally {
       const still = this.sessions.get(sessionId);
       if (still) {

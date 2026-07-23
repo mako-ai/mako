@@ -39,10 +39,17 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderDefinition> = {
   codex: {
     id: "codex",
     label: "Codex (ChatGPT)",
-    description: "OpenAI Codex via ACP adapter (ChatGPT subscription or API key).",
-    commands: ["codex-acp", "@zed-industries/codex-acp"],
-    npxPackage: "@zed-industries/codex-acp",
-    installHint: "Install Codex CLI, then: npm i -g @zed-industries/codex-acp",
+    description:
+      "OpenAI Codex via ACP adapter (ChatGPT subscription or API key).",
+    commands: [
+      "codex-acp",
+      "@agentclientprotocol/codex-acp",
+      // Retired package — keep as last-resort fallback for old installs.
+      "@zed-industries/codex-acp",
+    ],
+    npxPackage: "@agentclientprotocol/codex-acp",
+    installHint:
+      "Install Codex CLI, then: npm i -g @agentclientprotocol/codex-acp",
     authProduct: "ChatGPT / OpenAI API",
   },
 };

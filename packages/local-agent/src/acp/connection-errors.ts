@@ -25,11 +25,16 @@ export function acpReconnectMessage(providerLabel: string): string {
 export function explainAdapterLaunchFailure(stderrOrMessage: string): string | null {
   const text = stderrOrMessage || "";
   if (!/ENOTEMPTY|npm error code ENOTEMPTY|_npx/i.test(text)) return null;
+  const isCodex = /codex/i.test(text);
+  const pkg = isCodex
+    ? "@agentclientprotocol/codex-acp"
+    : "@agentclientprotocol/claude-agent-acp";
+  const label = isCodex ? "Codex" : "Claude";
   return (
-    "Claude ACP adapter failed to start because the npm/npx cache is corrupted " +
-    "(ENOTEMPTY). Fix in Terminal, then retry Enable workspace tools:\n" +
-    "  rm -rf ~/.npm/_npx\n" +
-    "  npm i -g @agentclientprotocol/claude-agent-acp\n" +
+    `${label} ACP adapter failed to start because the npm/npx cache is corrupted ` +
+    `(ENOTEMPTY). Fix in Terminal, then retry Enable workspace tools:\n` +
+    `  rm -rf ~/.npm/_npx\n` +
+    `  npm i -g ${pkg}\n` +
     "Using a global install avoids npx cache races on every Chat turn."
   );
 }

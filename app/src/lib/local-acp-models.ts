@@ -32,6 +32,31 @@ export const CLAUDE_CODE_MODEL_FALLBACKS: AcpModelChoice[] = [
   { value: "haiku", name: "Haiku" },
 ];
 
+/** ChatGPT-subscription Codex models (avoid API/gateway `*-sol` ids). */
+export const CODEX_MODEL_FALLBACKS: AcpModelChoice[] = [
+  {
+    value: "default",
+    name: "Default",
+    description: "Codex’s current default for this login",
+  },
+  { value: "gpt-5.1-codex", name: "GPT-5.1 Codex" },
+  { value: "gpt-5.1-codex-mini", name: "GPT-5.1 Codex Mini" },
+  { value: "o3", name: "o3" },
+  { value: "o4-mini", name: "o4-mini" },
+];
+
+/** Filter out API/gateway models that break ChatGPT-login Codex. */
+export function isUnsupportedCodexChatGptModel(model: string): boolean {
+  const m = model.trim().toLowerCase();
+  if (!m) return false;
+  return (
+    m.includes("-sol") ||
+    m.startsWith("openai/") ||
+    m.includes("cursor") ||
+    m.includes("mako")
+  );
+}
+
 const PROVIDER_LABEL: Record<AcpProviderId, string> = {
   claude: "Claude Code",
   codex: "Codex",
@@ -163,8 +188,14 @@ export function localAcpModelsFromProviders(
     const fallbacks =
       providerId === "claude"
         ? CLAUDE_CODE_MODEL_FALLBACKS
-        : [{ value: "default", name: "Default" }];
-    const choices = mergeModelChoices(status?.availableModels, fallbacks);
+        : CODEX_MODEL_FALLBACKS;
+    const advertised =
+      providerId === "codex"
+        ? (status?.availableModels ?? []).filter(
+            m => !isUnsupportedCodexChatGptModel(m.value),
+          )
+        : status?.availableModels;
+    const choices = mergeModelChoices(advertised, fallbacks);
 
     for (const choice of choices) {
       const id = buildLocalAcpModelId(providerId, choice.value);
