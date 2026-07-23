@@ -91,6 +91,8 @@ interface AcpState {
     },
   ) => void;
   authenticate: (providerId?: AcpProviderId) => Promise<void>;
+  /** Last auth guidance (Terminal opened / copy-paste command). */
+  authGuidance: string | null;
   sendPrompt: (text: string) => Promise<void>;
   cancelActive: () => Promise<void>;
   closeActive: () => Promise<void>;
@@ -115,6 +117,7 @@ export const useAcpStore = create<AcpState>()(
     permissionsBySession: {},
     sending: false,
     error: null,
+    authGuidance: null,
     selectedProviderId: "claude",
     cwdDraft: "",
 
@@ -365,9 +368,18 @@ export const useAcpStore = create<AcpState>()(
       const id = providerId || get().selectedProviderId;
       set(s => {
         s.error = null;
+        s.authGuidance = null;
       });
       try {
-        await acpClient.authenticate(id);
+        const result = await acpClient.authenticate(id);
+        set(s => {
+          s.authGuidance =
+            result.message ||
+            (result.terminalCommand
+              ? `Run in Terminal:\n${result.terminalCommand}`
+              : null);
+          s.error = null;
+        });
         await get().refreshStatus();
       } catch (error) {
         set(s => {

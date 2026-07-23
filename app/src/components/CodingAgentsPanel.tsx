@@ -36,6 +36,7 @@ export function CodingAgentsPanel() {
   const acpStatus = useAcpStore(s => s.status);
   const statusError = useAcpStore(s => s.statusError);
   const error = useAcpStore(s => s.error);
+  const authGuidance = useAcpStore(s => s.authGuidance);
   const selectedProviderId = useAcpStore(s => s.selectedProviderId);
   const setSelectedProvider = useAcpStore(s => s.setSelectedProvider);
   const authenticate = useAcpStore(s => s.authenticate);
@@ -44,6 +45,7 @@ export function CodingAgentsPanel() {
   const loadingStatus = useAcpStore(s => s.loadingStatus);
 
   const [booting, setBooting] = useState(true);
+  const [signingIn, setSigningIn] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -191,23 +193,49 @@ export function CodingAgentsPanel() {
           <Stack direction="row" spacing={1} alignItems="center">
             <Button
               variant="outlined"
-              onClick={() => void authenticate()}
-              disabled={!provider?.adapterFound || loadingStatus}
+              onClick={() => {
+                setSigningIn(true);
+                void authenticate().finally(() => setSigningIn(false));
+              }}
+              disabled={!provider?.adapterFound || loadingStatus || signingIn}
             >
-              Sign in with {provider?.authProduct || "provider"}
+              {signingIn
+                ? "Opening Terminal…"
+                : `Sign in with ${provider?.authProduct || "provider"}`}
             </Button>
             <Typography variant="body2" color="text.secondary">
               {readyProviders.length > 0
-                ? "Ready — open Chat and pick a local model."
+                ? "Opens Terminal for Claude CLI login (not a browser popup)."
                 : "Install an adapter to enable local models in Chat."}
             </Typography>
           </Stack>
+
+          <Typography variant="caption" color="text.secondary" component="div">
+            Prefer the CLI? Run <code>claude auth login</code> (or{" "}
+            <code>
+              npx --yes @agentclientprotocol/claude-agent-acp --cli auth login
+              --claudeai
+            </code>
+            ), then return here and use Chat → Enable workspace tools.
+          </Typography>
         </Stack>
       </Paper>
+
+      {authGuidance && (
+        <Alert severity="info" sx={{ mb: 2, whiteSpace: "pre-wrap" }}>
+          {authGuidance}
+        </Alert>
+      )}
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
           {error}
+          {/ACP connection closed|connection dropped/i.test(error) ? (
+            <Typography variant="body2" sx={{ mt: 1 }}>
+              Quit Mako Desktop, run <code>pnpm agent:start</code> from the ACP
+              branch, reopen Desktop, then Sign in again (Terminal login).
+            </Typography>
+          ) : null}
         </Alert>
       )}
 

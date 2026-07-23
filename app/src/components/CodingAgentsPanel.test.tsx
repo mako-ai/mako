@@ -45,6 +45,7 @@ vi.mock("../store/acpStore", () => {
     permissionsBySession: {},
     sending: false,
     error: null,
+    authGuidance: null,
     selectedProviderId: "claude" as const,
     cwdDraft: "/tmp",
     refreshStatus: vi.fn(async () => undefined),

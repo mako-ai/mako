@@ -7,6 +7,10 @@ import { promises as fs } from "node:fs";
 import type { ClientConnection, ClientContext } from "@agentclientprotocol/sdk";
 import type { AcpProviderId } from "./providers";
 import type { ResolvedAdapterCommand } from "./resolve-command";
+import {
+  extractTerminalAuthLaunch,
+  formatTerminalAuthCommand,
+} from "./terminal-auth";
 import { acpLog } from "./log";
 
 export type AcpSdk = typeof import("@agentclientprotocol/sdk");
@@ -31,13 +35,28 @@ export type PermissionHandler = (
   payload: PermissionRequestPayload,
 ) => Promise<{ outcome: "cancelled" | "selected"; optionId?: string }>;
 
+export interface AcpAuthMethodInfo {
+  id: string;
+  name?: string;
+  description?: string;
+  type?: string;
+  /** Shell-ish command for UI copy/paste when type is terminal. */
+  terminalCommand?: string;
+  /** Raw terminal-auth launch from adapter _meta (when present). */
+  terminalAuth?: {
+    command: string;
+    args: string[];
+    label?: string;
+  };
+}
+
 export interface AcpProviderConnection {
   providerId: AcpProviderId;
   child: ChildProcess;
   connection: ClientConnection;
   agent: ClientContext;
   protocolVersion: number;
-  authMethods: Array<{ id: string; name?: string; description?: string }>;
+  authMethods: AcpAuthMethodInfo[];
   authRequired: boolean;
   authenticated: boolean;
   close: () => void;
@@ -185,15 +204,44 @@ export async function openProviderConnection(options: {
         readTextFile: true,
         writeTextFile: true,
       },
+      // Claude ACP advertises terminal login only when the client opts in.
+      auth: {
+        terminal: true,
+      },
+      _meta: {
+        "terminal-auth": true,
+      },
     },
   });
 
-  const authMethods = Array.isArray(initResult.authMethods)
-    ? initResult.authMethods.map(m => ({
-        id: String(m.id),
-        name: m.name ?? undefined,
-        description: m.description ?? undefined,
-      }))
+  const authMethods: AcpAuthMethodInfo[] = Array.isArray(initResult.authMethods)
+    ? initResult.authMethods.map(m => {
+        const raw = m as {
+          id?: string;
+          name?: string;
+          description?: string;
+          type?: string;
+          args?: unknown;
+          _meta?: unknown;
+        };
+        const launch = extractTerminalAuthLaunch(raw);
+        return {
+          id: String(raw.id || ""),
+          name: raw.name ?? undefined,
+          description: raw.description ?? undefined,
+          type: raw.type ?? (launch ? "terminal" : undefined),
+          terminalCommand: launch
+            ? formatTerminalAuthCommand(launch)
+            : undefined,
+          terminalAuth: launch
+            ? {
+                command: launch.command,
+                args: launch.args,
+                label: launch.label,
+              }
+            : undefined,
+        };
+      })
     : [];
 
   return {

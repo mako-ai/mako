@@ -21,7 +21,9 @@ This is the reverse of [MCP Server](/mcp-server/):
 2. An ACP adapter on `PATH`:
    - Claude: `npm i -g @agentclientprotocol/claude-agent-acp`
    - Codex: `npm i -g @zed-industries/codex-acp`
-3. Sign-in with the provider (Claude Pro/Max or ChatGPT / API key) when prompted.
+3. Sign in with the provider when prompted. **Claude Code** uses a **Terminal**
+   login (`claude auth login` / Claude subscription) — Mako’s **Sign in** button
+   opens Terminal; it is not a browser popup inside the app.
 
 ## How to use
 

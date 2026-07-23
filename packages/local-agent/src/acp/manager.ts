@@ -24,7 +24,9 @@ import {
   acpReconnectMessage,
   isAcpConnectionClosedError,
 } from "./connection-errors";
+import { launchTerminalAuth } from "./terminal-auth";
 import type {
+  AcpAuthenticateResult,
   AcpBridgeEvent,
   AcpProviderStatus,
   AcpSessionInfo,
@@ -106,7 +108,13 @@ export class AcpSessionManager {
         adapterFound: Boolean(launch),
         connected: isConnectionAlive(conn),
         authRequired: conn?.authRequired ?? false,
-        authMethods: conn?.authMethods ?? [],
+        authMethods: (conn?.authMethods ?? []).map(m => ({
+          id: m.id,
+          name: m.name,
+          description: m.description,
+          type: m.type,
+          terminalCommand: m.terminalCommand,
+        })),
       };
     });
 
@@ -373,22 +381,110 @@ export class AcpSessionManager {
   async authenticate(
     providerId: AcpProviderId,
     methodId?: string,
-  ): Promise<{ ok: true; methodId: string }> {
+  ): Promise<AcpAuthenticateResult> {
     const acp = await loadAcpSdk();
-    const conn = await this.ensureConnection(providerId);
-    const method =
-      methodId ||
-      conn.authMethods[0]?.id ||
-      (conn.authMethods.length === 0 ? null : null);
-    if (!method) {
-      conn.authenticated = true;
-      return { ok: true, methodId: "none" };
+    let conn;
+    try {
+      conn = await this.ensureConnection(providerId);
+    } catch (error) {
+      if (isAcpConnectionClosedError(error)) {
+        this.invalidateProvider(providerId, "connection closed during auth");
+        conn = await this.ensureConnection(providerId);
+      } else {
+        throw error;
+      }
     }
-    await conn.agent.request(acp.methods.agent.authenticate, {
-      methodId: method,
-    });
-    conn.authenticated = true;
-    return { ok: true, methodId: method };
+
+    const preferred =
+      (methodId
+        ? conn.authMethods.find(m => m.id === methodId)
+        : undefined) ||
+      conn.authMethods.find(m => m.id === "claude-ai-login") ||
+      conn.authMethods.find(m => m.type === "terminal") ||
+      conn.authMethods[0];
+
+    if (!preferred) {
+      // Adapter advertised no auth methods — typically already logged in via
+      // Claude Code CLI credentials on disk.
+      conn.authenticated = true;
+      return {
+        ok: true,
+        methodId: "none",
+        message:
+          "No sign-in required — Claude/Codex credentials look available. Open Chat and pick a local model.",
+      };
+    }
+
+    // Modern Claude ACP uses terminal login; agent.authenticate(methodId)
+    // throws "Method not implemented." Open a real Terminal instead.
+    if (preferred.type === "terminal" || preferred.terminalAuth) {
+      const launch = preferred.terminalAuth || {
+        command: "npx",
+        args: [
+          "--yes",
+          "@agentclientprotocol/claude-agent-acp",
+          "--cli",
+          "auth",
+          "login",
+          "--claudeai",
+        ],
+        label: preferred.name || "Claude Login",
+      };
+      const { commandLine, opened } = launchTerminalAuth(launch);
+      return {
+        ok: true,
+        methodId: preferred.id,
+        launchedTerminal: opened,
+        terminalCommand: commandLine,
+        message: opened
+          ? "Complete sign-in in the Terminal window that just opened, then click Enable workspace tools in Chat."
+          : `Run this in Terminal, then return to Chat:\n${commandLine}`,
+      };
+    }
+
+    try {
+      await conn.agent.request(acp.methods.agent.authenticate, {
+        methodId: preferred.id,
+      });
+      conn.authenticated = true;
+      return {
+        ok: true,
+        methodId: preferred.id,
+        message: "Signed in. Open Chat and pick a local model.",
+      };
+    } catch (error) {
+      if (isAcpConnectionClosedError(error)) {
+        this.invalidateProvider(providerId, "connection closed during auth");
+        throw new Error(acpReconnectMessage(ACP_PROVIDERS[providerId].label));
+      }
+      const message =
+        error instanceof Error ? error.message : "Authentication failed";
+      // Claude adapters that reject authenticate RPC — fall back to CLI login.
+      if (/not implemented/i.test(message)) {
+        const { commandLine, opened } = launchTerminalAuth({
+          command: "npx",
+          args: [
+            "--yes",
+            "@agentclientprotocol/claude-agent-acp",
+            "--cli",
+            "auth",
+            "login",
+            "--claudeai",
+          ],
+          label: "Claude Login",
+        });
+        return {
+          ok: true,
+          methodId: preferred.id,
+          launchedTerminal: opened,
+          terminalCommand: commandLine,
+          message: opened
+            ? "Complete sign-in in the Terminal window that just opened, then return to Mako."
+            : `Run this in Terminal, then return to Mako:\n${commandLine}`,
+        };
+      }
+      throw error;
+    }
   }
 
   async createSession(
@@ -415,15 +511,22 @@ export class AcpSessionManager {
     try {
       const conn = await this.ensureConnection(providerId);
       if (conn.authRequired && !conn.authenticated) {
-        // Best-effort: try first auth method (agent-login often opens a browser).
-        try {
-          await this.authenticate(providerId);
-        } catch (error) {
-          const message =
-            error instanceof Error ? error.message : "Authentication failed";
-          throw new Error(
-            `${ACP_PROVIDERS[providerId].label} requires sign-in (${ACP_PROVIDERS[providerId].authProduct}): ${message}`,
-          );
+        const terminalOnly = conn.authMethods.every(
+          m => m.type === "terminal" || m.terminalAuth,
+        );
+        // Claude ACP uses Terminal CLI login — do NOT auto-open Terminal on
+        // every session/new (Sign in button owns that). Credentials on disk
+        // usually already work; if not, session/new fails with a clear error.
+        if (!terminalOnly) {
+          try {
+            await this.authenticate(providerId);
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : "Authentication failed";
+            throw new Error(
+              `${ACP_PROVIDERS[providerId].label} requires sign-in (${ACP_PROVIDERS[providerId].authProduct}): ${message}`,
+            );
+          }
         }
       }
 

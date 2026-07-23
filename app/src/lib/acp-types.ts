@@ -12,8 +12,22 @@ export interface AcpProviderStatus {
   adapterFound: boolean;
   connected: boolean;
   authRequired: boolean;
-  authMethods: Array<{ id: string; name?: string; description?: string }>;
+  authMethods: Array<{
+    id: string;
+    name?: string;
+    description?: string;
+    type?: string;
+    terminalCommand?: string;
+  }>;
   error?: string;
+}
+
+export interface AcpAuthenticateResult {
+  ok: true;
+  methodId: string;
+  launchedTerminal?: boolean;
+  terminalCommand?: string;
+  message?: string;
 }
 
 export interface AcpStatus {

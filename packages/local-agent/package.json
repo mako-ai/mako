@@ -12,7 +12,7 @@
     "start": "tsx src/index.ts",
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/acp/manager.test.ts src/acp/permissions.test.ts src/acp/mcp-probe.test.ts src/acp/mako-system-append.test.ts src/acp/connection-errors.test.ts",
+    "test": "tsx --test src/acp/manager.test.ts src/acp/permissions.test.ts src/acp/mcp-probe.test.ts src/acp/mako-system-append.test.ts src/acp/connection-errors.test.ts src/acp/terminal-auth.test.ts",
     "acp:mock-agent": "tsx src/acp/mock-agent.ts"
   },
   "dependencies": {

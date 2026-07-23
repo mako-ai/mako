@@ -4,6 +4,7 @@
  */
 import { LOCAL_AGENT_BASE_URL, localAgentClient } from "./local-agent-client";
 import type {
+  AcpAuthenticateResult,
   AcpBridgeEvent,
   AcpProviderId,
   AcpSessionInfo,
@@ -42,10 +43,11 @@ export const acpClient = {
   async authenticate(
     providerId: AcpProviderId,
     methodId?: string,
-  ): Promise<{ ok: true; methodId: string }> {
-    const body = await localAgentClient.post<
-      Envelope<{ ok: true; methodId: string }>
-    >("/acp/authenticate", { providerId, methodId });
+  ): Promise<AcpAuthenticateResult> {
+    const body = await localAgentClient.post<Envelope<AcpAuthenticateResult>>(
+      "/acp/authenticate",
+      { providerId, methodId },
+    );
     return unwrap(body, "Authentication failed");
   },
 

@@ -63,8 +63,24 @@ export interface AcpProviderStatus {
   adapterFound: boolean;
   connected: boolean;
   authRequired: boolean;
-  authMethods: Array<{ id: string; name?: string; description?: string }>;
+  authMethods: Array<{
+    id: string;
+    name?: string;
+    description?: string;
+    type?: string;
+    terminalCommand?: string;
+  }>;
   error?: string;
+}
+
+export interface AcpAuthenticateResult {
+  ok: true;
+  methodId: string;
+  /** True when we opened a system Terminal for Claude/Codex CLI login. */
+  launchedTerminal?: boolean;
+  /** Copy-paste fallback when a Terminal window could not be opened. */
+  terminalCommand?: string;
+  message?: string;
 }
 
 export interface AcpStatusResponse {
