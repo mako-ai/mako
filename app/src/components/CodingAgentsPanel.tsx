@@ -269,6 +269,17 @@ export function CodingAgentsPanel() {
               tools.
             </Typography>
           ) : null}
+          {/ENOTEMPTY|_npx/i.test(`${error}\n${lastAdapterError || ""}`) ? (
+            <Typography variant="body2" sx={{ mt: 1 }}>
+              Broken npm/npx cache. In Terminal run:
+              <br />
+              <code>rm -rf ~/.npm/_npx</code>
+              <br />
+              <code>npm i -g @agentclientprotocol/claude-agent-acp</code>
+              <br />
+              then retry Enable workspace tools (global install avoids npx).
+            </Typography>
+          ) : null}
           {lastAdapterError ? (
             <Typography
               variant="caption"
