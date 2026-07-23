@@ -10,7 +10,10 @@ describe("buildMakoSystemPromptAppend", () => {
     assert.match(text, /mako-workspace/);
     assert.match(text, /get_relevant_skills/);
     assert.match(text, /claude mcp/);
-    assert.ok(text.length < 2500);
+    assert.match(text, /Desktop Chat/);
+    assert.match(text, /create_preview_token/);
+    assert.match(text, /Do \*\*not\*\* call/);
+    assert.ok(text.length < 3500);
   });
 
   it("appends workspace guidance when provided", () => {

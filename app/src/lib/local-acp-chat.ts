@@ -16,7 +16,6 @@ import {
   getAssistantParts,
   setAssistantErrorText,
   upsertAcpToolPart,
-  resolveAcpToolName,
   type AcpToolUpdate,
 } from "./local-acp-parts";
 import { isAcpConnectionClosedError } from "./acp-connection-errors";
@@ -25,48 +24,8 @@ import {
   type LocalAcpChatBinding,
 } from "./persist-local-acp-chat";
 import { useAcpStore } from "../store/acpStore";
-import { useAppStore } from "../store/appStore";
-import { focusAppTab } from "../app-runtime/shell";
 import type { AcpProviderId } from "./acp-types";
-
-/** When MCP create_app completes, open the app tab so the user sees the scaffold. */
-function maybeOpenCreatedApp(
-  workspaceId: string | undefined,
-  update: AcpToolUpdate,
-): void {
-  if (!workspaceId || update.status !== "completed") return;
-  if (resolveAcpToolName(update) !== "create_app") return;
-  const output = update.rawOutput ?? update.content;
-  const rec =
-    output && typeof output === "object"
-      ? (output as Record<string, unknown>)
-      : null;
-  const nested =
-    rec?.data && typeof rec.data === "object"
-      ? (rec.data as Record<string, unknown>)
-      : null;
-  const appId =
-    (typeof rec?.appId === "string" && rec.appId) ||
-    (typeof nested?.appId === "string" && nested.appId) ||
-    null;
-  if (!appId) return;
-  const titleFromRec =
-    typeof rec?.title === "string" && rec.title.trim() ? rec.title : null;
-  const titleFromNested =
-    typeof nested?.title === "string" && nested.title.trim()
-      ? nested.title
-      : null;
-  const title = titleFromRec || titleFromNested || "App";
-  void useAppStore
-    .getState()
-    .fetchApp(workspaceId, appId)
-    .then(app => {
-      focusAppTab(appId, app?.title || title);
-    })
-    .catch(() => {
-      focusAppTab(appId, title);
-    });
-}
+import { maybeFocusAppFromAcpTool } from "./acp-app-focus";
 
 async function applyModelPreference(
   sessionId: string,
@@ -303,7 +262,7 @@ export async function runLocalAcpChatTurn(
             update.sessionUpdate === "tool_call_update"
           ) {
             patchAssistantParts(parts => upsertAcpToolPart(parts, update));
-            maybeOpenCreatedApp(workspaceId, update);
+            maybeFocusAppFromAcpTool(workspaceId, update);
           }
         } else if (event.type === "permission_request") {
           const activeSessionId = sessionId;

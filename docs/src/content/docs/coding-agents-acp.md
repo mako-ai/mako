@@ -52,6 +52,10 @@ Claude Code / Codex then get the same workspace data tools as
 Database queries stay **read-only**; apps/consoles can be authored over MCP.
 File and shell tools still run on your machine via the adapter.
 
+**Apps in Desktop:** after `create_app` / file edits, Mako opens the app tab in
+the Desktop window (same as in-app chat). Local Claude is instructed not to use
+`create_preview_token` / paste `/preview/…` links when you’re already in Chat.
+
 To feel like the in-app agent, Mako:
 
 - Attaches an already-authenticated MCP server named `mako-workspace` (Bearer
