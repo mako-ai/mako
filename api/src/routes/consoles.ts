@@ -23,6 +23,7 @@ import {
   QueryLanguage,
   QueryStatus,
 } from "../services/query-execution.service";
+import { queryExecutionSourceLabel } from "../services/query-execution-source";
 import { Types } from "mongoose";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
@@ -3380,6 +3381,7 @@ consoleRoutes.openapi(
           id: execution._id,
           executedAt: execution.executedAt,
           source: execution.source,
+          sourceLabel: queryExecutionSourceLabel(execution.source),
           status: execution.status,
           executionTimeMs: execution.executionTimeMs,
           rowCount: execution.rowCount ?? null,

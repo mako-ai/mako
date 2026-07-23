@@ -19,6 +19,10 @@ import {
 } from "@mui/material";
 import { ContentCopy } from "@mui/icons-material";
 import { useConsoleStore } from "../store/consoleStore";
+import {
+  consoleExecutionSourceLabel,
+  isExternalConsoleExecutionSource,
+} from "../lib/console-execution-source";
 
 interface ConsoleInfoModalProps {
   open: boolean;
@@ -91,16 +95,6 @@ const MonospaceField = ({ value, onCopy, disabled }: MonospaceFieldProps) => {
 const accessLabels: Record<string, string> = {
   private: "Private",
   workspace: "Shared with workspace",
-};
-
-const sourceLabels: Record<string, string> = {
-  console_ui: "App",
-  console_ui_admin_override: "App (admin)",
-  api: "API",
-  mcp: "MCP",
-  agent: "Agent",
-  flow: "Flow",
-  scheduled_query: "Schedule",
 };
 
 function formatDuration(ms: number): string {
@@ -294,7 +288,7 @@ export default function ConsoleInfoModal({
                   <TableHead>
                     <TableRow>
                       <TableCell>When</TableCell>
-                      <TableCell>Source</TableCell>
+                      <TableCell>Trigger</TableCell>
                       <TableCell>Status</TableCell>
                       <TableCell align="right">Duration</TableCell>
                     </TableRow>
@@ -307,17 +301,27 @@ export default function ConsoleInfoModal({
                         </TableCell>
                         <TableCell>
                           <Chip
-                            label={
-                              sourceLabels[execution.source] || execution.source
-                            }
+                            label={consoleExecutionSourceLabel(
+                              execution.source,
+                            )}
                             size="small"
-                            variant="outlined"
                             color={
-                              execution.source === "api" ||
-                              execution.source === "mcp"
+                              isExternalConsoleExecutionSource(execution.source)
                                 ? "primary"
                                 : "default"
                             }
+                            variant={
+                              isExternalConsoleExecutionSource(execution.source)
+                                ? "filled"
+                                : "outlined"
+                            }
+                            sx={{
+                              fontWeight: isExternalConsoleExecutionSource(
+                                execution.source,
+                              )
+                                ? 600
+                                : 500,
+                            }}
                           />
                         </TableCell>
                         <TableCell>

@@ -79,6 +79,7 @@ Return the most recent query execution logs for a console (from `query_execution
       "id": "execution_id",
       "executedAt": "2024-01-01T00:00:00Z",
       "source": "api",
+      "sourceLabel": "API key",
       "status": "success",
       "executionTimeMs": 42,
       "rowCount": 10,
@@ -92,7 +93,16 @@ Return the most recent query execution logs for a console (from `query_execution
 }
 ```
 
-`source` is one of: `console_ui`, `console_ui_admin_override`, `api`, `mcp`, `agent`, `flow`, `scheduled_query`.
+`source` / `sourceLabel`:
+
+| source | sourceLabel |
+|---|---|
+| `console_ui` | App UI |
+| `api` | API key |
+| `mcp` | MCP |
+| `agent` | AI agent |
+| `scheduled_query` | Schedule |
+| `flow` | Flow |
 
 ### Get Console Details
 

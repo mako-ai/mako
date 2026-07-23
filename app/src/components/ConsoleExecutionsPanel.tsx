@@ -10,6 +10,10 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
+import {
+  consoleExecutionSourceLabel,
+  isExternalConsoleExecutionSource,
+} from "../lib/console-execution-source";
 
 export interface ConsoleExecutionRow {
   id: string;
@@ -28,20 +32,45 @@ interface ConsoleExecutionsPanelProps {
   executions: ConsoleExecutionRow[];
 }
 
-const sourceLabels: Record<string, string> = {
-  console_ui: "App",
-  console_ui_admin_override: "App (admin)",
-  api: "API",
-  mcp: "MCP",
-  agent: "Agent",
-  flow: "Flow",
-  scheduled_query: "Schedule",
-};
-
 function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "—";
   if (ms < 1000) return `${Math.round(ms)} ms`;
   return `${(ms / 1000).toFixed(1)} s`;
+}
+
+function TriggerSourceCell({
+  source,
+  apiKeyId,
+}: {
+  source: string;
+  apiKeyId: string | null;
+}) {
+  const label = consoleExecutionSourceLabel(source);
+  const external = isExternalConsoleExecutionSource(source);
+  const keySuffix =
+    apiKeyId && (source === "api" || source === "mcp")
+      ? ` · key …${apiKeyId.slice(-6)}`
+      : "";
+
+  return (
+    <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25 }}>
+      <Chip
+        label={label}
+        size="small"
+        color={external ? "primary" : "default"}
+        variant={external ? "filled" : "outlined"}
+        sx={{
+          alignSelf: "flex-start",
+          fontWeight: external ? 600 : 500,
+        }}
+      />
+      {keySuffix ? (
+        <Typography variant="caption" color="text.secondary">
+          {keySuffix.replace(/^ · /, "")}
+        </Typography>
+      ) : null}
+    </Box>
+  );
 }
 
 export default function ConsoleExecutionsPanel({
@@ -77,7 +106,7 @@ export default function ConsoleExecutionsPanel({
         <TableHead>
           <TableRow>
             <TableCell>When</TableCell>
-            <TableCell>Source</TableCell>
+            <TableCell>Trigger</TableCell>
             <TableCell>Status</TableCell>
             <TableCell align="right">Duration</TableCell>
             <TableCell align="right">Rows</TableCell>
@@ -90,15 +119,9 @@ export default function ConsoleExecutionsPanel({
                 {new Date(execution.executedAt).toLocaleString()}
               </TableCell>
               <TableCell>
-                <Chip
-                  label={sourceLabels[execution.source] || execution.source}
-                  size="small"
-                  variant="outlined"
-                  color={
-                    execution.source === "api" || execution.source === "mcp"
-                      ? "primary"
-                      : "default"
-                  }
+                <TriggerSourceCell
+                  source={execution.source}
+                  apiKeyId={execution.apiKeyId}
                 />
               </TableCell>
               <TableCell>

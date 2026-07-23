@@ -42,6 +42,7 @@ import {
   cancelDetachedConsoleRun,
 } from "../../services/console-execution.service";
 import { queryExecutionService } from "../../services/query-execution.service";
+import { queryExecutionSourceLabel } from "../../services/query-execution-source";
 import {
   MONGO_QUERY_WRITE_SCOPE_REQUIRED,
   sqlReadOnlyAccessError,
@@ -777,7 +778,7 @@ export function createServerConsoleTools({
 
     list_console_executions: tool({
       description:
-        "List recent query executions for a console (App UI, API key, MCP, in-app agent, schedule). Returns newest-first rows with source, status, duration, and rowCount. History is retained for ~90 days. Use this to see whether a console is used externally (source api/mcp) or only in-app.",
+        "List recent query executions for a console. Each row includes source (raw) and sourceLabel (App UI / API key / MCP / AI agent / Schedule / Flow). Use sourceLabel when explaining to the user; source api|mcp means external. History is retained for ~90 days.",
       inputSchema: listConsoleExecutionsSchema,
       execute: async ({ consoleId, limit }) => {
         try {
@@ -797,6 +798,7 @@ export function createServerConsoleTools({
               id: execution._id.toString(),
               executedAt: execution.executedAt,
               source: execution.source,
+              sourceLabel: queryExecutionSourceLabel(execution.source),
               status: execution.status,
               executionTimeMs: execution.executionTimeMs,
               rowCount: execution.rowCount ?? null,
