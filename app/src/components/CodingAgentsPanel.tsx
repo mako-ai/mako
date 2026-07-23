@@ -249,8 +249,22 @@ function Transcript() {
 async function bootCodingAgents(): Promise<void> {
   const agentStatus = await useLocalAgentStore.getState().checkAgent();
   if (agentStatus !== "online") return;
-  await useAcpStore.getState().refreshStatus();
-  await useAcpStore.getState().refreshSessions();
+  const store = useAcpStore.getState();
+  await store.refreshStatus();
+  await store.refreshSessions();
+  const { sessions, activeSessionId, setActiveSession } =
+    useAcpStore.getState();
+  // Re-select an existing Local Agent session so SSE backlog can rebuild the
+  // transcript the agent still has in context.
+  const nextId =
+    (activeSessionId && sessions.some(s => s.id === activeSessionId)
+      ? activeSessionId
+      : null) ??
+    sessions[0]?.id ??
+    null;
+  if (nextId) {
+    setActiveSession(nextId);
+  }
 }
 
 export function CodingAgentsPanel() {

@@ -29,6 +29,9 @@ import { acpLog } from "./log";
 
 type Listener = (event: AcpBridgeEvent) => void;
 
+/** Cap per-session replay buffer so long sessions don't unbounded-grow. */
+const MAX_EVENT_LOG = 4000;
+
 interface PendingPermission {
   resolve: (value: {
     outcome: "cancelled" | "selected";
@@ -45,6 +48,8 @@ interface ManagedSession {
   active: ActiveSession | null;
   busy: boolean;
   listeners: Set<Listener>;
+  /** Transcript/events for SSE reconnect replay (in-memory for process lifetime). */
+  eventLog: AcpBridgeEvent[];
 }
 
 function nowIso(): string {
@@ -112,6 +117,42 @@ export class AcpSessionManager {
     };
   }
 
+  /**
+   * Subscribe and immediately replay the in-memory transcript/event log.
+   * Attach-before-replay with a frozen end index so concurrent live events
+   * are delivered once (via the listener) and not duplicated by replay.
+   */
+  subscribeWithReplay(sessionId: string, listener: Listener): () => void {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Unknown ACP session: ${sessionId}`);
+    }
+    session.listeners.add(listener);
+    const end = session.eventLog.length;
+    for (let i = 0; i < end; i++) {
+      try {
+        listener(session.eventLog[i]!);
+      } catch (error) {
+        acpLog.error("ACP session replay listener failed", {
+          error: String(error),
+          sessionId,
+        });
+      }
+    }
+    return () => {
+      session.listeners.delete(listener);
+    };
+  }
+
+  /**
+   * Events recorded for this session (for SSE backlog replay). Excludes
+   * permission_request — those are only meaningful while a request is pending.
+   */
+  getEventLog(sessionId: string): AcpBridgeEvent[] {
+    const session = this.sessions.get(sessionId);
+    return session ? [...session.eventLog] : [];
+  }
+
   subscribeAll(listener: Listener): () => void {
     this.globalListeners.add(listener);
     return () => {
@@ -119,7 +160,19 @@ export class AcpSessionManager {
     };
   }
 
+  private record(sessionId: string, event: AcpBridgeEvent): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    // Permission prompts are ephemeral; replaying them on reconnect is wrong.
+    if (event.type === "permission_request") return;
+    session.eventLog.push(event);
+    if (session.eventLog.length > MAX_EVENT_LOG) {
+      session.eventLog.splice(0, session.eventLog.length - MAX_EVENT_LOG);
+    }
+  }
+
   private emit(sessionId: string, event: AcpBridgeEvent): void {
+    this.record(sessionId, event);
     const session = this.sessions.get(sessionId);
     if (session) {
       for (const listener of session.listeners) {
@@ -284,6 +337,7 @@ export class AcpSessionManager {
       active,
       busy: false,
       listeners: new Set(),
+      eventLog: [],
     });
 
     acpLog.info("Created ACP session", { sessionId: id, providerId, cwd });
@@ -308,6 +362,18 @@ export class AcpSessionManager {
     session.busy = true;
     session.info.busy = true;
     session.info.updatedAt = nowIso();
+
+    // Persist the user turn on the bridge so SSE reconnect can rebuild the
+    // transcript. Claude keeps context even when the UI does not.
+    this.emit(sessionId, {
+      type: "session_update",
+      sessionId,
+      update: {
+        sessionUpdate: "user_message_chunk",
+        content: { type: "text", text: text.trim() },
+      },
+      at: nowIso(),
+    });
 
     try {
       const promptPromise = session.active.prompt(text);

@@ -166,6 +166,11 @@ export const acpClient = {
             }
           }
         }
+        // Server closed the stream — drop the subscription so callers can
+        // reconnect and replay history.
+        if (!controller.signal.aborted) {
+          onError?.(new Error("ACP event stream closed"));
+        }
       } catch (error) {
         if (controller.signal.aborted) return;
         onError?.(

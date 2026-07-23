@@ -32,6 +32,25 @@ function appendAssistantText(
   });
 }
 
+function appendUserText(
+  messages: AcpChatMessage[],
+  text: string,
+  at: string,
+): void {
+  const last = messages[messages.length - 1];
+  if (last?.role === "user") {
+    last.text += text;
+    last.at = at;
+    return;
+  }
+  messages.push({
+    id: messageId(),
+    role: "user",
+    text,
+    at,
+  });
+}
+
 interface AcpState {
   status: AcpStatus | null;
   statusError: string | null;
@@ -143,6 +162,11 @@ export const useAcpStore = create<AcpState>()(
 
     ensureEventSubscription: sessionId => {
       if (eventUnsubscribers.has(sessionId)) return;
+      // SSE backlog replays the full bridge transcript — clear so we don't
+      // double-append after reconnect / selecting an existing session.
+      set(s => {
+        s.messagesBySession[sessionId] = [];
+      });
       const unsub = acpClient.subscribeEvents(
         sessionId,
         event => {
@@ -156,6 +180,12 @@ export const useAcpStore = create<AcpState>()(
               };
               const messages = (s.messagesBySession[sessionId] ??= []);
               if (
+                update.sessionUpdate === "user_message_chunk" &&
+                update.content?.type === "text" &&
+                update.content.text
+              ) {
+                appendUserText(messages, update.content.text, event.at);
+              } else if (
                 update.sessionUpdate === "agent_message_chunk" &&
                 update.content?.type === "text" &&
                 update.content.text
@@ -205,7 +235,10 @@ export const useAcpStore = create<AcpState>()(
           });
         },
         error => {
-          // Soft: EventSource reconnects; only keep last message.
+          // Drop the dead subscription so the next ensure can reconnect and
+          // replay history from the Local Agent event log.
+          eventUnsubscribers.delete(sessionId);
+          unsub();
           set(s => {
             if (!s.error) s.error = error.message;
           });
@@ -265,14 +298,8 @@ export const useAcpStore = create<AcpState>()(
       set(s => {
         s.sending = true;
         s.error = null;
-        const messages = (s.messagesBySession[sessionId] ??= []);
-        messages.push({
-          id: messageId(),
-          role: "user",
-          text: text.trim(),
-          at: new Date().toISOString(),
-        });
       });
+      // User text arrives via bridge `user_message_chunk` (live + SSE replay).
       get().ensureEventSubscription(sessionId);
       try {
         await acpClient.prompt(sessionId, text.trim());

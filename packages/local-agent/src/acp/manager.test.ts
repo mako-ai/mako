@@ -92,6 +92,69 @@ describe("AcpSessionManager with mock agent", () => {
     await manager.closeSession(session.id);
   });
 
+  it("records an event log that can be replayed after subscribe", async () => {
+    const session = await manager.createSession({
+      providerId: "claude",
+      cwd: process.cwd(),
+      title: "replay-test",
+    });
+
+    await manager.prompt(session.id, "first turn");
+    await manager.prompt(session.id, "second turn");
+
+    const log = manager.getEventLog(session.id);
+    const userTexts = log
+      .filter(e => e.type === "session_update")
+      .map(e => {
+        const update = e.update as {
+          sessionUpdate?: string;
+          content?: { type?: string; text?: string };
+        };
+        if (
+          update.sessionUpdate === "user_message_chunk" &&
+          update.content?.type === "text"
+        ) {
+          return update.content.text || "";
+        }
+        return "";
+      })
+      .filter(Boolean);
+
+    assert.deepEqual(userTexts, ["first turn", "second turn"]);
+    assert.ok(
+      log.some(
+        e =>
+          e.type === "session_update" &&
+          (e.update as { sessionUpdate?: string }).sessionUpdate ===
+            "agent_message_chunk",
+      ),
+      "expected agent message chunks in the event log",
+    );
+
+    // A late subscriber should still receive live events; backlog is served
+    // by getEventLog / the HTTP SSE route.
+    const live: AcpBridgeEvent[] = [];
+    const unsub = manager.subscribe(session.id, event => {
+      live.push(event);
+    });
+    await manager.prompt(session.id, "third turn");
+    assert.ok(live.some(e => e.type === "turn_done"));
+    assert.equal(
+      manager
+        .getEventLog(session.id)
+        .filter(
+          e =>
+            e.type === "session_update" &&
+            (e.update as { sessionUpdate?: string }).sessionUpdate ===
+              "user_message_chunk",
+        ).length,
+      3,
+    );
+
+    unsub();
+    await manager.closeSession(session.id);
+  });
+
   it("handles permission requests", async () => {
     const session = await manager.createSession({
       providerId: "claude",

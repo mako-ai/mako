@@ -141,13 +141,6 @@ export function registerAcpRoutes(app: Hono): void {
 
     return streamSSE(c, async stream => {
       let closed = false;
-      const unsubscribe = acpSessionManager.subscribe(sessionId, event => {
-        if (closed) return;
-        void stream.writeSSE({
-          event: event.type,
-          data: JSON.stringify(event),
-        });
-      });
 
       // Heartbeat so proxies / browsers keep the stream alive.
       const heartbeat = setInterval(() => {
@@ -157,6 +150,19 @@ export function registerAcpRoutes(app: Hono): void {
           data: JSON.stringify({ at: new Date().toISOString() }),
         });
       }, 15000);
+
+      // Replay prior turns, then keep streaming live updates. This is what
+      // rebuilds the Coding Agents transcript after a refresh / re-open.
+      const unsubscribe = acpSessionManager.subscribeWithReplay(
+        sessionId,
+        event => {
+          if (closed) return;
+          void stream.writeSSE({
+            event: event.type,
+            data: JSON.stringify(event),
+          });
+        },
+      );
 
       await stream.writeSSE({
         event: "status",
