@@ -230,10 +230,14 @@ export function CodingAgentsPanel() {
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
           {error}
-          {/ACP connection closed|connection dropped/i.test(error) ? (
+          {/ACP connection closed|connection dropped|without Mako data tools/i.test(
+            error,
+          ) ? (
             <Typography variant="body2" sx={{ mt: 1 }}>
-              Quit Mako Desktop, run <code>pnpm agent:start</code> from the ACP
-              branch, reopen Desktop, then Sign in again (Terminal login).
+              Your Desktop app may be bundling an older Local Agent. Install the
+              latest Mako Desktop (or the PR desktop-canary build), quit and
+              reopen the app, then Sign in again. Developers testing a branch
+              can run <code>pnpm agent:start</code> instead.
             </Typography>
           ) : null}
         </Alert>
