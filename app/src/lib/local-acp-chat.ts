@@ -22,6 +22,7 @@ import type { AcpProviderId } from "./acp-types";
 
 export async function ensureAcpSessionForProvider(
   providerId: AcpProviderId,
+  workspaceId?: string,
 ): Promise<string> {
   const store = useAcpStore.getState();
   if (!store.status) {
@@ -38,6 +39,7 @@ export async function ensureAcpSessionForProvider(
   }
 
   // Prefer a session that already has Mako MCP attached so Chat gets DB tools.
+  // Ignore old sessions that used the unauthenticated Claude.ai "Mako" path.
   const withMcp = useAcpStore
     .getState()
     .sessions.find(s => s.providerId === providerId && s.makoMcpAttached);
@@ -47,16 +49,13 @@ export async function ensureAcpSessionForProvider(
   }
 
   useAcpStore.getState().setSelectedProvider(providerId);
-  const created = await useAcpStore.getState().createSession();
+  const created = await useAcpStore.getState().createSession({
+    workspaceId,
+    requireMakoMcp: true,
+  });
   if (!created) {
     throw new Error(
       useAcpStore.getState().error || "Failed to create local ACP session",
-    );
-  }
-  if (!created.makoMcpAttached) {
-    throw new Error(
-      useAcpStore.getState().error ||
-        "Local session started without Mako data tools. Check that you are signed in and Local Agent can reach this workspace.",
     );
   }
   return created.id;
@@ -65,6 +64,7 @@ export async function ensureAcpSessionForProvider(
 export interface LocalAcpChatTurnArgs {
   modelId: string;
   text: string;
+  workspaceId?: string;
   setMessages: (
     updater: UIMessage[] | ((prev: UIMessage[]) => UIMessage[]),
   ) => void;
@@ -79,7 +79,7 @@ export interface LocalAcpChatTurnArgs {
 export async function runLocalAcpChatTurn(
   args: LocalAcpChatTurnArgs,
 ): Promise<boolean> {
-  const { modelId, text, setMessages, signal } = args;
+  const { modelId, text, workspaceId, setMessages, signal } = args;
   if (!isLocalAcpModelId(modelId)) return false;
 
   const providerId = localAcpModelIdToProviderId(modelId);
@@ -127,7 +127,10 @@ export async function runLocalAcpChatTurn(
       throw new DOMException("Cancelled", "AbortError");
     }
 
-    const sessionId = await ensureAcpSessionForProvider(providerId);
+    const sessionId = await ensureAcpSessionForProvider(
+      providerId,
+      workspaceId,
+    );
     // Keep the store subscription alive for permission prompts in Chat.
     useAcpStore.getState().ensureEventSubscription(sessionId);
 
@@ -154,7 +157,12 @@ export async function runLocalAcpChatTurn(
             patchAssistantParts(parts => upsertAcpToolPart(parts, update));
           }
         } else if (event.type === "permission_request") {
-          // Store path (ensureEventSubscription) also receives this; no-op here.
+          // HITL in Chat — surface Allow/Deny above the composer.
+          useAcpStore.getState().ingestPermissionRequest(sessionId, {
+            requestId: event.requestId,
+            toolCall: event.toolCall,
+            options: event.options || [],
+          });
         } else if (event.type === "error") {
           patchAssistantParts(parts =>
             setAssistantErrorText(parts, `Error: ${event.message}`),

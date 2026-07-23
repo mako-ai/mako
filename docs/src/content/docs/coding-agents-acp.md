@@ -49,9 +49,11 @@ File and shell tools still run on your machine via the adapter.
 
 To feel like the in-app agent, Mako:
 
-- Allowlists `mcp__mako__*` for Claude ACP (no per-tool click tax on Mako tools)
-- Auto-approves Mako MCP + read/search tool kinds in the Local Agent
-- Still prompts in Chat / Coding Agents for Bash and file edits
+- Attaches an already-authenticated MCP server named `mako-workspace` (Bearer
+  token) — not Claude.ai’s optional “Mako” connector
+- Allowlists `mcp__mako-workspace__*` so Mako tools don’t require a click
+- Auto-approves those tools + read/search kinds in the Local Agent
+- Shows **Allow / Deny in the Chat composer** for Bash and file edits (HITL)
 
 If attach fails (offline API, missing workspace), the session still starts with
 local tools only; start a **new** session after fixing auth to pick up Mako MCP.

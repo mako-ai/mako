@@ -7,12 +7,19 @@ import {
 } from "./local-acp-parts";
 
 describe("local-acp-parts", () => {
-  it("strips mcp__mako__ for manifest-friendly names", () => {
+  it("strips mcp__mako-workspace__ for manifest-friendly names", () => {
     expect(
       resolveAcpToolName({
-        _meta: { claudeCode: { toolName: "mcp__mako__list_connections" } },
+        _meta: {
+          claudeCode: { toolName: "mcp__mako-workspace__list_connections" },
+        },
       }),
     ).toBe("list_connections");
+    expect(
+      resolveAcpToolName({
+        name: "mcp__mako__sql_execute_query",
+      }),
+    ).toBe("sql_execute_query");
     expect(resolveAcpToolName({ name: "Bash" })).toBe("Bash");
   });
 
@@ -27,7 +34,7 @@ describe("local-acp-parts", () => {
     let parts = appendAssistantText([], "Hello ");
     parts = upsertAcpToolPart(parts, {
       toolCallId: "t1",
-      name: "mcp__mako__sql_execute_query",
+      name: "mcp__mako-workspace__sql_execute_query",
       title: "Run SQL",
       status: "pending",
       rawInput: { query: "select 1" },

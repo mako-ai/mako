@@ -100,6 +100,7 @@ describe("AcpSessionManager with mock agent", () => {
       attachMakoMcp: true,
       mcpUrl: "https://example.com/api/mcp",
       mcpAuthorization: "Bearer mcpat_test",
+      mcpServerName: "mako-workspace",
     });
     assert.equal(session.makoMcpAttached, true);
     await manager.closeSession(session.id);

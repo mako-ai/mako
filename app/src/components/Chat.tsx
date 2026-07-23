@@ -685,6 +685,7 @@ const Chat: React.FC<ChatProps> = ({
       await runLocalAcpChatTurn({
         modelId,
         text,
+        workspaceId: workspaceIdRef.current,
         setMessages,
         signal: abort.signal,
       });

@@ -77,6 +77,11 @@ export interface CreateAcpSessionRequest {
   mcpUrl?: string;
   /** `Bearer mcpat_…` (or raw token — normalized to Bearer). */
   mcpAuthorization?: string;
+  /**
+   * MCP server name advertised to the agent (Claude tool prefix mcp__{name}__).
+   * Default `mako-workspace` — avoid `mako` which collides with Claude.ai connectors.
+   */
+  mcpServerName?: string;
 }
 
 export interface PromptAcpSessionRequest {

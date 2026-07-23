@@ -7,8 +7,11 @@ import {
 } from "./permissions";
 
 describe("ACP permission auto-approve", () => {
-  it("detects Claude MCP tool names for mako", () => {
-    assert.equal(isMakoMcpToolName("mcp__mako__list_connections"), true);
+  it("detects Claude MCP tool names for mako workspace", () => {
+    assert.equal(
+      isMakoMcpToolName("mcp__mako-workspace__list_connections"),
+      true,
+    );
     assert.equal(isMakoMcpToolName("mcp__mako__sql_execute_query"), true);
     assert.equal(isMakoMcpToolName("mcp__slack__post"), false);
     assert.equal(isMakoMcpToolName("Bash"), false);

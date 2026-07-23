@@ -1,27 +1,60 @@
-import { Alert, Button, Stack } from "@mui/material";
+import { Alert, Button, Stack, Typography } from "@mui/material";
 import { useAcpStore } from "../store/acpStore";
 
+function toolLabel(toolCall: unknown): string {
+  if (!toolCall || typeof toolCall !== "object") return "tool";
+  const tc = toolCall as {
+    title?: unknown;
+    name?: unknown;
+    kind?: unknown;
+    _meta?: { claudeCode?: { toolName?: unknown } };
+  };
+  const name =
+    (typeof tc._meta?.claudeCode?.toolName === "string" &&
+      tc._meta.claudeCode.toolName) ||
+    (typeof tc.name === "string" && tc.name) ||
+    (typeof tc.title === "string" && tc.title) ||
+    "tool";
+  const kind = typeof tc.kind === "string" ? tc.kind : "";
+  return kind ? `${name} (${kind})` : name;
+}
+
 /**
- * Shows Allow / Deny for Local Agent ACP permissions that were not
- * auto-approved (e.g. Bash, file edits). Used in Coding Agents and main Chat.
+ * Human-in-the-loop Allow / Deny for Local Agent ACP permissions that were
+ * not auto-approved (Bash, file edits, etc.). Shown in main Chat above the
+ * composer — never send the user to a terminal to approve.
  */
 export function AcpPermissionBanner() {
-  const activeSessionId = useAcpStore(s => s.activeSessionId);
-  const prompt = useAcpStore(s =>
-    activeSessionId ? s.permissionsBySession[activeSessionId] : null,
-  );
+  const pending = useAcpStore(s => {
+    const activeId = s.activeSessionId;
+    const activePrompt = activeId ? s.permissionsBySession[activeId] : null;
+    if (activeId && activePrompt) {
+      return { sessionId: activeId, prompt: activePrompt };
+    }
+    for (const [sessionId, prompt] of Object.entries(s.permissionsBySession)) {
+      if (prompt) return { sessionId, prompt };
+    }
+    return null;
+  });
   const respondPermission = useAcpStore(s => s.respondPermission);
+  const setActiveSession = useAcpStore(s => s.setActiveSession);
 
-  if (!prompt) return null;
+  if (!pending) return null;
 
-  const tool = prompt.toolCall as { title?: string; kind?: string } | null;
+  const { sessionId, prompt } = pending;
 
   return (
     <Alert
       severity="warning"
-      sx={{ mb: 1 }}
+      sx={{
+        mb: 1,
+        alignItems: "flex-start",
+        position: "sticky",
+        bottom: 0,
+        zIndex: 2,
+      }}
       action={
-        <Stack direction="row" spacing={1}>
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
           {prompt.options.map(opt => (
             <Button
               key={opt.optionId}
@@ -32,28 +65,35 @@ export function AcpPermissionBanner() {
                   : "warning"
               }
               variant={opt.kind?.startsWith("allow") ? "contained" : "outlined"}
-              onClick={() =>
+              onClick={() => {
+                setActiveSession(sessionId);
                 void respondPermission(
                   opt.kind?.startsWith("reject") ? "cancelled" : "selected",
                   opt.kind?.startsWith("reject") ? undefined : opt.optionId,
-                )
-              }
+                );
+              }}
             >
               {opt.name}
             </Button>
           ))}
           <Button
             size="small"
-            onClick={() => void respondPermission("cancelled")}
+            onClick={() => {
+              setActiveSession(sessionId);
+              void respondPermission("cancelled");
+            }}
           >
             Deny
           </Button>
         </Stack>
       }
     >
-      Permission required
-      {tool?.title ? `: ${tool.title}` : ""}
-      {tool?.kind ? ` (${tool.kind})` : ""}
+      <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+        Approval needed in Chat
+      </Typography>
+      <Typography variant="body2">
+        Claude Code wants to run: {toolLabel(prompt.toolCall)}
+      </Typography>
     </Alert>
   );
 }

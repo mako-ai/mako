@@ -73,7 +73,20 @@ interface AcpState {
   setSelectedProvider: (id: AcpProviderId) => void;
   setCwdDraft: (cwd: string) => void;
   setActiveSession: (sessionId: string | null) => void;
-  createSession: () => Promise<AcpSessionInfo | null>;
+  createSession: (options?: {
+    workspaceId?: string;
+    /** When true (Chat path), fail if Mako MCP cannot be attached. */
+    requireMakoMcp?: boolean;
+  }) => Promise<AcpSessionInfo | null>;
+  /** Record an ACP permission prompt for Chat / Coding Agents HITL. */
+  ingestPermissionRequest: (
+    sessionId: string,
+    request: {
+      requestId: string;
+      toolCall: unknown;
+      options: unknown[];
+    },
+  ) => void;
   authenticate: (providerId?: AcpProviderId) => Promise<void>;
   sendPrompt: (text: string) => Promise<void>;
   cancelActive: () => Promise<void>;
@@ -251,44 +264,57 @@ export const useAcpStore = create<AcpState>()(
       eventUnsubscribers.set(sessionId, unsub);
     },
 
-    createSession: async () => {
+    ingestPermissionRequest: (sessionId, request) => {
+      set(s => {
+        s.activeSessionId = sessionId;
+        s.permissionsBySession[sessionId] = {
+          requestId: request.requestId,
+          toolCall: request.toolCall,
+          options: (request.options || []).map(opt => {
+            const o = opt as {
+              optionId?: string;
+              name?: string;
+              kind?: string;
+            };
+            return {
+              optionId: String(o.optionId || ""),
+              name: String(o.name || o.optionId || "Option"),
+              kind: o.kind,
+            };
+          }),
+        };
+      });
+    },
+
+    createSession: async options => {
       const { selectedProviderId, cwdDraft } = get();
+      const requireMakoMcp = options?.requireMakoMcp !== false;
       set(s => {
         s.error = null;
       });
       try {
-        const workspaceId = getActiveWorkspaceId();
-        let attach:
-          | {
-              attachMakoMcp: true;
-              mcpUrl: string;
-              mcpAuthorization: string;
-            }
-          | undefined;
-        if (workspaceId) {
-          try {
-            const creds = await mintMakoMcpAttach(workspaceId);
-            attach = {
-              attachMakoMcp: true,
-              mcpUrl: creds.mcpUrl,
-              mcpAuthorization: creds.mcpAuthorization,
-            };
-          } catch (attachError) {
-            // Non-fatal: session still works with FS/local tools only.
-            set(s => {
-              s.error =
-                attachError instanceof Error
-                  ? `Mako data tools unavailable: ${attachError.message}`
-                  : "Mako data tools unavailable";
-            });
-          }
+        const workspaceId =
+          options?.workspaceId?.trim() || getActiveWorkspaceId();
+        if (!workspaceId) {
+          throw new Error(
+            "Select a workspace before starting Claude Code (local).",
+          );
         }
 
+        const creds = await mintMakoMcpAttach(workspaceId);
         const session = await acpClient.createSession({
           providerId: selectedProviderId,
           cwd: cwdDraft || undefined,
-          ...attach,
+          attachMakoMcp: true,
+          mcpUrl: creds.mcpUrl,
+          mcpAuthorization: creds.mcpAuthorization,
+          mcpServerName: creds.mcpServerName,
         });
+        if (requireMakoMcp && !session.makoMcpAttached) {
+          throw new Error(
+            "Local session started without Mako data tools. Restart Local Agent from this branch and try again.",
+          );
+        }
         set(s => {
           s.sessions = [
             session,
@@ -296,8 +322,7 @@ export const useAcpStore = create<AcpState>()(
           ];
           s.activeSessionId = session.id;
           s.messagesBySession[session.id] ??= [];
-          // Clear soft attach warning once the session exists.
-          if (session.makoMcpAttached) s.error = null;
+          s.error = null;
         });
         get().ensureEventSubscription(session.id);
         return session;

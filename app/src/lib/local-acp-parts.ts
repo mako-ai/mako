@@ -44,8 +44,10 @@ export function resolveAcpToolName(update: AcpToolUpdate): string {
     update._meta?.claudeCode?.toolName || update.name || update.title || "tool";
   const name = String(raw).trim() || "tool";
   // Strip Claude MCP prefix so AGENT_TOOL_MANIFEST icons/labels match.
-  if (name.startsWith("mcp__mako__")) {
-    return name.slice("mcp__mako__".length) || name;
+  for (const prefix of ["mcp__mako-workspace__", "mcp__mako__"]) {
+    if (name.startsWith(prefix)) {
+      return name.slice(prefix.length) || name;
+    }
   }
   return name;
 }

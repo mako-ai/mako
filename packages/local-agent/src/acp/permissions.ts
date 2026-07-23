@@ -36,12 +36,11 @@ export function isMakoMcpToolName(name: string): boolean {
   if (!name) return false;
   const lower = name.toLowerCase();
   return (
+    lower.startsWith("mcp__mako-workspace__") ||
+    lower === "mcp__mako-workspace" ||
     lower.startsWith("mcp__mako__") ||
     lower === "mcp__mako" ||
-    lower.startsWith("mcp__mako ") ||
-    // Some UIs put the server name in the title only.
-    /\bmcp__mako\b/i.test(name) ||
-    /^mako\b/i.test(name)
+    /\bmcp__mako(-workspace)?\b/i.test(name)
   );
 }
 
@@ -85,8 +84,8 @@ export function shouldAutoApprovePermission(input: {
   const name = extractToolCallName(input.toolCall);
   const kind = extractToolCallKind(input.toolCall);
 
-  // Any mcp__mako__* tool is already authorized by the workspace MCP Bearer
-  // we attached on session/new — never click-tax those.
+  // Workspace MCP tools are already authorized by the Bearer we attached on
+  // session/new — never click-tax those.
   if (isMakoMcpToolName(name)) {
     return { optionId };
   }

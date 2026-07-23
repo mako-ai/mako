@@ -345,7 +345,12 @@ export class AcpSessionManager {
     const attachMakoMcp = Boolean(
       body.attachMakoMcp && body.mcpUrl?.trim() && body.mcpAuthorization?.trim(),
     );
-    // For Claude ACP, also allowlist mcp__mako__* so the Agent SDK does not
+    const mcpServerName = (
+      body.mcpServerName?.trim() || "mako-workspace"
+    ).replace(/[^a-zA-Z0-9_-]/g, "-");
+    const makoToolPrefix = `mcp__${mcpServerName}__`;
+
+    // For Claude ACP, allowlist our attached server so the Agent SDK does not
     // prompt on every Mako tool (acceptEdits does NOT cover MCP).
     let builder =
       attachMakoMcp && providerId === "claude"
@@ -355,14 +360,13 @@ export class AcpSessionManager {
             _meta: {
               claudeCode: {
                 options: {
-                  allowedTools: ["mcp__mako__*", "mcp__mako"],
-                  // Nudge Claude toward Mako workspace tools for data questions
-                  // (otherwise it may prefer Claude.ai Gmail/Drive connectors).
+                  allowedTools: [`${makoToolPrefix}*`, `mcp__${mcpServerName}`],
+                  // Prefer the Bearer-authenticated workspace MCP we attach —
+                  // not Claude.ai's optional "Mako" connector (needs separate OAuth).
                   systemPrompt: {
                     type: "preset",
                     preset: "claude_code",
-                    append:
-                      "\n\n# Mako workspace\nYou are running inside Mako. For the user's workspace databases, SQL, connections, consoles, and apps, prefer the `mcp__mako__*` tools (list_connections, sql_list_tables, sql_execute_query, run_console, create_console, app_*, etc.). Use those before searching Gmail/Drive when the question is about data available in Mako.",
+                    append: `\n\n# Mako workspace\nYou are running inside Mako. Workspace databases, SQL, connections, consoles, and apps are available via the already-authenticated MCP server \`${mcpServerName}\` (tools named \`${makoToolPrefix}*\`, e.g. list_connections, sql_execute_query, run_console). Prefer those tools. Do not ask the user to run \`claude mcp\` or authorize a Claude.ai "Mako" connector — that is a different, unauthenticated connector. Do not use Gmail/Drive for questions about data in Mako.`,
                   },
                 },
               },
@@ -376,13 +380,14 @@ export class AcpSessionManager {
       );
       builder = builder.withMcpServer({
         type: "http",
-        name: "mako",
+        name: mcpServerName,
         url: mcpUrl,
         headers: [{ name: "Authorization", value: authorization }],
       });
       acpLog.info("Attaching Mako MCP to ACP session", {
         providerId,
         mcpUrl,
+        mcpServerName,
       });
     }
 

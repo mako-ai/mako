@@ -56,6 +56,7 @@ export const acpClient = {
     attachMakoMcp?: boolean;
     mcpUrl?: string;
     mcpAuthorization?: string;
+    mcpServerName?: string;
   }): Promise<AcpSessionInfo> {
     const body = await localAgentClient.post<Envelope<AcpSessionInfo>>(
       "/acp/sessions",
