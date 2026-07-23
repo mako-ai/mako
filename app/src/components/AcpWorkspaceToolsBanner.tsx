@@ -152,8 +152,7 @@ export function AcpWorkspaceToolsBanner(props: {
         </Typography>
         <Typography variant="body2" sx={{ mb: 1 }}>
           Start Mako Desktop or run <code>pnpm agent:start</code> on this
-          machine, then enable tools below. You do not need{" "}
-          <code>claude mcp</code>.
+          machine, then enable tools below.
         </Typography>
         {statusError ? (
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
@@ -254,9 +253,9 @@ export function AcpWorkspaceToolsBanner(props: {
         onClose={() => setDismissedReady(true)}
       >
         <Typography variant="body2">
-          Workspace tools connected (<code>mako-workspace</code>). Ask about
-          your data — Claude should call Mako tools, not ask for{" "}
-          <code>claude mcp</code>.
+          Workspace tools connected (<code>mako-workspace</code>). Ask{" "}
+          {provider?.label || "the local agent"} about your data — it should
+          call Mako tools directly (no Terminal MCP setup).
         </Typography>
       </Alert>
     );
@@ -286,8 +285,9 @@ export function AcpWorkspaceToolsBanner(props: {
       </Typography>
       <Typography variant="body2">
         Mints a short-lived token and attaches authenticated workspace MCP (SQL,
-        connections, consoles). If Claude already said Mako needs auth, click
-        Enable, then send a new message — or start a New chat.
+        connections, consoles) for {provider?.label || "this local agent"}. If
+        it asked for Mako auth, click Enable, then send a new message — or start
+        a New chat.
       </Typography>
       {ensureRunning || ensureStatus?.state === "error" ? (
         <Typography variant="body2" sx={{ mt: 1 }}>

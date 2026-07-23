@@ -917,8 +917,14 @@ export class AcpSessionManager {
       let modelToApply: string | null = null;
       if (providerId === "codex") {
         const before = managed.info.currentModel;
+        const resolvedPreferred = preferredModel
+          ? resolveModelConfigValue(
+              preferredModel,
+              managed.info.availableModels,
+            )
+          : undefined;
         const safe = pickSafeCodexModel(
-          preferredModel,
+          resolvedPreferred,
           managed.info.availableModels,
           before,
         );
@@ -949,19 +955,17 @@ export class AcpSessionManager {
             preferredModel: modelToApply,
             error: String(error),
           });
-          // Claude: fail clearly — silent fallback left users on Sonnet while
-          // Chat showed Opus. Codex: leave adapter default (metadata tips).
-          if (providerId === "claude") {
-            const raw =
-              error instanceof Error ? error.message : String(error);
-            throw new Error(
-              /not found|invalid value|unknown/i.test(raw)
-                ? `Claude could not switch to model "${modelToApply}". ` +
-                    `Pick a model from the adapter list (full id), or Update ` +
-                    `the Claude ACP adapter in Settings → Coding Agents. (${raw})`
-                : raw,
-            );
-          }
+          // Fail clearly for both providers — silent fallback left Chat showing
+          // Opus/Sol while the adapter stayed on default.
+          const raw = error instanceof Error ? error.message : String(error);
+          const label = ACP_PROVIDERS[providerId].label;
+          throw new Error(
+            /not found|invalid value|unknown/i.test(raw)
+              ? `${label} could not switch to model "${modelToApply}". ` +
+                  `Update the adapter in Settings → Coding Agents, fully quit/` +
+                  `reopen Desktop, then pick the model again. (${raw})`
+              : raw,
+          );
         }
       }
 

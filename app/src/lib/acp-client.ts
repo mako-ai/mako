@@ -21,9 +21,19 @@ interface Envelope<T> {
 
 function unwrap<T>(body: Envelope<T>, fallback: string): T {
   if (!body?.success || body.data === undefined) {
-    throw new Error(body?.error || fallback);
+    throw new Error(rewriteLocalAgentNotFound(body?.error || fallback));
   }
   return body.data;
+}
+
+/** Old Local Agents return bare "Not Found" for new ACP routes. */
+function rewriteLocalAgentNotFound(message: string): string {
+  if (!/^not found$/i.test(message.trim())) return message;
+  return (
+    "Local Agent is outdated for this action (missing ACP route). " +
+    "Fully quit and reopen Mako Desktop 0.3.9+ so the bundled agent restarts, " +
+    "then retry Update adapter / model switch."
+  );
 }
 
 export const acpClient = {
@@ -61,24 +71,34 @@ export const acpClient = {
     providerId: AcpProviderId,
     options?: { force?: boolean },
   ): Promise<AcpEnsureAdapterResult> {
-    const body = await localAgentClient.post<Envelope<AcpEnsureAdapterResult>>(
-      `/acp/adapters/${encodeURIComponent(providerId)}/ensure`,
-      { force: Boolean(options?.force) },
-      { timeoutMs: 4 * 60 * 1000 },
-    );
-    return unwrap(body, "Failed to update local adapter");
+    try {
+      const body = await localAgentClient.post<Envelope<AcpEnsureAdapterResult>>(
+        `/acp/adapters/${encodeURIComponent(providerId)}/ensure`,
+        { force: Boolean(options?.force) },
+        { timeoutMs: 4 * 60 * 1000 },
+      );
+      return unwrap(body, "Failed to update local adapter");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(rewriteLocalAgentNotFound(message));
+    }
   },
 
   /** Populate real Claude/Codex model ids without starting a Chat turn. */
   async warmProviderModels(
     providerId: AcpProviderId,
   ): Promise<AcpWarmModelsResult> {
-    const body = await localAgentClient.post<Envelope<AcpWarmModelsResult>>(
-      `/acp/providers/${encodeURIComponent(providerId)}/warm-models`,
-      {},
-      { timeoutMs: 2 * 60 * 1000 },
-    );
-    return unwrap(body, "Failed to load local models");
+    try {
+      const body = await localAgentClient.post<Envelope<AcpWarmModelsResult>>(
+        `/acp/providers/${encodeURIComponent(providerId)}/warm-models`,
+        {},
+        { timeoutMs: 2 * 60 * 1000 },
+      );
+      return unwrap(body, "Failed to load local models");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(rewriteLocalAgentNotFound(message));
+    }
   },
 
   async createSession(input: {

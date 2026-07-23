@@ -483,9 +483,11 @@ export async function runLocalAcpChatTurn(
       error instanceof Error ? error.message : "Local ACP prompt failed";
     if (/^not found$/i.test(message.trim())) {
       message =
-        "Local Claude/Codex could not apply that model. " +
-        "Mako will reload models on the next send — try again, or pick the " +
-        "full Opus/Sonnet row after Update adapter in Settings.";
+        providerId === "codex"
+          ? "Codex could not apply that model (or Local Agent is outdated). " +
+            "Fully quit/reopen Mako Desktop 0.3.9+, then pick GPT-5.6 Sol/Terra/Luna again."
+          : "Claude could not apply that model (or Local Agent is outdated). " +
+            "Fully quit/reopen Mako Desktop 0.3.9+, then pick Opus/Sonnet again.";
     }
     // Codex often returns opaque "Internal error" / missing model metadata
     // when the CLI or ACP adapter is outdated. Local Agent auto-updates;

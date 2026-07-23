@@ -344,7 +344,9 @@ export const useAcpStore = create<AcpState>()(
           options?.workspaceId?.trim() || getActiveWorkspaceId();
         if (!workspaceId) {
           throw new Error(
-            "Select a workspace before starting Claude Code (local).",
+            `Select a workspace before starting ${
+              selectedProviderId === "codex" ? "Codex" : "Claude Code"
+            } (local).`,
           );
         }
 
@@ -411,9 +413,13 @@ export const useAcpStore = create<AcpState>()(
             ? error.message
             : "Failed to switch local model";
         if (/^not found$/i.test(message.trim())) {
+          const providerId =
+            get().sessions.find(s => s.id === sessionId)?.providerId ||
+            get().selectedProviderId;
           message =
-            `Could not switch to model "${value}". ` +
-            `Mako will reload the model list — pick Opus/Sonnet again, or send your message to start a fresh local session.`;
+            providerId === "codex"
+              ? `Codex could not switch to "${value}". Fully quit/reopen Desktop 0.3.9+, Update adapter, then pick GPT-5.6 Sol/Terra/Luna again.`
+              : `Claude could not switch to "${value}". Fully quit/reopen Desktop 0.3.9+, Update adapter, then pick Opus/Sonnet again.`;
         }
         set(s => {
           s.error = message;
