@@ -28,7 +28,11 @@ function ProviderSetupCard() {
   const createSession = useAcpStore(s => s.createSession);
   const loadingStatus = useAcpStore(s => s.loadingStatus);
 
-  const provider = status?.providers.find(p => p.id === selectedProviderId);
+  const providers = status?.providers ?? [];
+  const provider = providers.find(p => p.id === selectedProviderId);
+  // MUI Select crashes the tree when `value` is set but no matching MenuItem
+  // exists yet (providers still loading). Only bind a known option.
+  const selectValue = provider ? selectedProviderId : "";
 
   return (
     <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
@@ -41,15 +45,26 @@ function ProviderSetupCard() {
           <Select
             labelId="acp-provider-label"
             label="Provider"
-            value={selectedProviderId}
-            onChange={e => setSelectedProvider(e.target.value as AcpProviderId)}
+            value={selectValue}
+            displayEmpty
+            disabled={providers.length === 0}
+            onChange={e => {
+              const next = e.target.value;
+              if (next) setSelectedProvider(next as AcpProviderId);
+            }}
           >
-            {(status?.providers || []).map(p => (
-              <MenuItem key={p.id} value={p.id}>
-                {p.label}
-                {!p.adapterFound ? " (adapter missing)" : ""}
+            {providers.length === 0 ? (
+              <MenuItem value="">
+                <em>Loading providers…</em>
               </MenuItem>
-            ))}
+            ) : (
+              providers.map(p => (
+                <MenuItem key={p.id} value={p.id}>
+                  {p.label}
+                  {!p.adapterFound ? " (adapter missing)" : ""}
+                </MenuItem>
+              ))
+            )}
           </Select>
         </FormControl>
 
@@ -255,9 +270,16 @@ export function CodingAgentsPanel() {
     })();
   }, [checkAgent, refreshStatus, refreshSessions]);
 
+  // Subscribe to ACP status: Local Agent may already be "online" from
+  // Databases/etc. before `/acp/status` has loaded. Rendering the provider
+  // Select with value "claude" and zero MenuItems crashes MUI/React and
+  // blanks the settings pane.
+  const acpStatus = useAcpStore(s => s.status);
+
   if (
     agentStatus === "unknown" ||
-    (agentStatus === "online" && loadingStatus)
+    loadingStatus ||
+    (agentStatus === "online" && !statusError && !acpStatus)
   ) {
     return (
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, py: 4 }}>
@@ -278,6 +300,19 @@ export function CodingAgentsPanel() {
             {statusError}
           </Typography>
         ) : null}
+        <Box sx={{ mt: 2 }}>
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={() =>
+              void checkAgent().then(s => {
+                if (s === "online") void refreshStatus();
+              })
+            }
+          >
+            Retry
+          </Button>
+        </Box>
       </Alert>
     );
   }
