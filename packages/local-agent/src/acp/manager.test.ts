@@ -110,7 +110,7 @@ describe("AcpSessionManager with mock agent", () => {
         cwd: process.cwd(),
         title: "mcp-attach",
         attachMakoMcp: true,
-        mcpUrl: "https://example.com/api/mcp",
+        mcpUrl: "https://app.mako.ai/api/mcp",
         mcpAuthorization: "Bearer mcpat_test",
         mcpServerName: "mako-workspace",
       });
@@ -128,6 +128,21 @@ describe("AcpSessionManager with mock agent", () => {
     await manager.closeSession(without.id);
   });
 
+  it("rejects session/new when mcpUrl host is not a Mako API", async () => {
+    await assert.rejects(
+      () =>
+        manager.createSession({
+          providerId: "claude",
+          cwd: process.cwd(),
+          attachMakoMcp: true,
+          mcpUrl: "https://evil.example/api/mcp",
+          mcpAuthorization: "Bearer mcpat_test",
+          mcpServerName: "mako-workspace",
+        }),
+      /not allowed/i,
+    );
+  });
+
   it("fails session/new when Mako MCP probe returns 401", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () =>
@@ -139,7 +154,7 @@ describe("AcpSessionManager with mock agent", () => {
             providerId: "claude",
             cwd: process.cwd(),
             attachMakoMcp: true,
-            mcpUrl: "https://example.com/api/mcp",
+            mcpUrl: "https://app.mako.ai/api/mcp",
             mcpAuthorization: "Bearer bad",
             mcpServerName: "mako-workspace",
           }),

@@ -19,6 +19,7 @@ import { getCookie } from "hono/cookie";
 
 import { sessionManager } from "../auth/session";
 import {
+  ACP_MCP_CLIENT_ID,
   createAuthorizationCode,
   exchangeAuthorizationCode,
   getOAuthClient,
@@ -205,6 +206,16 @@ async function parseAuthorizeParams(
   const client = await getOAuthClient(clientId);
   if (!client) {
     return { ok: false, status: 400, message: "Unknown client_id" };
+  }
+  // Session-mint only — never show the trusted "Mako Coding Agent (ACP)"
+  // consent page or issue codes via the public authorize flow.
+  if (clientId === ACP_MCP_CLIENT_ID) {
+    return {
+      ok: false,
+      status: 400,
+      message:
+        "This client is for Desktop session minting only and cannot use the browser authorize flow",
+    };
   }
   if (!client.redirectUris.includes(redirectUri)) {
     return {
@@ -480,6 +491,16 @@ mcpOAuthRoutes.post("/token", async c => {
 
   try {
     if (grantType === "authorization_code") {
+      if (clientId === ACP_MCP_CLIENT_ID) {
+        return c.json(
+          {
+            error: "unauthorized_client",
+            error_description:
+              "mako-acp-local cannot use authorization_code; mint via session",
+          },
+          400,
+        );
+      }
       const code = str("code");
       const codeVerifier = str("code_verifier");
       if (!code || !codeVerifier) {

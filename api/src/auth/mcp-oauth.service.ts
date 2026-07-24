@@ -156,13 +156,23 @@ async function ensureAcpMcpClient(): Promise<void> {
     clientId: ACP_MCP_CLIENT_ID,
   }).lean();
   if (existing) return;
-  await McpOAuthClient.create({
-    clientId: ACP_MCP_CLIENT_ID,
-    clientName: ACP_MCP_CLIENT_NAME,
-    // Session-minted grants never use the authorize redirect; keep a valid
-    // loopback URI so the client row satisfies registration constraints.
-    redirectUris: ["http://127.0.0.1/acp-callback"],
-  });
+  try {
+    await McpOAuthClient.create({
+      clientId: ACP_MCP_CLIENT_ID,
+      clientName: ACP_MCP_CLIENT_NAME,
+      // Session-minted grants never use the authorize redirect; keep a valid
+      // loopback URI so the client row satisfies registration constraints.
+      // Public /authorize must reject this clientId (session-mint only).
+      redirectUris: ["http://127.0.0.1/acp-callback"],
+    });
+  } catch (error) {
+    // Concurrent first mints can race the unique clientId index.
+    const code =
+      error && typeof error === "object" && "code" in error
+        ? (error as { code?: unknown }).code
+        : undefined;
+    if (code !== 11000) throw error;
+  }
 }
 
 /**

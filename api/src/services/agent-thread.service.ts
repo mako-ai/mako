@@ -753,6 +753,12 @@ export const saveChat = async (
       messages: storedMessages,
       updatedAt: now,
     },
+    // Cloud /api/agent/chat saves go through here. Clear any prior Local ACP
+    // binding so History reopen doesn't force a dead Claude/Codex session.
+    // ACP PUT /chats/:id/messages re-$sets localAcp immediately after saveChat.
+    $unset: {
+      localAcp: "",
+    },
     $setOnInsert: {
       workspaceId: new ObjectId(workspaceId),
       createdBy: userId,

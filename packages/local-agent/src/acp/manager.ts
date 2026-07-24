@@ -18,6 +18,7 @@ import {
 } from "./providers";
 import { resolveAdapterCommand } from "./resolve-command";
 import { shouldAutoApprovePermission } from "./permissions";
+import { assertAllowedMakoMcpUrl } from "./mako-mcp-url";
 import { probeMakoMcpHttp } from "./mcp-probe";
 import {
   hasCodexAuthFile,
@@ -938,7 +939,9 @@ export class AcpSessionManager {
             })
           : conn.agent.buildSession(cwd);
       if (attachMakoMcp) {
-        const mcpUrl = String(body.mcpUrl).trim();
+        // Never probe/attach an arbitrary URL with the workspace Bearer —
+        // that would exfiltrate mcpat_* to an attacker-controlled host.
+        const mcpUrl = assertAllowedMakoMcpUrl(String(body.mcpUrl));
         const authorization = normalizeBearerAuth(
           String(body.mcpAuthorization),
         );
