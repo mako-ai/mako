@@ -356,6 +356,13 @@ export default function AppRenderer({
       const hasArtifact =
         status === "ready" && Boolean(binding.cache?.parquetUrl);
       if (hasArtifact || status === "error") continue;
+      // A build is already in flight — an explicit Refresh (bulk or single),
+      // the agent, or a scheduled run flipped this binding to queued/building.
+      // Do NOT start a competing refreshPreview build: that path refreshes the
+      // running app once per binding, so the whole batch would poke the preview
+      // N times instead of once when every binding settles. The in-flight
+      // build's own caller applies data when it's done.
+      if (status === "queued" || status === "building") continue;
       if (autoMaterializeAttempted.current.has(binding.id)) continue;
       autoMaterializeAttempted.current.add(binding.id);
       setPublishedNotice(`Building data for "${binding.name}"…`);
