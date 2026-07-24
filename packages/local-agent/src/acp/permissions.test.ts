@@ -20,6 +20,37 @@ describe("ACP permission auto-approve", () => {
     assert.equal(isMakoMcpToolName("Bash"), false);
   });
 
+  it("detects Codex dotted MCP titles for mako workspace/desktop", () => {
+    assert.equal(
+      isMakoMcpToolName("mcp.mako-desktop.get_preview_errors"),
+      true,
+    );
+    assert.equal(
+      isMakoMcpToolName("mcp.mako-workspace.get_relevant_skills"),
+      true,
+    );
+    assert.equal(
+      isMakoMcpToolName("Mcp.Mako-Workspace.Sql Execute Query"),
+      true,
+    );
+    assert.equal(isMakoMcpToolName("mcp.slack.post_message"), false);
+  });
+
+  it("auto-approves Codex mako-desktop execute tools", () => {
+    const decision = shouldAutoApprovePermission({
+      toolCall: {
+        title: "mcp.mako-desktop.get_preview_errors",
+        kind: "execute",
+        _meta: { is_mcp_tool_call: true },
+      },
+      options: [
+        { optionId: "allow-once", kind: "allow_once" },
+        { optionId: "reject-once", kind: "reject_once" },
+      ],
+    });
+    assert.deepEqual(decision, { optionId: "allow-once" });
+  });
+
   it("prefers allow_always over allow_once", () => {
     assert.equal(
       pickAllowOptionId([

@@ -148,6 +148,23 @@ describe("local-acp-parts", () => {
         state: "streaming",
       },
     ]);
+    // Claude summarized titles arrive without separators — don't mash them.
+    parts = appendAssistantReasoning(
+      [{ type: "reasoning", text: "", state: "streaming" }],
+      "**Inspecting available tools**",
+    );
+    parts = appendAssistantReasoning(
+      parts,
+      "I'll review the current app's structure.",
+    );
+    parts = appendAssistantReasoning(
+      parts,
+      "**Identifying precise call names**",
+    );
+    expect(parts[0]).toMatchObject({
+      type: "reasoning",
+      text: "**Inspecting available tools**\n\nI'll review the current app's structure.\n\n**Identifying precise call names**",
+    });
     parts = upsertAcpToolPart(parts, {
       toolCallId: "t3",
       name: "sql_execute_query",

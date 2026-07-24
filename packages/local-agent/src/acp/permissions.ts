@@ -31,19 +31,32 @@ export function extractToolCallKind(toolCall: unknown): string {
   return typeof kind === "string" ? kind : "";
 }
 
-/** Claude Agent SDK names MCP tools `mcp__{server}__{tool}`. */
+/**
+ * True for Mako workspace / desktop MCP tools under either naming scheme:
+ * - Claude Agent SDK: `mcp__mako-workspace__list_connections`
+ * - Codex ACP titles: `mcp.mako-desktop.get_preview_errors` /
+ *   `Mcp.Mako-Workspace.Sql Execute Query`
+ *
+ * Codex marks these `kind: "execute"`, so without this match they sit in
+ * request_permission forever (black / stuck Chat) while Claude's `mcp__*`
+ * names auto-approve.
+ */
 export function isMakoMcpToolName(name: string): boolean {
   if (!name) return false;
-  const lower = name.toLowerCase();
-  return (
-    lower.startsWith("mcp__mako-workspace__") ||
-    lower === "mcp__mako-workspace" ||
-    lower.startsWith("mcp__mako-desktop__") ||
-    lower === "mcp__mako-desktop" ||
+  const lower = name.trim().toLowerCase();
+  if (
+    lower.startsWith("mcp__mako-workspace") ||
+    lower.startsWith("mcp__mako-desktop") ||
     lower.startsWith("mcp__mako__") ||
-    lower === "mcp__mako" ||
-    /\bmcp__mako(-workspace|-desktop)?\b/i.test(name)
-  );
+    lower === "mcp__mako"
+  ) {
+    return true;
+  }
+  // Codex dotted / Title Case forms (server segment may include hyphens).
+  if (/^mcp\.mako(-workspace|-desktop)?(\.|$)/.test(lower)) {
+    return true;
+  }
+  return /\bmcp__mako(-workspace|-desktop)?\b/i.test(name);
 }
 
 /** Safe to auto-approve without a human click (reads / search / think). */

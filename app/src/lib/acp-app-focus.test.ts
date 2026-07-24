@@ -95,6 +95,22 @@ describe("acp-app-focus", () => {
     expect(focusAppTab).not.toHaveBeenCalled();
   });
 
+  it("does not rebuild preview on get_app_state (avoids black flash)", async () => {
+    mockOpenApps = { app1: { _id: "app1" } };
+    const scheduled = maybeFocusAppFromAcpTool("ws1", {
+      status: "completed",
+      name: "mcp__mako-workspace__get_app_state",
+      rawInput: { appId: "app1" },
+      rawOutput: { success: true, appId: "app1" },
+    });
+    expect(scheduled).toBe(true);
+    await vi.waitFor(() => {
+      expect(fetchApp).toHaveBeenCalled();
+    });
+    expect(bumpPreview).not.toHaveBeenCalled();
+    expect(focusAppTab).not.toHaveBeenCalled();
+  });
+
   it("ignores unrelated tools", () => {
     expect(
       maybeFocusAppFromAcpTool("ws1", {
