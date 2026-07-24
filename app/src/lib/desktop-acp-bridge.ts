@@ -62,6 +62,8 @@ async function executeImmediateJob(job: BridgeJob): Promise<unknown> {
   }
 
   if (job.tool === "get_preview_errors") {
+    // Read-only — never bumpPreview / rebuild the iframe (that blacks out
+    // the app preview and can remount Chat mid-turn).
     const errors = useAppStore.getState().previewErrors[appId] ?? [];
     return {
       success: true,
@@ -70,7 +72,11 @@ async function executeImmediateJob(job: BridgeJob): Promise<unknown> {
     };
   }
 
-  return executeAppAgentTool("run_app", { appId });
+  if (job.tool === "run_app") {
+    return executeAppAgentTool("run_app", { appId });
+  }
+
+  throw new Error(`Unsupported desktop bridge tool: ${job.tool}`);
 }
 
 export async function completeDesktopHitlJob(

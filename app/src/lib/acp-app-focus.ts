@@ -22,7 +22,27 @@ export const ACP_APP_FOCUS_TOOLS = new Set([
   "app_delete_data_binding",
   "create_preview_token",
   "render_app",
+  // Read-only inspect — open the tab if needed, but do NOT rebuild the iframe
+  // (bumpPreview). Rebuilding flashes a black “Building preview…” screen and
+  // can remount Chat mid-tool (get_preview_errors then looks Interrupted).
   "get_app_state",
+]);
+
+/** Mutations / explicit preview that need an iframe srcdoc rebuild. */
+const ACP_APP_BUMP_PREVIEW_TOOLS = new Set([
+  "create_app",
+  "open_app",
+  "app_write_file",
+  "app_edit_file",
+  "app_delete_file",
+  "app_rename_file",
+  "app_add_dependency",
+  "app_remove_dependency",
+  "app_create_data_binding",
+  "app_update_data_binding",
+  "app_delete_data_binding",
+  "create_preview_token",
+  "render_app",
 ]);
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -83,6 +103,8 @@ export function maybeFocusAppFromAcpTool(
     toolName === "create_preview_token" ||
     toolName === "render_app";
 
+  const shouldBump = ACP_APP_BUMP_PREVIEW_TOOLS.has(toolName);
+
   void useAppStore
     .getState()
     .fetchApp(workspaceId, appId)
@@ -91,7 +113,12 @@ export function maybeFocusAppFromAcpTool(
         if (shouldFocus) {
           focusAppTab(appId, app?.title || title || "App");
         }
-        useAppStore.getState().bumpPreview(appId);
+        // Only rebuild the sandboxed iframe when files/bindings changed.
+        // Read tools (get_app_state) used to bump every time → black flash +
+        // Chat remount → mid-flight mako-desktop tools marked Interrupted.
+        if (shouldBump) {
+          useAppStore.getState().bumpPreview(appId);
+        }
         void useAppStore.getState().fetchList(workspaceId);
       } catch {
         // Preview/tab focus must never surface as an unhandled rejection —

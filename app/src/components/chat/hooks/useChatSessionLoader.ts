@@ -145,6 +145,12 @@ export interface UseChatSessionLoaderArgs {
    * Chat on new-session; set here when a persisted localAcp payload is loaded.
    */
   localAcpBindingRef: MutableRefObject<LocalAcpChatBinding | null>;
+  /**
+   * True while a Local ACP turn is streaming. Mid-turn History checkpoints
+   * persist in-flight tools; without this flag, reload would poison them to
+   * "Interrupted — stream disconnected…" (ACP has no activeStreamId).
+   */
+  localAcpBusyRef: MutableRefObject<boolean>;
 }
 
 /**
@@ -167,6 +173,7 @@ export function useChatSessionLoader({
   loadPersistedMessagesRef,
   requestResumeRef,
   localAcpBindingRef,
+  localAcpBusyRef,
 }: UseChatSessionLoaderArgs): void {
   // Fetch the persisted chat and swap it into the hook state. Shared by the
   // history-load effect below and the resume manager's reload-before-replay
@@ -244,7 +251,10 @@ export function useChatSessionLoader({
       // persisted the poison over the server's correct finalization.
       const convertedMessages = convertStoredMessages(
         data.messages as unknown[],
-        { turnActive: Boolean(data.activeStreamId) },
+        {
+          turnActive:
+            Boolean(data.activeStreamId) || Boolean(localAcpBusyRef.current),
+        },
       );
 
       // Restored tool parts must not re-trigger the in-band console

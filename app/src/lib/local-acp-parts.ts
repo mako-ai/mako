@@ -338,11 +338,31 @@ export function appendAssistantText(
 }
 
 /**
+ * Claude `thinking.display: "summarized"` streams short title + prose chunks
+ * without separators (`**Inspecting…**` then `I'll review…`). Naive concat
+ * produces `**tools**I'll`. Insert a break / space at the boundary.
+ */
+export function joinReasoningChunks(prev: string, chunk: string): string {
+  if (!prev) return chunk;
+  if (!chunk) return prev;
+  if (/\s$/.test(prev) || /^\s/.test(chunk)) return prev + chunk;
+  // New summarized heading, or previous chunk ended on a markdown heading.
+  if (/^\*\*/.test(chunk) || /\*\*[^*\n]+\*\*$/.test(prev.trimEnd())) {
+    return `${prev}\n\n${chunk}`;
+  }
+  return `${prev} ${chunk}`;
+}
+
+/**
  * Append ACP `agent_thought_chunk` text as UIMessage `reasoning` parts so Chat
  * renders the same Thinking/ReasoningDisplay blocks as the in-app agent.
  * Extends the trailing reasoning part; starts a new block after tools/text.
  * Stamps `state: "streaming"` so Chat's streaming-reasoning heuristic expands
  * the block live (same as cloud AI SDK parts).
+ *
+ * Note: Claude ACP only exposes Anthropic's summarized thinking (titles +
+ * short blurbs), not full extended-thinking traces — `display: "omitted"` is
+ * empty; there is no "full" display mode on Opus 4.7+.
  */
 export function appendAssistantReasoning(
   parts: AssistantPart[],
@@ -364,7 +384,7 @@ export function appendAssistantReasoning(
     const copy = parts.slice();
     copy[copy.length - 1] = {
       type: "reasoning",
-      text: `${(last as ReasoningPart).text}${chunk}`,
+      text: joinReasoningChunks((last as ReasoningPart).text, chunk),
       state: "streaming",
     };
     return copy;

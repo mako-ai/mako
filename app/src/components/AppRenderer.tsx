@@ -305,6 +305,14 @@ export default function AppRenderer({
   // with Babel can take several seconds; show progress instead of a white box.
   const [booting, setBooting] = useState(true);
 
+  // If the iframe never posts ready/error (crash, hung CDN), clear the overlay
+  // so users aren't stuck on a black "Building preview…" screen.
+  useEffect(() => {
+    if (!booting) return;
+    const timer = window.setTimeout(() => setBooting(false), 20_000);
+    return () => window.clearTimeout(timer);
+  }, [booting, previewNonce]);
+
   useEffect(() => {
     if (!appEntity && workspaceId) void fetchApp(workspaceId, appId);
   }, [appEntity, workspaceId, appId, fetchApp]);
