@@ -58,7 +58,7 @@ export function buildAcpContinuitySeed(messages: UIMessage[]): string {
   if (lines.length === 0) return "";
 
   let text = [
-    "[Prior Mako chat transcript — the previous local Claude/Codex session ended; continue from this context. Do not re-greet as if this is a brand-new chat.]",
+    "[Prior Mako chat transcript — the previous local Claude/Codex session ended; continue from this context. Do not re-greet as if this is a brand-new chat. Do not paste or repeat this transcript back to the user — answer only their latest message.]",
     ...lines,
     "[End prior transcript]",
   ].join("\n");

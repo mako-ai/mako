@@ -47,7 +47,10 @@ import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { useRealtimeStore } from "../store/realtimeStore";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { generateObjectId } from "../utils/objectId";
-import { isLocalAcpModelId } from "../lib/local-acp-models";
+import {
+  isLocalAcpModelId,
+  localAcpModelIdToProviderId,
+} from "../lib/local-acp-models";
 import { runLocalAcpChatTurn } from "../lib/local-acp-chat";
 import {
   completeDesktopHitlJob,
@@ -709,13 +712,20 @@ const Chat: React.FC<ChatProps> = ({
     isLoadingRef.current = true;
     try {
       const binding = localAcpBindingRef.current;
+      const providerId = localAcpModelIdToProviderId(modelId);
+      // Reuse the ACP process session across Terra/Luna/Sol picks for the same
+      // provider. Exact modelId equality used to drop the binding on every
+      // picker change, which forced set_config / reconnect mid-chat and made
+      // the user's turn look like it disappeared ("Conversation interrupted").
       await runLocalAcpChatTurn({
         modelId,
         text,
         workspaceId: workspaceIdRef.current,
         chatId: chatIdRef.current,
         preferredSessionId:
-          binding?.modelId === modelId ? binding.sessionId : undefined,
+          binding && providerId && binding.providerId === providerId
+            ? binding.sessionId
+            : undefined,
         setMessages,
         signal: abort.signal,
         onPersisted: binding => {

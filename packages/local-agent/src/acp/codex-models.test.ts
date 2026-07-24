@@ -2,8 +2,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   explainCodexModelFailure,
+  isChatGptRejectedCodexModel,
+  isCodexChatGptModelRejectedError,
   isForeignGatewayCodexModel,
   isUnsupportedCodexChatGptModel,
+  pickChatGptCompatibleCodexModel,
   pickSafeCodexModel,
 } from "./codex-models";
 
@@ -17,7 +20,19 @@ describe("codex-models", () => {
     assert.equal(isUnsupportedCodexChatGptModel("openai/foo"), true);
   });
 
-  it("keeps gpt-5.6-sol as the current session model", () => {
+  it("treats Sol as ChatGPT-rejected and prefers Terra", () => {
+    assert.equal(isChatGptRejectedCodexModel("gpt-5.6-sol"), true);
+    assert.equal(isChatGptRejectedCodexModel("gpt-5.6-terra"), false);
+    assert.equal(
+      pickChatGptCompatibleCodexModel([
+        { value: "gpt-5.6-sol", name: "Sol" },
+        { value: "gpt-5.6-terra", name: "Terra" },
+      ]),
+      "gpt-5.6-terra",
+    );
+  });
+
+  it("switches adapter default Sol to Terra for ChatGPT-safe sessions", () => {
     assert.equal(
       pickSafeCodexModel(
         null,
@@ -27,11 +42,25 @@ describe("codex-models", () => {
         ],
         "gpt-5.6-sol",
       ),
-      null,
+      "gpt-5.6-terra",
     );
   });
 
-  it("applies an explicit Sol/Terra pick", () => {
+  it("remaps an explicit Sol pick to Terra for ChatGPT accounts", () => {
+    assert.equal(
+      pickSafeCodexModel(
+        "gpt-5.6-sol",
+        [
+          { value: "gpt-5.6-sol", name: "Sol" },
+          { value: "gpt-5.6-terra", name: "Terra" },
+        ],
+        "gpt-5.6-terra",
+      ),
+      "gpt-5.6-terra",
+    );
+  });
+
+  it("applies an explicit Terra pick", () => {
     assert.equal(
       pickSafeCodexModel(
         "gpt-5.6-terra",
@@ -42,24 +71,37 @@ describe("codex-models", () => {
     );
   });
 
-  it("replaces a foreign gateway current model with Sol", () => {
+  it("replaces a foreign gateway current model with Terra", () => {
     const picked = pickSafeCodexModel(
       null,
       [
         { value: "openai/gpt-5", name: "API" },
         { value: "gpt-5.6-sol", name: "Sol" },
+        { value: "gpt-5.6-terra", name: "Terra" },
       ],
       "openai/gpt-5",
     );
-    assert.equal(picked, "gpt-5.6-sol");
+    assert.equal(picked, "gpt-5.6-terra");
   });
 
-  it("explains metadata / API key / Internal error", () => {
+  it("explains ChatGPT model rejection / metadata / API key / Internal error", () => {
+    assert.equal(
+      isCodexChatGptModelRejectedError(
+        "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.",
+      ),
+      true,
+    );
+    assert.match(
+      explainCodexModelFailure(
+        "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.",
+      ) || "",
+      /Terra|ChatGPT subscription/,
+    );
     assert.match(
       explainCodexModelFailure(
         "Model metadata for `gpt-5.6-sol` not found",
       ) || "",
-      /Mako will try to update|automatically/,
+      /Terra|automatically/,
     );
     assert.match(
       explainCodexModelFailure(

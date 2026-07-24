@@ -15,6 +15,10 @@ import {
   Typography,
 } from "@mui/material";
 import { acpSupportsAdapterEnsure } from "../lib/acp-capabilities";
+import {
+  sanitizeAcpUserError,
+  shouldClearAcpAuthGuidance,
+} from "../lib/acp-user-errors";
 import { useAcpStore } from "../store/acpStore";
 import { useLocalAgentStore } from "../store/localAgentStore";
 import type { AcpProviderId } from "../lib/acp-types";
@@ -112,7 +116,19 @@ export function CodingAgentsPanel() {
   const bridgeOk = Boolean(
     acpStatus.acpBridge?.version && acpStatus.acpBridge.version >= 2,
   );
-  const lastAdapterError = acpStatus.lastAdapterError;
+  const lastAdapterError = sanitizeAcpUserError(acpStatus.lastAdapterError, {
+    providerId: selectedProviderId,
+  });
+  const displayError = sanitizeAcpUserError(error, {
+    providerId: selectedProviderId,
+  });
+  const signedIn =
+    Boolean(provider?.cliLoggedIn) ||
+    Boolean(provider?.connected && !provider?.authRequired);
+  // Hide Terminal guidance when chips already say Signed in.
+  const displayAuthGuidance = shouldClearAcpAuthGuidance(authGuidance, provider)
+    ? null
+    : authGuidance;
 
   return (
     <Box>
@@ -199,16 +215,21 @@ export function CodingAgentsPanel() {
                 <Chip
                   size="small"
                   label={
-                    provider.authRequired && !provider.connected
-                      ? `Sign in needed (${provider.authProduct})`
-                      : provider.connected
-                        ? `Signed in (${provider.authProduct})`
-                        : provider.authProduct
+                    provider.cliLoggedIn ||
+                    (provider.connected && !provider.authRequired)
+                      ? `Signed in (${provider.authProduct})`
+                      : provider.authRequired && !provider.connected
+                        ? `Sign in needed (${provider.authProduct})`
+                        : provider.connected
+                          ? `Signed in (${provider.authProduct})`
+                          : provider.authProduct
                   }
                   color={
-                    provider.authRequired && !provider.connected
-                      ? "warning"
-                      : "default"
+                    provider.cliLoggedIn || provider.connected
+                      ? "success"
+                      : provider.authRequired
+                        ? "warning"
+                        : "default"
                   }
                   variant="outlined"
                 />
@@ -269,20 +290,27 @@ export function CodingAgentsPanel() {
             <Button
               variant="outlined"
               onClick={() => {
+                // Codex: Local Agent skips `codex login` when already signed in.
                 setSigningIn(true);
                 void authenticate().finally(() => setSigningIn(false));
               }}
               disabled={!provider?.adapterFound || loadingStatus || signingIn}
             >
               {signingIn
-                ? "Opening Terminal…"
-                : `Sign in with ${provider?.authProduct || "provider"}`}
+                ? signedIn
+                  ? "Checking…"
+                  : "Opening Terminal…"
+                : signedIn
+                  ? `Already signed in (${provider?.authProduct || "provider"})`
+                  : `Sign in with ${provider?.authProduct || "provider"}`}
             </Button>
             <Typography variant="body2" color="text.secondary">
               {!acpSupportsAdapterEnsure(acpStatus)
                 ? "One-click Update isn’t available on this Local Agent — the button shows the npm command to run in Terminal."
                 : readyProviders.length > 0
-                  ? `Update keeps ${provider?.label || "the adapter"} current. Sign in opens Terminal for CLI login.`
+                  ? signedIn
+                    ? `Update keeps ${provider?.label || "the adapter"} current. You’re signed in — use Chat → Enable workspace tools.`
+                    : `Update keeps ${provider?.label || "the adapter"} current. Sign in opens Terminal for CLI login.`
                   : "Install the adapter here — no Terminal npm required."}
             </Typography>
           </Stack>
@@ -310,25 +338,27 @@ export function CodingAgentsPanel() {
         </Stack>
       </Paper>
 
-      {authGuidance && (
+      {displayAuthGuidance && (
         <Alert severity="info" sx={{ mb: 2, whiteSpace: "pre-wrap" }}>
-          {authGuidance}
+          {displayAuthGuidance}
         </Alert>
       )}
 
-      {error &&
+      {displayError &&
         !/missing ACP route|outdated for this action|missing this ACP route/i.test(
-          error,
+          displayError,
         ) && (
           <Alert severity="error" sx={{ mb: 2 }}>
-            {error}
-            {/ACP connection closed/i.test(error) ? (
+            {displayError}
+            {/ACP connection closed/i.test(displayError) ? (
               <Typography variant="body2" sx={{ mt: 1 }}>
                 Local Agent may be stale on port 41720. Quit Mako, kill that
                 port, install PR Desktop 0.3.9, reopen.
               </Typography>
             ) : null}
-            {/ENOTEMPTY|_npx/i.test(`${error}\n${lastAdapterError || ""}`) ? (
+            {/ENOTEMPTY|_npx/i.test(
+              `${displayError}\n${lastAdapterError || ""}`,
+            ) ? (
               <Typography variant="body2" sx={{ mt: 1 }}>
                 Broken npm/npx cache. In Terminal run:
                 <br />
@@ -343,7 +373,9 @@ export function CodingAgentsPanel() {
                 then retry Enable workspace tools (global install avoids npx).
               </Typography>
             ) : null}
-            {lastAdapterError ? (
+            {lastAdapterError &&
+            lastAdapterError !== displayError &&
+            !displayError.includes(lastAdapterError) ? (
               <Typography
                 variant="caption"
                 component="pre"

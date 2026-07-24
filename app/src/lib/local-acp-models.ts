@@ -54,9 +54,14 @@ export const CODEX_MODEL_FALLBACKS: AcpModelChoice[] = [
     name: "Default",
     description: "Codex’s current default for this login",
   },
-  { value: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
+  // Terra before Sol — ChatGPT subscriptions reject gpt-5.6-sol.
   { value: "gpt-5.6-terra", name: "GPT-5.6 Terra" },
   { value: "gpt-5.6-luna", name: "GPT-5.6 Luna" },
+  {
+    value: "gpt-5.6-sol",
+    name: "GPT-5.6 Sol",
+    description: "API / non–ChatGPT login — ChatGPT accounts use Terra instead",
+  },
   { value: "gpt-5.6", name: "GPT-5.6" },
   { value: "gpt-5.5", name: "GPT-5.5" },
   { value: "gpt-5.4", name: "GPT-5.4" },
@@ -258,6 +263,7 @@ export function localAcpModelsFromProviders(
     for (const choice of choices) {
       const id = buildLocalAcpModelId(providerId, choice.value);
       const isDefault = choice.value === "default";
+      const choiceHint = choice.description?.trim();
       out.push({
         id,
         name: isDefault
@@ -266,7 +272,9 @@ export function localAcpModelsFromProviders(
         provider: "local",
         description: isDefault
           ? def.description
-          : `${def.description} — model: ${choice.name}`,
+          : choiceHint
+            ? `${def.description} — ${choiceHint}`
+            : `${def.description} — model: ${choice.name}`,
         tier: "free",
         supportsTools: true,
       });

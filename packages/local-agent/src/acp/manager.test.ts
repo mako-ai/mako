@@ -15,6 +15,8 @@ describe("AcpSessionManager with mock agent", () => {
 
   let manager: AcpSessionManager;
 
+  const previousWarm = process.env.MAKO_ACP_DISABLE_BACKGROUND_WARM;
+
   before(() => {
     process.env.MAKO_ACP_AGENT_COMMAND = "npx";
     process.env.MAKO_ACP_AGENT_ARGS = JSON.stringify([
@@ -22,11 +24,12 @@ describe("AcpSessionManager with mock agent", () => {
       mockAgentPath,
     ]);
     process.env.MAKO_ACP_PROVIDER = "claude";
+    process.env.MAKO_ACP_DISABLE_BACKGROUND_WARM = "1";
     manager = new AcpSessionManager();
   });
 
-  after(() => {
-    manager.shutdown();
+  after(async () => {
+    await manager.shutdown();
     if (previous.command === undefined) {
       delete process.env.MAKO_ACP_AGENT_COMMAND;
     } else {
@@ -41,6 +44,11 @@ describe("AcpSessionManager with mock agent", () => {
       delete process.env.MAKO_ACP_PROVIDER;
     } else {
       process.env.MAKO_ACP_PROVIDER = previous.provider;
+    }
+    if (previousWarm === undefined) {
+      delete process.env.MAKO_ACP_DISABLE_BACKGROUND_WARM;
+    } else {
+      process.env.MAKO_ACP_DISABLE_BACKGROUND_WARM = previousWarm;
     }
   });
 

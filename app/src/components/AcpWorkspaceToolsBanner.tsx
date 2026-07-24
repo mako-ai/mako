@@ -1,9 +1,9 @@
 /**
  * Helps users activate authenticated Mako workspace tools for local ACP
- * (Claude Code / Codex). No `claude mcp` — one button mints a Bearer and
- * starts a Local Agent session with `mako-workspace` attached.
+ * (Claude Code / Codex). No `claude mcp` — mints a Bearer and starts a Local
+ * Agent session with `mako-workspace` attached (auto when signed in).
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Stack, Typography } from "@mui/material";
 import {
   acpSupportsAdapterEnsure,
@@ -14,6 +14,7 @@ import {
   isLocalAcpModelId,
   localAcpModelIdToProviderId,
 } from "../lib/local-acp-models";
+import { sanitizeAcpUserError } from "../lib/acp-user-errors";
 import { useAcpStore } from "../store/acpStore";
 import { useLocalAgentStore } from "../store/localAgentStore";
 
@@ -40,7 +41,13 @@ export function AcpWorkspaceToolsBanner(props: {
 
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
-  const [dismissedReady, setDismissedReady] = useState(false);
+  /** Success toast — auto-hides; null until first attach for this provider. */
+  const [showConnectedToast, setShowConnectedToast] = useState(false);
+  /** Auto-enable tried and failed — keep Retry visible (don't go quiet). */
+  const [autoAttachNeedsRetry, setAutoAttachNeedsRetry] = useState(false);
+  // One auto-attempt per provider+workspace until attached (or user retries).
+  const autoEnableKeyRef = useRef<string | null>(null);
+  const sawAttachedRef = useRef(false);
 
   const providerId = modelId ? localAcpModelIdToProviderId(modelId) : null;
   const isLocal = isLocalAcpModelId(modelId);
@@ -48,10 +55,30 @@ export function AcpWorkspaceToolsBanner(props: {
     ? acpStatus?.ensureByProvider?.[providerId]
     : undefined;
   const ensureRunning = ensureStatus?.state === "running";
+  const provider = providerId
+    ? acpStatus?.providers.find(p => p.id === providerId)
+    : undefined;
+  const attached = Boolean(
+    providerId &&
+      sessions.some(s => s.providerId === providerId && s.makoMcpAttached),
+  );
+  const needsCliLogin = (() => {
+    if (!provider || !providerId) return false;
+    if (providerId === "codex") {
+      if (typeof provider.cliLoggedIn === "boolean") {
+        return !provider.cliLoggedIn;
+      }
+      return Boolean(provider.authRequired) && !provider.connected;
+    }
+    return Boolean(provider.authRequired) && !provider.connected;
+  })();
 
   useEffect(() => {
     if (!isLocal || !providerId) return;
-    setDismissedReady(false);
+    sawAttachedRef.current = false;
+    setShowConnectedToast(false);
+    setAutoAttachNeedsRetry(false);
+    autoEnableKeyRef.current = null;
     void (async () => {
       await checkAgent();
       await refreshStatus();
@@ -70,6 +97,19 @@ export function AcpWorkspaceToolsBanner(props: {
     warmProviderModels,
   ]);
 
+  // Flash a short “connected” indicator once, then hide — not a sticky banner.
+  useEffect(() => {
+    if (!attached) {
+      sawAttachedRef.current = false;
+      return;
+    }
+    if (sawAttachedRef.current) return;
+    sawAttachedRef.current = true;
+    setShowConnectedToast(true);
+    const timer = window.setTimeout(() => setShowConnectedToast(false), 3200);
+    return () => window.clearTimeout(timer);
+  }, [attached]);
+
   // Poll status while npm ensure is running so the banner can show progress.
   useEffect(() => {
     if (!ensureRunning) return;
@@ -79,37 +119,8 @@ export function AcpWorkspaceToolsBanner(props: {
     return () => window.clearInterval(timer);
   }, [ensureRunning, refreshStatus]);
 
-  if (!isLocal || !providerId) return null;
-
-  const provider = acpStatus?.providers.find(p => p.id === providerId);
-  // Background `npm i -g` while adapter is already on PATH must not freeze Enable.
-  const ensureBlocksUi = ensureRunning && !provider?.adapterFound;
-  const attached = sessions.some(
-    s => s.providerId === providerId && s.makoMcpAttached,
-  );
-
-  const ensureLabel = (() => {
-    if (!ensureStatus || ensureStatus.state === "idle") return null;
-    if (ensureStatus.state === "running") {
-      const started = ensureStatus.startedAt
-        ? Date.parse(ensureStatus.startedAt)
-        : NaN;
-      const secs = Number.isFinite(started)
-        ? Math.max(0, Math.round((Date.now() - started) / 1000))
-        : 0;
-      return (
-        ensureStatus.message ||
-        `Installing/updating local tools${secs ? ` (${secs}s)` : "…"}`
-      );
-    }
-    if (ensureStatus.state === "error") {
-      return ensureStatus.message || "Failed to update local tools";
-    }
-    return null;
-  })();
-
-  const enable = async () => {
-    if (!workspaceId) return;
+  const enable = useCallback(async () => {
+    if (!workspaceId || !providerId) return;
     setBusy(true);
     setBusyLabel("Connecting…");
     try {
@@ -137,15 +148,82 @@ export function AcpWorkspaceToolsBanner(props: {
         workspaceId,
         requireMakoMcp: true,
       });
-      if (session?.makoMcpAttached) {
-        setDismissedReady(false);
-      }
       await refreshSessions();
+      const ok = Boolean(session?.makoMcpAttached);
+      setAutoAttachNeedsRetry(!ok);
+    } catch {
+      setAutoAttachNeedsRetry(true);
     } finally {
       setBusy(false);
       setBusyLabel(null);
     }
-  };
+  }, [
+    workspaceId,
+    providerId,
+    checkAgent,
+    refreshStatus,
+    setSelectedProvider,
+    ensureAdapter,
+    warmProviderModels,
+    createSession,
+    refreshSessions,
+  ]);
+
+  // Auto-attach workspace MCP when the user picks a local model and is ready
+  // (signed in, adapter present, workspace selected). Avoids the extra click;
+  // still gated so we don't mint tokens / spawn adapters while Sign in is needed.
+  useEffect(() => {
+    if (!isLocal || !providerId || !workspaceId) return;
+    if (attached) {
+      // Latch success so a later session drop (model change) can auto again.
+      autoEnableKeyRef.current = `done:${providerId}:${workspaceId}`;
+      return;
+    }
+    if (!bridgeOk || agentStatus === "offline" || statusError) return;
+    if (!provider?.adapterFound || needsCliLogin || busy) return;
+    const key = `try:${providerId}:${workspaceId}`;
+    // Skip if we already tried this pair and failed (manual Retry still works).
+    if (autoEnableKeyRef.current === key) return;
+    autoEnableKeyRef.current = key;
+    void enable();
+  }, [
+    isLocal,
+    providerId,
+    workspaceId,
+    bridgeOk,
+    agentStatus,
+    statusError,
+    provider?.adapterFound,
+    needsCliLogin,
+    attached,
+    busy,
+    enable,
+  ]);
+
+  if (!isLocal || !providerId) return null;
+
+  // Background `npm i -g` while adapter is already on PATH must not freeze Enable.
+  const ensureBlocksUi = ensureRunning && !provider?.adapterFound;
+
+  const ensureLabel = (() => {
+    if (!ensureStatus || ensureStatus.state === "idle") return null;
+    if (ensureStatus.state === "running") {
+      const started = ensureStatus.startedAt
+        ? Date.parse(ensureStatus.startedAt)
+        : NaN;
+      const secs = Number.isFinite(started)
+        ? Math.max(0, Math.round((Date.now() - started) / 1000))
+        : 0;
+      return (
+        ensureStatus.message ||
+        `Installing/updating local tools${secs ? ` (${secs}s)` : "…"}`
+      );
+    }
+    if (ensureStatus.state === "error") {
+      return ensureStatus.message || "Failed to update local tools";
+    }
+    return null;
+  })();
 
   const installAdapter = async () => {
     setBusy(true);
@@ -225,7 +303,7 @@ export function AcpWorkspaceToolsBanner(props: {
     );
   }
 
-  if (provider?.authRequired && !provider.connected) {
+  if (needsCliLogin && provider) {
     return (
       <Alert
         severity="info"
@@ -237,6 +315,8 @@ export function AcpWorkspaceToolsBanner(props: {
             disabled={busy}
             onClick={() => {
               setBusy(true);
+              // After Sign in completes, clear the auto latch so tools attach.
+              autoEnableKeyRef.current = null;
               void authenticate(providerId).finally(() => setBusy(false));
             }}
           >
@@ -248,80 +328,89 @@ export function AcpWorkspaceToolsBanner(props: {
           Sign in to {provider.authProduct}
         </Typography>
         <Typography variant="body2">
-          Then enable Mako workspace tools (BigQuery, SQL, connections) in one
-          click — no terminal MCP setup.
+          Then Mako attaches workspace tools (BigQuery, SQL, connections)
+          automatically — no terminal MCP setup.
         </Typography>
       </Alert>
     );
   }
 
-  if (attached && !error) {
-    if (dismissedReady) return null;
+  const displayError = sanitizeAcpUserError(error, { providerId });
+  const showError =
+    Boolean(displayError) &&
+    !/missing ACP route|outdated for this action|missing this ACP route|Update needs PR Desktop|CODEX_API_KEY|OPENAI_API_KEY/i.test(
+      displayError || "",
+    );
+
+  // Quiet success path: brief toast, then nothing. Connecting is the same —
+  // a compact temporary line, not a sticky call-to-action.
+  if (attached && !showError) {
+    if (!showConnectedToast) return null;
     return (
       <Alert
         severity="success"
-        sx={{ mb: 1 }}
-        onClose={() => setDismissedReady(true)}
+        sx={{ mb: 1, py: 0.5 }}
+        onClose={() => setShowConnectedToast(false)}
       >
         <Typography variant="body2">
-          Workspace tools connected (<code>mako-workspace</code>). Ask{" "}
-          {provider?.label || "the local agent"} about your data — it should
-          call Mako tools directly (no Terminal MCP setup).
+          Workspace tools connected for {provider?.label || "local agent"}
         </Typography>
       </Alert>
     );
+  }
+
+  if (busy || ensureBlocksUi) {
+    return (
+      <Alert severity="info" sx={{ mb: 1, py: 0.5 }}>
+        <Typography variant="body2">
+          {busyLabel || ensureLabel || "Connecting workspace tools…"}
+        </Typography>
+      </Alert>
+    );
+  }
+
+  // Quiet when healthy; stick around for retry / missing workspace / failed auto.
+  if (!showError && !autoAttachNeedsRetry && workspaceId && bridgeOk) {
+    return null;
   }
 
   return (
     <Alert
-      severity={error ? "error" : "info"}
+      severity={showError ? "error" : "info"}
       sx={{ mb: 1 }}
       action={
         <Stack direction="row" spacing={1}>
           <Button
             size="small"
             variant="contained"
-            disabled={busy || ensureBlocksUi || !workspaceId || !bridgeOk}
-            onClick={() => void enable()}
+            disabled={!workspaceId || !bridgeOk}
+            onClick={() => {
+              autoEnableKeyRef.current = null;
+              void enable();
+            }}
           >
-            {busy || ensureBlocksUi
-              ? busyLabel || ensureLabel || "Connecting…"
-              : "Enable workspace tools"}
+            Enable workspace tools
           </Button>
         </Stack>
       }
     >
       <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-        Activate Mako data tools for this local session
+        Workspace tools need a retry
       </Typography>
       <Typography variant="body2">
-        Mints a short-lived token and attaches authenticated workspace MCP (SQL,
-        connections, consoles) for {provider?.label || "this local agent"}. If
-        it asked for Mako auth, click Enable, then send a new message — or start
-        a New chat.
+        {showError
+          ? displayError
+          : !workspaceId
+            ? "Select a workspace first."
+            : !bridgeOk
+              ? "Local Agent is outdated for MCP attach — install Desktop 0.3.9+ and fully quit/reopen Mako."
+              : `Could not auto-connect tools for ${
+                  provider?.label || "this local agent"
+                }.`}
       </Typography>
-      {ensureBlocksUi || ensureStatus?.state === "error" ? (
+      {ensureStatus?.state === "error" && ensureLabel ? (
         <Typography variant="body2" sx={{ mt: 1 }}>
           {ensureLabel}
-        </Typography>
-      ) : null}
-      {!bridgeOk ? (
-        <Typography variant="body2" sx={{ mt: 1 }}>
-          Local Agent is outdated for MCP attach — install Desktop 0.3.9+ and
-          fully quit/reopen Mako before enabling tools.
-        </Typography>
-      ) : null}
-      {error &&
-      !/missing ACP route|outdated for this action|missing this ACP route|Update needs PR Desktop|CODEX_API_KEY|OPENAI_API_KEY/i.test(
-        error,
-      ) ? (
-        <Typography variant="body2" sx={{ mt: 1 }}>
-          {error}
-        </Typography>
-      ) : null}
-      {!workspaceId ? (
-        <Typography variant="body2" sx={{ mt: 1 }}>
-          Select a workspace first.
         </Typography>
       ) : null}
     </Alert>

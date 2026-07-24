@@ -518,7 +518,7 @@ export function startAgent(port?: number): StartedAgent {
   return {
     port: resolvedPort,
     close: () => {
-      acpSessionManager.shutdown();
+      void acpSessionManager.shutdown();
       server.close();
     },
   };

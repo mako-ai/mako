@@ -18,6 +18,8 @@ export interface AcpProviderStatus {
   adapterFound: boolean;
   connected: boolean;
   authRequired: boolean;
+  /** Codex: true when ~/.codex/auth.json is present. */
+  cliLoggedIn?: boolean;
   authMethods: Array<{
     id: string;
     name?: string;

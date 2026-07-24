@@ -11,7 +11,10 @@ import {
   extractTerminalAuthLaunch,
   formatTerminalAuthCommand,
 } from "./terminal-auth";
-import { explainAdapterLaunchFailure } from "./connection-errors";
+import {
+  explainAdapterLaunchFailure,
+  sanitizeAdapterStderrForUi,
+} from "./connection-errors";
 import { acpLog } from "./log";
 
 export type AcpSdk = typeof import("@agentclientprotocol/sdk");
@@ -235,10 +238,11 @@ export async function openProviderConnection(options: {
     });
   } catch (error) {
     const tip = explainAdapterLaunchFailure(lastStderr);
+    const stderrUi = sanitizeAdapterStderrForUi(lastStderr);
     const detail = tip
       ? `\n${tip}`
-      : lastStderr
-        ? ` Adapter stderr: ${lastStderr.slice(-800)}`
+      : stderrUi
+        ? ` Adapter stderr: ${stderrUi.slice(-800)}`
         : "";
     const base =
       error instanceof Error ? error.message : "ACP initialize failed";
@@ -248,7 +252,7 @@ export async function openProviderConnection(options: {
       // ignore
     }
     if (!child.killed) child.kill("SIGTERM");
-    throw new Error(`${base}.${detail}`.trim());
+    throw new Error(`${base}${detail ? `.${detail}` : ""}`.trim());
   }
 
   const authMethods: AcpAuthMethodInfo[] = Array.isArray(initResult.authMethods)

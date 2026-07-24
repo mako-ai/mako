@@ -174,16 +174,24 @@ export const acpClient = {
   /**
    * Subscribe to SSE events for a session via fetch (supports Chromium
    * Local Network Access `targetAddressSpace: "loopback"`, unlike EventSource).
+   *
+   * @param options.replay When false, ask Local Agent for live events only
+   *   (`?replay=0`). Use for Chat turns so prior agent chunks are not painted
+   *   into the new assistant message. Defaults to true (Coding Agents UI).
    */
   subscribeEvents(
     sessionId: string,
     onEvent: (event: AcpBridgeEvent) => void,
     onError?: (error: Error) => void,
+    options?: { replay?: boolean },
   ): () => void {
     const url = new URL(
       `/acp/sessions/${encodeURIComponent(sessionId)}/events`,
       LOCAL_AGENT_BASE_URL,
     );
+    if (options?.replay === false) {
+      url.searchParams.set("replay", "0");
+    }
     const controller = new AbortController();
 
     void (async () => {
@@ -229,9 +237,18 @@ export const acpClient = {
           buffer += decoder.decode(value, { stream: true });
           const parts = buffer.split(/\r?\n/);
           buffer = parts.pop() || "";
+          let flushedInChunk = 0;
           for (const line of parts) {
             if (line === "") {
               flush();
+              flushedInChunk += 1;
+              // One TCP read can contain thought + first text. Yield so React
+              // can paint `state: "streaming"` Thinking before it flips to done.
+              if (flushedInChunk > 1) {
+                await new Promise<void>(resolve => {
+                  setTimeout(resolve, 0);
+                });
+              }
               continue;
             }
             if (line.startsWith("event:")) {

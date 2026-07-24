@@ -4,6 +4,9 @@ import {
   acpReconnectMessage,
   explainAdapterLaunchFailure,
   isAcpConnectionClosedError,
+  isAdapterStderrNoise,
+  sanitizeAdapterStderrForUi,
+  userFacingAcpError,
 } from "./connection-errors";
 
 describe("isAcpConnectionClosedError", () => {
@@ -35,5 +38,25 @@ describe("explainAdapterLaunchFailure", () => {
     assert.ok(tip);
     assert.match(tip, /rm -rf ~\/\.npm\/_npx/);
     assert.match(tip, /npm i -g @agentclientprotocol\/claude-agent-acp/);
+  });
+});
+
+describe("adapter stderr noise", () => {
+  it("filters Claude canUseTool shadow warnings", () => {
+    const dump =
+      "Invalid params\n" +
+      "(node:123) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked for: mcp__mako-workspace__*";
+    assert.equal(isAdapterStderrNoise(dump), true);
+    assert.equal(sanitizeAdapterStderrForUi(dump), null);
+    assert.match(
+      userFacingAcpError(dump, { providerId: "codex" }),
+      /Terra|Enable workspace tools/i,
+    );
+  });
+
+  it("keeps actionable adapter failures", () => {
+    const text = "ENOTEMPTY: directory not empty, rename /Users/x/.npm/_npx/abc";
+    assert.equal(isAdapterStderrNoise(text), false);
+    assert.ok(sanitizeAdapterStderrForUi(text));
   });
 });

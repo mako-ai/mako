@@ -213,18 +213,21 @@ export function registerAcpRoutes(app: Hono): void {
         });
       }, 15000);
 
-      // Replay prior turns, then keep streaming live updates. This is what
-      // rebuilds the Coding Agents transcript after a refresh / re-open.
-      const unsubscribe = acpSessionManager.subscribeWithReplay(
-        sessionId,
-        event => {
-          if (closed) return;
-          void stream.writeSSE({
-            event: event.type,
-            data: JSON.stringify(event),
-          });
-        },
-      );
+      // Default: replay prior turns (Coding Agents transcript rebuild).
+      // `?replay=0` — live only (main Chat turns; backlog would paint the
+      // previous reply into the new assistant bubble instantly).
+      const replay = c.req.query("replay") !== "0";
+      const unsubscribe = (
+        replay
+          ? acpSessionManager.subscribeWithReplay.bind(acpSessionManager)
+          : acpSessionManager.subscribeLive.bind(acpSessionManager)
+      )(sessionId, event => {
+        if (closed) return;
+        void stream.writeSSE({
+          event: event.type,
+          data: JSON.stringify(event),
+        });
+      });
 
       await stream.writeSSE({
         event: "status",

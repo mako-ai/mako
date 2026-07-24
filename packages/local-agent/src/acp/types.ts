@@ -73,6 +73,12 @@ export interface AcpProviderStatus {
   adapterFound: boolean;
   connected: boolean;
   authRequired: boolean;
+  /**
+   * True when CLI credentials appear present (e.g. ~/.codex/auth.json).
+   * Distinct from adapter `authRequired` — Codex still advertises auth
+   * methods after ChatGPT login.
+   */
+  cliLoggedIn?: boolean;
   authMethods: Array<{
     id: string;
     name?: string;

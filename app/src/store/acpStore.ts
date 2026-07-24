@@ -20,6 +20,10 @@ import {
 } from "../lib/mako-mcp-attach";
 import { fetchWorkspaceGuidanceForAcp } from "../lib/acp-system-append";
 import { startDesktopAcpCliLogin } from "../lib/desktop";
+import {
+  sanitizeAcpUserError,
+  shouldClearAcpAuthGuidance,
+} from "../lib/acp-user-errors";
 
 function messageId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -160,6 +164,14 @@ export const useAcpStore = create<AcpState>()(
           if (!s.cwdDraft) {
             s.cwdDraft = status.defaultCwd;
           }
+          // Drop stale "open Terminal" copy once CLI login is confirmed —
+          // otherwise Switching Codex models keeps showing a blue Sign-in box.
+          const provider = status.providers.find(
+            p => p.id === s.selectedProviderId,
+          );
+          if (shouldClearAcpAuthGuidance(s.authGuidance, provider)) {
+            s.authGuidance = null;
+          }
         });
       } catch (error) {
         set(s => {
@@ -190,6 +202,10 @@ export const useAcpStore = create<AcpState>()(
     setSelectedProvider: id => {
       set(s => {
         s.selectedProviderId = id;
+        // Claude Terminal guidance must not stick when the user flips to Codex.
+        s.authGuidance = null;
+        const cleaned = sanitizeAcpUserError(s.error, { providerId: id });
+        s.error = cleaned;
       });
     },
 
@@ -275,13 +291,23 @@ export const useAcpStore = create<AcpState>()(
                 }),
               };
             } else if (event.type === "session_invalidated") {
+              const sessionProviderId =
+                s.sessions.find(x => x.id === sessionId)?.providerId ||
+                s.selectedProviderId;
               s.sessions = s.sessions.filter(x => x.id !== sessionId);
               if (s.activeSessionId === sessionId) s.activeSessionId = null;
               s.permissionsBySession[sessionId] = null;
-              s.error = event.message;
+              s.error = sanitizeAcpUserError(event.message, {
+                providerId: sessionProviderId,
+              });
               s.sending = false;
             } else if (event.type === "error") {
-              s.error = event.message;
+              const sessionProviderId =
+                s.sessions.find(x => x.id === sessionId)?.providerId ||
+                s.selectedProviderId;
+              s.error = sanitizeAcpUserError(event.message, {
+                providerId: sessionProviderId,
+              });
             } else if (event.type === "turn_done") {
               s.sending = false;
               const existing = s.sessions.find(x => x.id === sessionId);
@@ -314,6 +340,9 @@ export const useAcpStore = create<AcpState>()(
         s.permissionsBySession[sessionId] = null;
         delete s.messagesBySession[sessionId];
       });
+      // Tear down the Local Agent process session so Codex/Claude orphans
+      // don't pile up after model switches / stale bindings.
+      void acpClient.closeSession(sessionId).catch(() => undefined);
     },
 
     ingestPermissionRequest: (sessionId, request) => {
@@ -398,15 +427,26 @@ export const useAcpStore = create<AcpState>()(
             "(runs `codex login`), finish auth in Terminal, then retry.";
         }
         set(s => {
-          s.error = message;
+          s.error =
+            sanitizeAcpUserError(message, {
+              providerId: selectedProviderId,
+            }) || message;
         });
         return null;
       }
     },
 
     setSessionModel: async (sessionId, model) => {
-      const value = model.trim();
+      let value = model.trim();
       if (!sessionId || !value) return null;
+      const providerId =
+        get().sessions.find(s => s.id === sessionId)?.providerId ||
+        get().selectedProviderId;
+      // ChatGPT rejects Sol — prefer Terra in the live switch so we don't flash
+      // Invalid params / subscription errors in the Enable banner.
+      if (providerId === "codex" && /gpt-5\.6-sol/i.test(value)) {
+        value = "gpt-5.6-terra";
+      }
       set(s => {
         s.error = null;
       });
@@ -426,17 +466,25 @@ export const useAcpStore = create<AcpState>()(
           error instanceof Error
             ? error.message
             : "Failed to switch local model";
+        // Picking Luna/Terra after Local Agent restart (or a closed session)
+        // hits set_config on a dead id. Drop the stale session quietly — the
+        // next Enable / Chat send creates a fresh one with the selected model.
+        if (/expired ACP session|Unknown or expired/i.test(message)) {
+          get().forgetSession(sessionId);
+          set(s => {
+            s.error = null;
+          });
+          void get().refreshSessions();
+          return null;
+        }
         if (/^not found$/i.test(message.trim())) {
-          const providerId =
-            get().sessions.find(s => s.id === sessionId)?.providerId ||
-            get().selectedProviderId;
           message =
             providerId === "codex"
-              ? `Codex could not switch to "${value}". Fully quit/reopen Desktop 0.3.9+, Update adapter, then pick GPT-5.6 Sol/Terra/Luna again.`
+              ? `Codex could not switch to "${value}". Fully quit/reopen Desktop 0.3.9+, Update adapter, then pick GPT-5.6 Terra/Luna again.`
               : `Claude could not switch to "${value}". Fully quit/reopen Desktop 0.3.9+, Update adapter, then pick Opus/Sonnet again.`;
         }
         set(s => {
-          s.error = message;
+          s.error = sanitizeAcpUserError(message, { providerId }) || message;
         });
         return null;
       }
@@ -448,34 +496,83 @@ export const useAcpStore = create<AcpState>()(
         s.error = null;
         s.authGuidance = null;
       });
-      // Codex: open Terminal + `codex login` from Desktop first (same UX as
-      // Claude). Older Local Agents fail authenticate before they can spawn
-      // Terminal (CODEX_API_KEY), so Desktop IPC is the reliable path.
+      // Codex: ask Local Agent first — it skips `codex login` when already
+      // signed in. Starting a second login (Desktop IPC + agent) can wipe
+      // ~/.codex/auth.json. Only open Terminal when login is actually needed.
       if (id === "codex") {
         try {
-          const desktopLogin = await startDesktopAcpCliLogin("codex");
-          if (desktopLogin?.opened) {
+          const result = await acpClient.authenticate(id);
+          set(s => {
+            s.authGuidance =
+              result.message ||
+              (result.terminalCommand
+                ? `Run in Terminal:\n${result.terminalCommand}`
+                : null);
+            s.error = null;
+          });
+          if (!result.launchedTerminal && result.terminalCommand) {
+            // Agent wants login but could not open Terminal — Desktop IPC.
+            try {
+              const desktopLogin = await startDesktopAcpCliLogin("codex");
+              if (desktopLogin?.opened) {
+                set(s => {
+                  s.authGuidance =
+                    "Complete ChatGPT sign-in in the Terminal window (`codex login`), " +
+                    "then pick Codex in Chat and Enable workspace tools.";
+                });
+              } else if (desktopLogin && !desktopLogin.opened) {
+                set(s => {
+                  s.authGuidance =
+                    "Could not open Terminal automatically. Run this yourself, then retry Codex:\n\n" +
+                    desktopLogin.commandLine;
+                });
+              }
+            } catch {
+              // Guidance already set from Local Agent.
+            }
+          }
+          await get().refreshStatus();
+          return;
+        } catch (error) {
+          const raw =
+            error instanceof Error ? error.message : "Authentication failed";
+          // Older Local Agents / offline agent — try Desktop Terminal, else guide.
+          try {
+            const desktopLogin = await startDesktopAcpCliLogin("codex");
+            if (desktopLogin?.opened) {
+              set(s => {
+                s.error = null;
+                s.authGuidance =
+                  "Complete ChatGPT sign-in in the Terminal window (`codex login`), " +
+                  "then pick Codex in Chat and Enable workspace tools.";
+              });
+              return;
+            }
+            if (desktopLogin && !desktopLogin.opened) {
+              set(s => {
+                s.error = null;
+                s.authGuidance =
+                  "Could not open Terminal automatically. Run this yourself, then retry Codex:\n\n" +
+                  desktopLogin.commandLine;
+              });
+              return;
+            }
+          } catch {
+            // fall through
+          }
+          if (/CODEX_API_KEY|OPENAI_API_KEY/i.test(raw)) {
             set(s => {
               s.error = null;
               s.authGuidance =
-                "Complete ChatGPT sign-in in the Terminal window (`codex login`), " +
-                "then pick Codex in Chat and Enable workspace tools.";
-            });
-            // Still nudge Local Agent in case it can refresh status afterward.
-            void acpClient.authenticate(id).catch(() => null);
-            return;
-          }
-          if (desktopLogin && !desktopLogin.opened) {
-            set(s => {
-              s.error = null;
-              s.authGuidance =
-                "Could not open Terminal automatically. Run this yourself, then retry Codex:\n\n" +
-                desktopLogin.commandLine;
+                "Codex needs ChatGPT login. Run this in Terminal, then retry Codex in Chat:\n\n" +
+                "codex login";
             });
             return;
           }
-        } catch {
-          // Fall through to Local Agent authenticate.
+          set(s => {
+            s.error = raw;
+          });
+          return;
         }
       }
       try {
@@ -492,17 +589,6 @@ export const useAcpStore = create<AcpState>()(
       } catch (error) {
         const raw =
           error instanceof Error ? error.message : "Authentication failed";
-        // Older Local Agents surface Codex-not-logged-in as an API-key error
-        // instead of opening Terminal — give the user the real next step.
-        if (id === "codex" && /CODEX_API_KEY|OPENAI_API_KEY/i.test(raw)) {
-          set(s => {
-            s.error = null;
-            s.authGuidance =
-              "Codex needs ChatGPT login. Run this in Terminal, then retry Codex in Chat:\n\n" +
-              "codex login";
-          });
-          return;
-        }
         set(s => {
           s.error = raw;
         });

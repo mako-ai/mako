@@ -12,10 +12,12 @@ import {
   localAcpModelPreference,
   resolveLocalAcpModelValue,
 } from "./local-acp-models";
+import { sanitizeAcpUserError } from "./acp-user-errors";
 import {
   appendAssistantReasoning,
   appendAssistantText,
   getAssistantParts,
+  markStreamingReasoningDone,
   setAssistantErrorText,
   upsertAcpToolPart,
   type AcpToolUpdate,
@@ -49,12 +51,38 @@ function isAcpModelSwitchError(error: unknown): boolean {
   return /^not found$/i.test(msg.trim()) || /\(Not Found\)/i.test(msg);
 }
 
-async function applyModelPreference(
+function modelsEquivalent(
+  current: string | null | undefined,
+  preferred: string,
+  resolved: string,
+): boolean {
+  if (!current) return false;
+  const c = current.toLowerCase();
+  const p = preferred.toLowerCase();
+  const r = resolved.toLowerCase();
+  return (
+    c === r ||
+    c === p ||
+    c.includes(p) ||
+    p.includes(c) ||
+    r.includes(c) ||
+    c.includes(r)
+  );
+}
+
+/**
+ * Returns true when the session is already on the preferred model (no-op),
+ * false when the caller should start a fresh session instead of set_config.
+ * Codex treats mid-chat model switches as "Conversation interrupted" and
+ * dumps prior turns into the next reply — never set_config after the first
+ * prompt on that process session.
+ */
+async function ensureSessionModelOrNeedsFresh(
   sessionId: string,
   modelPreference: string | null | undefined,
-): Promise<void> {
+): Promise<"ok" | "needs_fresh"> {
   const preferred = modelPreference?.trim();
-  if (!preferred) return;
+  if (!preferred) return "ok";
   const store = useAcpStore.getState();
   const session = store.sessions.find(s => s.id === sessionId);
   const providerId = session?.providerId;
@@ -75,18 +103,18 @@ async function applyModelPreference(
     preferred,
     session?.availableModels?.length ? session.availableModels : providerModels,
   );
-  // Skip no-op switches (adapter may already be on this model / alias).
-  if (
-    session?.currentModel &&
-    (session.currentModel === resolved ||
-      session.currentModel === preferred ||
-      session.currentModel.toLowerCase().includes(preferred.toLowerCase()) ||
-      preferred.toLowerCase().includes(session.currentModel.toLowerCase()) ||
-      resolved
-        .toLowerCase()
-        .includes((session.currentModel || "").toLowerCase()))
-  ) {
-    return;
+  if (modelsEquivalent(session?.currentModel, preferred, resolved)) {
+    return "ok";
+  }
+
+  // Codex: never hot-swap model on a live chat session.
+  if (providerId === "codex") {
+    return "needs_fresh";
+  }
+
+  // Claude: live switch is usually fine when idle.
+  if (session?.busy) {
+    return "needs_fresh";
   }
   const updated = await useAcpStore
     .getState()
@@ -97,6 +125,7 @@ async function applyModelPreference(
         `Failed to switch local model to ${resolved}`,
     );
   }
+  return "ok";
 }
 
 export async function ensureAcpSessionForProvider(
@@ -152,21 +181,37 @@ export async function ensureAcpSessionForProvider(
       );
     if (preferred) {
       useAcpStore.getState().setActiveSession(preferred.id);
-      await applyModelPreference(preferred.id, modelPreference);
-      return { sessionId: preferred.id, isFresh: false };
+      const modelState = await ensureSessionModelOrNeedsFresh(
+        preferred.id,
+        modelPreference,
+      );
+      if (modelState === "ok") {
+        return { sessionId: preferred.id, isFresh: false };
+      }
+      // Model changed (esp. Codex) — close the old process session and fall
+      // through to a fresh one + Chat continuity seed (no mid-chat interrupt).
+      useAcpStore.getState().forgetSession(preferred.id);
     }
   }
 
   // Dead chat binding: do not reuse an unrelated ACP session (wrong memory).
   // Fresh session + Mako transcript seed restores continuity instead.
+  // Also skip reuse when the only live session is on a different model and
+  // would need a hot-swap (Codex interrupts).
   if (!options?.forceNew && !preferredSessionId) {
     const withMcp = useAcpStore
       .getState()
       .sessions.find(s => s.providerId === providerId && s.makoMcpAttached);
     if (withMcp && liveIds.has(withMcp.id)) {
       useAcpStore.getState().setActiveSession(withMcp.id);
-      await applyModelPreference(withMcp.id, modelPreference);
-      return { sessionId: withMcp.id, isFresh: false };
+      const modelState = await ensureSessionModelOrNeedsFresh(
+        withMcp.id,
+        modelPreference,
+      );
+      if (modelState === "ok") {
+        return { sessionId: withMcp.id, isFresh: false };
+      }
+      useAcpStore.getState().forgetSession(withMcp.id);
     }
   }
 
@@ -257,7 +302,11 @@ export async function runLocalAcpChatTurn(
       {
         id: assistantId,
         role: "assistant",
-        parts: [{ type: "text", text: "" }],
+        // Seed a live Thinking block immediately. Claude ACP (summarized
+        // display) often waits seconds with no events, then dumps a short
+        // agent_thought_chunk burst right before text — without this seed
+        // the UI shows only a spinner during the real think time.
+        parts: [{ type: "reasoning", text: "", state: "streaming" }],
       },
     ];
   });
@@ -321,10 +370,21 @@ export async function runLocalAcpChatTurn(
       uiContext,
     });
 
+    // Ignore any backlog that still arrives (older Local Agents always replay).
+    // Otherwise the previous turn's agent_message chunks paint into this bubble
+    // instantly — looks like the model "repeats itself" after you send.
+    const ignoreEventsBeforeMs = Date.now();
     const unsub = acpClient.subscribeEvents(
       sessionId,
       event => {
         if (signal?.aborted) return;
+        if (
+          "at" in event &&
+          typeof event.at === "string" &&
+          Date.parse(event.at) < ignoreEventsBeforeMs
+        ) {
+          return;
+        }
         if (event.type === "session_update") {
           const update = event.update as AcpToolUpdate & {
             content?: { type?: string; text?: string };
@@ -371,20 +431,29 @@ export async function runLocalAcpChatTurn(
           // Recoverable closes are retried below; avoid painting a fatal line
           // that races the automatic reconnect.
           if (!isAcpConnectionClosedError(event.message)) {
-            patchAssistantParts(parts =>
-              setAssistantErrorText(parts, `Error: ${event.message}`),
-            );
+            const cleaned = sanitizeAcpUserError(event.message, {
+              providerId,
+            });
+            if (cleaned) {
+              patchAssistantParts(parts =>
+                setAssistantErrorText(parts, `Error: ${cleaned}`),
+              );
+            }
           }
         }
       },
       err => {
         if (signal?.aborted) return;
         if (!isAcpConnectionClosedError(err)) {
-          patchAssistantParts(parts =>
-            setAssistantErrorText(parts, `(${err.message})`),
-          );
+          const cleaned = sanitizeAcpUserError(err.message, { providerId });
+          if (cleaned) {
+            patchAssistantParts(parts =>
+              setAssistantErrorText(parts, `(${cleaned})`),
+            );
+          }
         }
       },
+      { replay: false },
     );
 
     const activeSessionId = sessionId;
@@ -405,22 +474,34 @@ export async function runLocalAcpChatTurn(
       }
       applyMessages(prev => {
         const assistant = prev.find(m => m.id === assistantId);
-        const parts = getAssistantParts(assistant);
+        let parts = markStreamingReasoningDone(getAssistantParts(assistant));
+        // Drop empty reasoning placeholders that never received thought text.
+        parts = parts.filter(
+          p =>
+            !(
+              p.type === "reasoning" &&
+              !String((p as { text?: string }).text || "").trim()
+            ),
+        );
         const hasText = parts.some(
           p =>
             p.type === "text" &&
             String((p as { text?: string }).text || "").trim(),
         );
         const hasTool = parts.some(p => p.type === "dynamic-tool");
-        if (hasText || hasTool) return prev;
+        const hasReasoning = parts.some(
+          p =>
+            p.type === "reasoning" &&
+            String((p as { text?: string }).text || "").trim(),
+        );
+        if (!hasText && !hasTool && !hasReasoning) {
+          parts = [
+            { type: "text", text: "(No response from local agent)" },
+          ] as ReturnType<typeof getAssistantParts>;
+        }
         return prev.map(m =>
           m.id === assistantId
-            ? {
-                ...m,
-                parts: [
-                  { type: "text", text: "(No response from local agent)" },
-                ] as UIMessage["parts"],
-              }
+            ? { ...m, parts: parts as UIMessage["parts"] }
             : m,
         );
       });

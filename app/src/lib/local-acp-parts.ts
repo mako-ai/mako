@@ -34,7 +34,12 @@ export type DynamicToolPart = {
 };
 
 type TextPart = { type: "text"; text: string };
-type ReasoningPart = { type: "reasoning"; text: string };
+type ReasoningPart = {
+  type: "reasoning";
+  text: string;
+  /** Matches AI SDK live parts so ReasoningDisplay stays open while ACP thinks. */
+  state?: "streaming" | "done";
+};
 type AssistantPart =
   | TextPart
   | ReasoningPart
@@ -198,12 +203,28 @@ export function upsertAcpToolPart(
         : stringifyToolError(update.rawOutput ?? update.content);
   }
 
+  const withDoneReasoning = markStreamingReasoningDone(parts);
   if (idx >= 0) {
-    const copy = parts.slice();
+    const copy = withDoneReasoning.slice();
     copy[idx] = next;
     return copy;
   }
-  return [...parts, next];
+  return [...withDoneReasoning, next];
+}
+
+/** Flip ACP live reasoning parts to `done` when text/tools start. */
+export function markStreamingReasoningDone(
+  parts: AssistantPart[],
+): AssistantPart[] {
+  let changed = false;
+  const next = parts.map(p => {
+    if (p.type === "reasoning" && (p as ReasoningPart).state === "streaming") {
+      changed = true;
+      return { ...(p as ReasoningPart), state: "done" as const };
+    }
+    return p;
+  });
+  return changed ? next : parts;
 }
 
 /** Append or extend the trailing text part (keeps tool cards intact). */
@@ -212,34 +233,48 @@ export function appendAssistantText(
   chunk: string,
 ): AssistantPart[] {
   if (!chunk) return parts;
-  const last = parts[parts.length - 1];
+  const base = markStreamingReasoningDone(parts);
+  const last = base[base.length - 1];
   if (last?.type === "text") {
-    const copy = parts.slice();
+    const copy = base.slice();
     copy[copy.length - 1] = {
       type: "text",
       text: `${(last as TextPart).text}${chunk}`,
     };
     return copy;
   }
-  return [...parts, { type: "text", text: chunk }];
+  return [...base, { type: "text", text: chunk }];
 }
 
 /**
  * Append ACP `agent_thought_chunk` text as UIMessage `reasoning` parts so Chat
  * renders the same Thinking/ReasoningDisplay blocks as the in-app agent.
  * Extends the trailing reasoning part; starts a new block after tools/text.
+ * Stamps `state: "streaming"` so Chat's streaming-reasoning heuristic expands
+ * the block live (same as cloud AI SDK parts).
  */
 export function appendAssistantReasoning(
   parts: AssistantPart[],
   chunk: string,
 ): AssistantPart[] {
-  if (!chunk) return parts;
   const last = parts[parts.length - 1];
+  // Codex often sends a whitespace-only first thought chunk. Keep an existing
+  // streaming placeholder open, but don't start a new empty block from it.
+  if (!chunk.trim()) {
+    if (
+      last?.type === "reasoning" &&
+      (last as ReasoningPart).state === "streaming"
+    ) {
+      return parts;
+    }
+    return parts;
+  }
   if (last?.type === "reasoning") {
     const copy = parts.slice();
     copy[copy.length - 1] = {
       type: "reasoning",
       text: `${(last as ReasoningPart).text}${chunk}`,
+      state: "streaming",
     };
     return copy;
   }
@@ -250,9 +285,9 @@ export function appendAssistantReasoning(
     parts[0]?.type === "text" &&
     !(parts[0] as TextPart).text.trim()
   ) {
-    return [{ type: "reasoning", text: chunk }];
+    return [{ type: "reasoning", text: chunk, state: "streaming" }];
   }
-  return [...parts, { type: "reasoning", text: chunk }];
+  return [...parts, { type: "reasoning", text: chunk, state: "streaming" }];
 }
 
 export function setAssistantErrorText(

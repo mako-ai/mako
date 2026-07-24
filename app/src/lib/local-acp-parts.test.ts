@@ -97,11 +97,19 @@ describe("local-acp-parts", () => {
       "Considering the schema…",
     );
     expect(parts).toEqual([
-      { type: "reasoning", text: "Considering the schema…" },
+      {
+        type: "reasoning",
+        text: "Considering the schema…",
+        state: "streaming",
+      },
     ]);
     parts = appendAssistantReasoning(parts, " then joins.");
     expect(parts).toEqual([
-      { type: "reasoning", text: "Considering the schema… then joins." },
+      {
+        type: "reasoning",
+        text: "Considering the schema… then joins.",
+        state: "streaming",
+      },
     ]);
     parts = upsertAcpToolPart(parts, {
       toolCallId: "t3",
@@ -109,10 +117,33 @@ describe("local-acp-parts", () => {
       status: "completed",
       rawOutput: { ok: true },
     });
+    expect(parts[0]).toMatchObject({
+      type: "reasoning",
+      state: "done",
+    });
     parts = appendAssistantReasoning(parts, "Next step.");
     expect(parts[2]).toMatchObject({
       type: "reasoning",
       text: "Next step.",
+      state: "streaming",
     });
+  });
+
+  it("ignores whitespace-only thought chunks before real text", () => {
+    const parts = appendAssistantReasoning(
+      [{ type: "text", text: "" }],
+      "\n\n",
+    );
+    expect(parts).toEqual([{ type: "text", text: "" }]);
+  });
+
+  it("keeps an empty streaming Thinking placeholder open on whitespace", () => {
+    const seeded = [
+      { type: "reasoning" as const, text: "", state: "streaming" as const },
+    ];
+    expect(appendAssistantReasoning(seeded, "\n\n")).toEqual(seeded);
+    expect(appendAssistantReasoning(seeded, "Hello")).toEqual([
+      { type: "reasoning", text: "Hello", state: "streaming" },
+    ]);
   });
 });

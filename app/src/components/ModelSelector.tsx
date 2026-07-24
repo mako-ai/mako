@@ -25,10 +25,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import type { AIModel } from "../lib/api-types";
 import {
   isLocalAcpModelId,
-  localAcpModelIdToProviderId,
-  localAcpModelPreference,
   localAcpModelsFromProviders,
-  resolveLocalAcpModelValue,
 } from "../lib/local-acp-models";
 import { getModelBillingState } from "./model-selector-utils";
 
@@ -128,34 +125,11 @@ export const ModelSelector: React.FC = () => {
   const handleSelectModel = (modelId: string) => {
     setSelectedModelId(modelId);
     handleClose();
-    // If a Claude/Codex ACP session is already live, switch its model now so
-    // the next Chat turn doesn't keep running Sonnet after picking Fable.
-    if (!isLocalAcpModelId(modelId)) return;
-    const providerId = localAcpModelIdToProviderId(modelId);
-    const preference = localAcpModelPreference(modelId);
-    if (!providerId || !preference) return;
-    const store = useAcpStore.getState();
-    const session =
-      store.sessions.find(
-        s =>
-          s.id === store.activeSessionId &&
-          s.providerId === providerId &&
-          s.makoMcpAttached,
-      ) ||
-      store.sessions.find(
-        s => s.providerId === providerId && s.makoMcpAttached,
-      );
-    if (!session) return;
-    const providerModels = store.status?.providers.find(
-      p => p.id === providerId,
-    )?.availableModels;
-    const resolved = resolveLocalAcpModelValue(
-      preference,
-      session.availableModels?.length
-        ? session.availableModels
-        : providerModels,
-    );
-    void store.setSessionModel(session.id, resolved);
+    // Do NOT call setSessionModel on a live Codex/Claude session here.
+    // Mid-chat `session/set_config_option` makes Codex emit "Conversation
+    // interrupted" and look like the transcript was wiped. The selected
+    // model id is applied on the next Chat send (fresh session + continuity
+    // when the model actually changes).
   };
 
   const localModels = useMemo(

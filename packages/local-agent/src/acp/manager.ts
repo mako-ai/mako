@@ -19,11 +19,18 @@ import {
 import { resolveAdapterCommand } from "./resolve-command";
 import { shouldAutoApprovePermission } from "./permissions";
 import { probeMakoMcpHttp } from "./mcp-probe";
+import {
+  hasCodexAuthFile,
+  probeCodexLoginStatus,
+  shouldAutoAuthenticateOnSessionNew,
+} from "./codex-login-status";
 import { buildMakoSystemPromptAppend } from "./mako-system-append";
 import {
   acpReconnectMessage,
   explainAdapterLaunchFailure,
   isAcpConnectionClosedError,
+  sanitizeAdapterStderrForUi,
+  userFacingAcpError,
 } from "./connection-errors";
 import {
   defaultTerminalLoginLaunch,
@@ -54,7 +61,10 @@ import {
 } from "../desktop-bridge/mcp";
 import {
   explainCodexModelFailure,
+  isChatGptRejectedCodexModel,
+  isCodexChatGptModelRejectedError,
   isForeignGatewayCodexModel,
+  pickChatGptCompatibleCodexModel,
   pickSafeCodexModel,
 } from "./codex-models";
 import {
@@ -200,6 +210,8 @@ export class AcpSessionManager {
         adapterFound: Boolean(launch),
         connected: isConnectionAlive(conn),
         authRequired: conn?.authRequired ?? false,
+        // Sync file check only — avoid blocking GET /acp/status on `codex login status`.
+        cliLoggedIn: id === "codex" ? hasCodexAuthFile() : undefined,
         authMethods: (conn?.authMethods ?? []).map(m => ({
           id: m.id,
           name: m.name,
@@ -213,19 +225,27 @@ export class AcpSessionManager {
     });
 
     // Warm model catalogs in the background so Chat's picker shows real
-    // Claude/Codex ids before the user starts a turn.
-    for (const p of providers) {
-      if (
-        p.adapterFound &&
-        (!p.availableModels || p.availableModels.length === 0) &&
-        !this.modelWarmInFlight.has(p.id)
-      ) {
-        void this.ensureProviderModels(p.id).catch(error => {
-          acpLog.info("Background ACP model warm failed", {
-            providerId: p.id,
-            error: String(error),
+    // Claude/Codex ids before the user starts a turn. Tests set
+    // MAKO_ACP_DISABLE_BACKGROUND_WARM=1 so getStatus cannot spawn PATH
+    // adapters (codex-acp) and keep the Node test process open.
+    if (process.env.MAKO_ACP_DISABLE_BACKGROUND_WARM !== "1") {
+      const warmOnly = process.env.MAKO_ACP_PROVIDER?.trim() as
+        | AcpProviderId
+        | undefined;
+      for (const p of providers) {
+        if (warmOnly && p.id !== warmOnly) continue;
+        if (
+          p.adapterFound &&
+          (!p.availableModels || p.availableModels.length === 0) &&
+          !this.modelWarmInFlight.has(p.id)
+        ) {
+          void this.ensureProviderModels(p.id).catch(error => {
+            acpLog.info("Background ACP model warm failed", {
+              providerId: p.id,
+              error: String(error),
+            });
           });
-        });
+        }
       }
     }
 
@@ -421,6 +441,21 @@ export class AcpSessionManager {
   }
 
   /**
+   * Live-only subscribe (no backlog). Chat turns use this so reconnecting the
+   * SSE pipe does not paint prior agent_message chunks into the new bubble.
+   */
+  subscribeLive(sessionId: string, listener: Listener): () => void {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Unknown ACP session: ${sessionId}`);
+    }
+    session.listeners.add(listener);
+    return () => {
+      session.listeners.delete(listener);
+    };
+  }
+
+  /**
    * Events recorded for this session (for SSE backlog replay). Excludes
    * permission_request — those are only meaningful while a request is pending.
    */
@@ -484,9 +519,9 @@ export class AcpSessionManager {
   ): void {
     const label = ACP_PROVIDERS[providerId].label;
     const conn = this.connections.get(providerId);
-    const stderr = conn?.lastStderr?.trim();
+    const stderr = sanitizeAdapterStderrForUi(conn?.lastStderr);
     if (stderr) {
-      this.lastAdapterError = stderr.slice(-800);
+      this.lastAdapterError = stderr;
     }
     const npxTip = stderr ? explainAdapterLaunchFailure(stderr) : null;
     const message = npxTip
@@ -645,7 +680,24 @@ export class AcpSessionManager {
     // Codex without ChatGPT login often cannot even initialize the ACP
     // adapter (fails with CODEX_API_KEY / OPENAI_API_KEY). Open `codex login`
     // first — do not require a live connection for Sign in.
+    // Important: never start a new `codex login` when already signed in —
+    // that OAuth flow can wipe ~/.codex/auth.json.
     if (providerId === "codex" && !methodId) {
+      if (await probeCodexLoginStatus()) {
+        try {
+          const conn = await this.ensureConnection(providerId);
+          conn.authenticated = true;
+        } catch {
+          // Status said logged in; connection may still fail for other reasons.
+        }
+        return {
+          ok: true,
+          methodId: "codex-login",
+          launchedTerminal: false,
+          message:
+            "Codex is already signed in with ChatGPT. Open Chat, pick Codex (local), and Enable workspace tools.",
+        };
+      }
       const { commandLine, opened } = launchTerminalAuth(
         defaultTerminalLoginLaunch("codex"),
       );
@@ -799,24 +851,36 @@ export class AcpSessionManager {
         });
       }
       const conn = await this.ensureConnection(providerId);
-      if (conn.authRequired && !conn.authenticated) {
-        const terminalOnly = conn.authMethods.every(
-          m => m.type === "terminal" || m.terminalAuth,
-        );
-        // Claude ACP uses Terminal CLI login — do NOT auto-open Terminal on
-        // every session/new (Sign in button owns that). Credentials on disk
-        // usually already work; if not, session/new fails with a clear error.
-        if (!terminalOnly) {
-          try {
-            await this.authenticate(providerId);
-          } catch (error) {
-            const message =
-              error instanceof Error ? error.message : "Authentication failed";
-            throw new Error(
-              `${ACP_PROVIDERS[providerId].label} requires sign-in (${ACP_PROVIDERS[providerId].authProduct}): ${message}`,
-            );
-          }
+      // Claude/Codex use Terminal CLI login — do NOT auto-open Terminal on
+      // every session/new (Sign in owns that). Auto-auth for Codex used to
+      // run `codex login` and wipe ~/.codex/auth.json even when ChatGPT
+      // credentials already existed.
+      if (
+        shouldAutoAuthenticateOnSessionNew({
+          providerId,
+          authRequired: conn.authRequired,
+          authenticated: conn.authenticated,
+          authMethods: conn.authMethods,
+        })
+      ) {
+        try {
+          await this.authenticate(providerId);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Authentication failed";
+          throw new Error(
+            `${ACP_PROVIDERS[providerId].label} requires sign-in (${ACP_PROVIDERS[providerId].authProduct}): ${message}`,
+          );
         }
+      } else if (
+        providerId === "codex" &&
+        conn.authRequired &&
+        !conn.authenticated &&
+        (await probeCodexLoginStatus())
+      ) {
+        // Adapter still advertises auth methods after ChatGPT login; treat
+        // disk/CLI status as authenticated so session/new can proceed.
+        conn.authenticated = true;
       }
 
       const attachMakoMcp = Boolean(
@@ -1122,10 +1186,12 @@ export class AcpSessionManager {
       session.guidanceInjectedIntoPrompt = true;
     }
 
-    try {
-      const promptPromise = session.active.prompt(promptText);
+    // Capture after the null guard — nested async closures lose the narrow.
+    const active = session.active;
+    const drainPrompt = async (): Promise<{ stopReason: string }> => {
+      const promptPromise = active.prompt(promptText);
       for (;;) {
-        const message = await session.active.nextUpdate();
+        const message = await active.nextUpdate();
         if (message.kind === "session_update") {
           this.emit(sessionId, {
             type: "session_update",
@@ -1144,6 +1210,10 @@ export class AcpSessionManager {
           return { stopReason: message.stopReason };
         }
       }
+    };
+
+    try {
+      return await drainPrompt();
     } catch (error) {
       if (isAcpConnectionClosedError(error)) {
         this.invalidateProvider(providerId, "connection closed during prompt");
@@ -1160,8 +1230,48 @@ export class AcpSessionManager {
       const raw =
         error instanceof Error ? error.message : "ACP prompt failed";
       const conn = this.connections.get(providerId);
-      const stderr = conn?.lastStderr?.trim() || this.lastAdapterError || "";
+      const stderr =
+        sanitizeAdapterStderrForUi(conn?.lastStderr) ||
+        sanitizeAdapterStderrForUi(this.lastAdapterError) ||
+        "";
       const combined = stderr ? `${raw}\n${stderr.slice(-600)}` : raw;
+
+      // ChatGPT login rejects Sol (and similar). Switch to Terra once and retry.
+      if (
+        providerId === "codex" &&
+        isCodexChatGptModelRejectedError(combined)
+      ) {
+        const fallback = pickChatGptCompatibleCodexModel(
+          session.info.availableModels,
+          session.info.currentModel,
+        );
+        try {
+          acpLog.info("Retrying Codex prompt on ChatGPT-compatible model", {
+            sessionId,
+            from: session.info.currentModel,
+            to: fallback,
+          });
+          await this.setSessionConfig(sessionId, {
+            configId: "model",
+            value: fallback,
+          });
+          return await drainPrompt();
+        } catch (retryError) {
+          const retryRaw =
+            retryError instanceof Error
+              ? retryError.message
+              : "ACP prompt failed after model switch";
+          const tip = explainCodexModelFailure(retryRaw) || retryRaw;
+          this.emit(sessionId, {
+            type: "error",
+            sessionId,
+            message: tip,
+            at: nowIso(),
+          });
+          throw new Error(tip);
+        }
+      }
+
       const tip =
         providerId === "codex" ? explainCodexModelFailure(combined) : null;
       let message = tip || raw;
@@ -1259,7 +1369,21 @@ export class AcpSessionManager {
           // resolve with whatever we have
         }
       }
-      const resolved = resolveModelConfigValue(value, available);
+      let resolved = resolveModelConfigValue(value, available);
+      // ChatGPT rejects Sol — remap before set_config so Chat never sees
+      // "Invalid params" / subscription rejection when switching models.
+      if (
+        session.info.providerId === "codex" &&
+        isChatGptRejectedCodexModel(resolved)
+      ) {
+        const fallback = pickChatGptCompatibleCodexModel(available, resolved);
+        acpLog.info("Remapping ChatGPT-rejected Codex model", {
+          sessionId,
+          from: resolved,
+          to: fallback,
+        });
+        resolved = fallback;
+      }
       if (resolved !== value.trim()) {
         acpLog.info("Resolved ACP model alias", {
           sessionId,
@@ -1306,18 +1430,22 @@ export class AcpSessionManager {
       )) as { configOptions?: unknown };
     } catch (error) {
       const raw = error instanceof Error ? error.message : String(error);
+      const providerId = session.info.providerId;
       if (
         configId === "model" &&
         typeof value === "string" &&
-        /not found|invalid value|unknown/i.test(raw)
+        /not found|invalid value|unknown|invalid params/i.test(raw)
       ) {
         throw new Error(
-          `Could not switch to model "${value}". ` +
-            `Use a model id from the Chat picker (not a stale alias), or ` +
-            `Update the ACP adapter in Settings → Coding Agents. (${raw})`,
+          userFacingAcpError(
+            `Could not switch to model "${value}". ` +
+              `Use a model id from the Chat picker (not a stale alias), or ` +
+              `Update the ACP adapter in Settings → Coding Agents. (${raw})`,
+            { providerId },
+          ),
         );
       }
-      throw error;
+      throw new Error(userFacingAcpError(raw, { providerId }));
     }
     this.applyConfigOptionsToSession(session, response?.configOptions);
     session.info.updatedAt = nowIso();
@@ -1384,10 +1512,19 @@ export class AcpSessionManager {
     return randomUUID();
   }
 
-  shutdown(): void {
-    for (const sessionId of [...this.sessions.keys()]) {
-      void this.closeSession(sessionId);
+  async shutdown(): Promise<void> {
+    const warms = [...this.modelWarmInFlight.values()];
+    if (warms.length > 0) {
+      await Promise.race([
+        Promise.allSettled(warms),
+        new Promise<void>(resolve => {
+          setTimeout(resolve, 2000);
+        }),
+      ]);
     }
+    await Promise.allSettled(
+      [...this.sessions.keys()].map(id => this.closeSession(id)),
+    );
     for (const conn of this.connections.values()) {
       conn.close();
     }
