@@ -310,7 +310,10 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
                   consoleToolPresentation?.title ||
                   (typeof part.title === "string" &&
                   part.title.trim() &&
-                  !isRawMcpToolLabel(part.title)
+                  !isRawMcpToolLabel(part.title) &&
+                  // Don't override native labels with the raw tool id
+                  // (e.g. ACP "ToolSearch" === toolName).
+                  part.title.trim() !== toolName
                     ? part.title
                     : undefined)
                 }

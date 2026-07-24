@@ -142,4 +142,18 @@ describe("client tool manifest contracts", () => {
       }),
     ).toBe('Searching web: "PostgreSQL 17"');
   });
+
+  it("aliases Claude Code ACP ToolSearch onto search_tools card UI", () => {
+    expect(getAgentToolManifestEntry("ToolSearch")).toMatchObject({
+      domain: "search",
+      icon: "search",
+    });
+    expect(getAgentToolManifestEntry("ToolSearch")?.getLabel()).toBe(
+      "Searching tools",
+    );
+    expect(
+      getAgentToolManifestEntry("ToolSearch")?.getLabel({ query: "sql" }),
+    ).toBe("Searching tools: sql");
+    expect(getAgentToolManifestEntry("tool_search")?.icon).toBe("search");
+  });
 });

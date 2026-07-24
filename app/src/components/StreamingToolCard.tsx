@@ -78,7 +78,12 @@ const ICON_SIZE = 13;
 // ── Helpers ──────────────────────────────────────────────────
 
 function humanizeToolName(name: string): string {
-  return name.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, c => c.toUpperCase());
 }
 
 function renderToolIcon(iconKey: ToolIconKey): React.ReactNode {
@@ -128,12 +133,13 @@ function renderToolIcon(iconKey: ToolIconKey): React.ReactNode {
 
 function getToolConfig(toolName: string): ToolUiConfig {
   const config = getAgentToolManifestEntry(toolName);
-  return (
-    config ?? {
-      getLabel: () => humanizeToolName(toolName),
-      icon: "help-circle",
-    }
-  );
+  if (config) return config;
+  const humanized = humanizeToolName(toolName);
+  const looksLikeSearch = /\bsearch\b/i.test(humanized);
+  return {
+    getLabel: () => humanized,
+    icon: looksLikeSearch ? "search" : "help-circle",
+  };
 }
 
 function formatOutputForDisplay(output: unknown): string {
