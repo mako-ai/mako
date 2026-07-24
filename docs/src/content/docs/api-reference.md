@@ -112,6 +112,7 @@ The legacy unauthenticated `POST /api/execute` and `POST /api/run/:path` endpoin
 | `DELETE` | `/api/workspaces/:wid/consoles/:id/schedule` | Remove a saved console schedule (admin only) |
 | `POST` | `/api/workspaces/:wid/consoles/:id/schedule/run` | Trigger a scheduled console immediately (admin only) |
 | `GET` | `/api/workspaces/:wid/consoles/:id/schedule/runs` | List scheduled run history (admin only) |
+| `GET` | `/api/workspaces/:wid/consoles/:id/executions` | List recent query executions with trigger source (`?limit=`, ~90-day retention) |
 | `GET` | `/api/workspaces/:wid/scheduled-queries` | List scheduled consoles in the workspace (admin only) |
 | `GET`    | `/api/workspaces/:wid/consoles/:id/collaborators`           | List per-user collaborators                  |
 | `POST`   | `/api/workspaces/:wid/consoles/:id/collaborators`           | Add/update a collaborator (`{ userId, role }`; owner/admin only) |

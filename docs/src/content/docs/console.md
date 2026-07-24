@@ -59,6 +59,12 @@ When a console is scheduled, Mako stores the next run time and executes it throu
 
 Triggering an async run requires workspace admin access and hits `POST /api/workspaces/:wid/consoles/:id/schedule/run`.
 
+### Runs Tab
+
+The **Runs** tab below the editor lists the console's recent query executions (retained for ~90 days) — not just scheduled runs. Each row shows status, duration, row count, and a **Trigger** label identifying what ran the query: App UI, API key, MCP, AI agent, Schedule, or Flow. External triggers (API key, MCP) are highlighted and show a key suffix when available. For scheduled consoles, the scheduled run history appears as a subsection.
+
+The same history is available programmatically via `GET /api/workspaces/:wid/consoles/:id/executions` and to agents via the `list_console_executions` tool.
+
 ## Live Editing & Streaming
 
 When the agent edits a console, changes are applied **server-side to the authoritative draft** and any open windows update live — you don't have to be the one driving the chat to see the edit land.
@@ -107,6 +113,7 @@ Authorization: Bearer revops_YOUR_API_KEY
 | `DELETE` | `/api/workspaces/:wid/consoles/:id/schedule` | Remove a schedule (admin only) |
 | `POST` | `/api/workspaces/:wid/consoles/:id/schedule/run` | Trigger a scheduled console now (admin only) |
 | `GET` | `/api/workspaces/:wid/consoles/:id/schedule/runs` | List scheduled run history (admin only) |
+| `GET` | `/api/workspaces/:wid/consoles/:id/executions` | List recent query executions (any trigger, ~90-day retention) |
 | `GET` | `/api/workspaces/:wid/scheduled-queries` | List scheduled consoles in the workspace (admin only) |
 
 ### Example

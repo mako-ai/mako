@@ -230,6 +230,7 @@ The agent then calls `check_query_status` to fetch the result, and can stop a ru
 | `run_console`        | Executes a console's query as a detached run; returns rows, or `status: "running"` + `executionId`   |
 | `check_query_status` | Polls a running query by `consoleId` (+ optional `executionId`); returns `running`/`success`/`error`/`cancelled` |
 | `cancel_query`       | Aborts a running detached query (task + engine-native cancel)                                         |
+| `list_console_executions` | Lists a console's recent executions with trigger source (App UI / API key / MCP / AI agent / Schedule / Flow), status, duration, and row count |
 
 Results land via the persisted `lastRun` record and the realtime `console.run.completed` pipeline, so result polling works across server instances for **every engine** — no re-attach and no Inngest dependency (multi-instance realtime fan-out uses `REDIS_URL`). A server-side hard cap (`QUERY_HARD_MAX_EXECUTION_MS`, 5 minutes default) aborts any detached run that exceeds it, so no query can run forever.
 
