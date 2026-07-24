@@ -202,20 +202,55 @@ export function createServerAppTools({
   const savedByName = async (): Promise<string> =>
     userId ? await getUserDisplayName(userId) : "Agent";
 
-  // Persist a mutated app doc, then poke the workspace channel so open tabs
-  // pull the new definition and rebuild their preview.
+  // Persist only the fields mutated by this tool behind a version predicate,
+  // then poke the workspace channel so open tabs pull the new definition.
+  // A plain doc.save() here can overwrite a concurrent atomic file/binding edit
+  // with the stale snapshot loaded at the start of this tool invocation.
   const saveAndPublish = async (doc: IMakoApp): Promise<number> => {
-    doc.version += 1;
-    await doc.save();
+    const expectedVersion = doc.version;
+    const setFields: Record<string, unknown> = {};
+    const unsetFields: Record<string, ""> = {};
+    for (const path of doc.directModifiedPaths()) {
+      if (
+        path === "_id" ||
+        path === "workspaceId" ||
+        path === "version" ||
+        path === "createdAt" ||
+        path === "updatedAt"
+      ) {
+        continue;
+      }
+      const value = doc.get(path);
+      if (value === undefined) unsetFields[path] = "";
+      else setFields[path] = value;
+    }
+    const updated = await MakoApp.findOneAndUpdate(
+      {
+        _id: doc._id,
+        workspaceId: doc.workspaceId,
+        version: expectedVersion,
+      },
+      {
+        ...(Object.keys(setFields).length > 0 ? { $set: setFields } : {}),
+        ...(Object.keys(unsetFields).length > 0 ? { $unset: unsetFields } : {}),
+        $inc: { version: 1 },
+      },
+      { new: true, runValidators: true },
+    );
+    if (!updated) {
+      throw new Error(
+        "App changed while this update was being applied. Re-read the app and retry.",
+      );
+    }
     publishRealtimeEvent(workspaceId, {
       type: "app.updated",
-      appId: doc._id.toString(),
-      version: doc.version,
+      appId: updated._id.toString(),
+      version: updated.version,
       updatedBy: userId ?? "agent",
       clientId: agentClientId,
       origin: "agent",
     });
-    return doc.version;
+    return updated.version;
   };
 
   // Validate that a data-binding connection belongs to this workspace.

@@ -615,7 +615,7 @@ export function createNotebookServerTools({
         );
         if (!result.success) {
           const message = result.error || "Query failed";
-          await persistOutputs(
+          const persisted = await persistOutputs(
             id,
             doc.blocks,
             input.cellId,
@@ -630,6 +630,20 @@ export function createNotebookServerTools({
             undefined,
             doc.version,
           );
+          if (persisted === SAVE_CONFLICT) {
+            return {
+              success: false,
+              error:
+                `${message} The notebook changed while the SQL cell was running, ` +
+                "so its error output was not persisted. Re-read before rerunning it.",
+            };
+          }
+          if (persisted === null) {
+            return {
+              success: false,
+              error: `${message} Its error output could not be persisted.`,
+            };
+          }
           return { success: false, error: message };
         }
         const rows = (result.data as Record<string, unknown>[]) || [];
@@ -661,6 +675,14 @@ export function createNotebookServerTools({
             error:
               "Notebook changed while the SQL cell was running; its result was " +
               "not persisted. Re-read and rerun the cell.",
+          };
+        }
+        if (persisted === null) {
+          return {
+            success: false,
+            error:
+              "The SQL query completed, but its result could not be persisted. " +
+              "Confirm the notebook still exists and you can edit it, then rerun the cell.",
           };
         }
         return {
@@ -727,6 +749,14 @@ export function createNotebookServerTools({
               error:
                 "Notebook changed while the Python cell was running; its result " +
                 "was not persisted. Re-read and rerun the cell.",
+            };
+          }
+          if (persisted === null) {
+            return {
+              success: false,
+              error:
+                "The Python cell completed, but its output could not be persisted. " +
+                "Confirm the notebook still exists and you can edit it, then rerun the cell.",
             };
           }
           return {

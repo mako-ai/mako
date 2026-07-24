@@ -1107,6 +1107,10 @@
           },
           "clientId": {
             "type": "string"
+          },
+          "expectedVersion": {
+            "type": "integer",
+            "exclusiveMinimum": 0
           }
         }
       },
