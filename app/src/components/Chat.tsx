@@ -308,6 +308,8 @@ const Chat: React.FC<ChatProps> = ({
   /** Bumps on each ACP send so overlapping finally blocks don't clear busy early. */
   const localAcpGenerationRef = useRef(0);
   const [localAcpBusy, setLocalAcpBusy] = useState(false);
+  const localAcpBusyRef = useRef(false);
+  localAcpBusyRef.current = localAcpBusy;
   // Client-tool registry: in-flight executions, cancel/interrupt plumbing,
   // and the per-chat toolCallId dispatch dedupe gate (the triplicate-tool
   // fix). Created before useChat — its register/settle callbacks are wired
@@ -847,6 +849,7 @@ const Chat: React.FC<ChatProps> = ({
     loadPersistedMessagesRef,
     requestResumeRef,
     localAcpBindingRef,
+    localAcpBusyRef,
   });
 
   // Create new chat session - just generate a new ID locally (no API call needed)

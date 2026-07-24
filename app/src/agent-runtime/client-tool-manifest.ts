@@ -631,6 +631,14 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Rebuilding app preview",
     icon: "play",
   },
+  // Desktop ACP (mako-desktop) — read live iframe errors without rebuilding.
+  get_preview_errors: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    getLabel: () => "Checking preview errors",
+    icon: "eye",
+  },
   app_set_preview_environment: {
     domain: "app",
     execution: "client",
