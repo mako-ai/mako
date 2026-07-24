@@ -1405,6 +1405,7 @@ const Chat: React.FC<ChatProps> = ({
                 message={message}
                 isLastMessage={msgIdx === messages.length - 1}
                 isStreaming={status === "streaming" || localAcpBusy}
+                collapseEmptyReasoningWhileStreaming={localAcpBusy}
                 onToolClick={handleToolClick}
                 onConsoleTitleClick={handleConsoleTitleClick}
                 onMcpApprovalResponse={handleMcpApprovalResponse}

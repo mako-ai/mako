@@ -53,6 +53,7 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
   message,
   isLastMessage,
   isStreaming,
+  collapseEmptyReasoningWhileStreaming = false,
   onToolClick,
   onConsoleTitleClick,
   onMcpApprovalResponse,
@@ -356,6 +357,9 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
                 key={`reasoning-group-${reasoningGroupOrdinals.get(partIndex) ?? partIndex}`}
                 reasoningText={group.text}
                 isStreaming={isGroupStreaming}
+                collapseEmptyWhileStreaming={
+                  collapseEmptyReasoningWhileStreaming
+                }
                 paletteMode={paletteMode}
               />
             );

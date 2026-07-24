@@ -12,10 +12,16 @@ export const ReasoningDisplay = React.memo(
     reasoningText,
     isStreaming,
     paletteMode: _paletteMode,
+    /**
+     * Local ACP only: keep empty Thinking placeholders label-only. Default
+     * in-app chat keeps the historical auto-expand-while-streaming behavior.
+     */
+    collapseEmptyWhileStreaming = false,
   }: {
     reasoningText: string;
     isStreaming: boolean;
     paletteMode: "light" | "dark";
+    collapseEmptyWhileStreaming?: boolean;
   }) => {
     const [userToggled, setUserToggled] = React.useState(false);
     const [userOpen, setUserOpen] = React.useState(false);
@@ -31,12 +37,13 @@ export const ReasoningDisplay = React.memo(
     const startTimeRef = React.useRef<number | null>(null);
     const scrollRef = React.useRef<HTMLDivElement>(null);
 
-    // Auto-open only while THIS block is actively streaming with text and
-    // not yet finished. Empty ACP placeholders (Codex silent wait / seeded
-    // Thinking) stay label-only so we don't show a blank expanded pane.
-    // If the user manually toggled, respect their choice.
+    // Auto-open only while THIS block is actively streaming and not yet
+    // finished; auto-close the moment it finishes. If the user manually
+    // toggled, respect their choice.
     const hasText = reasoningText.trim().length > 0;
-    const isOpen = userToggled ? userOpen : isStreaming && !finished && hasText;
+    const streamingOpen =
+      isStreaming && !finished && (!collapseEmptyWhileStreaming || hasText);
+    const isOpen = userToggled ? userOpen : streamingOpen;
 
     const handleToggle = () => {
       setUserToggled(true);
