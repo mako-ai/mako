@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendAssistantReasoning,
   appendAssistantText,
+  coerceAcpToolPayload,
   isAcpCodexCommentaryPhase,
   mapAcpToolStatus,
   resolveAcpToolName,
@@ -65,6 +66,22 @@ describe("local-acp-parts", () => {
     expect(mapAcpToolStatus("in_progress")).toBe("output-streaming");
     expect(mapAcpToolStatus("completed")).toBe("output-available");
     expect(mapAcpToolStatus("failed")).toBe("output-error");
+  });
+
+  it("unwraps MCP CallToolResult envelopes so SQL row counts are visible", () => {
+    const payload = {
+      success: true,
+      rowCount: 42,
+      data: [{ id: 1 }, { id: 2 }],
+    };
+    expect(
+      coerceAcpToolPayload({
+        content: [{ type: "text", text: JSON.stringify(payload) }],
+      }),
+    ).toEqual(payload);
+    expect(
+      coerceAcpToolPayload([{ type: "text", text: JSON.stringify(payload) }]),
+    ).toEqual(payload);
   });
 
   it("upserts tool parts by toolCallId and preserves text", () => {

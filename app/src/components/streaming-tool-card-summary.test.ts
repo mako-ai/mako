@@ -38,4 +38,28 @@ describe("StreamingToolCard getOutputSummary", () => {
     expect(getOutputSummary({ data: [1, 2, 3] })).toBe("3 rows");
     expect(getOutputSummary(null)).toBeNull();
   });
+
+  it("prefers rowCount over truncated data length", () => {
+    expect(
+      getOutputSummary({
+        rowCount: 500,
+        data: [{ a: 1 }, { a: 2 }],
+      }),
+    ).toBe("500 rows");
+  });
+
+  it("unwraps a one-part MCP content array instead of saying 1 result", () => {
+    expect(
+      getOutputSummary([
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            rowCount: 17,
+            data: [{ n: 1 }],
+          }),
+        },
+      ]),
+    ).toBe("17 rows");
+  });
 });

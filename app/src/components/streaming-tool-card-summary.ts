@@ -40,14 +40,39 @@ export function getOutputSummary(output: unknown): string | null {
     return "Fresh data loaded";
   }
 
-  if (Array.isArray(o.data)) {
-    return `${o.data.length} row${o.data.length !== 1 ? "s" : ""}`;
-  }
+  // Prefer explicit rowCount (full result size) over truncated data[].length.
   if (typeof o.rowCount === "number") {
     return `${o.rowCount} row${o.rowCount !== 1 ? "s" : ""}`;
   }
+  if (Array.isArray(o.data)) {
+    return `${o.data.length} row${o.data.length !== 1 ? "s" : ""}`;
+  }
+  if (Array.isArray(o.rows)) {
+    return `${o.rows.length} row${o.rows.length !== 1 ? "s" : ""}`;
+  }
 
-  if (Array.isArray(output)) {
+  // MCP CallToolResult envelopes (ACP) — one text part is not "1 result".
+  if (Array.isArray(output) && output.length > 0) {
+    const texts = output.filter(
+      (c): c is { type?: string; text: string } =>
+        !!c &&
+        typeof c === "object" &&
+        typeof (c as { text?: unknown }).text === "string" &&
+        ((c as { type?: unknown }).type === undefined ||
+          (c as { type?: unknown }).type === "text"),
+    );
+    if (texts.length === output.length) {
+      const raw = texts.length === 1 ? texts[0]?.text : undefined;
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw.trim()) as unknown;
+          const nested = getOutputSummary(parsed);
+          if (nested) return nested;
+        } catch {
+          // fall through
+        }
+      }
+    }
     return `${output.length} result${output.length !== 1 ? "s" : ""}`;
   }
 

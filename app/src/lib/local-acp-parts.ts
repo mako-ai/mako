@@ -103,16 +103,68 @@ export function stripMcpToolPrefix(name: string): string {
   return trimmed;
 }
 
-/** ACP/MCP often delivers tool results as JSON text — coerce for UI sync. */
+function isMcpTextPart(
+  value: unknown,
+): value is { type?: string; text: string } {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    typeof (value as { text?: unknown }).text === "string" &&
+    ((value as { type?: unknown }).type === undefined ||
+      (value as { type?: unknown }).type === "text")
+  );
+}
+
+/**
+ * ACP/MCP often delivers tool results as JSON text, or as an MCP
+ * CallToolResult envelope (`{ content: [{ type: "text", text }] }` / bare
+ * content array). Unwrap so StreamingToolCard can read rowCount/data.
+ */
 export function coerceAcpToolPayload(value: unknown): unknown {
-  if (typeof value !== "string") return value;
-  const trimmed = value.trim();
-  if (!trimmed || (trimmed[0] !== "{" && trimmed[0] !== "[")) return value;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return value;
+  return unwrapAcpToolPayload(value, 0);
+}
+
+function unwrapAcpToolPayload(value: unknown, depth: number): unknown {
+  if (depth > 4) return value;
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed || (trimmed[0] !== "{" && trimmed[0] !== "[")) return value;
+    try {
+      return unwrapAcpToolPayload(JSON.parse(trimmed), depth + 1);
+    } catch {
+      return value;
+    }
   }
+
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const rec = value as Record<string, unknown>;
+    if (Array.isArray(rec.content) && rec.content.length > 0) {
+      const texts = rec.content.filter(isMcpTextPart).map(c => c.text);
+      const unwrapped = unwrapMcpTextParts(texts);
+      if (unwrapped !== undefined) {
+        return unwrapAcpToolPayload(unwrapped, depth + 1);
+      }
+    }
+  }
+
+  if (Array.isArray(value) && value.length > 0 && value.every(isMcpTextPart)) {
+    const unwrapped = unwrapMcpTextParts(value.map(c => c.text));
+    if (unwrapped !== undefined) {
+      return unwrapAcpToolPayload(unwrapped, depth + 1);
+    }
+  }
+
+  return value;
+}
+
+function unwrapMcpTextParts(texts: string[]): string | undefined {
+  if (texts.length === 0) return undefined;
+  if (texts.length === 1) return texts[0];
+  return texts.find(t => {
+    const s = t.trim();
+    return s.startsWith("{") || s.startsWith("[");
+  });
 }
 
 export function resolveAcpToolName(update: AcpToolUpdate): string {
