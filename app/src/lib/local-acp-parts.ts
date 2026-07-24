@@ -57,6 +57,27 @@ type AssistantPart =
   | DynamicToolPart
   | { type: string; [k: string]: unknown };
 
+/** True for adapter titles that must never become StreamingToolCard labels. */
+export function isRawMcpToolLabel(label: string): boolean {
+  const t = label.trim();
+  if (!t) return false;
+  if (t.startsWith("mcp__")) return true;
+  // Codex ACP display form: "Mcp.Mako-Workspace.Sql Execute Query"
+  if (/^mcp\./i.test(t)) return true;
+  return false;
+}
+
+/** Normalize a humanized MCP tool segment → snake_case tool id. */
+function toSnakeToolId(segment: string): string {
+  return segment
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_+/g, "_")
+    .toLowerCase();
+}
+
 /** Strip Claude/Codex MCP prefixes so AGENT_TOOL_MANIFEST icons/labels match. */
 export function stripMcpToolPrefix(name: string): string {
   const trimmed = name.trim();
@@ -73,6 +94,12 @@ export function stripMcpToolPrefix(name: string): string {
   // Generic mcp__<server>__<tool> (other attached MCP servers).
   const generic = /^mcp__[^_]+(?:_[^_]+)*__(.+)$/.exec(trimmed);
   if (generic?.[1]) return generic[1];
+
+  // Codex UI titles: "Mcp.Mako-Workspace.Sql Execute Query"
+  const dotted = /^mcp\.[^.]+\.(.+)$/i.exec(trimmed);
+  if (dotted?.[1]) {
+    return toSnakeToolId(dotted[1]) || trimmed;
+  }
   return trimmed;
 }
 
@@ -106,7 +133,8 @@ export function resolveAcpToolTitle(
 ): string | undefined {
   const rawTitle = typeof update.title === "string" ? update.title.trim() : "";
   if (!rawTitle) return undefined;
-  if (rawTitle.startsWith("mcp__")) return undefined;
+  // Raw MCP ids / Codex "Mcp.Server.Tool Name" — never override native labels.
+  if (isRawMcpToolLabel(rawTitle)) return undefined;
   const strippedTitle = stripMcpToolPrefix(rawTitle);
   if (
     strippedTitle === toolName ||

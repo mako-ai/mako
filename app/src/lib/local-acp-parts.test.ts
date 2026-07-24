@@ -26,6 +26,19 @@ describe("local-acp-parts", () => {
     expect(resolveAcpToolName({ name: "Bash" })).toBe("Bash");
   });
 
+  it("normalizes Codex Mcp.Server.Tool Title forms to snake_case ids", () => {
+    expect(
+      resolveAcpToolName({
+        title: "Mcp.Mako-Workspace.Sql Execute Query",
+      }),
+    ).toBe("sql_execute_query");
+    expect(
+      resolveAcpToolName({
+        name: "Mcp.Mako-Desktop.List Open Consoles",
+      }),
+    ).toBe("list_open_consoles");
+  });
+
   it("drops raw MCP ids from tool titles so native labels/icons win", () => {
     expect(
       resolveAcpToolTitle(
@@ -34,6 +47,12 @@ describe("local-acp-parts", () => {
           name: "mcp__mako-workspace__app_edit_file",
         },
         "app_edit_file",
+      ),
+    ).toBeUndefined();
+    expect(
+      resolveAcpToolTitle(
+        { title: "Mcp.Mako-Workspace.Sql Execute Query" },
+        "sql_execute_query",
       ),
     ).toBeUndefined();
     expect(

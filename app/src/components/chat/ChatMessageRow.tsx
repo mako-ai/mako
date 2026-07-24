@@ -29,6 +29,7 @@ import { ReasoningDisplay } from "./ReasoningDisplay";
 import { StreamingIndicator } from "./StreamingIndicator";
 import { CollapsibleUserText } from "./CollapsibleUserText";
 import { ImagePreviewDialog } from "./ImagePreviewDialog";
+import { isRawMcpToolLabel } from "../../lib/local-acp-parts";
 
 // ── Memoized message row ─────────────────────────────────────────
 // Prevents completed messages from re-rendering on every streaming chunk.
@@ -308,7 +309,8 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
                 labelOverride={
                   consoleToolPresentation?.title ||
                   (typeof part.title === "string" &&
-                  !part.title.startsWith("mcp__")
+                  part.title.trim() &&
+                  !isRawMcpToolLabel(part.title)
                     ? part.title
                     : undefined)
                 }
