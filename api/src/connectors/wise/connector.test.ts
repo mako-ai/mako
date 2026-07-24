@@ -240,7 +240,8 @@ function testIncrementalCapabilitiesHonest() {
   assert.equal(caps.mode, "none");
   assert.equal(caps.perEntity?.transfers?.mode, "created-anchor");
   assert.equal(caps.perEntity?.transfers?.anchorField, "createdDateStart");
-  assert.equal(caps.perEntity?.activities?.mode, "client-filter");
+  assert.equal(caps.perEntity?.activities?.mode, "native");
+  assert.equal(caps.perEntity?.activities?.anchorField, "since");
   assert.equal(caps.perEntity?.profiles, undefined);
   assert.equal(caps.perEntity?.balances, undefined);
   assert.equal(caps.perEntity?.recipients, undefined);
@@ -420,11 +421,21 @@ async function testRecipientsChunkUsesSeekPosition() {
           },
         };
       }
-      assert.equal(config?.params?.seekPosition, 9);
+      if (calls === 2) {
+        assert.equal(config?.params?.seekPosition, 9);
+        return {
+          data: {
+            content: [{ id: 8 }],
+            seekPositionForNext: 8,
+            size: 2,
+          },
+        };
+      }
+      assert.equal(config?.params?.seekPosition, 8);
       return {
         data: {
-          content: [{ id: 8 }],
-          seekPositionForNext: 8,
+          content: [],
+          seekPositionForNext: null,
           size: 2,
         },
       };
@@ -436,6 +447,7 @@ async function testRecipientsChunkUsesSeekPosition() {
     entity: "recipients",
     batchSize: 2,
     maxIterations: 1,
+    rateLimitDelay: 0,
     onBatch: async () => {},
   } as any);
   assert.equal(first.hasMore, true);
@@ -445,12 +457,208 @@ async function testRecipientsChunkUsesSeekPosition() {
     entity: "recipients",
     batchSize: 2,
     maxIterations: 1,
+    rateLimitDelay: 0,
     state: first,
     onBatch: async () => {},
   } as any);
-  // Next seek equals previous → profile complete
+  assert.equal(second.hasMore, true);
+  assert.equal(second.metadata?.seekPosition, 8);
+
+  const third = await connector.fetchEntityChunk({
+    entity: "recipients",
+    batchSize: 2,
+    maxIterations: 1,
+    rateLimitDelay: 0,
+    state: second,
+    onBatch: async () => {},
+  } as any);
+  // Null seekPositionForNext → profile complete
+  assert.equal(third.hasMore, false);
+  assert.equal(calls, 3);
+}
+
+async function testRecipientsContinuesWhenPageShorterThanRequestedSize() {
+  // Wise often caps page size (e.g. 20) below our requested size (100). A
+  // short page must NOT end the sync while seekPositionForNext is set.
+  const connector = createConnector({ profile_id: "12636519" });
+  let calls = 0;
+  const batches: Array<Record<string, unknown>> = [];
+
+  (connector as any).wiseApi = {
+    get: async () => {
+      calls++;
+      if (calls === 1) {
+        return {
+          data: {
+            content: Array.from({ length: 20 }, (_, i) => ({ id: 100 - i })),
+            seekPositionForNext: 81,
+            size: 20,
+          },
+        };
+      }
+      if (calls === 2) {
+        return {
+          data: {
+            content: Array.from({ length: 7 }, (_, i) => ({ id: 80 - i })),
+            seekPositionForNext: 74,
+            size: 20,
+          },
+        };
+      }
+      return {
+        data: {
+          content: [],
+          seekPositionForNext: null,
+          size: 20,
+        },
+      };
+    },
+  };
+
+  const state = await connector.fetchEntityChunk({
+    entity: "recipients",
+    batchSize: 100,
+    maxIterations: 10,
+    rateLimitDelay: 0,
+    onBatch: async batch => {
+      batches.push(...batch);
+    },
+  } as any);
+
+  assert.equal(calls, 3);
+  assert.equal(batches.length, 27);
+  assert.equal(state.hasMore, false);
+  assert.equal(state.totalProcessed, 27);
+}
+
+async function testActivitiesChunkUsesNextCursorQueryParam() {
+  const connector = createConnector({ profile_id: "12636519" });
+  const captured: Array<Record<string, unknown>> = [];
+  let calls = 0;
+
+  (connector as any).wiseApi = {
+    get: async (
+      path: string,
+      config?: { params?: Record<string, unknown> },
+    ) => {
+      calls++;
+      captured.push({ path, ...(config?.params ?? {}) });
+      if (calls === 1) {
+        return {
+          data: {
+            activities: [
+              { id: "act-1", createdOn: "2026-07-01T00:00:00.000Z" },
+              { id: "act-2", createdOn: "2026-06-01T00:00:00.000Z" },
+            ],
+            cursor: "cursor-page-2",
+          },
+        };
+      }
+      return {
+        data: {
+          activities: [{ id: "act-3", createdOn: "2026-05-01T00:00:00.000Z" }],
+          cursor: null,
+        },
+      };
+    },
+  };
+
+  const batches: Array<Record<string, unknown>> = [];
+  const first = await connector.fetchEntityChunk({
+    entity: "activities",
+    batchSize: 50,
+    maxIterations: 1,
+    rateLimitDelay: 0,
+    onBatch: async batch => {
+      batches.push(...batch);
+    },
+  } as any);
+
+  assert.equal(captured[0].path, "/v1/profiles/12636519/activities");
+  assert.equal(captured[0].cursor, undefined);
+  assert.equal(captured[0].nextCursor, undefined);
+  assert.equal(first.hasMore, true);
+  assert.equal(first.metadata?.cursor, "cursor-page-2");
+  assert.equal(batches.length, 2);
+
+  const second = await connector.fetchEntityChunk({
+    entity: "activities",
+    batchSize: 50,
+    maxIterations: 1,
+    rateLimitDelay: 0,
+    state: first,
+    onBatch: async batch => {
+      batches.push(...batch);
+    },
+  } as any);
+
+  assert.equal(captured[1].nextCursor, "cursor-page-2");
+  // Must not send the wrong query key — that re-fetches page 1 forever.
+  assert.equal(captured[1].cursor, undefined);
+  assert.equal(second.hasMore, false);
+  assert.equal(batches.length, 3);
+  assert.equal(batches[2].id, "act-3");
+  assert.equal(batches[2].profileId, "12636519");
+}
+
+async function testActivitiesStopsWhenCursorDoesNotAdvance() {
+  const connector = createConnector({ profile_id: "12636519" });
+  let calls = 0;
+
+  (connector as any).wiseApi = {
+    get: async () => {
+      calls++;
+      return {
+        data: {
+          activities: [{ id: `act-${calls}` }],
+          cursor: "stuck-cursor",
+        },
+      };
+    },
+  };
+
+  // First page establishes cursor; second echoes the same cursor → done.
+  const first = await connector.fetchEntityChunk({
+    entity: "activities",
+    maxIterations: 1,
+    rateLimitDelay: 0,
+    onBatch: async () => {},
+  } as any);
+  assert.equal(first.hasMore, true);
+  assert.equal(first.metadata?.cursor, "stuck-cursor");
+
+  const second = await connector.fetchEntityChunk({
+    entity: "activities",
+    maxIterations: 1,
+    rateLimitDelay: 0,
+    state: first,
+    onBatch: async () => {},
+  } as any);
   assert.equal(second.hasMore, false);
   assert.equal(calls, 2);
+}
+
+async function testActivitiesIncrementalPassesNativeSince() {
+  const connector = createConnector({ profile_id: "12636519" });
+  let captured: Record<string, unknown> | undefined;
+
+  (connector as any).wiseApi = {
+    get: async (
+      _path: string,
+      config?: { params?: Record<string, unknown> },
+    ) => {
+      captured = config?.params;
+      return { data: { activities: [], cursor: null } };
+    },
+  };
+
+  await connector.fetchEntityChunk({
+    entity: "activities",
+    since: new Date("2026-07-15T12:34:56.000Z"),
+    onBatch: async () => {},
+  } as any);
+
+  assert.equal(captured?.since, "2026-07-15T12:34:56.000Z");
 }
 
 async function testProfilesChunkFiltersConfiguredProfile() {
@@ -501,6 +709,10 @@ async function main() {
   await testTransfersChunkUsesOffsetAndProfile();
   await testTransfersIncrementalPassesCreatedDateStart();
   await testRecipientsChunkUsesSeekPosition();
+  await testRecipientsContinuesWhenPageShorterThanRequestedSize();
+  await testActivitiesChunkUsesNextCursorQueryParam();
+  await testActivitiesStopsWhenCursorDoesNotAdvance();
+  await testActivitiesIncrementalPassesNativeSince();
   await testProfilesChunkFiltersConfiguredProfile();
 }
 

@@ -29,20 +29,22 @@ PostgreSQL 16 locally (persist in the VM snapshot) and config lives in a
 gitignored root `.env` (also persisted in the snapshot — `api/src/index.ts`
 loads it via `dotenv.config()`).
 
-Both DB servers must be **started on each VM boot** (no systemd here); the update
-script does NOT start them. Start them before `pnpm dev`:
+Both DB servers must be **started on each VM boot** (no systemd here). The
+`.cursor/environment.json` `start` command runs
+[`.cursor/start-local-dbs.sh`](.cursor/start-local-dbs.sh) automatically; if you
+need to start them by hand before `pnpm dev`:
 
 ```bash
-# MongoDB — single-node replica set (the app uses transactions, which REQUIRE a
-# replica set; a standalone mongod fails with "Transaction numbers are only
-# allowed on a replica set member"). Config already has replSetName: rs0.
-sudo mongod --config /etc/mongod.conf --bind_ip 127.0.0.1 &   # logs: /var/log/mongodb/mongod.log
-# First boot only (idempotent thereafter — already initiated in this snapshot):
-mongosh --quiet --eval 'try{rs.status()}catch(e){rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})}'
-
-# PostgreSQL (demo data source)
-sudo pg_ctlcluster 16 main start
+bash .cursor/start-local-dbs.sh
+# Equivalent manual steps:
+# sudo mongod --config /etc/mongod.conf --bind_ip 127.0.0.1 &
+# mongosh --quiet --eval 'try{rs.status()}catch(e){rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})}'
+# sudo pg_ctlcluster 16 main start
 ```
+
+MongoDB must be a single-node replica set (`replSetName: rs0`) — the app uses
+transactions, and a standalone `mongod` fails with "Transaction numbers are only
+allowed on a replica set member".
 
 `.env` points the app at these: `DATABASE_URL=mongodb://127.0.0.1:27017/mako` and
 the demo source `DEMO_DATABASE_URL=postgresql://mako:mako@127.0.0.1:5432/demo`.
