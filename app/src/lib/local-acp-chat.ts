@@ -330,19 +330,65 @@ export async function runLocalAcpChatTurn(
 
   let sessionId: string | null = null;
 
+  // Checkpoint mid-turn: ACP only used to persist on turn end, so a UI crash
+  // (common while focusing apps during app_write_file) wiped everything after
+  // the last successful response. Debounced tool checkpoints + final flush.
+  let persistTimer: ReturnType<typeof setTimeout> | null = null;
+  let persistChain: Promise<void> = Promise.resolve();
+  /** Avoid refetching History on every tool checkpoint — only on bind changes. */
+  let lastNotifiedSessionId: string | null | undefined = undefined;
+
   const persistIfPossible = async () => {
     if (!workspaceId || !chatId || !mirrored || mirrored.length === 0) return;
     const binding: LocalAcpChatBinding | undefined = sessionId
       ? { providerId, sessionId, modelId }
       : undefined;
+    const snapshot = mirrored;
     const ok = await persistLocalAcpChat({
       workspaceId,
       chatId,
-      messages: mirrored,
+      messages: snapshot,
       localAcp: binding,
     });
-    if (ok) onPersisted?.(binding);
+    if (!ok) return;
+    const sid = binding?.sessionId ?? null;
+    if (lastNotifiedSessionId !== sid) {
+      lastNotifiedSessionId = sid;
+      onPersisted?.(binding);
+    }
   };
+
+  const schedulePersist = (mode: "debounce" | "immediate" = "debounce") => {
+    if (!workspaceId || !chatId) return;
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+      persistTimer = null;
+    }
+    const run = () => {
+      persistTimer = null;
+      persistChain = persistChain
+        .then(() => persistIfPossible())
+        .catch(() => undefined);
+    };
+    if (mode === "immediate") {
+      run();
+      return;
+    }
+    persistTimer = setTimeout(run, 750);
+  };
+
+  const flushPersist = async () => {
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+      persistTimer = null;
+    }
+    await persistChain.catch(() => undefined);
+    await persistIfPossible();
+  };
+
+  // Save user + empty assistant immediately so History survives a crash before
+  // the first tool/text token.
+  schedulePersist("immediate");
 
   const modelPreference = localAcpModelPreference(modelId);
   const uiContext = buildAcpUiContextBlock({
@@ -421,9 +467,20 @@ export async function runLocalAcpChatTurn(
             update.sessionUpdate === "tool_call_update"
           ) {
             patchAssistantParts(parts => upsertAcpToolPart(parts, update));
-            maybeFocusAppFromAcpTool(workspaceId, update);
-            maybeFocusConsoleFromAcpTool(workspaceId, update);
-            maybeFocusNotebookFromAcpTool(workspaceId, update);
+            // Focus side-effects must not tear down the SSE listener / turn.
+            try {
+              maybeFocusAppFromAcpTool(workspaceId, update);
+              maybeFocusConsoleFromAcpTool(workspaceId, update);
+              maybeFocusNotebookFromAcpTool(workspaceId, update);
+            } catch {
+              // ignore UI focus failures
+            }
+            // Checkpoint after tools so app-building turns survive a crash.
+            schedulePersist(
+              update.status === "completed" || update.status === "failed"
+                ? "immediate"
+                : "debounce",
+            );
           }
         } else if (event.type === "permission_request") {
           const activeSessionId = sessionId;
@@ -568,7 +625,7 @@ export async function runLocalAcpChatTurn(
       (error instanceof DOMException && error.name === "AbortError")
     ) {
       patchAssistantParts(parts => setAssistantErrorText(parts, "_Stopped._"));
-      await persistIfPossible();
+      await flushPersist();
       return true;
     }
     let message =
@@ -612,10 +669,10 @@ export async function runLocalAcpChatTurn(
     patchAssistantParts(parts =>
       setAssistantErrorText(parts, `Error: ${message}`),
     );
-    await persistIfPossible();
+    await flushPersist();
     throw error;
   }
 
-  await persistIfPossible();
+  await flushPersist();
   return true;
 }

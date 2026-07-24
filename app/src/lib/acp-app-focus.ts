@@ -87,14 +87,23 @@ export function maybeFocusAppFromAcpTool(
     .getState()
     .fetchApp(workspaceId, appId)
     .then(app => {
-      if (shouldFocus) {
-        focusAppTab(appId, app?.title || title || "App");
+      try {
+        if (shouldFocus) {
+          focusAppTab(appId, app?.title || title || "App");
+        }
+        useAppStore.getState().bumpPreview(appId);
+        void useAppStore.getState().fetchList(workspaceId);
+      } catch {
+        // Preview/tab focus must never surface as an unhandled rejection —
+        // that remounts Chat and used to drop unpersisted ACP turns.
       }
-      useAppStore.getState().bumpPreview(appId);
-      void useAppStore.getState().fetchList(workspaceId);
     })
     .catch(() => {
-      if (shouldFocus) focusAppTab(appId, title || "App");
+      try {
+        if (shouldFocus) focusAppTab(appId, title || "App");
+      } catch {
+        // ignore
+      }
     });
 
   return true;
