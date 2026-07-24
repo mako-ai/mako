@@ -332,9 +332,11 @@ describe("Chat.tsx structural guards", () => {
       /totalListHeightChanged=\{handleListHeightChanged\}/,
     );
     expect(chatSource).toMatch(/scrollerRef=\{/);
-    // While streaming, the pin writes scrollTop on the captured scroller, gated
-    // on the live isAtBottom ref (so scrolling up to read history isn't yanked
-    // down). While settling after the turn ends, it instead uses Virtuoso's
+    // While streaming, the pin writes the exact maximum scrollTop on the
+    // captured scroller, gated on the live isAtBottom ref (so scrolling up to
+    // read history isn't yanked down). It skips an already-pinned scroller so
+    // ResizeObserver measurements cannot feed back through redundant writes.
+    // While settling after the turn ends, it instead uses Virtuoso's
     // authoritative `scrollToIndex({ index: "LAST" })` (a raw scrollTop write
     // loses the race to Virtuoso re-anchoring the big end-of-turn collapse to
     // the item top), gated on a snapshot of whether the user was at the bottom
@@ -345,7 +347,13 @@ describe("Chat.tsx structural guards", () => {
       path.resolve(__dirname, "../chat/hooks/useChatScroll.ts"),
       "utf-8",
     );
-    expect(scrollHookSource).toMatch(/el\.scrollTop = el\.scrollHeight/);
+    expect(scrollHookSource).toMatch(
+      /maxScrollTop = Math\.max\(0, el\.scrollHeight - el\.clientHeight\)/,
+    );
+    expect(scrollHookSource).toMatch(
+      /Math\.abs\(el\.scrollTop - maxScrollTop\) <= 1/,
+    );
+    expect(scrollHookSource).toMatch(/el\.scrollTop = maxScrollTop/);
     expect(scrollHookSource).toMatch(/if \(!isAtBottomRef\.current\) return;/);
     expect(scrollHookSource).toMatch(/wasAtBottomAtTurnEndRef/);
     // Settle uses the authoritative scrollToIndex, not a raw scrollTop write,

@@ -88,6 +88,9 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   app_write_file: bridge(),
   create_app: bridge(),
   get_app_state: bridge(),
+  app_search: bridge(),
+  app_read_resource: bridge(),
+  app_get_data_binding: bridge(),
   list_open_apps: bridge(),
   materialize_binding: bridge(),
   open_app: exclude(
@@ -106,8 +109,10 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   edit_notebook_cell: bridge(),
   list_open_notebooks: bridge(),
   read_notebook: bridge(),
+  read_notebook_cell: bridge(),
   run_notebook_code_cell: bridge(),
   run_notebook_sql_cell: bridge(),
+  search_notebook: bridge(),
 
   // ── MCP-only preview / render ─────────────────────────────────────────
   create_preview_token: mcpOnly(),

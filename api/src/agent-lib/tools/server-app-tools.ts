@@ -38,10 +38,24 @@ import {
   listAppsSchema,
   createAppSchema,
   getAppStateSchema,
+  getDataBindingSchema,
   appReadFileSchema,
+  appReadResourceSchema,
+  appSearchSchema,
   materializeBindingSchema,
   setBindingScheduleSchema,
   setBindingMaterializationSchema,
+  summarizeAppBindingForState,
+  clipAgentText,
+  APP_BINDING_CODE_MAX_CHARS,
+  APP_READ_FILE_MAX_CHARS,
+  appResourceRef,
+  appResourceVersion,
+  appVersionedResourceVersion,
+  appBindingResourceVersion,
+  parseAppResourceRef,
+  readAppResourceRange,
+  searchAppResources,
   applyStrReplace,
   buildStrReplaceDiff,
 } from "@mako/agent-tools";
@@ -419,15 +433,49 @@ export function createServerAppTools({
     get_app_state: tool({
       description:
         "Get the app definition from the server: file list (paths), dependencies, " +
-        "data bindings, entrypoint, runtime, and version/publish state. Use this " +
-        "to understand the project before editing. NOTE: live preview build/" +
-        "runtime errors are only available in an attached browser via run_app.",
+        "data binding metadata (name/language/connection/codeLength + a short " +
+        "codePreview — NOT full SQL), entrypoint, runtime, and version/publish " +
+        "state. This is a manifest: use app_search, then app_read_resource for " +
+        "specific line ranges. NOTE: live preview build/runtime errors are only " +
+        "available in an attached browser via run_app.",
       inputSchema: getAppStateSchema,
-      execute: async ({ appId }) =>
+      execute: async ({ appId, resourceOffset, resourceLimit }) =>
         wrap("get_app_state", async () => {
           const loaded = await loadApp(appId);
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const { doc } = loaded;
+          const offset = resourceOffset ?? 0;
+          const limit = resourceLimit ?? 100;
+          const allResources = [
+            ...(doc.files ?? []).map(f => ({
+              resource: appResourceRef("file", f.path),
+              kind: "file" as const,
+              name: f.path,
+              lines: (f.contents ?? "").split("\n").length,
+              chars: (f.contents ?? "").length,
+              resourceVersion: appVersionedResourceVersion(
+                doc.version,
+                appResourceVersion(f.contents ?? ""),
+              ),
+            })),
+            ...(doc.dataBindings ?? []).map(b => ({
+              ...summarizeAppBindingForState(b),
+              resource: appResourceRef("binding", b.name),
+              kind: "binding" as const,
+              lines: (b.code ?? "").split("\n").length,
+              chars: (b.code ?? "").length,
+              resourceVersion: appVersionedResourceVersion(
+                doc.version,
+                appBindingResourceVersion(b),
+              ),
+            })),
+          ];
+          const resources = allResources.slice(offset, offset + limit);
+          const nextResourceOffset =
+            offset + resources.length < allResources.length
+              ? offset + resources.length
+              : undefined;
+          const dependencyEntries = Object.entries(doc.dependencies ?? {});
           return {
             success: true,
             appId,
@@ -436,22 +484,202 @@ export function createServerAppTools({
             entrypoint: doc.entrypoint,
             version: doc.version,
             publishedVersion: doc.publishedVersion,
-            files: (doc.files ?? []).map(f => f.path),
-            dependencies: doc.dependencies ?? {},
-            dataBindings: (doc.dataBindings ?? []).map(b => ({
-              name: b.name,
-              connectionId: b.connectionId,
-              dbtProjectId: b.dbtProjectId,
-              language: b.language,
-              code: b.code,
-              materialization: b.materialization ?? "live",
+            resourceOffset: offset,
+            resourceLimit: limit,
+            totalResources: allResources.length,
+            resources,
+            ...(nextResourceOffset !== undefined ? { nextResourceOffset } : {}),
+            // Compatibility projections are page-scoped, never unbounded.
+            files: resources
+              .filter(resource => resource.kind === "file")
+              .map(resource => resource.name),
+            dataBindings: resources.filter(
+              resource => resource.kind === "binding",
+            ),
+            dependencies: Object.fromEntries(dependencyEntries.slice(0, 200)),
+            dependenciesTruncated: dependencyEntries.length > 200,
+            hint:
+              "Search with app_search, then fetch only relevant lines with " +
+              "app_read_resource. Binding queries are not dumped here.",
+          };
+        }),
+    }),
+
+    app_search: tool({
+      description:
+        "Search app files and data bindings without loading them into context. " +
+        "Returns bounded snippets, line ranges, resource refs, and versions. " +
+        "Call this before app_read_resource when you need specific code. If " +
+        "truncated, continue with the returned nextOffset.",
+      inputSchema: appSearchSchema,
+      execute: async ({
+        appId,
+        query,
+        resourceTypes,
+        contextLines,
+        maxResults,
+        offset,
+      }) =>
+        wrap("app_search", async () => {
+          const loaded = await loadApp(appId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+          const allowed = new Set(resourceTypes ?? ["file", "binding"]);
+          const resources = [
+            ...((allowed.has("file") ? loaded.doc.files : []) ?? []).map(f => ({
+              resource: appResourceRef("file", f.path),
+              kind: "file" as const,
+              name: f.path,
+              text: f.contents ?? "",
+              resourceVersion: appVersionedResourceVersion(
+                loaded.doc.version,
+                appResourceVersion(f.contents ?? ""),
+              ),
             })),
+            ...(
+              (allowed.has("binding") ? loaded.doc.dataBindings : []) ?? []
+            ).map(b => ({
+              resource: appResourceRef("binding", b.name),
+              kind: "binding" as const,
+              name: b.name,
+              text: b.code ?? "",
+              resourceVersion: appVersionedResourceVersion(
+                loaded.doc.version,
+                appBindingResourceVersion(b),
+              ),
+            })),
+          ];
+          const result = searchAppResources(resources, query, {
+            contextLines,
+            maxResults,
+            offset,
+          });
+          return {
+            success: true,
+            appId,
+            query,
+            ...result,
+            hint:
+              "Use app_read_resource with a returned resource and line range " +
+              "for more context.",
+          };
+        }),
+    }),
+
+    app_read_resource: tool({
+      description:
+        "Read a bounded line range from an app file or data binding. Resource " +
+        'refs come from get_app_state/app_search ("file:path" or "binding:name"). ' +
+        "Returns pagination metadata and a resourceVersion for safe edits. Use " +
+        "startOffset/nextOffset for oversized generated single lines.",
+      inputSchema: appReadResourceSchema,
+      execute: async ({ appId, resource, startLine, endLine, startOffset }) =>
+        wrap("app_read_resource", async () => {
+          const loaded = await loadApp(appId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+          const parsed = parseAppResourceRef(resource);
+          if (!parsed) {
+            return {
+              success: false,
+              error:
+                'Invalid resource ref. Use "file:<path>" or "binding:<name>" ' +
+                "from get_app_state/app_search.",
+            };
+          }
+          const file =
+            parsed.kind === "file"
+              ? (loaded.doc.files ?? []).find(f => f.path === parsed.name)
+              : undefined;
+          const binding =
+            parsed.kind === "binding"
+              ? (loaded.doc.dataBindings ?? []).find(
+                  b => b.name === parsed.name,
+                )
+              : undefined;
+          const text = file?.contents ?? binding?.code;
+          if (text == null) {
+            return { success: false, error: `Resource not found: ${resource}` };
+          }
+          return {
+            success: true,
+            appId,
+            resource,
+            kind: parsed.kind,
+            name: parsed.name,
+            resourceVersion: binding
+              ? appVersionedResourceVersion(
+                  loaded.doc.version,
+                  appBindingResourceVersion(binding),
+                )
+              : appVersionedResourceVersion(
+                  loaded.doc.version,
+                  appResourceVersion(text),
+                ),
+            ...readAppResourceRange(text, startLine, endLine, startOffset),
+          };
+        }),
+    }),
+
+    app_get_data_binding: tool({
+      description:
+        "Compatibility fallback that reads one data binding's query code. " +
+        "Prefer app_search + app_read_resource for precise line ranges. " +
+        "Large queries are truncated " +
+        `(~${APP_BINDING_CODE_MAX_CHARS} chars); use app_update_data_binding ` +
+        "with oldString/newString for targeted edits.",
+      inputSchema: getDataBindingSchema,
+      execute: async ({ appId, name }) =>
+        wrap("app_get_data_binding", async () => {
+          const loaded = await loadApp(appId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+          const binding = (loaded.doc.dataBindings ?? []).find(
+            b => b.name === name,
+          );
+          if (!binding) {
+            return {
+              success: false,
+              error: `No data binding named "${name}". Confirm with get_app_state.`,
+            };
+          }
+          const clipped = clipAgentText(
+            binding.code ?? "",
+            APP_BINDING_CODE_MAX_CHARS,
+          );
+          if (clipped.truncated) {
+            return {
+              success: false,
+              appId,
+              error:
+                "Binding is too large for app_get_data_binding. Use app_search " +
+                "and app_read_resource to read precise ranges.",
+              binding: {
+                name: binding.name,
+                codeLength: clipped.length,
+              },
+            };
+          }
+          return {
+            success: true,
+            appId,
+            binding: {
+              name: binding.name,
+              connectionId: binding.connectionId,
+              dbtProjectId: binding.dbtProjectId,
+              language: binding.language ?? "sql",
+              materialization: binding.materialization ?? "live",
+              code: clipped.text,
+              codeLength: clipped.length,
+              truncated: false,
+            },
           };
         }),
     }),
 
     app_read_file: tool({
-      description: "Read the full contents of a single file in the app.",
+      description:
+        "Compatibility fallback that reads a single app file. Prefer " +
+        "app_search + app_read_resource for precise line ranges. Large files are truncated " +
+        `(~${APP_READ_FILE_MAX_CHARS} chars) with truncated:true — prefer ` +
+        "app_edit_file with a unique oldString over re-reading whole files.",
       inputSchema: appReadFileSchema,
       execute: async ({ appId, path }) =>
         wrap("app_read_file", async () => {
@@ -461,7 +689,27 @@ export function createServerAppTools({
           if (!file) {
             return { success: false, error: `File not found: ${path}` };
           }
-          return { success: true, path: file.path, contents: file.contents };
+          const clipped = clipAgentText(
+            file.contents ?? "",
+            APP_READ_FILE_MAX_CHARS,
+          );
+          if (clipped.truncated) {
+            return {
+              success: false,
+              path: file.path,
+              length: clipped.length,
+              error:
+                "File is too large for app_read_file. Use app_search and " +
+                "app_read_resource to read precise ranges.",
+            };
+          }
+          return {
+            success: true,
+            path: file.path,
+            contents: clipped.text,
+            length: clipped.length,
+            truncated: false,
+          };
         }),
     }),
 
@@ -596,7 +844,14 @@ export function createServerAppTools({
         "Set replaceAll: true for renames. Use app_write_file only for new " +
         "files or full rewrites. Edits refresh the live preview.",
       inputSchema: editFileSchema,
-      execute: async ({ appId, path, oldString, newString, replaceAll }) =>
+      execute: async ({
+        appId,
+        path,
+        oldString,
+        newString,
+        replaceAll,
+        expectedResourceVersion,
+      }) =>
         wrap("app_edit_file", async () => {
           const loaded = await loadApp(appId);
           if (isLoadError(loaded)) return { success: false, ...loaded };
@@ -607,6 +862,22 @@ export function createServerAppTools({
             return {
               success: false,
               error: `File not found: ${path}. Use get_app_state to list files, or app_write_file to create it.`,
+            };
+          }
+          const currentResourceVersion = appVersionedResourceVersion(
+            doc.version,
+            appResourceVersion(file.contents ?? ""),
+          );
+          if (
+            expectedResourceVersion &&
+            expectedResourceVersion !== currentResourceVersion
+          ) {
+            return {
+              success: false,
+              error:
+                `File changed since it was read (expected ${expectedResourceVersion}, ` +
+                `current ${currentResourceVersion}). Search/read it again before editing.`,
+              currentResourceVersion,
             };
           }
           const result = applyStrReplace(
@@ -624,15 +895,40 @@ export function createServerAppTools({
             newString,
             result.replacements,
           );
-          doc.files = normalizeAppFiles([
-            ...(doc.files ?? []).filter(f => f.path !== path),
-            { path, contents: result.contents },
-          ]) as IMakoApp["files"];
-          const version = await saveAndPublish(doc);
+          // Version predicate makes the read-check-write atomic. A concurrent
+          // app mutation causes a clean retry instead of a lost update.
+          const updated = await MakoApp.findOneAndUpdate(
+            { _id: doc._id, version: doc.version, "files.path": path },
+            {
+              $set: { "files.$.contents": result.contents },
+              $inc: { version: 1 },
+            },
+            { new: true },
+          );
+          if (!updated) {
+            return {
+              success: false,
+              error:
+                "App changed while this edit was being applied. Search/read " +
+                "the resource again, then retry with its new resourceVersion.",
+            };
+          }
+          publishRealtimeEvent(workspaceId, {
+            type: "app.updated",
+            appId,
+            version: updated.version,
+            updatedBy: userId ?? "agent",
+            clientId: agentClientId,
+            origin: "agent",
+          });
           return {
             success: true,
             path,
-            version,
+            version: updated.version,
+            resourceVersion: appVersionedResourceVersion(
+              updated.version,
+              appResourceVersion(result.contents),
+            ),
             replacements: result.replacements,
             diff,
           };
@@ -886,6 +1182,22 @@ export function createServerAppTools({
               error: `No data binding named "${input.name}". Confirm the name with list_data_sources, or create it with app_create_data_binding.`,
             };
           }
+          const currentResourceVersion = appVersionedResourceVersion(
+            doc.version,
+            appBindingResourceVersion(binding),
+          );
+          if (
+            input.expectedResourceVersion &&
+            input.expectedResourceVersion !== currentResourceVersion
+          ) {
+            return {
+              success: false,
+              error:
+                `Binding changed since it was read (expected ${input.expectedResourceVersion}, ` +
+                `current ${currentResourceVersion}). Search/read it again before updating.`,
+              currentResourceVersion,
+            };
+          }
 
           if (input.code !== undefined && input.oldString !== undefined) {
             return {
@@ -968,49 +1280,101 @@ export function createServerAppTools({
             };
           }
 
-          // Mutate IN PLACE: id, materialization, schedule, and the
-          // server-owned cache all survive. The definition-hash change is
-          // what invalidates the artifact, not a new identity.
-          binding.code = nextCode;
+          // Mutate the existing embedded binding atomically. The app version
+          // predicate closes the race between resourceVersion validation and
+          // persistence; any concurrent app edit forces a fresh read/retry.
+          const setFields: Record<string, unknown> = {
+            "dataBindings.$.code": nextCode,
+          };
+          const unsetFields: Record<string, 1> = {};
           if (input.dbtProjectId !== undefined) {
-            binding.dbtProjectId = nextDbtProjectId;
+            if (nextDbtProjectId === undefined) {
+              unsetFields["dataBindings.$.dbtProjectId"] = 1;
+            } else {
+              setFields["dataBindings.$.dbtProjectId"] = nextDbtProjectId;
+            }
           }
           if (input.connectionId !== undefined) {
-            binding.connectionId = input.connectionId;
+            setFields["dataBindings.$.connectionId"] = input.connectionId;
           }
-          if (input.language !== undefined) binding.language = input.language;
+          if (input.language !== undefined) {
+            setFields["dataBindings.$.language"] = input.language;
+          }
           if (input.databaseId !== undefined) {
-            binding.databaseId = input.databaseId;
+            setFields["dataBindings.$.databaseId"] = input.databaseId;
           }
           if (input.databaseName !== undefined) {
-            binding.databaseName = input.databaseName;
+            setFields["dataBindings.$.databaseName"] = input.databaseName;
           }
-          doc.markModified("dataBindings");
-          const version = await saveAndPublish(doc);
+          const updated = await MakoApp.findOneAndUpdate(
+            {
+              _id: doc._id,
+              version: doc.version,
+              "dataBindings.name": input.name,
+            },
+            {
+              $set: setFields,
+              ...(Object.keys(unsetFields).length > 0
+                ? { $unset: unsetFields }
+                : {}),
+              $inc: { version: 1 },
+            },
+            { new: true },
+          );
+          if (!updated) {
+            return {
+              success: false,
+              error:
+                "App changed while this binding update was being applied. " +
+                "Search/read the resource again, then retry with its new " +
+                "resourceVersion.",
+            };
+          }
+          const updatedBinding = (updated.dataBindings ?? []).find(
+            candidate => candidate.name === input.name,
+          );
+          if (!updatedBinding) {
+            return {
+              success: false,
+              error: `Binding disappeared during update: ${input.name}`,
+            };
+          }
+          publishRealtimeEvent(workspaceId, {
+            type: "app.updated",
+            appId: input.appId,
+            version: updated.version,
+            updatedBy: userId ?? "agent",
+            clientId: agentClientId,
+            origin: "agent",
+          });
 
-          const isParquet = binding.materialization === "parquet";
+          const isParquet = updatedBinding.materialization === "parquet";
           if (isParquet) {
             // Queue the rebuild now (the hash change makes it a cache miss);
             // the agent can wait on it with materialize_binding.
             await queueAppBindingMaterialization({
               workspaceId,
               appId: input.appId,
-              bindingId: binding.id,
+              bindingId: updatedBinding.id,
             }).catch(() => undefined);
           }
 
           return {
             success: true,
             binding: {
-              name: binding.name,
-              materialization: binding.materialization ?? "live",
+              name: updatedBinding.name,
+              materialization: updatedBinding.materialization ?? "live",
             },
-            version,
+            version: updated.version,
+            resourceVersion: appVersionedResourceVersion(
+              updated.version,
+              appBindingResourceVersion(updatedBinding),
+            ),
             ...(replacements !== undefined ? { replacements } : {}),
             ...(diff ? { diff } : {}),
             hint: isParquet
-              ? `Definition updated in place and a rebuild was queued. The app keeps serving the PREVIOUS data until the artifact is rebuilt — call materialize_binding for "${binding.name}" to wait for it.`
-              : `Definition updated in place. useQuery("${binding.name}") runs the new query on the next read.`,
+              ? `Definition updated in place and a rebuild was queued. The app keeps serving the PREVIOUS data until the artifact is rebuilt — call materialize_binding for "${updatedBinding.name}" to wait for it.`
+              : `Definition updated in place. useQuery("${updatedBinding.name}") runs the new query on the next read.`,
           };
         }),
     }),

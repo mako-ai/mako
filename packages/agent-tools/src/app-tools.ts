@@ -54,6 +54,13 @@ export const editFileSchema = z.object({
       "Replace every occurrence of oldString (for renames). Defaults to " +
         "false, which requires the match to be unique.",
     ),
+  expectedResourceVersion: z
+    .string()
+    .optional()
+    .describe(
+      "Resource version returned by get_app_state, app_search, or " +
+        "app_read_resource. The edit is rejected if the file changed since read.",
+    ),
 });
 
 export const deleteFileSchema = z.object({
@@ -217,6 +224,13 @@ export const updateDataBindingSchema = z.object({
       "Link the binding to a dbt project (enables the {{ dbt_schema }} " +
         "token in code) or pass null to unlink it.",
     ),
+  expectedResourceVersion: z
+    .string()
+    .optional()
+    .describe(
+      "Resource version returned by get_app_state, app_search, or " +
+        "app_read_resource. The update is rejected if the binding changed since read.",
+    ),
 });
 
 export const deleteDataBindingSchema = z.object({
@@ -262,9 +276,440 @@ export const createAppSchema = z.object({
   description: z.string().optional().describe("Brief description"),
 });
 
-export const getAppStateSchema = z.object({ appId: appIdField });
+export const getAppStateSchema = z.object({
+  appId: appIdField,
+  resourceOffset: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe("Resource manifest offset (default 0)."),
+  resourceLimit: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe("Maximum manifest entries to return (default 100, max 200)."),
+});
+
+/** Fetch one binding's full query — prefer over dumping every binding via get_app_state. */
+export const getDataBindingSchema = z.object({
+  appId: appIdField,
+  name: z
+    .string()
+    .describe("Data binding name from get_app_state / list_data_sources"),
+});
 
 export { readFileSchema as appReadFileSchema };
+
+export const appReadResourceSchema = z.object({
+  appId: appIdField,
+  resource: z
+    .string()
+    .describe(
+      'Resource ref from get_app_state, e.g. "file:src/App.tsx" or "binding:revenue".',
+    ),
+  startLine: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("First 1-based line to return (default 1)."),
+  endLine: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe(
+      "Last 1-based line to return. Responses are still bounded by the tool budget.",
+    ),
+  startOffset: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe(
+      "Optional 0-based character offset. When set, uses character pagination " +
+        "instead of line pagination (useful for generated/minified single lines).",
+    ),
+});
+
+export const appSearchSchema = z.object({
+  appId: appIdField,
+  query: z
+    .string()
+    .min(1)
+    .describe("Literal, case-insensitive text to find in app files and bindings."),
+  resourceTypes: z
+    .array(z.enum(["file", "binding"]))
+    .optional()
+    .describe("Limit search to files and/or bindings (default both)."),
+  contextLines: z
+    .number()
+    .int()
+    .min(0)
+    .max(10)
+    .optional()
+    .describe("Context lines before and after each match (default 3)."),
+  maxResults: z
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .optional()
+    .describe("Maximum matches to return (default 20)."),
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe("Number of matching occurrences to skip (default 0)."),
+});
+
+/** Max chars of SQL/JS kept on get_app_state binding summaries (not full code). */
+export const APP_STATE_CODE_PREVIEW_CHARS = 160;
+
+/** Caps for intentional full-read tools — keep agent/MCP context budgets honest. */
+export const APP_BINDING_CODE_MAX_CHARS = 12_000;
+export const APP_READ_FILE_MAX_CHARS = 16_000;
+/** inspect_data_source / list previews — not a substitute for app_get_data_binding. */
+export const APP_INSPECT_CODE_PREVIEW_CHARS = 2_000;
+export const APP_PREVIEW_ERROR_MAX = 20;
+export const APP_PREVIEW_ERROR_CHARS = 2_000;
+export const APP_SAMPLE_CELL_MAX_CHARS = 200;
+export const APP_RESOURCE_MAX_LINES = 400;
+export const APP_RESOURCE_MAX_CHARS = 16_000;
+export const APP_SEARCH_MAX_OUTPUT_CHARS = 20_000;
+export const APP_SEARCH_SNIPPET_MAX_CHARS = 4_000;
+
+export type AppResourceKind = "file" | "binding";
+
+export function appResourceRef(kind: AppResourceKind, name: string): string {
+  return `${kind}:${name}`;
+}
+
+export function parseAppResourceRef(
+  resource: string,
+): { kind: AppResourceKind; name: string } | null {
+  const separator = resource.indexOf(":");
+  if (separator <= 0) return null;
+  const kind = resource.slice(0, separator);
+  const name = resource.slice(separator + 1);
+  if ((kind !== "file" && kind !== "binding") || !name) return null;
+  return { kind, name };
+}
+
+/** Stable, lightweight concurrency token for one file/binding body. */
+export function appResourceVersion(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${text.length}-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+/**
+ * Include the app's monotonic version in concurrency tokens. The hash keeps
+ * tokens resource-specific; the app version makes collisions harmless.
+ */
+export function appVersionedResourceVersion(
+  appVersion: number,
+  resourceVersion: string,
+): string {
+  return `${appVersion}:${resourceVersion}`;
+}
+
+export function appBindingResourceVersion(binding: {
+  code?: string | null;
+  connectionId?: string | null;
+  language?: string | null;
+  databaseId?: string | null;
+  databaseName?: string | null;
+  dbtProjectId?: string | null;
+}): string {
+  return appResourceVersion(
+    JSON.stringify({
+      code: binding.code ?? "",
+      connectionId: binding.connectionId ?? null,
+      language: binding.language ?? "sql",
+      databaseId: binding.databaseId ?? null,
+      databaseName: binding.databaseName ?? null,
+      dbtProjectId: binding.dbtProjectId ?? null,
+    }),
+  );
+}
+
+export function readAppResourceRange(
+  text: string,
+  startLineInput?: number,
+  endLineInput?: number,
+  startOffsetInput?: number,
+): {
+  content: string;
+  startLine: number;
+  endLine: number;
+  totalLines: number;
+  startOffset?: number;
+  endOffset?: number;
+  nextOffset?: number;
+  hasMore: boolean;
+  nextStartLine?: number;
+  contentTruncated: boolean;
+} {
+  if (startOffsetInput !== undefined) {
+    const startOffset = Math.min(Math.max(startOffsetInput, 0), text.length);
+    const endOffset = Math.min(
+      startOffset + APP_RESOURCE_MAX_CHARS,
+      text.length,
+    );
+    const content = text.slice(startOffset, endOffset);
+    const startLine = text.slice(0, startOffset).split("\n").length;
+    const endLine = startLine + content.split("\n").length - 1;
+    const hasMore = endOffset < text.length;
+    return {
+      content,
+      startLine,
+      endLine,
+      totalLines: text.split("\n").length,
+      startOffset,
+      endOffset,
+      ...(hasMore ? { nextOffset: endOffset } : {}),
+      hasMore,
+      contentTruncated: hasMore,
+    };
+  }
+
+  const lines = text.split("\n");
+  const totalLines = lines.length;
+  const startLine = Math.min(Math.max(startLineInput ?? 1, 1), totalLines);
+  const requestedEnd = Math.max(endLineInput ?? startLine + 199, startLine);
+  const protocolEnd = Math.min(
+    requestedEnd,
+    startLine + APP_RESOURCE_MAX_LINES - 1,
+  );
+  let endLine = Math.min(protocolEnd, totalLines);
+  let selected = lines.slice(startLine - 1, endLine);
+  let content = selected.join("\n");
+  let contentTruncated = protocolEnd < requestedEnd;
+  let characterStartOffset: number | undefined;
+  let characterEndOffset: number | undefined;
+
+  while (content.length > APP_RESOURCE_MAX_CHARS && selected.length > 1) {
+    selected = selected.slice(0, -1);
+    endLine -= 1;
+    content = selected.join("\n");
+    contentTruncated = true;
+  }
+  if (content.length > APP_RESOURCE_MAX_CHARS) {
+    characterStartOffset =
+      lines
+        .slice(0, startLine - 1)
+        .reduce((sum, line) => sum + line.length + 1, 0);
+    characterEndOffset = Math.min(
+      characterStartOffset + APP_RESOURCE_MAX_CHARS,
+      text.length,
+    );
+    content = text.slice(characterStartOffset, characterEndOffset);
+    contentTruncated = true;
+  }
+
+  const hasCharacterContinuation =
+    characterEndOffset !== undefined && characterEndOffset < text.length;
+  const hasMore = endLine < totalLines || hasCharacterContinuation;
+  return {
+    content,
+    startLine,
+    endLine,
+    totalLines,
+    ...(characterStartOffset !== undefined
+      ? {
+          startOffset: characterStartOffset,
+          endOffset: characterEndOffset,
+          ...(hasCharacterContinuation
+            ? { nextOffset: characterEndOffset }
+            : {}),
+        }
+      : {}),
+    hasMore,
+    ...(endLine < totalLines && !hasCharacterContinuation
+      ? { nextStartLine: endLine + 1 }
+      : {}),
+    contentTruncated,
+  };
+}
+
+export interface AppSearchableResource<TKind extends string = AppResourceKind> {
+  resource: string;
+  kind: TKind;
+  name: string;
+  text: string;
+  resourceVersion?: string;
+}
+
+export function searchAppResources<TKind extends string = AppResourceKind>(
+  resources: AppSearchableResource<TKind>[],
+  query: string,
+  options?: { contextLines?: number; maxResults?: number; offset?: number },
+): {
+  matches: Array<{
+    resource: string;
+    kind: TKind;
+    name: string;
+    line: number;
+    startLine: number;
+    endLine: number;
+    snippet: string;
+    resourceVersion: string;
+  }>;
+  truncated: boolean;
+  offset: number;
+  nextOffset?: number;
+} {
+  const needle = query.toLocaleLowerCase();
+  const contextLines = Math.min(Math.max(options?.contextLines ?? 3, 0), 10);
+  const maxResults = Math.min(Math.max(options?.maxResults ?? 20, 1), 50);
+  const offset = Math.max(options?.offset ?? 0, 0);
+  const matches: Array<{
+    resource: string;
+    kind: TKind;
+    name: string;
+    line: number;
+    startLine: number;
+    endLine: number;
+    snippet: string;
+    resourceVersion: string;
+  }> = [];
+  let outputChars = 0;
+  let truncated = false;
+  let matchIndex = 0;
+
+  outer: for (const resource of resources) {
+    const lines = resource.text.split("\n");
+    const version =
+      resource.resourceVersion ?? appResourceVersion(resource.text);
+    for (let index = 0; index < lines.length; index += 1) {
+      if (!lines[index]?.toLocaleLowerCase().includes(needle)) continue;
+      if (matchIndex < offset) {
+        matchIndex += 1;
+        continue;
+      }
+      const startLine = Math.max(index + 1 - contextLines, 1);
+      const endLine = Math.min(index + 1 + contextLines, lines.length);
+      const rawSnippet = lines.slice(startLine - 1, endLine).join("\n");
+      const matchColumn = lines[index]
+        ?.toLocaleLowerCase()
+        .indexOf(needle) ?? 0;
+      const matchLine = lines[index] ?? "";
+      const matchWindowStart = Math.max(
+        matchColumn - Math.floor(APP_SEARCH_SNIPPET_MAX_CHARS / 2),
+        0,
+      );
+      const snippet =
+        rawSnippet.length > APP_SEARCH_SNIPPET_MAX_CHARS
+          ? `${matchLine.slice(
+              matchWindowStart,
+              matchWindowStart + APP_SEARCH_SNIPPET_MAX_CHARS,
+            )}\n…(line ${index + 1} clipped around match column ${matchColumn + 1})`
+          : rawSnippet;
+      if (
+        matches.length >= maxResults ||
+        outputChars + snippet.length > APP_SEARCH_MAX_OUTPUT_CHARS
+      ) {
+        truncated = true;
+        break outer;
+      }
+      matches.push({
+        resource: resource.resource,
+        kind: resource.kind,
+        name: resource.name,
+        line: index + 1,
+        startLine,
+        endLine,
+        snippet,
+        resourceVersion: version,
+      });
+      outputChars += snippet.length;
+      matchIndex += 1;
+    }
+  }
+  return {
+    matches,
+    truncated,
+    offset,
+    ...(truncated ? { nextOffset: offset + matches.length } : {}),
+  };
+}
+
+export function clipAgentText(
+  text: string,
+  maxChars: number,
+): { text: string; truncated: boolean; length: number } {
+  const length = text.length;
+  if (length <= maxChars) {
+    return { text, truncated: false, length };
+  }
+  return {
+    text: `${text.slice(0, maxChars)}\n…(truncated)`,
+    truncated: true,
+    length,
+  };
+}
+
+/** Compact binding row for get_app_state — never ship full query text. */
+export function summarizeAppBindingForState(binding: {
+  name: string;
+  connectionId?: string | null;
+  dbtProjectId?: string | null;
+  language?: string | null;
+  materialization?: string | null;
+  code?: string | null;
+  databaseId?: string | null;
+  databaseName?: string | null;
+}): {
+  resource: string;
+  resourceVersion: string;
+  name: string;
+  connectionId?: string | null;
+  dbtProjectId?: string | null;
+  language: string;
+  materialization: string;
+  codeLength: number;
+  codePreview: string;
+} {
+  const code = typeof binding.code === "string" ? binding.code : "";
+  const preview =
+    code.length <= APP_STATE_CODE_PREVIEW_CHARS
+      ? code
+      : `${code.slice(0, APP_STATE_CODE_PREVIEW_CHARS)}…`;
+  return {
+    resource: appResourceRef("binding", binding.name),
+    resourceVersion: appBindingResourceVersion(binding),
+    name: binding.name,
+    connectionId: binding.connectionId,
+    dbtProjectId: binding.dbtProjectId,
+    language: binding.language || "sql",
+    materialization: binding.materialization || "live",
+    codeLength: code.length,
+    codePreview: preview,
+  };
+}
+
+/** Clip preview/runtime error lists before they enter agent context. */
+export function summarizePreviewErrors(
+  errors: Array<{ message?: string; source?: string }> | null | undefined,
+): Array<{ message: string; source?: string }> {
+  const list = Array.isArray(errors) ? errors : [];
+  return list.slice(0, APP_PREVIEW_ERROR_MAX).map(e => {
+    const raw = typeof e.message === "string" ? e.message : String(e.message ?? "");
+    const clipped = clipAgentText(raw, APP_PREVIEW_ERROR_CHARS);
+    return {
+      message: clipped.text,
+      ...(typeof e.source === "string" ? { source: e.source } : {}),
+    };
+  });
+}
 
 export const setBindingScheduleSchema = z.object({
   appId: appIdField,

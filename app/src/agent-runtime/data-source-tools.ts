@@ -8,6 +8,11 @@
  * one set of primitives regardless of where the data lives.
  */
 
+import {
+  APP_INSPECT_CODE_PREVIEW_CHARS,
+  APP_SAMPLE_CELL_MAX_CHARS,
+  clipAgentText,
+} from "@mako/agent-tools";
 import { useAppStore } from "../store/appStore";
 import { useDashboardStore } from "../store/dashboardStore";
 import {
@@ -19,6 +24,70 @@ import { ensureBindingLoadedForPreview } from "../app-runtime/binding-preview";
 import { queryDashboardRuntime } from "../dashboard-runtime/gateway";
 import { previewDashboardQuery } from "../dashboard-runtime/commands";
 import { getCurrentWorkspaceId } from "../app-runtime/shell";
+
+function clipSampleRows(
+  rows: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  const budget = { remaining: 20_000 };
+
+  const clipValue = (value: unknown, depth: number): unknown => {
+    if (budget.remaining <= 0) return "[output budget exhausted]";
+    if (typeof value === "string") {
+      const max = Math.min(APP_SAMPLE_CELL_MAX_CHARS, budget.remaining);
+      const clipped = clipAgentText(value, max).text;
+      budget.remaining -= clipped.length;
+      return clipped;
+    }
+    if (typeof value === "bigint") {
+      const serialized = value.toString();
+      budget.remaining -= serialized.length;
+      return serialized;
+    }
+    if (
+      value === undefined ||
+      typeof value === "symbol" ||
+      typeof value === "function"
+    ) {
+      const serialized = value === undefined ? "null" : String(value);
+      budget.remaining -= serialized.length;
+      return serialized;
+    }
+    if (value == null || typeof value !== "object") {
+      const serialized = String(value);
+      budget.remaining -= serialized.length;
+      return value;
+    }
+    if (depth >= 2) {
+      budget.remaining -= 16;
+      return "[nested omitted]";
+    }
+    if (Array.isArray(value)) {
+      return value.slice(0, 10).map(item => clipValue(item, depth + 1));
+    }
+    const next: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(value).slice(0, 15)) {
+      if (budget.remaining <= 0) break;
+      const clippedKey = clipAgentText(key, 200).text;
+      budget.remaining -= clippedKey.length;
+      next[clippedKey] = clipValue(nested, depth + 1);
+    }
+    return next;
+  };
+
+  const clippedRows: Record<string, unknown>[] = [];
+  for (const row of rows.slice(0, 5)) {
+    if (budget.remaining <= 0) break;
+    const next: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(row).slice(0, 50)) {
+      if (budget.remaining <= 0) break;
+      const clippedKey = clipAgentText(key, 200).text;
+      budget.remaining -= clippedKey.length;
+      next[clippedKey] = clipValue(value, 0);
+    }
+    clippedRows.push(next);
+  }
+  return clippedRows;
+}
 
 type ToolResult = Record<string, unknown>;
 
@@ -97,6 +166,7 @@ async function executeAppDataTool(
   if (!appEntity) return fail("App not found (is it open?)");
 
   if (toolName === "list_data_sources") {
+    // Omit full SQL here — use inspect_data_source / app_get_data_binding.
     return {
       success: true,
       dataSources: appEntity.dataBindings.map(b => ({
@@ -104,7 +174,7 @@ async function executeAppDataTool(
         connectionId: b.connectionId,
         language: b.language,
         materialization: b.materialization,
-        code: b.code,
+        codeLength: (b.code ?? "").length,
         status: b.cache?.parquetBuildStatus ?? null,
         rowCount: b.cache?.rowCount ?? null,
         table:
@@ -157,6 +227,10 @@ async function executeAppDataTool(
       note = e instanceof Error ? e.message : "Inspect failed";
     }
 
+    const codeClipped = clipAgentText(
+      binding.code ?? "",
+      APP_INSPECT_CODE_PREVIEW_CHARS,
+    );
     return {
       success: true,
       dataSource: {
@@ -164,7 +238,9 @@ async function executeAppDataTool(
         connectionId: binding.connectionId,
         language: binding.language,
         materialization: binding.materialization,
-        code: binding.code,
+        codePreview: codeClipped.text,
+        codeLength: codeClipped.length,
+        codeTruncated: codeClipped.truncated,
         table:
           binding.materialization === "parquet"
             ? bindingTableName(binding.name)
@@ -172,9 +248,13 @@ async function executeAppDataTool(
         status: binding.cache?.parquetBuildStatus ?? null,
         rowCount: binding.cache?.rowCount ?? null,
         columns,
-        sampleRows,
+        sampleRows: clipSampleRows(sampleRows),
       },
-      note,
+      note:
+        note ||
+        (codeClipped.truncated
+          ? "Query preview truncated — use app_get_data_binding for more code."
+          : undefined),
     };
   }
 
@@ -224,6 +304,7 @@ async function executeDashboardDataTool(
   }
 
   if (toolName === "list_data_sources") {
+    // Omit full SQL — inspect_data_source returns code for one source.
     return {
       success: true,
       dataSources: (dashboard.dataSources || []).map(ds => ({
@@ -232,7 +313,7 @@ async function executeDashboardDataTool(
         table: ds.tableRef,
         connectionId: ds.query?.connectionId,
         language: ds.query?.language,
-        code: ds.query?.code,
+        codeLength: (ds.query?.code ?? "").length,
         status: ds.cache?.parquetBuildStatus ?? null,
         rowCount: ds.cache?.rowCount ?? null,
       })),
@@ -250,6 +331,10 @@ async function executeDashboardDataTool(
         dashboardId,
         dataSourceId: ds.id,
       });
+      const codeClipped = clipAgentText(
+        ds.query?.code ?? "",
+        APP_INSPECT_CODE_PREVIEW_CHARS,
+      );
       return {
         success: true,
         dataSource: {
@@ -258,11 +343,20 @@ async function executeDashboardDataTool(
           table: ds.tableRef,
           connectionId: ds.query?.connectionId,
           language: ds.query?.language,
-          code: ds.query?.code,
+          codePreview: codeClipped.text,
+          codeLength: codeClipped.length,
+          codeTruncated: codeClipped.truncated,
           columns: result.fields,
-          sampleRows: result.rows.slice(0, 5),
+          sampleRows: clipSampleRows(
+            result.rows.slice(0, 5) as Record<string, unknown>[],
+          ),
           rowCount: result.rowCount,
         },
+        ...(codeClipped.truncated
+          ? {
+              note: "Query preview truncated — fetch the source query only when editing it.",
+            }
+          : {}),
       };
     } catch (e) {
       return fail(e instanceof Error ? e.message : "Inspect failed");

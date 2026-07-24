@@ -26,6 +26,9 @@ export const ACP_APP_FOCUS_TOOLS = new Set([
   // (bumpPreview). Rebuilding flashes a black “Building preview…” screen and
   // can remount Chat mid-tool (get_preview_errors then looks Interrupted).
   "get_app_state",
+  "app_search",
+  "app_read_resource",
+  "app_get_data_binding",
 ]);
 
 /** Mutations / explicit preview that need an iframe srcdoc rebuild. */

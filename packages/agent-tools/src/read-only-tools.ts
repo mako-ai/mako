@@ -43,7 +43,15 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   // App reads
   "list_open_apps",
   "get_app_state",
+  "app_search",
+  "app_read_resource",
+  "app_get_data_binding",
   "app_read_file",
+  // Notebook reads
+  "list_open_notebooks",
+  "read_notebook",
+  "search_notebook",
+  "read_notebook_cell",
   // dbt reads + verification (parse/compile/show/get_run never mutate the
   // warehouse; show runs a bounded SELECT, get_run reads run history)
   "read_dbt_project_tree",

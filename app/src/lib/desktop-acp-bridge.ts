@@ -2,6 +2,7 @@
  * Polls Local Agent for mako-desktop MCP jobs and fulfills them in the
  * Desktop/web renderer (apps, consoles, HITL clarify/plan cards).
  */
+import { summarizePreviewErrors } from "@mako/agent-tools";
 import { executeAppAgentTool } from "../app-runtime/agent-tools";
 import { useAppStore } from "../store/appStore";
 import { useConsoleStore } from "../store/consoleStore";
@@ -64,11 +65,12 @@ async function executeImmediateJob(job: BridgeJob): Promise<unknown> {
   if (job.tool === "get_preview_errors") {
     // Read-only — never bumpPreview / rebuild the iframe (that blacks out
     // the app preview and can remount Chat mid-turn).
-    const errors = useAppStore.getState().previewErrors[appId] ?? [];
     return {
       success: true,
       appId,
-      errors: errors.map(e => ({ message: e.message, source: e.source })),
+      errors: summarizePreviewErrors(
+        useAppStore.getState().previewErrors[appId],
+      ),
     };
   }
 
