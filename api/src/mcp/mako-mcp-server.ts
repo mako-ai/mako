@@ -30,10 +30,12 @@ import { createSqlToolsV2 } from "../agent-lib/tools/sql-tools";
 import { createMongoToolsV2 } from "../agent-lib/tools/mongodb-tools";
 import { createUniversalTools } from "../agent-lib/tools/universal-tools";
 import { createServerConsoleTools } from "../agent-lib/tools/server-console-tools";
+import { createNotebookServerTools } from "../agent-lib/tools/server-notebook-tools";
 import { createConsoleSearchTools } from "../agent-lib/tools/console-search-tools";
 import { createDashboardSearchTools } from "../agent-lib/tools/dashboard-search-tools";
 import { createVersionHistoryTools } from "../agent-lib/tools/version-history-tools";
 import { createSkillTools } from "../agent-lib/tools/skill-tools";
+import { createSelfDirectiveTools } from "../agent-lib/tools/self-directive-tool";
 import { createWebTools } from "../agent-lib/tools/web-tools";
 import {
   getSystemSkillIndex,
@@ -79,6 +81,25 @@ Skills (same knowledge as the in-product agent):
 Before writing app code: get_relevant_skills("build a Mako app") or resource mako://skills/apps.
 Optional: search_dashboards, web_search / fetch_url for public docs.`;
 
+/** ACP Desktop Chat — no headless preview tokens; the user already has a live tab. */
+const ACP_DESKTOP_SERVER_INSTRUCTIONS = `Mako builds data apps (React + data bindings) inside Mako Desktop Chat.
+
+Typical loop:
+1. Discover data: list_connections, then sql_list_tables / sql_inspect_table.
+2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
+3. create_app → app_write_file / app_edit_file → app_create_data_binding (bind the validated query; pass consoleId to seed from a console).
+4. Desktop opens/refreshes the app tab automatically. Do NOT create_preview_token, render_app, or paste /preview/… URLs. Use mako-desktop run_app / get_preview_errors for iframe errors. For consoles use open_console / create_console; for notebooks use create_notebook / cell tools.
+5. Interactive UX: mako-desktop ask_clarifying_questions / submit_plan (docked Chat cards) — never ask as plain text.
+6. Durable memory: read_self_directive / update_self_directive only. Do NOT write .claude/**/MEMORY.md or other local Claude memory files.
+7. app_save_version to snapshot/publish.
+
+Skills (same knowledge as the in-product agent):
+- list_skills → compact index (workspace + system).
+- get_relevant_skills({ query }) → ranked bodies for your task (call this early).
+- load_skill / read_skill_resource / mako://skills/{name} for specifics.
+Before writing app code: get_relevant_skills("build a Mako app") or resource mako://skills/apps.
+Optional: search_dashboards, web_search / fetch_url for public docs.`;
+
 /** Defensive cap so a huge query result cannot blow up the JSON response. */
 const MAX_TOOL_RESULT_CHARS = 200_000;
 
@@ -90,6 +111,12 @@ export interface MakoMcpContext {
   userId?: string;
   /** Capabilities granted to the authenticated workspace API key. */
   scopes?: readonly WorkspaceApiKeyScope[];
+  /**
+   * Local Agent ACP / Desktop Chat attachment — omit headless preview
+   * workflow from initialize instructions (preview tools are also not
+   * registered for these clients).
+   */
+  acpDesktop?: boolean;
 }
 
 export type BridgeableTool = Pick<
@@ -127,6 +154,12 @@ export function buildMakoMcpCandidateTools(
     surface: "mcp",
   });
 
+  const notebookTools = createNotebookServerTools({
+    workspaceId,
+    userId,
+    chatId,
+  });
+
   const sqlTools = createSqlToolsV2(
     workspaceId,
     [],
@@ -146,11 +179,14 @@ export function buildMakoMcpCandidateTools(
   const dashboardSearchTools = createDashboardSearchTools(workspaceId);
   const versionHistoryTools = createVersionHistoryTools(workspaceId);
   const skillTools = createSkillTools(workspaceId, userId);
+  const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
   const webTools = createWebTools();
 
   return {
     ...appTools,
     ...consoleTools,
+    ...notebookTools,
+    ...selfDirectiveTools,
     list_connections,
     ...sqlTools,
     // Namespace mongo the same way the unified agent does.
@@ -281,7 +317,9 @@ export function buildMakoMcpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       capabilities: { tools: {}, resources: {} },
-      instructions: SERVER_INSTRUCTIONS,
+      instructions: context.acpDesktop
+        ? ACP_DESKTOP_SERVER_INSTRUCTIONS
+        : SERVER_INSTRUCTIONS,
     },
   );
 

@@ -36,6 +36,7 @@ export type SettingsSection =
   | "skills"
   | "mcp"
   | "agents"
+  | "coding-agents"
   | "models"
   | "billing"
   | "members"

@@ -103,9 +103,11 @@ export function createMcpPreviewTools(context: MakoMcpContext) {
     create_preview_token: tool({
       description:
         "Mint a signed, short-lived URL that renders the app's current DRAFT " +
-        "in a browser without any login — use it to screenshot or visually " +
-        "inspect the app you are building (e.g. drive it with a local " +
-        "headless browser). The page can only read this one app and run its " +
+        "in a browser without any login — for HEADLESS agents only (no Mako " +
+        "Desktop/Chat UI). If the user is already in Mako Desktop Chat, do " +
+        "NOT call this: the Desktop app tab shows the live preview after " +
+        "create_app / app_write_file. Never paste preview URLs into Chat for " +
+        "Desktop users. The page can only read this one app and run its " +
         "stored data bindings; it cannot modify anything. Never share the " +
         "URL: anyone holding it sees the draft and its data until expiry.",
       inputSchema: createPreviewTokenSchema,

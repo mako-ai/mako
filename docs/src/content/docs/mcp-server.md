@@ -7,6 +7,8 @@ Mako is itself an [MCP](https://modelcontextprotocol.io) **server**: point Claud
 
 Where [MCP Connectors](/mcp-connectors/) let Mako's agent use *other* systems' tools, the MCP server is the reverse: it lets *your* agent use Mako.
 
+Want Claude Code or Codex **inside** the Mako UI instead? See [Coding Agents (ACP)](/coding-agents-acp/).
+
 **Data access over MCP is read-only by design.** Agents can never write to your databases through Mako — there is no scope or setting that enables it.
 
 ## Connect by signing in (no API key)

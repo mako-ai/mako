@@ -3,7 +3,10 @@ import type { UseChatHelpers } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
 import type { VirtuosoHandle } from "react-virtuoso";
 import { api } from "../../../api/client";
+import type { LocalAcpChatBinding } from "../../../lib/persist-local-acp-chat";
+import { isLocalAcpModelId } from "../../../lib/local-acp-models";
 import { useConsoleStore } from "../../../store/consoleStore";
+import { useSettingsStore } from "../../../store/settingsStore";
 import { convertStoredMessages } from "../convert-stored-messages";
 import type { ToolDispatchGate } from "../tool-dispatch-gate";
 
@@ -22,6 +25,26 @@ function isToolPart(part: Record<string, unknown>): boolean {
     typeof type === "string" &&
     (type.startsWith("tool-") || type === "dynamic-tool")
   );
+}
+
+function lastUserText(
+  messages: Array<{
+    role?: string;
+    parts?: Array<Record<string, unknown>> | null;
+  }>,
+): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.role !== "user") continue;
+    const parts = msg.parts ?? [];
+    const text = parts
+      .filter(p => p.type === "text" && typeof p.text === "string")
+      .map(p => String(p.text))
+      .join("\n")
+      .trim();
+    return text || null;
+  }
+  return null;
 }
 
 /**
@@ -43,6 +66,18 @@ export function isPersistedSnapshotStale(
   if (inMemory.length === 0) return false;
   if (rawPersisted.length < inMemory.length) return true;
   if (rawPersisted.length > inMemory.length) return false;
+
+  // Equal length but the newest user turn only exists in memory (e.g. Local
+  // ACP optimistic append racing a History reload of the prior snapshot).
+  const memoryUserText = lastUserText(inMemory);
+  const persistedUserText = lastUserText(rawPersisted);
+  if (
+    memoryUserText !== null &&
+    persistedUserText !== null &&
+    memoryUserText !== persistedUserText
+  ) {
+    return true;
+  }
 
   const persistedLast = rawPersisted[rawPersisted.length - 1];
   const memoryLast = inMemory[inMemory.length - 1];
@@ -105,6 +140,11 @@ export interface UseChatSessionLoaderArgs {
   requestResumeRef: MutableRefObject<
     ((opts?: { skipReload?: boolean }) => Promise<void>) | undefined
   >;
+  /**
+   * Bound Local Agent ACP session for this History chat (if any). Cleared by
+   * Chat on new-session; set here when a persisted localAcp payload is loaded.
+   */
+  localAcpBindingRef: MutableRefObject<LocalAcpChatBinding | null>;
 }
 
 /**
@@ -126,6 +166,7 @@ export function useChatSessionLoader({
   toolDispatchGateRef,
   loadPersistedMessagesRef,
   requestResumeRef,
+  localAcpBindingRef,
 }: UseChatSessionLoaderArgs): void {
   // Fetch the persisted chat and swap it into the hook state. Shared by the
   // history-load effect below and the resume manager's reload-before-replay
@@ -156,23 +197,40 @@ export function useChatSessionLoader({
         messages?: unknown[];
         consoles?: Array<{ id: string }>;
         activeStreamId?: string | null;
+        localAcp?: LocalAcpChatBinding | null;
       };
       if (chatIdRef.current !== targetChatId) return false;
+
+      // Rebind Local Agent ACP session + restore model when reopening History.
+      if (
+        data.localAcp?.sessionId &&
+        data.localAcp.providerId &&
+        data.localAcp.modelId
+      ) {
+        localAcpBindingRef.current = {
+          providerId: data.localAcp.providerId,
+          sessionId: data.localAcp.sessionId,
+          modelId: data.localAcp.modelId,
+        };
+        if (opts?.forHistoryLoad && isLocalAcpModelId(data.localAcp.modelId)) {
+          useSettingsStore.getState().setSelectedModelId(data.localAcp.modelId);
+        }
+      } else if (opts?.forHistoryLoad) {
+        localAcpBindingRef.current = null;
+      }
 
       const rawMessages = (data.messages ?? []) as Array<{
         role?: string;
         parts?: Array<Record<string, unknown>> | null;
       }>;
 
-      // Reload-before-replay only: never step the live in-memory state
-      // backwards to a stale snapshot (persistence is per-segment and async;
-      // around a segment boundary the server can lag the client). The resume
-      // replay is still safe without the reload — the dispatch gate blocks
-      // re-execution and the persist-time dedupe strips duplicate text.
-      if (
-        !opts?.forHistoryLoad &&
-        isPersistedSnapshotStale(rawMessages, messagesRef.current)
-      ) {
+      // Never step the live in-memory state backwards to a stale snapshot
+      // (persistence is async). Also covers Local ACP: first persist flips
+      // isExistingChat → this loader re-fetches with forHistoryLoad and used
+      // to clobber the optimistic user/assistant turn (message vanished on
+      // Enter). History switches clear messages to [] first, so this guard
+      // still allows a full load.
+      if (isPersistedSnapshotStale(rawMessages, messagesRef.current)) {
         return false;
       }
 

@@ -1310,8 +1310,44 @@ export const LONG_RUNNING_DASHBOARD_TOOL_NAMES = createToolNameSet(
     entry.longRunning === true,
 );
 
+/**
+ * Claude Code / Codex ACP often emit PascalCase built-in names (`ToolSearch`)
+ * that are not Mako tools. Alias them onto the closest native card so icons
+ * and labels stay consistent with in-app Chat.
+ */
+const ACP_TOOL_MANIFEST_ALIASES: Record<string, AgentToolName> = {
+  ToolSearch: "search_tools",
+  tool_search: "search_tools",
+  WebSearch: "web_search",
+  web_search: "web_search",
+};
+
+function toSnakeToolId(name: string): string {
+  return name
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_+/g, "_")
+    .toLowerCase();
+}
+
 export function getAgentToolManifestEntry(
   toolName: string,
 ): AgentToolManifestEntry | undefined {
-  return AGENT_TOOL_MANIFEST[toolName as AgentToolName];
+  const direct = AGENT_TOOL_MANIFEST[toolName as AgentToolName];
+  if (direct) return direct;
+
+  const aliased = ACP_TOOL_MANIFEST_ALIASES[toolName];
+  if (aliased) return AGENT_TOOL_MANIFEST[aliased];
+
+  const snake = toSnakeToolId(toolName);
+  if (snake && snake !== toolName) {
+    const viaSnake = AGENT_TOOL_MANIFEST[snake as AgentToolName];
+    if (viaSnake) return viaSnake;
+    const aliasViaSnake = ACP_TOOL_MANIFEST_ALIASES[snake];
+    if (aliasViaSnake) return AGENT_TOOL_MANIFEST[aliasViaSnake];
+  }
+
+  return undefined;
 }

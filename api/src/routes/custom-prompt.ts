@@ -96,7 +96,12 @@ customPromptRoutes.openapi(
     request: { params: WorkspaceParam },
     responses: {
       200: jsonContent(
-        z.object({ success: z.literal(true), content: z.string() }),
+        z.object({
+          success: z.literal(true),
+          content: z.string(),
+          /** Agent-learned workspace rules (also used by Local ACP append). */
+          selfDirective: z.string().optional(),
+        }),
         "Custom prompt content.",
       ),
       400: errorJson("Invalid workspace ID"),
@@ -123,8 +128,19 @@ customPromptRoutes.openapi(
 
       // Return the custom prompt from workspace settings, or default if not set
       const content = workspace.settings.customPrompt || DEFAULT_CUSTOM_PROMPT;
+      const selfDirective =
+        typeof workspace.selfDirective === "string"
+          ? workspace.selfDirective
+          : "";
 
-      return c.json({ success: true as const, content }, 200);
+      return c.json(
+        {
+          success: true as const,
+          content,
+          ...(selfDirective.trim() ? { selfDirective } : {}),
+        },
+        200,
+      );
     } catch (error) {
       logger.error("Error reading custom prompt", { error });
       return c.json(

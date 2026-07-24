@@ -29,8 +29,16 @@ import {
   updateConnection,
 } from "./connection-store";
 import { registerDrivers, toDatabaseConnection } from "./database-bridge";
+import { registerAcpRoutes } from "./acp/routes";
+import { acpSessionManager } from "./acp/manager";
+import { ensureNpmGlobalPath } from "./acp/path-env";
+import { registerDesktopBridgeRoutes } from "./desktop-bridge/routes";
 
 const logger = loggers.api("local-agent");
+
+// Desktop GUI PATH is often stripped; prepend Homebrew / npm-global bins so
+// `claude-agent-acp` resolves after `npm i -g` instead of falling back to npx.
+ensureNpmGlobalPath();
 
 export const DEFAULT_AGENT_PORT = 41720;
 
@@ -476,6 +484,10 @@ export function createAgentApp(): Hono {
     return c.json(result);
   });
 
+  // --- ACP coding agents (Claude Code / Codex via local stdio adapters) ---
+  registerAcpRoutes(app);
+  registerDesktopBridgeRoutes(app);
+
   return app;
 }
 
@@ -503,5 +515,11 @@ export function startAgent(port?: number): StartedAgent {
     host: "127.0.0.1",
   });
 
-  return { port: resolvedPort, close: () => server.close() };
+  return {
+    port: resolvedPort,
+    close: () => {
+      void acpSessionManager.shutdown();
+      server.close();
+    },
+  };
 }

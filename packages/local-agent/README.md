@@ -63,3 +63,35 @@ stubbed — every one has a pure-JS fallback. The desktop app
 | GET | `/connections/:id/table-definition` | Table DDL (Postgres family) |
 | POST | `/execute` | Execute query (preview mode + safety checks) |
 | POST | `/execute/cancel` | Cancel a running query |
+
+## ACP coding agents (Claude Code / Codex)
+
+The agent also hosts an **ACP client bridge**: it spawns a local stdio ACP
+adapter (`claude-agent-acp` or `codex-acp`) and exposes sessions to the Mako
+web app over loopback HTTP + SSE. Model tokens stay on the user's Claude /
+ChatGPT subscription — nothing is proxied through Mako Cloud.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/acp/status` | Provider readiness (adapter found, auth methods) |
+| POST | `/acp/authenticate` | Trigger adapter login for a provider |
+| GET/POST | `/acp/sessions` | List / create sessions |
+| POST | `/acp/sessions/:id/prompt` | Send a user prompt (blocks until turn ends) |
+| GET | `/acp/sessions/:id/events` | SSE stream of updates / permissions |
+| POST | `/acp/sessions/:id/permissions/:requestId` | Answer a permission prompt |
+| POST | `/acp/sessions/:id/cancel` | Cancel the current turn |
+| DELETE | `/acp/sessions/:id` | Close a session |
+| POST | `/desktop/mcp` | Stateless MCP (`mako-desktop`): `run_app`, preview errors, `list_open_consoles`, clarify/plan HITL |
+| POST | `/desktop/bridge/hello` | Desktop Chat heartbeat for the bridge |
+| POST | `/desktop/bridge/claim` | Long-poll for a pending Desktop tool job |
+| POST | `/desktop/bridge/jobs/:id/result` | Complete a claimed job |
+
+Overrides for tests/custom installs:
+
+- `MAKO_ACP_AGENT_COMMAND` / `MAKO_ACP_AGENT_ARGS` — spawn this instead of the
+  default adapter (`MAKO_ACP_PROVIDER` scopes the override to one provider id)
+- `MAKO_ACP_DEFAULT_CWD` — default working directory for new sessions
+
+```bash
+pnpm --filter @mako/local-agent test   # mock ACP agent round-trip
+```
