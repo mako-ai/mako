@@ -298,6 +298,7 @@ chatsRoutes.openapi(
                   sessionId: z.string().min(1),
                   modelId: z.string().min(1),
                 })
+                .nullable()
                 .optional(),
             }),
           },
@@ -351,6 +352,8 @@ chatsRoutes.openapi(
         return c.json({ error: "Failed to save chat" }, 500);
       }
 
+      // saveChat $unsets localAcp; re-bind only when ACP persistence supplies
+      // one. Explicit null also clears (model switch away from local ACP).
       if (body.localAcp) {
         await Chat.updateOne(
           {
@@ -367,6 +370,15 @@ chatsRoutes.openapi(
               },
             },
           },
+        );
+      } else if (body.localAcp === null) {
+        await Chat.updateOne(
+          {
+            _id: new ObjectId(id),
+            workspaceId: new ObjectId(workspaceId),
+            createdBy: userId.toString(),
+          },
+          { $unset: { localAcp: "" } },
         );
       }
 

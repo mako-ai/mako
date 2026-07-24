@@ -15,7 +15,7 @@ export async function persistLocalAcpChat(args: {
   workspaceId: string;
   chatId: string;
   messages: UIMessage[];
-  localAcp?: LocalAcpChatBinding;
+  localAcp?: LocalAcpChatBinding | null;
 }): Promise<boolean> {
   const { workspaceId, chatId, messages, localAcp } = args;
   if (!workspaceId || !chatId || messages.length === 0) return false;
@@ -35,4 +35,13 @@ export async function persistLocalAcpChat(args: {
   } catch {
     return false;
   }
+}
+
+/** Drop a persisted ACP binding so History reopen does not force local Claude/Codex. */
+export async function clearLocalAcpChatBinding(args: {
+  workspaceId: string;
+  chatId: string;
+  messages: UIMessage[];
+}): Promise<boolean> {
+  return persistLocalAcpChat({ ...args, localAcp: null });
 }

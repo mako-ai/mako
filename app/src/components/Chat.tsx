@@ -52,6 +52,7 @@ import {
   localAcpModelIdToProviderId,
 } from "../lib/local-acp-models";
 import { runLocalAcpChatTurn } from "../lib/local-acp-chat";
+import { clearLocalAcpChatBinding } from "../lib/persist-local-acp-chat";
 import {
   completeDesktopHitlJob,
   startDesktopAcpBridge,
@@ -564,6 +565,23 @@ const Chat: React.FC<ChatProps> = ({
   messagesRef.current = messages;
   const sendMessageRef = useRef(sendMessage);
   sendMessageRef.current = sendMessage;
+
+  // Leaving local Claude/Codex must drop the persisted ACP binding so History
+  // reopen doesn't force a dead session (Bugbot: stale localAcp).
+  useEffect(() => {
+    if (isLocalAcpModelId(selectedModelId)) return;
+    if (!localAcpBindingRef.current) return;
+    const workspaceId = workspaceIdRef.current;
+    const id = chatIdRef.current;
+    const transcript = messagesRef.current;
+    localAcpBindingRef.current = null;
+    if (!workspaceId || !id || transcript.length === 0) return;
+    void clearLocalAcpChatBinding({
+      workspaceId,
+      chatId: id,
+      messages: transcript,
+    });
+  }, [selectedModelId]);
 
   // Give the registry (created before useChat) the live addToolOutput.
   addToolOutputRef.current = addToolOutput;

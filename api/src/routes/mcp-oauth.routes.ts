@@ -527,6 +527,18 @@ mcpOAuthRoutes.post("/token", async c => {
       });
     }
     if (grantType === "refresh_token") {
+      // Session-minted ACP tokens are short-lived and never expose refresh to
+      // the browser; keep this client off the public token endpoint entirely.
+      if (clientId === ACP_MCP_CLIENT_ID) {
+        return c.json(
+          {
+            error: "unauthorized_client",
+            error_description:
+              "mako-acp-local cannot use refresh_token; mint via session",
+          },
+          400,
+        );
+      }
       const refreshToken = str("refresh_token");
       if (!refreshToken) {
         return c.json(

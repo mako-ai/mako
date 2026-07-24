@@ -9574,7 +9574,10 @@
                     }
                   },
                   "localAcp": {
-                    "type": "object",
+                    "type": [
+                      "object",
+                      "null"
+                    ],
                     "properties": {
                       "providerId": {
                         "type": "string",

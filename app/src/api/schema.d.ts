@@ -9485,7 +9485,7 @@ export interface operations {
                         providerId: string;
                         sessionId: string;
                         modelId: string;
-                    };
+                    } | null;
                 };
             };
         };
