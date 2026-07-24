@@ -14,8 +14,19 @@ export type AcpToolUpdate = {
   rawInput?: unknown;
   rawOutput?: unknown;
   content?: unknown;
-  _meta?: { claudeCode?: { toolName?: string } } | null;
+  _meta?: {
+    claudeCode?: { toolName?: string };
+    /** Codex ACP: commentary = mid-turn reasoning-like prose; final_answer = reply. */
+    codex?: { phase?: string; threadStatus?: unknown };
+  } | null;
 };
+
+/** Codex streams planning prose as message chunks with phase=commentary. */
+export function isAcpCodexCommentaryPhase(update: {
+  _meta?: { codex?: { phase?: string } | null } | null;
+}): boolean {
+  return update._meta?.codex?.phase === "commentary";
+}
 
 export type DynamicToolPart = {
   type: "dynamic-tool";

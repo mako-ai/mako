@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendAssistantReasoning,
   appendAssistantText,
+  isAcpCodexCommentaryPhase,
   mapAcpToolStatus,
   resolveAcpToolName,
   resolveAcpToolTitle,
@@ -145,5 +146,19 @@ describe("local-acp-parts", () => {
     expect(appendAssistantReasoning(seeded, "Hello")).toEqual([
       { type: "reasoning", text: "Hello", state: "streaming" },
     ]);
+  });
+
+  it("detects Codex commentary-phase message chunks", () => {
+    expect(
+      isAcpCodexCommentaryPhase({
+        _meta: { codex: { phase: "commentary" } },
+      }),
+    ).toBe(true);
+    expect(
+      isAcpCodexCommentaryPhase({
+        _meta: { codex: { phase: "final_answer" } },
+      }),
+    ).toBe(false);
+    expect(isAcpCodexCommentaryPhase({})).toBe(false);
   });
 });

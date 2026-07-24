@@ -31,10 +31,12 @@ export const ReasoningDisplay = React.memo(
     const startTimeRef = React.useRef<number | null>(null);
     const scrollRef = React.useRef<HTMLDivElement>(null);
 
-    // Auto-open only while THIS block is actively streaming and not yet
-    // finished; auto-close the moment it finishes. If the user manually
-    // toggled, respect their choice.
-    const isOpen = userToggled ? userOpen : isStreaming && !finished;
+    // Auto-open only while THIS block is actively streaming with text and
+    // not yet finished. Empty ACP placeholders (Codex silent wait / seeded
+    // Thinking) stay label-only so we don't show a blank expanded pane.
+    // If the user manually toggled, respect their choice.
+    const hasText = reasoningText.trim().length > 0;
+    const isOpen = userToggled ? userOpen : isStreaming && !finished && hasText;
 
     const handleToggle = () => {
       setUserToggled(true);

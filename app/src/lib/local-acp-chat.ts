@@ -17,6 +17,7 @@ import {
   appendAssistantReasoning,
   appendAssistantText,
   getAssistantParts,
+  isAcpCodexCommentaryPhase,
   markStreamingReasoningDone,
   setAssistantErrorText,
   upsertAcpToolPart,
@@ -406,7 +407,15 @@ export async function runLocalAcpChatTurn(
             update.content.text
           ) {
             const chunk = update.content.text;
-            patchAssistantParts(parts => appendAssistantText(parts, chunk));
+            // Codex puts most "thinking" in commentary-phase message chunks,
+            // not agent_thought_chunk (which is often just a short heading).
+            if (isAcpCodexCommentaryPhase(update)) {
+              patchAssistantParts(parts =>
+                appendAssistantReasoning(parts, chunk),
+              );
+            } else {
+              patchAssistantParts(parts => appendAssistantText(parts, chunk));
+            }
           } else if (
             update.sessionUpdate === "tool_call" ||
             update.sessionUpdate === "tool_call_update"
