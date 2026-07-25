@@ -4720,6 +4720,7 @@ export interface components {
                 executedAt?: string;
             }[];
             clientId?: string;
+            expectedVersion?: number;
         };
         NotebookPresenceRequest: {
             clientId: string;
