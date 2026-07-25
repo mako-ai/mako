@@ -45,7 +45,6 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   "get_app_state",
   "app_search",
   "app_read_resource",
-  "app_get_data_binding",
   "app_read_file",
   // Notebook reads
   "list_open_notebooks",

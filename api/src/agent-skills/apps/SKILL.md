@@ -48,8 +48,8 @@ errors); `open_app` just focuses a UI tab.
    endLine })` for only the required range. Follow `nextStartLine` when needed;
    use `startOffset`/`nextOffset` for oversized single lines. If search returns
    `truncated`, continue with its `nextOffset`. Do not dump every resource.
-   Full reads (`app_read_file` and
-   `app_get_data_binding`) remain compatibility fallbacks and are capped.
+   `app_read_file` remains a deferred compatibility fallback for older flows;
+   new work should use the bounded resource reader.
    (Live preview build/runtime errors are only available in an attached browser
    via `run_app`.)
 3. Modify existing files with `app_edit_file` — an anchored replacement: pass the

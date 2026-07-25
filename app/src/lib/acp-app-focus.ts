@@ -28,7 +28,6 @@ export const ACP_APP_FOCUS_TOOLS = new Set([
   "get_app_state",
   "app_search",
   "app_read_resource",
-  "app_get_data_binding",
 ]);
 
 /** Mutations / explicit preview that need an iframe srcdoc rebuild. */

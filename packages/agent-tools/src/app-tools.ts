@@ -293,14 +293,6 @@ export const getAppStateSchema = z.object({
     .describe("Maximum manifest entries to return (default 100, max 200)."),
 });
 
-/** Fetch one binding's full query — prefer over dumping every binding via get_app_state. */
-export const getDataBindingSchema = z.object({
-  appId: appIdField,
-  name: z
-    .string()
-    .describe("Data binding name from get_app_state / list_data_sources"),
-});
-
 export { readFileSchema as appReadFileSchema };
 
 export const appReadResourceSchema = z.object({
@@ -371,9 +363,8 @@ export const appSearchSchema = z.object({
 export const APP_STATE_CODE_PREVIEW_CHARS = 160;
 
 /** Caps for intentional full-read tools — keep agent/MCP context budgets honest. */
-export const APP_BINDING_CODE_MAX_CHARS = 12_000;
 export const APP_READ_FILE_MAX_CHARS = 16_000;
-/** inspect_data_source / list previews — not a substitute for app_get_data_binding. */
+/** inspect_data_source / list previews — use app_read_resource for full ranges. */
 export const APP_INSPECT_CODE_PREVIEW_CHARS = 2_000;
 export const APP_PREVIEW_ERROR_MAX = 20;
 export const APP_PREVIEW_ERROR_CHARS = 2_000;

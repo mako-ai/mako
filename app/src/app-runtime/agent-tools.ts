@@ -8,7 +8,6 @@
  */
 
 import {
-  APP_BINDING_CODE_MAX_CHARS,
   APP_READ_FILE_MAX_CHARS,
   appBindingResourceVersion,
   appResourceRef,
@@ -275,40 +274,6 @@ export async function executeAppAgentTool(
           typeof input.endLine === "number" ? input.endLine : undefined,
           typeof input.startOffset === "number" ? input.startOffset : undefined,
         ),
-      };
-    }
-
-    case "app_get_data_binding": {
-      if (!appId) return fail("appId is required");
-      const name = input.name as string | undefined;
-      if (!name) return fail("name is required");
-      const appEntity = await ensureApp(appId);
-      if (!appEntity) return fail("App not found");
-      const binding = appEntity.dataBindings.find(b => b.name === name);
-      if (!binding) return fail(`No data binding named "${name}"`);
-      const clipped = clipAgentText(
-        binding.code ?? "",
-        APP_BINDING_CODE_MAX_CHARS,
-      );
-      if (clipped.truncated) {
-        return fail(
-          "Binding is too large for app_get_data_binding. Use app_search and " +
-            "app_read_resource to read precise ranges.",
-        );
-      }
-      return {
-        success: true,
-        appId,
-        binding: {
-          name: binding.name,
-          connectionId: binding.connectionId,
-          dbtProjectId: binding.dbtProjectId,
-          language: binding.language,
-          materialization: binding.materialization ?? "live",
-          code: clipped.text,
-          codeLength: clipped.length,
-          truncated: false,
-        },
       };
     }
 

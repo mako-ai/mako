@@ -90,7 +90,6 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   get_app_state: bridge(),
   app_search: bridge(),
   app_read_resource: bridge(),
-  app_get_data_binding: bridge(),
   list_open_apps: bridge(),
   materialize_binding: bridge(),
   open_app: exclude(

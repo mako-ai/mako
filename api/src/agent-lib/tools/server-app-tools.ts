@@ -38,7 +38,6 @@ import {
   listAppsSchema,
   createAppSchema,
   getAppStateSchema,
-  getDataBindingSchema,
   appReadFileSchema,
   appReadResourceSchema,
   appSearchSchema,
@@ -47,7 +46,6 @@ import {
   setBindingMaterializationSchema,
   summarizeAppBindingForState,
   clipAgentText,
-  APP_BINDING_CODE_MAX_CHARS,
   APP_READ_FILE_MAX_CHARS,
   appResourceRef,
   appResourceVersion,
@@ -650,61 +648,6 @@ export function createServerAppTools({
                   appResourceVersion(text),
                 ),
             ...readAppResourceRange(text, startLine, endLine, startOffset),
-          };
-        }),
-    }),
-
-    app_get_data_binding: tool({
-      description:
-        "Compatibility fallback that reads one data binding's query code. " +
-        "Prefer app_search + app_read_resource for precise line ranges. " +
-        "Large queries are truncated " +
-        `(~${APP_BINDING_CODE_MAX_CHARS} chars); use app_update_data_binding ` +
-        "with oldString/newString for targeted edits.",
-      inputSchema: getDataBindingSchema,
-      execute: async ({ appId, name }) =>
-        wrap("app_get_data_binding", async () => {
-          const loaded = await loadApp(appId);
-          if (isLoadError(loaded)) return { success: false, ...loaded };
-          const binding = (loaded.doc.dataBindings ?? []).find(
-            b => b.name === name,
-          );
-          if (!binding) {
-            return {
-              success: false,
-              error: `No data binding named "${name}". Confirm with get_app_state.`,
-            };
-          }
-          const clipped = clipAgentText(
-            binding.code ?? "",
-            APP_BINDING_CODE_MAX_CHARS,
-          );
-          if (clipped.truncated) {
-            return {
-              success: false,
-              appId,
-              error:
-                "Binding is too large for app_get_data_binding. Use app_search " +
-                "and app_read_resource to read precise ranges.",
-              binding: {
-                name: binding.name,
-                codeLength: clipped.length,
-              },
-            };
-          }
-          return {
-            success: true,
-            appId,
-            binding: {
-              name: binding.name,
-              connectionId: binding.connectionId,
-              dbtProjectId: binding.dbtProjectId,
-              language: binding.language ?? "sql",
-              materialization: binding.materialization ?? "live",
-              code: clipped.text,
-              codeLength: clipped.length,
-              truncated: false,
-            },
           };
         }),
     }),

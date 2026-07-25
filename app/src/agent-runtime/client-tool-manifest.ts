@@ -474,15 +474,6 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "eye",
   },
-  app_get_data_binding: {
-    domain: "app",
-    execution: "server",
-    getLabel: input => {
-      const name = (input as Record<string, unknown>)?.name;
-      return name ? `Reading binding ${name}` : "Reading data binding";
-    },
-    icon: "eye",
-  },
   app_read_file: {
     domain: "app",
     execution: "server",

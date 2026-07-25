@@ -166,7 +166,7 @@ async function executeAppDataTool(
   if (!appEntity) return fail("App not found (is it open?)");
 
   if (toolName === "list_data_sources") {
-    // Omit full SQL here — use inspect_data_source / app_get_data_binding.
+    // Omit full SQL here — use inspect_data_source or app_read_resource.
     return {
       success: true,
       dataSources: appEntity.dataBindings.map(b => ({
@@ -253,7 +253,7 @@ async function executeAppDataTool(
       note:
         note ||
         (codeClipped.truncated
-          ? "Query preview truncated — use app_get_data_binding for more code."
+          ? 'Query preview truncated — use app_read_resource with resource "binding:<name>".'
           : undefined),
     };
   }

@@ -225,7 +225,6 @@ async function main() {
       "get_app_state",
       "app_search",
       "app_read_resource",
-      "app_get_data_binding",
       "app_read_file",
       "app_write_file",
       "app_edit_file",
@@ -268,6 +267,11 @@ async function main() {
     ]) {
       assert.ok(names.has(expected), `missing tool: ${expected}`);
     }
+    assert.equal(
+      names.has("app_get_data_binding"),
+      false,
+      "redundant app_get_data_binding must not be exposed over MCP",
+    );
     for (const tool of tools) {
       assert.equal(
         tool.inputSchema.type,

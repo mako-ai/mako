@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  APP_BINDING_CODE_MAX_CHARS,
   APP_PREVIEW_ERROR_CHARS,
   APP_PREVIEW_ERROR_MAX,
   APP_RESOURCE_MAX_CHARS,
@@ -46,8 +45,8 @@ describe("summarizeAppBindingForState", () => {
 
 describe("clipAgentText / summarizePreviewErrors", () => {
   it("clips full-read payloads with truncated flag", () => {
-    const code = "y".repeat(APP_BINDING_CODE_MAX_CHARS + 100);
-    const clipped = clipAgentText(code, APP_BINDING_CODE_MAX_CHARS);
+    const code = "y".repeat(APP_RESOURCE_MAX_CHARS + 100);
+    const clipped = clipAgentText(code, APP_RESOURCE_MAX_CHARS);
     assert.equal(clipped.truncated, true);
     assert.equal(clipped.length, code.length);
     assert.ok(clipped.text.includes("…(truncated)"));
