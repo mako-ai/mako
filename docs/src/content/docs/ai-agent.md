@@ -182,6 +182,8 @@ Mako routes all AI requests through the **Vercel AI Gateway**, which provides ac
 
 Models are discovered dynamically at runtime by merging the Gateway model catalog with [arena.ai](https://arena.ai) code leaderboard ELO scores. The catalog refreshes hourly.
 
+On **Mako Desktop**, the model dropdown also shows an **On this machine** group — Claude Code and Codex running locally via ACP on your own subscription. See [Coding Agents (ACP)](/coding-agents-acp/).
+
 ### Free vs Pro Models
 
 When billing is enabled, models are split into two tiers:
