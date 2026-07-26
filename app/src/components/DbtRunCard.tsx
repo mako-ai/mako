@@ -27,6 +27,7 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useDbtStore, type DbtRunItem } from "../store/dbtStore";
 import { focusDbtRunsTab } from "../dbt-runtime/shell";
+import { formatRowsAffected, formatStepDuration } from "../lib/dbt-step-format";
 
 interface DbtRunCardProps {
   runId: string;
@@ -383,8 +384,8 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
                         ? ` — ${step.message}`
                         : ""}
                     </td>
-                    <td>{(step.executionTimeMs / 1000).toFixed(2)}s</td>
-                    <td>{step.rowsAffected ?? ""}</td>
+                    <td>{formatStepDuration(step.executionTimeMs)}</td>
+                    <td>{formatRowsAffected(step.rowsAffected)}</td>
                   </Box>
                 ))}
               </tbody>

@@ -228,6 +228,29 @@ describe("RBAC matrix (through real middleware)", () => {
     expect((await write.json()).error).toMatch(/read-only/i);
   });
 
+  it("preview is member+ — viewers and non-members are refused", async () => {
+    // Preview runs a bounded SELECT against the warehouse, so it sits with the
+    // other ad-hoc runner routes (member+) rather than with plain GET reads.
+    ctx.role = "owner";
+    const projectId = await createProjectAsOwner();
+    const body = { select: "customers" };
+
+    ctx.role = "viewer";
+    const viewer = await req("POST", `/projects/${projectId}/preview`, body);
+    expect(viewer.status).toBe(403);
+    expect((await viewer.json()).error).toMatch(/read-only/i);
+
+    ctx.role = null;
+    expect(
+      (await req("POST", `/projects/${projectId}/preview`, body)).status,
+    ).toBe(403);
+
+    ctx.role = "member";
+    expect(
+      (await req("POST", `/projects/${projectId}/preview`, body)).status,
+    ).toBe(200);
+  });
+
   it("members are blocked from admin-only project creation", async () => {
     ctx.role = "member";
     const res = await req("POST", "/projects", NEW_PROJECT);
@@ -714,6 +737,80 @@ describe("ad-hoc runner routes", () => {
       command: "compile --select customers",
     });
     expect(recordAdhocMock).not.toHaveBeenCalled();
+  });
+
+  it("preview runs a bounded `show --output json` and returns parsed rows", async () => {
+    const projectId = await createProjectAsOwner();
+    adhocMock.mockResolvedValueOnce({
+      success: true,
+      exitCode: 0,
+      logs: [
+        { ts: new Date(), level: "info", line: "Running with dbt=1.9.4" },
+        {
+          ts: new Date(),
+          level: "info",
+          line: JSON.stringify({
+            node: "customers",
+            show: [{ id: 1, name: "acme" }],
+          }),
+        },
+      ],
+      stepResults: [],
+    });
+
+    const res = await req("POST", `/projects/${projectId}/preview`, {
+      select: "customers",
+    });
+    expect(res.status).toBe(200);
+    const { preview } = await res.json();
+    expect(preview.ok).toBe(true);
+    expect(preview.columns).toEqual(["id", "name"]);
+    expect(preview.rows).toEqual([{ id: 1, name: "acme" }]);
+    expect(adhocMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: "show --select customers --limit 500 --output json",
+      }),
+    );
+  });
+
+  it("preview never writes to run history and rejects unsafe selectors", async () => {
+    const projectId = await createProjectAsOwner();
+
+    await req("POST", `/projects/${projectId}/preview`, {
+      select: "+customers",
+    });
+    expect(recordAdhocMock).not.toHaveBeenCalled();
+
+    const bad = await req("POST", `/projects/${projectId}/preview`, {
+      select: "bad; rm -rf /",
+    });
+    expect(bad.status).toBe(400);
+
+    const tooMany = await req("POST", `/projects/${projectId}/preview`, {
+      select: "customers",
+      limit: 1_000_000,
+    });
+    expect(tooMany.status).toBe(400);
+  });
+
+  it("preview reports not-ok when dbt produced no rows payload", async () => {
+    const projectId = await createProjectAsOwner();
+    adhocMock.mockResolvedValueOnce({
+      success: false,
+      exitCode: 1,
+      logs: [
+        { ts: new Date(), level: "error", line: "Compilation Error in model" },
+      ],
+      stepResults: [],
+    });
+
+    const res = await req("POST", `/projects/${projectId}/preview`, {
+      select: "customers",
+    });
+    const { preview } = await res.json();
+    expect(preview.ok).toBe(false);
+    expect(preview.rows).toEqual([]);
+    expect(preview.logs[0].line).toContain("Compilation Error");
   });
 
   it("lineage returns an empty DAG when no manifest exists yet", async () => {

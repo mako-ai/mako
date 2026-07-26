@@ -5,7 +5,8 @@
  *     allowlist as stored jobs) with an environment + "defer to prod" toggle;
  *   - a Problems tab that runs `dbt parse` and surfaces compile/parse
  *     diagnostics, each clickable to open the offending file;
- *   - Results + Logs tabs for the most recent command.
+ *   - a Commands tab sharing DbtCommandsPanel with the file editor, so a
+ *     command's status, logs and node results read the same in both places.
  */
 
 import {
@@ -14,13 +15,13 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
   Box,
   Button,
   Checkbox,
-  Chip,
   CircularProgress,
   FormControlLabel,
   MenuItem,
@@ -41,11 +42,16 @@ import { useAuth } from "../contexts/auth-context";
 import {
   useDbtStore,
   visibleDbtEnvironments,
-  type DbtCommandRunResult,
   type DbtRunLogLine,
 } from "../store/dbtStore";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
 import { resolveDevEnvName, resolveProdLikeEnvName } from "../lib/dbt-env";
+import {
+  appendInvocation,
+  settleInvocation,
+  type DbtCommandInvocation,
+} from "../lib/dbt-command-history";
+import DbtCommandsPanel from "./DbtCommandsPanel";
 import EntityLoadErrorState, {
   EntityLoadingState,
 } from "./EntityLoadErrorState";
@@ -86,43 +92,6 @@ function logsToProblems(logs: DbtRunLogLine[]): Problem[] {
   return problems;
 }
 
-function LogLines({ logs }: { logs: DbtRunLogLine[] }) {
-  return (
-    <Box
-      sx={{
-        fontFamily: "monospace",
-        fontSize: "0.75rem",
-        whiteSpace: "pre-wrap",
-        p: 1,
-        overflow: "auto",
-        height: "100%",
-      }}
-    >
-      {logs.length === 0 ? (
-        <Typography variant="caption" color="text.secondary">
-          No output yet — run a command.
-        </Typography>
-      ) : (
-        logs.map((log, index) => (
-          <Box
-            key={index}
-            sx={{
-              color:
-                log.level === "error"
-                  ? "error.main"
-                  : log.level === "warn"
-                    ? "warning.main"
-                    : "text.primary",
-            }}
-          >
-            {log.line}
-          </Box>
-        ))
-      )}
-    </Box>
-  );
-}
-
 export default function DbtConsoleView({ projectId }: { projectId: string }) {
   const { currentWorkspace } = useWorkspace();
   const { user } = useAuth();
@@ -140,10 +109,16 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
   const [environment, setEnvironment] = useState("");
   const [defer, setDefer] = useState(false);
   const [command, setCommand] = useState("");
-  const [tab, setTab] = useState<"problems" | "results" | "logs">("problems");
+  const [tab, setTab] = useState<"problems" | "commands">("problems");
   const [busy, setBusy] = useState<"command" | "parse" | null>(null);
-  const [result, setResult] = useState<DbtCommandRunResult | null>(null);
   const [problems, setProblems] = useState<Problem[] | null>(null);
+  // Same session-scoped rail as the file editor's Commands tab, so a command
+  // run here and one run there are presented identically.
+  const [history, setHistory] = useState<DbtCommandInvocation[]>([]);
+  const [selectedInvocationId, setSelectedInvocationId] = useState<
+    string | null
+  >(null);
+  const invocationSeq = useRef(0);
 
   useEffect(() => {
     if (!project && workspaceId) void fetchProjects(workspaceId);
@@ -198,16 +173,39 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
       return;
     }
     setBusy("command");
-    setTab("logs");
+    setTab("commands");
+    // Accept a pasted "dbt build ..." — the API strips it too, but the rail
+    // shouldn't read "dbt dbt build ...".
+    const normalized = command.trim().replace(/^dbt\s+/i, "");
+    const id = `inv-${(invocationSeq.current += 1)}`;
+    const startedAt = Date.now();
+    setHistory(entries =>
+      appendInvocation(entries, {
+        id,
+        command: normalized,
+        environment: environment || "—",
+        startedAt,
+        status: "running",
+        logs: [],
+        stepResults: [],
+      }),
+    );
+    setSelectedInvocationId(id);
     const res = await runCommand(
       workspaceId,
       projectId,
-      command.trim(),
+      normalized,
       environment || undefined,
       defer,
     );
-    setResult(res);
-    if (res && res.stepResults.length > 0) setTab("results");
+    setHistory(entries =>
+      settleInvocation(entries, id, {
+        durationMs: Date.now() - startedAt,
+        status: res?.ok ? "success" : "error",
+        logs: res?.logs ?? [],
+        stepResults: res?.stepResults ?? [],
+      }),
+    );
     setBusy(null);
   }, [workspaceId, projectId, command, environment, defer, runCommand]);
 
@@ -379,11 +377,10 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
                 sx={{ minHeight: 32, py: 0 }}
               />
               <Tab
-                label="Results"
-                value="results"
+                label="Commands"
+                value="commands"
                 sx={{ minHeight: 32, py: 0 }}
               />
-              <Tab label="Logs" value="logs" sx={{ minHeight: 32, py: 0 }} />
             </Tabs>
             {tab === "problems" && (
               <Button
@@ -473,87 +470,14 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
               </Box>
             )}
 
-            {tab === "results" && (
-              <Box sx={{ p: 1 }}>
-                {!result || result.stepResults.length === 0 ? (
-                  <Typography variant="caption" color="text.secondary">
-                    {busy === "command"
-                      ? "Running…"
-                      : "Run a build/run/test command to see node results."}
-                  </Typography>
-                ) : (
-                  <Box
-                    component="table"
-                    sx={{
-                      width: "100%",
-                      fontSize: "0.75rem",
-                      borderCollapse: "collapse",
-                      "& td, & th": {
-                        borderBottom: "1px solid",
-                        borderColor: "divider",
-                        p: 0.5,
-                        textAlign: "left",
-                      },
-                    }}
-                  >
-                    <thead>
-                      <tr>
-                        <th>Node</th>
-                        <th>Type</th>
-                        <th>Status</th>
-                        <th>Time</th>
-                        <th>Rows</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {result.stepResults.map(step => (
-                        <Box
-                          component="tr"
-                          key={step.uniqueId}
-                          sx={{
-                            color:
-                              step.status === "error" || step.status === "fail"
-                                ? "error.main"
-                                : step.status === "warn"
-                                  ? "warning.main"
-                                  : "inherit",
-                          }}
-                        >
-                          <td>{step.name}</td>
-                          <td>{step.resourceType}</td>
-                          <td>{step.status}</td>
-                          <td>{(step.executionTimeMs / 1000).toFixed(2)}s</td>
-                          <td>{step.rowsAffected ?? ""}</td>
-                        </Box>
-                      ))}
-                    </tbody>
-                  </Box>
-                )}
-              </Box>
-            )}
-
-            {tab === "logs" && <LogLines logs={result?.logs ?? []} />}
-          </Box>
-
-          {result && tab !== "logs" && (
-            <Box
-              sx={{
-                px: 1.5,
-                py: 0.5,
-                borderTop: "1px solid",
-                borderColor: "divider",
-              }}
-            >
-              <Chip
-                size="small"
-                label={
-                  result.ok ? "Last command: success" : "Last command: failed"
-                }
-                color={result.ok ? "success" : "error"}
-                variant="outlined"
+            {tab === "commands" && (
+              <DbtCommandsPanel
+                history={history}
+                selectedId={selectedInvocationId}
+                onSelect={setSelectedInvocationId}
               />
-            </Box>
-          )}
+            )}
+          </Box>
         </Box>
       )}
     </Box>

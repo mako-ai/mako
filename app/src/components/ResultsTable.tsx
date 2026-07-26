@@ -125,6 +125,12 @@ interface ResultsTableProps {
    * Only supported when viewMode is uncontrolled.
    */
   structureView?: React.ReactNode;
+  /**
+   * Hide the chart view. For surfaces where results are a correctness check
+   * rather than something to visualize — the dbt editor's Preview grid, where
+   * you are reading the rows a model returns, not charting them.
+   */
+  hideChartView?: boolean;
 }
 
 const ResultsTable: React.FC<ResultsTableProps> = ({
@@ -139,6 +145,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
   onPreviousPage,
   onDownload,
   structureView,
+  hideChartView = false,
 }) => {
   const isMobile = useIsMobile();
   const [snackbarOpen, setSnackbarOpen] = React.useState(false);
@@ -154,8 +161,15 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
     React.useState<HTMLElement | null>(null);
   const { effectiveMode } = useTheme();
 
-  const viewMode: ResultsViewMode =
+  const requestedViewMode: ResultsViewMode =
     localOverride ?? controlledViewMode ?? internalViewMode;
+  // A caller that hides the chart must never end up rendering one — a
+  // persisted "chart" mode from another surface would otherwise show a chart
+  // with no way to switch back.
+  const viewMode: ResultsViewMode =
+    hideChartView && requestedViewMode === "chart"
+      ? "table"
+      : requestedViewMode;
   const setViewMode = useCallback(
     (mode: ResultsViewMode) => {
       if (mode === "cards") {
@@ -869,11 +883,13 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
               </ToggleButton>
             </Tooltip>
           )}
-          <Tooltip title="Chart view">
-            <ToggleButton value="chart" aria-label="chart view">
-              <ChartIcon strokeWidth={1.5} size={22} />
-            </ToggleButton>
-          </Tooltip>
+          {!hideChartView && (
+            <Tooltip title="Chart view">
+              <ToggleButton value="chart" aria-label="chart view">
+                <ChartIcon strokeWidth={1.5} size={22} />
+              </ToggleButton>
+            </Tooltip>
+          )}
           {structureView !== undefined && (
             <Tooltip title="Structure">
               <ToggleButton value="structure" aria-label="structure view">

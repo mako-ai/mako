@@ -303,6 +303,25 @@ export interface DbtCommandRunResult {
   logs: DbtRunLogLine[];
 }
 
+/** Rows a Preview fetches by default — mirrors DBT_PREVIEW_DEFAULT_LIMIT. */
+export const DBT_PREVIEW_DEFAULT_LIMIT = 500;
+
+/**
+ * Result of `dbt show --output json`. `ok: false` means dbt produced no rows
+ * payload (compile error) — `logs` carries the reason. `ok: true` with an
+ * empty `rows` is a model that legitimately returned nothing.
+ */
+export interface DbtPreviewResult {
+  ok: boolean;
+  exitCode: number;
+  /** The `--limit` dbt ran with, so the UI can say when rows were capped. */
+  limit: number;
+  columns: string[];
+  rows: Array<Record<string, unknown>>;
+  node?: string;
+  logs: DbtRunLogLine[];
+}
+
 export interface DbtLineageNode {
   id: string;
   name: string;
@@ -632,6 +651,15 @@ interface DbtActions {
     environment?: string,
     defer?: boolean,
   ) => Promise<DbtCommandRunResult | null>;
+  /** Bounded read-only row preview (`dbt show`) for the editor Results grid. */
+  previewModel: (
+    workspaceId: string,
+    projectId: string,
+    select: string,
+    environment?: string,
+    defer?: boolean,
+    limit?: number,
+  ) => Promise<DbtPreviewResult | null>;
   fetchLineage: (
     workspaceId: string,
     projectId: string,
@@ -1866,6 +1894,43 @@ export const useDbtStore = create<DbtStore>()(
               ts: new Date().toISOString(),
               level: "error",
               line: errMessage(error, "Command failed"),
+            },
+          ],
+        };
+      }
+    },
+
+    previewModel: async (
+      workspaceId,
+      projectId,
+      select,
+      environment,
+      defer,
+      limit,
+    ) => {
+      try {
+        const response = await apiClient.post<{
+          success: boolean;
+          preview: DbtPreviewResult;
+        }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/preview`, {
+          select,
+          ...(environment ? { environment } : {}),
+          ...(defer ? { defer } : {}),
+          ...(limit ? { limit } : {}),
+        });
+        return response.preview ?? null;
+      } catch (error) {
+        return {
+          ok: false,
+          exitCode: 1,
+          limit: limit ?? DBT_PREVIEW_DEFAULT_LIMIT,
+          columns: [],
+          rows: [],
+          logs: [
+            {
+              ts: new Date().toISOString(),
+              level: "error",
+              line: errMessage(error, "Preview failed"),
             },
           ],
         };

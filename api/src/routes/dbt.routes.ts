@@ -88,6 +88,11 @@ import {
 } from "../dbt/commands";
 import { buildStarterScaffold } from "../dbt/scaffold";
 import {
+  DBT_PREVIEW_DEFAULT_LIMIT,
+  DBT_PREVIEW_MAX_LIMIT,
+  parseDbtShowPreview,
+} from "../dbt/dbt-show";
+import {
   loadDbtDeferState,
   runAdhocDbtCommand,
 } from "../dbt/dbt-project.service";
@@ -2272,6 +2277,13 @@ const commandSchema = z.object({
   defer: z.boolean().optional(),
 });
 
+const previewSchema = z.object({
+  select: z.string().min(1).max(256),
+  environment: z.string().min(1).optional(),
+  defer: z.boolean().optional(),
+  limit: z.number().int().min(1).max(DBT_PREVIEW_MAX_LIMIT).optional(),
+});
+
 const SELECT_PATTERN = /^[\w.+@:*\-/]+$/;
 
 // Shared with the agent tools: reads the last prod manifest for
@@ -2336,6 +2348,60 @@ dbtRoutes.post(
       });
     } catch (error) {
       return serverError(c, error, "Failed to compile dbt project");
+    }
+  },
+);
+
+// Preview (editor Preview button / ⌘↵). Runs `show --select <node> --limit N
+// --output json`: a bounded SELECT over the model's compiled SQL that never
+// materializes anything, so it is safe on every environment including prod and
+// is deliberately NOT recorded into run history. Returns structured rows for
+// the Results grid; `preview: null` means dbt produced no ShowNode payload
+// (compile error — read `logs`).
+dbtRoutes.post(
+  "/projects/:projectId/preview",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      const parsed = previewSchema.safeParse(
+        await c.req.json().catch(() => ({})),
+      );
+      if (!parsed.success) {
+        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
+      }
+      const { select, environment, defer, limit } = parsed.data;
+      if (!SELECT_PATTERN.test(select)) {
+        return badRequest(c, "Invalid --select value");
+      }
+      const rowLimit = limit ?? DBT_PREVIEW_DEFAULT_LIMIT;
+      const deferState = defer ? await loadDeferState(project) : undefined;
+      const result = await runAdhocDbtCommand({
+        workspaceId: project.workspaceId.toString(),
+        projectId: project._id.toString(),
+        environmentName: environment,
+        userId: getUserId(c),
+        command: `show --select ${select} --limit ${rowLimit} --output json`,
+        deferState,
+        timeoutMs: 3 * 60 * 1000,
+      });
+      const preview = parseDbtShowPreview(result.logs);
+      return c.json({
+        success: true,
+        preview: {
+          ok: result.success && preview !== null,
+          exitCode: result.exitCode,
+          limit: rowLimit,
+          columns: preview?.columns ?? [],
+          rows: preview?.rows ?? [],
+          node: preview?.node,
+          logs: noteDeferUnavailable(result.logs, !!defer, deferState),
+        },
+      });
+    } catch (error) {
+      return serverError(c, error, "Failed to preview dbt model");
     }
   },
 );

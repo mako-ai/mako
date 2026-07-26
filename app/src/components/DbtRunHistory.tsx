@@ -45,6 +45,7 @@ import {
 import { useSchemaStore } from "../store/schemaStore";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
 import { envBadgeColor } from "../lib/dbt-env";
+import { formatRowsAffected, formatStepDuration } from "../lib/dbt-step-format";
 import { useIsMobile } from "../hooks/useIsMobile";
 
 const ARTIFACT_LABELS: Record<DbtArtifactKind, string> = {
@@ -965,8 +966,8 @@ export default function DbtRunHistory({
                             ? ` — ${step.message}`
                             : ""}
                         </td>
-                        <td>{(step.executionTimeMs / 1000).toFixed(2)}s</td>
-                        <td>{step.rowsAffected ?? ""}</td>
+                        <td>{formatStepDuration(step.executionTimeMs)}</td>
+                        <td>{formatRowsAffected(step.rowsAffected)}</td>
                         <td>
                           {step.resourceType === "model" && (
                             <Tooltip title="Open model">
