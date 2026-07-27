@@ -13,6 +13,7 @@ vi.mock("../services/realtime.service", () => ({
 import { buildCurrentScreenContext } from "../agents/unified/prompt";
 import { dbtAgentFactory } from "../agents/dbt";
 import type { AgentContext } from "../agents/types";
+import { isDbtShapedTurn } from "./dbt-turn-shape";
 
 const RULES_BLOCK = "### Project rules — `.makorules.md`\n\n- never select *";
 
@@ -40,6 +41,42 @@ describe("unified prompt", () => {
     expect(
       buildCurrentScreenContext(baseContext({ dbtRulesBlock: "   " })),
     ).not.toContain("Project rules");
+  });
+});
+
+describe("isDbtShapedTurn", () => {
+  // Regression guard: detectAgentId (api/src/agents/index.ts) always
+  // resolves to "unified", so gating .makorules resolution on the resolved
+  // agent id is a no-op that fires on every turn — including plain SQL
+  // console / notebook turns with no dbt tab open, at real per-turn token
+  // cost. The route must gate on turn shape instead.
+
+  it("is true when a dbt tab is open, regardless of tabKind", () => {
+    expect(
+      isDbtShapedTurn({
+        openTabs: [{ dbtProjectId: "proj1" }],
+        tabKind: "console",
+      }),
+    ).toBe(true);
+  });
+
+  it("is true for a dbt-* tabKind even with no open tabs forwarded", () => {
+    expect(isDbtShapedTurn({ openTabs: [], tabKind: "dbt-file" })).toBe(true);
+    expect(isDbtShapedTurn({ tabKind: "dbt-file" })).toBe(true);
+  });
+
+  it("is false for a console-only turn", () => {
+    expect(
+      isDbtShapedTurn({
+        openTabs: [{ dbtProjectId: undefined }],
+        tabKind: "console",
+      }),
+    ).toBe(false);
+  });
+
+  it("is false with no tabs and no tabKind", () => {
+    expect(isDbtShapedTurn({})).toBe(false);
+    expect(isDbtShapedTurn({ openTabs: [], tabKind: undefined })).toBe(false);
   });
 });
 

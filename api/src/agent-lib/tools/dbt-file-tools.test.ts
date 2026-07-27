@@ -78,6 +78,7 @@ vi.mock("../../integrations/github/github-api", () => ({
 
 // Imported after the mocks are registered.
 import { createDbtServerTools } from "./dbt-tools";
+import { DBT_RULES_MAX_CHARS } from "../../dbt/dbt-rules.service";
 import {
   DbtFile,
   DbtFileDraft,
@@ -143,7 +144,7 @@ function readFile(projectId: string, path: string): Promise<ReadResult> {
 type TreeResult = {
   success: boolean;
   files?: string[];
-  rules?: { path: string; contents: string };
+  rules?: { path: string; contents: string; truncated?: boolean };
 };
 
 function readTree(projectId: string): Promise<TreeResult> {
@@ -409,5 +410,22 @@ describe("read_dbt_project_tree .makorules", () => {
     });
     // The rules file is still a normal working-tree file.
     expect(tree.files).toContain(".makorules.md");
+  });
+
+  it("flags truncated rules so a tool-only reader knows the file was cut", async () => {
+    const projectId = await seedRepoProject();
+    const oversized = "x".repeat(DBT_RULES_MAX_CHARS + 500);
+    await DbtFile.create({
+      workspaceId: new Types.ObjectId(WS),
+      projectId: new Types.ObjectId(projectId),
+      branch: "main",
+      path: ".makorules.md",
+      content: oversized,
+      updatedBy: "sync",
+      repoBlobSha: gitBlobSha(oversized),
+    });
+    const tree = await readTree(projectId);
+    expect(tree.rules?.truncated).toBe(true);
+    expect(tree.rules?.contents).toHaveLength(DBT_RULES_MAX_CHARS);
   });
 });

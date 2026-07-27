@@ -62,6 +62,15 @@ export function renderDbtRulesBlock(
   rules: DbtRules,
   projectName: string,
 ): string {
+  // `contents` is user-authored and interpolated raw between the wrapper
+  // tags below. A rules file that happens to contain a literal
+  // `</project_rules>` would close the wrapper early and have the rest of
+  // the file read as top-level prompt text. Neutralize it so the wrapper
+  // can only ever be closed by the one we emit ourselves.
+  const safeContents = rules.contents.replace(
+    /<\/project_rules>/gi,
+    "&lt;/project_rules&gt;",
+  );
   const lines = [
     `### Project rules — \`${rules.path}\``,
     "",
@@ -77,7 +86,7 @@ export function renderDbtRulesBlock(
       `\`${rules.path}\` — never silently ignore either one.`,
     "",
     "<project_rules>",
-    rules.contents,
+    safeContents,
     "</project_rules>",
   ];
 

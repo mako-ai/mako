@@ -438,8 +438,18 @@ export const createDbtServerTools = (
             files: files.map(f => f.path),
             // Team-authored rules for this project — binding for any SQL
             // written here. Omitted entirely when the project has none.
+            // `truncated` is only included (as `true`) when the file was
+            // cut at DBT_RULES_MAX_CHARS, so a model reasoning off this tool
+            // result alone (without the prompt block) still knows it isn't
+            // looking at the whole file.
             ...(rules
-              ? { rules: { path: rules.path, contents: rules.contents } }
+              ? {
+                  rules: {
+                    path: rules.path,
+                    contents: rules.contents,
+                    ...(rules.truncated ? { truncated: true } : {}),
+                  },
+                }
               : {}),
             jobs: jobs.map(job => ({
               id: job._id.toString(),
