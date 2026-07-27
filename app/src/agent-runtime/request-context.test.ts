@@ -141,4 +141,47 @@ describe("buildChatRequestBody", () => {
       { id: baseDashboard._id, title: baseDashboard.title, isActive: true },
     ]);
   });
+
+  it("forwards the dbt project id for dbt tabs only", () => {
+    const requestBody = buildChatRequestBody({
+      messages: [],
+      workspaceId: "ws_1",
+      modelId: "model_1",
+      chatId: "chat_1",
+      tabs: [
+        {
+          id: "dbt_1",
+          title: "stg_orders.sql",
+          content: "",
+          kind: "dbt-file",
+          metadata: { projectId: "proj_1", path: "models/stg_orders.sql" },
+        },
+        {
+          id: "console_1",
+          title: "Revenue Query",
+          content: "select 1",
+          kind: "console",
+          connectionId: "conn_1",
+        },
+      ] as any,
+      activeTabId: "dbt_1",
+      activeTab: {
+        id: "dbt_1",
+        title: "stg_orders.sql",
+        content: "",
+        kind: "dbt-file",
+        metadata: { projectId: "proj_1", path: "models/stg_orders.sql" },
+      } as any,
+      activeView: "console",
+      activeExplorer: "consoles",
+      workspaceConnections: [{ id: "conn_1", type: "postgresql" }] as any,
+    });
+
+    const tabs = requestBody.openTabs as Array<{
+      id: string;
+      dbtProjectId?: string;
+    }>;
+    expect(tabs.find(t => t.id === "dbt_1")?.dbtProjectId).toBe("proj_1");
+    expect(tabs.find(t => t.id === "console_1")?.dbtProjectId).toBeUndefined();
+  });
 });

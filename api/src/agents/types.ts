@@ -91,6 +91,8 @@ export interface AgentContext {
     dashboardId?: string;
     flowId?: string;
     connectionId?: string;
+    /** dbt project the tab belongs to (dbt-file / dbt-job / dbt-console tabs). */
+    dbtProjectId?: string;
     databaseName?: string;
   }>;
   /** Lightweight summary of open dashboards for explicit dashboard selection */

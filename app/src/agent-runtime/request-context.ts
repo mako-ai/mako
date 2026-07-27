@@ -64,6 +64,14 @@ function buildOpenConsoles(tabs: ConsoleTab[]) {
     });
 }
 
+/** Tab kinds whose metadata carries a dbt project id. */
+const DBT_TAB_KINDS = new Set([
+  "dbt-file",
+  "dbt-job",
+  "dbt-console",
+  "dbt-runs",
+]);
+
 function buildOpenTabs(tabs: ConsoleTab[], activeTabId?: string | null) {
   return tabs.map(tab => ({
     id: tab.id,
@@ -82,6 +90,10 @@ function buildOpenTabs(tabs: ConsoleTab[], activeTabId?: string | null) {
       tab.kind === "notebook"
         ? (tab.metadata?.notebookId as string | undefined)
         : undefined,
+    // Lets the server resolve which dbt project's .makorules govern this turn.
+    dbtProjectId: DBT_TAB_KINDS.has(tab.kind || "")
+      ? (tab.metadata?.projectId as string | undefined)
+      : undefined,
     connectionId:
       tab.kind === "console" || !tab.kind ? tab.connectionId : undefined,
     databaseName:
