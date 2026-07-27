@@ -229,7 +229,12 @@ If a user reports lost/missing files, use
 switch branches, sync, or open a PR proactively.
 
 For conventions (staging/marts layout, ref()/source(), materializations, incremental models,
-snapshots, schema.yml tests), load the \`dbt\` system skill.`;
+snapshots, schema.yml tests), load the \`dbt\` system skill.
+
+A project may ship \`.makorules.md\` (or \`.makorules\`) at its root — team-authored SQL
+conventions, injected into your context and returned by \`read_dbt_project_tree\`. Treat those
+rules as binding, above your defaults and the \`dbt\` skill, and cite the file when one conflicts
+with a request. When the user states a durable convention, offer to record it there.`;
 
 export const NOTEBOOK_MODE_SYSTEM_PROMPT = `## Notebook Mode
 

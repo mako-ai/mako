@@ -33,6 +33,13 @@ match must be unique; include surrounding lines to disambiguate, `""` deletes,
 full rewrites, and verifies with `dbt_parse` → `dbt_compile_model` →
 `dbt_run_model`.
 
+## Project rules override this skill
+
+If the dbt project has a `.makorules.md` (or `.makorules`) file at its root, the
+conventions in it win over everything in this skill. Its contents arrive in your
+context automatically and in `read_dbt_project_tree`'s `rules` field. Follow this
+skill only where the project's rules are silent.
+
 ## Project layout
 
 ```text

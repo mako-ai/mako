@@ -90,6 +90,7 @@ import {
   writeWorkingFile,
 } from "../../dbt/dbt-working-tree.service";
 import { generateDbtCommitMessage } from "../../dbt/dbt-commit-message.service";
+import { resolveDbtRules } from "../../dbt/dbt-rules.service";
 import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
   isDbtCompatibleConnectionType,
@@ -393,7 +394,9 @@ export const createDbtServerTools = (
       description:
         "List dbt projects in the workspace, or the file tree + jobs of one " +
         "project when projectId is given. Call this FIRST to get project IDs " +
-        "and file paths before using any other dbt tool.",
+        "and file paths before using any other dbt tool. When the project has " +
+        "a .makorules file, its contents come back in `rules` — those are " +
+        "binding conventions for any SQL you write in that project.",
       inputSchema: readDbtTreeSchema,
       execute: async ({ projectId }) => {
         try {
@@ -421,9 +424,10 @@ export const createDbtServerTools = (
             };
           }
           const project = await assertProject(projectId);
-          const [files, jobs] = await Promise.all([
+          const [files, jobs, rules] = await Promise.all([
             listWorkingFiles(project, actingUserId),
             DbtJob.find({ projectId: project._id }).lean(),
+            resolveDbtRules(project, actingUserId),
           ]);
           return {
             success: true as const,
@@ -432,6 +436,21 @@ export const createDbtServerTools = (
             defaultEnvironment: project.defaultEnvironment,
             environments: project.environments,
             files: files.map(f => f.path),
+            // Team-authored rules for this project — binding for any SQL
+            // written here. Omitted entirely when the project has none.
+            // `truncated` is only included (as `true`) when the file was
+            // cut at DBT_RULES_MAX_CHARS, so a model reasoning off this tool
+            // result alone (without the prompt block) still knows it isn't
+            // looking at the whole file.
+            ...(rules
+              ? {
+                  rules: {
+                    path: rules.path,
+                    contents: rules.contents,
+                    ...(rules.truncated ? { truncated: true } : {}),
+                  },
+                }
+              : {}),
             jobs: jobs.map(job => ({
               id: job._id.toString(),
               name: job.name,

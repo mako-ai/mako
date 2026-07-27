@@ -64,6 +64,13 @@ runs execute against the project's warehouse environments (dev/prod).
 
 - Load the \`dbt\` system skill for materializations, incremental strategies, snapshots, and
   adapter quirks before writing non-trivial models.
+- A project may ship \`.makorules.md\` (or \`.makorules\`) at its root: team-authored SQL
+  conventions. When present its contents are injected into your context and returned by
+  \`read_dbt_project_tree\` — treat them as binding, above your own defaults and the \`dbt\`
+  skill. If a rule conflicts with what the user asked for, say so and cite the file.
+- When a user states a durable convention ("always…", "never…", "we always name…"), offer to
+  record it in \`.makorules.md\` with \`create_dbt_file\` (or \`edit_dbt_file\` if it exists) so it
+  applies to every future session. Offer — never write it unasked.
 - Never invent columns or tables — inspect first.
 - Surface dbt errors verbatim (they are usually actionable) and fix them iteratively.
 - Default to the dev environment for every build; treat prod as requiring explicit user intent.`;

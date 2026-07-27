@@ -410,6 +410,12 @@ export function buildCurrentScreenContext(context: AgentContext): string {
 
   sections.push(...buildConnectionsContext(context));
 
+  if (context.dbtRulesBlock?.trim()) {
+    // Pre-rendered with its own heading by renderDbtRulesBlock.
+    sections.push("");
+    sections.push(context.dbtRulesBlock.trim());
+  }
+
   if (context.workspaceCustomPrompt?.trim()) {
     sections.push("");
     sections.push("### Workspace Context");
