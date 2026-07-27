@@ -393,6 +393,23 @@ async function endToEnd() {
     [],
     `Unclassified agent tools (add to a mode's toolNames, CORE_ALWAYS_TOOL_NAMES, or DEFERRED_BUILTIN_TOOL_DOMAINS): ${unclassified.join(", ")}`,
   );
+  const appModeTools = toolNamesForModes(new Set(["app"] as const));
+  assert.ok(appModeTools.has("app_search"));
+  assert.ok(appModeTools.has("app_read_resource"));
+  assert.equal(
+    appModeTools.has("app_read_file"),
+    false,
+    "legacy app_read_file should stay out of the normal app working set",
+  );
+  assert.ok(
+    DEFERRED_BUILTIN_TOOL_NAMES.includes("app_read_file"),
+    "legacy app_read_file should remain loadable for compatibility",
+  );
+  assert.equal(
+    Object.hasOwn(runtime.tools, "app_get_data_binding"),
+    false,
+    "redundant app_get_data_binding should not be registered",
+  );
 
   // Preload: a Slack-flavored user message pre-activates relevant tools
   // with zero search/load round-trips.

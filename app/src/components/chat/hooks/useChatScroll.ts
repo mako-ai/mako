@@ -89,14 +89,21 @@ export function useChatScroll({
     wasLoadingRef.current = isLoading;
   }, [isLoading]);
 
-  // Streaming follow: a raw `scrollTop = scrollHeight` write on the captured
-  // scroller. This is the smoothest way to track append-only growth — released
-  // the instant the user scrolls up (live `isAtBottomRef`) so reading history
-  // isn't yanked down.
+  // Streaming follow: write the exact maximum scroll position on the captured
+  // scroller. Avoid redundant writes when already pinned: assigning an
+  // out-of-range `scrollHeight` from inside Virtuoso's ResizeObserver callback
+  // can trigger another measurement/scroll cycle even though the browser
+  // clamps it to the same effective position. Large, rapidly settling tool
+  // results can otherwise recurse until React's maximum update depth guard
+  // unmounts the app.
   const pinToBottom = useCallback(() => {
     if (!isAtBottomRef.current) return;
     const el = scrollerElRef.current;
-    if (el && el instanceof HTMLElement) el.scrollTop = el.scrollHeight;
+    if (!el || !(el instanceof HTMLElement)) return;
+
+    const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    if (Math.abs(el.scrollTop - maxScrollTop) <= 1) return;
+    el.scrollTop = maxScrollTop;
   }, []);
 
   const handleListHeightChanged = useCallback(() => {

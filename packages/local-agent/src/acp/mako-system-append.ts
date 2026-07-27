@@ -33,7 +33,7 @@ When you need a decision or approval, call Desktop tools — never ask as plain 
 Use \`${prefix}create_console\`, \`${prefix}open_console\`, \`${prefix}run_console\`, \`${prefix}modify_console\`, \`${prefix}search_consoles\`. Desktop opens/focuses the console tab automatically. For tabs the user already has open, call \`${desktopPrefix}list_open_consoles\`.
 
 ## Notebooks
-Use \`${prefix}create_notebook\`, \`${prefix}read_notebook\`, \`${prefix}list_open_notebooks\`, cell add/edit/delete, and \`${prefix}run_notebook_sql_cell\` / \`${prefix}run_notebook_code_cell\`. Desktop opens the notebook tab on create/read.
+Use \`${prefix}create_notebook\` / \`${prefix}list_open_notebooks\`, then \`${prefix}read_notebook\` for the compact manifest. Use \`${prefix}search_notebook\` and \`${prefix}read_notebook_cell\` for only relevant source ranges. For large cells, prefer targeted oldString/newString edits with resourceVersion over full rewrites. Cell add/edit/delete and \`${prefix}run_notebook_sql_cell\` / \`${prefix}run_notebook_code_cell\` remain available. Desktop opens the notebook tab on create or mutation; read-only inspection does not steal focus.
 
 ## Apps (Desktop preview — not headless)
 The user can see apps in the Mako window. After \`${prefix}create_app\` / \`${prefix}app_write_file\` / \`${prefix}app_edit_file\`, Desktop opens/refreshes the app tab automatically.

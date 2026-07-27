@@ -13,7 +13,7 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { api, toLoadError, unwrapBody, type LoadError } from "../api";
+import { api, ApiError, toLoadError, unwrapBody, type LoadError } from "../api";
 import { apiClient } from "../lib/api-client";
 import {
   containsDbtSchemaToken,
@@ -351,6 +351,12 @@ function isAbortError(e: unknown): boolean {
   return e instanceof DOMException && e.name === "AbortError";
 }
 
+// One save pipeline per app. Calls made while a request is in flight coalesce
+// into one follow-up write that snapshots the latest local state and uses the
+// version returned by the accepted write.
+const appSavePipelines = new Map<string, Promise<void>>();
+const appSavePending = new Set<string>();
+
 export const useAppStore = create<AppStore>()(
   immer((set, get) => ({
     ...initialState,
@@ -462,49 +468,75 @@ export const useAppStore = create<AppStore>()(
     },
 
     persistApp: async (workspaceId, appId) => {
-      const appEntity = get().openApps[appId];
-      if (!appEntity) return;
-      try {
-        const res = unwrapBody(
-          await api.PUT("/api/workspaces/{workspaceId}/apps/{id}", {
-            params: { path: { workspaceId, id: appId } },
-            body: {
-              title: appEntity.title,
-              description: appEntity.description,
-              runtime: appEntity.runtime,
-              entrypoint: appEntity.entrypoint,
-              files: appEntity.files,
-              dependencies: appEntity.dependencies,
-              dataBindings: appEntity.dataBindings,
-            },
-          }),
-        ) as { success: boolean; app: AppEntity };
-        if (res.success && res.app) {
-          set(state => {
-            const current = state.openApps[appId];
-            if (current) {
-              current.version = res.app.version;
-              // Autosave bumps the draft; mirror the server-computed publish
-              // state so the preview toolbar's Publish button reflects whether
-              // the draft now differs from the published version.
-              current.publishedVersion = res.app.publishedVersion;
-              current.publishedAt = res.app.publishedAt;
-              current.hasUnpublishedChanges = res.app.hasUnpublishedChanges;
-            }
-          });
-        }
-      } catch {
-        // Surface persistence failures as a preview error so they are visible.
-        set(state => {
-          state.previewErrors[appId] = [
-            {
-              message: "Failed to save app changes to the server.",
-              source: "build",
-              at: Date.now(),
-            },
-          ];
-        });
+      const active = appSavePipelines.get(appId);
+      if (active) {
+        appSavePending.add(appId);
+        return active;
       }
+
+      const run = async () => {
+        do {
+          appSavePending.delete(appId);
+          const appEntity = get().openApps[appId];
+          if (!appEntity) return;
+          try {
+            const res = unwrapBody(
+              await api.PUT("/api/workspaces/{workspaceId}/apps/{id}", {
+                params: { path: { workspaceId, id: appId } },
+                body: {
+                  title: appEntity.title,
+                  description: appEntity.description,
+                  runtime: appEntity.runtime,
+                  entrypoint: appEntity.entrypoint,
+                  files: appEntity.files,
+                  dependencies: appEntity.dependencies,
+                  dataBindings: appEntity.dataBindings,
+                  expectedVersion: appEntity.version,
+                },
+              }),
+            ) as { success: boolean; app: AppEntity };
+            if (!res.success || !res.app) return;
+            set(state => {
+              const current = state.openApps[appId];
+              if (current) {
+                current.version = res.app.version;
+                // Autosave bumps the draft; mirror the server-computed publish
+                // state so the preview toolbar's Publish button reflects whether
+                // the draft now differs from the published version.
+                current.publishedVersion = res.app.publishedVersion;
+                current.publishedAt = res.app.publishedAt;
+                current.hasUnpublishedChanges = res.app.hasUnpublishedChanges;
+              }
+            });
+          } catch (error) {
+            // A 409 is an external edit, not a transient request failure. Do
+            // not retry stale local state over the newer server definition.
+            if (error instanceof ApiError && error.status === 409) {
+              appSavePending.delete(appId);
+            }
+            // Surface persistence failures as a preview error so they are visible.
+            set(state => {
+              state.previewErrors[appId] = [
+                {
+                  message:
+                    error instanceof ApiError && error.status === 409
+                      ? "App changed elsewhere. Reload it before saving again."
+                      : "Failed to save app changes to the server.",
+                  source: "build",
+                  at: Date.now(),
+                },
+              ];
+            });
+            return;
+          }
+        } while (appSavePending.has(appId));
+      };
+
+      const pipeline = run().finally(() => {
+        appSavePipelines.delete(appId);
+      });
+      appSavePipelines.set(appId, pipeline);
+      return pipeline;
     },
 
     generateSaveComment: async (workspaceId, appId, signal) => {

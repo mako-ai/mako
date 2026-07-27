@@ -198,6 +198,9 @@ async function main() {
       "check_query_status",
       "list_console_executions",
       "cancel_query",
+      "read_notebook",
+      "search_notebook",
+      "read_notebook_cell",
     ]) {
       assert.equal(
         byName.get(readOnlyTool)?.annotations?.readOnlyHint,
@@ -220,6 +223,8 @@ async function main() {
     for (const expected of [
       "create_app",
       "get_app_state",
+      "app_search",
+      "app_read_resource",
       "app_read_file",
       "app_write_file",
       "app_edit_file",
@@ -247,6 +252,8 @@ async function main() {
       "run_console",
       "create_notebook",
       "read_notebook",
+      "search_notebook",
+      "read_notebook_cell",
       "list_open_notebooks",
       "check_query_status",
       "cancel_query",
@@ -260,6 +267,11 @@ async function main() {
     ]) {
       assert.ok(names.has(expected), `missing tool: ${expected}`);
     }
+    assert.equal(
+      names.has("app_get_data_binding"),
+      false,
+      "redundant app_get_data_binding must not be exposed over MCP",
+    );
     for (const tool of tools) {
       assert.equal(
         tool.inputSchema.type,

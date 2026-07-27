@@ -2,6 +2,7 @@
  * Compact "what's on screen" block prepended to Local ACP prompts so Claude
  * Code / Codex match native Chat's request-context awareness.
  */
+import { summarizePreviewErrors } from "@mako/agent-tools";
 import {
   buildChatRequestBody,
   type ChatActiveView,
@@ -67,10 +68,8 @@ export function buildAcpUiContextBlock(args: {
     appId,
     title: app.title,
     isActive: appStore.activeAppId === appId,
-    previewErrors: (appStore.previewErrors[appId] ?? []).map(e => ({
-      message: e.message,
-      source: e.source,
-    })),
+    // Clip before the outer 6k wall so one fat stack dump can't dominate.
+    previewErrors: summarizePreviewErrors(appStore.previewErrors[appId]),
   }));
 
   const lines: string[] = [

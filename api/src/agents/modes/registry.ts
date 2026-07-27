@@ -52,6 +52,9 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   delete_skill: "skills",
   list_skills: "skills",
   search_skills: "skills",
+  // Legacy full-file app read. Keep executable for compatibility, but the app
+  // mode uses app_search + app_read_resource for bounded context.
+  app_read_file: "apps",
 };
 
 export const DEFERRED_BUILTIN_TOOL_NAMES: readonly string[] = Object.keys(
@@ -156,7 +159,8 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "open_app",
   "create_app",
   "get_app_state",
-  "app_read_file",
+  "app_search",
+  "app_read_resource",
   "app_write_file",
   "app_edit_file",
   "app_delete_file",
@@ -274,6 +278,8 @@ const NOTEBOOK_MODE_TOOL_NAMES: string[] = [
   "create_notebook",
   "list_open_notebooks",
   "read_notebook",
+  "search_notebook",
+  "read_notebook_cell",
   "add_notebook_cell",
   "edit_notebook_cell",
   "delete_notebook_cell",

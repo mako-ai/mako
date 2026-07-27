@@ -456,6 +456,24 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Reading app state",
     icon: "eye",
   },
+  app_search: {
+    domain: "app",
+    execution: "server",
+    getLabel: input => {
+      const query = (input as Record<string, unknown>)?.query;
+      return query ? `Searching app for "${query}"` : "Searching app";
+    },
+    icon: "search",
+  },
+  app_read_resource: {
+    domain: "app",
+    execution: "server",
+    getLabel: input => {
+      const resource = (input as Record<string, unknown>)?.resource;
+      return resource ? `Reading ${resource}` : "Reading app resource";
+    },
+    icon: "eye",
+  },
   app_read_file: {
     domain: "app",
     execution: "server",
@@ -1211,7 +1229,24 @@ export const AGENT_TOOL_MANIFEST = {
   read_notebook: {
     domain: "notebook",
     execution: "server",
-    getLabel: () => "Reading notebook",
+    getLabel: () => "Inspecting notebook",
+    icon: "eye",
+  },
+  search_notebook: {
+    domain: "notebook",
+    execution: "server",
+    getLabel: input => {
+      const query = (input as Record<string, unknown>)?.query;
+      return typeof query === "string" && query
+        ? `Searching notebook: ${query}`
+        : "Searching notebook";
+    },
+    icon: "search",
+  },
+  read_notebook_cell: {
+    domain: "notebook",
+    execution: "server",
+    getLabel: () => "Reading notebook cell",
     icon: "eye",
   },
   add_notebook_cell: {

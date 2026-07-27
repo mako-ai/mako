@@ -13,8 +13,20 @@ import { tool } from "ai";
 import { z } from "zod";
 import { randomUUID } from "crypto";
 import { Types } from "mongoose";
+import {
+  applyStrReplace,
+  editNotebookCellSchema,
+  notebookCellResourceVersion,
+  readNotebookCellRange,
+  readNotebookCellSchema,
+  readNotebookSchema,
+  searchNotebookCells,
+  searchNotebookSchema,
+  summarizeNotebookCell,
+} from "@mako/agent-tools";
 
 import { getNotebookStore } from "../../notebooks/store";
+import { NotebookVersionConflictError } from "../../notebooks/store/types";
 import { offloadOutputs } from "../../notebooks/offload";
 import {
   createNotebookIndex,
@@ -26,6 +38,7 @@ import type {
   NotebookBlock,
   NotebookBlockType,
   NotebookCellOutput,
+  NotebookDoc,
 } from "../../notebooks/types";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
@@ -41,6 +54,7 @@ const logger = loggers.api("notebook-server-tools");
 
 const MAX_SQL_ROWS = 200; // persisted with the cell + returned to the model
 const MAX_STREAM_CHARS = 50_000;
+const SAVE_CONFLICT = "conflict" as const;
 
 interface ServerNotebookToolsOptions {
   workspaceId: string;
@@ -143,10 +157,22 @@ export function createNotebookServerTools({
   const saveBlocks = async (
     notebookId: string,
     blocks: NotebookBlock[],
-  ): Promise<number | null> => {
+    expectedVersion?: number,
+  ): Promise<number | null | typeof SAVE_CONFLICT> => {
     const access = await assertWriteAccess(notebookId);
     if (!access.ok) return null;
-    const updated = await store.update(workspaceId, notebookId, { blocks });
+    let updated: NotebookDoc | null;
+    try {
+      updated = await store.update(
+        workspaceId,
+        notebookId,
+        { blocks },
+        { expectedVersion },
+      );
+    } catch (error) {
+      if (error instanceof NotebookVersionConflictError) return SAVE_CONFLICT;
+      throw error;
+    }
     if (!updated) return null;
     await updateNotebookIndex(workspaceId, notebookId, {
       updatedAt: new Date(updated.updatedAt),
@@ -264,9 +290,53 @@ export function createNotebookServerTools({
 
     read_notebook: tool({
       description:
-        "Read a notebook's cells (cellId, type, source, connectionId) so you " +
-        "can decide what to add, edit, or run.",
-      inputSchema: z.object({ notebookId: notebookIdField }),
+        "Get a compact, paginated notebook manifest: cell ids/types, source " +
+        "lengths and short previews, connection ids, execution metadata, and " +
+        "resource versions. Full source is intentionally omitted; use " +
+        "search_notebook, then read_notebook_cell for relevant ranges.",
+      inputSchema: readNotebookSchema,
+      execute: async input => {
+        const id = resolveId(input);
+        if (!id) return noNotebook;
+        const access = await assertReadAccess(id);
+        if (!access.ok) return { success: false, error: access.error };
+        const doc = await store.get(workspaceId, id);
+        if (!doc) return { success: false, error: `Notebook ${id} not found` };
+        const cellOffset = input.cellOffset ?? 0;
+        const cellLimit = input.cellLimit ?? 50;
+        const cells = doc.blocks
+          .slice(cellOffset, cellOffset + cellLimit)
+          .map(cell => summarizeNotebookCell(cell, doc.version));
+        const nextCellOffset =
+          cellOffset + cells.length < doc.blocks.length
+            ? cellOffset + cells.length
+            : undefined;
+        return {
+          success: true,
+          notebookId: id,
+          name: doc.name,
+          version: doc.version,
+          cellOffset,
+          cellLimit,
+          totalCells: doc.blocks.length,
+          totalSourceChars: doc.blocks.reduce(
+            (total, cell) => total + cell.source.length,
+            0,
+          ),
+          cells,
+          ...(nextCellOffset !== undefined ? { nextCellOffset } : {}),
+          hint:
+            "Search with search_notebook, then fetch only relevant ranges " +
+            "with read_notebook_cell.",
+        };
+      },
+    }),
+
+    search_notebook: tool({
+      description:
+        "Search notebook cell sources without loading the whole notebook into " +
+        "context. Returns bounded snippets, line ranges, cell ids, and versions.",
+      inputSchema: searchNotebookSchema,
       execute: async input => {
         const id = resolveId(input);
         if (!id) return noNotebook;
@@ -277,13 +347,50 @@ export function createNotebookServerTools({
         return {
           success: true,
           notebookId: id,
-          name: doc.name,
-          cells: doc.blocks.map(b => ({
-            cellId: b.id,
-            type: b.type,
-            source: b.source,
-            connectionId: b.connectionId,
-          })),
+          query: input.query,
+          ...searchNotebookCells(doc.blocks, input.query, {
+            cellTypes: input.cellTypes,
+            contextLines: input.contextLines,
+            maxResults: input.maxResults,
+            offset: input.offset,
+            notebookVersion: doc.version,
+          }),
+          hint:
+            "Use read_notebook_cell with a returned cellId and line range " +
+            "for more context.",
+        };
+      },
+    }),
+
+    read_notebook_cell: tool({
+      description:
+        "Read a bounded line range from one notebook cell. Returns continuation " +
+        "metadata and a resourceVersion for safe targeted edits.",
+      inputSchema: readNotebookCellSchema,
+      execute: async input => {
+        const id = resolveId(input);
+        if (!id) return noNotebook;
+        const access = await assertReadAccess(id);
+        if (!access.ok) return { success: false, error: access.error };
+        const doc = await store.get(workspaceId, id);
+        if (!doc) return { success: false, error: `Notebook ${id} not found` };
+        const cell = doc.blocks.find(block => block.id === input.cellId);
+        if (!cell) {
+          return { success: false, error: `No cell with id "${input.cellId}"` };
+        }
+        return {
+          success: true,
+          notebookId: id,
+          cellId: cell.id,
+          type: cell.type,
+          connectionId: cell.connectionId,
+          resourceVersion: notebookCellResourceVersion(cell, doc.version),
+          ...readNotebookCellRange(
+            cell.source,
+            input.startLine,
+            input.endLine,
+            input.startOffset,
+          ),
         };
       },
     }),
@@ -321,7 +428,13 @@ export function createNotebookServerTools({
         };
         const blocks = [...doc.blocks];
         blocks.splice(input.atIndex ?? blocks.length, 0, cell);
-        const version = await saveBlocks(id, blocks);
+        const version = await saveBlocks(id, blocks, doc.version);
+        if (version === SAVE_CONFLICT) {
+          return {
+            success: false,
+            error: "Notebook changed while adding the cell. Re-read and retry.",
+          };
+        }
         if (version == null) {
           return { success: false, error: "Failed to add cell" };
         }
@@ -331,15 +444,9 @@ export function createNotebookServerTools({
 
     edit_notebook_cell: tool({
       description:
-        "Replace a cell's source (and optionally its type/connectionId). Get " +
-        "cellId from read_notebook.",
-      inputSchema: z.object({
-        notebookId: notebookIdField,
-        cellId: z.string().describe("Cell id from read_notebook"),
-        source: z.string().optional(),
-        type: cellTypeField.optional(),
-        connectionId: z.string().optional(),
-      }),
+        "Edit a cell's source or metadata. For large cells, use a unique " +
+        "oldString/newString plus resourceVersion instead of replacing the full source.",
+      inputSchema: editNotebookCellSchema,
       execute: async input => {
         const id = resolveId(input);
         if (!id) return noNotebook;
@@ -347,14 +454,44 @@ export function createNotebookServerTools({
         if (!access.ok) return { success: false, error: access.error };
         const doc = await store.get(workspaceId, id);
         if (!doc) return { success: false, error: `Notebook ${id} not found` };
-        if (!doc.blocks.some(b => b.id === input.cellId)) {
+        const current = doc.blocks.find(block => block.id === input.cellId);
+        if (!current) {
           return { success: false, error: `No cell with id "${input.cellId}"` };
+        }
+        const currentResourceVersion = notebookCellResourceVersion(
+          current,
+          doc.version,
+        );
+        if (
+          input.resourceVersion &&
+          input.resourceVersion !== currentResourceVersion
+        ) {
+          return {
+            success: false,
+            error:
+              "Cell changed since it was read. Re-read it and retry with the " +
+              "latest resourceVersion.",
+            currentResourceVersion,
+          };
+        }
+        let nextSource = input.source;
+        let replacements: number | undefined;
+        if (input.oldString !== undefined && input.newString !== undefined) {
+          const edit = applyStrReplace(
+            current.source,
+            input.oldString,
+            input.newString,
+            input.replaceAll,
+          );
+          if (!edit.ok) return { success: false, error: edit.error };
+          nextSource = edit.contents;
+          replacements = edit.replacements;
         }
         const blocks = doc.blocks.map(b =>
           b.id === input.cellId
             ? {
                 ...b,
-                ...(input.source !== undefined ? { source: input.source } : {}),
+                ...(nextSource !== undefined ? { source: nextSource } : {}),
                 ...(input.type
                   ? { type: input.type as NotebookBlockType }
                   : {}),
@@ -364,11 +501,28 @@ export function createNotebookServerTools({
               }
             : b,
         );
-        const version = await saveBlocks(id, blocks);
+        const version = await saveBlocks(id, blocks, doc.version);
+        if (version === SAVE_CONFLICT) {
+          return {
+            success: false,
+            error:
+              "Notebook changed while editing the cell. Re-read and retry with " +
+              "the latest resourceVersion.",
+          };
+        }
         if (version == null) {
           return { success: false, error: "Failed to edit cell" };
         }
-        return { success: true, cellId: input.cellId };
+        const updated = blocks.find(block => block.id === input.cellId);
+        return {
+          success: true,
+          cellId: input.cellId,
+          version,
+          resourceVersion: updated
+            ? notebookCellResourceVersion(updated, version)
+            : undefined,
+          replacements,
+        };
       },
     }),
 
@@ -391,7 +545,15 @@ export function createNotebookServerTools({
         const version = await saveBlocks(
           id,
           doc.blocks.filter(b => b.id !== input.cellId),
+          doc.version,
         );
+        if (version === SAVE_CONFLICT) {
+          return {
+            success: false,
+            error:
+              "Notebook changed while deleting the cell. Re-read and retry.",
+          };
+        }
         if (version == null) {
           return { success: false, error: "Failed to delete cell" };
         }
@@ -453,14 +615,35 @@ export function createNotebookServerTools({
         );
         if (!result.success) {
           const message = result.error || "Query failed";
-          await persistOutputs(id, doc.blocks, input.cellId, [
-            {
-              type: "error",
-              ename: "SQLError",
-              evalue: message,
-              traceback: [],
-            },
-          ]);
+          const persisted = await persistOutputs(
+            id,
+            doc.blocks,
+            input.cellId,
+            [
+              {
+                type: "error",
+                ename: "SQLError",
+                evalue: message,
+                traceback: [],
+              },
+            ],
+            undefined,
+            doc.version,
+          );
+          if (persisted === SAVE_CONFLICT) {
+            return {
+              success: false,
+              error:
+                `${message} The notebook changed while the SQL cell was running, ` +
+                "so its error output was not persisted. Re-read before rerunning it.",
+            };
+          }
+          if (persisted === null) {
+            return {
+              success: false,
+              error: `${message} Its error output could not be persisted.`,
+            };
+          }
           return { success: false, error: message };
         }
         const rows = (result.data as Record<string, unknown>[]) || [];
@@ -469,16 +652,39 @@ export function createNotebookServerTools({
             ?.map(f => (typeof f === "string" ? f : (f.name ?? "")))
             .filter(Boolean) ?? (rows[0] ? Object.keys(rows[0]) : []);
         const truncated = rows.length > MAX_SQL_ROWS;
-        await persistOutputs(id, doc.blocks, input.cellId, [
-          {
-            type: "sql",
-            rows: rows.slice(0, MAX_SQL_ROWS),
-            fields: columns,
-            rowCount: rows.length,
-            executionTime: Date.now() - started,
-            truncated,
-          },
-        ]);
+        const persisted = await persistOutputs(
+          id,
+          doc.blocks,
+          input.cellId,
+          [
+            {
+              type: "sql",
+              rows: rows.slice(0, MAX_SQL_ROWS),
+              fields: columns,
+              rowCount: rows.length,
+              executionTime: Date.now() - started,
+              truncated,
+            },
+          ],
+          undefined,
+          doc.version,
+        );
+        if (persisted === SAVE_CONFLICT) {
+          return {
+            success: false,
+            error:
+              "Notebook changed while the SQL cell was running; its result was " +
+              "not persisted. Re-read and rerun the cell.",
+          };
+        }
+        if (persisted === null) {
+          return {
+            success: false,
+            error:
+              "The SQL query completed, but its result could not be persisted. " +
+              "Confirm the notebook still exists and you can edit it, then rerun the cell.",
+          };
+        }
         return {
           success: true,
           cellId: input.cellId,
@@ -529,13 +735,30 @@ export function createNotebookServerTools({
             cell.source,
             o => collected.push(o),
           );
-          await persistOutputs(
+          const persisted = await persistOutputs(
             id,
             doc.blocks,
             input.cellId,
             capOutputs(collected),
             res.executionCount ?? undefined,
+            doc.version,
           );
+          if (persisted === SAVE_CONFLICT) {
+            return {
+              success: false,
+              error:
+                "Notebook changed while the Python cell was running; its result " +
+                "was not persisted. Re-read and rerun the cell.",
+            };
+          }
+          if (persisted === null) {
+            return {
+              success: false,
+              error:
+                "The Python cell completed, but its output could not be persisted. " +
+                "Confirm the notebook still exists and you can edit it, then rerun the cell.",
+            };
+          }
           return {
             success: true,
             cellId: input.cellId,
@@ -569,6 +792,7 @@ export function createNotebookServerTools({
     cellId: string,
     outputs: NotebookCellOutput[],
     executionCount?: number,
+    expectedVersion?: number,
   ) {
     // Offload large payloads (plots, HTML tables) to the store, keeping only a
     // small ref inline — same as the human PATCH path.
@@ -588,7 +812,7 @@ export function createNotebookServerTools({
           }
         : b,
     );
-    await saveBlocks(notebookId, next);
+    return saveBlocks(notebookId, next, expectedVersion);
   }
 }
 

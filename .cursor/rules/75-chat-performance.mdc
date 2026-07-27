@@ -211,13 +211,17 @@ Key pieces:
 - **Streaming follow (the load-bearing piece):** Virtuoso's
   `totalListHeightChanged={handleListHeightChanged}` callback fires as part of
   Virtuoso's resize processing, **after** it applies its scroll compensation, so
-  setting `scroller.scrollTop = scroller.scrollHeight` there is the *last write
+  setting `scroller.scrollTop` to its exact maximum there is the *last write
   before paint on exactly the frames that resize* — the frames the old rAF pin
   lost.
   - Capture the scroller via `scrollerRef={el => { scrollerElRef.current = el }}`
-    and write its `scrollTop` directly (raw position set) — never
+    and write its exact maximum (`scrollHeight - clientHeight`) directly — never
     `scrollToIndex({ align: "end" })` (re-derives its target from the growing
     last item and bounces).
+  - Skip the write when `scrollTop` is already within 1px of that maximum.
+    Redundant out-of-range writes from a ResizeObserver callback can feed back
+    into Virtuoso measurement and eventually hit React's maximum update depth
+    on large, rapidly settling tool results.
   - Gated on a **live `isAtBottomRef`** (read each call, not a stale closure) so
     scrolling up to read history releases the pin immediately.
   - Pin only while `isLoadingRef.current` is true **plus a bounded ~700ms

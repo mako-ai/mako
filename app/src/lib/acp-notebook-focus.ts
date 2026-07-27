@@ -7,7 +7,6 @@ import { resolveAcpToolName, type AcpToolUpdate } from "./local-acp-parts";
 
 export const ACP_NOTEBOOK_FOCUS_TOOLS = new Set([
   "create_notebook",
-  "read_notebook",
   "add_notebook_cell",
   "edit_notebook_cell",
   "run_notebook_sql_cell",

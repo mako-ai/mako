@@ -20,6 +20,7 @@ import {
 } from "../openapi/core";
 import { NotebookFolder, NotebookIndex } from "../database/workspace-schema";
 import { getNotebookStore } from "../notebooks/store";
+import { NotebookVersionConflictError } from "../notebooks/store/types";
 import { offloadBlocks } from "../notebooks/offload";
 import type { NotebookBlock } from "../notebooks/types";
 import { loggers } from "../logging";
@@ -70,6 +71,7 @@ const UpdateNotebookSchema = z
     name: z.string().optional(),
     blocks: z.array(BlockSchema).optional(),
     clientId: z.string().optional(),
+    expectedVersion: z.number().int().positive().optional(),
   })
   .openapi("UpdateNotebookRequest");
 
@@ -446,6 +448,7 @@ notebookRoutes.openapi(
       name?: string;
       blocks?: NotebookBlock[];
       clientId?: string;
+      expectedVersion?: number;
     };
     const store = getNotebookStore();
     const ws = workspaceId(c);
@@ -467,7 +470,30 @@ notebookRoutes.openapi(
     const blocks = body.blocks
       ? await offloadBlocks(store, ws, id, body.blocks)
       : undefined;
-    const doc = await store.update(ws, id, { ...body, blocks });
+    let doc;
+    try {
+      doc = await store.update(
+        ws,
+        id,
+        { name: body.name, blocks },
+        { expectedVersion: body.expectedVersion },
+      );
+    } catch (error) {
+      if (error instanceof NotebookVersionConflictError) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "Notebook changed since it was loaded. Reload it before saving again.",
+            code: "version_conflict",
+            expectedVersion: error.expectedVersion,
+            actualVersion: error.actualVersion,
+          },
+          409,
+        );
+      }
+      throw error;
+    }
     if (!doc) {
       return c.json({ success: false, error: "Notebook not found" }, 404);
     }
