@@ -42,8 +42,8 @@ const BLOB_CONCURRENCY = 8;
 
 /**
  * Text extensions we import. dbt projects are SQL/YAML/CSV/Markdown; we also
- * keep .gitkeep so empty model dirs survive. Generated/vendored output and
- * binary assets are skipped.
+ * keep .gitkeep so empty model dirs survive, and .makorules (the agent rules
+ * file). Generated/vendored output and binary assets are skipped.
  */
 const TEXT_EXTENSIONS = new Set([
   "sql",
@@ -71,9 +71,17 @@ export function normalizeSubdir(subdirectory?: string): string {
   return subdirectory.replace(/^\/+|\/+$/g, "");
 }
 
+/**
+ * Extension-less filenames we still import. `.gitkeep` keeps empty scaffold
+ * dirs alive; `.makorules` is the project rules file the dbt agent reads
+ * (see dbt-rules.service.ts). Both would otherwise be dropped, because a
+ * leading-dot basename has no extension by the `lastIndexOf` rule below.
+ */
+const IMPORTABLE_DOTFILES = new Set([".gitkeep", ".makorules"]);
+
 function hasTextExtension(path: string): boolean {
   const base = path.split("/").pop() ?? "";
-  if (base === ".gitkeep") return true;
+  if (IMPORTABLE_DOTFILES.has(base)) return true;
   const dot = base.lastIndexOf(".");
   const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
   return TEXT_EXTENSIONS.has(ext);

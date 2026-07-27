@@ -32,6 +32,16 @@ describe("isImportable", () => {
     }
   });
 
+  it("imports the .makorules rules file under both recognized names", () => {
+    expect(isImportable(".makorules")).toBe(true);
+    expect(isImportable(".makorules.md")).toBe(true);
+  });
+
+  it("still skips other extension-less dotfiles", () => {
+    expect(isImportable(".env")).toBe(false);
+    expect(isImportable(".dockerignore")).toBe(false);
+  });
+
   it("skips generated/vendored dirs and binary/unknown extensions", () => {
     for (const p of [
       "target/manifest.json",
