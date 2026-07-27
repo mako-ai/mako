@@ -49,6 +49,7 @@ export interface StreamAgentParams {
   sessionId?: string;
   modelId?: string;
   workspaceCustomPrompt?: string;
+  dbtRulesBlock?: string;
 }
 
 export interface ConsoleModificationV2 {

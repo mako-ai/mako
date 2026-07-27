@@ -89,6 +89,9 @@ export const dbtAgentFactory: AgentFactory = (
         role: "system" as const,
         content:
           (context.skillsBlock ?? "") +
+          (context.dbtRulesBlock?.trim()
+            ? `\n\n${context.dbtRulesBlock.trim()}`
+            : "") +
           (context.workspaceCustomPrompt
             ? `\n\n## Workspace instructions\n${context.workspaceCustomPrompt}`
             : "") +

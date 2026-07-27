@@ -112,6 +112,12 @@ export interface AgentContext {
   flowFormState?: Record<string, unknown>;
   /** Custom workspace prompt */
   workspaceCustomPrompt?: string;
+  /**
+   * Pre-rendered `.makorules` block for the dbt project this turn is about.
+   * Populated by `agent.routes.ts` via `resolveDbtRulesBlockForTurn`. Empty
+   * when no project resolves or the project ships no rules file.
+   */
+  dbtRulesBlock?: string;
   /** Agent-editable self-directive (persisted workspace knowledge) */
   selfDirective?: string;
   /** Auto-discovered relevant consoles (injected via embedding search) */

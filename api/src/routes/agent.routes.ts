@@ -60,6 +60,7 @@ import {
   retrieveRelevantSkills,
   renderSkillsPromptBlock,
 } from "../services/skills.service";
+import { resolveDbtRulesBlockForTurn } from "../dbt/dbt-rules-turn.service";
 import { sanitizeMessagesForModel } from "../utils/message-sanitizer";
 import { resolveChatAttachmentsForModel } from "../services/chat-attachment.service";
 import { loggers, enrichContextWithWorkspace } from "../logging";
@@ -307,6 +308,7 @@ agentRoutes.openapi(
       notebookId?: string;
       connectionId?: string;
       databaseName?: string;
+      dbtProjectId?: string;
     }
 
     interface OpenDashboardContext {
@@ -656,6 +658,25 @@ agentRoutes.openapi(
       }
     }
 
+    // `.makorules` — the dbt project's own SQL conventions. Binding for any
+    // model the agent writes, so it is injected rather than left for the agent
+    // to look up. Never fatal: a failed lookup just means no rules this turn.
+    let dbtRulesBlock = "";
+    if (resolvedAgentId === "unified" || resolvedAgentId === "dbt") {
+      try {
+        const dbtTabs = (openTabs ?? []).filter(t => t.dbtProjectId);
+        dbtRulesBlock = await resolveDbtRulesBlockForTurn({
+          workspaceId,
+          userId: actorId,
+          dbtProjectId:
+            dbtTabs.find(t => t.isActive)?.dbtProjectId ??
+            dbtTabs[0]?.dbtProjectId,
+        });
+      } catch (err) {
+        logger.warn("dbt rules injection skipped", { error: err });
+      }
+    }
+
     const dashboardContext =
       activeView === "dashboard"
         ? {
@@ -717,6 +738,7 @@ agentRoutes.openapi(
       selfDirective,
       consoleHints,
       skillsBlock,
+      dbtRulesBlock,
       activeConsoleResults,
       activeDashboardContext: dashboardContext.activeDashboardContext,
       toolExecutionContext,
