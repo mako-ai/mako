@@ -68,6 +68,23 @@ describe("isPersistedSnapshotStale (reload-before-replay guard)", () => {
     ).toBe(false);
   });
 
+  it("stale when Local ACP optimistic turn is ahead of an empty History fetch", () => {
+    const memory = [
+      user("build me an app"),
+      assistant([{ type: "text", text: "" }]),
+    ];
+    expect(isPersistedSnapshotStale([], asUi(memory))).toBe(true);
+  });
+
+  it("stale when equal-length snapshot has a different newest user text", () => {
+    const persisted = [user("old"), assistant([{ type: "text", text: "ok" }])];
+    const memory = [
+      user("new question"),
+      assistant([{ type: "text", text: "" }]),
+    ];
+    expect(isPersistedSnapshotStale(persisted, asUi(memory))).toBe(true);
+  });
+
   it("not stale when the snapshot has MORE parts (server ahead mid-replay)", () => {
     const persisted = [
       user("hi"),

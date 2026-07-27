@@ -6,6 +6,13 @@
  * notebook through `notebookStore` (which autosaves), so the agent's edits show
  * up live in the editor exactly like a human's.
  */
+import {
+  applyStrReplace,
+  notebookCellResourceVersion,
+  readNotebookCellRange,
+  searchNotebookCells,
+  summarizeNotebookCell,
+} from "@mako/agent-tools";
 import { useConsoleStore } from "../store/consoleStore";
 import {
   useNotebookStore,
@@ -141,18 +148,77 @@ export async function executeNotebookAgentTool(
   const store = useNotebookStore.getState();
 
   switch (toolName) {
-    case "read_notebook":
+    case "read_notebook": {
+      const cellOffset =
+        typeof input.cellOffset === "number" ? input.cellOffset : 0;
+      const cellLimit =
+        typeof input.cellLimit === "number" ? input.cellLimit : 50;
+      const cells = doc.blocks
+        .slice(cellOffset, cellOffset + cellLimit)
+        .map(cell => summarizeNotebookCell(cell, doc.version));
+      const nextCellOffset =
+        cellOffset + cells.length < doc.blocks.length
+          ? cellOffset + cells.length
+          : undefined;
       return {
         success: true,
         notebookId,
         name: doc.name,
-        cells: doc.blocks.map(b => ({
-          cellId: b.id,
-          type: b.type,
-          source: b.source,
-          connectionId: b.connectionId,
-        })),
+        version: doc.version,
+        cellOffset,
+        cellLimit,
+        totalCells: doc.blocks.length,
+        totalSourceChars: doc.blocks.reduce(
+          (total, cell) => total + cell.source.length,
+          0,
+        ),
+        cells,
+        ...(nextCellOffset !== undefined ? { nextCellOffset } : {}),
+        hint:
+          "Search with search_notebook, then fetch only relevant ranges " +
+          "with read_notebook_cell.",
       };
+    }
+
+    case "search_notebook":
+      return {
+        success: true,
+        notebookId,
+        query: String(input.query ?? ""),
+        ...searchNotebookCells(doc.blocks, String(input.query ?? ""), {
+          cellTypes: Array.isArray(input.cellTypes)
+            ? (input.cellTypes as Array<"code" | "sql" | "markdown">)
+            : undefined,
+          contextLines:
+            typeof input.contextLines === "number"
+              ? input.contextLines
+              : undefined,
+          maxResults:
+            typeof input.maxResults === "number" ? input.maxResults : undefined,
+          offset: typeof input.offset === "number" ? input.offset : undefined,
+          notebookVersion: doc.version,
+        }),
+      };
+
+    case "read_notebook_cell": {
+      const cellId = input.cellId as string;
+      const cell = doc.blocks.find(block => block.id === cellId);
+      if (!cell) return fail(`No cell with id "${cellId}"`);
+      return {
+        success: true,
+        notebookId,
+        cellId,
+        type: cell.type,
+        connectionId: cell.connectionId,
+        resourceVersion: notebookCellResourceVersion(cell, doc.version),
+        ...readNotebookCellRange(
+          cell.source,
+          typeof input.startLine === "number" ? input.startLine : undefined,
+          typeof input.endLine === "number" ? input.endLine : undefined,
+          typeof input.startOffset === "number" ? input.startOffset : undefined,
+        ),
+      };
+    }
 
     case "add_notebook_cell": {
       const type = (input.type as NotebookBlockType) || "code";
@@ -173,11 +239,42 @@ export async function executeNotebookAgentTool(
 
     case "edit_notebook_cell": {
       const cellId = input.cellId as string;
-      if (!doc.blocks.some(b => b.id === cellId)) {
+      const current = doc.blocks.find(block => block.id === cellId);
+      if (!current) {
         return fail(`No cell with id "${cellId}"`);
       }
+      const currentResourceVersion = notebookCellResourceVersion(
+        current,
+        doc.version,
+      );
+      if (
+        typeof input.resourceVersion === "string" &&
+        input.resourceVersion !== currentResourceVersion
+      ) {
+        return {
+          success: false,
+          error:
+            "Cell changed since it was read. Re-read it and retry with the " +
+            "latest resourceVersion.",
+          currentResourceVersion,
+        };
+      }
       const patch: Partial<NotebookBlock> = {};
-      if (typeof input.source === "string") patch.source = input.source;
+      if (
+        typeof input.oldString === "string" &&
+        typeof input.newString === "string"
+      ) {
+        const edit = applyStrReplace(
+          current.source,
+          input.oldString,
+          input.newString,
+          input.replaceAll === true,
+        );
+        if (!edit.ok) return fail(edit.error);
+        patch.source = edit.contents;
+      } else if (typeof input.source === "string") {
+        patch.source = input.source;
+      }
       if (typeof input.type === "string") {
         patch.type = input.type as NotebookBlockType;
       }
@@ -185,7 +282,10 @@ export async function executeNotebookAgentTool(
         patch.connectionId = input.connectionId;
       }
       store.updateCell(notebookId, cellId, patch);
-      return { success: true, cellId };
+      return {
+        success: true,
+        cellId,
+      };
     }
 
     case "delete_notebook_cell": {

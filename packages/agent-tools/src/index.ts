@@ -78,12 +78,36 @@ export {
   createAppSchema,
   getAppStateSchema,
   appReadFileSchema,
+  appReadResourceSchema,
+  appSearchSchema,
   materializeBindingSchema,
   setBindingScheduleSchema,
   setBindingMaterializationSchema,
   bindingMaterializationScheduleSchema,
+  APP_STATE_CODE_PREVIEW_CHARS,
+  APP_READ_FILE_MAX_CHARS,
+  APP_INSPECT_CODE_PREVIEW_CHARS,
+  APP_PREVIEW_ERROR_MAX,
+  APP_PREVIEW_ERROR_CHARS,
+  APP_SAMPLE_CELL_MAX_CHARS,
+  APP_RESOURCE_MAX_LINES,
+  APP_RESOURCE_MAX_CHARS,
+  APP_SEARCH_MAX_OUTPUT_CHARS,
+  APP_SEARCH_SNIPPET_MAX_CHARS,
+  appResourceRef,
+  parseAppResourceRef,
+  appResourceVersion,
+  appVersionedResourceVersion,
+  appBindingResourceVersion,
+  readAppResourceRange,
+  searchAppResources,
+  clipAgentText,
+  summarizeAppBindingForState,
+  summarizePreviewErrors,
 } from "./app-tools";
 export type {
+  AppResourceKind,
+  AppSearchableResource,
   AppWriteFileInput,
   AppEditFileInput,
   AppCreateDataBindingInput,
@@ -109,7 +133,19 @@ export type {
 
 export { clientDataSourceTools } from "./data-source-tools";
 
-export { clientNotebookTools } from "./notebook-tools";
+export {
+  clientNotebookTools,
+  editNotebookCellSchema,
+  notebookCellResourceVersion,
+  readNotebookCellRange,
+  readNotebookCellSchema,
+  readNotebookSchema,
+  searchNotebookCells,
+  searchNotebookSchema,
+  summarizeNotebookCell,
+  NOTEBOOK_CELL_PAGE_LIMIT,
+  NOTEBOOK_SOURCE_PREVIEW_CHARS,
+} from "./notebook-tools";
 
 export { clientScreenshotTools } from "./screenshot-tools";
 export type { CaptureScreenshotInput } from "./screenshot-tools";

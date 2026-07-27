@@ -17,7 +17,13 @@ import type {
   NotebookSummary,
   NotebookVersion,
 } from "../types";
-import { ID_RE, buildNewDoc, mergePatch, type NotebookStore } from "./types";
+import {
+  ID_RE,
+  NotebookVersionConflictError,
+  buildNewDoc,
+  mergePatch,
+  type NotebookStore,
+} from "./types";
 
 const logger = loggers.api("notebooks");
 
@@ -145,6 +151,7 @@ export class GcsNotebookStore implements NotebookStore {
     workspaceId: string,
     id: string,
     patch: { name?: string; blocks?: NotebookBlock[] },
+    options?: { expectedVersion?: number },
   ): Promise<NotebookDoc | null> {
     if (!ID_RE.test(id)) return null;
     const file = this.file(workspaceId, id);
@@ -158,6 +165,15 @@ export class GcsNotebookStore implements NotebookStore {
         throw err;
       }
       const existing = JSON.parse(buf.toString("utf8")) as NotebookDoc;
+      if (
+        options?.expectedVersion !== undefined &&
+        existing.version !== options.expectedVersion
+      ) {
+        throw new NotebookVersionConflictError(
+          options.expectedVersion,
+          existing.version,
+        );
+      }
       const generation = file.metadata.generation ?? undefined;
       const next = mergePatch(existing, patch);
       try {
@@ -167,6 +183,12 @@ export class GcsNotebookStore implements NotebookStore {
         );
         return next;
       } catch (err) {
+        if (
+          isPreconditionFailed(err) &&
+          options?.expectedVersion !== undefined
+        ) {
+          throw new NotebookVersionConflictError(options.expectedVersion);
+        }
         // Someone else wrote between our read and write — re-read and retry.
         if (isPreconditionFailed(err) && attempt < MAX_UPDATE_RETRIES - 1) {
           logger.debug("notebook update precondition failed, retrying", { id });

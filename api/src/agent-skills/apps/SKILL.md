@@ -29,8 +29,9 @@ entities:
 Apps are React projects rendered live in a tab. You build them by editing files.
 
 All app tools run server-side except the live preview: `list_open_apps`,
-`create_app`, `get_app_state`, `app_read_file`, the file/dependency/binding
-edits, `materialize_binding`, and versioning all operate on the server document,
+`create_app`, `get_app_state`, `app_search`, `app_read_resource`, the
+file/dependency/binding edits, `materialize_binding`, and versioning all operate
+on the server document,
 so you can build and operate an app with no browser attached. The only
 browser-only tool is `run_app` (rebuild the preview and read render/build
 errors); `open_app` just focuses a UI tab.
@@ -40,16 +41,25 @@ errors); `open_app` just focuses a UI tab.
 1. Call `list_open_apps` to find the target app and its `appId`. If none exists,
    use `create_app` (it scaffolds a React + TypeScript starter; in an attached
    browser, call `open_app` afterward to focus its tab).
-2. Use `get_app_state` to see the file list, dependencies, data bindings,
-   entrypoint, and version before editing. (Live preview build/runtime errors are
-   only available in an attached browser via `run_app`.)
+2. Use `get_app_state` as a **manifest**: it returns metadata plus resource refs,
+   sizes, and versions, never full source or SQL. Large manifests paginate via
+   `nextResourceOffset`. Use `app_search` to locate relevant code, then
+   `app_read_resource({ appId, resource, startLine,
+   endLine })` for only the required range. Follow `nextStartLine` when needed;
+   use `startOffset`/`nextOffset` for oversized single lines. If search returns
+   `truncated`, continue with its `nextOffset`. Do not dump every resource.
+   `app_read_file` remains a deferred compatibility fallback for older flows;
+   new work should use the bounded resource reader.
+   (Live preview build/runtime errors are only available in an attached browser
+   via `run_app`.)
 3. Modify existing files with `app_edit_file` — an anchored replacement: pass the
    exact current text as `oldString` (must match exactly once — include a few
-   surrounding lines to disambiguate; re-read the file with `app_read_file` if the
-   match fails) and the replacement as `newString` (`""` deletes it; set
-   `replaceAll: true` for renames). Use `app_write_file` (COMPLETE contents) only to
-   create new files or fully rewrite one. The entrypoint defaults to `src/App.tsx`
-   (default export is rendered).
+   surrounding lines to disambiguate) and the replacement as `newString` (`""`
+   deletes it; set `replaceAll: true` for renames). Pass the
+   `expectedResourceVersion` returned by search/read so concurrent changes are
+   rejected instead of overwritten. Use `app_write_file` (COMPLETE contents)
+   only to create new files or fully rewrite one. The entrypoint defaults to
+   `src/App.tsx` (default export is rendered).
 4. Add libraries with `app_add_dependency` (e.g. d3, recharts, framer-motion) before
    importing them. They resolve as ES modules at preview time.
 5. To use workspace data, create a binding with `app_create_data_binding` (validate the

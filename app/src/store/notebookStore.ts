@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import { apiClient } from "../lib/api-client";
+import { ApiError } from "../api/result";
 import type { KernelOutput } from "../notebook-runtime/kernel";
 import { useUIStore } from "./uiStore";
 import { realtimeClientId } from "../lib/realtime-client-id";
@@ -76,6 +77,13 @@ function makeBlock(type: NotebookBlockType): NotebookBlock {
 
 // Per-notebook autosave debounce timers (module scope; not reactive state).
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const saveNamePending = new Map<string, boolean>();
+const saveInFlight = new Set<string>();
+const queuedSaves = new Map<
+  string,
+  { nameChanged: boolean; revision: number }
+>();
+const saveRevisions = new Map<string, number>();
 const SAVE_DEBOUNCE_MS = 700;
 
 interface NotebookStore {
@@ -93,6 +101,7 @@ interface NotebookStore {
   updateNotebook: (
     id: string,
     patch: { name?: string; blocks?: NotebookBlock[] },
+    expectedVersion?: number,
   ) => Promise<NotebookDoc | null>;
 
   // -- open-notebook editing (editor + agent + collab share these) ----------
@@ -129,25 +138,61 @@ interface NotebookStore {
 }
 
 export const useNotebookStore = create<NotebookStore>((set, get) => {
+  const flushSave = async (
+    id: string,
+    nameChanged: boolean,
+    revision: number,
+  ): Promise<void> => {
+    if (saveInFlight.has(id)) {
+      const queued = queuedSaves.get(id);
+      queuedSaves.set(id, {
+        nameChanged: (queued?.nameChanged ?? false) || nameChanged,
+        revision: Math.max(queued?.revision ?? 0, revision),
+      });
+      return;
+    }
+
+    saveInFlight.add(id);
+    try {
+      const doc = get().openNotebooks[id];
+      if (!doc) return;
+      const res = await get().updateNotebook(
+        id,
+        {
+          name: nameChanged ? doc.name : undefined,
+          blocks: doc.blocks,
+        },
+        doc.version,
+      );
+      if (saveRevisions.get(id) === revision) {
+        set(s => ({
+          saveState: { ...s.saveState, [id]: res ? "saved" : "error" },
+        }));
+      }
+    } finally {
+      saveInFlight.delete(id);
+      const queued = queuedSaves.get(id);
+      if (queued) {
+        queuedSaves.delete(id);
+        await flushSave(id, queued.nameChanged, queued.revision);
+      }
+    }
+  };
+
   const scheduleSave = (id: string, nameChanged: boolean) => {
     const existing = saveTimers.get(id);
     if (existing) clearTimeout(existing);
+    saveNamePending.set(id, (saveNamePending.get(id) ?? false) || nameChanged);
+    const revision = (saveRevisions.get(id) ?? 0) + 1;
+    saveRevisions.set(id, revision);
     set(s => ({ saveState: { ...s.saveState, [id]: "saving" } }));
     saveTimers.set(
       id,
       setTimeout(() => {
-        const doc = get().openNotebooks[id];
-        if (!doc) return;
-        void get()
-          .updateNotebook(id, {
-            name: nameChanged ? doc.name : undefined,
-            blocks: doc.blocks,
-          })
-          .then(res =>
-            set(s => ({
-              saveState: { ...s.saveState, [id]: res ? "saved" : "error" },
-            })),
-          );
+        saveTimers.delete(id);
+        const includeName = saveNamePending.get(id) ?? false;
+        saveNamePending.delete(id);
+        void flushSave(id, includeName, revision);
       }, SAVE_DEBOUNCE_MS),
     );
   };
@@ -222,15 +267,33 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
       }
     },
 
-    updateNotebook: async (id, patch) => {
+    updateNotebook: async (id, patch, expectedVersion) => {
       const ws = currentWorkspaceId();
       if (!ws) return null;
       try {
         const res = await apiClient.patch<{ data: NotebookDoc }>(
           `/workspaces/${ws}/notebooks/${id}`,
-          { ...patch, clientId: realtimeClientId },
+          { ...patch, clientId: realtimeClientId, expectedVersion },
         );
         const doc = res.data ?? null;
+        if (doc) {
+          // Keep any local edits made while this request was in flight, but
+          // advance their concurrency base to the version the server accepted.
+          set(state => {
+            const current = state.openNotebooks[id];
+            if (!current) return state;
+            return {
+              openNotebooks: {
+                ...state.openNotebooks,
+                [id]: {
+                  ...current,
+                  version: Math.max(current.version, doc.version),
+                  updatedAt: doc.updatedAt,
+                },
+              },
+            };
+          });
+        }
         // Reflect a rename in the explorer tree without a full reload storm.
         if (doc && patch.name !== undefined && ws) {
           void useNotebookTreeStore
@@ -239,8 +302,26 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
         }
         return doc;
       } catch (e) {
+        const current = get().openNotebooks[id];
+        if (
+          e instanceof ApiError &&
+          e.status === 409 &&
+          expectedVersion !== undefined &&
+          current &&
+          current.version > expectedVersion
+        ) {
+          // A restore/reload or an earlier serialized save already advanced
+          // this editor past the rejected request; do not surface a stale
+          // conflict over the newer local state.
+          return current;
+        }
         set({
-          error: e instanceof Error ? e.message : "Failed to save notebook",
+          error:
+            e instanceof ApiError && e.status === 409
+              ? "Notebook changed elsewhere. Reload it before saving again."
+              : e instanceof Error
+                ? e.message
+                : "Failed to save notebook",
         });
         return null;
       }
@@ -274,7 +355,11 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
     importNotebook: async (name, blocks) => {
       const created = await get().createNotebook(name);
       if (!created) return null;
-      const updated = await get().updateNotebook(created.id, { blocks });
+      const updated = await get().updateNotebook(
+        created.id,
+        { blocks },
+        created.version,
+      );
       return updated ?? created;
     },
 
@@ -301,6 +386,11 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
         clearTimeout(timer);
         saveTimers.delete(id);
       }
+      saveNamePending.delete(id);
+      queuedSaves.delete(id);
+      // Invalidate any save already in flight so its completion cannot replace
+      // the restore's idle state with a stale success/error result.
+      saveRevisions.set(id, (saveRevisions.get(id) ?? 0) + 1);
       try {
         const res = await apiClient.post<{ data: NotebookDoc }>(
           `/workspaces/${ws}/notebooks/${id}/versions/${versionId}/restore`,
@@ -314,6 +404,7 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
             ? {
                 openNotebooks: { ...s.openNotebooks, [id]: doc },
                 saveState: { ...s.saveState, [id]: "idle" },
+                error: null,
               }
             : {},
         );

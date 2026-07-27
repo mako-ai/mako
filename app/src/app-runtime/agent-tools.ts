@@ -7,6 +7,19 @@
  * JSON-serializable result for the agent.
  */
 
+import {
+  APP_READ_FILE_MAX_CHARS,
+  appBindingResourceVersion,
+  appResourceRef,
+  appResourceVersion,
+  appVersionedResourceVersion,
+  clipAgentText,
+  parseAppResourceRef,
+  readAppResourceRange,
+  searchAppResources,
+  summarizeAppBindingForState,
+  summarizePreviewErrors,
+} from "@mako/agent-tools";
 import { useConsoleStore } from "../store/consoleStore";
 import { useAppStore, type AppEntity } from "../store/appStore";
 import { focusAppTab, getCurrentWorkspaceId } from "./shell";
@@ -106,22 +119,160 @@ export async function executeAppAgentTool(
       if (!appId) return fail("appId is required");
       const appEntity = await ensureApp(appId);
       if (!appEntity) return fail("App not found");
+      const offset =
+        typeof input.resourceOffset === "number" ? input.resourceOffset : 0;
+      const limit =
+        typeof input.resourceLimit === "number" ? input.resourceLimit : 100;
+      const allResources = [
+        ...appEntity.files.map(f => ({
+          resource: appResourceRef("file", f.path),
+          kind: "file" as const,
+          name: f.path,
+          lines: (f.contents ?? "").split("\n").length,
+          chars: (f.contents ?? "").length,
+          resourceVersion: appVersionedResourceVersion(
+            appEntity.version,
+            appResourceVersion(f.contents ?? ""),
+          ),
+        })),
+        ...appEntity.dataBindings.map(b => ({
+          ...summarizeAppBindingForState(b),
+          resource: appResourceRef("binding", b.name),
+          kind: "binding" as const,
+          lines: (b.code ?? "").split("\n").length,
+          chars: (b.code ?? "").length,
+          resourceVersion: appVersionedResourceVersion(
+            appEntity.version,
+            appBindingResourceVersion(b),
+          ),
+        })),
+      ];
+      const resources = allResources.slice(offset, offset + limit);
+      const nextResourceOffset =
+        offset + resources.length < allResources.length
+          ? offset + resources.length
+          : undefined;
+      const dependencyEntries = Object.entries(appEntity.dependencies);
       return {
         success: true,
         appId,
         title: appEntity.title,
         runtime: appEntity.runtime,
         entrypoint: appEntity.entrypoint,
-        files: appEntity.files.map(f => f.path),
-        dependencies: appEntity.dependencies,
-        dataBindings: appEntity.dataBindings.map(b => ({
-          name: b.name,
-          connectionId: b.connectionId,
-          language: b.language,
-          code: b.code,
-        })),
-        previewErrors: (useAppStore.getState().previewErrors[appId] ?? []).map(
-          e => ({ message: e.message, source: e.source }),
+        resourceOffset: offset,
+        resourceLimit: limit,
+        totalResources: allResources.length,
+        resources,
+        ...(nextResourceOffset !== undefined ? { nextResourceOffset } : {}),
+        files: resources
+          .filter(resource => resource.kind === "file")
+          .map(resource => resource.name),
+        dataBindings: resources.filter(resource => resource.kind === "binding"),
+        dependencies: Object.fromEntries(dependencyEntries.slice(0, 200)),
+        dependenciesTruncated: dependencyEntries.length > 200,
+        hint:
+          "Search with app_search, then fetch only relevant lines with " +
+          "app_read_resource. Binding queries are not dumped here.",
+        previewErrors: summarizePreviewErrors(
+          useAppStore.getState().previewErrors[appId],
+        ),
+      };
+    }
+
+    case "app_search": {
+      if (!appId) return fail("appId is required");
+      const appEntity = await ensureApp(appId);
+      if (!appEntity) return fail("App not found");
+      const resourceTypes = Array.isArray(input.resourceTypes)
+        ? new Set(input.resourceTypes)
+        : new Set(["file", "binding"]);
+      const resources = [
+        ...(resourceTypes.has("file")
+          ? appEntity.files.map(f => ({
+              resource: appResourceRef("file", f.path),
+              kind: "file" as const,
+              name: f.path,
+              text: f.contents ?? "",
+              resourceVersion: appVersionedResourceVersion(
+                appEntity.version,
+                appResourceVersion(f.contents ?? ""),
+              ),
+            }))
+          : []),
+        ...(resourceTypes.has("binding")
+          ? appEntity.dataBindings.map(b => ({
+              resource: appResourceRef("binding", b.name),
+              kind: "binding" as const,
+              name: b.name,
+              text: b.code ?? "",
+              resourceVersion: appVersionedResourceVersion(
+                appEntity.version,
+                appBindingResourceVersion(b),
+              ),
+            }))
+          : []),
+      ];
+      const query = String(input.query ?? "");
+      return {
+        success: true,
+        appId,
+        query,
+        ...searchAppResources(resources, query, {
+          contextLines:
+            typeof input.contextLines === "number"
+              ? input.contextLines
+              : undefined,
+          maxResults:
+            typeof input.maxResults === "number" ? input.maxResults : undefined,
+          offset: typeof input.offset === "number" ? input.offset : undefined,
+        }),
+        hint:
+          "Use app_read_resource with a returned resource and line range " +
+          "for more context.",
+      };
+    }
+
+    case "app_read_resource": {
+      if (!appId) return fail("appId is required");
+      const appEntity = await ensureApp(appId);
+      if (!appEntity) return fail("App not found");
+      const resource = String(input.resource ?? "");
+      const parsed = parseAppResourceRef(resource);
+      if (!parsed) {
+        return fail(
+          'Invalid resource ref. Use "file:<path>" or "binding:<name>".',
+        );
+      }
+      const file =
+        parsed.kind === "file"
+          ? appEntity.files.find(f => f.path === parsed.name)
+          : undefined;
+      const binding =
+        parsed.kind === "binding"
+          ? appEntity.dataBindings.find(b => b.name === parsed.name)
+          : undefined;
+      const text = file?.contents ?? binding?.code;
+      if (text == null) return fail(`Resource not found: ${resource}`);
+      return {
+        success: true,
+        appId,
+        resource,
+        kind: parsed.kind,
+        name: parsed.name,
+        resourceVersion: binding
+          ? appVersionedResourceVersion(
+              appEntity.version,
+              appBindingResourceVersion(binding),
+            )
+          : appVersionedResourceVersion(
+              appEntity.version,
+              appResourceVersion(text),
+            ),
+        ...readAppResourceRange(
+          text,
+          typeof input.startLine === "number" ? input.startLine : undefined,
+          typeof input.endLine === "number" ? input.endLine : undefined,
+          typeof input.startOffset === "number" ? input.startOffset : undefined,
         ),
       };
     }
@@ -132,7 +283,23 @@ export async function executeAppAgentTool(
       if (!appEntity) return fail("App not found");
       const file = appEntity.files.find(f => f.path === input.path);
       if (!file) return fail(`File not found: ${input.path}`);
-      return { success: true, path: file.path, contents: file.contents };
+      const clipped = clipAgentText(
+        file.contents ?? "",
+        APP_READ_FILE_MAX_CHARS,
+      );
+      if (clipped.truncated) {
+        return fail(
+          "File is too large for app_read_file. Use app_search and " +
+            "app_read_resource to read precise ranges.",
+        );
+      }
+      return {
+        success: true,
+        path: file.path,
+        contents: clipped.text,
+        length: clipped.length,
+        truncated: false,
+      };
     }
 
     case "app_write_file": {
@@ -272,10 +439,12 @@ export async function executeAppAgentTool(
       store.bumpPreview(appId);
       // Give the preview a moment to rebuild and report errors.
       await new Promise(resolve => setTimeout(resolve, 1200));
-      const errors = useAppStore.getState().previewErrors[appId] ?? [];
+      const errors = summarizePreviewErrors(
+        useAppStore.getState().previewErrors[appId],
+      );
       return {
         success: true,
-        errors: errors.map(e => ({ message: e.message, source: e.source })),
+        errors,
       };
     }
 

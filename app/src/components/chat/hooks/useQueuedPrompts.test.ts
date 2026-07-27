@@ -83,6 +83,9 @@ function buildArgs(overrides: Partial<UseQueuedPromptsArgs> = {}): Harness {
     autoSendWhenComplete: () => false,
     interruptActiveTurn,
     drainQueuedPromptAfterTurnRef: makeRef<(() => void) | null>(null),
+    sendViaLocalAcpRef: makeRef<((text: string) => Promise<boolean>) | null>(
+      null,
+    ),
     ...overrides,
   };
   return { args, sendMessage, interruptActiveTurn };

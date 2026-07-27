@@ -21,6 +21,8 @@ export interface AuthVariables {
   workspaceId?: string;
   /** Scopes carried by an MCP OAuth access token (authType "mcpOAuth"). */
   mcpOAuthScopes?: string[];
+  /** OAuth client id for MCP access tokens (e.g. `mako-acp-local`). */
+  mcpOAuthClientId?: string;
 }
 
 export type AuthEnv = { Variables: AuthVariables };

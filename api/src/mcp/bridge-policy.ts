@@ -88,6 +88,8 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   app_write_file: bridge(),
   create_app: bridge(),
   get_app_state: bridge(),
+  app_search: bridge(),
+  app_read_resource: bridge(),
   list_open_apps: bridge(),
   materialize_binding: bridge(),
   open_app: exclude(
@@ -99,42 +101,17 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "Browser iframe preview; MCP uses render_app instead.",
   ),
 
-  // ── Notebooks (server) — durable, but not yet an MCP surface ──────────
-  // These run headless server-side (like apps), so they *could* bridge, but
-  // notebooks have no designed external MCP surface yet — keep in-product
-  // until that's decided, rather than silently exposing authoring over MCP.
-  add_notebook_cell: exclude(
-    "deferred",
-    "Notebook authoring stays in-product until notebooks get a dedicated MCP surface.",
-  ),
-  create_notebook: exclude(
-    "deferred",
-    "Notebook authoring stays in-product until notebooks get a dedicated MCP surface.",
-  ),
-  delete_notebook_cell: exclude(
-    "deferred",
-    "Notebook authoring stays in-product until notebooks get a dedicated MCP surface.",
-  ),
-  edit_notebook_cell: exclude(
-    "deferred",
-    "Notebook authoring stays in-product until notebooks get a dedicated MCP surface.",
-  ),
-  list_open_notebooks: exclude(
-    "deferred",
-    "Notebook discovery stays in-product until notebooks get a dedicated MCP surface.",
-  ),
-  read_notebook: exclude(
-    "deferred",
-    "Notebook reads stay in-product until notebooks get a dedicated MCP surface.",
-  ),
-  run_notebook_code_cell: exclude(
-    "deferred",
-    "Notebook kernel execution stays in-product until notebooks get a dedicated MCP surface.",
-  ),
-  run_notebook_sql_cell: exclude(
-    "deferred",
-    "Notebook SQL execution stays in-product until notebooks get a dedicated MCP surface.",
-  ),
+  // ── Notebooks (server) — durable GCS + kernel; Desktop opens tabs via focus ─
+  add_notebook_cell: bridge(),
+  create_notebook: bridge(),
+  delete_notebook_cell: bridge(),
+  edit_notebook_cell: bridge(),
+  list_open_notebooks: bridge(),
+  read_notebook: bridge(),
+  read_notebook_cell: bridge(),
+  run_notebook_code_cell: bridge(),
+  run_notebook_sql_cell: bridge(),
+  search_notebook: bridge(),
 
   // ── MCP-only preview / render ─────────────────────────────────────────
   create_preview_token: mcpOnly(),
@@ -146,13 +123,10 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   create_console: bridge(),
   list_open_consoles: exclude(
     "client-only",
-    "Lists open browser tabs; MCP uses search_consoles for workspace discovery.",
+    "Open browser tabs; Desktop ACP uses mako-desktop list_open_consoles / UI context.",
   ),
   modify_console: bridge(),
-  open_console: exclude(
-    "client-only",
-    "Opens a UI tab; headless agents use consoleId directly.",
-  ),
+  open_console: bridge(),
   read_console: bridge(),
   run_console: bridge({ requiresQueryAccess: true }),
   list_console_executions: bridge(),
@@ -367,10 +341,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "in-product-only",
     "Deferred-tool working set is the in-product agent runtime; MCP exposes a fixed curated surface.",
   ),
-  read_self_directive: exclude(
-    "in-product-only",
-    "Workspace self-directive memory is chat-agent scoped.",
-  ),
+  read_self_directive: bridge(),
   read_skill_resource: bridge(),
   save_skill: exclude(
     "in-product-only",
@@ -386,10 +357,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "in-product-only",
     "In-product agent todo list; external MCP clients have their own planning.",
   ),
-  update_self_directive: exclude(
-    "in-product-only",
-    "Workspace self-directive memory is chat-agent scoped.",
-  ),
+  update_self_directive: bridge(),
 
   // ── Version history ───────────────────────────────────────────────────
   browse_version_history: bridge(),
@@ -494,8 +462,15 @@ export function mcpReadOnlyHint(
   }
   if (
     queryAccess === "read" &&
-    (name === "sql_execute_query" || name === "run_console")
+    (name === "sql_execute_query" ||
+      name === "run_console" ||
+      name === "check_query_status" ||
+      name === "list_console_executions" ||
+      name === "cancel_query")
   ) {
+    // Under query:read the SQL loop is forced read-only; status/cancel/list
+    // are part of that same lifecycle and should not look like writes to MCP
+    // clients (affects auto-approval annotations).
     return true;
   }
   return false;

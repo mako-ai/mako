@@ -85,7 +85,7 @@ Beyond the always-on self-directive, Mako supports **skills** — named, workspa
 
 Every turn, Mako injects a compact index of every skill plus the top-3 auto-retrieved bodies (entity overlap 0.6 + semantic similarity 0.4). See [Skills](/skills/) for the full model, admin UI, and REST API.
 
-Skill _retrieval_ (`get_relevant_skills`, `load_skill`) is always active; skill _writes_ and long-tail lookups (`save_skill`, `delete_skill`, `list_skills`, `search_skills`, `read_skill_resource`) are deferred tools the agent activates on demand — see [Tool paging](#tool-paging) below.
+Skill _retrieval_ and _writes_ (`get_relevant_skills`, `load_skill`, `save_skill`, `read_skill_resource`) are always active — the skills prompt names them every turn, so keeping them core avoids search/load round-trips. Long-tail lookups (`delete_skill`, `list_skills`, `search_skills`) are deferred tools the agent activates on demand — see [Tool paging](#tool-paging) below.
 
 ## Expertise Modes
 
@@ -111,9 +111,9 @@ The provider request carries a bounded **working set** of tools instead of every
 
 - **core** — always active (lifecycle, memory, skill retrieval, web access, tool discovery)
 - **mode** — activates with an expertise mode
-- **deferred** — registered and executable (approval flow intact) but dormant: all MCP tools plus demoted built-ins (skill writes, version history)
+- **deferred** — registered and executable (approval flow intact) but dormant: all MCP tools plus demoted built-ins (rare skill-management ops: `delete_skill`, `list_skills`, `search_skills`)
 
-Deferred tools are discoverable via the `search_tools` meta-tool (compact cards, no schemas) and activated with `load_tools`, which mutates the active set exactly like `enable_mode` and replays statelessly from the chat transcript. A deterministic per-turn relevance preload activates obviously-relevant deferred tools from the last user message, so common cases need no search/load round-trip.
+Deferred tools are discoverable via the `search_tools` meta-tool (compact cards, no schemas) and activated with `load_tools`, which mutates the active set exactly like `enable_mode` and replays statelessly from the chat transcript. A deterministic per-turn relevance preload activates obviously-relevant deferred tools from the last user message, so common cases need no search/load round-trip. To close the named-but-not-loaded trap, the system prompt always carries a compact name-only inventory: every built-in tool name grouped by tier (core/mode/deferred, no schemas) plus MCP servers with tool counts — individual MCP tool names are only discoverable via `search_tools`.
 
 Budgets: at most 110 active tools and ~12k tokens of tool definitions per step, whichever binds first — with per-provider hard caps as a backstop (xAI rejects requests above 250 tools, OpenAI above 128). Core and mode tools are never evicted; loaded deferred tools are evicted oldest-first. Small workspaces whose whole tool surface fits the budget bypass paging entirely and keep the zero-friction behavior. When paging is active, the system prompt lists deferred sources one line per connector, and provider-facing MCP tool descriptions are truncated (full descriptions stay in the search catalog).
 
@@ -137,7 +137,7 @@ Edit-mode locking is handled automatically so concurrent users cannot conflict.
 
 ## Version-Aware Tools
 
-Two tools inspect the history of saved consoles and dashboards. They are deferred — the agent activates them via `search_tools`/`load_tools` (or the relevance preload) when a history question comes up:
+Two tools inspect the history of saved consoles and dashboards. They are mode tools — active in the **Dashboard** and **React App** modes, where history questions actually come up:
 
 - `browse_version_history` — list past versions of a console or dashboard with author, timestamp, and comment.
 - `get_version_snapshot` — fetch the full snapshot of a specific version.

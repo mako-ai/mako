@@ -27,6 +27,7 @@ import {
 } from "../../../agent-runtime/client-tool-manifest";
 import {
   isApprovalPendingState,
+  isHumanInTheLoopToolName,
   isHumanInTheLoopToolPartType,
   reportStreamInterruption,
   toolNameFromPartType,
@@ -72,6 +73,11 @@ export interface UseClientToolDispatchArgs {
   chatId: string;
   setMessages: ChatHelpers["setMessages"];
   /**
+   * When true, skip orphan-rescue. Local ACP turns keep useChat status at
+   * "ready" while tools are still in-flight via dynamic-tool parts.
+   */
+  suppressOrphanRescue?: boolean;
+  /**
    * Refetch persisted messages (session loader's shared pipeline). The
    * orphan-rescue effect tries this FIRST for stuck tool parts: a pending
    * part is often just a lagging local copy of a tool that already settled
@@ -102,6 +108,7 @@ export function useClientToolDispatch({
   chatId,
   setMessages,
   loadPersistedMessagesRef,
+  suppressOrphanRescue = false,
 }: UseClientToolDispatchArgs) {
   const {
     activeClientToolCallsRef,
@@ -727,6 +734,7 @@ export function useClientToolDispatch({
   }, [chatId]);
   const [rescueTick, setRescueTick] = useState(0);
   useEffect(() => {
+    if (suppressOrphanRescue) return;
     if (status !== "ready" || activeClientToolCallCount > 0) return;
     if (activeClientToolCallsRef.current.size > 0) return;
     const last = messages.at(-1);
@@ -740,7 +748,15 @@ export function useClientToolDispatch({
       const pt = p.type as string;
       if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
       if (isHumanInTheLoopToolPartType(pt)) return false;
-      const s = (p as Record<string, unknown>).state as string;
+      const rec = p as Record<string, unknown>;
+      const toolName =
+        pt === "dynamic-tool"
+          ? String(rec.toolName || "")
+          : pt.startsWith("tool-")
+            ? pt.slice("tool-".length)
+            : "";
+      if (isHumanInTheLoopToolName(toolName)) return false;
+      const s = rec.state as string;
       // MCP approval flow: the turn intentionally pauses here.
       if (isApprovalPendingState(s)) return false;
       return s !== "output-available" && s !== "output-error" && s !== "error";
@@ -823,6 +839,13 @@ export function useClientToolDispatch({
             const pt = p.type as string;
             if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return p;
             if (isHumanInTheLoopToolPartType(pt)) return p;
+            const toolName =
+              pt === "dynamic-tool"
+                ? String(record.toolName || "")
+                : pt.startsWith("tool-")
+                  ? pt.slice("tool-".length)
+                  : "";
+            if (isHumanInTheLoopToolName(toolName)) return p;
             // Leave parts we just handed to recovery untouched.
             if (recoveredCallIds.has(record.toolCallId as string)) return p;
             const s = record.state as string;
@@ -848,6 +871,7 @@ export function useClientToolDispatch({
       });
     });
   }, [
+    suppressOrphanRescue,
     status,
     activeClientToolCallCount,
     activeClientToolCallsRef,

@@ -23,6 +23,20 @@ Each flow run:
 4. Saves the new cursor position
 5. Repeats until no more records
 
+## Sync Modes
+
+Each flow entity runs with one of five sync/write mode combinations:
+
+| Mode | Fetches | Writes |
+|------|---------|--------|
+| **Incremental \| Append + Deduped** | New or updated records since the last cursor | Upsert by primary key — one deduplicated row per record |
+| **Incremental \| Append** | New or updated records since the last cursor | Every version added as a new row (history) |
+| **Full Refresh \| Deduped** | Everything, each run | Upsert by primary key (reconciles drift) |
+| **Full Refresh \| Append** | Everything, each run | All rows appended — accumulates a snapshot per run |
+| **Full Refresh \| Overwrite** | Everything, each run | Destination cleared once at the start of the run, then written — ends up an exact snapshot |
+
+Connectors declare **incremental capabilities** per entity (`full-support`, `created-anchor`, `client-filter`, or `none`), and the flow form only offers honest combinations — an entity whose API can't see updates to old records (e.g. Wise transfers) won't pretend to support true incremental sync, and the connector's warning is surfaced in the UI. Webhook-applied CDC events respect the flow's write mode: append flows append, deduped flows merge.
+
 ## Change Data Capture (CDC) & Streaming
 
 In addition to scheduled batch syncing, Mako supports experimental Change Data Capture (CDC) for near real-time updates.
@@ -78,6 +92,6 @@ pnpm run sync --workspace <workspace-id>
 
 ## Error Handling
 
-- Syncs are idempotent — re-running won't create duplicates (upsert-based writes)
+- Deduped and overwrite syncs are idempotent — re-running won't create duplicates. Append-mode flows intentionally keep every fetched version as a new row.
 - Cursor is saved after each successful chunk, so failures resume from the last checkpoint
 - Failed syncs are retried automatically by Inngest with exponential backoff

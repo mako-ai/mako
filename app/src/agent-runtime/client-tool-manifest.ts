@@ -456,6 +456,24 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Reading app state",
     icon: "eye",
   },
+  app_search: {
+    domain: "app",
+    execution: "server",
+    getLabel: input => {
+      const query = (input as Record<string, unknown>)?.query;
+      return query ? `Searching app for "${query}"` : "Searching app";
+    },
+    icon: "search",
+  },
+  app_read_resource: {
+    domain: "app",
+    execution: "server",
+    getLabel: input => {
+      const resource = (input as Record<string, unknown>)?.resource;
+      return resource ? `Reading ${resource}` : "Reading app resource";
+    },
+    icon: "eye",
+  },
   app_read_file: {
     domain: "app",
     execution: "server",
@@ -630,6 +648,14 @@ export const AGENT_TOOL_MANIFEST = {
     longRunning: true,
     getLabel: () => "Rebuilding app preview",
     icon: "play",
+  },
+  // Desktop ACP (mako-desktop) — read live iframe errors without rebuilding.
+  get_preview_errors: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    getLabel: () => "Checking preview errors",
+    icon: "eye",
   },
   app_set_preview_environment: {
     domain: "app",
@@ -1203,7 +1229,24 @@ export const AGENT_TOOL_MANIFEST = {
   read_notebook: {
     domain: "notebook",
     execution: "server",
-    getLabel: () => "Reading notebook",
+    getLabel: () => "Inspecting notebook",
+    icon: "eye",
+  },
+  search_notebook: {
+    domain: "notebook",
+    execution: "server",
+    getLabel: input => {
+      const query = (input as Record<string, unknown>)?.query;
+      return typeof query === "string" && query
+        ? `Searching notebook: ${query}`
+        : "Searching notebook";
+    },
+    icon: "search",
+  },
+  read_notebook_cell: {
+    domain: "notebook",
+    execution: "server",
+    getLabel: () => "Reading notebook cell",
     icon: "eye",
   },
   add_notebook_cell: {
@@ -1310,8 +1353,44 @@ export const LONG_RUNNING_DASHBOARD_TOOL_NAMES = createToolNameSet(
     entry.longRunning === true,
 );
 
+/**
+ * Claude Code / Codex ACP often emit PascalCase built-in names (`ToolSearch`)
+ * that are not Mako tools. Alias them onto the closest native card so icons
+ * and labels stay consistent with in-app Chat.
+ */
+const ACP_TOOL_MANIFEST_ALIASES: Record<string, AgentToolName> = {
+  ToolSearch: "search_tools",
+  tool_search: "search_tools",
+  WebSearch: "web_search",
+  web_search: "web_search",
+};
+
+function toSnakeToolId(name: string): string {
+  return name
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_+/g, "_")
+    .toLowerCase();
+}
+
 export function getAgentToolManifestEntry(
   toolName: string,
 ): AgentToolManifestEntry | undefined {
-  return AGENT_TOOL_MANIFEST[toolName as AgentToolName];
+  const direct = AGENT_TOOL_MANIFEST[toolName as AgentToolName];
+  if (direct) return direct;
+
+  const aliased = ACP_TOOL_MANIFEST_ALIASES[toolName];
+  if (aliased) return AGENT_TOOL_MANIFEST[aliased];
+
+  const snake = toSnakeToolId(toolName);
+  if (snake && snake !== toolName) {
+    const viaSnake = AGENT_TOOL_MANIFEST[snake as AgentToolName];
+    if (viaSnake) return viaSnake;
+    const aliasViaSnake = ACP_TOOL_MANIFEST_ALIASES[snake];
+    if (aliasViaSnake) return AGENT_TOOL_MANIFEST[aliasViaSnake];
+  }
+
+  return undefined;
 }

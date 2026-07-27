@@ -55,6 +55,7 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
         c.set("authType", "mcpOAuth");
         c.set("workspaceId", workspace._id.toString());
         c.set("mcpOAuthScopes", validated.scopes);
+        c.set("mcpOAuthClientId", validated.clientId);
 
         enrichContextWithUser(tokenUser._id);
         enrichContextWithWorkspace(workspace._id.toString());
