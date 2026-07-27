@@ -15,6 +15,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { autoUpdater } from "electron-updater";
 import { execFile, spawn, ChildProcess } from "child_process";
+import * as fs from "fs";
 import * as http from "http";
 import * as os from "os";
 import * as path from "path";
@@ -38,6 +39,25 @@ const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 let mainWindow: BrowserWindow | null = null;
 let agentProcess: ChildProcess | null = null;
+let lastRendererRecoveryAt = 0;
+let rendererRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function recordRendererFailure(
+  event: string,
+  details: Record<string, unknown> = {},
+): void {
+  try {
+    const logsDirectory = app.getPath("logs");
+    fs.mkdirSync(logsDirectory, { recursive: true });
+    fs.appendFileSync(
+      path.join(logsDirectory, "renderer-failures.log"),
+      `${JSON.stringify({ at: new Date().toISOString(), event, ...details })}\n`,
+      "utf8",
+    );
+  } catch {
+    // Diagnostics must never make a renderer failure worse.
+  }
+}
 
 // ── Browser-based sign-in (deep-link handoff) ────────────────────────────────
 // Third-party logins (Google/GitHub) never render inside this window: the
@@ -419,6 +439,28 @@ function createWindow(): void {
       event.preventDefault();
       startBrowserAuth();
     }
+  });
+
+  mainWindow.webContents.on("unresponsive", () => {
+    recordRendererFailure("unresponsive");
+  });
+
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    recordRendererFailure("render-process-gone", {
+      reason: details.reason,
+      exitCode: details.exitCode,
+    });
+    if (details.reason === "clean-exit") return;
+
+    if (rendererRecoveryTimer) return;
+    const now = Date.now();
+    const recoveryDelay = now - lastRendererRecoveryAt < 60_000 ? 5000 : 500;
+    lastRendererRecoveryAt = now;
+    rendererRecoveryTimer = setTimeout(() => {
+      rendererRecoveryTimer = null;
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      mainWindow.webContents.reload();
+    }, recoveryDelay);
   });
 
   mainWindow.on("closed", () => {

@@ -140,6 +140,11 @@ function normalizeBearerAuth(value: string): string {
 
 export class AcpSessionManager {
   private connections = new Map<AcpProviderId, AcpProviderConnection>();
+  private connectionInFlight = new Map<
+    AcpProviderId,
+    Promise<AcpProviderConnection>
+  >();
+  private shuttingDown = false;
   private sessions = new Map<string, ManagedSession>();
   private pendingPermissions = new Map<string, PendingPermission>();
   /** Global listeners (all sessions) — used by tests. */
@@ -532,11 +537,7 @@ export class AcpSessionManager {
         : `${acpReconnectMessage(label)} (${reason})`;
     if (conn) {
       this.connections.delete(providerId);
-      try {
-        conn.close();
-      } catch {
-        // already dead
-      }
+      void conn.close().catch(() => undefined);
     }
 
     const deadSessionIds: string[] = [];
@@ -577,6 +578,30 @@ export class AcpSessionManager {
   }
 
   private async ensureConnection(
+    providerId: AcpProviderId,
+  ): Promise<AcpProviderConnection> {
+    if (this.shuttingDown) {
+      throw new Error("ACP session manager is shutting down");
+    }
+
+    const existing = this.connections.get(providerId);
+    if (existing && isConnectionAlive(existing)) {
+      return existing;
+    }
+
+    const inFlight = this.connectionInFlight.get(providerId);
+    if (inFlight) return inFlight;
+
+    const pending = this.openConnection(providerId).finally(() => {
+      if (this.connectionInFlight.get(providerId) === pending) {
+        this.connectionInFlight.delete(providerId);
+      }
+    });
+    this.connectionInFlight.set(providerId, pending);
+    return pending;
+  }
+
+  private async openConnection(
     providerId: AcpProviderId,
   ): Promise<AcpProviderConnection> {
     const existing = this.connections.get(providerId);
@@ -1516,6 +1541,7 @@ export class AcpSessionManager {
   }
 
   async shutdown(): Promise<void> {
+    this.shuttingDown = true;
     const warms = [...this.modelWarmInFlight.values()];
     if (warms.length > 0) {
       await Promise.race([
@@ -1525,13 +1551,18 @@ export class AcpSessionManager {
         }),
       ]);
     }
+    const connectionStarts = [...this.connectionInFlight.values()];
+    if (connectionStarts.length > 0) {
+      await Promise.allSettled(connectionStarts);
+    }
     await Promise.allSettled(
       [...this.sessions.keys()].map(id => this.closeSession(id)),
     );
-    for (const conn of this.connections.values()) {
-      conn.close();
-    }
+    await Promise.allSettled(
+      [...this.connections.values()].map(conn => conn.close()),
+    );
     this.connections.clear();
+    this.connectionInFlight.clear();
   }
 }
 

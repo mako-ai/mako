@@ -7,10 +7,18 @@ import { startAgent } from "./server";
 
 const agent = startAgent();
 
-function shutdown() {
-  agent.close();
-  process.exit(0);
+let shuttingDown = false;
+
+async function shutdown(): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try {
+    await agent.close();
+    process.exit(0);
+  } catch {
+    process.exit(1);
+  }
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());
