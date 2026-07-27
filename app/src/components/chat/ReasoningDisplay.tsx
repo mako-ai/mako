@@ -12,10 +12,16 @@ export const ReasoningDisplay = React.memo(
     reasoningText,
     isStreaming,
     paletteMode: _paletteMode,
+    /**
+     * Local ACP only: keep empty Thinking placeholders label-only. Default
+     * in-app chat keeps the historical auto-expand-while-streaming behavior.
+     */
+    collapseEmptyWhileStreaming = false,
   }: {
     reasoningText: string;
     isStreaming: boolean;
     paletteMode: "light" | "dark";
+    collapseEmptyWhileStreaming?: boolean;
   }) => {
     const [userToggled, setUserToggled] = React.useState(false);
     const [userOpen, setUserOpen] = React.useState(false);
@@ -34,7 +40,10 @@ export const ReasoningDisplay = React.memo(
     // Auto-open only while THIS block is actively streaming and not yet
     // finished; auto-close the moment it finishes. If the user manually
     // toggled, respect their choice.
-    const isOpen = userToggled ? userOpen : isStreaming && !finished;
+    const hasText = reasoningText.trim().length > 0;
+    const streamingOpen =
+      isStreaming && !finished && (!collapseEmptyWhileStreaming || hasText);
+    const isOpen = userToggled ? userOpen : streamingOpen;
 
     const handleToggle = () => {
       setUserToggled(true);

@@ -22,6 +22,20 @@ export function nowIso(): string {
   return new Date().toISOString();
 }
 
+export class NotebookVersionConflictError extends Error {
+  constructor(
+    public readonly expectedVersion: number,
+    public readonly actualVersion?: number,
+  ) {
+    super(
+      actualVersion === undefined
+        ? `Notebook changed after version ${expectedVersion}`
+        : `Notebook changed from version ${expectedVersion} to ${actualVersion}`,
+    );
+    this.name = "NotebookVersionConflictError";
+  }
+}
+
 /** Build a fresh, empty notebook document. */
 export function buildNewDoc(input: { name?: string }): NotebookDoc {
   const ts = nowIso();
@@ -61,6 +75,7 @@ export interface NotebookStore {
     workspaceId: string,
     id: string,
     patch: { name?: string; blocks?: NotebookBlock[] },
+    options?: { expectedVersion?: number },
   ): Promise<NotebookDoc | null>;
   remove(workspaceId: string, id: string): Promise<boolean>;
 

@@ -7,6 +7,8 @@ Mako is itself an [MCP](https://modelcontextprotocol.io) **server**: point Claud
 
 Where [MCP Connectors](/mcp-connectors/) let Mako's agent use *other* systems' tools, the MCP server is the reverse: it lets *your* agent use Mako.
 
+Want Claude Code or Codex **inside** the Mako UI instead? See [Coding Agents (ACP)](/coding-agents-acp/).
+
 **Data access over MCP is read-only by design.** Agents can never write to your databases through Mako — there is no scope or setting that enables it.
 
 ## Connect by signing in (no API key)
@@ -98,7 +100,7 @@ Read-only tools are annotated per the MCP spec (`readOnlyHint`), so well-behaved
 ## Security model
 
 - **Read-only, no exceptions.** SQL must be a single `SELECT`/`WITH` statement; enforcement also happens *inside the database* where supported (PostgreSQL/Cloud SQL/Redshift read-only transactions, MySQL `START TRANSACTION READ ONLY`, ClickHouse `readonly=2`). Arbitrary MongoDB JavaScript is not exposed at all — Mongo is discovery/inspection only.
-- **Engines without a reliable per-query read-only mode fail closed** (BigQuery, MSSQL, Cloudflare D1/KV): queries over MCP are refused unless the connection itself uses read-restricted database credentials.
+- **Non-SQL engines fail closed** (MongoDB shell code, Cloudflare KV): the lexical analyzer cannot validate them, so read-only execution refuses them outright. SQL engines without a session-level read-only mode (BigQuery, MSSQL, Cloudflare D1) rely on the validated single-`SELECT`/`WITH` statement instead.
 - **MCP credentials are MCP-only.** OAuth access tokens and scoped keys are rejected on every other API endpoint, so an MCP credential can never be replayed against REST mutation routes.
 - **OAuth grants are least-privilege by construction**: public clients with mandatory PKCE, single-use authorization codes, rotating refresh tokens, hashed at rest, always scoped to the read-only MCP set, and bound to the one workspace chosen at consent.
 - **Key management requires a browser session** — API keys cannot create or delete other API keys.
@@ -123,7 +125,7 @@ To keep agent context lean, agents can pass `includeScreenshot: false` to `rende
 | `403 … created before MCP scopes existed` | Legacy key. Sign in via OAuth or create a new key under Workspace Settings → API Keys. |
 | `403 … does not include the mcp scope` | Key was created without the `mcp` scope — create a new key. |
 | `Mako MCP access is read-only: the query was rejected…` | The agent attempted a write (`UPDATE`/`INSERT`/DDL). Expected — run writes with your own database tooling. |
-| `Read-only execution is not supported for bigquery…` | Fail-closed engine. Connect it with read-restricted database credentials. |
+| `Read-only execution is not supported for mongodb…` (or `cloudflare-kv`) | Non-SQL engine — the SQL analyzer can't validate it, so it fails closed. For MongoDB, use the discovery/inspection tools instead; arbitrary Mongo execution is not available over MCP. |
 | `Server-side rendering is not configured` | The deployment has no `RENDER_APP_BROWSER_PATH` (headless Chromium). Agents fall back to `create_preview_token` — open the URL in any browser. |
 | `Preview base URL … is unreachable` | `CLIENT_URL`/`PUBLIC_URL` on the API server is wrong — it must point at the Mako frontend. |
 | Client shows the server but tools error with 401 | The OAuth token or `Authorization: Bearer` key is missing/revoked — reconnect or rotate. |

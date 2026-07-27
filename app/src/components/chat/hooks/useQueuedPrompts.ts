@@ -47,6 +47,13 @@ export interface UseQueuedPromptsArgs {
    * hook runs); this hook assigns the implementation.
    */
   drainQueuedPromptAfterTurnRef: MutableRefObject<(() => void) | null>;
+  /**
+   * When the selected model is a local ACP provider (Claude Code / Codex),
+   * Chat.tsx handles the turn. Return true if the send was claimed.
+   */
+  sendViaLocalAcpRef: MutableRefObject<
+    ((text: string) => Promise<boolean>) | null
+  >;
 }
 
 /**
@@ -72,6 +79,7 @@ export function useQueuedPrompts({
   autoSendWhenComplete,
   interruptActiveTurn,
   drainQueuedPromptAfterTurnRef,
+  sendViaLocalAcpRef,
 }: UseQueuedPromptsArgs) {
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
   const queuedPromptsRef = useRef(queuedPrompts);
@@ -246,6 +254,15 @@ export function useQueuedPrompts({
       has_context: false,
       has_images: (next.files?.length ?? 0) > 0,
     });
+    const localSend = sendViaLocalAcpRef.current;
+    if (localSend) {
+      void localSend(next.text).then(handled => {
+        if (!handled) {
+          sendMessageRef.current?.({ text: next.text, files: next.files });
+        }
+      });
+      return;
+    }
     sendMessageRef.current?.({ text: next.text, files: next.files });
   };
   drainQueuedPromptAfterTurnRef.current = () =>
@@ -344,6 +361,16 @@ export function useQueuedPrompts({
         has_context: !!activeConsole?.content,
         has_images: (files?.length ?? 0) > 0,
       });
+      const localSend = sendViaLocalAcpRef.current;
+      if (localSend) {
+        isLoadingRef.current = true;
+        void localSend(text).then(handled => {
+          if (!handled) {
+            sendMessageRef.current?.({ text, files });
+          }
+        });
+        return;
+      }
       sendMessageRef.current?.({ text, files });
     },
     [
@@ -355,6 +382,7 @@ export function useQueuedPrompts({
       modelIdRef,
       pendingPlanToolCallIdRef,
       sendMessageRef,
+      sendViaLocalAcpRef,
       suppressNextAutoSendRef,
     ],
   );

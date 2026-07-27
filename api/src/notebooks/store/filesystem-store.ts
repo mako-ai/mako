@@ -18,7 +18,13 @@ import type {
   NotebookSummary,
   NotebookVersion,
 } from "../types";
-import { ID_RE, buildNewDoc, mergePatch, type NotebookStore } from "./types";
+import {
+  ID_RE,
+  NotebookVersionConflictError,
+  buildNewDoc,
+  mergePatch,
+  type NotebookStore,
+} from "./types";
 
 const logger = loggers.api("notebooks");
 
@@ -61,6 +67,31 @@ function versionsDir(workspaceId: string, id: string): string {
 
 export class FilesystemNotebookStore implements NotebookStore {
   readonly kind = "filesystem" as const;
+  private readonly updateLocks = new Map<string, Promise<void>>();
+
+  private async withUpdateLock<T>(
+    workspaceId: string,
+    id: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const key = `${workspaceId}:${id}`;
+    const previous = this.updateLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const tail = previous.then(() => current);
+    this.updateLocks.set(key, tail);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.updateLocks.get(key) === tail) {
+        this.updateLocks.delete(key);
+      }
+    }
+  }
 
   async list(workspaceId: string): Promise<NotebookSummary[]> {
     const dir = workspaceDir(workspaceId);
@@ -115,23 +146,37 @@ export class FilesystemNotebookStore implements NotebookStore {
     workspaceId: string,
     id: string,
     patch: { name?: string; blocks?: NotebookBlock[] },
+    options?: { expectedVersion?: number },
   ): Promise<NotebookDoc | null> {
-    const existing = await this.get(workspaceId, id);
-    if (!existing) return null;
-    const next = mergePatch(existing, patch);
-    await this.write(workspaceId, next);
-    return next;
+    return this.withUpdateLock(workspaceId, id, async () => {
+      const existing = await this.get(workspaceId, id);
+      if (!existing) return null;
+      if (
+        options?.expectedVersion !== undefined &&
+        existing.version !== options.expectedVersion
+      ) {
+        throw new NotebookVersionConflictError(
+          options.expectedVersion,
+          existing.version,
+        );
+      }
+      const next = mergePatch(existing, patch);
+      await this.write(workspaceId, next);
+      return next;
+    });
   }
 
   async remove(workspaceId: string, id: string): Promise<boolean> {
     if (!ID_RE.test(id)) return false;
-    try {
-      await fs.unlink(notebookPath(workspaceId, id));
-      return true;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
-      throw err;
-    }
+    return this.withUpdateLock(workspaceId, id, async () => {
+      try {
+        await fs.unlink(notebookPath(workspaceId, id));
+        return true;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw err;
+      }
+    });
   }
 
   async putArtifact(

@@ -1,0 +1,10 @@
+{
+  "name": "Mako",
+  "install": "export PNPM_HOME=\"${PNPM_HOME:-$HOME/.local/share/pnpm}\"; export PATH=\"$PNPM_HOME:$PATH\"; command -v pnpm >/dev/null || npm install -g pnpm@10.33.3; pnpm install",
+  "start": "bash .cursor/start-local-dbs.sh",
+  "ports": [
+    { "name": "API", "port": 8080 },
+    { "name": "App", "port": 5173 },
+    { "name": "Inngest", "port": 8288 }
+  ]
+}

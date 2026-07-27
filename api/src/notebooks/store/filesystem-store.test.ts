@@ -17,6 +17,7 @@ const WORKDIR = path.join(os.tmpdir(), `mako-notebooks-test-${randomUUID()}`);
 process.env.NOTEBOOK_WORKDIR = WORKDIR;
 
 import { FilesystemNotebookStore } from "./filesystem-store";
+import { NotebookVersionConflictError } from "./types";
 
 const svc = new FilesystemNotebookStore();
 
@@ -133,6 +134,71 @@ async function testVersioning() {
   );
 }
 
+async function testExpectedVersionRejectsStaleWrites() {
+  const created = await svc.create(WS, { name: "Concurrent edits" });
+  const updated = await svc.update(
+    WS,
+    created.id,
+    { blocks: [{ id: "b1", type: "code", source: "latest" }] },
+    { expectedVersion: created.version },
+  );
+  assert.equal(updated?.version, created.version + 1);
+
+  await assert.rejects(
+    svc.update(
+      WS,
+      created.id,
+      { blocks: [{ id: "b1", type: "code", source: "stale overwrite" }] },
+      { expectedVersion: created.version },
+    ),
+    NotebookVersionConflictError,
+  );
+  const after = await svc.get(WS, created.id);
+  assert.equal(after?.blocks[0]?.source, "latest");
+}
+
+async function testConcurrentExpectedVersionAllowsOneWriter() {
+  const created = await svc.create(WS, { name: "Simultaneous edits" });
+  const writes = await Promise.allSettled([
+    svc.update(
+      WS,
+      created.id,
+      { blocks: [{ id: "b1", type: "code", source: "writer a" }] },
+      { expectedVersion: created.version },
+    ),
+    svc.update(
+      WS,
+      created.id,
+      { blocks: [{ id: "b1", type: "code", source: "writer b" }] },
+      { expectedVersion: created.version },
+    ),
+  ]);
+
+  assert.equal(
+    writes.filter(result => result.status === "fulfilled").length,
+    1,
+  );
+  const rejected = writes.find(result => result.status === "rejected");
+  assert.ok(rejected && rejected.status === "rejected");
+  assert.ok(rejected.reason instanceof NotebookVersionConflictError);
+}
+
+async function testDeleteWaitsForInFlightUpdate() {
+  const created = await svc.create(WS, { name: "Delete race" });
+  const [updated, removed] = await Promise.all([
+    svc.update(
+      WS,
+      created.id,
+      { blocks: [{ id: "b1", type: "code", source: "updated" }] },
+      { expectedVersion: created.version },
+    ),
+    svc.remove(WS, created.id),
+  ]);
+  assert.ok(updated);
+  assert.equal(removed, true);
+  assert.equal(await svc.get(WS, created.id), null);
+}
+
 async function main() {
   try {
     await testCreateGetListRoundTrip();
@@ -142,6 +208,9 @@ async function main() {
     await testRemove();
     await testArtifactRoundTrip();
     await testVersioning();
+    await testExpectedVersionRejectsStaleWrites();
+    await testConcurrentExpectedVersionAllowsOneWriter();
+    await testDeleteWaitsForInFlightUpdate();
     console.log(
       "notebook store contract: OK — CRUD + isolation + guards + artifacts + versions",
     );

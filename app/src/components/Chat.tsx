@@ -42,10 +42,21 @@ import type { ConsoleTab } from "../store/lib/types";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
+import { useAcpStore } from "../store/acpStore";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { useRealtimeStore } from "../store/realtimeStore";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { generateObjectId } from "../utils/objectId";
+import {
+  isLocalAcpModelId,
+  localAcpModelIdToProviderId,
+} from "../lib/local-acp-models";
+import { runLocalAcpChatTurn } from "../lib/local-acp-chat";
+import { clearLocalAcpChatBinding } from "../lib/persist-local-acp-chat";
+import {
+  completeDesktopHitlJob,
+  startDesktopAcpBridge,
+} from "../lib/desktop-acp-bridge";
 import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { ClarifyingQuestionsCard } from "./ClarifyingQuestionsCard";
@@ -56,6 +67,7 @@ import {
   usePlanStore,
   type PartialSubmitPlanInput,
 } from "../store/planStore";
+import { useDesktopHitlStore } from "../store/desktopHitlStore";
 import type {
   AskClarifyingQuestionsInput,
   SubmitPlanInput,
@@ -96,6 +108,8 @@ import { useNotebookAutoOpen } from "./chat/hooks/useNotebookAutoOpen";
 import { ChatMessageRow, MessageVirtuosoList } from "./chat/ChatMessageRow";
 import { QueuedPromptList } from "./chat/QueuedPrompts";
 import { ChatInputArea } from "./chat/ChatInputArea";
+import { AcpPermissionBanner } from "./AcpPermissionBanner";
+import { AcpWorkspaceToolsBanner } from "./AcpWorkspaceToolsBanner";
 import {
   onRenderDebug,
   useRenderCount,
@@ -183,6 +197,9 @@ const Chat: React.FC<ChatProps> = ({
   useEffect(() => {
     void fetchDbTypes();
   }, [fetchDbTypes]);
+
+  // Local Agent mako-desktop MCP → iframe run_app / previewErrors.
+  useEffect(() => startDesktopAcpBridge(), []);
   const workspaceConnections = useMemo(
     () => (currentWorkspace ? connections[currentWorkspace.id] || [] : []),
     [connections, currentWorkspace],
@@ -279,6 +296,20 @@ const Chat: React.FC<ChatProps> = ({
   const chatIdRef = useRef(chatId);
   const manualStopRequestedRef = useRef(false);
   const drainQueuedPromptAfterTurnRef = useRef<(() => void) | null>(null);
+  const sendViaLocalAcpRef = useRef<
+    ((text: string) => Promise<boolean>) | null
+  >(null);
+  const localAcpAbortRef = useRef<AbortController | null>(null);
+  const localAcpBindingRef = useRef<{
+    providerId: string;
+    sessionId: string;
+    modelId: string;
+  } | null>(null);
+  /** Bumps on each ACP send so overlapping finally blocks don't clear busy early. */
+  const localAcpGenerationRef = useRef(0);
+  const [localAcpBusy, setLocalAcpBusy] = useState(false);
+  const localAcpBusyRef = useRef(false);
+  localAcpBusyRef.current = localAcpBusy;
   // Client-tool registry: in-flight executions, cancel/interrupt plumbing,
   // and the per-chat toolCallId dispatch dedupe gate (the triplicate-tool
   // fix). Created before useChat — its register/settle callbacks are wired
@@ -537,6 +568,23 @@ const Chat: React.FC<ChatProps> = ({
   const sendMessageRef = useRef(sendMessage);
   sendMessageRef.current = sendMessage;
 
+  // Leaving local Claude/Codex must drop the persisted ACP binding so History
+  // reopen doesn't force a dead session (Bugbot: stale localAcp).
+  useEffect(() => {
+    if (isLocalAcpModelId(selectedModelId)) return;
+    if (!localAcpBindingRef.current) return;
+    const workspaceId = workspaceIdRef.current;
+    const id = chatIdRef.current;
+    const transcript = messagesRef.current;
+    localAcpBindingRef.current = null;
+    if (!workspaceId || !id || transcript.length === 0) return;
+    void clearLocalAcpChatBinding({
+      workspaceId,
+      chatId: id,
+      messages: transcript,
+    });
+  }, [selectedModelId]);
+
   // Give the registry (created before useChat) the live addToolOutput.
   addToolOutputRef.current = addToolOutput;
   clearErrorRef.current = clearError;
@@ -582,6 +630,9 @@ const Chat: React.FC<ChatProps> = ({
     chatId,
     setMessages,
     loadPersistedMessagesRef,
+    // Local ACP keeps useChat at "ready" while tools stream in — don't poison
+    // in-flight dynamic-tool parts as orphans.
+    suppressOrphanRescue: localAcpBusy,
   });
   onToolCallImplRef.current = dispatchClientToolCall;
 
@@ -628,6 +679,15 @@ const Chat: React.FC<ChatProps> = ({
   const interruptActiveTurn = useCallback(() => {
     manualStopRequestedRef.current = true;
 
+    // Abort an in-flight local ACP (Claude Code / Codex) turn if any.
+    localAcpAbortRef.current?.abort();
+    localAcpAbortRef.current = null;
+    setLocalAcpBusy(false);
+    void useAcpStore
+      .getState()
+      .cancelActive()
+      .catch(() => undefined);
+
     interruptActiveClientToolCalls();
     // With resumable streams, disconnecting no longer cancels the turn — the
     // server keeps generating for reconnecting clients. Stop must be explicit:
@@ -646,8 +706,68 @@ const Chat: React.FC<ChatProps> = ({
   const isLoading =
     status === "streaming" ||
     status === "submitted" ||
-    activeClientToolCallCount > 0;
+    activeClientToolCallCount > 0 ||
+    localAcpBusy;
   isLoadingRef.current = isLoading;
+
+  // Main Chat → Local Agent ACP when the dropdown selection is a local model.
+  // Generation counter: overlapping send/abort must not clear busy while an
+  // older turn is still awaiting the Local Agent (that race poisoned Skill
+  // cards as "Interrupted" and surfaced "Session is already processing").
+  sendViaLocalAcpRef.current = async (text: string) => {
+    const modelId = modelIdRef.current;
+    if (!modelId || !isLocalAcpModelId(modelId)) return false;
+
+    localAcpAbortRef.current?.abort();
+    // Cancel the in-flight ACP prompt so the next turn can start cleanly.
+    void useAcpStore
+      .getState()
+      .cancelActive()
+      .catch(() => undefined);
+
+    const abort = new AbortController();
+    localAcpAbortRef.current = abort;
+    const generation = ++localAcpGenerationRef.current;
+    setLocalAcpBusy(true);
+    isLoadingRef.current = true;
+    try {
+      const binding = localAcpBindingRef.current;
+      const providerId = localAcpModelIdToProviderId(modelId);
+      // Reuse the ACP process session across Terra/Luna/Sol picks for the same
+      // provider. Exact modelId equality used to drop the binding on every
+      // picker change, which forced set_config / reconnect mid-chat and made
+      // the user's turn look like it disappeared ("Conversation interrupted").
+      await runLocalAcpChatTurn({
+        modelId,
+        text,
+        workspaceId: workspaceIdRef.current,
+        chatId: chatIdRef.current,
+        preferredSessionId:
+          binding && providerId && binding.providerId === providerId
+            ? binding.sessionId
+            : undefined,
+        setMessages,
+        signal: abort.signal,
+        onPersisted: binding => {
+          if (binding) localAcpBindingRef.current = binding;
+          setIsExistingChat(true);
+          void fetchSessionsRef.current?.();
+        },
+      });
+    } catch {
+      // Transcript already includes the error text.
+    } finally {
+      if (localAcpGenerationRef.current === generation) {
+        if (localAcpAbortRef.current === abort) {
+          localAcpAbortRef.current = null;
+        }
+        setLocalAcpBusy(false);
+        isLoadingRef.current = false;
+        queueMicrotask(() => drainQueuedPromptAfterTurnRef.current?.());
+      }
+    }
+    return true;
+  };
 
   // Bottom-pin / streaming-follow machinery (see useChatScroll).
   const { isAtBottom, setIsAtBottom, scrollerElRef, handleListHeightChanged } =
@@ -728,6 +848,8 @@ const Chat: React.FC<ChatProps> = ({
     toolDispatchGateRef,
     loadPersistedMessagesRef,
     requestResumeRef,
+    localAcpBindingRef,
+    localAcpBusyRef,
   });
 
   // Create new chat session - just generate a new ID locally (no API call needed)
@@ -735,6 +857,7 @@ const Chat: React.FC<ChatProps> = ({
     cancelActiveClientToolCalls("session-change");
     manualStopRequestedRef.current = false;
     clearQueuedPrompts();
+    localAcpBindingRef.current = null;
     setChatId(generateObjectId());
     setMessages([]);
     setIsExistingChat(false);
@@ -744,6 +867,7 @@ const Chat: React.FC<ChatProps> = ({
     cancelActiveClientToolCalls("session-change");
     manualStopRequestedRef.current = false;
     clearQueuedPrompts();
+    localAcpBindingRef.current = null;
     setChatId(id);
     setMessages([]);
     setIsExistingChat(true);
@@ -765,6 +889,10 @@ const Chat: React.FC<ChatProps> = ({
     setToolDialogOpen(true);
   }, []);
 
+  // Local ACP HITL: mako-desktop ask_clarifying_questions / submit_plan park
+  // here while Claude's MCP call waits on the Desktop bridge.
+  const desktopHitlPending = useDesktopHitlStore(s => s.pending);
+
   // Resolve a deferred interactive tool (clarifying questions / plan) with the
   // user's answer. Stable identity so the docked card doesn't remount.
   const handleResolveInteractiveTool = useCallback(
@@ -772,7 +900,12 @@ const Chat: React.FC<ChatProps> = ({
       tool: string;
       toolCallId: string;
       output: Record<string, unknown>;
+      viaAcpBridge?: boolean;
     }) => {
+      if (args.viaAcpBridge) {
+        void completeDesktopHitlJob(args.toolCallId, args.output);
+        return;
+      }
       void addToolOutput({
         tool: args.tool,
         toolCallId: args.toolCallId,
@@ -786,32 +919,43 @@ const Chat: React.FC<ChatProps> = ({
   // Rendered as a docked panel above the composer (Cursor-style) rather than
   // inline in the chat; the inline summary only appears once resolved.
   const pendingInteractiveTool = useMemo(() => {
+    if (desktopHitlPending) {
+      return {
+        toolName: desktopHitlPending.toolName,
+        toolCallId: desktopHitlPending.jobId,
+        input: desktopHitlPending.input,
+        streaming: false,
+        viaAcpBridge: true as const,
+      };
+    }
     const last = messages.at(-1);
     if (!last || last.role !== "assistant") return null;
     for (const part of (last.parts ?? []) as Array<Record<string, unknown>>) {
       const partType = part.type as string | undefined;
-      if (
-        partType !== "tool-ask_clarifying_questions" &&
-        partType !== "tool-submit_plan"
-      ) {
-        continue;
-      }
+      const dynamicName =
+        partType === "dynamic-tool" ? String(part.toolName || "") : "";
+      const isClarify =
+        partType === "tool-ask_clarifying_questions" ||
+        dynamicName === "ask_clarifying_questions";
+      const isPlan =
+        partType === "tool-submit_plan" || dynamicName === "submit_plan";
+      if (!isClarify && !isPlan) continue;
       // submit_plan also surfaces while its input is still streaming so the
       // plan tab and dock card can render the plan as the model writes it.
-      const isStreamingPlan =
-        partType === "tool-submit_plan" && part.state === "input-streaming";
+      const isStreamingPlan = isPlan && part.state === "input-streaming";
       if (part.state !== "input-available" && !isStreamingPlan) continue;
       return {
-        toolName: partType.slice("tool-".length) as
+        toolName: (isPlan ? "submit_plan" : "ask_clarifying_questions") as
           | "ask_clarifying_questions"
           | "submit_plan",
         toolCallId: (part.toolCallId as string) || "",
         input: part.input,
         streaming: isStreamingPlan,
+        viaAcpBridge: false as const,
       };
     }
     return null;
-  }, [messages]);
+  }, [messages, desktopHitlPending]);
 
   // While a submit_plan awaits review (input fully available, unresolved),
   // the chat composer becomes the plan-iteration channel: a sent message is
@@ -857,6 +1001,7 @@ const Chat: React.FC<ChatProps> = ({
           tool: "submit_plan",
           toolCallId,
           output: output as unknown as Record<string, unknown>,
+          viaAcpBridge: pendingInteractiveTool.viaAcpBridge,
         });
       });
     }
@@ -951,6 +1096,7 @@ const Chat: React.FC<ChatProps> = ({
     autoSendWhenComplete,
     interruptActiveTurn,
     drainQueuedPromptAfterTurnRef,
+    sendViaLocalAcpRef,
   });
 
   const handleStop = useCallback(() => {
@@ -1279,7 +1425,8 @@ const Chat: React.FC<ChatProps> = ({
               <ChatMessageRow
                 message={message}
                 isLastMessage={msgIdx === messages.length - 1}
-                isStreaming={status === "streaming"}
+                isStreaming={status === "streaming" || localAcpBusy}
+                collapseEmptyReasoningWhileStreaming={localAcpBusy}
                 onToolClick={handleToolClick}
                 onConsoleTitleClick={handleConsoleTitleClick}
                 onMcpApprovalResponse={handleMcpApprovalResponse}
@@ -1343,6 +1490,7 @@ const Chat: React.FC<ChatProps> = ({
                   tool: pendingInteractiveTool.toolName,
                   toolCallId: pendingInteractiveTool.toolCallId,
                   output: output as unknown as Record<string, unknown>,
+                  viaAcpBridge: pendingInteractiveTool.viaAcpBridge,
                 })
               }
             />
@@ -1378,6 +1526,15 @@ const Chat: React.FC<ChatProps> = ({
           onRemove={handleRemoveQueuedPrompt}
         />
       </Collapse>
+
+      {/* Local Claude/Codex: activate workspace MCP + HITL for Bash/edits. */}
+      {isLocalAcpModelId(selectedModelId) ? (
+        <AcpWorkspaceToolsBanner
+          modelId={selectedModelId}
+          workspaceId={currentWorkspace?.id}
+        />
+      ) : null}
+      {isLocalAcpModelId(selectedModelId) ? <AcpPermissionBanner /> : null}
 
       {/* Input — isolated component so keystrokes don't re-render messages */}
       <ChatInputArea

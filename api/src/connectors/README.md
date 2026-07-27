@@ -120,6 +120,13 @@ All sensitive configuration data (API keys, passwords, etc.) is encrypted before
 - Supports custom queries with offset or cursor pagination
 - Required config: `endpoint`, `queries`
 
+### Wise
+
+- Syncs Wise (TransferWise) financial data
+- Supported entities: profiles, balances, balance_updates, transfers, recipients, activities
+- Required config: `api_key` (personal API token); optional `profile_id`, `api_base_url` (sandbox)
+- Webhooks verified with Wise's RSA-SHA256 public keys; provisioning is manual (personal tokens can't create subscriptions — register the webhook URL in the Wise Developer Hub)
+
 ## Future Connectors
 
 The architecture supports easy addition of new connectors such as:

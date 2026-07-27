@@ -1107,6 +1107,10 @@
           },
           "clientId": {
             "type": "string"
+          },
+          "expectedVersion": {
+            "type": "integer",
+            "exclusiveMinimum": 0
           }
         }
       },
@@ -4422,6 +4426,75 @@
           }
         },
         "operationId": "delete_api_workspaces_id_api_keys_keyId"
+      }
+    },
+    "/api/workspaces/{id}/mcp-access-token": {
+      "post": {
+        "tags": [
+          "Workspaces"
+        ],
+        "summary": "Mint a short-lived MCP access token for attaching Mako tools to a local ACP session",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_id_mcp_access_token"
       }
     },
     "/api/workspaces/{id}/mcp-connections": {
@@ -8564,6 +8637,91 @@
         "operationId": "get_api_workspaces_workspaceId_consoles_list"
       }
     },
+    "/api/workspaces/{workspaceId}/consoles/{id}/executions": {
+      "get": {
+        "tags": [
+          "Consoles"
+        ],
+        "summary": "GET /{id}/executions",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_consoles_id_executions"
+      }
+    },
     "/api/workspaces/{workspaceId}/consoles/{id}/details": {
       "get": {
         "tags": [
@@ -9373,6 +9531,130 @@
         "operationId": "delete_api_workspaces_workspaceId_chats_id"
       }
     },
+    "/api/workspaces/{workspaceId}/chats/{id}/messages": {
+      "put": {
+        "tags": [
+          "Chats"
+        ],
+        "summary": "Upsert chat messages",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "messages": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  },
+                  "localAcp": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "providerId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sessionId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "modelId": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "providerId",
+                      "sessionId",
+                      "modelId"
+                    ]
+                  }
+                },
+                "required": [
+                  "messages"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "put_api_workspaces_workspaceId_chats_id_messages"
+      }
+    },
     "/api/workspaces/{workspaceId}/chat-images/{attachmentId}": {
       "get": {
         "tags": [
@@ -9485,6 +9767,9 @@
                       ]
                     },
                     "content": {
+                      "type": "string"
+                    },
+                    "selfDirective": {
                       "type": "string"
                     }
                   },

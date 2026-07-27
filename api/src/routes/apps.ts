@@ -532,7 +532,7 @@ app.openapi(
         return c.json({ success: false, error: "Invalid app ID" }, 400);
       }
 
-      const doc = await MakoApp.findOne({
+      let doc = await MakoApp.findOne({
         _id: new Types.ObjectId(id),
         workspaceId: new Types.ObjectId(workspaceId),
       });
@@ -543,6 +543,25 @@ app.openapi(
       }
 
       const body = (await c.req.json()) as Record<string, unknown>;
+      const expectedVersion =
+        typeof body.expectedVersion === "number" &&
+        Number.isInteger(body.expectedVersion) &&
+        body.expectedVersion >= 1
+          ? body.expectedVersion
+          : doc.version;
+      if (expectedVersion !== doc.version) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "App changed since it was loaded. Reload it before saving again.",
+            code: "version_conflict",
+            expectedVersion,
+            actualVersion: doc.version,
+          },
+          409,
+        );
+      }
 
       // Snapshot of bindings before the update, keyed by id — used after save
       // to detect which scheduled parquet bindings changed definition so we
@@ -655,8 +674,50 @@ app.openapi(
         }
       }
 
-      doc.version += 1;
-      await doc.save();
+      const setFields: Record<string, unknown> = {};
+      const unsetFields: Record<string, ""> = {};
+      for (const path of doc.directModifiedPaths()) {
+        if (
+          path === "_id" ||
+          path === "workspaceId" ||
+          path === "version" ||
+          path === "createdAt" ||
+          path === "updatedAt"
+        ) {
+          continue;
+        }
+        const value = doc.get(path);
+        if (value === undefined) unsetFields[path] = "";
+        else setFields[path] = value;
+      }
+      const updated = await MakoApp.findOneAndUpdate(
+        {
+          _id: doc._id,
+          workspaceId: doc.workspaceId,
+          version: expectedVersion,
+        },
+        {
+          ...(Object.keys(setFields).length > 0 ? { $set: setFields } : {}),
+          ...(Object.keys(unsetFields).length > 0
+            ? { $unset: unsetFields }
+            : {}),
+          $inc: { version: 1 },
+        },
+        { new: true, runValidators: true },
+      );
+      if (!updated) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "App changed while this save was being applied. Reload it before saving again.",
+            code: "version_conflict",
+            expectedVersion,
+          },
+          409,
+        );
+      }
+      doc = updated;
 
       // Mechanism parity with dashboards: when a scheduled parquet binding's
       // query definition changes, proactively rebuild its artifact so the

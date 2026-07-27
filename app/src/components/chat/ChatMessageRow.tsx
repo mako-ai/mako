@@ -29,6 +29,7 @@ import { ReasoningDisplay } from "./ReasoningDisplay";
 import { StreamingIndicator } from "./StreamingIndicator";
 import { CollapsibleUserText } from "./CollapsibleUserText";
 import { ImagePreviewDialog } from "./ImagePreviewDialog";
+import { isRawMcpToolLabel } from "../../lib/local-acp-parts";
 
 // ── Memoized message row ─────────────────────────────────────────
 // Prevents completed messages from re-rendering on every streaming chunk.
@@ -53,6 +54,7 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
   message,
   isLastMessage,
   isStreaming,
+  collapseEmptyReasoningWhileStreaming = false,
   onToolClick,
   onConsoleTitleClick,
   onMcpApprovalResponse,
@@ -304,7 +306,17 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
                 state={cardState}
                 input={part.input}
                 output={cardOutput}
-                labelOverride={consoleToolPresentation?.title}
+                labelOverride={
+                  consoleToolPresentation?.title ||
+                  (typeof part.title === "string" &&
+                  part.title.trim() &&
+                  !isRawMcpToolLabel(part.title) &&
+                  // Don't override native labels with the raw tool id
+                  // (e.g. ACP "ToolSearch" === toolName).
+                  part.title.trim() !== toolName
+                    ? part.title
+                    : undefined)
+                }
                 leadingIconUrl={consoleToolPresentation?.iconUrl}
                 leadingIconAlt={
                   consoleToolPresentation ? "Database" : undefined
@@ -350,6 +362,9 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
                 key={`reasoning-group-${reasoningGroupOrdinals.get(partIndex) ?? partIndex}`}
                 reasoningText={group.text}
                 isStreaming={isGroupStreaming}
+                collapseEmptyWhileStreaming={
+                  collapseEmptyReasoningWhileStreaming
+                }
                 paletteMode={paletteMode}
               />
             );

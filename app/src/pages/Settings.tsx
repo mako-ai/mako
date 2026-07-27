@@ -3,6 +3,7 @@ import SettingsPrompt from "./settings/SettingsPrompt";
 import SettingsSkills from "./settings/SettingsSkills";
 import SettingsMcp from "./settings/SettingsMcp";
 import SettingsAgents from "./settings/SettingsAgents";
+import SettingsCodingAgents from "./settings/SettingsCodingAgents";
 import SettingsModels from "./settings/SettingsModels";
 import SettingsBilling from "./settings/SettingsBilling";
 import SettingsMembers from "./settings/SettingsMembers";
@@ -32,6 +33,8 @@ function Settings({ section = "prompt" }: Props) {
       return <SettingsMcp />;
     case "agents":
       return <SettingsAgents />;
+    case "coding-agents":
+      return <SettingsCodingAgents />;
     case "models":
       return <SettingsModels />;
     case "billing":

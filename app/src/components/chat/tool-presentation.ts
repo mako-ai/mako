@@ -25,6 +25,11 @@ export function isHumanInTheLoopToolPartType(partType: string): boolean {
   return HUMAN_IN_THE_LOOP_TOOL_PART_TYPES.has(partType);
 }
 
+/** Tool name form (native `tool-*` parts or ACP `dynamic-tool`). */
+export function isHumanInTheLoopToolName(toolName: string): boolean {
+  return toolName === "ask_clarifying_questions" || toolName === "submit_plan";
+}
+
 /**
  * Tool-part states that are *intentionally* awaiting a human decision (MCP
  * approval flow). Like the HITL plan/clarify tools, these must never be

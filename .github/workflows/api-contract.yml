@@ -18,6 +18,7 @@ on:
       - "app/src/store/**"
       - "docs/src/openapi/**"
       - "packages/schemas/**"
+      - "packages/agent-tools/**"
       - ".github/workflows/api-contract.yml"
 
 jobs:
@@ -51,6 +52,9 @@ jobs:
 
       - name: API contract tests
         run: pnpm --filter api run test
+
+      - name: Agent tools tests
+        run: pnpm --filter @mako/agent-tools run test
 
       - name: API destination tests
         # Offline destination connector suite (driver dialect/write SQL, CDC

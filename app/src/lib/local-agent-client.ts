@@ -181,12 +181,13 @@ class LocalAgentClient {
   async post<T>(
     path: string,
     data?: unknown,
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<T> {
     return this.request<T>(path, {
       method: "POST",
       body: data ? JSON.stringify(data) : undefined,
       signal: options?.signal,
+      timeoutMs: options?.timeoutMs,
     });
   }
 

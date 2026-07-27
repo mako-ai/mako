@@ -9,18 +9,235 @@
  */
 import { tool } from "ai";
 import { z } from "zod";
+import {
+  appResourceVersion,
+  appVersionedResourceVersion,
+  readAppResourceRange,
+  searchAppResources,
+} from "./app-tools";
 
-const notebookIdField = z
+export const NOTEBOOK_SOURCE_PREVIEW_CHARS = 160;
+export const NOTEBOOK_CELL_PAGE_LIMIT = 100;
+
+export const notebookIdField = z
   .string()
   .optional()
   .describe("Notebook id. Defaults to the notebook in the active tab.");
 
-const cellTypeField = z
+export const cellTypeField = z
   .enum(["code", "sql", "markdown"])
   .describe(
     "Cell type: 'sql' runs against a data source, 'code' is Python (runs on " +
       "the managed kernel), 'markdown' renders as prose.",
   );
+
+export const readNotebookSchema = z.object({
+  notebookId: notebookIdField,
+  cellOffset: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe("Cell offset (default 0)."),
+  cellLimit: z
+    .number()
+    .int()
+    .min(1)
+    .max(NOTEBOOK_CELL_PAGE_LIMIT)
+    .optional()
+    .describe(
+      `Maximum cells to return (default 50, max ${NOTEBOOK_CELL_PAGE_LIMIT}).`,
+    ),
+});
+
+export const searchNotebookSchema = z.object({
+  notebookId: notebookIdField,
+  query: z
+    .string()
+    .min(1)
+    .describe("Case-insensitive text to find in cell sources."),
+  cellTypes: z
+    .array(cellTypeField)
+    .optional()
+    .describe("Optional cell types to search; defaults to all types."),
+  contextLines: z.number().int().min(0).max(10).optional(),
+  maxResults: z.number().int().min(1).max(50).optional(),
+  offset: z.number().int().min(0).optional(),
+});
+
+export const readNotebookCellSchema = z.object({
+  notebookId: notebookIdField,
+  cellId: z.string().describe("Cell id from read_notebook or search_notebook."),
+  startLine: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("First line (1-based)."),
+  endLine: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Last line (inclusive)."),
+  startOffset: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe("Character offset continuation for an oversized single line."),
+});
+
+export const editNotebookCellSchema = z
+  .object({
+    notebookId: notebookIdField,
+    cellId: z.string().describe("Cell id from read_notebook"),
+    source: z
+      .string()
+      .optional()
+      .describe(
+        "Replace the full source. Prefer oldString/newString for large cells.",
+      ),
+    oldString: z
+      .string()
+      .optional()
+      .describe(
+        "Unique source text to replace without resending the full cell.",
+      ),
+    newString: z.string().optional().describe("Replacement for oldString."),
+    replaceAll: z
+      .boolean()
+      .optional()
+      .describe("Replace every occurrence of oldString (default false)."),
+    resourceVersion: z
+      .string()
+      .optional()
+      .describe(
+        "Version from read_notebook, search_notebook, or read_notebook_cell. " +
+          "The edit is rejected if the cell changed since it was read.",
+      ),
+    type: cellTypeField.optional(),
+    connectionId: z.string().optional(),
+  })
+  .superRefine((value, ctx) => {
+    const hasTargetedEdit =
+      value.oldString !== undefined || value.newString !== undefined;
+    if (
+      hasTargetedEdit &&
+      (value.oldString === undefined || value.newString === undefined)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "oldString and newString must be provided together",
+      });
+    }
+    if (hasTargetedEdit && value.source !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Use either source or oldString/newString, not both",
+      });
+    }
+  });
+
+export function notebookCellResourceVersion(
+  cell: {
+    source?: string | null;
+    type?: string | null;
+    connectionId?: string | null;
+  },
+  notebookVersion?: number,
+): string {
+  const resourceVersion = appResourceVersion(
+    JSON.stringify({
+      source: cell.source ?? "",
+      type: cell.type ?? "code",
+      connectionId: cell.connectionId ?? null,
+    }),
+  );
+  return notebookVersion === undefined
+    ? resourceVersion
+    : appVersionedResourceVersion(notebookVersion, resourceVersion);
+}
+
+export function summarizeNotebookCell(
+  cell: {
+    id: string;
+    source?: string | null;
+    type?: string | null;
+    connectionId?: string | null;
+    outputs?: unknown[] | null;
+    executionCount?: number | null;
+    executedAt?: string | null;
+  },
+  notebookVersion?: number,
+) {
+  const source = cell.source ?? "";
+  return {
+    cellId: cell.id,
+    type: cell.type ?? "code",
+    connectionId: cell.connectionId,
+    sourceLength: source.length,
+    sourcePreview:
+      source.length <= NOTEBOOK_SOURCE_PREVIEW_CHARS
+        ? source
+        : `${source.slice(0, NOTEBOOK_SOURCE_PREVIEW_CHARS)}…`,
+    lines: source.split("\n").length,
+    resourceVersion: notebookCellResourceVersion(cell, notebookVersion),
+    outputCount: cell.outputs?.length ?? 0,
+    executionCount: cell.executionCount,
+    executedAt: cell.executedAt,
+  };
+}
+
+export const readNotebookCellRange = readAppResourceRange;
+
+export function searchNotebookCells(
+  cells: Array<{
+    id: string;
+    source?: string | null;
+    type?: string | null;
+    connectionId?: string | null;
+  }>,
+  query: string,
+  options?: {
+    cellTypes?: Array<"code" | "sql" | "markdown">;
+    contextLines?: number;
+    maxResults?: number;
+    offset?: number;
+    notebookVersion?: number;
+  },
+) {
+  const allowed = new Set(options?.cellTypes ?? ["code", "sql", "markdown"]);
+  const result = searchAppResources(
+    cells
+      .filter(cell =>
+        allowed.has((cell.type ?? "code") as "code" | "sql" | "markdown"),
+      )
+      .map(cell => ({
+        resource: `cell:${cell.id}`,
+        kind: "cell" as const,
+        name: cell.id,
+        text: cell.source ?? "",
+        resourceVersion: notebookCellResourceVersion(
+          cell,
+          options?.notebookVersion,
+        ),
+      })),
+    query,
+    options,
+  );
+  return {
+    ...result,
+    matches: result.matches.map(match => ({
+      cellId: match.name,
+      line: match.line,
+      startLine: match.startLine,
+      endLine: match.endLine,
+      snippet: match.snippet,
+      resourceVersion: match.resourceVersion,
+    })),
+  };
+}
 
 export const clientNotebookTools = {
   create_notebook: tool({
@@ -43,9 +260,23 @@ export const clientNotebookTools = {
   }),
   read_notebook: tool({
     description:
-      "Read a notebook's cells (cellId, type, source, connectionId) so you can " +
-      "decide what to add, edit, or run.",
-    inputSchema: z.object({ notebookId: notebookIdField }),
+      "Get a compact, paginated notebook manifest: cell ids/types, source lengths " +
+      "and short previews, connection ids, execution metadata, and resource versions. " +
+      "Full source is intentionally omitted; use search_notebook, then " +
+      "read_notebook_cell for relevant ranges.",
+    inputSchema: readNotebookSchema,
+  }),
+  search_notebook: tool({
+    description:
+      "Search notebook cell sources without loading the whole notebook into " +
+      "context. Returns bounded snippets, line ranges, cell ids, and versions.",
+    inputSchema: searchNotebookSchema,
+  }),
+  read_notebook_cell: tool({
+    description:
+      "Read a bounded line range from one notebook cell. Returns continuation " +
+      "metadata and a resourceVersion for safe targeted edits.",
+    inputSchema: readNotebookCellSchema,
   }),
   add_notebook_cell: tool({
     description:
@@ -68,15 +299,9 @@ export const clientNotebookTools = {
   }),
   edit_notebook_cell: tool({
     description:
-      "Replace a cell's source (and optionally its type/connectionId). Get " +
-      "cellId from read_notebook.",
-    inputSchema: z.object({
-      notebookId: notebookIdField,
-      cellId: z.string().describe("Cell id from read_notebook"),
-      source: z.string().optional(),
-      type: cellTypeField.optional(),
-      connectionId: z.string().optional(),
-    }),
+      "Edit a cell's source or metadata. For large cells, use a unique " +
+      "oldString/newString plus resourceVersion instead of replacing the full source.",
+    inputSchema: editNotebookCellSchema,
   }),
   delete_notebook_cell: tool({
     description: "Delete a cell by id.",
