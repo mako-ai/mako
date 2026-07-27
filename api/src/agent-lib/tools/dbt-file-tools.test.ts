@@ -140,6 +140,20 @@ function readFile(projectId: string, path: string): Promise<ReadResult> {
   )({ projectId, path });
 }
 
+type TreeResult = {
+  success: boolean;
+  files?: string[];
+  rules?: { path: string; contents: string };
+};
+
+function readTree(projectId: string): Promise<TreeResult> {
+  return (
+    tools.read_dbt_project_tree.execute as (i: {
+      projectId: string;
+    }) => Promise<TreeResult>
+  )({ projectId });
+}
+
 async function seedRepoProject(): Promise<string> {
   const project = await DbtProject.create({
     workspaceId: new Types.ObjectId(WS),
@@ -366,5 +380,34 @@ describe("edit_dbt_file on a blank (non-repo) project", () => {
     const file = await DbtFile.findOne({ path: "models/a.sql" }).lean();
     expect(file?.content).toBe("select 2");
     expect(await DbtFileDraft.countDocuments({})).toBe(0);
+  });
+});
+
+describe("read_dbt_project_tree .makorules", () => {
+  it("omits the rules key when the project has none", async () => {
+    const projectId = await seedRepoProject();
+    const tree = await readTree(projectId);
+    expect(tree.success).toBe(true);
+    expect(tree).not.toHaveProperty("rules");
+  });
+
+  it("returns the rules file inline when present", async () => {
+    const projectId = await seedRepoProject();
+    await DbtFile.create({
+      workspaceId: new Types.ObjectId(WS),
+      projectId: new Types.ObjectId(projectId),
+      branch: "main",
+      path: ".makorules.md",
+      content: "- never select *",
+      updatedBy: "sync",
+      repoBlobSha: gitBlobSha("- never select *"),
+    });
+    const tree = await readTree(projectId);
+    expect(tree.rules).toEqual({
+      path: ".makorules.md",
+      contents: "- never select *",
+    });
+    // The rules file is still a normal working-tree file.
+    expect(tree.files).toContain(".makorules.md");
   });
 });
