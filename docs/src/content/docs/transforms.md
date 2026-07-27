@@ -137,3 +137,46 @@ dbt routes are mounted under `/api/workspaces/:workspaceId/dbt`. Highlights (ful
 | `GET` | `/projects/:projectId/lineage` | DAG nodes + edges from the latest manifest |
 
 GitHub connect/import and in-IDE git operations (status, diff, commit, branch, pull request) are exposed under the same `/dbt` prefix.
+
+## Project rules (`.makorules.md`)
+
+Drop a `.makorules.md` file at the root of a dbt project and Mako's agent will
+follow it on every turn — the same idea as `.cursorrules`, scoped to how your
+team writes SQL. `.makorules` (no extension) works too; `.makorules.md` wins if
+both exist.
+
+It is an ordinary project file, so it is versioned with the project: it syncs
+from your repo, commits and pushes with the rest of your changes, and lives on
+the branch you wrote it on. Your uncommitted edits apply to your own agent turns
+straight away, so you can tune the rules and re-prompt without committing.
+
+**Precedence,** highest first:
+
+1. What you tell the agent in the conversation
+2. `.makorules.md`
+3. Workspace instructions (Settings → Prompt)
+4. Mako's built-in dbt conventions
+
+When a rule blocks what you asked for, the agent says so and cites the file
+rather than silently picking a side.
+
+**Size limit:** the first 16,000 characters (~4k tokens) are injected. Past that
+the agent is told the file was truncated.
+
+### Example
+
+```markdown
+# SQL conventions for this project
+
+- Every model starts with import CTEs (`with source as (select * from {{ ref(...) }})`),
+  one per upstream, then transform CTEs, then a single `select` at the bottom.
+- Never `select *` outside an import CTE.
+- Columns are `snake_case`; booleans are prefixed `is_` or `has_`.
+- Money is stored in minor units and suffixed `_cents`.
+- Every mart model needs a `unique` + `not_null` test on its primary key in
+  `schema.yml`, in the same PR.
+- Never hardcode a schema or table name — always `{{ ref() }}` or `{{ source() }}`.
+```
+
+You don't have to write it yourself: tell the agent a convention ("we never use
+`select *`") and it will offer to record it for you.
