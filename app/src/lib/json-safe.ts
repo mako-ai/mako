@@ -30,10 +30,18 @@ export function toJsonSafe(
   }
 
   if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return "[Circular]";
+    }
+    seen.add(value);
     return value.map(item => toJsonSafe(item, seen));
   }
 
   if (value instanceof Map) {
+    if (seen.has(value)) {
+      return "[Circular]";
+    }
+    seen.add(value);
     return Object.fromEntries(
       Array.from(value.entries()).map(([key, item]) => [
         String(key),
@@ -43,6 +51,10 @@ export function toJsonSafe(
   }
 
   if (value instanceof Set) {
+    if (seen.has(value)) {
+      return "[Circular]";
+    }
+    seen.add(value);
     return Array.from(value.values()).map(item => toJsonSafe(item, seen));
   }
 

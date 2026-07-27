@@ -628,6 +628,15 @@ export interface IMessagePart {
   input?: unknown; // Tool input/arguments (named 'input' for AI SDK v6 compat, was 'args')
   output?: unknown; // Tool result (named 'output' for AI SDK v6 compat, was 'result')
   state?: string; // Tool state: "input-streaming", "input-available", "output-streaming", "output-available", "error"
+  approval?: { id?: string; approved?: boolean }; // AI SDK MCP approval lifecycle
+  errorText?: string;
+  rawInput?: unknown;
+  providerExecuted?: boolean;
+  preliminary?: boolean;
+  callProviderMetadata?: unknown;
+  resultProviderMetadata?: unknown;
+  toolMetadata?: unknown;
+  title?: string;
   // File parts (AI SDK FileUIPart). Without these fields, persisted attachments
   // are reduced to `{ type: "file", _id }` and break `convertToModelMessages`
   // with "The messages do not match the ModelMessage[] schema."
@@ -1897,6 +1906,17 @@ const ChatSchema = new Schema<IChat>(
             input: Schema.Types.Mixed,
             output: Schema.Types.Mixed,
             state: String,
+            // AI SDK tool lifecycle fields. Approval metadata is required to
+            // continue an MCP tool call after the chat is persisted/reloaded.
+            approval: Schema.Types.Mixed,
+            errorText: String,
+            rawInput: Schema.Types.Mixed,
+            providerExecuted: Boolean,
+            preliminary: Boolean,
+            callProviderMetadata: Schema.Types.Mixed,
+            resultProviderMetadata: Schema.Types.Mixed,
+            toolMetadata: Schema.Types.Mixed,
+            title: String,
             // File parts (AI SDK FileUIPart). Persisting these keeps attachments
             // round-trippable; without them Mongoose strict mode strips the
             // fields and breaks convertToModelMessages on the next turn.
