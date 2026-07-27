@@ -72,7 +72,7 @@ const DBT_TAB_KINDS = new Set([
   "dbt-runs",
 ]);
 
-function buildOpenTabs(tabs: ConsoleTab[], activeTabId?: string | null) {
+export function buildOpenTabs(tabs: ConsoleTab[], activeTabId?: string | null) {
   return tabs.map(tab => ({
     id: tab.id,
     kind: tab.kind || "console",
