@@ -69,7 +69,7 @@ filter unchanged.
 
 ```ts
 export const DBT_RULES_PATHS = [".makorules.md", ".makorules"] as const;
-export const DBT_RULES_MAX_BYTES = 16_384;
+export const DBT_RULES_MAX_CHARS = 16_000;
 
 export interface DbtRules {
   path: string;
@@ -85,9 +85,9 @@ export async function resolveDbtRules(
 
 Reads each candidate path via `readWorkingFile` (draft-over-base) in order and
 returns the first that exists with non-whitespace contents. Contents over
-`DBT_RULES_MAX_BYTES` (~4k tokens) are cut at that boundary and marked
+`DBT_RULES_MAX_CHARS` (~4k tokens) are cut at that boundary and marked
 `truncated: true`; the renderer appends an explicit
-`[.makorules truncated at 16 KB]` line rather than cutting silently.
+`[.makorules truncated at 16000 characters]` line rather than cutting silently.
 
 Returns `null` when neither file exists. Pure over the working tree — no prompt
 or HTTP concerns, independently testable.
@@ -186,8 +186,12 @@ No new UI and no new tool.
 
 **API**
 
-- `api/src/dbt/dbt-rules.service.ts` — new
+- `api/src/dbt/dbt-rules.service.ts` — new (resolve + render)
 - `api/src/dbt/dbt-rules.service.test.ts` — new
+- `api/src/dbt/dbt-rules-turn.service.ts` — new (`resolveDbtRulesBlockForTurn`:
+  turn-level project resolution, so `agent.routes.ts` stays thin)
+- `api/src/dbt/dbt-rules-turn.service.test.ts` — new
+- `api/src/dbt/dbt-rules-prompt-wiring.test.ts` — new (both prompt consumers)
 - `api/src/dbt/dbt-github-sync.service.ts` — dotfile whitelist
 - `api/src/agent-lib/tools/dbt-tools.ts` — `rules` on `read_dbt_project_tree`
 - `api/src/agents/types.ts` — `dbtRulesBlock`, `openTabs[].dbtProjectId`
