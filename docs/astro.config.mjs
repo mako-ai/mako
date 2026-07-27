@@ -53,6 +53,7 @@ export default defineConfig({
             { label: "Skills", slug: "skills" },
             { label: "MCP Connectors", slug: "mcp-connectors" },
             { label: "MCP Server (AI Agents)", slug: "mcp-server" },
+            { label: "Coding Agents (ACP)", slug: "coding-agents-acp" },
             { label: "Notifications", slug: "notifications" },
             { label: "Mako Desktop", slug: "desktop" },
           ],
