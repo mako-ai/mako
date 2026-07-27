@@ -913,6 +913,8 @@ function ServerDetail({
   } = useMcpStore();
   const [testing, setTesting] = useState(false);
   const myGrants = grants[server.id] ?? [];
+  const hasAvailableTools =
+    server.status === "connected" && server.cachedTools.length > 0;
   const readTools = useMemo(
     () => server.cachedTools.filter(t => t.riskTier === "read"),
     [server.cachedTools],
@@ -1085,7 +1087,7 @@ function ServerDetail({
         )}
       </Stack>
 
-      {server.cachedTools.length > 0 && (
+      {hasAvailableTools && (
         <>
           <Divider />
           <Box>
@@ -1229,7 +1231,7 @@ function ServerDetail({
         </>
       )}
 
-      {server.cachedTools.length > 0 && (
+      {hasAvailableTools && (
         <>
           <Divider />
           <Box>

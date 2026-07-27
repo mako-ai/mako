@@ -43,6 +43,7 @@ import {
   type ToolIconKey,
   type ToolUiConfig,
 } from "../agent-runtime/client-tool-manifest";
+import { safeStringify } from "../lib/json-safe";
 import { getOutputSummary } from "./streaming-tool-card-summary";
 
 export type ToolPartState =
@@ -148,7 +149,7 @@ function formatOutputForDisplay(output: unknown): string {
 
   if (Array.isArray(output)) {
     const items = output.length > 10 ? output.slice(0, 10) : output;
-    const json = JSON.stringify(items, null, 2);
+    const json = safeStringify(items, 2);
     return output.length > 10
       ? json + `\n// … and ${output.length - 10} more`
       : json;
@@ -170,7 +171,7 @@ function formatOutputForDisplay(output: unknown): string {
     if (typeof val === "string") return val;
   }
 
-  return JSON.stringify(o, null, 2);
+  return safeStringify(o, 2);
 }
 
 // The tool body always renders the FULL content — never truncated. What we DO
@@ -414,7 +415,7 @@ export const StreamingToolCard = React.memo(
         (typeof rawContent === "string"
           ? rawContent
           : rawContent && typeof rawContent === "object"
-            ? JSON.stringify(rawContent, null, 2)
+            ? safeStringify(rawContent, 2)
             : "")
       );
     }, [shouldRenderBody, hasCode, bodyPreview?.content, rawContent]);

@@ -488,7 +488,7 @@ export const persistChatError = async (
  * NEW: The `parts` array is the source of truth for message structure.
  * Legacy fields (content, reasoning, toolCalls) are still populated for backward compatibility.
  */
-function convertUIMessageToStoredFormat(msg: UIMessage): {
+export function convertUIMessageToStoredFormat(msg: UIMessage): {
   id: string;
   role: "user" | "assistant";
   parts: Array<{
@@ -564,13 +564,31 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
           partType === "dynamic-tool"
             ? (p.toolName as string)
             : partType.split("-").slice(1).join("-");
+        const hasOutput =
+          Object.prototype.hasOwnProperty.call(p, "output") &&
+          p.output !== undefined;
         return {
           type: partType,
           toolCallId: p.toolCallId as string,
           toolName: toolName || (p.toolName as string),
           input: p.input ?? {},
-          output: p.output ?? null,
           state: (p.state as string) || "output-available",
+          ...(hasOutput ? { output: p.output } : {}),
+          ...(p.approval != null ? { approval: p.approval } : {}),
+          ...(p.errorText != null ? { errorText: p.errorText } : {}),
+          ...(p.rawInput != null ? { rawInput: p.rawInput } : {}),
+          ...(p.providerExecuted != null
+            ? { providerExecuted: p.providerExecuted }
+            : {}),
+          ...(p.preliminary != null ? { preliminary: p.preliminary } : {}),
+          ...(p.callProviderMetadata != null
+            ? { callProviderMetadata: p.callProviderMetadata }
+            : {}),
+          ...(p.resultProviderMetadata != null
+            ? { resultProviderMetadata: p.resultProviderMetadata }
+            : {}),
+          ...(p.toolMetadata != null ? { toolMetadata: p.toolMetadata } : {}),
+          ...(p.title != null ? { title: p.title } : {}),
         };
       }
 
