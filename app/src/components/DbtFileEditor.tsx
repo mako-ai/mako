@@ -1,8 +1,14 @@
 /**
  * DbtFileEditor — full-screen Monaco editor for one dbt project file plus a
- * persistent dbt Studio-style bottom panel (Commands / Problems / Results /
- * Code quality / Compiled code / Lineage) and a status bar (inline command
- * input, defer environment, compile status, dbt version, problem counts).
+ * persistent dbt Cloud-style bottom panel (Commands / Problems / Results /
+ * Compiled code / Lineage) and a status bar (inline command input, defer
+ * environment, compile status, dbt version, problem counts).
+ *
+ * The panel toolbar mirrors dbt Cloud's: Preview (bounded read-only `dbt show`,
+ * also bound to ⌘↵) · Compile · Build ▾ (split button whose menu carries the
+ * Build/Run/Test × graph-operator matrix). Preview fills the Results grid with
+ * real rows; Build/Run/Test node outcomes live in the Commands tab next to the
+ * command that produced them.
  */
 
 import {
@@ -39,20 +45,24 @@ import {
   CheckCircle2 as OkIcon,
   ChevronDown as CollapseIcon,
   ChevronUp as ExpandIcon,
-  Hammer as CompileIcon,
+  Code2 as CompileIcon,
   Play as RunIcon,
+  Table2 as PreviewIcon,
   Terminal as CommandIcon,
+  Wrench as BuildIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import MonacoEditor, { type Monaco } from "@monaco-editor/react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import {
+  DBT_PREVIEW_DEFAULT_LIMIT,
   useDbtStore,
   visibleDbtEnvironments,
   type DbtCompileResult,
-  type DbtCommandRunResult,
+  type DbtPreviewResult,
   type DbtRunLogLine,
+  type DbtStepResult,
 } from "../store/dbtStore";
 import {
   registerDbtJinjaLanguage,
@@ -73,112 +83,56 @@ import {
   type Problem,
 } from "../lib/dbt-editor-logic";
 import { resolveDevEnvName, resolveProdLikeEnvName } from "../lib/dbt-env";
+import {
+  appendInvocation,
+  settleInvocation,
+  type DbtCommandInvocation,
+} from "../lib/dbt-command-history";
+import {
+  downloadTextFile,
+  previewFilename,
+  rowsToCsv,
+  rowsToNdjson,
+} from "../lib/preview-export";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
 import EntityLoadErrorState, {
   EntityLoadingState,
 } from "./EntityLoadErrorState";
 import StreamingMarkdown from "./StreamingMarkdown";
+import DbtCommandsPanel from "./DbtCommandsPanel";
 
 const DbtLineageView = lazy(() => import("./DbtLineageView"));
+// The results grid drags in MUI's DataGrid (+ its stylesheet) and the charting
+// stack; keep it out of the editor's chunk until a Preview actually runs.
+const ResultsTable = lazy(() => import("./ResultsTable"));
 
-type PanelTab =
-  | "commands"
-  | "problems"
-  | "results"
-  | "quality"
-  | "compiled"
-  | "lineage";
+type PanelTab = "commands" | "problems" | "results" | "compiled" | "lineage";
 
-function LogLines({ logs }: { logs: DbtRunLogLine[] }) {
+/**
+ * dbt Cloud's empty Results state: previews are explicit, so an untouched tab
+ * says which button fills it rather than pretending to be loading.
+ */
+function ResultsEmptyState({ message }: { message: string }) {
   return (
     <Box
       sx={{
-        fontFamily: "monospace",
-        fontSize: "0.75rem",
-        whiteSpace: "pre-wrap",
-        p: 1,
-        overflow: "auto",
         height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 1,
+        color: "text.secondary",
       }}
     >
-      {logs.length === 0 ? (
-        <Typography variant="caption" color="text.secondary">
-          No output.
-        </Typography>
-      ) : (
-        logs.map((log, index) => (
-          <Box
-            key={index}
-            component="div"
-            sx={{
-              color:
-                log.level === "error"
-                  ? "error.main"
-                  : log.level === "warn"
-                    ? "warning.main"
-                    : "text.primary",
-            }}
-          >
-            {log.line}
-          </Box>
-        ))
-      )}
-    </Box>
-  );
-}
-
-function StepResultsTable({
-  steps,
-}: {
-  steps: DbtCommandRunResult["stepResults"];
-}) {
-  return (
-    <Box
-      component="table"
-      sx={{
-        width: "100%",
-        fontSize: "0.75rem",
-        borderCollapse: "collapse",
-        "& td, & th": {
-          borderBottom: "1px solid",
-          borderColor: "divider",
-          p: 0.5,
-          textAlign: "left",
-        },
-      }}
-    >
-      <thead>
-        <tr>
-          <th>Node</th>
-          <th>Type</th>
-          <th>Status</th>
-          <th>Time</th>
-          <th>Rows</th>
-        </tr>
-      </thead>
-      <tbody>
-        {steps.map(step => (
-          <Box
-            component="tr"
-            key={step.uniqueId}
-            sx={{
-              color:
-                step.status === "error" || step.status === "fail"
-                  ? "error.main"
-                  : step.status === "warn"
-                    ? "warning.main"
-                    : "inherit",
-            }}
-          >
-            <td>{step.name}</td>
-            <td>{step.resourceType}</td>
-            <td>{step.status}</td>
-            <td>{(step.executionTimeMs / 1000).toFixed(2)}s</td>
-            <td>{step.rowsAffected ?? ""}</td>
-          </Box>
-        ))}
-      </tbody>
+      <PreviewIcon size={44} strokeWidth={1.25} />
+      <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+        There&apos;s nothing here.
+      </Typography>
+      <Typography variant="body2" color="text.secondary">
+        {message}
+      </Typography>
     </Box>
   );
 }
@@ -296,6 +250,7 @@ export default function DbtFileEditor({
   const persistFile = useDbtStore(s => s.persistFile);
   const compileModel = useDbtStore(s => s.compileModel);
   const runCommand = useDbtStore(s => s.runCommand);
+  const previewModel = useDbtStore(s => s.previewModel);
   const setMyEnvironment = useDbtStore(s => s.setMyEnvironment);
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -307,14 +262,18 @@ export default function DbtFileEditor({
   const [panelOpen, setPanelOpen] = useState(true);
   const [panelTab, setPanelTab] = useState<PanelTab>("compiled");
   const [busy, setBusy] = useState<
-    "compile" | "run" | "command" | "parse" | null
+    "compile" | "preview" | "command" | "parse" | null
   >(null);
   const [compileResult, setCompileResult] = useState<DbtCompileResult | null>(
     null,
   );
   const [command, setCommand] = useState("");
-  const [commandResult, setCommandResult] =
-    useState<DbtCommandRunResult | null>(null);
+  const [preview, setPreview] = useState<DbtPreviewResult | null>(null);
+  // Session-scoped Commands rail (see lib/dbt-command-history).
+  const [history, setHistory] = useState<DbtCommandInvocation[]>([]);
+  const [selectedInvocationId, setSelectedInvocationId] = useState<
+    string | null
+  >(null);
   const [problems, setProblems] = useState<Problem[] | null>(null);
   const [runMenuAnchor, setRunMenuAnchor] = useState<HTMLElement | null>(null);
   // Markdown docs (.md/.markdown) open in a rendered preview by default; the
@@ -405,14 +364,85 @@ export default function DbtFileEditor({
     if (workspaceId) void persistFile(workspaceId, projectId, path);
   }, [workspaceId, projectId, path, persistFile]);
 
+  // ⌘S saves, ⌘↵ previews. Both are registered once on mount, so they read the
+  // live handler through a ref rather than capturing the mount-time closure.
+  const previewRef = useRef<() => void>(() => {});
   const handleEditorMount = useCallback(
     (
       editor: { addCommand: (keys: number, handler: () => void) => void },
-      monaco: { KeyMod: { CtrlCmd: number }; KeyCode: { KeyS: number } },
+      monaco: {
+        KeyMod: { CtrlCmd: number };
+        KeyCode: { KeyS: number; Enter: number };
+      },
     ) => {
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveNow);
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () =>
+        previewRef.current(),
+      );
     },
     [saveNow],
+  );
+
+  /**
+   * Run one dbt invocation and log it in the Commands rail: append a `running`
+   * entry up front (so a slow build is visible while it runs), then settle it
+   * with the outcome. Returns the runner's result untouched so each caller can
+   * still drive its own tab.
+   */
+  const invocationSeq = useRef(0);
+  const recordInvocation = useCallback(
+    async <T,>(
+      commandLabel: string,
+      run: () => Promise<T>,
+      describe: (result: T) => {
+        status: "success" | "error";
+        logs: DbtRunLogLine[];
+        stepResults: DbtStepResult[];
+      },
+    ): Promise<T> => {
+      const id = `inv-${(invocationSeq.current += 1)}`;
+      const startedAt = Date.now();
+      setHistory(entries =>
+        appendInvocation(entries, {
+          id,
+          command: commandLabel,
+          environment: environment || "—",
+          startedAt,
+          status: "running",
+          logs: [],
+          stepResults: [],
+        }),
+      );
+      setSelectedInvocationId(id);
+      try {
+        const result = await run();
+        setHistory(entries =>
+          settleInvocation(entries, id, {
+            durationMs: Date.now() - startedAt,
+            ...describe(result),
+          }),
+        );
+        return result;
+      } catch (error) {
+        // The store actions swallow failures into result objects, so this only
+        // fires on a genuine crash — still, never strand an entry as running.
+        setHistory(entries =>
+          settleInvocation(entries, id, {
+            durationMs: Date.now() - startedAt,
+            status: "error",
+            logs: [
+              {
+                ts: new Date().toISOString(),
+                level: "error",
+                line: String(error),
+              },
+            ],
+          }),
+        );
+        throw error;
+      }
+    },
+    [environment],
   );
 
   const runParse = useCallback(async () => {
@@ -435,12 +465,21 @@ export default function DbtFileEditor({
     setBusy("compile");
     setPanelOpen(true);
     setPanelTab("compiled");
-    const result = await compileModel(
-      workspaceId,
-      projectId,
-      modelName,
-      environment || undefined,
-      defer,
+    const result = await recordInvocation(
+      `compile --select ${modelName}`,
+      () =>
+        compileModel(
+          workspaceId,
+          projectId,
+          modelName,
+          environment || undefined,
+          defer,
+        ),
+      compiled => ({
+        status: compiled?.ok ? ("success" as const) : ("error" as const),
+        logs: compiled?.logs ?? [],
+        stepResults: [],
+      }),
     );
     setCompileResult(result);
     if (result && !result.ok) setPanelTab("problems");
@@ -454,7 +493,83 @@ export default function DbtFileEditor({
     defer,
     compileModel,
     saveNow,
+    recordInvocation,
   ]);
+
+  /**
+   * Preview (⌘↵) — a bounded, read-only `dbt show` over the model's compiled
+   * SQL. Nothing is materialized, so unlike Build/Run/Test it needs no prod
+   * confirmation and never touches run history.
+   */
+  const previewInFlightRef = useRef(false);
+  const handlePreview = useCallback(async () => {
+    if (!workspaceId || !modelName) return;
+    // ⌘↵ can arrive from both Monaco's binding and the document listener, and
+    // it is a chord people mash — one preview at a time either way.
+    if (previewInFlightRef.current) return;
+    previewInFlightRef.current = true;
+    saveNow();
+    manualBusyRef.current = true;
+    setBusy("preview");
+    setPanelOpen(true);
+    setPanelTab("results");
+    const result = await recordInvocation(
+      `show --select ${modelName} --limit ${DBT_PREVIEW_DEFAULT_LIMIT}`,
+      () =>
+        previewModel(
+          workspaceId,
+          projectId,
+          modelName,
+          environment || undefined,
+          defer,
+        ),
+      previewed => ({
+        status: previewed?.ok ? ("success" as const) : ("error" as const),
+        logs: previewed?.logs ?? [],
+        stepResults: [],
+      }),
+    );
+    setPreview(result);
+    manualBusyRef.current = false;
+    previewInFlightRef.current = false;
+    setBusy(null);
+  }, [
+    workspaceId,
+    projectId,
+    modelName,
+    environment,
+    defer,
+    previewModel,
+    saveNow,
+    recordInvocation,
+  ]);
+
+  useEffect(() => {
+    previewRef.current = () => void handlePreview();
+  }, [handlePreview]);
+
+  // ⌘↵ previews from anywhere in the tab, not just with Monaco focused (the
+  // panel, the command bar, a markdown preview). Monaco binds the same chord
+  // to override its built-in "insert line below" and stops propagation there,
+  // so this listener only sees the cases Monaco didn't handle.
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
+      const container = containerRef.current;
+      if (!container) return;
+      // Console tabs stay mounted while hidden, so a document listener would
+      // otherwise fire in every open dbt file. Only the visible tab responds.
+      const tabHost = container.closest("[data-mako-tab-id]");
+      if (tabHost && !tabHost.hasAttribute("data-mako-active-tab-content")) {
+        return;
+      }
+      event.preventDefault();
+      previewRef.current();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   // Quiet, automatic compile: refreshes the Compiled code tab + status pill
   // without stealing focus or switching tabs. Dev-only and skipped while an
@@ -478,7 +593,7 @@ export default function DbtFileEditor({
     autoCompileRef.current = autoCompile;
   }, [autoCompile]);
 
-  // On open / environment change: parse the project (Problems + Code quality)
+  // On open / environment change: parse the project (populating Problems)
   // then live-compile the active model so the status pill and Compiled code
   // populate automatically — mirroring dbt Studio (no Compile button).
   useEffect(() => {
@@ -512,16 +627,23 @@ export default function DbtFileEditor({
       manualBusyRef.current = true;
       setBusy("command");
       setPanelOpen(true);
-      setPanelTab("results");
-      const res = await runCommand(
-        workspaceId,
-        projectId,
+      setPanelTab("commands");
+      await recordInvocation(
         cmd,
-        environment || undefined,
-        defer,
+        () =>
+          runCommand(
+            workspaceId,
+            projectId,
+            cmd,
+            environment || undefined,
+            defer,
+          ),
+        res => ({
+          status: res?.ok ? ("success" as const) : ("error" as const),
+          logs: res?.logs ?? [],
+          stepResults: res?.stepResults ?? [],
+        }),
       );
-      setCommandResult(res);
-      if (res && res.stepResults.length === 0) setPanelTab("commands");
       manualBusyRef.current = false;
       setBusy(null);
     },
@@ -534,6 +656,7 @@ export default function DbtFileEditor({
       fullRefresh,
       runCommand,
       saveNow,
+      recordInvocation,
     ],
   );
 
@@ -550,14 +673,25 @@ export default function DbtFileEditor({
     setBusy("command");
     setPanelOpen(true);
     setPanelTab("commands");
-    const res = await runCommand(
-      workspaceId,
-      projectId,
-      command.trim(),
-      environment || undefined,
-      defer,
+    // Accept a pasted "dbt build ..." — the API strips it too, but the rail
+    // shouldn't read "dbt dbt build ...".
+    const normalized = command.trim().replace(/^dbt\s+/i, "");
+    await recordInvocation(
+      normalized,
+      () =>
+        runCommand(
+          workspaceId,
+          projectId,
+          normalized,
+          environment || undefined,
+          defer,
+        ),
+      res => ({
+        status: res?.ok ? ("success" as const) : ("error" as const),
+        logs: res?.logs ?? [],
+        stepResults: res?.stepResults ?? [],
+      }),
     );
-    setCommandResult(res);
     manualBusyRef.current = false;
     setBusy(null);
   }, [
@@ -568,6 +702,7 @@ export default function DbtFileEditor({
     defer,
     runCommand,
     saveNow,
+    recordInvocation,
   ]);
 
   const errorCount = useMemo(
@@ -578,34 +713,56 @@ export default function DbtFileEditor({
     () => problems?.filter(p => p.severity === "warn").length ?? 0,
     [problems],
   );
-  const errorProblems = useMemo(
-    () => problems?.filter(p => p.severity === "error") ?? null,
-    [problems],
-  );
-  const warnProblems = useMemo(
-    () => problems?.filter(p => p.severity === "warn") ?? null,
-    [problems],
+
+  // The Results grid speaks ResultsTable's QueryResult shape. `fields` carries
+  // the warehouse column order so a preview's columns don't get alphabetised,
+  // and empty-but-typed results still render their headers.
+  const previewResults = useMemo(() => {
+    if (!preview?.ok) return null;
+    return {
+      results: preview.rows,
+      executedAt: new Date().toISOString(),
+      resultCount: preview.rows.length,
+      fields: preview.columns,
+    };
+  }, [preview]);
+
+  // Preview rows are already in memory, so export needs no server round trip
+  // (unlike the SQL console, which streams a full paginated result set).
+  const handleDownloadPreview = useCallback(
+    (format: "csv" | "ndjson") => {
+      if (!preview?.ok) return;
+      const content =
+        format === "csv"
+          ? rowsToCsv(preview.columns, preview.rows)
+          : rowsToNdjson(preview.rows);
+      downloadTextFile(
+        previewFilename(preview.node ?? modelName ?? undefined, format),
+        content,
+        format,
+      );
+    },
+    [preview, modelName],
   );
 
-  const resultSteps = commandResult?.stepResults;
-  const commandLogs = commandResult?.logs ?? compileResult?.logs ?? [];
-
-  // Status pill mirrors dbt Studio: it reflects the live compile state of the
-  // active model (runs/tests surface their outcome in Results/Commands).
+  // Status pill mirrors dbt Cloud: it reflects the live compile state of the
+  // active model (previews/runs surface their outcome in Results/Commands).
   const status: { label: string; tone: "ok" | "error" | "busy" | "idle" } =
     busy === "compile"
       ? { label: "Compiling…", tone: "busy" }
-      : busy === "run" || busy === "command"
-        ? { label: "Running…", tone: "busy" }
-        : busy === "parse"
-          ? { label: "Checking…", tone: "busy" }
-          : compileResult
-            ? compileResult.ok
-              ? { label: "Compiled", tone: "ok" }
-              : { label: "Compile error", tone: "error" }
-            : errorCount > 0
-              ? { label: "Errors", tone: "error" }
-              : { label: "Ready", tone: "idle" };
+      : busy === "preview"
+        ? { label: "Previewing…", tone: "busy" }
+        : busy === "command"
+          ? { label: "Running…", tone: "busy" }
+          : busy === "parse"
+            ? { label: "Checking…", tone: "busy" }
+            : compileResult
+              ? compileResult.ok
+                ? { label: "Compiled", tone: "ok" }
+                : { label: "Compile error", tone: "error" }
+              : errorCount > 0
+                ? { label: "Errors", tone: "error" }
+                : { label: "Ready", tone: "idle" };
 
   if (!file?.loaded) {
     if (fileLoadError) {
@@ -680,32 +837,60 @@ export default function DbtFileEditor({
     >
       {modelName && (
         <Box sx={{ display: "flex", alignItems: "center", pl: 0.5 }}>
-          <Tooltip title="Recompile this model">
+          <Tooltip title="Preview this model's rows (⌘↵) — read-only, nothing is materialized">
             <span>
               <IconButton
                 size="small"
-                aria-label="Recompile this model"
+                aria-label="Preview this model"
+                disabled={busy !== null}
+                onClick={handlePreview}
+              >
+                <PreviewIcon size={16} />
+              </IconButton>
+            </span>
+          </Tooltip>
+          <Tooltip title="Compile this model's Jinja to SQL">
+            <span>
+              <IconButton
+                size="small"
+                aria-label="Compile this model"
                 disabled={busy !== null}
                 onClick={handleCompile}
               >
-                <CompileIcon size={15} />
+                <CompileIcon size={16} />
               </IconButton>
             </span>
           </Tooltip>
-          <Tooltip title="Build / Run / Test this model (with upstream/downstream selectors)">
-            <span>
-              <IconButton
-                size="small"
-                color="primary"
-                aria-label="Build, run, or test this model"
-                disabled={busy !== null}
-                onClick={e => setRunMenuAnchor(e.currentTarget)}
-              >
-                <RunIcon size={15} />
-                <CollapseIcon size={11} style={{ marginLeft: -1 }} />
-              </IconButton>
-            </span>
-          </Tooltip>
+          {/* Split button: clicking builds the model, the caret opens the
+              Build/Run/Test × graph-operator matrix. */}
+          <Box sx={{ display: "flex", alignItems: "center" }}>
+            <Tooltip title="Build this model (dbt build --select <model>)">
+              <span>
+                <IconButton
+                  size="small"
+                  aria-label="Build this model"
+                  disabled={busy !== null}
+                  onClick={() => void runNodeSelection("build", "")}
+                  sx={{ pr: 0.25 }}
+                >
+                  <BuildIcon size={16} />
+                </IconButton>
+              </span>
+            </Tooltip>
+            <Tooltip title="Build / Run / Test this model (with upstream/downstream selectors)">
+              <span>
+                <IconButton
+                  size="small"
+                  aria-label="Build, run, or test this model"
+                  disabled={busy !== null}
+                  onClick={e => setRunMenuAnchor(e.currentTarget)}
+                  sx={{ pl: 0.25 }}
+                >
+                  <CollapseIcon size={13} />
+                </IconButton>
+              </span>
+            </Tooltip>
+          </Box>
           <Box
             sx={{
               width: "1px",
@@ -734,11 +919,6 @@ export default function DbtFileEditor({
           sx={{ py: 0 }}
         />
         <Tab label="Results" value="results" sx={{ py: 0 }} />
-        <Tab
-          label={`Code quality${warnCount ? ` ${warnCount}` : ""}`}
-          value="quality"
-          sx={{ py: 0 }}
-        />
         <Tab label="Compiled code" value="compiled" sx={{ py: 0 }} />
         <Tab label="Lineage" value="lineage" sx={{ py: 0 }} />
       </Tabs>
@@ -754,51 +934,63 @@ export default function DbtFileEditor({
   const panelBody = (
     <Box sx={{ flex: 1, minHeight: 0, overflow: "auto" }}>
       {panelTab === "commands" && (
-        <Box sx={{ height: "100%" }}>
-          {commandResult ? (
-            <LogLines logs={commandLogs} />
-          ) : (
-            <Box sx={{ p: 2 }}>
-              <Typography variant="caption" color="text.secondary">
-                Type a dbt command in the bar below (e.g.{" "}
-                <code>build --select stg_orders+</code>) and press Enter.
-              </Typography>
-            </Box>
-          )}
-        </Box>
+        <DbtCommandsPanel
+          history={history}
+          selectedId={selectedInvocationId}
+          onSelect={setSelectedInvocationId}
+        />
       )}
 
       {panelTab === "problems" && (
         <ProblemList
-          problems={errorProblems}
+          problems={problems}
           projectId={projectId}
           busy={busy === "parse"}
           emptyOk="No problems — project parses cleanly."
         />
       )}
 
-      {panelTab === "results" && (
-        <Box sx={{ p: 1 }}>
-          {!resultSteps || resultSteps.length === 0 ? (
-            <Typography variant="caption" color="text.secondary">
-              {busy === "run" || busy === "command"
-                ? "Running…"
-                : "Run a model or command to see node results."}
-            </Typography>
-          ) : (
-            <StepResultsTable steps={resultSteps} />
-          )}
-        </Box>
-      )}
-
-      {panelTab === "quality" && (
-        <ProblemList
-          problems={warnProblems}
-          projectId={projectId}
-          busy={busy === "parse"}
-          emptyOk="No code-quality warnings."
-        />
-      )}
+      {panelTab === "results" &&
+        (busy === "preview" ? (
+          <Box
+            sx={{
+              height: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <CircularProgress size={24} />
+          </Box>
+        ) : previewResults ? (
+          <Box sx={{ height: "100%", minHeight: 0 }}>
+            <Suspense
+              fallback={
+                <Box sx={{ p: 3, display: "flex", justifyContent: "center" }}>
+                  <CircularProgress size={20} />
+                </Box>
+              }
+            >
+              <ResultsTable
+                results={previewResults}
+                hideChartView
+                onDownload={handleDownloadPreview}
+              />
+            </Suspense>
+          </Box>
+        ) : preview && !preview.ok ? (
+          // Failed preview: the reason is in the logs, so point at the tab
+          // that has them rather than showing an empty grid.
+          <ResultsEmptyState message="Preview failed — see the Commands tab for the error." />
+        ) : (
+          <ResultsEmptyState
+            message={
+              modelName
+                ? "Press the Preview button above (⌘↵)."
+                : "Open a .sql model to preview its rows."
+            }
+          />
+        ))}
 
       {panelTab === "compiled" &&
         (compileResult?.compiledSql ? (
@@ -1069,9 +1261,13 @@ export default function DbtFileEditor({
   );
 
   return (
-    <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+    <Box
+      ref={containerRef}
+      sx={{ height: "100%", display: "flex", flexDirection: "column" }}
+    >
       {/* Breadcrumb (workspace › Transforms › project › path). Compile is live
-          and runs go through the command bar, mirroring dbt Studio. */}
+          and runs go through the toolbar or the command bar, mirroring dbt
+          Cloud. */}
       <EntityBreadcrumbs tabId={tabId} trailing={markdownPreviewToggle} />
 
       <Box sx={{ flex: 1, minHeight: 0 }}>

@@ -40,6 +40,13 @@ vi.mock("./EntityBreadcrumbs", () => ({
     <div data-testid="breadcrumbs">{trailing}</div>
   ),
 }));
+// The real results grid pulls MUI DataGrid's stylesheet, which the jsdom
+// runner can't load. Assert on the rows handed to it instead.
+vi.mock("./ResultsTable", () => ({
+  default: ({ results }: { results: { results: unknown[] } }) => (
+    <div data-testid="results-grid">{JSON.stringify(results.results)}</div>
+  ),
+}));
 
 import DbtFileEditor from "./DbtFileEditor";
 import { useDbtStore } from "../store/dbtStore";
@@ -55,6 +62,15 @@ const compileModelMock = vi.fn(async () => ({
   ok: true,
   exitCode: 0,
   compiledSql: "select 1",
+  logs: [],
+}));
+const previewModelMock = vi.fn(async () => ({
+  ok: true,
+  exitCode: 0,
+  limit: 500,
+  columns: ["id", "name"],
+  rows: [{ id: 1, name: "acme" }],
+  node: "foo",
   logs: [],
 }));
 
@@ -98,6 +114,7 @@ beforeEach(() => {
     filePathsByProject: { p1: ["models/foo.sql"] } as never,
     runCommand: runCommandMock as never,
     compileModel: compileModelMock as never,
+    previewModel: previewModelMock as never,
     readFile: vi.fn(async () => "select 1") as never,
     persistFile: vi.fn(async () => true) as never,
     writeFile: vi.fn() as never,
@@ -150,6 +167,108 @@ describe("DbtFileEditor", () => {
         false,
       ),
     );
+  });
+
+  it("previews rows into the Results tab from the toolbar button", async () => {
+    const user = userEvent.setup();
+    render(<DbtFileEditor tabId="t1" projectId="p1" path="models/foo.sql" />);
+
+    // Nothing previewed yet — Results points at the button that fills it.
+    await user.click(await screen.findByRole("tab", { name: "Results" }));
+    expect(screen.getByText(/There's nothing here/i)).toBeTruthy();
+
+    const previewButton = await screen.findByRole("button", {
+      name: /preview this model/i,
+    });
+    await waitFor(() =>
+      expect((previewButton as HTMLButtonElement).disabled).toBe(false),
+    );
+    await user.click(previewButton);
+
+    await waitFor(() =>
+      expect(previewModelMock).toHaveBeenCalledWith(
+        "ws1",
+        "p1",
+        "foo",
+        "dev",
+        false,
+      ),
+    );
+
+    // Preview jumps to Results and hands the rows to the grid.
+    const grid = await screen.findByTestId("results-grid");
+    expect(JSON.parse(grid.textContent as string)).toEqual([
+      { id: 1, name: "acme" },
+    ]);
+  });
+
+  it("previews on Cmd+Enter without materializing anything", async () => {
+    const user = userEvent.setup();
+    render(<DbtFileEditor tabId="t1" projectId="p1" path="models/foo.sql" />);
+
+    await waitFor(() => expect(compileModelMock).toHaveBeenCalled());
+
+    // Monaco is stubbed, so the shortcut arrives at the tab's key handler.
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+    await waitFor(() =>
+      expect(previewModelMock).toHaveBeenCalledWith(
+        "ws1",
+        "p1",
+        "foo",
+        "dev",
+        false,
+      ),
+    );
+    // ⌘↵ is read-only: no build/run reached the warehouse.
+    expect(runCommandMock).not.toHaveBeenCalled();
+  });
+
+  it("ignores Cmd+Enter in a background console tab", async () => {
+    const user = userEvent.setup();
+    // Console tabs stay mounted while hidden (display:none), so the shortcut's
+    // document listener must only answer for the tab the user is looking at.
+    render(
+      <div data-mako-tab-id="t1">
+        <DbtFileEditor tabId="t1" projectId="p1" path="models/foo.sql" />
+      </div>,
+    );
+
+    await waitFor(() => expect(compileModelMock).toHaveBeenCalled());
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+    expect(previewModelMock).not.toHaveBeenCalled();
+  });
+
+  it("builds the model from the split button's primary action", async () => {
+    const user = userEvent.setup();
+    render(<DbtFileEditor tabId="t1" projectId="p1" path="models/foo.sql" />);
+
+    const buildButton = await screen.findByRole("button", {
+      name: /^build this model$/i,
+    });
+    await waitFor(() =>
+      expect((buildButton as HTMLButtonElement).disabled).toBe(false),
+    );
+    await user.click(buildButton);
+
+    await waitFor(() =>
+      expect(runCommandMock).toHaveBeenCalledWith(
+        "ws1",
+        "p1",
+        "build --select foo",
+        "dev",
+        false,
+      ),
+    );
+
+    // The invocation lands in the Commands rail with its node results.
+    await user.click(screen.getByRole("tab", { name: "Commands" }));
+    expect(
+      await screen.findByText("dbt build --select foo", {
+        selector: "h6",
+      }),
+    ).toBeTruthy();
   });
 
   it("renders a markdown preview by default for .md files and toggles to the editor", async () => {
