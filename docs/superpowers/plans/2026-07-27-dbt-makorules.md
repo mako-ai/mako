@@ -1181,7 +1181,8 @@ straight away, so you can tune the rules and re-prompt without committing.
 1. What you tell the agent in the conversation
 2. `.makorules.md`
 3. Workspace instructions (Settings → Prompt)
-4. Mako's built-in dbt conventions
+4. The `dbt` system skill
+5. Mako's built-in dbt conventions
 
 When a rule blocks what you asked for, the agent says so and cites the file
 rather than silently picking a side.
