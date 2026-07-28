@@ -80,7 +80,7 @@ editing, and disconnected from Mako connectors, marts, and auth.
 | --- | --- |
 | MVP | One real n8n flow replaced (Calendly → Close opportunity) running in Mako |
 | v1 | Reverse-ETL style mart → Close upsert as a second workflow; run history + agent edit |
-| v1.5 | Optional GitHub binding; webhook + cron triggers; basic fixture tests |
+| v1.5 | Optional GitHub binding; optional HMAC verification on ingress; basic fixture tests |
 | Later | OCR/compute steps; self-heal from Slack/run failures; engine consolidation |
 
 ### 4.2 Success metrics
@@ -145,11 +145,9 @@ const CalendlyInviteeCreated = z.object({
 export default workflow({
   name: "calendly_to_close_opportunity",
   description: "Create a Close opportunity when a Calendly demo is booked",
-  trigger: {
-    type: "connector_webhook",
-    connector: "calendly",
-    event: "invitee.created",
-  },
+  // "manual" = run via POST URL. Point Calendly (or any provider) at the
+  // workflow's URL — Mako doesn't need to know who is calling.
+  trigger: { type: "manual" },
   input: CalendlyInviteeCreated,
 
   async run(input, ctx) {
@@ -269,7 +267,7 @@ Editing draft does not affect production until publish (same spirit as apps/dbt)
                              │ publish snapshot
                              ▼
 ┌─ Control plane (Mako API) ──────────────────────────────────┐
-│  Triggers: connector webhooks, cron, manual                  │
+│  Triggers: tokenized POST URL (webhooks/manual), cron         │
 │  Credential injection: workspace connectors (encrypted)      │
 │  Run records: status, step timeline, I/O redaction           │
 │  Deploy registry: workspace → published workflow bundle      │
@@ -323,10 +321,10 @@ The workflow body only sees a typed `input`. It does not register webhooks or
 crons itself.
 
 ```
-[Calendly / cron / UI]
+[any provider POST / cron / UI]
         │
         ▼
- Mako ingress (verify / due check)
+ Mako ingress (token check / due check)
         │
         ▼
  create WorkflowRun(input)
@@ -342,15 +340,22 @@ This is the same split Sync already uses (schedule/webhook on `IFlow`, executor
 elsewhere) — but Workflows **must not** drain into CDC materialization. Ingress
 enqueues a workflow run, not a warehouse MERGE.
 
-### 9.1 Trigger kinds (MVP)
+### 9.1 Trigger kinds (MVP) — only two
 
 | Kind | Who fires it | What `input` is |
 | --- | --- | --- |
-| `connector_webhook` | External provider → Mako URL | Normalized event payload from the connector |
+| `manual` | Anything that can POST JSON: provider webhooks (Calendly, Stripe, GitHub, …), UI “Run now”, agent, curl | Raw JSON body, validated by the workflow’s Zod schema |
 | `cron` | Platform scheduler | Empty/`{}` or last-cursor bag (declared by workflow) |
-| `manual` | UI / API “Run now” | JSON the user pastes (often a fixture) |
 
-Later (not MVP): `http` signed URL, `on_sync_completed`, Slack events.
+**Triggers are provider-agnostic.** Every published `manual` workflow gets a
+stable **tokenized POST URL**. External webhooks are not a special trigger
+type — the author pastes the workflow URL into Calendly (or any provider) and
+Mako neither knows nor cares who is calling. UI “Run now” and provider
+deliveries go through the exact same ingress pipeline.
+
+Later (not MVP): optional per-provider HMAC verification, connector-assisted
+subscription provisioning (convenience, not core), `on_sync_completed`, Slack
+events.
 
 ### 9.2 Where trigger config lives
 
@@ -359,24 +364,19 @@ Later (not MVP): `http` signed URL, `on_sync_completed`, Slack events.
 ```ts
 export default workflow({
   name: "calendly_to_close_opportunity",
-  trigger: {
-    type: "connector_webhook",
-    connector: "calendly",           // logical name → workspace connector binding
-    event: "invitee.created",        // must be in connector webhook catalog
-  },
-  input: CalendlyInviteeCreated,
+  trigger: { type: "manual" },       // default — may be omitted
+  input: CalendlyInviteeCreated,     // the only contract with the caller
   async run(input, ctx) { /* ... */ },
 });
 ```
 
 **Bound at publish** into a `Workflow` deploy record:
 
-- resolve `connector: "calendly"` → workspace `connectorId`
-- allocate public endpoint + signing secret (if webhook)
-- optionally call `connector.createWebhookSubscription()` (same as Sync provision)
-- store `enabled`, cron expression, endpoint URL on the deploy record
+- allocate the public POST URL + secret token (capability URL)
+- store `enabled`, cron expression (if cron), `nextRunAt`
+- token is rotatable from the UI; rotating invalidates the old URL
 
-Draft edits do not move provider webhooks until **Publish**.
+Draft edits do not change the live URL or schedule until **Publish**.
 
 Cron example:
 
@@ -384,64 +384,76 @@ Cron example:
 trigger: { type: "cron", cron: "0 */6 * * *", timezone: "UTC" }
 ```
 
-Manual:
+Cron workflows still get the POST URL — “Run now” with a fixture payload is
+always available regardless of trigger kind.
 
-```ts
-trigger: { type: "manual" } // also always available as “Run now” even if primary trigger is webhook/cron
-```
-
-### 9.3 Connector webhook — end-to-end (Calendly → workflow)
+### 9.3 HTTP ingress — end-to-end (works for Calendly, Stripe, curl, UI)
 
 Today Sync uses:
 
 `POST /api/webhooks/:workspaceId/:flowId` → `WebhookEvent` → CDC cron (~5 min) → warehouse.
 
-Workflows get a **sibling ingress** that shares verification, not CDC:
+Workflows get a **sibling ingress** that shares the ack-fast pattern, not CDC
+and not connector coupling:
 
 ```
-POST /api/webhooks/:workspaceId/workflows/:workflowId
+POST /api/webhooks/:workspaceId/workflows/:workflowId/:token
 ```
+
+The `:token` is a per-workflow secret generated at publish (capability URL —
+the only auth an external provider needs, since most providers can only be
+given a URL). Authenticated callers (UI, agent, API) can instead use:
+
+```
+POST /api/workspaces/:id/workflows/:wid/runs   (workspace auth, no token)
+```
+
+Both doors funnel into the same pipeline:
 
 ```mermaid
 sequenceDiagram
-  participant Cal as Calendly
-  participant API as Mako webhook route
-  participant Conn as Calendly connector
+  participant Src as Any caller (Calendly / UI / curl)
+  participant API as Mako ingress route
   participant Run as WorkflowRun
   participant Eng as Engine worker
 
-  Note over Cal,API: On publish: provision subscription to workflow URL
-  Cal->>API: POST signed invitee.created
-  API->>API: Load Workflow deploy (enabled)
-  API->>Conn: verifyWebhook(payload, headers, secret)
-  API->>API: Map payload → workflow input (Zod)
-  API->>Run: insert status=queued
+  Note over Src,API: Author pasted workflow URL into provider (one-time)
+  Src->>API: POST JSON body
+  API->>API: Load Workflow deploy (enabled) + constant-time token check
+  API->>API: Validate body → workflow input (Zod)
+  API->>Run: insert status=queued (idempotency key = body hash)
   API->>Eng: enqueue workflow.execute(runId)
-  API-->>Cal: 200 received
+  API-->>Src: 200 received
   Eng->>Eng: run(input) with step() checkpoints
   Eng->>Run: steps + succeeded/failed
 ```
 
 **Important differences from Sync webhooks:**
 
-| | Sync webhook flow | Workflow webhook |
+| | Sync webhook flow | Workflow ingress |
 | --- | --- | --- |
-| URL | `/api/webhooks/:ws/:flowId` | `/api/webhooks/:ws/workflows/:workflowId` |
-| After verify | Persist `WebhookEvent` → CDC batch | Create `WorkflowRun` → execute ASAP |
+| URL | `/api/webhooks/:ws/:flowId` | `/api/webhooks/:ws/workflows/:workflowId/:token` |
+| Caller identity | Bound to a connector | Agnostic — anything that can POST |
+| After accept | Persist `WebhookEvent` → CDC batch | Create `WorkflowRun` → execute ASAP |
 | Latency | Up to ~5 min (scheduler drain) | Near-real-time enqueue (required for CRM actions) |
 | Outcome | Rows in destination table | Side effects inside TS steps |
 
 **Reuse from Sync:**
 
-- Connector `supportsWebhooks` / `verifyWebhook` / `createWebhookSubscription`
-- Calendly HMAC (`Calendly-Webhook-Signature`) already implemented
-- Ack-fast pattern (verify + persist + 200, work async)
+- Ack-fast pattern (accept + persist + 200, work async)
+- Route scaffolding / workspace scoping in `api/src/routes/webhooks.ts`
 
-**Do not reuse:** `WebhookEvent` → `CdcChangeEvent` → materialize path.
+**Do not reuse:** `WebhookEvent` → `CdcChangeEvent` → materialize path, and no
+dependency on connector `verifyWebhook` / `createWebhookSubscription` /
+webhook-event catalogs. Optional per-workflow HMAC verification (e.g. Calendly’s
+`Calendly-Webhook-Signature`) can be layered on later as deploy-record config
+for providers that support signing — hardening, not a prerequisite.
 
-**Idempotency at the door:** store provider delivery id (or body hash) on
-`WorkflowRun` unique key so Calendly retries do not start a second run. Step-level
-idempotency keys still protect Close writes if a run is retried mid-flight.
+**Idempotency at the door:** store a body hash (provider-agnostic) on a
+`WorkflowRun` unique key so provider retries do not start a second run. An
+optional header mapping (e.g. use `X-Delivery-Id` as the key) can be configured
+per workflow. Step-level idempotency keys still protect Close writes if a run
+is retried mid-flight.
 
 ### 9.4 Cron — end-to-end
 
@@ -450,77 +462,65 @@ Inngest cron registration per workflow).
 
 ```
 every minute (or */5):
-  find Workflow where trigger.type=cron AND enabled
+  atomically claim Workflow where trigger.type=cron AND enabled
                    AND nextRunAt <= now
-                   AND no running run (optional concurrency policy)
-  for each: create WorkflowRun → enqueue engine
-  update nextRunAt from cron expression
+                   (findOneAndUpdate advances nextRunAt — safe with
+                    multiple API instances, no double-fire)
+  for each claimed: create WorkflowRun → enqueue engine
 ```
 
 Align with `flowSchedulerFunction` / scheduled-query patterns
 (`api/src/inngest/functions/flow.ts`, `scheduled-query.ts`).
 
-Workflows that only run on cron (reverse-ETL) never need a public URL.
+### 9.5 Binding connectors for the run
 
-### 9.5 Manual — end-to-end
-
-```
-POST /api/workspaces/:id/workflows/:wid/runs
-Body: { input: { ... } }
-
-→ validate against workflow Zod input
-→ WorkflowRun(triggerKind=manual)
-→ enqueue engine
-→ return run id for UI polling
-```
-
-Used for fixtures, debugging, and agent “try this payload.”
-
-### 9.6 Binding connectors for the run
-
-Triggers name **logical** connectors (`calendly`, `close`). The workflow project
-environment maps those to workspace resources:
+Connector bindings exist only for **actions inside steps** — triggers no longer
+reference connectors at all. The workflow project environment maps logical
+names to workspace resources:
 
 ```yaml
 # mako_workflows.yml (or project settings UI)
 bindings:
-  calendly: { connectorId: "..." }   # source of webhooks + optional API reads
   close:    { connectorId: "..." }   # injected as ctx.connectors.close()
   warehouse:{ databaseConnectionId: "..." }
 ```
 
 At run time:
 
-- Webhook secret / verify path uses the **trigger** connector binding
-- `ctx.connectors.*` uses the **action** bindings
+- `ctx.connectors.*` resolves through the action bindings
 - Secrets never appear in the TS file or in run logs (redacted)
 
-### 9.7 What the author does vs what Mako does
+### 9.6 What the author does vs what Mako does
 
-| Author writes | Mako does |
+| Author writes / does | Mako does |
 | --- | --- |
-| `trigger: { type: "connector_webhook", connector: "calendly", event: "invitee.created" }` | On publish: create endpoint, secret, call Calendly provision API |
+| `trigger: { type: "manual" }` (or omits it) | On publish: allocate POST URL + token |
+| Pastes the URL into Calendly / Stripe / anywhere (one-time) | Accepts POSTs, checks token, enqueues run |
 | Zod `input` schema | Validate ingress payload before run starts |
 | `async run(input, ctx)` | Enqueue, inject connectors, record steps |
 | `step("create_opp", ...)` | Durable retry / checkpoint |
 
-Author never pastes a Calendly signing key into code. Author never opens n8n to
-“add a webhook node.”
+Author never pastes a signing key into code. Author never opens n8n to “add a
+webhook node.” The one manual step — pasting a URL into the provider — buys
+freedom from connector webhook catalogs, provisioning APIs, and per-provider
+trigger types.
 
-### 9.8 Failure modes (trigger layer)
+### 9.7 Failure modes (trigger layer)
 
 | Failure | Behavior |
 | --- | --- |
-| Bad signature | `401/403`, no run created |
+| Bad/missing token | `401/403`, no run created |
 | Workflow disabled | `404/410`, no run |
-| Zod input mismatch | Run created as `failed` with validation error **or** reject at ingress (prefer reject for webhooks) |
+| Zod input mismatch | Reject at ingress (`422`) **and** record a rejected-delivery event so failed payloads stay debuggable from the UI |
 | Engine down | Run stays `queued`; retry dispatch; alert |
-| Step fails mid-run | Engine retries step; run `failed` if exhausted; trigger can fire again only if provider retries **and** ingress idempotency key differs |
-| Publish changes event filter | Re-provision or update subscription; old URL stays until cutover |
+| Step fails mid-run | Engine retries step; run `failed` if exhausted; a provider retry only creates a new run if the body-hash idempotency key differs |
+| Token rotated | Old URL returns `401` immediately; author updates the provider |
 
-### 9.9 Explicit non-design
+### 9.8 Explicit non-design
 
 - Workflows do **not** share Sync’s `type: "webhook"` flow documents.
+- No connector-bound trigger types, no webhook-event catalogs, no publish-time
+  provider provisioning in v1 — the tokenized URL is the whole contract.
 - A Sync Calendly→BigQuery flow and a Workflow Calendly→Close job are **two
   subscriptions** (or one fan-out later) — v1 keeps them independent to avoid
   coupling CRM latency to CDC batching.
@@ -553,7 +553,8 @@ New workspace-scoped collections (names illustrative):
 ### 10.4 `Workflow` (deployed unit — denormalized for runtime)
 
 - `projectId`, `versionId`, `name`, `trigger`, `enabled`
-- Pointer used by scheduler / webhook router
+- `ingressToken` (hashed), `nextRunAt` (cron)
+- Pointer used by scheduler / ingress router
 
 ### 10.5 `WorkflowRun`
 
@@ -579,7 +580,8 @@ All under workspace auth (`unifiedAuthMiddleware` + workspace context):
 | List | `.../workflows` | Deployed workflows + enabled flag |
 | Run | `.../workflows/:wid/runs` | Manual trigger + history |
 | Get run | `.../workflows/:wid/runs/:rid` | Step timeline |
-| Webhook | existing or `.../hooks/workflows/:wid/...` | Ingress |
+| Ingress | `POST /api/webhooks/:ws/workflows/:wid/:token` (public, tokenized) | External POST → run |
+| Token | `.../workflows/:wid/token/rotate` | Rotate ingress URL |
 
 Agent tools (server-side): `workflow_write_file`, `workflow_read_file`,
 `workflow_publish`, `workflow_explain_run`, `workflow_list_runs` — dedicated
@@ -610,7 +612,7 @@ timeline, never the source of truth.
 - Publish RBAC: member edit drafts; admin (or role TBD) publish to prod
 - Idempotency keys required by convention for mutate steps; lint/guide in skill docs
 - v1 assumes trusted workspace authors (same trust as writing sync config / dbt). Untrusted multi-tenant sandbox is out of scope
-- Webhook signatures verified via existing connector webhook capabilities
+- Ingress guarded by per-workflow secret tokens (constant-time compare, rotatable); optional HMAC verification later for providers that sign
 
 ---
 
@@ -618,7 +620,7 @@ timeline, never the source of truth.
 
 1. Pick highest-pain flow (Calendly → Close)
 2. Agent reimplements as TS workflow using connector guidelines / skills
-3. Point Calendly webhook at Mako (or dual-run shadow)
+3. Paste the workflow's POST URL into Calendly (or dual-run shadow)
 4. Compare outcomes; disable n8n
 5. Repeat for reverse-ETL and remaining automations
 
@@ -694,11 +696,11 @@ MVP should ship Close lead/opportunity actions needed for the golden path.
 - Register workflows with chosen engine
 - Inject connector clients
 - Persist step timeline → `WorkflowRun`
-- Manual + cron + one connector webhook trigger
+- Manual/HTTP ingress (tokenized POST URL) + cron trigger
 
 ### WS3 — Golden path: Calendly → Close
 
-- Webhook trigger wiring
+- Point Calendly at the workflow's tokenized POST URL
 - Close action helpers
 - End-to-end run in a workspace
 - Agent skill: how to write workflows + connector action shapes
@@ -738,7 +740,7 @@ MVP should ship Close lead/opportunity actions needed for the golden path.
 
 - [ ] Virtual FS project + editor
 - [ ] Publish → worker register
-- [ ] `connector_webhook` + `manual` + `cron`
+- [ ] Tokenized POST URL ingress (`manual`) + `cron`
 - [ ] Run history with step timeline
 - [ ] Calendly → Close golden path in one workspace
 - [ ] Minimal agent file edit tools
