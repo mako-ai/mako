@@ -245,6 +245,35 @@ const baseModeState = (loaded: string[] = []): ModeState => ({
   assert.ok(!activeApproved.includes("dbt_commit_and_push"));
 }
 
+// --- app capabilities: edits are implicit; schedules need a plan grant --------
+{
+  const all = new Set([
+    "app_write_file",
+    "app_set_binding_schedule",
+    "materialize_binding",
+  ]);
+  const withoutPlan: ModeState = {
+    enabledModes: new Set(["app"]),
+    planSubmitted: false,
+    planApproved: false,
+    approvedCapabilityGrants: new Set(),
+    loadedToolNames: [],
+  };
+  const activeWithoutPlan = computeActiveTools(withoutPlan, all);
+  assert.ok(activeWithoutPlan.includes("app_write_file"));
+  assert.ok(activeWithoutPlan.includes("materialize_binding"));
+  assert.ok(!activeWithoutPlan.includes("app_set_binding_schedule"));
+
+  const approved: ModeState = {
+    ...withoutPlan,
+    planSubmitted: true,
+    planApproved: true,
+    approvedCapabilityGrants: new Set(["schedule-write"]),
+  };
+  const activeApproved = computeActiveTools(approved, all);
+  assert.ok(activeApproved.includes("app_set_binding_schedule"));
+}
+
 // --- provider caps ------------------------------------------------------------
 {
   assert.equal(providerToolCap("xai/grok-4.5"), 250);

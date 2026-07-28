@@ -17,6 +17,7 @@ process.env.ENCRYPTION_KEY =
 
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import {
+  AGENT_CAPABILITIES,
   CAPABILITY_GRANTS,
   DBT_CAPABILITY_NAMES,
   type CapabilityGrant,
@@ -474,6 +475,90 @@ async function main() {
       tools.some(tool => tool.name === "dbt_get_run"),
       false,
       "dbt run output must stay hidden without query:read",
+    );
+    // Warehouse-executing tools from the other migrated domains carry the
+    // same query envelope.
+    for (const queryTool of ["run_notebook_sql_cell", "materialize_binding"]) {
+      assert.equal(
+        tools.some(tool => tool.name === queryTool),
+        false,
+        `${queryTool} must stay hidden without query:read`,
+      );
+    }
+  }
+
+  // 3e. Schedule mutations: implicit for external MCP (existing headless
+  //     authoring authority), plan-grant-gated for Desktop ACP.
+  {
+    const registryNames = new Set(
+      AGENT_CAPABILITIES.map(capability => capability.name),
+    );
+    assert.equal(
+      registryNames.size,
+      AGENT_CAPABILITIES.length,
+      "capability registry must not contain duplicate tool names",
+    );
+
+    // External MCP: authorization passes, so the zod schema rejects the
+    // bogus arguments (proves the call was not blocked by a grant).
+    const [externalCall] = await exchange([
+      {
+        jsonrpc: "2.0",
+        id: "schedule-external",
+        method: "tools/call",
+        params: { name: "app_set_binding_schedule", arguments: { appId: 42 } },
+      },
+    ]);
+    assert.match(
+      (externalCall.result as { content: { text: string }[] }).content[0].text,
+      /Invalid arguments/,
+      "external MCP keeps implicit schedule authority",
+    );
+
+    // Desktop ACP without an approved plan grant: blocked before execution.
+    const [desktopDenied] = await exchange(
+      [
+        {
+          jsonrpc: "2.0",
+          id: "schedule-acp-denied",
+          method: "tools/call",
+          params: {
+            name: "app_set_binding_schedule",
+            arguments: { appId: 42 },
+          },
+        },
+      ],
+      ["mcp", "query:read"],
+      true,
+    );
+    const deniedSchedule = desktopDenied.result as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+    assert.equal(deniedSchedule.isError, true);
+    assert.match(deniedSchedule.content[0].text, /schedule-write/);
+
+    // Desktop ACP with the grant: authorization passes (zod rejects args).
+    const [desktopGranted] = await exchange(
+      [
+        {
+          jsonrpc: "2.0",
+          id: "schedule-acp-granted",
+          method: "tools/call",
+          params: {
+            name: "app_set_binding_schedule",
+            arguments: { appId: 42 },
+          },
+        },
+      ],
+      ["mcp", "query:read"],
+      true,
+      ["schedule-write"],
+    );
+    assert.match(
+      (desktopGranted.result as { content: { text: string }[] }).content[0]
+        .text,
+      /Invalid arguments/,
     );
   }
 

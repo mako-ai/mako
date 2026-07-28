@@ -15,48 +15,23 @@
  * a raw query can contain writes (INSERT/UPDATE/DELETE/DDL) and we cannot
  * statically guarantee otherwise, so plan mode blocks them until approval.
  */
-import { DBT_CAPABILITIES } from "./capabilities/dbt-capabilities";
+import { AGENT_CAPABILITIES } from "./capabilities/registry";
 
 export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
-  // Cross-surface discovery
-  "list_connections",
-  // SQL discovery / inspection
-  "sql_list_connections",
-  "sql_list_databases",
-  "sql_list_tables",
-  "sql_inspect_table",
-  // MongoDB discovery / inspection
-  "mongo_list_connections",
-  "mongo_list_databases",
-  "mongo_list_collections",
-  "mongo_inspect_collection",
+  // Migrated domains (dbt, apps, consoles, SQL/mongo, notebooks) derive their
+  // read inventory from the shared capability registry.
+  ...AGENT_CAPABILITIES.filter(capability => capability.risk === "read").map(
+    capability => capability.name,
+  ),
   // Flow discovery / inspection (shared agent-lib builders)
   "list_databases",
   "list_tables",
   "inspect_table",
-  // Console reads
-  "read_console",
-  "list_open_consoles",
   // Dashboard reads / previews
   "list_open_dashboards",
   "get_dashboard_state",
   "get_chart_templates",
   "get_chart_template",
-  // App reads
-  "list_open_apps",
-  "get_app_state",
-  "app_search",
-  "app_read_resource",
-  "app_read_file",
-  // Notebook reads
-  "list_open_notebooks",
-  "read_notebook",
-  "search_notebook",
-  "read_notebook_cell",
-  // dbt read/validation inventory is derived from the capability registry.
-  ...DBT_CAPABILITIES.filter(capability => capability.risk === "read").map(
-    capability => capability.name,
-  ),
   // Surface-scoped data-source reads (apps + dashboards, local DuckDB only)
   "list_data_sources",
   "inspect_data_source",
@@ -64,7 +39,6 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   // Visual inspection (no mutation)
   "capture_screenshot",
   // Search
-  "search_consoles",
   "search_dashboards",
   "search_skills",
   "search_tools",

@@ -5,23 +5,13 @@
  * for mode membership, MCP exposure, authorization, token packs, and UI
  * result semantics.
  */
+import {
+  ALL_AGENT_SURFACES,
+  PRODUCT_AGENT_SURFACES,
+  type AgentCapabilityDefinition,
+  type AgentSurface,
+} from "./types";
 
-export type AgentSurface = "in-chat" | "desktop-acp" | "external-mcp";
-
-export type CapabilityRisk = "read" | "write" | "destructive";
-
-export type CapabilityGrant =
-  | "artifact-write"
-  | "git-write"
-  | "schedule-write"
-  | "warehouse-write";
-
-export const CAPABILITY_GRANTS = [
-  "artifact-write",
-  "git-write",
-  "schedule-write",
-  "warehouse-write",
-] as const satisfies readonly CapabilityGrant[];
 
 export type DbtCapabilityPack =
   | "dbt-orient"
@@ -32,37 +22,10 @@ export type DbtCapabilityPack =
   | "dbt-git-write"
   | "dbt-jobs";
 
-export type CapabilityResultKind =
-  | "data"
-  | "artifact"
-  | "run"
-  | "ui-effect";
-
-export interface DbtCapabilityDefinition {
-  name: string;
-  domain: "dbt";
-  pack: DbtCapabilityPack;
-  risk: CapabilityRisk;
-  requiredGrant?: CapabilityGrant;
-  surfaces: readonly AgentSurface[];
-  resultKind: CapabilityResultKind;
-  requiresQueryAccess?: boolean;
-  /**
-   * Long-running validation must move to the run registry before MCP exposure.
-   */
-  requiresAsyncMcp?: boolean;
-}
-
-const ALL_AGENT_SURFACES = [
-  "in-chat",
-  "desktop-acp",
-  "external-mcp",
-] as const satisfies readonly AgentSurface[];
-
-const PRODUCT_AGENT_SURFACES = [
-  "in-chat",
-  "desktop-acp",
-] as const satisfies readonly AgentSurface[];
+export type DbtCapabilityDefinition = AgentCapabilityDefinition<
+  "dbt",
+  DbtCapabilityPack
+>;
 
 const define = (
   definition: Omit<DbtCapabilityDefinition, "domain">,

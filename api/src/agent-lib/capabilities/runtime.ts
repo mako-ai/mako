@@ -1,5 +1,5 @@
 import {
-  DBT_CAPABILITY_BY_NAME,
+  AGENT_CAPABILITY_BY_NAME,
   type AgentSurface,
   type CapabilityGrant,
 } from "@mako/agent-tools";
@@ -21,7 +21,7 @@ export function authorizeAgentCapability(
   name: string,
   context: AgentCapabilityAuthorizationContext,
 ): AgentCapabilityDecision {
-  const capability = DBT_CAPABILITY_BY_NAME.get(name);
+  const capability = AGENT_CAPABILITY_BY_NAME.get(name);
   // The shared registry is being introduced domain-by-domain. Unregistered
   // tools continue through their existing policy until migrated.
   if (!capability) return { allowed: true };
