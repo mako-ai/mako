@@ -269,7 +269,7 @@ const DashboardRuntimeChrome: React.FC<DashboardRuntimeChromeProps> = ({
           sx={{ borderRadius: 0, py: 0, ".MuiAlert-message": { py: 0.75 } }}
           action={
             <Button color="inherit" size="small" onClick={onReloadData}>
-              Refresh now
+              Refresh
             </Button>
           }
         >

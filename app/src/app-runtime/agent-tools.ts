@@ -406,7 +406,9 @@ export async function executeAppAgentTool(
         workspaceId,
         appId,
         binding.id,
-        { signal: options?.signal, timeoutMs },
+        // Explicit rebuild request: force past the definition-hash cache so
+        // unchanged queries still pick up new upstream data.
+        { force: true, signal: options?.signal, timeoutMs },
       );
       if (result.status === "building") {
         // Not an error: the build continues server-side. Return so the agent

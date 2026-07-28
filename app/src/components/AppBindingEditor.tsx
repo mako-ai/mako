@@ -176,8 +176,8 @@ export default function AppBindingEditor({
     if (!workspaceId) return;
     setMaterializing(true);
     // Explicit user action = rebuild now. Force past the definition-hash cache
-    // so a rematerialize picks up new upstream data even when the query text is
-    // unchanged (parity with the dashboard data source Materialize button).
+    // so a refresh picks up new upstream data even when the query text is
+    // unchanged (parity with the dashboard data source Refresh button).
     await materializeBinding(workspaceId, appId, bindingId, { force: true });
     setMaterializing(false);
   }, [workspaceId, appId, bindingId, materializeBinding]);
@@ -292,8 +292,8 @@ export default function AppBindingEditor({
             <Typography variant="caption" display="block">
               <b>Materialized</b> — the query is snapshotted to a Parquet file
               (stored like dashboards) and loaded into DuckDB in the browser, so
-              the app can run fast analytical SQL. Click <b>Materialize</b> to
-              build/refresh the snapshot.
+              the app can run fast analytical SQL. Click <b>Refresh</b> to
+              rebuild the snapshot from source.
             </Typography>
           </Box>
         }

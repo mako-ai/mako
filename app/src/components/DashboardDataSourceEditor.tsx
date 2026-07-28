@@ -25,6 +25,7 @@ import DataSourceMaterializationControls, {
   type MaterializationHistoryItem,
 } from "./DataSourceMaterializationControls";
 import type { MaterializationScheduleValue } from "../lib/materializationSchedule";
+import { refreshDashboardDataSourceCommand } from "../dashboard-runtime/commands";
 
 interface PreviewResult {
   results: Record<string, unknown>[];
@@ -33,9 +34,6 @@ interface PreviewResult {
   executionTime?: number;
   fields?: Array<{ name?: string; originalName?: string } | string>;
 }
-
-const MATERIALIZE_POLL_INTERVAL_MS = 2500;
-const MATERIALIZE_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 
 function dataSourceFilePath(name: string): string {
   return `${name.replace(/[^a-zA-Z0-9_-]/g, "_")}.sql`;
@@ -65,12 +63,6 @@ export default function DashboardDataSourceEditor({
   const openDashboard = useDashboardStore(s => s.openDashboard);
   const updateDataSource = useDashboardStore(s => s.updateDataSource);
   const saveDashboard = useDashboardStore(s => s.saveDashboard);
-  const materializeDataSource = useDashboardStore(
-    s => s.materializeDashboardDataSource,
-  );
-  const fetchMaterializationStatus = useDashboardStore(
-    s => s.fetchDashboardMaterializationStatus,
-  );
   const fetchMaterializationRuns = useDashboardStore(
     s => s.fetchMaterializationRuns,
   );
@@ -155,41 +147,17 @@ export default function DashboardDataSourceEditor({
     if (!workspaceId) return;
     setMaterializing(true);
     try {
-      await materializeDataSource(workspaceId, dashboardId, dataSourceId, {
-        force: true,
+      // Same contract as the data-source panel Refresh: force rebuild, wait
+      // until builds settle, then apply into the dashboard runtime once.
+      await refreshDashboardDataSourceCommand({
+        workspaceId,
+        dataSourceId,
+        dashboardId,
       });
-      // Poll until this data source leaves queued/building (status fetch also
-      // syncs cache onto the open dashboard, so the chip updates live).
-      const deadline = Date.now() + MATERIALIZE_POLL_TIMEOUT_MS;
-      while (Date.now() < deadline) {
-        await new Promise(resolve =>
-          setTimeout(resolve, MATERIALIZE_POLL_INTERVAL_MS),
-        );
-        const status = await fetchMaterializationStatus(
-          workspaceId,
-          dashboardId,
-        );
-        const sourceStatus = status?.dataSources.find(
-          source => source.dataSourceId === dataSourceId,
-        );
-        if (
-          !sourceStatus ||
-          (sourceStatus.status !== "queued" &&
-            sourceStatus.status !== "building")
-        ) {
-          break;
-        }
-      }
     } finally {
       setMaterializing(false);
     }
-  }, [
-    workspaceId,
-    dashboardId,
-    dataSourceId,
-    materializeDataSource,
-    fetchMaterializationStatus,
-  ]);
+  }, [workspaceId, dashboardId, dataSourceId]);
 
   const cache = dataSource?.cache;
 
@@ -313,7 +281,7 @@ export default function DashboardDataSourceEditor({
           <Typography variant="caption" display="block">
             <b>Materialized</b> — the query is snapshotted to a Parquet file and
             loaded into DuckDB, so widgets render fast and public viewers get a
-            cached snapshot. Click <b>Materialize</b> to build/refresh.
+            cached snapshot. Click <b>Refresh</b> to rebuild from source.
           </Typography>
         </Box>
       }

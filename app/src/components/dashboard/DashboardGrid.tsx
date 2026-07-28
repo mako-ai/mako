@@ -8,7 +8,8 @@ import {
   useDashboardStore,
   type DashboardWidget,
 } from "../../store/dashboardStore";
-import { refreshDashboardWidgetCommand } from "../../dashboard-runtime/commands";
+import { refreshDashboardWidgetDataCommand } from "../../dashboard-runtime/commands";
+import { useWorkspace } from "../../contexts/workspace-context";
 import type { MosaicInstance } from "../../lib/mosaic";
 import type {
   Dashboard,
@@ -83,6 +84,8 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
   onOpenAddWidget,
   onInspectWidget,
 }) => {
+  const { currentWorkspace } = useWorkspace();
+  const workspaceId = currentWorkspace?.id;
   const widgets = useMemo(() => dashboard?.widgets ?? [], [dashboard]);
   const crossFilterResolution =
     dashboard?.crossFilter.resolution ?? "intersect";
@@ -338,13 +341,14 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
                   loading={!allSourcesReady}
                   error={widgetError || undefined}
                   isEditMode={isEditMode}
-                  onRefresh={() =>
-                    dashboardId &&
-                    refreshDashboardWidgetCommand({
+                  onRefresh={() => {
+                    if (!workspaceId || !dashboardId) return;
+                    void refreshDashboardWidgetDataCommand({
+                      workspaceId,
                       dashboardId,
                       widgetId: widget.id,
-                    })
-                  }
+                    });
+                  }}
                   onRemove={() =>
                     dashboardId && removeWidgetAction(dashboardId, widget.id)
                   }

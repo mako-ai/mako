@@ -1019,6 +1019,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                     </Typography>
                     <IconButton
                       size="small"
+                      title="Refresh from source"
                       onClick={() => handleRefreshDataSource(ds.id)}
                       disabled={status === "loading" || materializationPending}
                       sx={{ p: 0.5 }}
@@ -1181,7 +1182,7 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                       }}
                       onClick={() => handleRefreshDataSource(ds.id)}
                     >
-                      Materialize
+                      Refresh
                     </Button>
                   </Box>
                 </Box>

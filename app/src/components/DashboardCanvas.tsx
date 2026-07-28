@@ -16,7 +16,6 @@ import {
   Alert,
 } from "@mui/material";
 import {
-  RefreshCw,
   Save,
   Download,
   Database,
@@ -41,7 +40,6 @@ import { useAuth } from "../contexts/auth-context";
 import {
   applyFreshMaterializationCommand,
   materializeDashboardInBackgroundCommand,
-  refreshDashboardCommand,
   reloadDashboardDataSourcesCommand,
   shouldAutoApplyFreshMaterialization,
 } from "../dashboard-runtime/commands";
@@ -62,6 +60,7 @@ import WidgetInspector from "./dashboard/WidgetInspector";
 import { SaveCommentDialog } from "./SaveCommentDialog";
 import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
+import ResourceRefreshControl from "./ResourceRefreshControl";
 
 type ViewMode = "canvas" | "code";
 
@@ -193,21 +192,20 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   }, [dashboard?.title]);
 
   const [reloadingData, setReloadingData] = useState(false);
+  const [freshnessDismissed, setFreshnessDismissed] = useState(false);
 
+  // One Refresh action everywhere: force-rematerialize every data source,
+  // wait until ALL builds settle, then apply into the runtime once.
   const handleRefresh = useCallback(() => {
-    if (!workspaceId) {
-      return;
-    }
-    if (isEditMode) {
-      if (reloadingData) return;
-      setReloadingData(true);
-      void reloadDashboardDataSourcesCommand(workspaceId, dashboardId)
-        .catch(() => undefined)
-        .finally(() => setReloadingData(false));
-      return;
-    }
-    void refreshDashboardCommand(workspaceId, dashboardId);
-  }, [workspaceId, dashboardId, isEditMode, reloadingData]);
+    if (!workspaceId || reloadingData) return;
+    setFreshnessDismissed(true);
+    setReloadingData(true);
+    void reloadDashboardDataSourcesCommand(workspaceId, dashboardId)
+      .catch(() => {
+        setFreshnessDismissed(false);
+      })
+      .finally(() => setReloadingData(false));
+  }, [workspaceId, dashboardId, reloadingData]);
 
   const dataFreshness = useMemo(() => {
     if (!dashboard || dashboard.dataSources.length === 0) return null;
@@ -236,8 +234,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     return { ageMs, label };
   }, [dashboard]);
 
-  const [freshnessDismissed, setFreshnessDismissed] = useState(false);
-
   useEffect(() => {
     setFreshnessDismissed(false);
   }, [dataFreshness?.ageMs]);
@@ -263,19 +259,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     runtimeSession?.freshDataAvailable,
     workspaceId,
   ]);
-
-  const handleReloadData = useCallback(async () => {
-    if (!workspaceId || reloadingData) return;
-    setFreshnessDismissed(true);
-    setReloadingData(true);
-    try {
-      await reloadDashboardDataSourcesCommand(workspaceId, dashboardId);
-    } catch {
-      setFreshnessDismissed(false);
-    } finally {
-      setReloadingData(false);
-    }
-  }, [workspaceId, dashboardId, reloadingData]);
 
   const handleDismissStaleLock = useCallback(async () => {
     if (workspaceId && dashboardId) {
@@ -382,38 +365,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           />
         </Tooltip>
 
-        <Tooltip title="Clear filters and rerun all widgets">
-          <span>
-            <Chip
-              icon={<RefreshCw size={14} />}
-              label={isEditMode && reloadingData ? "Reloading…" : "Refresh"}
-              size="small"
-              variant="outlined"
-              onClick={handleRefresh}
-              disabled={isEditMode && reloadingData}
-              sx={{
-                cursor: isEditMode && reloadingData ? "default" : "pointer",
-              }}
-            />
-          </span>
-        </Tooltip>
-
         {isEditMode && (
           <>
-            <Tooltip title="Reload data from source database">
-              <span>
-                <Chip
-                  icon={<Database size={14} />}
-                  label={reloadingData ? "Reloading…" : "Reload data"}
-                  size="small"
-                  variant="outlined"
-                  onClick={handleReloadData}
-                  disabled={reloadingData}
-                  sx={{ cursor: reloadingData ? "default" : "pointer" }}
-                />
-              </span>
-            </Tooltip>
-
             <Tooltip title="Add widget">
               <IconButton size="small" onClick={() => setAddWidgetOpen(true)}>
                 <Plus size={18} />
@@ -470,8 +423,16 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           </IconButton>
         </Tooltip>
 
+        <Box sx={{ flex: 1 }} />
+
+        <ResourceRefreshControl
+          subject="data source"
+          busy={reloadingData}
+          onClick={handleRefresh}
+        />
+
         {canManageShare && (
-          <Tooltip title="Share dashboard">
+          <Tooltip title="Share">
             <IconButton size="small" onClick={() => setShareOpen(true)}>
               <Share2 size={16} />
             </IconButton>
@@ -541,7 +502,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             label={`Logs ${recentEventLogCount}`}
             variant={showEventLog ? "filled" : "outlined"}
             onClick={() => setShowEventLog(prev => !prev)}
-            sx={{ cursor: "pointer", ml: "auto" }}
+            sx={{ cursor: "pointer" }}
           />
         </Tooltip>
       </Box>
@@ -561,7 +522,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         onForceEditMode={handleForceEditMode}
         onDismissStaleLock={handleDismissStaleLock}
         onEditModeToggle={handleEditModeToggle}
-        onReloadData={handleReloadData}
+        onReloadData={handleRefresh}
         dataFreshness={freshnessDismissed ? null : dataFreshness}
       />
 

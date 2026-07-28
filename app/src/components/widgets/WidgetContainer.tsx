@@ -141,7 +141,7 @@ const WidgetContainer: React.FC<WidgetContainerProps> = ({
         {isEditMode && (
           <>
             {onRefresh && (
-              <Tooltip title="Refresh widget">
+              <Tooltip title="Refresh data from source">
                 <IconButton size="small" onClick={onRefresh} sx={{ p: 0.25 }}>
                   <RefreshCw size={14} />
                 </IconButton>
