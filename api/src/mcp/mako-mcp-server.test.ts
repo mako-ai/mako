@@ -381,7 +381,11 @@ async function main() {
     assert.ok(mcpExposedToolNames().includes("create_app"));
   }
 
-  // 3c. Desktop ACP only gets warehouse execution after plan approval.
+  // 3c. Desktop ACP warehouse execution: plan-grant gating is DISABLED
+  //     pending product review (see the grants comment in mako-mcp-server.ts
+  //     and PLAN_GRANT_GATING_ENABLED in agents/modes/runtime.ts) — calls
+  //     pass authorization without any AcpPlanGrant; the zod schema then
+  //     rejects the empty arguments, proving no grant gate blocked the call.
   {
     const [unapprovedList] = await exchange(
       [{ jsonrpc: "2.0", id: "acp-dbt-list", method: "tools/list" }],
@@ -393,46 +397,24 @@ async function main() {
     ).tools;
     assert.ok(
       unapprovedTools.some(tool => tool.name === "dbt_run_model"),
-      "Desktop should discover plan-gated tools before approval",
+      "Desktop should discover warehouse tools",
     );
-    const [unapprovedCall] = await exchange(
+    const [ungatedCall] = await exchange(
       [
         {
           jsonrpc: "2.0",
-          id: "acp-dbt-denied",
+          id: "acp-dbt-ungated",
           method: "tools/call",
           params: { name: "dbt_run_model", arguments: {} },
         },
       ],
       ["mcp", "query:read"],
       true,
-    );
-    const deniedResult = unapprovedCall.result as {
-      isError?: boolean;
-      content: { text: string }[];
-    };
-    assert.equal(deniedResult.isError, true);
-    assert.match(deniedResult.content[0].text, /warehouse-write/);
-    const [wrongGrantCall] = await exchange(
-      [
-        {
-          jsonrpc: "2.0",
-          id: "acp-dbt-wrong-grant",
-          method: "tools/call",
-          params: { name: "dbt_run_model", arguments: {} },
-        },
-      ],
-      ["mcp", "query:read"],
-      true,
-      ["artifact-write"],
     );
     assert.match(
-      (
-        wrongGrantCall.result as {
-          content: { text: string }[];
-        }
-      ).content[0].text,
-      /warehouse-write/,
+      (ungatedCall.result as { content: { text: string }[] }).content[0].text,
+      /Invalid arguments/,
+      "ACP gating disabled: no plan grant required to reach the tool",
     );
 
     const [res] = await exchange(
@@ -488,7 +470,8 @@ async function main() {
   }
 
   // 3e. Schedule mutations: implicit for external MCP (existing headless
-  //     authoring authority), plan-grant-gated for Desktop ACP.
+  //     authoring authority); Desktop ACP plan-grant gating is DISABLED
+  //     pending review, so ACP passes authorization without a grant too.
   {
     const registryNames = new Set(
       AGENT_CAPABILITIES.map(capability => capability.name),
@@ -515,12 +498,13 @@ async function main() {
       "external MCP keeps implicit schedule authority",
     );
 
-    // Desktop ACP without an approved plan grant: blocked before execution.
-    const [desktopDenied] = await exchange(
+    // Desktop ACP without any plan grant: gating disabled, authorization
+    // passes and the zod schema rejects the bogus arguments.
+    const [desktopUngated] = await exchange(
       [
         {
           jsonrpc: "2.0",
-          id: "schedule-acp-denied",
+          id: "schedule-acp-ungated",
           method: "tools/call",
           params: {
             name: "app_set_binding_schedule",
@@ -530,35 +514,12 @@ async function main() {
       ],
       ["mcp", "query:read"],
       true,
-    );
-    const deniedSchedule = desktopDenied.result as {
-      isError?: boolean;
-      content: { text: string }[];
-    };
-    assert.equal(deniedSchedule.isError, true);
-    assert.match(deniedSchedule.content[0].text, /schedule-write/);
-
-    // Desktop ACP with the grant: authorization passes (zod rejects args).
-    const [desktopGranted] = await exchange(
-      [
-        {
-          jsonrpc: "2.0",
-          id: "schedule-acp-granted",
-          method: "tools/call",
-          params: {
-            name: "app_set_binding_schedule",
-            arguments: { appId: 42 },
-          },
-        },
-      ],
-      ["mcp", "query:read"],
-      true,
-      ["schedule-write"],
     );
     assert.match(
-      (desktopGranted.result as { content: { text: string }[] }).content[0]
+      (desktopUngated.result as { content: { text: string }[] }).content[0]
         .text,
       /Invalid arguments/,
+      "ACP gating disabled: no schedule-write grant required",
     );
   }
 

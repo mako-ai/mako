@@ -77,9 +77,7 @@ YOU decide when these make sense:
   overwriting data, reconfiguring a sync flow), or when the user explicitly asks for a plan.
   The user can Approve, Request changes, or Cancel. Include only the
   \`requiredCapabilities\` the visible plan needs: \`artifact-write\`, \`warehouse-write\`,
-  \`git-write\`, and/or \`schedule-write\`. Scheduling mutations (dbt jobs, binding
-  schedules, scheduled queries) always need an approved plan with \`schedule-write\`;
-  dbt warehouse runs need \`warehouse-write\`; Git mutations need \`git-write\`.
+  \`git-write\`, and/or \`schedule-write\`.
 
 IMPORTANT: once you call \`submit_plan\`, mutating tools are blocked until the user approves.
 Do your read-only exploration BEFORE submitting so the plan is concrete. For small,

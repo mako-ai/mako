@@ -24,7 +24,10 @@ import { unifiedAgentFactory } from "../unified";
 import { buildCurrentScreenContext } from "../unified/prompt";
 import { createModeTools } from "../../agent-lib/tools/mode-tools";
 import { createToolDiscoveryTools } from "../../agent-lib/tools/tool-discovery-tools";
-import { authorizeAgentCapability } from "../../agent-lib/capabilities/runtime";
+import {
+  authorizeAgentCapability,
+  enforceCapabilityGrantsAtExecution,
+} from "../../agent-lib/capabilities/runtime";
 import {
   effectiveToolCountLimit,
   estimateToolSetTokens,
@@ -51,6 +54,35 @@ import type { ExpertiseModeId, ModeState } from "./types";
 /** The plan gate is engaged: a plan was submitted this turn but not approved. */
 function isPlanGateActive(modeState: ModeState): boolean {
   return modeState.planSubmitted && !modeState.planApproved;
+}
+
+const ALL_CAPABILITY_GRANTS: ReadonlySet<CapabilityGrant> = new Set(
+  CAPABILITY_GRANTS,
+);
+
+/**
+ * Hard plan-grant gating for native Chat: when enabled, warehouse, Git, and
+ * scheduling mutations execute only after the user approves a plan carrying
+ * the matching grant (small artifact edits stay implicit).
+ *
+ * DISABLED pending product review. The gating shipped in #755 without a
+ * broad review of the resulting agent UX and regressed core dbt flows (its
+ * working-set filtering also caused tool-call misrouting — see
+ * enforceCapabilityGrantsAtExecution). Until the policy is reviewed, native
+ * Chat implicitly holds every grant, matching pre-#755 behavior. The plan
+ * gate (read-only while a submitted plan awaits a decision) is unaffected.
+ */
+const PLAN_GRANT_GATING_ENABLED = false;
+
+/** Grants held by the native Chat surface for the current request. */
+export function nativeCapabilityGrants(
+  modeState: ModeState,
+): ReadonlySet<CapabilityGrant> {
+  if (!PLAN_GRANT_GATING_ENABLED) return ALL_CAPABILITY_GRANTS;
+  return new Set<CapabilityGrant>([
+    "artifact-write",
+    ...(modeState.planApproved ? [...modeState.approvedCapabilityGrants] : []),
+  ]);
 }
 
 type UIMessagePart = {
@@ -346,18 +378,18 @@ export function computeActiveTools(
         PLAN_GATE_ALLOWED_TOOL_NAMES.has(name),
     );
   }
-  const nativeCapabilityGrants = new Set<CapabilityGrant>([
-    // Small working-tree edits retain native Chat's act-without-a-plan flow.
-    // Warehouse, Git, and scheduling mutations always require plan approval.
-    "artifact-write",
-    ...(modeState.planApproved ? [...modeState.approvedCapabilityGrants] : []),
-  ]);
+  // Surface gating only. Grant-gated tools stay in the working set — their
+  // schemas must reach the provider because the system-prompt inventory
+  // advertises them as active. Hiding them made models snap intended calls
+  // onto a similarly named available tool (dbt_run_model →
+  // dbt_list_pull_requests); grants are now enforced when the tool executes
+  // (see enforceCapabilityGrantsAtExecution).
   names = names.filter(
     name =>
       authorizeAgentCapability(name, {
         surface: "in-chat",
         queryAccess: "write",
-        grants: nativeCapabilityGrants,
+        grants: ALL_CAPABILITY_GRANTS,
       }).allowed,
   );
 
@@ -477,12 +509,18 @@ export function buildUnifiedModeRuntime(params: {
 
   const discoveryTools = createToolDiscoveryTools({ modeState, catalog });
 
-  const tools: ToolSet = {
-    ...domainTools,
-    ...clientPlanTools,
-    ...modeTools,
-    ...discoveryTools,
-  } as ToolSet;
+  // Grant enforcement happens here, at execution time — never by removing
+  // the tool from the provider working set (that desyncs the prompt
+  // inventory and misroutes calls; see enforceCapabilityGrantsAtExecution).
+  const tools: ToolSet = enforceCapabilityGrantsAtExecution(
+    {
+      ...domainTools,
+      ...clientPlanTools,
+      ...modeTools,
+      ...discoveryTools,
+    } as ToolSet,
+    () => nativeCapabilityGrants(modeState),
+  );
 
   const allToolNames = new Set<string>(Object.keys(tools));
   const mcpAllowlist = {
