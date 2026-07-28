@@ -54,6 +54,12 @@ export interface AgentCapabilityDefinition<
    * why + note instead of a generic "deferred" classification.
    */
   mcpExclusion?: { why: CapabilityMcpExclusionWhy; note: string };
+  /**
+   * On desktop-acp this capability is delivered by the mako-desktop loopback
+   * server (same tool name), so the Mako MCP bridge must NOT register it for
+   * acpDesktop clients — one name, one provider per surface.
+   */
+  desktopDelivery?: "mako-desktop";
 }
 
 export const ALL_AGENT_SURFACES = [

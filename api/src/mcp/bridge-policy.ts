@@ -33,6 +33,11 @@ export type McpBridgeEntry =
       /** Expose only to the signed-in Mako Desktop ACP client. */
       acpDesktopOnly?: boolean;
       /**
+       * Omit for Desktop ACP clients: the mako-desktop loopback server
+       * delivers this same tool name there (one name, one provider).
+       */
+      omitForAcpDesktop?: boolean;
+      /**
        * Factory may omit this tool without credentials/config (e.g. web_search
        * when no search provider is configured). Still classified so the catalog
        * stays complete; inventory/staleness checks treat it as optional.
@@ -91,7 +96,21 @@ function capabilityBridgePolicyEntries(
           bridge({
             requiresQueryAccess: capability.requiresQueryAccess,
             destructiveHint: capability.risk === "destructive",
+            omitForAcpDesktop:
+              capability.desktopDelivery === "mako-desktop" || undefined,
           }),
+        ];
+      }
+      if (desktop && capability.desktopDelivery === "mako-desktop") {
+        // Desktop ACP gets this tool from the mako-desktop loopback server;
+        // the Mako bridge never serves it on any MCP surface.
+        return [
+          capability.name,
+          exclude(
+            capability.mcpExclusion?.why ?? "client-only",
+            capability.mcpExclusion?.note ??
+              "Delivered by the mako-desktop loopback server on Desktop ACP.",
+          ),
         ];
       }
       if (desktop) {
@@ -134,7 +153,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // ── Charts / screenshots (client) ─────────────────────────────────────
   capture_screenshot: exclude(
     "client-only",
-    "Captures the open browser tab; MCP uses render_app screenshots.",
+    "Captures the open browser tab; MCP uses run_app screenshots.",
   ),
   get_chart_template: exclude(
     "client-only",
@@ -394,13 +413,13 @@ export function mcpReadOnlyHint(
     queryAccess === "read" &&
     (name === "sql_execute_query" ||
       name === "run_console" ||
-      name === "check_query_status" ||
-      name === "list_console_executions" ||
       name === "cancel_query")
   ) {
-    // Under query:read the SQL loop is forced read-only; status/cancel/list
-    // are part of that same lifecycle and should not look like writes to MCP
-    // clients (affects auto-approval annotations).
+    // Under query:read the SQL loop is forced read-only; cancel is part of
+    // that same lifecycle and should not look like a write to MCP clients
+    // (affects auto-approval annotations). check_query_status and
+    // list_console_executions are read-risk in the capability registry, so
+    // they are covered by READ_ONLY_TOOL_NAMES above regardless of scope.
     return true;
   }
   return false;

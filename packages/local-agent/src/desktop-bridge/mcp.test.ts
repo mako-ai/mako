@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { HITL_TOOL_JSON_SCHEMAS } from "@mako/agent-tools";
 import { handleDesktopMcpExchange } from "./mcp";
 import { desktopBridgeRegistry } from "./registry";
 
@@ -17,11 +18,36 @@ describe("desktop-bridge MCP", () => {
     const names = body.result.tools.map(t => t.name).sort();
     assert.deepEqual(names, [
       "ask_clarifying_questions",
-      "get_preview_errors",
       "list_open_consoles",
       "run_app",
       "submit_plan",
     ]);
+    const runApp = body.result.tools.find(t => t.name === "run_app") as
+      | { inputSchema: { properties: Record<string, unknown> } }
+      | undefined;
+    assert.ok(
+      runApp?.inputSchema.properties.rebuild,
+      "run_app must accept rebuild (absorbs the old get_preview_errors)",
+    );
+  });
+
+  it("serves the HITL schemas from the shared @mako/agent-tools source", async () => {
+    const exchange = await handleDesktopMcpExchange({
+      jsonrpc: "2.0",
+      id: 10,
+      method: "tools/list",
+    });
+    const body = exchange.body as {
+      result: { tools: Array<{ name: string; inputSchema: unknown }> };
+    };
+    for (const name of ["ask_clarifying_questions", "submit_plan"] as const) {
+      const listed = body.result.tools.find(t => t.name === name);
+      assert.deepEqual(
+        listed?.inputSchema,
+        HITL_TOOL_JSON_SCHEMAS[name],
+        `${name} must serve the schema derived from the chat zod definition`,
+      );
+    }
   });
 
   it("fails run_app when Desktop Chat is not connected", async () => {
@@ -67,6 +93,30 @@ describe("desktop-bridge MCP", () => {
 
     const exchange = await callPromise;
     assert.equal(exchange.status, 200);
+    const body = exchange.body as {
+      result: { isError?: boolean; content: Array<{ text: string }> };
+    };
+    assert.equal(body.result.isError, undefined);
+    assert.match(body.result.content[0].text, /"success":true/);
+  });
+
+  it("translates legacy get_preview_errors into run_app({ rebuild: false })", async () => {
+    desktopBridgeRegistry.touchClient();
+    const callPromise = handleDesktopMcpExchange({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: { name: "get_preview_errors", arguments: { appId: "app-2" } },
+    });
+
+    const job = await desktopBridgeRegistry.claim(5_000);
+    assert.ok(job);
+    assert.equal(job.tool, "run_app");
+    assert.equal(job.arguments.appId, "app-2");
+    assert.equal(job.arguments.rebuild, false);
+    desktopBridgeRegistry.complete(job.id, { success: true, errors: [] });
+
+    const exchange = await callPromise;
     const body = exchange.body as {
       result: { isError?: boolean; content: Array<{ text: string }> };
     };

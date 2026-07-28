@@ -438,9 +438,13 @@ export async function executeAppAgentTool(
     case "run_app": {
       if (!appId) return fail("appId is required");
       await ensureApp(appId);
-      store.bumpPreview(appId);
-      // Give the preview a moment to rebuild and report errors.
-      await new Promise(resolve => setTimeout(resolve, 1200));
+      // rebuild: false = read current errors only — no bumpPreview, which
+      // flashes a black "Building preview…" screen and can remount Chat.
+      if (input.rebuild !== false) {
+        store.bumpPreview(appId);
+        // Give the preview a moment to rebuild and report errors.
+        await new Promise(resolve => setTimeout(resolve, 1200));
+      }
       const errors = summarizePreviewErrors(
         useAppStore.getState().previewErrors[appId],
       );

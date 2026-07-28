@@ -8,6 +8,7 @@
 import {
   ALL_AGENT_SURFACES,
   IN_CHAT_ONLY_SURFACES,
+  PRODUCT_AGENT_SURFACES,
   type AgentCapabilityDefinition,
 } from "./types";
 
@@ -43,14 +44,19 @@ export const CONSOLE_CAPABILITIES = [
     resultKind: "data",
   }),
   define({
+    // One name, one provider per surface: Chat reads the open tabs directly
+    // (client tool) and Desktop ACP gets the same tool from the mako-desktop
+    // loopback server. No external adapter — headless clients have no open
+    // tabs and use search_consoles instead.
     name: "list_open_consoles",
     pack: "console-orient",
     risk: "read",
-    surfaces: IN_CHAT_ONLY_SURFACES,
+    surfaces: PRODUCT_AGENT_SURFACES,
     resultKind: "data",
+    desktopDelivery: "mako-desktop",
     mcpExclusion: {
       why: "client-only",
-      note: "Open browser tabs; Desktop ACP uses mako-desktop list_open_consoles / UI context.",
+      note: "Open tabs are client state: Desktop ACP gets it from the mako-desktop loopback server; external MCP uses search_consoles.",
     },
   }),
   // ── Authoring ───────────────────────────────────────────────────────────
@@ -79,10 +85,11 @@ export const CONSOLE_CAPABILITIES = [
     resultKind: "artifact",
   }),
   define({
+    // Focuses/opens a tab (realtime event) without changing the console
+    // definition — a UI effect, not a mutation.
     name: "open_console",
     pack: "console-edit",
-    risk: "write",
-    requiredGrant: "artifact-write",
+    risk: "read",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "ui-effect",
   }),
@@ -96,9 +103,10 @@ export const CONSOLE_CAPABILITIES = [
     requiresQueryAccess: true,
   }),
   define({
+    // Polls a run without affecting it — read-lifecycle, not a write.
     name: "check_query_status",
     pack: "console-run",
-    risk: "write",
+    risk: "read",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "run",
     requiresQueryAccess: true,
@@ -112,9 +120,10 @@ export const CONSOLE_CAPABILITIES = [
     requiresQueryAccess: true,
   }),
   define({
+    // Lists past runs — read-lifecycle, not a write.
     name: "list_console_executions",
     pack: "console-run",
-    risk: "write",
+    risk: "read",
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "data",
   }),
