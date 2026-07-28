@@ -211,6 +211,7 @@ async function main() {
       "check_query_status",
       "list_console_executions",
       "cancel_query",
+      "open_console",
       "read_notebook",
       "search_notebook",
       "read_notebook_cell",
@@ -547,6 +548,11 @@ async function main() {
       desktopTools.some(tool => tool.name === "run_app"),
       false,
       "Desktop ACP must get run_app from mako-desktop, not the Mako bridge",
+    );
+    assert.equal(
+      desktopTools.some(tool => tool.name === "list_open_consoles"),
+      false,
+      "Desktop ACP must get list_open_consoles from mako-desktop, not the Mako bridge",
     );
   }
 

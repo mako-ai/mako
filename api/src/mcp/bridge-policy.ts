@@ -101,6 +101,18 @@ function capabilityBridgePolicyEntries(
           }),
         ];
       }
+      if (desktop && capability.desktopDelivery === "mako-desktop") {
+        // Desktop ACP gets this tool from the mako-desktop loopback server;
+        // the Mako bridge never serves it on any MCP surface.
+        return [
+          capability.name,
+          exclude(
+            capability.mcpExclusion?.why ?? "client-only",
+            capability.mcpExclusion?.note ??
+              "Delivered by the mako-desktop loopback server on Desktop ACP.",
+          ),
+        ];
+      }
       if (desktop) {
         return [
           capability.name,
@@ -401,13 +413,13 @@ export function mcpReadOnlyHint(
     queryAccess === "read" &&
     (name === "sql_execute_query" ||
       name === "run_console" ||
-      name === "check_query_status" ||
-      name === "list_console_executions" ||
       name === "cancel_query")
   ) {
-    // Under query:read the SQL loop is forced read-only; status/cancel/list
-    // are part of that same lifecycle and should not look like writes to MCP
-    // clients (affects auto-approval annotations).
+    // Under query:read the SQL loop is forced read-only; cancel is part of
+    // that same lifecycle and should not look like a write to MCP clients
+    // (affects auto-approval annotations). check_query_status and
+    // list_console_executions are read-risk in the capability registry, so
+    // they are covered by READ_ONLY_TOOL_NAMES above regardless of scope.
     return true;
   }
   return false;
