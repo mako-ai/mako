@@ -607,6 +607,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{id}/acp-plan-grant": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply a Desktop ACP plan decision */
+        post: operations["post_api_workspaces_id_acp_plan_grant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{id}/mcp-connections": {
         parameters: {
             query?: never;
@@ -1491,6 +1508,23 @@ export interface paths {
         /** Update the workspace custom prompt */
         put: operations["put_api_workspaces_workspaceId_custom_prompt"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/custom-prompt/turn-guidance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Prepare budgeted agent guidance for one turn */
+        post: operations["post_api_workspaces_workspaceId_custom_prompt_turn_guidance"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6772,6 +6806,57 @@ export interface operations {
             };
         };
     };
+    post_api_workspaces_id_acp_plan_grant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    agentSessionId: string;
+                    /** @enum {string} */
+                    decision: "approve" | "request_changes" | "cancel";
+                    planMarkdown?: string;
+                    grants?: ("artifact-write" | "warehouse-write" | "git-write" | "schedule-write")[];
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     get_api_workspaces_id_mcp_connections: {
         parameters: {
             query?: never;
@@ -9672,6 +9757,69 @@ export interface operations {
                 };
             };
             /** @description Failed to update custom prompt */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_custom_prompt_turn_guidance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    userText: string;
+                    /** @default false */
+                    includeDbtRules?: boolean;
+                    dbtProjectId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Prepared turn guidance. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        success: true;
+                        skillsBlock: string;
+                        dbtRulesBlock: string;
+                    };
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Access denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Failed to prepare guidance */
             500: {
                 headers: {
                     [name: string]: unknown;

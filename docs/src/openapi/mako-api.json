@@ -4497,6 +4497,119 @@
         "operationId": "post_api_workspaces_id_mcp_access_token"
       }
     },
+    "/api/workspaces/{id}/acp-plan-grant": {
+      "post": {
+        "tags": [
+          "Workspaces"
+        ],
+        "summary": "Apply a Desktop ACP plan decision",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "agentSessionId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "approve",
+                      "request_changes",
+                      "cancel"
+                    ]
+                  },
+                  "planMarkdown": {
+                    "type": "string",
+                    "maxLength": 100000
+                  },
+                  "grants": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "artifact-write",
+                        "warehouse-write",
+                        "git-write",
+                        "schedule-write"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "agentSessionId",
+                  "decision"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_id_acp_plan_grant"
+      }
+    },
     "/api/workspaces/{id}/mcp-connections": {
       "get": {
         "tags": [
@@ -9913,6 +10026,121 @@
           }
         },
         "operationId": "put_api_workspaces_workspaceId_custom_prompt"
+      }
+    },
+    "/api/workspaces/{workspaceId}/custom-prompt/turn-guidance": {
+      "post": {
+        "tags": [
+          "Custom Prompt"
+        ],
+        "summary": "Prepare budgeted agent guidance for one turn",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "userText": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100000
+                  },
+                  "includeDbtRules": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "dbtProjectId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "userText"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Prepared turn guidance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "skillsBlock": {
+                      "type": "string"
+                    },
+                    "dbtRulesBlock": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "skillsBlock",
+                    "dbtRulesBlock"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to prepare guidance",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_custom_prompt_turn_guidance"
       }
     },
     "/api/workspaces/{workspaceId}/custom-prompt/reset": {
