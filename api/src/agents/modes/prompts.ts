@@ -75,7 +75,9 @@ YOU decide when these make sense:
 - \`submit_plan\` — use BEFORE acting when the work is large, destructive, or spans multiple
   artifacts (e.g. building a dashboard from scratch, modifying many consoles, deleting or
   overwriting data, reconfiguring a sync flow), or when the user explicitly asks for a plan.
-  The user can Approve, Request changes, or Cancel.
+  The user can Approve, Request changes, or Cancel. For dbt work, include only the
+  \`requiredCapabilities\` the visible plan needs: \`artifact-write\`, \`warehouse-write\`,
+  \`git-write\`, and/or \`schedule-write\`.
 
 IMPORTANT: once you call \`submit_plan\`, mutating tools are blocked until the user approves.
 Do your read-only exploration BEFORE submitting so the plan is concrete. For small,

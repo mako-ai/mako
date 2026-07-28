@@ -2,7 +2,10 @@
  * Polls Local Agent for mako-desktop MCP jobs and fulfills them in the
  * Desktop/web renderer (apps, consoles, HITL clarify/plan cards).
  */
-import { summarizePreviewErrors } from "@mako/agent-tools";
+import {
+  summarizePreviewErrors,
+  type CapabilityGrant,
+} from "@mako/agent-tools";
 import { executeAppAgentTool } from "../app-runtime/agent-tools";
 import { useAppStore } from "../store/appStore";
 import { useConsoleStore } from "../store/consoleStore";
@@ -10,6 +13,7 @@ import {
   useDesktopHitlStore,
   type DesktopHitlToolName,
 } from "../store/desktopHitlStore";
+import { useAcpStore } from "../store/acpStore";
 import { localAgentClient } from "./local-agent-client";
 
 type BridgeToolName =
@@ -22,6 +26,8 @@ interface BridgeJob {
   id: string;
   tool: BridgeToolName;
   arguments: Record<string, unknown>;
+  agentSessionId?: string;
+  workspaceId?: string;
 }
 
 interface ClaimEnvelope {
@@ -85,10 +91,82 @@ export async function completeDesktopHitlJob(
   jobId: string,
   result: unknown,
 ): Promise<void> {
-  await localAgentClient.post(
-    `/desktop/bridge/jobs/${encodeURIComponent(jobId)}/result`,
-    { ok: true, result },
-  );
+  const pending = useDesktopHitlStore.getState().pending;
+  let approvedGrantContext:
+    | { workspaceId: string; agentSessionId: string }
+    | undefined;
+  if (
+    pending?.jobId === jobId &&
+    pending.toolName === "submit_plan" &&
+    result &&
+    typeof result === "object"
+  ) {
+    const output = result as {
+      decision?: unknown;
+      editedPlan?: { planMarkdown?: unknown };
+    };
+    if (
+      output.decision === "approve" ||
+      output.decision === "request_changes" ||
+      output.decision === "cancel"
+    ) {
+      if (!pending.agentSessionId || !pending.workspaceId) {
+        throw new Error(
+          "This plan came from an outdated Local Agent session. Restart the local session and submit the plan again.",
+        );
+      }
+      const editedPlanMarkdown = output.editedPlan?.planMarkdown;
+      const originalPlanMarkdown = pending.input.planMarkdown;
+      const allowedGrants = new Set<CapabilityGrant>([
+        "artifact-write",
+        "warehouse-write",
+        "git-write",
+        "schedule-write",
+      ]);
+      const requestedGrants = Array.isArray(pending.input.requiredCapabilities)
+        ? pending.input.requiredCapabilities.filter(
+            (grant): grant is CapabilityGrant =>
+              typeof grant === "string" &&
+              allowedGrants.has(grant as CapabilityGrant),
+          )
+        : undefined;
+      await useAcpStore.getState().applyPlanDecision({
+        workspaceId: pending.workspaceId,
+        agentSessionId: pending.agentSessionId,
+        decision: output.decision,
+        planMarkdown:
+          typeof editedPlanMarkdown === "string"
+            ? editedPlanMarkdown
+            : typeof originalPlanMarkdown === "string"
+              ? originalPlanMarkdown
+              : undefined,
+        grants: requestedGrants,
+      });
+      if (output.decision === "approve") {
+        approvedGrantContext = {
+          workspaceId: pending.workspaceId,
+          agentSessionId: pending.agentSessionId,
+        };
+      }
+    }
+  }
+  try {
+    await localAgentClient.post(
+      `/desktop/bridge/jobs/${encodeURIComponent(jobId)}/result`,
+      { ok: true, result },
+    );
+  } catch (error) {
+    if (approvedGrantContext) {
+      await useAcpStore
+        .getState()
+        .applyPlanDecision({
+          ...approvedGrantContext,
+          decision: "cancel",
+        })
+        .catch(() => undefined);
+    }
+    throw error;
+  }
   useDesktopHitlStore.getState().clearPending(jobId);
 }
 
@@ -141,6 +219,8 @@ async function pollLoop(): Promise<void> {
               ? job.arguments
               : {},
           createdAt: Date.now(),
+          agentSessionId: job.agentSessionId,
+          workspaceId: job.workspaceId,
         });
         // Completes when Chat dock cards call completeDesktopHitlJob.
         continue;

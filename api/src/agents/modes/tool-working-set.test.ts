@@ -62,6 +62,7 @@ const baseModeState = (loaded: string[] = []): ModeState => ({
   enabledModes: new Set(["query"]),
   planSubmitted: false,
   planApproved: false,
+  approvedCapabilityGrants: new Set(),
   loadedToolNames: loaded,
 });
 
@@ -162,6 +163,7 @@ const baseModeState = (loaded: string[] = []): ModeState => ({
     enabledModes: new Set(),
     planSubmitted: false,
     planApproved: false,
+    approvedCapabilityGrants: new Set(),
     loadedToolNames: ["heavy_a", "heavy_b"],
   };
   const active = computeActiveTools(state, all, undefined, {
@@ -194,6 +196,7 @@ const baseModeState = (loaded: string[] = []): ModeState => ({
     enabledModes: new Set(),
     planSubmitted: true,
     planApproved: false,
+    approvedCapabilityGrants: new Set(),
     loadedToolNames: ["mcp_read_tool", "mcp_write_tool"],
   };
   const active = computeActiveTools(
@@ -209,6 +212,37 @@ const baseModeState = (loaded: string[] = []): ModeState => ({
   assert.ok(active.includes("load_tools"), "loading allowed under gate");
   assert.ok(active.includes("mcp_read_tool"), "read MCP allowed under gate");
   assert.ok(!active.includes("mcp_write_tool"), "write MCP gated");
+}
+
+// --- dbt capabilities: small edits are implicit; writes need plan grants -----
+{
+  const all = new Set([
+    "edit_dbt_file",
+    "dbt_run_model",
+    "dbt_commit_and_push",
+  ]);
+  const withoutPlan: ModeState = {
+    enabledModes: new Set(["transform"]),
+    planSubmitted: false,
+    planApproved: false,
+    approvedCapabilityGrants: new Set(),
+    loadedToolNames: [],
+  };
+  const activeWithoutPlan = computeActiveTools(withoutPlan, all);
+  assert.ok(activeWithoutPlan.includes("edit_dbt_file"));
+  assert.ok(!activeWithoutPlan.includes("dbt_run_model"));
+  assert.ok(!activeWithoutPlan.includes("dbt_commit_and_push"));
+
+  const approved: ModeState = {
+    ...withoutPlan,
+    planSubmitted: true,
+    planApproved: true,
+    approvedCapabilityGrants: new Set(["warehouse-write"]),
+  };
+  const activeApproved = computeActiveTools(approved, all);
+  assert.ok(activeApproved.includes("edit_dbt_file"));
+  assert.ok(activeApproved.includes("dbt_run_model"));
+  assert.ok(!activeApproved.includes("dbt_commit_and_push"));
 }
 
 // --- provider caps ------------------------------------------------------------

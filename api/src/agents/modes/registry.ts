@@ -1,4 +1,7 @@
-import { PLAN_GATE_ALLOWED_TOOL_NAMES } from "@mako/agent-tools";
+import {
+  DBT_CAPABILITY_NAMES,
+  PLAN_GATE_ALLOWED_TOOL_NAMES,
+} from "@mako/agent-tools";
 import type { AgentContext } from "../types";
 import type { AgentMode, ExpertiseModeId } from "./types";
 import {
@@ -202,46 +205,7 @@ const APP_MODE_TOOL_NAMES: string[] = [
 ];
 
 const TRANSFORM_MODE_TOOL_NAMES: string[] = [
-  // Bootstrap: create a project when the workspace has none
-  "dbt_create_project",
-  // Personal (per-developer) environment for safe fast iteration
-  "dbt_ensure_dev_environment",
-  // Client dbt file tools
-  "read_dbt_project_tree",
-  "read_dbt_file",
-  "create_dbt_file",
-  "modify_dbt_file",
-  "edit_dbt_file",
-  "delete_dbt_file",
-  // Server dbt verification + execution tools
-  "dbt_parse",
-  "dbt_compile_model",
-  "dbt_run_model",
-  "dbt_run_job",
-  "dbt_cancel_run",
-  "dbt_get_run",
-  "dbt_show",
-  "dbt_create_job",
-  "dbt_update_job",
-  "dbt_delete_job",
-  // Git: commit/push edits to the connected repo (only when the user asks).
-  "dbt_git_status",
-  "dbt_sync_from_repo",
-  "dbt_commit_and_push",
-  "dbt_commit_to_branch",
-  "dbt_create_branch",
-  "dbt_switch_branch",
-  "dbt_list_branches",
-  "dbt_compare_branches",
-  "dbt_delete_branch",
-  "dbt_open_pull_request",
-  "dbt_merge_pull_request",
-  "dbt_list_pull_requests",
-  "dbt_update_pull_request",
-  "dbt_close_pull_request",
-  // Recovery: surface + restore work hidden by a destructive switch/sync.
-  "dbt_list_recoverable_files",
-  "dbt_restore_file",
+  ...DBT_CAPABILITY_NAMES,
   // Discovery: inspect sources before writing staging models; preview built
   // tables after dbt_run_model.
   "list_connections",

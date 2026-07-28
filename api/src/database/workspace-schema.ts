@@ -5022,6 +5022,11 @@ export interface IDbtRun extends Document {
   logs: IDbtRunLogLine[];
   /** Parsed from run_results.json after each command. */
   stepResults: IDbtRunStepResult[];
+  /** Structured bounded output for commands whose result is not run_results. */
+  output?: {
+    kind: "show-preview";
+    text: string;
+  };
   artifactKeys: {
     manifest?: string;
     runResults?: string;
@@ -5124,6 +5129,10 @@ const DbtRunSchema = new Schema<IDbtRun>(
         ),
       ],
       default: [],
+    },
+    output: {
+      kind: { type: String, enum: ["show-preview"] },
+      text: { type: String },
     },
     artifactKeys: {
       manifest: { type: String },

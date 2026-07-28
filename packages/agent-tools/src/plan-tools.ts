@@ -84,6 +84,20 @@ export const submitPlanSchema = z.object({
     .array(planTodoSchema)
     .min(1)
     .describe("Ordered list of concrete steps you will execute once approved."),
+  requiredCapabilities: z
+    .array(
+      z.enum([
+        "artifact-write",
+        "warehouse-write",
+        "git-write",
+        "schedule-write",
+      ]),
+    )
+    .optional()
+    .describe(
+      "Task-scoped mutation capabilities this plan needs. Include only those " +
+        "the plan visibly describes. Desktop ACP enforces this list after approval.",
+    ),
 });
 
 /**

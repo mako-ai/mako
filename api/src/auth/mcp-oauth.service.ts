@@ -119,6 +119,7 @@ export interface IssuedTokens {
   refreshToken: string;
   expiresInSeconds: number;
   scopes: string[];
+  agentSessionId?: string;
 }
 
 async function issueTokens(grant: {
@@ -126,6 +127,7 @@ async function issueTokens(grant: {
   userId: string;
   workspaceId: string;
   scopes: string[];
+  agentSessionId?: string;
 }): Promise<IssuedTokens> {
   const accessToken = randomToken(MCP_ACCESS_TOKEN_PREFIX);
   const refreshToken = randomToken(MCP_REFRESH_TOKEN_PREFIX);
@@ -135,6 +137,7 @@ async function issueTokens(grant: {
     clientId: grant.clientId,
     userId: grant.userId,
     workspaceId: grant.workspaceId,
+    agentSessionId: grant.agentSessionId,
     scopes: grant.scopes,
     accessExpiresAt: new Date(Date.now() + ACCESS_TOKEN_TTL_MS),
     refreshExpiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
@@ -144,6 +147,7 @@ async function issueTokens(grant: {
     refreshToken,
     expiresInSeconds: Math.floor(ACCESS_TOKEN_TTL_MS / 1000),
     scopes: grant.scopes,
+    agentSessionId: grant.agentSessionId,
   };
 }
 
@@ -184,11 +188,13 @@ export async function mintMcpAccessTokenForUser(input: {
   workspaceId: string;
 }): Promise<IssuedTokens> {
   await ensureAcpMcpClient();
+  const agentSessionId = crypto.randomUUID();
   return issueTokens({
     clientId: ACP_MCP_CLIENT_ID,
     userId: input.userId,
     workspaceId: input.workspaceId,
     scopes: [...DEFAULT_WORKSPACE_API_KEY_SCOPES],
+    agentSessionId,
   });
 }
 
@@ -256,6 +262,7 @@ export async function refreshAccessToken(input: {
     userId: record.userId,
     workspaceId: record.workspaceId,
     scopes: record.scopes,
+    agentSessionId: record.agentSessionId,
   });
 }
 
@@ -336,6 +343,7 @@ export interface ValidatedMcpToken {
   scopes: WorkspaceApiKeyScope[];
   /** OAuth client that minted the grant (e.g. `mako-acp-local`). */
   clientId: string;
+  agentSessionId?: string;
 }
 
 export async function validateMcpAccessToken(
@@ -363,5 +371,6 @@ export async function validateMcpAccessToken(
     workspaceId: record.workspaceId,
     scopes: resolveWorkspaceApiKeyScopes(record.scopes),
     clientId: record.clientId,
+    agentSessionId: record.agentSessionId,
   };
 }

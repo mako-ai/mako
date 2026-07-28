@@ -15,6 +15,7 @@ export interface MakoMcpAttachCredentials {
   mcpAuthorization: string;
   expiresIn: number;
   mcpServerName: string;
+  agentSessionId: string;
 }
 
 /** Absolute MCP URL that the Local Agent (on the user's machine) can reach. */
@@ -46,6 +47,7 @@ export async function mintMakoMcpAttach(
       accessToken?: string;
       authorization?: string;
       expiresIn?: number;
+      agentSessionId?: string;
       mcpPath?: string;
     };
     error?: string;
@@ -58,12 +60,16 @@ export async function mintMakoMcpAttach(
   if (!authorization) {
     throw new Error(response?.error || "Failed to mint Mako MCP access token");
   }
+  if (!data?.agentSessionId) {
+    throw new Error("Mako MCP access token is missing its agent session");
+  }
 
   return {
     mcpUrl: resolveAbsoluteMcpUrl(),
     mcpAuthorization: authorization,
     expiresIn: data?.expiresIn ?? 0,
     mcpServerName: MAKO_WORKSPACE_MCP_NAME,
+    agentSessionId: data.agentSessionId,
   };
 }
 

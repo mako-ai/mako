@@ -111,6 +111,8 @@ export const acpClient = {
     mcpUrl?: string;
     mcpAuthorization?: string;
     mcpServerName?: string;
+    makoAgentSessionId?: string;
+    makoWorkspaceId?: string;
     /** Lean workspace guidance for Claude systemPrompt.append (not full skills). */
     systemPromptAppend?: string;
     /** Preferred Claude/Codex model (`fable`, `sonnet`, …). */

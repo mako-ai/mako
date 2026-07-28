@@ -33,7 +33,7 @@ import type { AcpProviderId } from "./acp-types";
 import { maybeFocusAppFromAcpTool } from "./acp-app-focus";
 import { maybeFocusConsoleFromAcpTool } from "./acp-console-focus";
 import { maybeFocusNotebookFromAcpTool } from "./acp-notebook-focus";
-import { buildAcpUiContextBlock } from "./acp-ui-context";
+import { buildAcpUiContextBlock, getAcpDbtFocus } from "./acp-ui-context";
 import {
   buildAcpContinuitySeed,
   prependAcpPromptLayers,
@@ -396,6 +396,18 @@ export async function runLocalAcpChatTurn(
     chatId,
     modelId,
   });
+  const dbtFocus = getAcpDbtFocus();
+  const turnGuidance = workspaceId
+    ? await useAcpStore
+        .getState()
+        .fetchTurnGuidance({
+          workspaceId,
+          userText: trimmed,
+          includeDbtRules: dbtFocus.active,
+          dbtProjectId: dbtFocus.projectId,
+        })
+        .catch(() => "")
+    : "";
 
   const runAgainstSession = async (forceNew: boolean) => {
     const ensured = await ensureAcpSessionForProvider(
@@ -406,6 +418,9 @@ export async function runLocalAcpChatTurn(
     );
     sessionId = ensured.sessionId;
     useAcpStore.getState().ensureEventSubscription(sessionId);
+    // Fail closed across turns: a missed end-of-turn revoke (renderer/network
+    // interruption) must never carry an old plan grant into this request.
+    await useAcpStore.getState().revokeSessionGrant(sessionId);
 
     const continuitySeed =
       ensured.isFresh && priorMessages.length > 0
@@ -415,6 +430,7 @@ export async function runLocalAcpChatTurn(
       userText: trimmed,
       continuitySeed,
       uiContext,
+      turnGuidance,
     });
 
     // Ignore any backlog that still arrives (older Local Agents always replay).
@@ -572,6 +588,10 @@ export async function runLocalAcpChatTurn(
         );
       });
     } finally {
+      await useAcpStore
+        .getState()
+        .revokeSessionGrant(activeSessionId)
+        .catch(() => undefined);
       signal?.removeEventListener("abort", onAbort);
       unsub();
     }

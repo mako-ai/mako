@@ -15,6 +15,10 @@ import {
 } from "../auth/mcp-oauth.service";
 import { workspaceService } from "../services/workspace.service";
 import {
+  approveAcpPlanGrant,
+  revokeAcpPlanGrant,
+} from "../services/acp-plan-grant.service";
+import {
   requireWorkspace,
   requireWorkspaceRole,
   optionalWorkspace,
@@ -51,6 +55,23 @@ const AddMemberBody = jsonBody(
 const UpdateMemberRoleBody = jsonBody(z.object({ role: MemberRole }));
 const CreateInviteBody = jsonBody(
   z.object({ email: z.string(), role: MemberRole }),
+);
+const AcpPlanDecisionBody = jsonBody(
+  z.object({
+    agentSessionId: z.string().uuid(),
+    decision: z.enum(["approve", "request_changes", "cancel"]),
+    planMarkdown: z.string().max(100_000).optional(),
+    grants: z
+      .array(
+        z.enum([
+          "artifact-write",
+          "warehouse-write",
+          "git-write",
+          "schedule-write",
+        ]),
+      )
+      .optional(),
+  }),
 );
 
 const WorkspaceSchema = z
@@ -1604,6 +1625,7 @@ workspaceRoutes.openapi(
           accessToken: tokens.accessToken,
           expiresIn: tokens.expiresInSeconds,
           scopes: tokens.scopes,
+          agentSessionId: tokens.agentSessionId,
           mcpPath: "/api/mcp",
           authorization: `Bearer ${tokens.accessToken}`,
         },
@@ -1620,6 +1642,72 @@ workspaceRoutes.openapi(
         },
         500,
       );
+    }
+  },
+);
+
+// POST /api/workspaces/:id/acp-plan-grant — approve/revoke Desktop task grants
+workspaceRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/acp-plan-grant",
+    tags: ["Workspaces"],
+    summary: "Apply a Desktop ACP plan decision",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: { params: IdParam, body: AcpPlanDecisionBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      if (!isSessionAuth(c)) {
+        return c.json(
+          { success: false, error: "Plan decisions require a browser session" },
+          403,
+        );
+      }
+      const workspace = c.get("workspace");
+      const user = c.get("user");
+      if (!user) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
+      if (c.req.param("id") !== workspace._id.toString()) {
+        return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
+      }
+      const input = c.req.valid("json");
+      if (input.decision === "approve") {
+        if (!input.planMarkdown?.trim()) {
+          return c.json(
+            {
+              success: false,
+              error: "An approved plan must include planMarkdown",
+            },
+            400,
+          );
+        }
+        const grant = await approveAcpPlanGrant({
+          workspaceId: workspace._id.toString(),
+          userId: String(user.id),
+          agentSessionId: input.agentSessionId,
+          planMarkdown: input.planMarkdown,
+          grants: input.grants ?? ["artifact-write"],
+        });
+        return c.json({ success: true, data: grant });
+      }
+      await revokeAcpPlanGrant({
+        workspaceId: workspace._id.toString(),
+        userId: String(user.id),
+        agentSessionId: input.agentSessionId,
+      });
+      return c.json({ success: true });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Failed to apply plan decision";
+      const status = /not found/i.test(message) ? 404 : 500;
+      logger.error("Error applying ACP plan decision", { error });
+      return c.json({ success: false, error: message }, status);
     }
   },
 );

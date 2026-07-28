@@ -11,6 +11,8 @@ export interface DesktopHitlPending {
   toolName: DesktopHitlToolName;
   input: Record<string, unknown>;
   createdAt: number;
+  agentSessionId?: string;
+  workspaceId?: string;
 }
 
 interface DesktopHitlState {

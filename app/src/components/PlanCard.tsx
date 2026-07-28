@@ -79,6 +79,8 @@ export const PlanCard: React.FC<PlanCardProps> = ({
       ? plan.status
       : output?.decision;
   const pending = !decision && !isStreaming;
+  const requiredCapabilities =
+    plan?.input.requiredCapabilities ?? input?.requiredCapabilities ?? [];
 
   const openTab = () => {
     if (!toolCallId) return;
@@ -150,6 +152,18 @@ export const PlanCard: React.FC<PlanCardProps> = ({
                 : `Plan · ${stepCount} step${stepCount === 1 ? "" : "s"}`}
           </Typography>
         </Box>
+        {requiredCapabilities.length > 0 && (
+          <Tooltip
+            title={`Approval grants this task: ${requiredCapabilities.join(", ")}`}
+            placement="top"
+          >
+            <Chip
+              size="small"
+              label={requiredCapabilities.join(" · ")}
+              variant="outlined"
+            />
+          </Tooltip>
+        )}
         {decision && (
           <Chip
             size="small"

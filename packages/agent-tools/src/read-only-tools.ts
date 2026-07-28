@@ -15,6 +15,8 @@
  * a raw query can contain writes (INSERT/UPDATE/DELETE/DDL) and we cannot
  * statically guarantee otherwise, so plan mode blocks them until approval.
  */
+import { DBT_CAPABILITIES } from "./capabilities/dbt-capabilities";
+
 export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   // Cross-surface discovery
   "list_connections",
@@ -51,19 +53,10 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   "read_notebook",
   "search_notebook",
   "read_notebook_cell",
-  // dbt reads + verification (parse/compile/show/get_run never mutate the
-  // warehouse; show runs a bounded SELECT, get_run reads run history)
-  "read_dbt_project_tree",
-  "read_dbt_file",
-  "dbt_parse",
-  "dbt_compile_model",
-  "dbt_get_run",
-  "dbt_show",
-  // dbt git reads (status + branch listing/compare never mutate the repo)
-  "dbt_git_status",
-  "dbt_list_branches",
-  "dbt_compare_branches",
-  "dbt_list_recoverable_files",
+  // dbt read/validation inventory is derived from the capability registry.
+  ...DBT_CAPABILITIES.filter(capability => capability.risk === "read").map(
+    capability => capability.name,
+  ),
   // Surface-scoped data-source reads (apps + dashboards, local DuckDB only)
   "list_data_sources",
   "inspect_data_source",

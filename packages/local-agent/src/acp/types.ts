@@ -57,6 +57,10 @@ export interface AcpSessionInfo {
   busy: boolean;
   /** True when Mako `/api/mcp` was attached on session/new. */
   makoMcpAttached?: boolean;
+  /** Non-secret API identity bound to this session's Mako MCP token. */
+  makoAgentSessionId?: string;
+  /** Workspace bound to the attached Mako MCP token. */
+  makoWorkspaceId?: string;
   /** Current Claude/Codex model id from session configOptions (when known). */
   currentModel?: string | null;
   /** Selectable models advertised by the adapter for this session. */
@@ -173,6 +177,10 @@ export interface CreateAcpSessionRequest {
   mcpUrl?: string;
   /** `Bearer mcpat_…` (or raw token — normalized to Bearer). */
   mcpAuthorization?: string;
+  /** Non-secret API identity returned alongside the MCP token. */
+  makoAgentSessionId?: string;
+  /** Workspace bound to the attached MCP token. */
+  makoWorkspaceId?: string;
   /**
    * MCP server name advertised to the agent (Claude tool prefix mcp__{name}__).
    * Default `mako-workspace` — avoid `mako` which collides with Claude.ai connectors.

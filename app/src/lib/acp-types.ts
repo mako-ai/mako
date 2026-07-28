@@ -98,6 +98,10 @@ export interface AcpSessionInfo {
   cwd: string;
   createdAt: string;
   updatedAt: string;
+  /** API-side identity bound to this session's Mako MCP Bearer. */
+  makoAgentSessionId?: string;
+  /** Workspace bound to this session's Mako MCP Bearer. */
+  makoWorkspaceId?: string;
   busy: boolean;
   /** True when Mako `/api/mcp` was attached on session/new. */
   makoMcpAttached?: boolean;
