@@ -60,16 +60,17 @@ Projects can be **imported from GitHub** and kept in sync via Mako's multi-tenan
 Beyond the file IDE, the editor mirrors **dbt Studio**:
 
 - **Live auto-compile** of the model you're editing.
-- **Build / Run / Test** node menu with graph operators: `model`, `model+`, `+model`, `+model+`.
-- **Persistent bottom panel** — Compiled / Problems / Results / Lineage tabs and a status bar.
+- **Toolbar: Preview (⌘↵) · Compile · Build ▾** — one-click Preview runs `dbt show --select <model> --limit 500 --output json`, a bounded read-only SELECT that materializes nothing and returns rows in a data grid (CSV / NDJSON export included). Build is a split button: clicking builds the model, the caret keeps the **Build / Run / Test** node menu with graph operators (`model`, `model+`, `+model`, `+model+`).
+- **Persistent bottom panel** — **Commands · Problems · Results · Compiled code · Lineage** tabs and a status bar. Results is the Preview data grid (read-only). Commands shows this session's invocations with node outcomes (status, environment, timing, collapsible logs, Pass/Warn/Error/Skip counters).
 - **jinja-sql** Monaco language support, a dbt version selector, and project create/import/settings drawers.
 
 ## Running models
 
-Three ways to execute dbt, all routed through the same validated runner:
+Four ways to execute dbt, all routed through the same validated runner:
 
 | Action | What it runs | Where |
 | ------ | ------------ | ----- |
+| **Preview** | `dbt show --select <model> --limit 500 --output json` | Read-only bounded SELECT; never materializes, never recorded to run history; allowed on every environment |
 | **Compile / Parse** | `dbt parse` or `dbt compile --select <model>` | Renders Jinja, validates refs/sources without touching the warehouse |
 | **Run selection** | `dbt build --select <model>` | Builds the model **and its tests** on the chosen environment |
 | **Command bar** | Any allow-listed `dbt` command | dbt Cloud parity — free-form command bar |
