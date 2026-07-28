@@ -9,7 +9,7 @@ import {
 } from "./registry";
 
 const SERVER_NAME = "mako-desktop";
-const SERVER_VERSION = "0.2.0";
+const SERVER_VERSION = "0.3.0";
 const PROTOCOL_VERSION = "2024-11-05";
 
 type JsonRpcId = string | number | null;
@@ -36,23 +36,16 @@ const TOOLS: Array<{
   {
     name: "run_app",
     description:
-      "Rebuild the in-Desktop app preview iframe and return live build/runtime errors (previewErrors). Prefer this over create_preview_token / render_app when Chat is open in Mako Desktop.",
+      "Rebuild the in-Desktop app preview iframe and return live build/runtime errors (previewErrors). Pass rebuild: false to read the current previewErrors without forcing a rebuild. Prefer this over create_preview_token when Chat is open in Mako Desktop.",
     inputSchema: {
       type: "object",
       properties: {
         appId: { type: "string", description: "App id to preview" },
-      },
-      required: ["appId"],
-    },
-  },
-  {
-    name: "get_preview_errors",
-    description:
-      "Return the current Desktop iframe previewErrors for an open app without forcing a rebuild.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        appId: { type: "string", description: "App id" },
+        rebuild: {
+          type: "boolean",
+          description:
+            "Default true. false = return current previewErrors without rebuilding the iframe.",
+        },
       },
       required: ["appId"],
     },
@@ -147,10 +140,17 @@ function fail(id: JsonRpcId, code: number, message: string): JsonRpcResponse {
 }
 
 async function callTool(
-  name: string,
-  args: Record<string, unknown>,
+  rawName: string,
+  rawArgs: Record<string, unknown>,
   context?: { agentSessionId?: string; workspaceId?: string },
 ): Promise<{ text: string; isError?: boolean }> {
+  // Legacy alias from pre-0.3 tool lists: agents mid-session across an
+  // update may still call it — same job as run_app({ rebuild: false }).
+  const legacyPreviewErrors = rawName === "get_preview_errors";
+  const name = legacyPreviewErrors ? "run_app" : rawName;
+  const args = legacyPreviewErrors
+    ? { ...rawArgs, rebuild: false }
+    : rawArgs;
   if (!TOOL_NAMES.has(name as DesktopBridgeToolName)) {
     return { text: `Unknown tool: ${name}`, isError: true };
   }
@@ -210,7 +210,12 @@ async function handleOne(
         ? (params.arguments as Record<string, unknown>)
         : {};
     // HITL tools block the HTTP exchange until Desktop completes — expected.
-    if (isDesktopHitlTool(name) || TOOL_NAMES.has(name as DesktopBridgeToolName)) {
+    // get_preview_errors is a legacy alias resolved inside callTool.
+    if (
+      isDesktopHitlTool(name) ||
+      TOOL_NAMES.has(name as DesktopBridgeToolName) ||
+      name === "get_preview_errors"
+    ) {
       const result = await callTool(name, args, context);
       return ok(id, {
         content: [{ type: "text", text: result.text }],

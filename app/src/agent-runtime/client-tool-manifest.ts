@@ -646,10 +646,13 @@ export const AGENT_TOOL_MANIFEST = {
     execution: "client",
     clientExecutor: "app",
     longRunning: true,
-    getLabel: () => "Rebuilding app preview",
+    getLabel: input =>
+      (input as { rebuild?: boolean } | undefined)?.rebuild === false
+        ? "Checking preview errors"
+        : "Rebuilding app preview",
     icon: "play",
   },
-  // Desktop ACP (mako-desktop) — read live iframe errors without rebuilding.
+  // Legacy alias from pre-0.3 Local Agent builds — run_app({ rebuild: false }).
   get_preview_errors: {
     domain: "app",
     execution: "client",

@@ -5,7 +5,6 @@
 
 export type DesktopBridgeToolName =
   | "run_app"
-  | "get_preview_errors"
   | "list_open_consoles"
   | "ask_clarifying_questions"
   | "submit_plan";

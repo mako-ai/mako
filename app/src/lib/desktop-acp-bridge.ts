@@ -18,6 +18,7 @@ import { localAgentClient } from "./local-agent-client";
 
 type BridgeToolName =
   | "run_app"
+  // Legacy alias from pre-0.3 Local Agent builds — run_app({ rebuild: false }).
   | "get_preview_errors"
   | "list_open_consoles"
   | DesktopHitlToolName;
@@ -69,8 +70,9 @@ async function executeImmediateJob(job: BridgeJob): Promise<unknown> {
   }
 
   if (job.tool === "get_preview_errors") {
-    // Read-only — never bumpPreview / rebuild the iframe (that blacks out
-    // the app preview and can remount Chat mid-turn).
+    // Legacy alias from pre-0.3 Local Agent builds. Read-only — never
+    // bumpPreview / rebuild the iframe (that blacks out the app preview
+    // and can remount Chat mid-turn).
     return {
       success: true,
       appId,
@@ -81,7 +83,12 @@ async function executeImmediateJob(job: BridgeJob): Promise<unknown> {
   }
 
   if (job.tool === "run_app") {
-    return executeAppAgentTool("run_app", { appId });
+    // rebuild: false = the executor skips the iframe rebuild and returns
+    // the current preview errors (the old get_preview_errors behavior).
+    return executeAppAgentTool("run_app", {
+      appId,
+      rebuild: job.arguments.rebuild,
+    });
   }
 
   throw new Error(`Unsupported desktop bridge tool: ${job.tool}`);

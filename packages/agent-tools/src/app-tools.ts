@@ -784,10 +784,20 @@ export const clientAppTools = {
   run_app: tool({
     description:
       "Rebuild and reload the app's LIVE PREVIEW in the browser and return any " +
-      "build/runtime errors. This is the only browser-only app tool — use it to " +
-      "validate that edits render and to read preview errors. Requires an " +
-      "attached browser tab; it is not needed to author or persist an app.",
-    inputSchema: z.object({ appId: appIdField }),
+      "build/runtime errors. Pass rebuild: false to read the current preview " +
+      "errors without forcing a rebuild. Use it to validate that edits render " +
+      "and to read preview errors. Requires an attached browser tab; it is " +
+      "not needed to author or persist an app.",
+    inputSchema: z.object({
+      appId: appIdField,
+      rebuild: z
+        .boolean()
+        .optional()
+        .describe(
+          "Default true. false = return the current preview errors without " +
+            "rebuilding the iframe (no preview flash).",
+        ),
+    }),
   }),
   app_set_preview_environment: tool({
     description:

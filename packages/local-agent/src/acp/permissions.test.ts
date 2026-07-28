@@ -21,10 +21,7 @@ describe("ACP permission auto-approve", () => {
   });
 
   it("detects Codex dotted MCP titles for mako workspace/desktop", () => {
-    assert.equal(
-      isMakoMcpToolName("mcp.mako-desktop.get_preview_errors"),
-      true,
-    );
+    assert.equal(isMakoMcpToolName("mcp.mako-desktop.run_app"), true);
     assert.equal(
       isMakoMcpToolName("mcp.mako-workspace.get_relevant_skills"),
       true,
@@ -39,7 +36,7 @@ describe("ACP permission auto-approve", () => {
   it("auto-approves Codex mako-desktop execute tools", () => {
     const decision = shouldAutoApprovePermission({
       toolCall: {
-        title: "mcp.mako-desktop.get_preview_errors",
+        title: "mcp.mako-desktop.run_app",
         kind: "execute",
         _meta: { is_mcp_tool_call: true },
       },
