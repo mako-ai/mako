@@ -24,7 +24,7 @@ import {
 import type { Tool as AiTool } from "ai";
 import { nanoid } from "nanoid";
 import { z } from "zod";
-import { type CapabilityGrant } from "@mako/agent-tools";
+import { CAPABILITY_GRANTS, type CapabilityGrant } from "@mako/agent-tools";
 
 import { authorizeAgentCapability } from "../agent-lib/capabilities/runtime";
 import { createServerAppTools } from "../agent-lib/tools/server-app-tools";
@@ -91,7 +91,7 @@ Typical loop:
 1. Discover data: list_connections, then sql_list_tables / sql_inspect_table.
 2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
 3. create_app → app_write_file / app_edit_file → app_create_data_binding (bind the validated query; pass consoleId to seed from a console).
-4. For dbt work: read_dbt_project_tree → read/edit files → validate asynchronously, then poll dbt_get_run. Before dbt mutations, submit a plan whose requiredCapabilities lists only the needed artifact-write, warehouse-write, git-write, or schedule-write grants.
+4. For dbt work: read_dbt_project_tree → read/edit files → validate asynchronously, then poll dbt_get_run. For large or destructive work (warehouse runs, Git mutations, schedules), prefer proposing a plan via mako-desktop submit_plan before acting.
 5. Desktop opens/refreshes the app tab automatically. Do NOT create_preview_token, render_app, or paste /preview/… URLs. Use mako-desktop run_app / get_preview_errors for iframe errors. For consoles use open_console / create_console; for notebooks use create_notebook / cell tools.
 6. Interactive UX: mako-desktop ask_clarifying_questions / submit_plan (docked Chat cards) — never ask as plain text.
 7. Durable memory: read_self_directive / update_self_directive only. Do NOT write .claude/**/MEMORY.md or other local Claude memory files.
@@ -353,11 +353,15 @@ export function buildMakoMcpServer(
     const authorization = authorizeAgentCapability(name, {
       surface: context.acpDesktop ? "desktop-acp" : "external-mcp",
       queryAccess,
-      // External MCP's `mcp` scope is the existing workspace-authoring
-      // authority. Small dbt working-tree edits match native Chat and do not
-      // require a plan; warehouse, Git, and scheduling mutations do.
+      // Capability-grant gating is DISABLED on every surface pending product
+      // review: the philosophy for now is "same capabilities everywhere", so
+      // external MCP and Desktop ACP implicitly hold every grant, matching
+      // native Chat (see PLAN_GRANT_GATING_ENABLED in
+      // agents/modes/runtime.ts). Surface membership and query-access scopes
+      // still apply. To re-enable ACP gating, restore: artifact-write +
+      // context.capabilityGrants (from resolveAcpPlanGrants).
       grants: new Set<CapabilityGrant>([
-        "artifact-write",
+        ...CAPABILITY_GRANTS,
         ...(context.capabilityGrants ?? []),
       ]),
     });

@@ -168,19 +168,54 @@ export {
 } from "./read-only-tools";
 
 export {
+  CAPABILITY_GRANTS,
+  type AgentCapabilityDefinition,
+  type AgentSurface,
+  type CapabilityGrant,
+  type CapabilityMcpExclusionWhy,
+  type CapabilityResultKind,
+  type CapabilityRisk,
+} from "./capabilities/types";
+
+export {
   DBT_CAPABILITIES,
   DBT_CAPABILITY_BY_NAME,
   DBT_CAPABILITY_NAMES,
-  CAPABILITY_GRANTS,
   dbtCapabilitiesForPack,
   dbtCapabilitiesForSurface,
-  type AgentSurface,
-  type CapabilityGrant,
-  type CapabilityResultKind,
-  type CapabilityRisk,
   type DbtCapabilityDefinition,
   type DbtCapabilityPack,
 } from "./capabilities/dbt-capabilities";
+
+export {
+  APP_CAPABILITIES,
+  type AppCapabilityDefinition,
+  type AppCapabilityPack,
+} from "./capabilities/app-capabilities";
+
+export {
+  CONSOLE_CAPABILITIES,
+  type ConsoleCapabilityDefinition,
+  type ConsoleCapabilityPack,
+} from "./capabilities/console-capabilities";
+
+export {
+  QUERY_CAPABILITIES,
+  type QueryCapabilityDefinition,
+  type QueryCapabilityPack,
+} from "./capabilities/query-capabilities";
+
+export {
+  NOTEBOOK_CAPABILITIES,
+  type NotebookCapabilityDefinition,
+  type NotebookCapabilityPack,
+} from "./capabilities/notebook-capabilities";
+
+export {
+  AGENT_CAPABILITIES,
+  AGENT_CAPABILITY_BY_NAME,
+  agentCapabilitiesForSurface,
+} from "./capabilities/registry";
 
 export {
   applyModification,

@@ -12,7 +12,11 @@
  * Adding a new agent tool without classifying it here fails the MCP
  * inventory test — that's how we stay smart about what's missing.
  */
-import { DBT_CAPABILITIES, READ_ONLY_TOOL_NAMES } from "@mako/agent-tools";
+import {
+  AGENT_CAPABILITIES,
+  READ_ONLY_TOOL_NAMES,
+  type AgentCapabilityDefinition,
+} from "@mako/agent-tools";
 
 /** Why a tool is kept off the MCP surface. */
 export type McpBridgeExclusionWhy =
@@ -64,9 +68,11 @@ const mcpOnly = (
   opts: Omit<Extract<McpBridgeEntry, { status: "mcp-only" }>, "status"> = {},
 ): McpBridgeEntry => ({ status: "mcp-only", ...opts });
 
-function dbtBridgePolicyEntries(): Record<string, McpBridgeEntry> {
+function capabilityBridgePolicyEntries(
+  capabilities: readonly AgentCapabilityDefinition[],
+): Record<string, McpBridgeEntry> {
   return Object.fromEntries(
-    DBT_CAPABILITIES.map(capability => {
+    capabilities.map(capability => {
       if (capability.requiresAsyncMcp) {
         return [
           capability.name,
@@ -98,6 +104,12 @@ function dbtBridgePolicyEntries(): Record<string, McpBridgeEntry> {
           }),
         ];
       }
+      if (capability.mcpExclusion) {
+        return [
+          capability.name,
+          exclude(capability.mcpExclusion.why, capability.mcpExclusion.note),
+        ];
+      }
       return [
         capability.name,
         exclude("deferred", "Not available on an MCP surface."),
@@ -111,75 +123,13 @@ function dbtBridgePolicyEntries(): Record<string, McpBridgeEntry> {
  * Keep alphabetical within each section so diffs stay reviewable.
  */
 export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
-  // ── Apps (server) — full headless authoring surface ───────────────────
-  app_add_dependency: bridge(),
-  app_create_data_binding: bridge(),
-  app_delete_data_binding: bridge({ destructiveHint: true }),
-  app_delete_file: bridge({ destructiveHint: true }),
-  app_edit_file: bridge(),
-  app_read_file: bridge(),
-  app_remove_dependency: bridge({ destructiveHint: true }),
-  app_rename_file: bridge(),
-  app_restore_version: bridge(),
-  app_save_version: bridge(),
-  app_set_binding_materialization: bridge(),
-  app_set_binding_schedule: bridge(),
-  app_set_preview_environment: exclude(
-    "client-only",
-    "Per-user browser preview state; headless agents use render_app / bindings directly.",
-  ),
-  app_update_data_binding: bridge(),
-  app_write_file: bridge(),
-  create_app: bridge(),
-  get_app_state: bridge(),
-  app_search: bridge(),
-  app_read_resource: bridge(),
-  list_open_apps: bridge(),
-  materialize_binding: bridge(),
-  open_app: exclude(
-    "client-only",
-    "UI tab focus only; MCP operates on appId directly.",
-  ),
-  run_app: exclude(
-    "client-only",
-    "Browser iframe preview; MCP uses render_app instead.",
-  ),
-
-  // ── Notebooks (server) — durable GCS + kernel; Desktop opens tabs via focus ─
-  add_notebook_cell: bridge(),
-  create_notebook: bridge(),
-  delete_notebook_cell: bridge(),
-  edit_notebook_cell: bridge(),
-  list_open_notebooks: bridge(),
-  read_notebook: bridge(),
-  read_notebook_cell: bridge(),
-  run_notebook_code_cell: bridge(),
-  run_notebook_sql_cell: bridge(),
-  search_notebook: bridge(),
+  // ── Apps / notebooks / consoles / SQL / Mongo / dbt — derived from the
+  //    shared capability registry (@mako/agent-tools capabilities/*) ───────
+  ...capabilityBridgePolicyEntries(AGENT_CAPABILITIES),
 
   // ── MCP-only preview / render ─────────────────────────────────────────
   create_preview_token: mcpOnly(),
   render_app: mcpOnly(),
-
-  // ── Console / query (server) ───────────────────────────────────────────
-  cancel_query: bridge({ requiresQueryAccess: true }),
-  check_query_status: bridge({ requiresQueryAccess: true }),
-  create_console: bridge(),
-  list_open_consoles: exclude(
-    "client-only",
-    "Open browser tabs; Desktop ACP uses mako-desktop list_open_consoles / UI context.",
-  ),
-  modify_console: bridge(),
-  open_console: bridge(),
-  read_console: bridge(),
-  run_console: bridge({ requiresQueryAccess: true }),
-  list_console_executions: bridge(),
-  schedule_query: exclude(
-    "in-product-only",
-    "Scheduled writes need session auth + console ownership UX; not in MCP read-only apps loop.",
-  ),
-  search_consoles: bridge(),
-  set_console_connection: bridge(),
 
   // ── Charts / screenshots (client) ─────────────────────────────────────
   capture_screenshot: exclude(
@@ -198,22 +148,6 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "client-only",
     "Mutates the open console chart in the browser.",
   ),
-
-  // ── SQL / Mongo discovery + execute ───────────────────────────────────
-  list_connections: bridge(),
-  mongo_execute_query: exclude(
-    "security",
-    "Arbitrary MongoDB JavaScript has no reliable per-query read-only mode.",
-  ),
-  mongo_inspect_collection: bridge(),
-  mongo_list_collections: bridge(),
-  mongo_list_connections: bridge(),
-  mongo_list_databases: bridge(),
-  sql_execute_query: bridge({ requiresQueryAccess: true }),
-  sql_inspect_table: bridge(),
-  sql_list_connections: bridge(),
-  sql_list_databases: bridge(),
-  sql_list_tables: bridge(),
 
   // ── Flow / sync (mostly UI + deferred) ────────────────────────────────
   create_flow_tab: exclude(
@@ -316,9 +250,6 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "client-only",
     "Queries in-browser DuckDB; MCP validates via sql_execute_query.",
   ),
-
-  // ── dbt / transform — derived from the shared capability registry ─────
-  ...dbtBridgePolicyEntries(),
 
   // ── Skills / memory / modes / plan ────────────────────────────────────
   ask_clarifying_questions: exclude(
