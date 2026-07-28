@@ -33,6 +33,11 @@ export type McpBridgeEntry =
       /** Expose only to the signed-in Mako Desktop ACP client. */
       acpDesktopOnly?: boolean;
       /**
+       * Omit for Desktop ACP clients: the mako-desktop loopback server
+       * delivers this same tool name there (one name, one provider).
+       */
+      omitForAcpDesktop?: boolean;
+      /**
        * Factory may omit this tool without credentials/config (e.g. web_search
        * when no search provider is configured). Still classified so the catalog
        * stays complete; inventory/staleness checks treat it as optional.
@@ -91,6 +96,8 @@ function capabilityBridgePolicyEntries(
           bridge({
             requiresQueryAccess: capability.requiresQueryAccess,
             destructiveHint: capability.risk === "destructive",
+            omitForAcpDesktop:
+              capability.desktopDelivery === "mako-desktop" || undefined,
           }),
         ];
       }

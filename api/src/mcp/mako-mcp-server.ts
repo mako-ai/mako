@@ -27,6 +27,7 @@ import { z } from "zod";
 import { CAPABILITY_GRANTS, type CapabilityGrant } from "@mako/agent-tools";
 
 import { authorizeAgentCapability } from "../agent-lib/capabilities/runtime";
+import { createHeadlessRunAppTool } from "./preview-tools";
 import { createServerAppTools } from "../agent-lib/tools/server-app-tools";
 import { createSqlToolsV2 } from "../agent-lib/tools/sql-tools";
 import { createMongoToolsV2 } from "../agent-lib/tools/mongodb-tools";
@@ -74,7 +75,7 @@ Typical loop:
 1. Discover data: list_connections, then sql_list_tables / sql_inspect_table.
 2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
 3. create_app → app_write_file / app_edit_file → app_create_data_binding (bind the validated query; pass consoleId to seed from a console).
-4. Verify with render_app after edits. Pass includeScreenshot: false when you only need status/errors — it is much cheaper than the screenshot.
+4. Verify with run_app after edits (server-side headless render). Pass includeScreenshot: false when you only need status/errors — it is much cheaper than the screenshot.
 5. app_save_version to snapshot/publish.
 
 Skills (same knowledge as the in-product agent):
@@ -188,9 +189,14 @@ export function buildMakoMcpCandidateTools(
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
   const webTools = createWebTools();
   const dbtTools = createDbtServerTools(workspaceId, userId, { chatId });
+  // Headless adapter for the canonical run_app capability (external MCP
+  // only — the bridge policy omits it for Desktop ACP, where mako-desktop
+  // provides run_app against the live tab).
+  const headlessRunApp = createHeadlessRunAppTool(context);
 
   return {
     ...appTools,
+    ...headlessRunApp,
     ...consoleTools,
     ...notebookTools,
     ...selfDirectiveTools,
@@ -230,6 +236,7 @@ export function buildMakoMcpToolset(
     const entry = MCP_BRIDGE_POLICY[name];
     if (!entry || entry.status !== "bridge") continue;
     if (entry.acpDesktopOnly && !context.acpDesktop) continue;
+    if (entry.omitForAcpDesktop && context.acpDesktop) continue;
     if (entry.requiresQueryAccess && queryAccess === "none") continue;
     exposed[name] = tool;
   }

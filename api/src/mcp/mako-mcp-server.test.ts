@@ -139,7 +139,7 @@ async function main() {
     assert.ok(result.capabilities.resources);
     assert.match(
       result.instructions ?? "",
-      /render_app/,
+      /Verify with run_app/,
       "initialize should ship the workflow instructions",
     );
   }
@@ -173,8 +173,8 @@ async function main() {
       assert.match(result.instructions ?? "", /mako-desktop|Desktop Chat/i);
       assert.doesNotMatch(
         result.instructions ?? "",
-        /Verify with render_app/,
-        "ACP Desktop must not steer agents toward render_app",
+        /Verify with run_app|Verify with render_app/,
+        "ACP Desktop must not steer agents toward the headless renderer",
       );
     } finally {
       await server.close().catch(() => undefined);
@@ -330,6 +330,14 @@ async function main() {
       names.has("open_app"),
       false,
       "client-only app tools must not be bridged",
+    );
+    // Canonical verify capability: external MCP gets run_app (headless
+    // renderer adapter), annotated read-only like the render it performs.
+    assert.ok(names.has("run_app"), "run_app must be bridged for external MCP");
+    assert.equal(
+      byName.get("run_app")?.annotations?.readOnlyHint,
+      true,
+      "run_app renders a draft and mutates nothing",
     );
     for (const desktopOnlyTool of [
       "dbt_parse",
@@ -520,6 +528,25 @@ async function main() {
         .text,
       /Invalid arguments/,
       "ACP gating disabled: no schedule-write grant required",
+    );
+  }
+
+  // 3f. run_app delivery per surface: external MCP gets the headless
+  //     adapter from the Mako server (asserted in section 3); Desktop ACP
+  //     gets run_app from the mako-desktop loopback server against the live
+  //     tab, so the Mako bridge must omit it there — one name, one provider.
+  {
+    const [desktopList] = await exchange(
+      [{ jsonrpc: "2.0", id: "run-app-acp", method: "tools/list" }],
+      ["mcp", "query:read"],
+      true,
+    );
+    const desktopTools = (desktopList.result as { tools: { name: string }[] })
+      .tools;
+    assert.equal(
+      desktopTools.some(tool => tool.name === "run_app"),
+      false,
+      "Desktop ACP must get run_app from mako-desktop, not the Mako bridge",
     );
   }
 
