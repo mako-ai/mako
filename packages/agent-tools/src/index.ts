@@ -168,6 +168,21 @@ export {
 } from "./read-only-tools";
 
 export {
+  DBT_CAPABILITIES,
+  DBT_CAPABILITY_BY_NAME,
+  DBT_CAPABILITY_NAMES,
+  CAPABILITY_GRANTS,
+  dbtCapabilitiesForPack,
+  dbtCapabilitiesForSurface,
+  type AgentSurface,
+  type CapabilityGrant,
+  type CapabilityResultKind,
+  type CapabilityRisk,
+  type DbtCapabilityDefinition,
+  type DbtCapabilityPack,
+} from "./capabilities/dbt-capabilities";
+
+export {
   applyModification,
   buildModificationDiff,
   type ConsoleModification,

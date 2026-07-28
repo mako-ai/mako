@@ -12,7 +12,7 @@
  * Adding a new agent tool without classifying it here fails the MCP
  * inventory test — that's how we stay smart about what's missing.
  */
-import { READ_ONLY_TOOL_NAMES } from "@mako/agent-tools";
+import { DBT_CAPABILITIES, READ_ONLY_TOOL_NAMES } from "@mako/agent-tools";
 
 /** Why a tool is kept off the MCP surface. */
 export type McpBridgeExclusionWhy =
@@ -26,6 +26,8 @@ export type McpBridgeEntry =
       status: "bridge";
       /** Omit when the API key has no query access (`query:read`). */
       requiresQueryAccess?: boolean;
+      /** Expose only to the signed-in Mako Desktop ACP client. */
+      acpDesktopOnly?: boolean;
       /**
        * Factory may omit this tool without credentials/config (e.g. web_search
        * when no search provider is configured). Still classified so the catalog
@@ -61,6 +63,48 @@ const exclude = (why: McpBridgeExclusionWhy, note: string): McpBridgeEntry => ({
 const mcpOnly = (
   opts: Omit<Extract<McpBridgeEntry, { status: "mcp-only" }>, "status"> = {},
 ): McpBridgeEntry => ({ status: "mcp-only", ...opts });
+
+function dbtBridgePolicyEntries(): Record<string, McpBridgeEntry> {
+  return Object.fromEntries(
+    DBT_CAPABILITIES.map(capability => {
+      if (capability.requiresAsyncMcp) {
+        return [
+          capability.name,
+          exclude(
+            "deferred",
+            "Move this operation to the async run lifecycle before MCP exposure.",
+          ),
+        ];
+      }
+
+      const external = capability.surfaces.includes("external-mcp");
+      const desktop = capability.surfaces.includes("desktop-acp");
+      if (external) {
+        return [
+          capability.name,
+          bridge({
+            requiresQueryAccess: capability.requiresQueryAccess,
+            destructiveHint: capability.risk === "destructive",
+          }),
+        ];
+      }
+      if (desktop) {
+        return [
+          capability.name,
+          bridge({
+            acpDesktopOnly: true,
+            requiresQueryAccess: capability.requiresQueryAccess,
+            destructiveHint: capability.risk === "destructive",
+          }),
+        ];
+      }
+      return [
+        capability.name,
+        exclude("deferred", "Not available on an MCP surface."),
+      ];
+    }),
+  );
+}
 
 /**
  * Complete classification of every agent / MCP tool name.
@@ -273,53 +317,8 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "Queries in-browser DuckDB; MCP validates via sql_execute_query.",
   ),
 
-  // ── dbt / transform (server-capable, not yet on MCP) ──────────────────
-  create_dbt_file: exclude(
-    "deferred",
-    "Transform mode is in-product; MCP v1 is the apps + data loop.",
-  ),
-  dbt_cancel_run: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_close_pull_request: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_commit_and_push: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_commit_to_branch: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_compare_branches: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_compile_model: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_create_branch: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_create_job: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_create_project: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_delete_branch: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_delete_job: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_ensure_dev_environment: exclude(
-    "deferred",
-    "Transform mode not yet on MCP.",
-  ),
-  dbt_get_run: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_git_status: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_list_branches: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_list_pull_requests: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_list_recoverable_files: exclude(
-    "deferred",
-    "Transform mode not yet on MCP.",
-  ),
-  dbt_merge_pull_request: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_open_pull_request: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_parse: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_restore_file: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_run_job: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_run_model: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_show: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_switch_branch: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_sync_from_repo: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_update_job: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_update_pull_request: exclude(
-    "deferred",
-    "Transform mode not yet on MCP.",
-  ),
-  delete_dbt_file: exclude("deferred", "Transform mode not yet on MCP."),
-  edit_dbt_file: exclude("deferred", "Transform mode not yet on MCP."),
-  modify_dbt_file: exclude("deferred", "Transform mode not yet on MCP."),
-  read_dbt_file: exclude("deferred", "Transform mode not yet on MCP."),
-  read_dbt_project_tree: exclude("deferred", "Transform mode not yet on MCP."),
+  // ── dbt / transform — derived from the shared capability registry ─────
+  ...dbtBridgePolicyEntries(),
 
   // ── Skills / memory / modes / plan ────────────────────────────────────
   ask_clarifying_questions: exclude(

@@ -94,7 +94,7 @@ const TOOLS: Array<{
   {
     name: "submit_plan",
     description:
-      "Present a reviewable plan in the Mako Chat dock for Approve / Request changes / Cancel. Use before large or multi-step work. Returns the user's decision.",
+      "Present a reviewable plan in the Mako Chat dock for Approve / Request changes / Cancel. Use before large or multi-step work. For dbt mutations, include only the requiredCapabilities visibly described by the plan. Returns the user's decision.",
     inputSchema: {
       type: "object",
       properties: {
@@ -116,6 +116,20 @@ const TOOLS: Array<{
             required: ["content"],
           },
         },
+        requiredCapabilities: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: [
+              "artifact-write",
+              "warehouse-write",
+              "git-write",
+              "schedule-write",
+            ],
+          },
+          description:
+            "Task-scoped mutation capabilities requested by this plan. Include only capabilities explicitly described in the plan.",
+        },
       },
       required: ["title", "planMarkdown", "todos"],
     },
@@ -135,6 +149,7 @@ function fail(id: JsonRpcId, code: number, message: string): JsonRpcResponse {
 async function callTool(
   name: string,
   args: Record<string, unknown>,
+  context?: { agentSessionId?: string; workspaceId?: string },
 ): Promise<{ text: string; isError?: boolean }> {
   if (!TOOL_NAMES.has(name as DesktopBridgeToolName)) {
     return { text: `Unknown tool: ${name}`, isError: true };
@@ -143,6 +158,8 @@ async function callTool(
     const result = await desktopBridgeRegistry.enqueue(
       name as DesktopBridgeToolName,
       args && typeof args === "object" ? args : {},
+      undefined,
+      context,
     );
     return {
       text: typeof result === "string" ? result : JSON.stringify(result),
@@ -157,6 +174,7 @@ async function callTool(
 
 async function handleOne(
   message: JsonRpcRequest,
+  context?: { agentSessionId?: string; workspaceId?: string },
 ): Promise<JsonRpcResponse | null> {
   const id = message.id ?? null;
   const method = message.method;
@@ -193,7 +211,7 @@ async function handleOne(
         : {};
     // HITL tools block the HTTP exchange until Desktop completes — expected.
     if (isDesktopHitlTool(name) || TOOL_NAMES.has(name as DesktopBridgeToolName)) {
-      const result = await callTool(name, args);
+      const result = await callTool(name, args, context);
       return ok(id, {
         content: [{ type: "text", text: result.text }],
         ...(result.isError ? { isError: true } : {}),
@@ -211,6 +229,7 @@ async function handleOne(
 
 export async function handleDesktopMcpExchange(
   body: unknown,
+  context?: { agentSessionId?: string; workspaceId?: string },
 ): Promise<{ status: 200 | 202 | 400; body: unknown }> {
   const incoming = Array.isArray(body) ? body : [body];
   if (
@@ -234,7 +253,7 @@ export async function handleDesktopMcpExchange(
 
   const responses: JsonRpcResponse[] = [];
   for (const message of incoming) {
-    const response = await handleOne(message as JsonRpcRequest);
+    const response = await handleOne(message as JsonRpcRequest, context);
     if (response) responses.push(response);
   }
 

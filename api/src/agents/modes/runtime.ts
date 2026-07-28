@@ -14,14 +14,17 @@
 import type { SystemModelMessage, ToolSet, UIMessage } from "ai";
 import {
   clientPlanTools,
+  CAPABILITY_GRANTS,
   READ_ONLY_TOOL_NAMES,
   PLAN_GATE_ALLOWED_TOOL_NAMES,
+  type CapabilityGrant,
 } from "@mako/agent-tools";
 import type { AgentContext } from "../types";
 import { unifiedAgentFactory } from "../unified";
 import { buildCurrentScreenContext } from "../unified/prompt";
 import { createModeTools } from "../../agent-lib/tools/mode-tools";
 import { createToolDiscoveryTools } from "../../agent-lib/tools/tool-discovery-tools";
+import { authorizeAgentCapability } from "../../agent-lib/capabilities/runtime";
 import {
   effectiveToolCountLimit,
   estimateToolSetTokens,
@@ -79,6 +82,7 @@ export function deriveModeState(
   const loadedToolNames: string[] = [];
   let planSubmitted = false;
   let planApproved = false;
+  let approvedCapabilityGrants = new Set<CapabilityGrant>();
   let lastPlanDecision: unknown;
 
   const recordLoadedTools = (names: unknown) => {
@@ -109,6 +113,7 @@ export function deriveModeState(
         planSubmitted = false;
       }
       planApproved = false;
+      approvedCapabilityGrants = new Set();
     }
 
     const parts = (message.parts ?? []) as UIMessagePart[];
@@ -129,6 +134,19 @@ export function deriveModeState(
         );
       } else if (toolName === "submit_plan") {
         planSubmitted = true;
+        const requested = (
+          part.input as { requiredCapabilities?: unknown } | undefined
+        )?.requiredCapabilities;
+        const validGrants = new Set<CapabilityGrant>(CAPABILITY_GRANTS);
+        approvedCapabilityGrants = new Set(
+          Array.isArray(requested)
+            ? requested.filter(
+                (grant): grant is CapabilityGrant =>
+                  typeof grant === "string" &&
+                  validGrants.has(grant as CapabilityGrant),
+              )
+            : ["artifact-write"],
+        );
         const decision = (part.output as { decision?: unknown } | undefined)
           ?.decision;
         lastPlanDecision = decision;
@@ -139,7 +157,13 @@ export function deriveModeState(
     }
   }
 
-  return { enabledModes, planSubmitted, planApproved, loadedToolNames };
+  return {
+    enabledModes,
+    planSubmitted,
+    planApproved,
+    approvedCapabilityGrants,
+    loadedToolNames,
+  };
 }
 
 /**
@@ -322,6 +346,20 @@ export function computeActiveTools(
         PLAN_GATE_ALLOWED_TOOL_NAMES.has(name),
     );
   }
+  const nativeCapabilityGrants = new Set<CapabilityGrant>([
+    // Small working-tree edits retain native Chat's act-without-a-plan flow.
+    // Warehouse, Git, and scheduling mutations always require plan approval.
+    "artifact-write",
+    ...(modeState.planApproved ? [...modeState.approvedCapabilityGrants] : []),
+  ]);
+  names = names.filter(
+    name =>
+      authorizeAgentCapability(name, {
+        surface: "in-chat",
+        queryAccess: "write",
+        grants: nativeCapabilityGrants,
+      }).allowed,
+  );
 
   // Count budget: trim the evictable tail; base is never evicted (it is
   // bounded by the mode registry, far under every provider cap).

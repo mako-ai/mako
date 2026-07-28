@@ -9,6 +9,7 @@
  *   `submit_plan` in the current user turn, mutating tools are hard-gated
  *   until the user approves the plan.
  */
+import type { CapabilityGrant } from "@mako/agent-tools";
 
 /** Dynamic expertise modes the model can enable via `enable_mode`. */
 export type ExpertiseModeId =
@@ -55,6 +56,8 @@ export interface ModeState {
   planSubmitted: boolean;
   /** Whether the user has approved the submitted plan (latest decision). */
   planApproved: boolean;
+  /** Mutation capabilities explicitly approved with the latest plan. */
+  approvedCapabilityGrants: Set<CapabilityGrant>;
   /**
    * Deferred-tier tools activated via `load_tools`, oldest-first (the order
    * doubles as the LRU eviction order when the working-set budget binds).

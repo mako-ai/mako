@@ -23,6 +23,8 @@ export interface AuthVariables {
   mcpOAuthScopes?: string[];
   /** OAuth client id for MCP access tokens (e.g. `mako-acp-local`). */
   mcpOAuthClientId?: string;
+  /** Server-generated identity for a Desktop ACP attachment. */
+  mcpAgentSessionId?: string;
 }
 
 export type AuthEnv = { Variables: AuthVariables };

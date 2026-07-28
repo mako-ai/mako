@@ -41,17 +41,22 @@ describe("desktop-bridge MCP", () => {
 
   it("completes run_app when a client claims the job", async () => {
     desktopBridgeRegistry.touchClient();
-    const callPromise = handleDesktopMcpExchange({
-      jsonrpc: "2.0",
-      id: 3,
-      method: "tools/call",
-      params: { name: "run_app", arguments: { appId: "app-1" } },
-    });
+    const callPromise = handleDesktopMcpExchange(
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "run_app", arguments: { appId: "app-1" } },
+      },
+      { agentSessionId: "agent-1", workspaceId: "workspace-1" },
+    );
 
     const job = await desktopBridgeRegistry.claim(5_000);
     assert.ok(job);
     assert.equal(job.tool, "run_app");
     assert.equal(job.arguments.appId, "app-1");
+    assert.equal(job.agentSessionId, "agent-1");
+    assert.equal(job.workspaceId, "workspace-1");
     assert.equal(
       desktopBridgeRegistry.complete(job.id, {
         success: true,

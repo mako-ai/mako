@@ -969,7 +969,22 @@ export class AcpSessionManager {
           Number.isFinite(parsedPort) && parsedPort > 0
             ? parsedPort
             : LOCAL_AGENT_PORT;
-        const desktopMcpUrl = `http://127.0.0.1:${agentPort}${DESKTOP_MCP_PATH}`;
+        const desktopMcpUrlValue = new URL(
+          `http://127.0.0.1:${agentPort}${DESKTOP_MCP_PATH}`,
+        );
+        if (body.makoAgentSessionId?.trim()) {
+          desktopMcpUrlValue.searchParams.set(
+            "agentSessionId",
+            body.makoAgentSessionId.trim(),
+          );
+        }
+        if (body.makoWorkspaceId?.trim()) {
+          desktopMcpUrlValue.searchParams.set(
+            "workspaceId",
+            body.makoWorkspaceId.trim(),
+          );
+        }
+        const desktopMcpUrl = desktopMcpUrlValue.toString();
         builder = builder.withMcpServer({
           type: "http",
           name: DESKTOP_MCP_SERVER_NAME,
@@ -995,6 +1010,12 @@ export class AcpSessionManager {
         updatedAt: nowIso(),
         busy: false,
         makoMcpAttached: attachMakoMcp,
+        makoAgentSessionId: attachMakoMcp
+          ? body.makoAgentSessionId?.trim()
+          : undefined,
+        makoWorkspaceId: attachMakoMcp
+          ? body.makoWorkspaceId?.trim()
+          : undefined,
       };
 
       const managed: ManagedSession = {

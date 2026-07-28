@@ -11,6 +11,7 @@ import {
   errorJson,
   jsonContent,
 } from "../openapi/core";
+import { prepareAgentTurnGuidance } from "../services/agent-turn-preparation.service";
 
 const logger = loggers.workspace();
 
@@ -20,6 +21,12 @@ const WorkspaceParam = z.object({
   workspaceId: z
     .string()
     .openapi({ param: { name: "workspaceId", in: "path" } }),
+});
+
+const TurnGuidanceBody = z.object({
+  userText: z.string().min(1).max(100_000),
+  includeDbtRules: z.boolean().default(false),
+  dbtProjectId: z.string().optional(),
 });
 
 // Apply unified auth middleware to all custom prompt routes
@@ -150,6 +157,63 @@ customPromptRoutes.openapi(
             error instanceof Error
               ? error.message
               : "Failed to read custom prompt",
+        },
+        500,
+      );
+    }
+  },
+);
+
+customPromptRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/turn-guidance",
+    tags: ["Custom Prompt"],
+    summary: "Prepare budgeted agent guidance for one turn",
+    security: AUTH_SECURITY,
+    request: {
+      params: WorkspaceParam,
+      body: {
+        required: true,
+        content: { "application/json": { schema: TurnGuidanceBody } },
+      },
+    },
+    responses: {
+      200: jsonContent(
+        z.object({
+          success: z.literal(true),
+          skillsBlock: z.string(),
+          dbtRulesBlock: z.string(),
+        }),
+        "Prepared turn guidance.",
+      ),
+      400: errorJson("Invalid request"),
+      403: errorJson("Access denied"),
+      500: errorJson("Failed to prepare guidance"),
+    },
+  }),
+  async c => {
+    try {
+      const { workspaceId } = c.req.valid("param");
+      const user = c.get("user");
+      const input = c.req.valid("json");
+      const guidance = await prepareAgentTurnGuidance({
+        workspaceId,
+        userId: user ? String(user.id) : undefined,
+        userText: input.userText,
+        includeDbtRules: input.includeDbtRules,
+        dbtProjectId: input.dbtProjectId,
+      });
+      return c.json({ success: true as const, ...guidance }, 200);
+    } catch (error) {
+      logger.error("Error preparing turn guidance", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to prepare guidance",
         },
         500,
       );

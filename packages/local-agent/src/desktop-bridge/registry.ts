@@ -15,6 +15,8 @@ export interface DesktopBridgeJob {
   tool: DesktopBridgeToolName;
   arguments: Record<string, unknown>;
   createdAt: number;
+  agentSessionId?: string;
+  workspaceId?: string;
 }
 
 interface PendingJob extends DesktopBridgeJob {
@@ -71,6 +73,7 @@ class DesktopBridgeRegistry {
     tool: DesktopBridgeToolName,
     args: Record<string, unknown>,
     timeoutMs = ttlForTool(tool),
+    context?: { agentSessionId?: string; workspaceId?: string },
   ): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.hasRecentClient()) {
@@ -88,6 +91,8 @@ class DesktopBridgeRegistry {
         tool,
         arguments: args,
         createdAt: Date.now(),
+        agentSessionId: context?.agentSessionId,
+        workspaceId: context?.workspaceId,
         resolve,
         reject,
         timer: setTimeout(() => {
@@ -167,6 +172,8 @@ function publicJob(job: PendingJob): DesktopBridgeJob {
     tool: job.tool,
     arguments: job.arguments,
     createdAt: job.createdAt,
+    agentSessionId: job.agentSessionId,
+    workspaceId: job.workspaceId,
   };
 }
 

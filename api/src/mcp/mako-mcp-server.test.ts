@@ -16,6 +16,11 @@ process.env.ENCRYPTION_KEY =
   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import {
+  CAPABILITY_GRANTS,
+  DBT_CAPABILITY_NAMES,
+  type CapabilityGrant,
+} from "@mako/agent-tools";
 import { buildMakoMcpServer } from "./mako-mcp-server";
 import { StatelessMcpTransport } from "./stateless-transport";
 import {
@@ -40,8 +45,15 @@ const WORKSPACE_ID = new Types.ObjectId().toString();
 async function exchange(
   messages: Record<string, unknown>[],
   scopes: WorkspaceApiKeyScope[] = ["mcp", "query:read"],
+  acpDesktop = false,
+  capabilityGrants?: CapabilityGrant[],
 ): Promise<Record<string, unknown>[]> {
-  const server = buildMakoMcpServer({ workspaceId: WORKSPACE_ID, scopes });
+  const server = buildMakoMcpServer({
+    workspaceId: WORKSPACE_ID,
+    scopes,
+    acpDesktop,
+    ...(capabilityGrants ? { capabilityGrants } : {}),
+  });
   const transport = new StatelessMcpTransport();
   await server.connect(transport);
   try {
@@ -201,6 +213,9 @@ async function main() {
       "read_notebook",
       "search_notebook",
       "read_notebook_cell",
+      "read_dbt_project_tree",
+      "read_dbt_file",
+      "dbt_get_run",
     ]) {
       assert.equal(
         byName.get(readOnlyTool)?.annotations?.readOnlyHint,
@@ -264,6 +279,15 @@ async function main() {
       "update_self_directive",
       "read_skill_resource",
       "fetch_url",
+      "read_dbt_project_tree",
+      "read_dbt_file",
+      "create_dbt_file",
+      "edit_dbt_file",
+      "modify_dbt_file",
+      "delete_dbt_file",
+      "dbt_get_run",
+      "dbt_list_recoverable_files",
+      "dbt_restore_file",
     ]) {
       assert.ok(names.has(expected), `missing tool: ${expected}`);
     }
@@ -306,6 +330,19 @@ async function main() {
       false,
       "client-only app tools must not be bridged",
     );
+    for (const desktopOnlyTool of [
+      "dbt_parse",
+      "dbt_compile_model",
+      "dbt_show",
+      "dbt_run_model",
+      "dbt_cancel_run",
+    ]) {
+      assert.equal(
+        names.has(desktopOnlyTool),
+        false,
+        `${desktopOnlyTool} must stay off general MCP`,
+      );
+    }
   }
 
   // 3b. Bridge policy covers the live agent inventory — this is how we stay
@@ -324,7 +361,7 @@ async function main() {
       if (entry.status !== "bridge") continue;
       // Conditional tools (e.g. web_search) only appear when optional
       // providers are configured.
-      if (entry.conditional) continue;
+      if (entry.conditional || entry.acpDesktopOnly) continue;
       assert.ok(
         exposed.has(name),
         `policy says bridge ${name} but tools/list omitted it`,
@@ -341,6 +378,103 @@ async function main() {
     const gaps = summarizeBridgeGaps();
     assert.ok(gaps.some(g => g.why === "security"));
     assert.ok(mcpExposedToolNames().includes("create_app"));
+  }
+
+  // 3c. Desktop ACP only gets warehouse execution after plan approval.
+  {
+    const [unapprovedList] = await exchange(
+      [{ jsonrpc: "2.0", id: "acp-dbt-list", method: "tools/list" }],
+      ["mcp", "query:read"],
+      true,
+    );
+    const unapprovedTools = (
+      unapprovedList.result as { tools: { name: string }[] }
+    ).tools;
+    assert.ok(
+      unapprovedTools.some(tool => tool.name === "dbt_run_model"),
+      "Desktop should discover plan-gated tools before approval",
+    );
+    const [unapprovedCall] = await exchange(
+      [
+        {
+          jsonrpc: "2.0",
+          id: "acp-dbt-denied",
+          method: "tools/call",
+          params: { name: "dbt_run_model", arguments: {} },
+        },
+      ],
+      ["mcp", "query:read"],
+      true,
+    );
+    const deniedResult = unapprovedCall.result as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+    assert.equal(deniedResult.isError, true);
+    assert.match(deniedResult.content[0].text, /warehouse-write/);
+    const [wrongGrantCall] = await exchange(
+      [
+        {
+          jsonrpc: "2.0",
+          id: "acp-dbt-wrong-grant",
+          method: "tools/call",
+          params: { name: "dbt_run_model", arguments: {} },
+        },
+      ],
+      ["mcp", "query:read"],
+      true,
+      ["artifact-write"],
+    );
+    assert.match(
+      (
+        wrongGrantCall.result as {
+          content: { text: string }[];
+        }
+      ).content[0].text,
+      /warehouse-write/,
+    );
+
+    const [res] = await exchange(
+      [{ jsonrpc: "2.0", id: "acp-dbt", method: "tools/list" }],
+      ["mcp", "query:read"],
+      true,
+      [...CAPABILITY_GRANTS],
+    );
+    const { tools } = res.result as {
+      tools: {
+        name: string;
+        annotations?: {
+          destructiveHint?: boolean;
+        };
+      }[];
+    };
+    const byName = new Map(tools.map(tool => [tool.name, tool]));
+    for (const capabilityName of DBT_CAPABILITY_NAMES) {
+      assert.ok(
+        byName.has(capabilityName),
+        `Desktop ACP missing registered dbt capability: ${capabilityName}`,
+      );
+    }
+    assert.ok(byName.has("dbt_run_model"));
+    assert.ok(byName.has("dbt_cancel_run"));
+    assert.equal(
+      byName.get("dbt_run_model")?.annotations?.destructiveHint,
+      true,
+    );
+  }
+
+  // 3d. Run logs / dbt show output require query scope.
+  {
+    const [res] = await exchange(
+      [{ jsonrpc: "2.0", id: "dbt-no-query", method: "tools/list" }],
+      ["mcp"],
+    );
+    const { tools } = res.result as { tools: { name: string }[] };
+    assert.equal(
+      tools.some(tool => tool.name === "dbt_get_run"),
+      false,
+      "dbt run output must stay hidden without query:read",
+    );
   }
 
   // 4. Arbitrary MongoDB JavaScript execution is never bridged over MCP.
