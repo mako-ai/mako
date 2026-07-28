@@ -225,7 +225,7 @@ export const APP_CAPABILITIES = [
     resultKind: "ui-effect",
     mcpExclusion: {
       why: "client-only",
-      note: "Per-user browser preview state; headless agents use render_app / bindings directly.",
+      note: "Per-user browser preview state; headless agents use run_app / bindings directly.",
     },
   }),
 ] as const satisfies readonly AppCapabilityDefinition[];

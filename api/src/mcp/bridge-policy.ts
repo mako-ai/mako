@@ -153,7 +153,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // ── Charts / screenshots (client) ─────────────────────────────────────
   capture_screenshot: exclude(
     "client-only",
-    "Captures the open browser tab; MCP uses render_app screenshots.",
+    "Captures the open browser tab; MCP uses run_app screenshots.",
   ),
   get_chart_template: exclude(
     "client-only",
