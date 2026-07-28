@@ -2,6 +2,8 @@
  * Minimal stateless MCP (JSON-RPC) server for Desktop-only tools.
  * Claude ACP attaches this as `mako-desktop` over loopback HTTP.
  */
+import { HITL_TOOL_JSON_SCHEMAS } from "@mako/agent-tools";
+
 import {
   desktopBridgeRegistry,
   isDesktopHitlTool,
@@ -57,75 +59,19 @@ const TOOLS: Array<{
     inputSchema: { type: "object", properties: {} },
   },
   {
+    // Schemas are single-sourced from @mako/agent-tools (same zod
+    // definitions the in-app agent uses); only the description is
+    // Desktop-tailored.
     name: "ask_clarifying_questions",
     description:
       "Pause and show clarifying questions in the Mako Chat dock (same UI as the in-app agent). Use this instead of asking questions as plain text. Returns the user's answers.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        questions: {
-          type: "array",
-          minItems: 1,
-          items: {
-            type: "object",
-            properties: {
-              id: { type: "string" },
-              prompt: { type: "string" },
-              type: { type: "string", enum: ["choice", "text"] },
-              options: { type: "array", items: { type: "string" } },
-              allowMultiple: { type: "boolean" },
-              allowOther: { type: "boolean" },
-              recommendedOption: { type: "string" },
-            },
-            required: ["id", "prompt", "type"],
-          },
-        },
-      },
-      required: ["questions"],
-    },
+    inputSchema: HITL_TOOL_JSON_SCHEMAS.ask_clarifying_questions,
   },
   {
     name: "submit_plan",
     description:
-      "Present a reviewable plan in the Mako Chat dock for Approve / Request changes / Cancel. Use before large or multi-step work. For dbt mutations, include only the requiredCapabilities visibly described by the plan. Returns the user's decision.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        title: { type: "string" },
-        planMarkdown: { type: "string" },
-        todos: {
-          type: "array",
-          minItems: 1,
-          items: {
-            type: "object",
-            properties: {
-              id: { type: "string" },
-              content: { type: "string" },
-              status: {
-                type: "string",
-                enum: ["pending", "in_progress", "completed", "cancelled"],
-              },
-            },
-            required: ["content"],
-          },
-        },
-        requiredCapabilities: {
-          type: "array",
-          items: {
-            type: "string",
-            enum: [
-              "artifact-write",
-              "warehouse-write",
-              "git-write",
-              "schedule-write",
-            ],
-          },
-          description:
-            "Task-scoped mutation capabilities requested by this plan. Include only capabilities explicitly described in the plan.",
-        },
-      },
-      required: ["title", "planMarkdown", "todos"],
-    },
+      "Present a reviewable plan in the Mako Chat dock for Approve / Request changes / Cancel. Use before large, destructive, or multi-step work. Include only the requiredCapabilities visibly described by the plan — approval grants exactly those. Returns the user's decision.",
+    inputSchema: HITL_TOOL_JSON_SCHEMAS.submit_plan,
   },
 ];
 

@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { HITL_TOOL_JSON_SCHEMAS } from "@mako/agent-tools";
 import { handleDesktopMcpExchange } from "./mcp";
 import { desktopBridgeRegistry } from "./registry";
 
@@ -28,6 +29,25 @@ describe("desktop-bridge MCP", () => {
       runApp?.inputSchema.properties.rebuild,
       "run_app must accept rebuild (absorbs the old get_preview_errors)",
     );
+  });
+
+  it("serves the HITL schemas from the shared @mako/agent-tools source", async () => {
+    const exchange = await handleDesktopMcpExchange({
+      jsonrpc: "2.0",
+      id: 10,
+      method: "tools/list",
+    });
+    const body = exchange.body as {
+      result: { tools: Array<{ name: string; inputSchema: unknown }> };
+    };
+    for (const name of ["ask_clarifying_questions", "submit_plan"] as const) {
+      const listed = body.result.tools.find(t => t.name === name);
+      assert.deepEqual(
+        listed?.inputSchema,
+        HITL_TOOL_JSON_SCHEMAS[name],
+        `${name} must serve the schema derived from the chat zod definition`,
+      );
+    }
   });
 
   it("fails run_app when Desktop Chat is not connected", async () => {

@@ -130,6 +130,26 @@ export const clientPlanTools = {
   }),
 };
 
+/**
+ * MCP-ready JSON Schemas for the HITL pair, derived from the zod schemas
+ * above — the single source of truth for every surface. Chat uses the zod
+ * `clientPlanTools` directly; the mako-desktop loopback server (Desktop ACP)
+ * serves these same schemas under the same tool names.
+ */
+function toMcpJsonSchema(schema: z.ZodType): Record<string, unknown> {
+  const json = z.toJSONSchema(schema, {
+    target: "draft-7",
+    io: "input",
+  }) as Record<string, unknown>;
+  delete json.$schema;
+  return json;
+}
+
+export const HITL_TOOL_JSON_SCHEMAS = {
+  ask_clarifying_questions: toMcpJsonSchema(askClarifyingQuestionsSchema),
+  submit_plan: toMcpJsonSchema(submitPlanSchema),
+} as const;
+
 export type ClarifyingQuestion = z.infer<typeof clarifyingQuestionSchema>;
 export type AskClarifyingQuestionsInput = z.infer<
   typeof askClarifyingQuestionsSchema
