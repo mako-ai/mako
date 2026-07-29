@@ -210,6 +210,8 @@ function testPosthogDeclaresNativeSincePlaceholder() {
   assert.equal(posthog.mode, "native");
   assert.equal(posthog.anchorField, "$since");
   assert.ok(posthog.warning && posthog.warning.includes("$since"));
+  assert.equal(posthog.perEntity?.surveys?.mode, "created-anchor");
+  assert.equal(posthog.perEntity?.survey_responses?.mode, "native");
 }
 
 function testCreatedAnchorConnectorsWarnAboutMissedUpdates() {

@@ -4,11 +4,35 @@ import {
   FetchOptions,
   ResumableFetchOptions,
   FetchState,
+  EntityMetadata,
   type IncrementalCapabilities,
+  type ConnectorEntitySchema,
 } from "../base/BaseConnector";
 import axios, { AxiosInstance } from "axios";
+import { resolvePosthogEntitySchema } from "./schema";
 
-type JsonRecord = Record<string, any>;
+type JsonRecord = Record<string, unknown>;
+
+/** Built-in REST entities (alongside user-defined HogQL query entities). */
+export const POSTHOG_BUILTIN_ENTITIES = [
+  "surveys",
+  "survey_responses",
+] as const;
+
+type BuiltinEntity = (typeof POSTHOG_BUILTIN_ENTITIES)[number];
+
+type PaginatedList<T> = {
+  results: T[];
+  count?: number;
+  next?: string | null;
+  has_more?: boolean;
+  limit?: number;
+  offset?: number;
+};
+
+function isBuiltinEntity(entity: string): entity is BuiltinEntity {
+  return (POSTHOG_BUILTIN_ENTITIES as readonly string[]).includes(entity);
+}
 
 export class PosthogConnector extends BaseConnector {
   private httpClient: AxiosInstance | null = null;
@@ -59,7 +83,8 @@ export class PosthogConnector extends BaseConnector {
       // This schema tells the UI what query fields to show
       transferQueries: {
         label: "HogQL Queries",
-        required: true,
+        // Built-in entities (surveys) can sync without any HogQL queries.
+        required: false,
         fields: [
           {
             name: "name",
@@ -97,9 +122,9 @@ export class PosthogConnector extends BaseConnector {
   getMetadata() {
     return {
       name: "PostHog",
-      version: "1.0.0",
+      version: "1.1.0",
       description:
-        "Connector for PostHog HogQL Query API (each query is an entity)",
+        "Connector for PostHog Surveys API and HogQL Query API (each query is an entity)",
       supportedEntities: this.getAvailableEntities(),
     };
   }
@@ -141,6 +166,10 @@ export class PosthogConnector extends BaseConnector {
     return this.httpClient;
   }
 
+  private getProjectId(): string {
+    return String(this.dataSource.config.project_id);
+  }
+
   async testConnection(): Promise<ConnectionTestResult> {
     try {
       const validation = this.validateConfig();
@@ -152,12 +181,22 @@ export class PosthogConnector extends BaseConnector {
         };
       }
 
-      // Run a trivial query to validate auth and project access
-      await this.executeQuery("SELECT 1 LIMIT 1");
+      // Prefer a lightweight surveys list probe (validates survey:read too).
+      // Fall back to a trivial HogQL query for keys without survey scope.
+      try {
+        await this.executeWithRetry(() =>
+          this.getHttpClient().get(
+            `/api/projects/${this.getProjectId()}/surveys/`,
+            { params: { limit: 1 }, timeout: 15000 },
+          ),
+        );
+      } catch {
+        await this.executeQuery("SELECT 1 LIMIT 1");
+      }
 
       return {
         success: true,
-        message: "Successfully connected to PostHog Query API",
+        message: "Successfully connected to PostHog API",
       };
     } catch (error) {
       return {
@@ -168,17 +207,68 @@ export class PosthogConnector extends BaseConnector {
     }
   }
 
-  getAvailableEntities(): string[] {
+  private getQueryEntityNames(): string[] {
     const list = this.dataSource.config.queries || [];
-    // Only include queries that have required fields filled in
     return list
-      .filter((q: any) => {
+      .filter((q: { name?: unknown; query?: unknown }) => {
         const nameOk = typeof q?.name === "string" && q.name.trim().length > 0;
         const queryOk =
           typeof q?.query === "string" && q.query.trim().length > 0;
         return nameOk && queryOk;
       })
-      .map((q: any) => q.name);
+      .map((q: { name: string }) => q.name);
+  }
+
+  getAvailableEntities(): string[] {
+    return [...POSTHOG_BUILTIN_ENTITIES, ...this.getQueryEntityNames()];
+  }
+
+  getEntityMetadata(): EntityMetadata[] {
+    const layoutSuggestion = {
+      partitionField: "_syncedAt",
+      partitionGranularity: "day" as const,
+      clusterFields: ["_dataSourceId", "id"],
+    };
+
+    const builtins: EntityMetadata[] = [
+      {
+        name: "surveys",
+        label: "Surveys",
+        description:
+          "PostHog survey definitions (questions, targeting, status)",
+        layoutSuggestion: {
+          partitionField: "created_at",
+          partitionGranularity: "day",
+          clusterFields: ["_dataSourceId", "id"],
+        },
+      },
+      {
+        name: "survey_responses",
+        label: "Survey Responses",
+        description:
+          "Individual survey responses across all surveys (answers + metadata)",
+        layoutSuggestion: {
+          partitionField: "submitted_at",
+          partitionGranularity: "day",
+          clusterFields: ["_dataSourceId", "survey_id", "id"],
+        },
+      },
+    ];
+
+    const queryEntities: EntityMetadata[] = this.getQueryEntityNames().map(
+      name => ({
+        name,
+        label: name,
+        description: "HogQL query entity",
+        layoutSuggestion,
+      }),
+    );
+
+    return [...builtins, ...queryEntities];
+  }
+
+  async resolveSchema(entity: string): Promise<ConnectorEntitySchema | null> {
+    return resolvePosthogEntitySchema(entity);
   }
 
   supportsResumableFetching(): boolean {
@@ -186,11 +276,304 @@ export class PosthogConnector extends BaseConnector {
   }
 
   async fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState> {
+    const { entity } = options;
+
+    if (entity === "surveys") {
+      return this.fetchSurveysChunk(options);
+    }
+    if (entity === "survey_responses") {
+      return this.fetchSurveyResponsesChunk(options);
+    }
+
+    return this.fetchHogqlChunk(options);
+  }
+
+  async fetchEntity(options: FetchOptions): Promise<void> {
+    await this.fetchEntityChunk({
+      ...options,
+      maxIterations: Number.MAX_SAFE_INTEGER,
+    });
+  }
+
+  // --- Surveys (REST) ---
+
+  private async fetchSurveysPage(options: {
+    limit: number;
+    offset: number;
+  }): Promise<PaginatedList<JsonRecord>> {
+    const response = await this.executeWithRetry(() =>
+      this.getHttpClient().get(
+        `/api/projects/${this.getProjectId()}/surveys/`,
+        {
+          params: { limit: options.limit, offset: options.offset },
+          timeout: this.dataSource.settings?.timeout_ms || 30000,
+        },
+      ),
+    );
+    const data = response.data as PaginatedList<JsonRecord>;
+    return {
+      results: Array.isArray(data?.results) ? data.results : [],
+      count: data?.count,
+      next: data?.next ?? null,
+    };
+  }
+
+  private async fetchSurveysChunk(
+    options: ResumableFetchOptions,
+  ): Promise<FetchState> {
+    const { onBatch, onProgress, since, state } = options;
+    const maxIterations = options.maxIterations || 10;
+    const batchSize = options.batchSize || this.getBatchSize();
+    const rateDelay = options.rateLimitDelay || this.getRateLimitDelay();
+
+    let offset = state?.offset || 0;
+    let processed = state?.totalProcessed || 0;
+    let iterations = 0;
+    let hasMore = state?.hasMore !== false;
+    const totalCount = state?.metadata?.totalCount as number | undefined;
+
+    if (!state && onProgress) {
+      onProgress(0, undefined);
+    }
+
+    while (hasMore && iterations < maxIterations) {
+      const page = await this.fetchSurveysPage({ limit: batchSize, offset });
+      let records = page.results;
+
+      // Surveys list has no updated-since filter; optional client filter on
+      // created_at only (misses later edits — declared as created-anchor).
+      if (since instanceof Date) {
+        const sinceMs = since.getTime();
+        records = records.filter(record => {
+          const created =
+            typeof record.created_at === "string"
+              ? new Date(record.created_at).getTime()
+              : NaN;
+          return Number.isFinite(created) ? created >= sinceMs : false;
+        });
+      }
+
+      if (records.length > 0) {
+        await onBatch(records);
+        processed += records.length;
+        if (onProgress) onProgress(processed, page.count ?? totalCount);
+      }
+
+      hasMore = Boolean(page.next) || page.results.length === batchSize;
+      if (!hasMore) {
+        return {
+          offset,
+          totalProcessed: processed,
+          hasMore: false,
+          iterationsInChunk: iterations + 1,
+          metadata: { totalCount: page.count ?? totalCount },
+        };
+      }
+
+      offset += batchSize;
+      iterations += 1;
+      await this.sleep(rateDelay);
+    }
+
+    return {
+      offset,
+      totalProcessed: processed,
+      hasMore,
+      iterationsInChunk: iterations,
+      metadata: { totalCount },
+    };
+  }
+
+  // --- Survey responses (REST, nested per survey) ---
+
+  private async fetchSurveyResponsesPage(options: {
+    surveyId: string;
+    limit: number;
+    offset: number;
+    since?: Date;
+  }): Promise<PaginatedList<JsonRecord>> {
+    const params: Record<string, string | number | boolean> = {
+      limit: options.limit,
+      offset: options.offset,
+      exclude_archived: false,
+    };
+    if (options.since instanceof Date) {
+      params.since = options.since.toISOString();
+    }
+
+    const response = await this.executeWithRetry(() =>
+      this.getHttpClient().get(
+        `/api/projects/${this.getProjectId()}/surveys/${options.surveyId}/responses/`,
+        {
+          params,
+          timeout: this.dataSource.settings?.timeout_ms || 30000,
+        },
+      ),
+    );
+    const data = response.data as PaginatedList<JsonRecord>;
+    return {
+      results: Array.isArray(data?.results) ? data.results : [],
+      has_more: data?.has_more,
+      limit: data?.limit,
+      offset: data?.offset,
+      next: data?.next ?? null,
+    };
+  }
+
+  private normalizeSurveyResponse(
+    surveyId: string,
+    row: JsonRecord,
+  ): JsonRecord {
+    const uuid =
+      typeof row.uuid === "string"
+        ? row.uuid
+        : typeof row.id === "string"
+          ? row.id
+          : undefined;
+    return {
+      ...row,
+      id: uuid ?? `${surveyId}:${String(row.submitted_at ?? "")}`,
+      uuid: uuid ?? null,
+      survey_id: surveyId,
+    };
+  }
+
+  private async fetchSurveyResponsesChunk(
+    options: ResumableFetchOptions,
+  ): Promise<FetchState> {
+    const { onBatch, onProgress, since, state } = options;
+    const maxIterations = options.maxIterations || 10;
+    const batchSize = options.batchSize || this.getBatchSize();
+    const rateDelay = options.rateLimitDelay || this.getRateLimitDelay();
+
+    // Resume: walk surveys by offset, then responses within the current survey.
+    let surveyOffset = (state?.metadata?.surveyOffset as number) ?? 0;
+    let responseOffset = (state?.metadata?.responseOffset as number) ?? 0;
+    let currentSurveyId =
+      (state?.metadata?.currentSurveyId as string | undefined) ?? undefined;
+    const surveysDone =
+      (state?.metadata?.surveysDone as boolean | undefined) ?? false;
+    let processed = state?.totalProcessed || 0;
+    let iterations = 0;
+
+    if (!state && onProgress) {
+      onProgress(0, undefined);
+    }
+
+    while (iterations < maxIterations) {
+      if (!currentSurveyId) {
+        if (surveysDone) {
+          return {
+            totalProcessed: processed,
+            hasMore: false,
+            iterationsInChunk: iterations,
+            metadata: {
+              surveyOffset,
+              responseOffset: 0,
+              currentSurveyId: null,
+              surveysDone: true,
+            },
+          };
+        }
+
+        const surveysPage = await this.fetchSurveysPage({
+          limit: 1,
+          offset: surveyOffset,
+        });
+        if (surveysPage.results.length === 0) {
+          return {
+            totalProcessed: processed,
+            hasMore: false,
+            iterationsInChunk: iterations + 1,
+            metadata: {
+              surveyOffset,
+              responseOffset: 0,
+              currentSurveyId: null,
+              surveysDone: true,
+            },
+          };
+        }
+
+        const nextSurvey = surveysPage.results[0];
+        const nextId =
+          typeof nextSurvey?.id === "string" ? nextSurvey.id : null;
+        if (!nextId) {
+          surveyOffset += 1;
+          iterations += 1;
+          continue;
+        }
+
+        currentSurveyId = nextId;
+        responseOffset = 0;
+        // Advance survey cursor now so a crash after finishing responses
+        // resumes on the next survey, not the current one again.
+        surveyOffset += 1;
+        iterations += 1;
+        await this.sleep(rateDelay);
+        if (iterations >= maxIterations) break;
+      }
+
+      const page = await this.fetchSurveyResponsesPage({
+        surveyId: currentSurveyId,
+        limit: batchSize,
+        offset: responseOffset,
+        since: since instanceof Date ? since : undefined,
+      });
+
+      const records = page.results.map(row =>
+        this.normalizeSurveyResponse(currentSurveyId as string, row),
+      );
+
+      if (records.length > 0) {
+        await onBatch(records);
+        processed += records.length;
+        if (onProgress) onProgress(processed, undefined);
+      }
+
+      const pageHasMore =
+        typeof page.has_more === "boolean"
+          ? page.has_more
+          : Boolean(page.next) || page.results.length === batchSize;
+
+      iterations += 1;
+
+      if (pageHasMore) {
+        responseOffset += batchSize;
+      } else {
+        // Move to next survey; empty surveys page on the next loop ends the run.
+        currentSurveyId = undefined;
+        responseOffset = 0;
+      }
+
+      await this.sleep(rateDelay);
+    }
+
+    return {
+      totalProcessed: processed,
+      hasMore: !surveysDone || Boolean(currentSurveyId),
+      iterationsInChunk: iterations,
+      metadata: {
+        surveyOffset,
+        responseOffset,
+        currentSurveyId: currentSurveyId ?? null,
+        surveysDone,
+      },
+    };
+  }
+
+  // --- HogQL query entities ---
+
+  private async fetchHogqlChunk(
+    options: ResumableFetchOptions,
+  ): Promise<FetchState> {
     const { entity, onBatch, onProgress, since, state } = options;
     const maxIterations = options.maxIterations || 10;
 
     const q = this.getQueryConfig(entity);
     if (!q || !q.query || q.query.trim().length === 0) {
+      if (isBuiltinEntity(entity)) {
+        throw new Error(`Unsupported PostHog entity: ${entity}`);
+      }
       // Treat as empty/incomplete configuration; skip gracefully
       if (onProgress) onProgress(0, undefined);
       return {
@@ -250,26 +633,22 @@ export class PosthogConnector extends BaseConnector {
     };
   }
 
-  async fetchEntity(options: FetchOptions): Promise<void> {
-    await this.fetchEntityChunk({
-      ...options,
-      maxIterations: Number.MAX_SAFE_INTEGER,
-    });
-  }
-
   // --- Helpers ---
   private getQueryConfig(
     name: string,
   ): { name: string; query: string; batch_size?: number } | undefined {
     const queries = this.dataSource.config.queries || [];
-    const found = queries.find((q: any) => q.name === name);
+    const found = queries.find((q: { name?: string }) => q.name === name);
     if (!found) return undefined;
     return {
       name: found.name,
       query: found.query,
       batch_size:
-        Number((found as any)["batch_size"] || (found as any)["batchSize"]) ||
-        undefined,
+        Number(
+          (found as { batch_size?: number; batchSize?: number })[
+            "batch_size"
+          ] || (found as { batchSize?: number })["batchSize"],
+        ) || undefined,
     };
   }
 
@@ -311,9 +690,9 @@ export class PosthogConnector extends BaseConnector {
     return q;
   }
 
-  private async executeQuery(hogqlQuery: string): Promise<any> {
+  private async executeQuery(hogqlQuery: string): Promise<unknown> {
     const client = this.getHttpClient();
-    const projectId = this.dataSource.config.project_id;
+    const projectId = this.getProjectId();
 
     const body: JsonRecord = {
       query: {
@@ -328,16 +707,17 @@ export class PosthogConnector extends BaseConnector {
     return res.data;
   }
 
-  private extractRows(response: any): any[] {
-    if (!response) return [];
-    // PostHog returns tabular data as arrays in `results`
-    const rows = Array.isArray(response?.results) ? response.results : [];
-    return rows;
+  private extractRows(response: unknown): unknown[] {
+    if (!response || typeof response !== "object") return [];
+    const rows = (response as { results?: unknown }).results;
+    return Array.isArray(rows) ? rows : [];
   }
 
-  private mapRowsToObjects(rows: any[], response: any): any[] {
-    const columns: string[] = Array.isArray(response?.columns)
-      ? response.columns
+  private mapRowsToObjects(rows: unknown[], response: unknown): unknown[] {
+    const columns: string[] = Array.isArray(
+      (response as { columns?: unknown })?.columns,
+    )
+      ? (response as { columns: string[] }).columns
       : [];
 
     if (columns.length === 0) {
@@ -346,10 +726,10 @@ export class PosthogConnector extends BaseConnector {
     }
 
     return rows.map(row => {
-      const obj: Record<string, any> = {};
+      const obj: Record<string, unknown> = {};
       for (let i = 0; i < columns.length; i++) {
         const key = columns[i] || `col_${i}`;
-        obj[key] = Array.isArray(row) ? row[i] : row?.[i];
+        obj[key] = Array.isArray(row) ? row[i] : (row as unknown[])?.[i];
       }
       return obj;
     });
@@ -381,10 +761,18 @@ export class PosthogConnector extends BaseConnector {
   getIncrementalCapabilities(): IncrementalCapabilities {
     return {
       supported: true,
+      // HogQL query entities substitute $since when the placeholder is present.
       mode: "native",
       anchorField: "$since",
+      perEntity: {
+        // Surveys list has no updated-since filter; client filter on created_at
+        // misses later edits to an existing survey.
+        surveys: { mode: "created-anchor", anchorField: "created_at" },
+        // Responses API accepts a real `since` query parameter.
+        survey_responses: { mode: "native", anchorField: "since" },
+      },
       warning:
-        "Incremental substitutes $since/{{since}} in your HogQL. Queries without that placeholder still full-repull every poll — add the placeholder or use Full Refresh.",
+        "Incremental substitutes $since/{{since}} in your HogQL. Queries without that placeholder still full-repull every poll — add the placeholder or use Full Refresh. Surveys only filter by created_at (edits need a full reconcile).",
     };
   }
 }
