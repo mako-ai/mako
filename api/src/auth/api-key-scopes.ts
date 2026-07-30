@@ -8,13 +8,15 @@ import type { CapabilityGrant } from "@mako/agent-tools";
  * `warehouse:write` is narrower than a query-write scope would be: it does
  * not unlock arbitrary DML — it maps to the `warehouse-write` capability
  * grant, whose only external-MCP tools are governed dbt executions
- * (dbt_run_model / dbt_run_job / dbt_cancel_run). It is never granted by
- * default; workspace admins opt a key in explicitly.
+ * (dbt_run_model / dbt_run_job / dbt_cancel_run). `git:write` maps to the
+ * `git-write` grant behind the dbt Git mutations (commit, branch, PR).
+ * Neither is granted by default; workspace admins opt a key in explicitly.
  */
 export const WORKSPACE_API_KEY_SCOPES = [
   "mcp",
   "query:read",
   "warehouse:write",
+  "git:write",
 ] as const;
 
 export type WorkspaceApiKeyScope = (typeof WORKSPACE_API_KEY_SCOPES)[number];
@@ -105,6 +107,9 @@ export function capabilityGrantsFromScopes(
   const grants: CapabilityGrant[] = [];
   if (hasWorkspaceApiKeyScope(scopes, "warehouse:write")) {
     grants.push("warehouse-write");
+  }
+  if (hasWorkspaceApiKeyScope(scopes, "git:write")) {
+    grants.push("git-write");
   }
   return grants;
 }
