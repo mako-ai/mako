@@ -18,6 +18,7 @@ process.env.ENCRYPTION_KEY =
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import {
   AGENT_CAPABILITIES,
+  AGENT_CAPABILITY_BY_NAME,
   CAPABILITY_GRANTS,
   DBT_CAPABILITY_NAMES,
   type CapabilityGrant,
@@ -25,6 +26,7 @@ import {
 import { buildMakoMcpServer } from "./mako-mcp-server";
 import { StatelessMcpTransport } from "./stateless-transport";
 import {
+  capabilityGrantsFromScopes,
   parseWorkspaceApiKeyScopes,
   restQueryAccessFromStoredScopes,
   resolveWorkspaceApiKeyScopes,
@@ -87,6 +89,17 @@ async function main() {
     () => parseWorkspaceApiKeyScopes(["mcp", "query:write"]),
     /Unsupported API key scope/,
   );
+  // warehouse:write is grantable (opt-in, never default) and maps to the
+  // warehouse-write capability grant only.
+  assert.deepEqual(
+    parseWorkspaceApiKeyScopes(["mcp", "query:read", "warehouse:write"]),
+    ["mcp", "query:read", "warehouse:write"],
+  );
+  assert.deepEqual(
+    capabilityGrantsFromScopes(["mcp", "query:read", "warehouse:write"]),
+    ["warehouse-write"],
+  );
+  assert.deepEqual(capabilityGrantsFromScopes(["mcp", "query:read"]), []);
   assert.equal(
     sqlReadOnlyAccessError("SELECT 'UPDATE is text' AS value"),
     null,
@@ -290,6 +303,11 @@ async function main() {
       "dbt_get_run",
       "dbt_list_recoverable_files",
       "dbt_restore_file",
+      // Async validation runs (queue + poll dbt_get_run) — read-risk, so
+      // they bridge for every query:read key: author AND validate headlessly.
+      "dbt_parse",
+      "dbt_compile_model",
+      "dbt_show",
     ]) {
       assert.ok(names.has(expected), `missing tool: ${expected}`);
     }
@@ -340,19 +358,88 @@ async function main() {
       true,
       "run_app renders a draft and mutates nothing",
     );
-    for (const desktopOnlyTool of [
-      "dbt_parse",
-      "dbt_compile_model",
-      "dbt_show",
+    // Warehouse-mutating dbt runs require the explicit warehouse:write
+    // scope; a default query:read key must not see them.
+    for (const warehouseGatedTool of [
       "dbt_run_model",
+      "dbt_run_job",
       "dbt_cancel_run",
     ]) {
       assert.equal(
-        names.has(desktopOnlyTool),
+        names.has(warehouseGatedTool),
         false,
-        `${desktopOnlyTool} must stay off general MCP`,
+        `${warehouseGatedTool} must stay hidden without warehouse:write`,
       );
     }
+  }
+
+  // 3a. warehouse:write opt-in: run tools appear (destructive-annotated) and
+  //     authorize; without the scope the call fails as an unknown tool and
+  //     the capability runtime would refuse it regardless.
+  {
+    const [res] = await exchange(
+      [{ jsonrpc: "2.0", id: "wh-list", method: "tools/list" }],
+      ["mcp", "query:read", "warehouse:write"],
+    );
+    const { tools } = res.result as {
+      tools: {
+        name: string;
+        annotations?: { destructiveHint?: boolean; readOnlyHint?: boolean };
+      }[];
+    };
+    const byName = new Map(tools.map(tool => [tool.name, tool]));
+    for (const runTool of ["dbt_run_model", "dbt_run_job", "dbt_cancel_run"]) {
+      assert.ok(
+        byName.has(runTool),
+        `${runTool} must be exposed with warehouse:write`,
+      );
+    }
+    assert.equal(
+      byName.get("dbt_run_model")?.annotations?.destructiveHint,
+      true,
+    );
+    assert.equal(byName.get("dbt_run_job")?.annotations?.destructiveHint, true);
+    // Validation stays read-annotated so clients can auto-approve it.
+    assert.equal(byName.get("dbt_parse")?.annotations?.readOnlyHint, true);
+    assert.equal(byName.get("dbt_show")?.annotations?.readOnlyHint, true);
+
+    const [ungated] = await exchange([
+      {
+        jsonrpc: "2.0",
+        id: "wh-call",
+        method: "tools/call",
+        params: { name: "dbt_run_model", arguments: {} },
+      },
+    ]);
+    const ungatedResult = ungated.result as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+    assert.equal(
+      ungatedResult.isError,
+      true,
+      "dbt_run_model without warehouse:write must fail",
+    );
+    assert.match(ungatedResult.content[0].text, /Unknown tool/);
+
+    // With the scope, authorization passes and the zod schema rejects the
+    // empty arguments (proves no grant gate blocked the call).
+    const [gatedCall] = await exchange(
+      [
+        {
+          jsonrpc: "2.0",
+          id: "wh-call-scoped",
+          method: "tools/call",
+          params: { name: "dbt_run_model", arguments: {} },
+        },
+      ],
+      ["mcp", "query:read", "warehouse:write"],
+    );
+    assert.match(
+      (gatedCall.result as { content: { text: string }[] }).content[0].text,
+      /Invalid arguments/,
+      "warehouse:write key reaches dbt_run_model",
+    );
   }
 
   // 3b. Bridge policy covers the live agent inventory — this is how we stay
@@ -372,6 +459,16 @@ async function main() {
       // Conditional tools (e.g. web_search) only appear when optional
       // providers are configured.
       if (entry.conditional || entry.acpDesktopOnly) continue;
+      // Grant-gated tools only appear when the key's scopes opt into the
+      // grant (e.g. warehouse:write); this exchange used the default scopes.
+      const requiredGrant = AGENT_CAPABILITY_BY_NAME.get(name)?.requiredGrant;
+      if (
+        requiredGrant &&
+        requiredGrant !== "artifact-write" &&
+        requiredGrant !== "schedule-write"
+      ) {
+        continue;
+      }
       assert.ok(
         exposed.has(name),
         `policy says bridge ${name} but tools/list omitted it`,

@@ -24,7 +24,11 @@ import {
 import type { Tool as AiTool } from "ai";
 import { nanoid } from "nanoid";
 import { z } from "zod";
-import { CAPABILITY_GRANTS, type CapabilityGrant } from "@mako/agent-tools";
+import {
+  AGENT_CAPABILITY_BY_NAME,
+  CAPABILITY_GRANTS,
+  type CapabilityGrant,
+} from "@mako/agent-tools";
 
 import { authorizeAgentCapability } from "../agent-lib/capabilities/runtime";
 import { createHeadlessRunAppTool } from "./preview-tools";
@@ -46,6 +50,7 @@ import {
   getSystemSkillFullText,
 } from "../agent-lib/skills/system-skills";
 import {
+  capabilityGrantsFromScopes,
   queryAccessFromScopes,
   resolveWorkspaceApiKeyScopes,
   type QueryAccess,
@@ -77,6 +82,8 @@ Typical loop:
 3. create_app → app_write_file / app_edit_file → app_create_data_binding (bind the validated query; pass consoleId to seed from a console).
 4. Verify with run_app after edits (server-side headless render). Pass includeScreenshot: false when you only need status/errors — it is much cheaper than the screenshot.
 5. app_save_version to snapshot/publish.
+
+dbt: read_dbt_project_tree → read/edit files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run). Warehouse-mutating runs (dbt_run_model, dbt_run_job) appear only when the API key has the warehouse:write scope.
 
 Skills (same knowledge as the in-product agent):
 - list_skills → compact index (workspace + system).
@@ -220,6 +227,40 @@ export function buildMakoMcpCandidateTools(
 }
 
 /**
+ * Grants held by this MCP session.
+ *
+ * External MCP keeps its long-standing implicit headless-authoring authority
+ * (artifact-write for app/notebook/dbt-file drafts, schedule-write for
+ * binding schedules — both relied on by every existing key), and derives the
+ * rest from explicit opt-in API-key scopes (warehouse:write → the
+ * warehouse-write grant behind dbt_run_model / dbt_run_job / dbt_cancel_run).
+ *
+ * Desktop ACP holds every grant: plan-grant gating is DISABLED pending
+ * product review — see the CallTool comment below.
+ */
+const EXTERNAL_MCP_IMPLICIT_GRANTS: readonly CapabilityGrant[] = [
+  "artifact-write",
+  "schedule-write",
+];
+
+function sessionCapabilityGrants(
+  context: MakoMcpContext,
+  scopes: readonly WorkspaceApiKeyScope[],
+): Set<CapabilityGrant> {
+  if (context.acpDesktop) {
+    return new Set<CapabilityGrant>([
+      ...CAPABILITY_GRANTS,
+      ...(context.capabilityGrants ?? []),
+    ]);
+  }
+  return new Set<CapabilityGrant>([
+    ...EXTERNAL_MCP_IMPLICIT_GRANTS,
+    ...capabilityGrantsFromScopes(scopes),
+    ...(context.capabilityGrants ?? []),
+  ]);
+}
+
+/**
  * The toolset exposed over MCP. Same implementations the in-product agent
  * uses; assembled per request so every execution is bound to the caller's
  * workspace + acting user. Filtering is driven by bridge-policy.ts.
@@ -229,6 +270,7 @@ export function buildMakoMcpToolset(
 ): Record<string, BridgeableTool> {
   const scopes = resolveWorkspaceApiKeyScopes(context.scopes);
   const queryAccess = queryAccessFromScopes(scopes);
+  const grants = sessionCapabilityGrants(context, scopes);
   const candidates = buildMakoMcpCandidateTools(context);
   const exposed: Record<string, BridgeableTool> = {};
 
@@ -238,6 +280,11 @@ export function buildMakoMcpToolset(
     if (entry.acpDesktopOnly && !context.acpDesktop) continue;
     if (entry.omitForAcpDesktop && context.acpDesktop) continue;
     if (entry.requiresQueryAccess && queryAccess === "none") continue;
+    // Grant-gated tools stay hidden from stateless external clients that
+    // did not opt in via scopes (mirrors the requiresQueryAccess hiding
+    // above). Execution re-checks via authorizeAgentCapability regardless.
+    const requiredGrant = AGENT_CAPABILITY_BY_NAME.get(name)?.requiredGrant;
+    if (requiredGrant && !grants.has(requiredGrant)) continue;
     exposed[name] = tool;
   }
 
@@ -360,17 +407,20 @@ export function buildMakoMcpServer(
     const authorization = authorizeAgentCapability(name, {
       surface: context.acpDesktop ? "desktop-acp" : "external-mcp",
       queryAccess,
-      // Capability-grant gating is DISABLED on every surface pending product
-      // review: the philosophy for now is "same capabilities everywhere", so
-      // external MCP and Desktop ACP implicitly hold every grant, matching
+      // Desktop ACP plan-grant gating is DISABLED pending product review:
+      // the philosophy there is "same capabilities everywhere", matching
       // native Chat (see PLAN_GRANT_GATING_ENABLED in
-      // agents/modes/runtime.ts). Surface membership and query-access scopes
-      // still apply. To re-enable ACP gating, restore: artifact-write +
+      // agents/modes/runtime.ts) — sessionCapabilityGrants hands ACP every
+      // grant. External MCP has no human in the loop, so it holds only the
+      // implicit headless-authoring grants plus whatever the API key's
+      // scopes explicitly opt into (warehouse:write → warehouse-write).
+      // Surface membership and query-access scopes still apply. To
+      // re-enable ACP gating, restore: artifact-write +
       // context.capabilityGrants (from resolveAcpPlanGrants).
-      grants: new Set<CapabilityGrant>([
-        ...CAPABILITY_GRANTS,
-        ...(context.capabilityGrants ?? []),
-      ]),
+      grants: sessionCapabilityGrants(
+        context,
+        resolveWorkspaceApiKeyScopes(context.scopes),
+      ),
     });
     if (!authorization.allowed) {
       return {

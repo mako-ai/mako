@@ -93,25 +93,30 @@ export const DBT_CAPABILITIES = [
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
+  // Validation runs are async (queue + poll dbt_get_run) since #755, so they
+  // are safe on the stateless external MCP surface. Read-risk validation
+  // bridges for every key; warehouse-mutating runs additionally require the
+  // warehouse-write grant, which external MCP only derives from an explicit
+  // warehouse:write API-key scope.
   define({
     name: "dbt_parse",
     pack: "dbt-validation",
     risk: "read",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "run",
   }),
   define({
     name: "dbt_compile_model",
     pack: "dbt-validation",
     risk: "read",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "run",
   }),
   define({
     name: "dbt_show",
     pack: "dbt-validation",
     risk: "read",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "run",
     requiresQueryAccess: true,
   }),
@@ -120,7 +125,7 @@ export const DBT_CAPABILITIES = [
     pack: "dbt-validation",
     risk: "destructive",
     requiredGrant: "warehouse-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "run",
     requiresQueryAccess: true,
   }),
@@ -137,7 +142,7 @@ export const DBT_CAPABILITIES = [
     pack: "dbt-validation",
     risk: "write",
     requiredGrant: "warehouse-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "run",
   }),
   define({
@@ -294,7 +299,7 @@ export const DBT_CAPABILITIES = [
     pack: "dbt-jobs",
     risk: "destructive",
     requiredGrant: "warehouse-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "run",
     requiresQueryAccess: true,
   }),
