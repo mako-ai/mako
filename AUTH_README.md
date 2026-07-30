@@ -527,6 +527,13 @@ branch, and pull-request tools). Git *reads* (`dbt_git_status`, branch and
 PR listings) are part of the default surface so headless agents can tell
 when their edits are uncommitted drafts.
 
+The opt-in `query:write` scope is double-gated: it yields "write-opt-in"
+query access, which `sql_execute_query` resolves per connection — write
+only where a workspace admin set `allowAgentWrites` on the connection
+document, read-only everywhere else. Console runs and REST query
+endpoints fail closed to read under this scope, and the connection flag
+can never upgrade a key that lacks `query:write`.
+
 ### Managing connected agents
 
 | Method | Endpoint                                        | Description                     |

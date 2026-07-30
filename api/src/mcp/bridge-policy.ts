@@ -401,7 +401,7 @@ export function assertBridgePolicyNotStale(
  */
 export function mcpReadOnlyHint(
   name: string,
-  queryAccess: "none" | "read" | "write",
+  queryAccess: "none" | "read" | "write-opt-in" | "write",
 ): boolean {
   if (READ_ONLY_TOOL_NAMES.has(name)) return true;
   const entry = MCP_BRIDGE_POLICY[name];
@@ -420,6 +420,15 @@ export function mcpReadOnlyHint(
     // (affects auto-approval annotations). check_query_status and
     // list_console_executions are read-risk in the capability registry, so
     // they are covered by READ_ONLY_TOOL_NAMES above regardless of scope.
+    return true;
+  }
+  if (
+    queryAccess === "write-opt-in" &&
+    (name === "run_console" || name === "cancel_query")
+  ) {
+    // Console runs fail closed to read under write-opt-in (only
+    // sql_execute_query resolves the per-connection allowAgentWrites flag,
+    // so it must NOT be annotated read-only here).
     return true;
   }
   return false;
