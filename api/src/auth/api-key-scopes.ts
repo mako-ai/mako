@@ -1,9 +1,21 @@
+import type { CapabilityGrant } from "@mako/agent-tools";
+
 /**
- * Mako MCP is read-only against workspace data by design: apps are read-only
- * data products, so there is deliberately no `query:write` scope. Anyone who
- * needs database writes should use their own database tooling.
+ * Mako MCP is read-only against workspace *data* by design: apps are
+ * read-only data products, so there is deliberately no `query:write` scope.
+ * Anyone who needs raw database writes should use their own database tooling.
+ *
+ * `warehouse:write` is narrower than a query-write scope would be: it does
+ * not unlock arbitrary DML — it maps to the `warehouse-write` capability
+ * grant, whose only external-MCP tools are governed dbt executions
+ * (dbt_run_model / dbt_run_job / dbt_cancel_run). It is never granted by
+ * default; workspace admins opt a key in explicitly.
  */
-export const WORKSPACE_API_KEY_SCOPES = ["mcp", "query:read"] as const;
+export const WORKSPACE_API_KEY_SCOPES = [
+  "mcp",
+  "query:read",
+  "warehouse:write",
+] as const;
 
 export type WorkspaceApiKeyScope = (typeof WORKSPACE_API_KEY_SCOPES)[number];
 
@@ -79,4 +91,20 @@ export function queryAccessFromScopes(
 export function restQueryAccessFromStoredScopes(value: unknown): QueryAccess {
   if (value === undefined) return "write";
   return queryAccessFromScopes(resolveWorkspaceApiKeyScopes(value));
+}
+
+/**
+ * Capability grants an external MCP credential opts into via scopes.
+ * Grants that no scope maps to (artifact-write, schedule-write) are the
+ * implicit headless-authoring authority external MCP has always had; the
+ * MCP server unions those in itself (see externalMcpCapabilityGrants).
+ */
+export function capabilityGrantsFromScopes(
+  scopes: readonly WorkspaceApiKeyScope[],
+): CapabilityGrant[] {
+  const grants: CapabilityGrant[] = [];
+  if (hasWorkspaceApiKeyScope(scopes, "warehouse:write")) {
+    grants.push("warehouse-write");
+  }
+  return grants;
 }

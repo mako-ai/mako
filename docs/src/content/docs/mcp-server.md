@@ -9,7 +9,7 @@ Where [MCP Connectors](/mcp-connectors/) let Mako's agent use *other* systems' t
 
 Want Claude Code or Codex **inside** the Mako UI instead? See [Coding Agents (ACP)](/coding-agents-acp/).
 
-**Data access over MCP is read-only by design.** Agents can never write to your databases through Mako — there is no scope or setting that enables it.
+**Data access over MCP is read-only by design.** Agents can never run raw SQL writes against your databases through Mako — there is no scope or setting that enables DML/DDL. The one deliberate, opt-in exception is governed dbt execution: an API key explicitly created with the `warehouse:write` scope may trigger dbt runs (which build model definitions that live in your project, not ad-hoc statements). OAuth sign-in grants remain fully read-only.
 
 ## Connect by signing in (no API key)
 
@@ -90,6 +90,7 @@ The server ships usage instructions with the handshake, so agents discover this 
 3. **Build apps** — `create_app`, `app_write_file` / `app_edit_file`, `app_create_data_binding` (bind the validated query), version history and restore.
 4. **Verify visually** — `run_app` renders the draft server-side and returns status, errors, filtered console output, and a screenshot (same tool name the in-product and Desktop agents use; `render_app` remains as a deprecated alias). `create_preview_token` mints a short-lived, login-free preview URL to share or open yourself.
 5. **Publish** — `app_save_version`.
+6. **dbt** — `read_dbt_project_tree` and the dbt file tools author models headlessly; `dbt_parse` / `dbt_compile_model` / `dbt_show` validate them asynchronously (start a run, poll `dbt_get_run`). Warehouse-mutating runs (`dbt_run_model`, `dbt_run_job`, plus `dbt_cancel_run`) only appear for API keys carrying the opt-in `warehouse:write` scope — see the security model below.
 
 Optional helpers: `web_search` / `fetch_url` for public docs (annotated `openWorldHint`).
 
@@ -99,7 +100,8 @@ Read-only tools are annotated per the MCP spec (`readOnlyHint`), so well-behaved
 
 ## Security model
 
-- **Read-only, no exceptions.** SQL must be a single `SELECT`/`WITH` statement; enforcement also happens *inside the database* where supported (PostgreSQL/Cloud SQL/Redshift read-only transactions, MySQL `START TRANSACTION READ ONLY`, ClickHouse `readonly=2`). Arbitrary MongoDB JavaScript is not exposed at all — Mongo is discovery/inspection only.
+- **SQL is read-only, no exceptions.** SQL must be a single `SELECT`/`WITH` statement; enforcement also happens *inside the database* where supported (PostgreSQL/Cloud SQL/Redshift read-only transactions, MySQL `START TRANSACTION READ ONLY`, ClickHouse `readonly=2`). Arbitrary MongoDB JavaScript is not exposed at all — Mongo is discovery/inspection only. There is no scope that unlocks raw DML/DDL over MCP.
+- **Warehouse mutations are opt-in and governed.** The only write path to a warehouse over MCP is dbt execution (`dbt_run_model` / `dbt_run_job`), which builds committed, reviewable model definitions — never ad-hoc SQL. These tools are hidden unless a workspace admin creates an API key with the `warehouse:write` scope (never granted by default; OAuth grants stay pinned to the read-only set).
 - **Non-SQL engines fail closed** (MongoDB shell code, Cloudflare KV): the lexical analyzer cannot validate them, so read-only execution refuses them outright. SQL engines without a session-level read-only mode (BigQuery, MSSQL, Cloudflare D1) rely on the validated single-`SELECT`/`WITH` statement instead.
 - **MCP credentials are MCP-only.** OAuth access tokens and scoped keys are rejected on every other API endpoint, so an MCP credential can never be replayed against REST mutation routes.
 - **OAuth grants are least-privilege by construction**: public clients with mandatory PKCE, single-use authorization codes, rotating refresh tokens, hashed at rest, always scoped to the read-only MCP set, and bound to the one workspace chosen at consent.
