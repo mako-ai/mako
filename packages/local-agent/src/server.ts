@@ -493,7 +493,7 @@ export function createAgentApp(): Hono {
 
 export interface StartedAgent {
   port: number;
-  close: () => void;
+  close: () => Promise<void>;
 }
 
 export function startAgent(port?: number): StartedAgent {
@@ -517,9 +517,14 @@ export function startAgent(port?: number): StartedAgent {
 
   return {
     port: resolvedPort,
-    close: () => {
-      void acpSessionManager.shutdown();
-      server.close();
+    close: async () => {
+      await acpSessionManager.shutdown();
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
     },
   };
 }

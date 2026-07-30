@@ -106,6 +106,7 @@ import { useQueuedPrompts } from "./chat/hooks/useQueuedPrompts";
 import { useChatScroll } from "./chat/hooks/useChatScroll";
 import { useNotebookAutoOpen } from "./chat/hooks/useNotebookAutoOpen";
 import { ChatMessageRow, MessageVirtuosoList } from "./chat/ChatMessageRow";
+import { ChatMessageErrorBoundary } from "./chat/ChatMessageErrorBoundary";
 import { QueuedPromptList } from "./chat/QueuedPrompts";
 import { ChatInputArea } from "./chat/ChatInputArea";
 import { AcpPermissionBanner } from "./AcpPermissionBanner";
@@ -1422,17 +1423,22 @@ const Chat: React.FC<ChatProps> = ({
             components={messageVirtuosoComponents}
             style={{ flex: 1 }}
             itemContent={(msgIdx, message) => (
-              <ChatMessageRow
-                message={message}
-                isLastMessage={msgIdx === messages.length - 1}
-                isStreaming={status === "streaming" || localAcpBusy}
-                collapseEmptyReasoningWhileStreaming={localAcpBusy}
-                onToolClick={handleToolClick}
-                onConsoleTitleClick={handleConsoleTitleClick}
-                onMcpApprovalResponse={handleMcpApprovalResponse}
-                connectionIconById={connectionIconById}
-                paletteMode={paletteMode}
-              />
+              <ChatMessageErrorBoundary
+                messageId={message.id}
+                messageRevision={message}
+              >
+                <ChatMessageRow
+                  message={message}
+                  isLastMessage={msgIdx === messages.length - 1}
+                  isStreaming={status === "streaming" || localAcpBusy}
+                  collapseEmptyReasoningWhileStreaming={localAcpBusy}
+                  onToolClick={handleToolClick}
+                  onConsoleTitleClick={handleConsoleTitleClick}
+                  onMcpApprovalResponse={handleMcpApprovalResponse}
+                  connectionIconById={connectionIconById}
+                  paletteMode={paletteMode}
+                />
+              </ChatMessageErrorBoundary>
             )}
           />
         </React.Profiler>
