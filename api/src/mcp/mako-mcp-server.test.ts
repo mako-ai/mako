@@ -100,6 +100,10 @@ async function main() {
     ["warehouse-write"],
   );
   assert.deepEqual(capabilityGrantsFromScopes(["mcp", "query:read"]), []);
+  assert.deepEqual(
+    capabilityGrantsFromScopes(["mcp", "query:read", "git:write"]),
+    ["git-write"],
+  );
   assert.equal(
     sqlReadOnlyAccessError("SELECT 'UPDATE is text' AS value"),
     null,
@@ -308,6 +312,12 @@ async function main() {
       "dbt_parse",
       "dbt_compile_model",
       "dbt_show",
+      // Git reads bridge unconditionally so headless agents can see that
+      // their edits are uncommitted working-tree drafts.
+      "dbt_git_status",
+      "dbt_list_branches",
+      "dbt_compare_branches",
+      "dbt_list_pull_requests",
     ]) {
       assert.ok(names.has(expected), `missing tool: ${expected}`);
     }
@@ -369,6 +379,25 @@ async function main() {
         names.has(warehouseGatedTool),
         false,
         `${warehouseGatedTool} must stay hidden without warehouse:write`,
+      );
+    }
+    // Git mutations require the explicit git:write scope.
+    for (const gitGatedTool of [
+      "dbt_sync_from_repo",
+      "dbt_commit_and_push",
+      "dbt_commit_to_branch",
+      "dbt_create_branch",
+      "dbt_switch_branch",
+      "dbt_delete_branch",
+      "dbt_open_pull_request",
+      "dbt_merge_pull_request",
+      "dbt_update_pull_request",
+      "dbt_close_pull_request",
+    ]) {
+      assert.equal(
+        names.has(gitGatedTool),
+        false,
+        `${gitGatedTool} must stay hidden without git:write`,
       );
     }
   }
@@ -439,6 +468,63 @@ async function main() {
       (gatedCall.result as { content: { text: string }[] }).content[0].text,
       /Invalid arguments/,
       "warehouse:write key reaches dbt_run_model",
+    );
+  }
+
+  // 3a2. git:write opt-in: Git mutations appear (risk-annotated) and
+  //      authorize, independently of warehouse:write.
+  {
+    const [res] = await exchange(
+      [{ jsonrpc: "2.0", id: "git-list", method: "tools/list" }],
+      ["mcp", "query:read", "git:write"],
+    );
+    const { tools } = res.result as {
+      tools: {
+        name: string;
+        annotations?: { destructiveHint?: boolean; readOnlyHint?: boolean };
+      }[];
+    };
+    const byName = new Map(tools.map(tool => [tool.name, tool]));
+    for (const gitTool of [
+      "dbt_commit_to_branch",
+      "dbt_create_branch",
+      "dbt_open_pull_request",
+      "dbt_switch_branch",
+      "dbt_merge_pull_request",
+    ]) {
+      assert.ok(byName.has(gitTool), `${gitTool} must appear with git:write`);
+    }
+    assert.equal(
+      byName.get("dbt_switch_branch")?.annotations?.destructiveHint,
+      true,
+    );
+    assert.equal(
+      byName.get("dbt_commit_to_branch")?.annotations?.destructiveHint,
+      false,
+    );
+    // git:write alone does not surface warehouse runs.
+    assert.equal(
+      byName.has("dbt_run_model"),
+      false,
+      "git:write must not imply warehouse:write",
+    );
+    assert.equal(byName.get("dbt_git_status")?.annotations?.readOnlyHint, true);
+
+    const [gatedCall] = await exchange(
+      [
+        {
+          jsonrpc: "2.0",
+          id: "git-call-scoped",
+          method: "tools/call",
+          params: { name: "dbt_commit_to_branch", arguments: {} },
+        },
+      ],
+      ["mcp", "query:read", "git:write"],
+    );
+    assert.match(
+      (gatedCall.result as { content: { text: string }[] }).content[0].text,
+      /Invalid arguments/,
+      "git:write key reaches dbt_commit_to_branch",
     );
   }
 

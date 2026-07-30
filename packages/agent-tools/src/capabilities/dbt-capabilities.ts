@@ -166,28 +166,28 @@ export const DBT_CAPABILITIES = [
     name: "dbt_git_status",
     pack: "dbt-git-read",
     risk: "read",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "data",
   }),
   define({
     name: "dbt_list_branches",
     pack: "dbt-git-read",
     risk: "read",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "data",
   }),
   define({
     name: "dbt_compare_branches",
     pack: "dbt-git-read",
     risk: "read",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "data",
   }),
   define({
     name: "dbt_list_pull_requests",
     pack: "dbt-git-read",
     risk: "read",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "data",
   }),
   define({
@@ -195,7 +195,7 @@ export const DBT_CAPABILITIES = [
     pack: "dbt-git-write",
     risk: "destructive",
     requiredGrant: "git-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
   define({
@@ -203,7 +203,7 @@ export const DBT_CAPABILITIES = [
     pack: "dbt-git-write",
     risk: "write",
     requiredGrant: "git-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
   define({
@@ -211,7 +211,7 @@ export const DBT_CAPABILITIES = [
     pack: "dbt-git-write",
     risk: "write",
     requiredGrant: "git-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
   define({
@@ -219,7 +219,7 @@ export const DBT_CAPABILITIES = [
     pack: "dbt-git-write",
     risk: "write",
     requiredGrant: "git-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
   define({
@@ -227,7 +227,7 @@ export const DBT_CAPABILITIES = [
     pack: "dbt-git-write",
     risk: "destructive",
     requiredGrant: "git-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
   define({
@@ -235,7 +235,7 @@ export const DBT_CAPABILITIES = [
     pack: "dbt-git-write",
     risk: "destructive",
     requiredGrant: "git-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
   define({
@@ -243,7 +243,7 @@ export const DBT_CAPABILITIES = [
     pack: "dbt-git-write",
     risk: "write",
     requiredGrant: "git-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
   define({
@@ -251,7 +251,7 @@ export const DBT_CAPABILITIES = [
     pack: "dbt-git-write",
     risk: "destructive",
     requiredGrant: "git-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
   define({
@@ -259,7 +259,7 @@ export const DBT_CAPABILITIES = [
     pack: "dbt-git-write",
     risk: "write",
     requiredGrant: "git-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
   define({
@@ -267,7 +267,7 @@ export const DBT_CAPABILITIES = [
     pack: "dbt-git-write",
     risk: "destructive",
     requiredGrant: "git-write",
-    surfaces: PRODUCT_AGENT_SURFACES,
+    surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
   define({

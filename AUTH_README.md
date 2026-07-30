@@ -521,6 +521,12 @@ external MCP surface, exposing governed dbt executions (`dbt_run_model`,
 `dbt_run_job`, `dbt_cancel_run`). It does not unlock raw SQL writes —
 `sql_execute_query` stays read-only under every scope combination.
 
+The opt-in `git:write` scope works the same way: it maps to the
+`git-write` capability grant, exposing dbt repository mutations (commit,
+branch, and pull-request tools). Git *reads* (`dbt_git_status`, branch and
+PR listings) are part of the default surface so headless agents can tell
+when their edits are uncommitted drafts.
+
 ### Managing connected agents
 
 | Method | Endpoint                                        | Description                     |
