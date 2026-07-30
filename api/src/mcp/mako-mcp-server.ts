@@ -83,7 +83,7 @@ Typical loop:
 4. Verify with run_app after edits (server-side headless render). Pass includeScreenshot: false when you only need status/errors — it is much cheaper than the screenshot.
 5. app_save_version to snapshot/publish.
 
-dbt: read_dbt_project_tree → read/edit files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run). Warehouse-mutating runs (dbt_run_model, dbt_run_job) appear only when the API key has the warehouse:write scope.
+dbt: read_dbt_project_tree → read/edit files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run). Check dbt_git_status before finishing — edits are working-tree drafts until committed. Warehouse-mutating runs (dbt_run_model, dbt_run_job) appear only when the API key has the warehouse:write scope; Git mutations (dbt_commit_to_branch, branches, PRs) only with git:write.
 
 Skills (same knowledge as the in-product agent):
 - list_skills → compact index (workspace + system).
