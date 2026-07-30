@@ -123,11 +123,16 @@ export function createServerConsoleTools({
   userId,
   executionContext,
   chatId,
-  queryAccess = "write",
+  queryAccess: rawQueryAccess = "write",
   surface = "agent",
 }: ServerConsoleToolsOptions) {
   const agentClientId = `agent:${chatId ?? "unknown"}`;
   const runSource = surface === "mcp" ? ("mcp" as const) : ("agent" as const);
+  // Console runs have not adopted per-connection allowAgentWrites
+  // resolution; a query:write ("write-opt-in") credential fails closed to
+  // read here. Only sql_execute_query honors the connection opt-in.
+  const queryAccess: QueryAccess =
+    rawQueryAccess === "write-opt-in" ? "read" : rawQueryAccess;
 
   const loadConsole = async (consoleId: string): Promise<LoadResult> => {
     if (!consoleId) {

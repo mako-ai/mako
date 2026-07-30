@@ -9,7 +9,7 @@ Where [MCP Connectors](/mcp-connectors/) let Mako's agent use *other* systems' t
 
 Want Claude Code or Codex **inside** the Mako UI instead? See [Coding Agents (ACP)](/coding-agents-acp/).
 
-**Data access over MCP is read-only by design.** Agents can never run raw SQL writes against your databases through Mako — there is no scope or setting that enables DML/DDL. The one deliberate, opt-in exception is governed dbt execution: an API key explicitly created with the `warehouse:write` scope may trigger dbt runs (which build model definitions that live in your project, not ad-hoc statements). OAuth sign-in grants remain fully read-only.
+**Data access over MCP is read-only by default, everywhere.** OAuth sign-in grants are *always* read-only — no scope can change that. Writes exist only as narrow, double-gated API-key opt-ins a workspace admin must configure deliberately: governed dbt runs (`warehouse:write` scope), dbt Git mutations (`git:write` scope), and — narrowest of all — SQL writes, which require **both** a key with the `query:write` scope **and** a connection explicitly marked *Allow agent writes*. A default key can touch none of these.
 
 ## Connect by signing in (no API key)
 
@@ -101,7 +101,7 @@ Read-only tools are annotated per the MCP spec (`readOnlyHint`), so well-behaved
 
 ## Security model
 
-- **SQL is read-only, no exceptions.** SQL must be a single `SELECT`/`WITH` statement; enforcement also happens *inside the database* where supported (PostgreSQL/Cloud SQL/Redshift read-only transactions, MySQL `START TRANSACTION READ ONLY`, ClickHouse `readonly=2`). Arbitrary MongoDB JavaScript is not exposed at all — Mongo is discovery/inspection only. There is no scope that unlocks raw DML/DDL over MCP.
+- **SQL is read-only unless double-gated otherwise.** By default SQL must be a single `SELECT`/`WITH` statement; enforcement also happens *inside the database* where supported (PostgreSQL/Cloud SQL/Redshift read-only transactions, MySQL `START TRANSACTION READ ONLY`, ClickHouse `readonly=2`). Arbitrary MongoDB JavaScript is not exposed at all — Mongo is discovery/inspection only. SQL writes require an API key with the `query:write` scope **and** a connection a workspace admin marked `allowAgentWrites` — the key scope alone stays read-only against every other connection, the connection flag alone does nothing for read-scoped keys, and console runs, app data bindings, and materializations stay read-only regardless.
 - **Warehouse mutations are opt-in and governed.** The only write path to a warehouse over MCP is dbt execution (`dbt_run_model` / `dbt_run_job`), which builds committed, reviewable model definitions — never ad-hoc SQL. These tools are hidden unless a workspace admin creates an API key with the `warehouse:write` scope (never granted by default; OAuth grants stay pinned to the read-only set).
 - **Git mutations are opt-in the same way.** dbt repository writes (commits, branches, pull requests) require the `git:write` scope; without it the agent can read Git state but every mutation tool stays hidden. Repository-side protections (protected branches, PR reviews) apply on top.
 - **Non-SQL engines fail closed** (MongoDB shell code, Cloudflare KV): the lexical analyzer cannot validate them, so read-only execution refuses them outright. SQL engines without a session-level read-only mode (BigQuery, MSSQL, Cloudflare D1) rely on the validated single-`SELECT`/`WITH` statement instead.

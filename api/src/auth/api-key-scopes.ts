@@ -10,11 +10,20 @@ import type { CapabilityGrant } from "@mako/agent-tools";
  * grant, whose only external-MCP tools are governed dbt executions
  * (dbt_run_model / dbt_run_job / dbt_cancel_run). `git:write` maps to the
  * `git-write` grant behind the dbt Git mutations (commit, branch, PR).
- * Neither is granted by default; workspace admins opt a key in explicitly.
+ *
+ * `query:write` is double-gated: the scope alone only yields
+ * "write-opt-in" access, which stays read-only against every connection
+ * except those a workspace admin explicitly marked `allowAgentWrites` —
+ * so raw DML/DDL requires BOTH a deliberately-scoped key AND a
+ * deliberately-flagged connection.
+ *
+ * None of the write scopes are granted by default; workspace admins opt a
+ * key in explicitly.
  */
 export const WORKSPACE_API_KEY_SCOPES = [
   "mcp",
   "query:read",
+  "query:write",
   "warehouse:write",
   "git:write",
 ] as const;
@@ -78,13 +87,18 @@ export function hasWorkspaceApiKeyScope(
 
 /**
  * "write" only exists for internal callers (the in-product agent and legacy
- * unscoped REST keys); no grantable scope maps to it.
+ * unscoped REST keys); no grantable scope maps to it. "write-opt-in" is the
+ * most a scoped key can get (via query:write): read-only everywhere except
+ * connections explicitly marked allowAgentWrites, resolved at execution
+ * time by the SQL tool layer. Consumers that have not adopted per-connection
+ * resolution MUST treat "write-opt-in" exactly like "read" — fail closed.
  */
-export type QueryAccess = "none" | "read" | "write";
+export type QueryAccess = "none" | "read" | "write-opt-in" | "write";
 
 export function queryAccessFromScopes(
   scopes: readonly WorkspaceApiKeyScope[],
 ): QueryAccess {
+  if (hasWorkspaceApiKeyScope(scopes, "query:write")) return "write-opt-in";
   if (hasWorkspaceApiKeyScope(scopes, "query:read")) return "read";
   return "none";
 }
@@ -92,7 +106,10 @@ export function queryAccessFromScopes(
 /** Legacy unscoped keys retain their pre-existing REST query capability. */
 export function restQueryAccessFromStoredScopes(value: unknown): QueryAccess {
   if (value === undefined) return "write";
-  return queryAccessFromScopes(resolveWorkspaceApiKeyScopes(value));
+  const access = queryAccessFromScopes(resolveWorkspaceApiKeyScopes(value));
+  // REST query endpoints have not adopted per-connection allowAgentWrites
+  // resolution; until they do, a query:write key is read-only there.
+  return access === "write-opt-in" ? "read" : access;
 }
 
 /**

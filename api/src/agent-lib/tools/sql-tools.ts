@@ -873,6 +873,20 @@ function compactQueryFields(fields: unknown): unknown {
   });
 }
 
+/**
+ * Resolve "write-opt-in" (the query:write scope) against one connection:
+ * write only where a workspace admin set allowAgentWrites, read everywhere
+ * else. A plain "read" key can never be upgraded by the connection flag.
+ * Exported for tests.
+ */
+export function effectiveSqlQueryAccess(
+  queryAccess: QueryAccess,
+  connection: { allowAgentWrites?: boolean },
+): QueryAccess {
+  if (queryAccess !== "write-opt-in") return queryAccess;
+  return connection.allowAgentWrites === true ? "write" : "read";
+}
+
 async function executeQueryImpl(
   connectionId: string,
   requestedDatabase: string | undefined,
@@ -897,6 +911,19 @@ async function executeQueryImpl(
 
   const database = await fetchSqlDatabase(connectionId, workspaceId);
   const dialect = getDialect(database.type);
+  const effectiveAccess = effectiveSqlQueryAccess(queryAccess, database);
+  if (queryAccess === "write-opt-in" && effectiveAccess === "read") {
+    const accessError = sqlReadOnlyAccessError(query);
+    if (accessError) {
+      // Agents relay this verbatim, so the error is the docs: say why AND
+      // how to fix it.
+      throw new Error(
+        `${accessError} This API key has the query:write scope, but this ` +
+          "connection has not opted into agent writes — a workspace admin " +
+          "must enable allowAgentWrites on the connection first.",
+      );
+    }
+  }
 
   // Resolve the target database, falling back to the connection's configured
   // default when the model omits `database`. BigQuery/ClickHouse/MSSQL run
@@ -953,7 +980,7 @@ async function executeQueryImpl(
             ...options,
             executionId: registeredExecutionId,
             signal,
-            readOnly: queryAccess === "read",
+            readOnly: effectiveAccess === "read",
           },
         ),
       { signal },

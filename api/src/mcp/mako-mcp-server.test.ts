@@ -28,10 +28,12 @@ import { StatelessMcpTransport } from "./stateless-transport";
 import {
   capabilityGrantsFromScopes,
   parseWorkspaceApiKeyScopes,
+  queryAccessFromScopes,
   restQueryAccessFromStoredScopes,
   resolveWorkspaceApiKeyScopes,
   type WorkspaceApiKeyScope,
 } from "../auth/api-key-scopes";
+import { effectiveSqlQueryAccess } from "../agent-lib/tools/sql-tools";
 import { sqlReadOnlyAccessError } from "../services/read-only-query.service";
 import {
   assertBridgePolicyCovers,
@@ -84,10 +86,41 @@ async function main() {
     () => parseWorkspaceApiKeyScopes(["mcp", "unknown"]),
     /Unsupported API key scope/,
   );
-  // MCP is read-only by design: query:write is not a grantable scope.
-  assert.throws(
-    () => parseWorkspaceApiKeyScopes(["mcp", "query:write"]),
-    /Unsupported API key scope/,
+  // query:write is double-gated: the scope alone yields "write-opt-in",
+  // which resolves to write ONLY against connections a workspace admin
+  // marked allowAgentWrites — and can never upgrade a plain query:read key.
+  assert.deepEqual(parseWorkspaceApiKeyScopes(["mcp", "query:write"]), [
+    "mcp",
+    "query:write",
+  ]);
+  assert.equal(
+    queryAccessFromScopes(["mcp", "query:read", "query:write"]),
+    "write-opt-in",
+  );
+  assert.equal(queryAccessFromScopes(["mcp", "query:read"]), "read");
+  assert.equal(
+    effectiveSqlQueryAccess("write-opt-in", { allowAgentWrites: true }),
+    "write",
+  );
+  assert.equal(
+    effectiveSqlQueryAccess("write-opt-in", { allowAgentWrites: false }),
+    "read",
+  );
+  assert.equal(effectiveSqlQueryAccess("write-opt-in", {}), "read");
+  assert.equal(
+    effectiveSqlQueryAccess("read", { allowAgentWrites: true }),
+    "read",
+    "the connection flag must never upgrade a read-only key",
+  );
+  assert.equal(
+    effectiveSqlQueryAccess("none", { allowAgentWrites: true }),
+    "none",
+  );
+  // REST endpoints have not adopted per-connection resolution: a
+  // query:write key stays read there.
+  assert.equal(
+    restQueryAccessFromStoredScopes(["mcp", "query:read", "query:write"]),
+    "read",
   );
   // warehouse:write is grantable (opt-in, never default) and maps to the
   // warehouse-write capability grant only.
@@ -526,6 +559,31 @@ async function main() {
       /Invalid arguments/,
       "git:write key reaches dbt_commit_to_branch",
     );
+  }
+
+  // 3a3. query:write annotations: sql_execute_query may write (per-connection
+  //      resolution happens at execution), so it must NOT be annotated
+  //      read-only; console runs fail closed to read and stay annotated so.
+  {
+    const [res] = await exchange(
+      [{ jsonrpc: "2.0", id: "qw-list", method: "tools/list" }],
+      ["mcp", "query:read", "query:write"],
+    );
+    const { tools } = res.result as {
+      tools: { name: string; annotations?: { readOnlyHint?: boolean } }[];
+    };
+    const byName = new Map(tools.map(tool => [tool.name, tool]));
+    assert.equal(
+      byName.get("sql_execute_query")?.annotations?.readOnlyHint,
+      false,
+      "sql_execute_query may write under query:write — no read-only hint",
+    );
+    assert.equal(
+      byName.get("run_console")?.annotations?.readOnlyHint,
+      true,
+      "run_console fails closed to read under query:write",
+    );
+    assert.equal(byName.get("cancel_query")?.annotations?.readOnlyHint, true);
   }
 
   // 3b. Bridge policy covers the live agent inventory — this is how we stay
