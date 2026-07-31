@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useMemo } from "react";
 import {
   Box,
   Button,
@@ -16,6 +16,8 @@ import {
   DECISION_COLOR,
   DECISION_LABEL,
   focusPlanTab,
+  normalizeSubmitPlanInput,
+  normalizeSubmitPlanOutput,
   usePlanStore,
 } from "../store/planStore";
 
@@ -66,34 +68,35 @@ export const PlanCard: React.FC<PlanCardProps> = ({
     if (output) store.markResolved(toolCallId, output);
   }, [toolCallId, chatId, streaming, input, output]);
 
-  // ACP bridge input/output arrive unvalidated (raw agent MCP arguments) —
-  // every field may be missing or mistyped. Defensive reads only: a malformed
-  // plan must degrade, never crash the renderer into the display-error screen.
+  // Props can carry unvalidated ACP payloads (raw agent MCP arguments where
+  // any field may be missing or mistyped) — normalize once, read declaratively.
+  const safeInput = useMemo(
+    () => (input ? normalizeSubmitPlanInput(input) : undefined),
+    [input],
+  );
+  const safeOutput = useMemo(
+    () => (output ? normalizeSubmitPlanOutput(output) : undefined),
+    [output],
+  );
+
   const isStreaming = streaming || plan?.status === "streaming";
-  const rawTitle =
-    plan?.draft.title ?? output?.editedPlan?.title ?? input?.title;
-  const title = typeof rawTitle === "string" ? rawTitle : "Plan";
+  const title =
+    plan?.draft.title ??
+    safeOutput?.editedPlan?.title ??
+    safeInput?.title ??
+    "Plan";
   const stepCount =
-    plan?.draft.todos?.length ??
-    output?.editedPlan?.todos?.length ??
-    input?.todos?.length ??
+    plan?.draft.todos.length ??
+    safeOutput?.editedPlan?.todos.length ??
+    safeInput?.todos.length ??
     0;
-  const rawDecision =
+  const decision =
     plan && plan.status !== "pending" && plan.status !== "streaming"
       ? plan.status
-      : output?.decision;
-  const decision =
-    rawDecision === "approve" ||
-    rawDecision === "request_changes" ||
-    rawDecision === "cancel"
-      ? rawDecision
-      : undefined;
+      : safeOutput?.decision;
   const pending = !decision && !isStreaming;
-  const rawCapabilities =
-    plan?.input.requiredCapabilities ?? input?.requiredCapabilities;
-  const requiredCapabilities = Array.isArray(rawCapabilities)
-    ? rawCapabilities
-    : [];
+  const requiredCapabilities =
+    plan?.input.requiredCapabilities ?? safeInput?.requiredCapabilities ?? [];
 
   const openTab = () => {
     if (!toolCallId) return;

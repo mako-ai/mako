@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from "vitest";
 import type { SubmitPlanInput, SubmitPlanOutput } from "@mako/agent-tools";
-import { normalizeSubmitPlanInput, usePlanStore } from "./planStore";
+import {
+  normalizeSubmitPlanInput,
+  normalizeSubmitPlanOutput,
+  usePlanStore,
+} from "./planStore";
 
 function resetPlanStore(): void {
   usePlanStore.setState({ plans: {} });
@@ -99,7 +103,7 @@ describe("planStore with malformed ACP input", () => {
     expect(usePlanStore.getState().plans["tc-2"]?.draft.todos).toEqual([]);
   });
 
-  it("markResolved ignores garbage decisions and missing editedPlan.todos", () => {
+  it("markResolved ignores garbage decisions and normalizes editedPlan", () => {
     usePlanStore.getState().registerPlan("tc-3", "chat-1", validInput);
 
     usePlanStore.getState().markResolved("tc-3", {
@@ -111,12 +115,41 @@ describe("planStore with malformed ACP input", () => {
     usePlanStore.getState().markResolved("tc-3", {
       success: true,
       decision: "approve",
-      editedPlan: { title: "Edited" },
+      editedPlan: { title: "Edited", todos: "not-an-array" },
     } as unknown as SubmitPlanOutput);
     const plan = usePlanStore.getState().plans["tc-3"];
     expect(plan?.status).toBe("approve");
-    expect(plan?.draft.title).toBe("Edited");
-    // editedPlan.todos omitted → keep the existing draft todos.
-    expect(plan?.draft.todos).toHaveLength(2);
+    expect(plan?.draft).toEqual({
+      title: "Edited",
+      planMarkdown: "",
+      todos: [],
+    });
+  });
+});
+
+describe("normalizeSubmitPlanOutput", () => {
+  it("returns undefined without a usable decision", () => {
+    expect(normalizeSubmitPlanOutput(undefined)).toBeUndefined();
+    expect(normalizeSubmitPlanOutput("approve")).toBeUndefined();
+    expect(normalizeSubmitPlanOutput({ decision: "42" })).toBeUndefined();
+  });
+
+  it("normalizes a valid output including a malformed editedPlan", () => {
+    expect(
+      normalizeSubmitPlanOutput({
+        decision: "request_changes",
+        feedback: "tighter scope",
+        editedPlan: { title: "Edited", todos: [{ content: "Step" }, null] },
+      }),
+    ).toEqual({
+      success: true,
+      decision: "request_changes",
+      feedback: "tighter scope",
+      editedPlan: {
+        title: "Edited",
+        planMarkdown: "",
+        todos: [{ content: "Step", status: "pending" }],
+      },
+    });
   });
 });

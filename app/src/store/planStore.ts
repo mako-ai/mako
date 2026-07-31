@@ -141,8 +141,9 @@ const normalizeTodos = (todos: unknown): PlanTodo[] => {
 /**
  * Desktop ACP forwards raw agent tool arguments with no schema validation
  * (mako-desktop MCP → bridge job → renderer), so any field may be missing or
- * of the wrong type. Coerce to a well-formed SubmitPlanInput so a malformed
- * plan can never crash the plan card / tab (top-level display error).
+ * of the wrong type — the same goes for mid-stream partial input. Coerce to a
+ * well-formed SubmitPlanInput once at the boundary; everything downstream
+ * (store, card, tab) can then trust the shape.
  */
 export const normalizeSubmitPlanInput = (input: unknown): SubmitPlanInput => {
   const raw = (input && typeof input === "object" ? input : {}) as Partial<
@@ -161,27 +162,42 @@ export const normalizeSubmitPlanInput = (input: unknown): SubmitPlanInput => {
   };
 };
 
+/**
+ * Same boundary treatment for tool outputs (hydrated from history / coerced
+ * ACP MCP results). Returns undefined when there is no usable decision —
+ * callers treat that as "not resolved".
+ */
+export const normalizeSubmitPlanOutput = (
+  output: unknown,
+): SubmitPlanOutput | undefined => {
+  const raw = (output && typeof output === "object" ? output : {}) as Record<
+    string,
+    unknown
+  >;
+  const decision = raw.decision;
+  if (
+    decision !== "approve" &&
+    decision !== "request_changes" &&
+    decision !== "cancel"
+  ) {
+    return undefined;
+  }
+  const result: SubmitPlanOutput = { success: raw.success !== false, decision };
+  if (typeof raw.feedback === "string") result.feedback = raw.feedback;
+  if (raw.editedPlan && typeof raw.editedPlan === "object") {
+    const { title, planMarkdown, todos } = normalizeSubmitPlanInput(
+      raw.editedPlan,
+    );
+    result.editedPlan = { title, planMarkdown, todos };
+  }
+  return result;
+};
+
+/** Inputs reaching this are already normalized — todos is always an array. */
 const draftFromInput = (input: SubmitPlanInput): PlanDraft => ({
   title: input.title,
   planMarkdown: input.planMarkdown,
-  todos: (input.todos ?? []).map(t => ({ status: "pending" as const, ...t })),
-});
-
-const draftFromPartialInput = (
-  partial: PartialSubmitPlanInput | undefined,
-): PlanDraft => ({
-  title: typeof partial?.title === "string" ? partial.title : "",
-  planMarkdown:
-    typeof partial?.planMarkdown === "string" ? partial.planMarkdown : "",
-  todos: (Array.isArray(partial?.todos) ? partial.todos : [])
-    .filter((t): t is Partial<PlanTodo> => Boolean(t))
-    .map(t => ({
-      ...(typeof t.id === "string" ? { id: t.id } : {}),
-      content: typeof t.content === "string" ? t.content : "",
-      status: TODO_STATUSES.has(t.status as PlanTodo["status"])
-        ? (t.status as PlanTodo["status"])
-        : ("pending" as const),
-    })),
+  todos: input.todos.map(t => ({ status: "pending" as const, ...t })),
 });
 
 export const usePlanStore = create<PlanStore>()(
@@ -192,16 +208,12 @@ export const usePlanStore = create<PlanStore>()(
       setStreamingInput: (toolCallId, chatId, partial) => {
         const existing = get().plans[toolCallId];
         if (existing && existing.status !== "streaming") return;
+        const input = normalizeSubmitPlanInput(partial);
         set(state => {
-          const draft = draftFromPartialInput(partial);
           state.plans[toolCallId] = {
             chatId,
-            input: {
-              title: draft.title,
-              planMarkdown: draft.planMarkdown,
-              todos: draft.todos,
-            },
-            draft,
+            input,
+            draft: draftFromInput(input),
             status: "streaming",
           };
         });
@@ -310,36 +322,17 @@ export const usePlanStore = create<PlanStore>()(
         ) {
           return;
         }
-        // ACP outputs are unvalidated (coerced MCP text) — ignore garbage.
-        if (
-          output.decision !== "approve" &&
-          output.decision !== "request_changes" &&
-          output.decision !== "cancel"
-        ) {
-          return;
-        }
+        // Outputs are unvalidated at this boundary (coerced ACP MCP text) —
+        // a payload without a usable decision is simply not a resolution.
+        const safe = normalizeSubmitPlanOutput(output);
+        if (!safe) return;
         resolvers.delete(toolCallId);
         set(state => {
           const entry = state.plans[toolCallId];
           if (!entry) return;
-          entry.status = output.decision;
-          entry.output = output;
-          if (output.editedPlan && typeof output.editedPlan === "object") {
-            entry.draft = {
-              title:
-                typeof output.editedPlan.title === "string"
-                  ? output.editedPlan.title
-                  : entry.draft.title,
-              planMarkdown:
-                typeof output.editedPlan.planMarkdown === "string"
-                  ? output.editedPlan.planMarkdown
-                  : entry.draft.planMarkdown,
-              todos:
-                output.editedPlan.todos === undefined
-                  ? entry.draft.todos
-                  : normalizeTodos(output.editedPlan.todos),
-            };
-          }
+          entry.status = safe.decision;
+          entry.output = safe;
+          if (safe.editedPlan) entry.draft = safe.editedPlan;
         });
       },
     })),
