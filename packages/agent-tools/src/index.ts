@@ -150,7 +150,11 @@ export {
 export { clientScreenshotTools } from "./screenshot-tools";
 export type { CaptureScreenshotInput } from "./screenshot-tools";
 
-export { clientPlanTools, HITL_TOOL_JSON_SCHEMAS } from "./plan-tools";
+export {
+  clientPlanTools,
+  HITL_TOOL_JSON_SCHEMAS,
+  validateHitlToolArguments,
+} from "./plan-tools";
 export type {
   ClarifyingQuestion,
   AskClarifyingQuestionsInput,
@@ -159,6 +163,7 @@ export type {
   SubmitPlanInput,
   SubmitPlanOutput,
   PlanDecision,
+  HitlToolName,
 } from "./plan-tools";
 
 export {

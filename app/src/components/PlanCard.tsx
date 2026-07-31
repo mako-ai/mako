@@ -66,21 +66,34 @@ export const PlanCard: React.FC<PlanCardProps> = ({
     if (output) store.markResolved(toolCallId, output);
   }, [toolCallId, chatId, streaming, input, output]);
 
+  // ACP bridge input/output arrive unvalidated (raw agent MCP arguments) —
+  // every field may be missing or mistyped. Defensive reads only: a malformed
+  // plan must degrade, never crash the renderer into the display-error screen.
   const isStreaming = streaming || plan?.status === "streaming";
-  const title =
-    plan?.draft.title ?? output?.editedPlan?.title ?? input?.title ?? "Plan";
+  const rawTitle =
+    plan?.draft.title ?? output?.editedPlan?.title ?? input?.title;
+  const title = typeof rawTitle === "string" ? rawTitle : "Plan";
   const stepCount =
-    plan?.draft.todos.length ??
-    output?.editedPlan?.todos.length ??
-    input?.todos.length ??
+    plan?.draft.todos?.length ??
+    output?.editedPlan?.todos?.length ??
+    input?.todos?.length ??
     0;
-  const decision =
+  const rawDecision =
     plan && plan.status !== "pending" && plan.status !== "streaming"
       ? plan.status
       : output?.decision;
+  const decision =
+    rawDecision === "approve" ||
+    rawDecision === "request_changes" ||
+    rawDecision === "cancel"
+      ? rawDecision
+      : undefined;
   const pending = !decision && !isStreaming;
-  const requiredCapabilities =
-    plan?.input.requiredCapabilities ?? input?.requiredCapabilities ?? [];
+  const rawCapabilities =
+    plan?.input.requiredCapabilities ?? input?.requiredCapabilities;
+  const requiredCapabilities = Array.isArray(rawCapabilities)
+    ? rawCapabilities
+    : [];
 
   const openTab = () => {
     if (!toolCallId) return;

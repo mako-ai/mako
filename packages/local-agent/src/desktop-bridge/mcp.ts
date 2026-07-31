@@ -2,7 +2,10 @@
  * Minimal stateless MCP (JSON-RPC) server for Desktop-only tools.
  * Claude ACP attaches this as `mako-desktop` over loopback HTTP.
  */
-import { HITL_TOOL_JSON_SCHEMAS } from "@mako/agent-tools";
+import {
+  HITL_TOOL_JSON_SCHEMAS,
+  validateHitlToolArguments,
+} from "@mako/agent-tools";
 
 import {
   desktopBridgeRegistry,
@@ -94,11 +97,19 @@ async function callTool(
   // update may still call it — same job as run_app({ rebuild: false }).
   const legacyPreviewErrors = rawName === "get_preview_errors";
   const name = legacyPreviewErrors ? "run_app" : rawName;
-  const args = legacyPreviewErrors
-    ? { ...rawArgs, rebuild: false }
-    : rawArgs;
+  let args = legacyPreviewErrors ? { ...rawArgs, rebuild: false } : rawArgs;
   if (!TOOL_NAMES.has(name as DesktopBridgeToolName)) {
     return { text: `Unknown tool: ${name}`, isError: true };
+  }
+  // HITL payloads render directly in the Desktop dock — bounce malformed
+  // arguments back to the agent as a correctable tool error instead of
+  // forwarding a shape the renderer cannot display.
+  if (isDesktopHitlTool(name)) {
+    const validated = validateHitlToolArguments(name, args);
+    if (!validated.ok) {
+      return { text: validated.error, isError: true };
+    }
+    args = validated.data;
   }
   try {
     const result = await desktopBridgeRegistry.enqueue(

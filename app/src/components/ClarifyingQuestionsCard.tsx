@@ -203,7 +203,11 @@ const OptionRow: React.FC<OptionRowProps> = ({
 export const ClarifyingQuestionsCard: React.FC<
   ClarifyingQuestionsCardProps
 > = ({ input, output, onResolve, docked }) => {
-  const questions = useMemo(() => input?.questions ?? [], [input]);
+  // ACP bridge input is unvalidated raw agent arguments — never trust the shape.
+  const questions = useMemo(
+    () => (Array.isArray(input?.questions) ? input.questions : []),
+    [input],
+  );
   const [answers, setAnswers] = useState<AnswerMap>({});
   const [step, setStep] = useState(0);
   const advanceTimerRef = useRef<number | null>(null);

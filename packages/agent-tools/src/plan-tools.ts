@@ -150,6 +150,36 @@ export const HITL_TOOL_JSON_SCHEMAS = {
   submit_plan: toMcpJsonSchema(submitPlanSchema),
 } as const;
 
+export type HitlToolName = keyof typeof HITL_TOOL_JSON_SCHEMAS;
+
+/**
+ * Validate raw MCP arguments for the HITL pair. ACP agents call these tools
+ * with unvalidated JSON — a malformed payload must be bounced back to the
+ * agent as a tool error it can correct, never forwarded to the Desktop
+ * renderer (where a missing `todos`/`questions` array crashes the card).
+ */
+export function validateHitlToolArguments(
+  tool: HitlToolName,
+  args: unknown,
+):
+  | { ok: true; data: Record<string, unknown> }
+  | { ok: false; error: string } {
+  const schema =
+    tool === "submit_plan" ? submitPlanSchema : askClarifyingQuestionsSchema;
+  const parsed = schema.safeParse(args);
+  if (parsed.success) {
+    return { ok: true, data: parsed.data as Record<string, unknown> };
+  }
+  const issues = parsed.error.issues
+    .slice(0, 5)
+    .map(i => `${i.path.join(".") || "(root)"}: ${i.message}`)
+    .join("; ");
+  return {
+    ok: false,
+    error: `Invalid ${tool} arguments — ${issues}. Fix the payload to match the tool's input schema and call ${tool} again.`,
+  };
+}
+
 export type ClarifyingQuestion = z.infer<typeof clarifyingQuestionSchema>;
 export type AskClarifyingQuestionsInput = z.infer<
   typeof askClarifyingQuestionsSchema

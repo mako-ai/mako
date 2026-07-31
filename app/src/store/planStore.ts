@@ -111,23 +111,76 @@ interface PlanActions {
 
 type PlanStore = PlanState & PlanActions;
 
+const TODO_STATUSES = new Set<PlanTodo["status"]>([
+  "pending",
+  "in_progress",
+  "completed",
+  "cancelled",
+]);
+
+const CAPABILITY_GRANTS = new Set([
+  "artifact-write",
+  "warehouse-write",
+  "git-write",
+  "schedule-write",
+]);
+
+const normalizeTodos = (todos: unknown): PlanTodo[] => {
+  if (!Array.isArray(todos)) return [];
+  return todos
+    .filter((t): t is Partial<PlanTodo> => Boolean(t) && typeof t === "object")
+    .map(t => ({
+      ...(typeof t.id === "string" ? { id: t.id } : {}),
+      content: typeof t.content === "string" ? t.content : "",
+      status: TODO_STATUSES.has(t.status as PlanTodo["status"])
+        ? (t.status as PlanTodo["status"])
+        : ("pending" as const),
+    }));
+};
+
+/**
+ * Desktop ACP forwards raw agent tool arguments with no schema validation
+ * (mako-desktop MCP → bridge job → renderer), so any field may be missing or
+ * of the wrong type. Coerce to a well-formed SubmitPlanInput so a malformed
+ * plan can never crash the plan card / tab (top-level display error).
+ */
+export const normalizeSubmitPlanInput = (input: unknown): SubmitPlanInput => {
+  const raw = (input && typeof input === "object" ? input : {}) as Partial<
+    Record<keyof SubmitPlanInput, unknown>
+  >;
+  const requiredCapabilities = Array.isArray(raw.requiredCapabilities)
+    ? (raw.requiredCapabilities.filter(
+        g => typeof g === "string" && CAPABILITY_GRANTS.has(g),
+      ) as SubmitPlanInput["requiredCapabilities"])
+    : undefined;
+  return {
+    title: typeof raw.title === "string" ? raw.title : "",
+    planMarkdown: typeof raw.planMarkdown === "string" ? raw.planMarkdown : "",
+    todos: normalizeTodos(raw.todos),
+    ...(requiredCapabilities?.length ? { requiredCapabilities } : {}),
+  };
+};
+
 const draftFromInput = (input: SubmitPlanInput): PlanDraft => ({
   title: input.title,
   planMarkdown: input.planMarkdown,
-  todos: input.todos.map(t => ({ status: "pending" as const, ...t })),
+  todos: (input.todos ?? []).map(t => ({ status: "pending" as const, ...t })),
 });
 
 const draftFromPartialInput = (
   partial: PartialSubmitPlanInput | undefined,
 ): PlanDraft => ({
-  title: partial?.title ?? "",
-  planMarkdown: partial?.planMarkdown ?? "",
-  todos: (partial?.todos ?? [])
+  title: typeof partial?.title === "string" ? partial.title : "",
+  planMarkdown:
+    typeof partial?.planMarkdown === "string" ? partial.planMarkdown : "",
+  todos: (Array.isArray(partial?.todos) ? partial.todos : [])
     .filter((t): t is Partial<PlanTodo> => Boolean(t))
     .map(t => ({
-      ...(t.id !== undefined ? { id: t.id } : {}),
-      content: t.content ?? "",
-      status: t.status ?? "pending",
+      ...(typeof t.id === "string" ? { id: t.id } : {}),
+      content: typeof t.content === "string" ? t.content : "",
+      status: TODO_STATUSES.has(t.status as PlanTodo["status"])
+        ? (t.status as PlanTodo["status"])
+        : ("pending" as const),
     })),
 });
 
@@ -160,11 +213,13 @@ export const usePlanStore = create<PlanStore>()(
         // a half-streamed plan is never persisted as a user draft; once
         // pending, user edits are preserved.
         if (existing && existing.status !== "streaming") return;
+        // ACP bridge input is unvalidated — never trust the shape.
+        const safe = normalizeSubmitPlanInput(input);
         set(state => {
           state.plans[toolCallId] = {
             chatId,
-            input,
-            draft: draftFromInput(input),
+            input: safe,
+            draft: draftFromInput(safe),
             status: "pending",
           };
         });
@@ -255,17 +310,34 @@ export const usePlanStore = create<PlanStore>()(
         ) {
           return;
         }
+        // ACP outputs are unvalidated (coerced MCP text) — ignore garbage.
+        if (
+          output.decision !== "approve" &&
+          output.decision !== "request_changes" &&
+          output.decision !== "cancel"
+        ) {
+          return;
+        }
         resolvers.delete(toolCallId);
         set(state => {
           const entry = state.plans[toolCallId];
           if (!entry) return;
           entry.status = output.decision;
           entry.output = output;
-          if (output.editedPlan) {
+          if (output.editedPlan && typeof output.editedPlan === "object") {
             entry.draft = {
-              title: output.editedPlan.title,
-              planMarkdown: output.editedPlan.planMarkdown,
-              todos: output.editedPlan.todos.map(t => ({ ...t })),
+              title:
+                typeof output.editedPlan.title === "string"
+                  ? output.editedPlan.title
+                  : entry.draft.title,
+              planMarkdown:
+                typeof output.editedPlan.planMarkdown === "string"
+                  ? output.editedPlan.planMarkdown
+                  : entry.draft.planMarkdown,
+              todos:
+                output.editedPlan.todos === undefined
+                  ? entry.draft.todos
+                  : normalizeTodos(output.editedPlan.todos),
             };
           }
         });
