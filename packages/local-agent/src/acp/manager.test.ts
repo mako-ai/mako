@@ -100,6 +100,50 @@ describe("AcpSessionManager with mock agent", () => {
     await manager.closeSession(session.id);
   });
 
+  it("forwards image attachments as ACP image ContentBlocks", async () => {
+    const events: AcpBridgeEvent[] = [];
+    const unsub = manager.subscribeAll(event => {
+      events.push(event);
+    });
+
+    const session = await manager.createSession({
+      providerId: "claude",
+      cwd: process.cwd(),
+      title: "image-test",
+    });
+
+    // 1x1 transparent PNG.
+    const pngBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const result = await manager.prompt(session.id, "what is in this image?", [
+      { data: pngBase64, mimeType: "image/png" },
+    ]);
+    assert.equal(result.stopReason, "end_turn");
+
+    const texts = events
+      .filter(e => e.type === "session_update")
+      .map(e => {
+        const update = e.update as {
+          sessionUpdate?: string;
+          content?: { type?: string; text?: string };
+        };
+        if (
+          update.sessionUpdate === "agent_message_chunk" &&
+          update.content?.type === "text"
+        ) {
+          return update.content.text || "";
+        }
+        return "";
+      })
+      .join("");
+
+    assert.match(texts, /Mock agent received: what is in this image\?/);
+    assert.match(texts, /\[images:1\]/);
+
+    unsub();
+    await manager.closeSession(session.id);
+  });
+
   it("attaches Mako MCP on session/new when requested", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () =>

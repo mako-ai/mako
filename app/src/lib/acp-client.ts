@@ -7,6 +7,7 @@ import type {
   AcpAuthenticateResult,
   AcpBridgeEvent,
   AcpEnsureAdapterResult,
+  AcpPromptImage,
   AcpProviderId,
   AcpSessionInfo,
   AcpStatus,
@@ -141,10 +142,11 @@ export const acpClient = {
   async prompt(
     sessionId: string,
     text: string,
+    images?: AcpPromptImage[],
   ): Promise<{ stopReason: string }> {
     const body = await localAgentClient.post<Envelope<{ stopReason: string }>>(
       `/acp/sessions/${encodeURIComponent(sessionId)}/prompt`,
-      { text },
+      images?.length ? { text, images } : { text },
     );
     return unwrap(body, "Prompt failed");
   },

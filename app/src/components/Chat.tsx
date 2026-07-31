@@ -33,6 +33,7 @@ import {
   DefaultChatTransport,
   lastAssistantMessageIsCompleteWithApprovalResponses,
   lastAssistantMessageIsCompleteWithToolCalls,
+  type FileUIPart,
 } from "ai";
 import { useMcpStore } from "../store/mcpStore";
 import { api } from "../api/client";
@@ -298,7 +299,7 @@ const Chat: React.FC<ChatProps> = ({
   const manualStopRequestedRef = useRef(false);
   const drainQueuedPromptAfterTurnRef = useRef<(() => void) | null>(null);
   const sendViaLocalAcpRef = useRef<
-    ((text: string) => Promise<boolean>) | null
+    ((text: string, files?: FileUIPart[]) => Promise<boolean>) | null
   >(null);
   const localAcpAbortRef = useRef<AbortController | null>(null);
   const localAcpBindingRef = useRef<{
@@ -715,7 +716,7 @@ const Chat: React.FC<ChatProps> = ({
   // Generation counter: overlapping send/abort must not clear busy while an
   // older turn is still awaiting the Local Agent (that race poisoned Skill
   // cards as "Interrupted" and surfaced "Session is already processing").
-  sendViaLocalAcpRef.current = async (text: string) => {
+  sendViaLocalAcpRef.current = async (text: string, files?: FileUIPart[]) => {
     const modelId = modelIdRef.current;
     if (!modelId || !isLocalAcpModelId(modelId)) return false;
 
@@ -741,6 +742,7 @@ const Chat: React.FC<ChatProps> = ({
       await runLocalAcpChatTurn({
         modelId,
         text,
+        files,
         workspaceId: workspaceIdRef.current,
         chatId: chatIdRef.current,
         preferredSessionId:
