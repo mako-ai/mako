@@ -39,7 +39,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     { chatId: context.chatId },
   );
   const flowTools = createFlowTools(workspaceId, context.toolExecutionContext);
-  const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
+  const selfDirectiveTools = createSelfDirectiveTools(workspaceId, userId);
   const skillTools = createSkillTools(workspaceId, userId);
   const consoleSearchTools = createConsoleSearchTools(
     workspaceId,

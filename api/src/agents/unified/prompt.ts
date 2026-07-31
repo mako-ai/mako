@@ -77,6 +77,12 @@ When you discover important schema quirks, user preferences, or useful rules, sa
 \`update_self_directive\`. Check \`read_self_directive\` before updating to avoid duplicates.
 This applies to all modes — console, dashboard, and flow work alike.
 
+The self-directive is ALWAYS loaded, so keep it a terse index of durable rules. Detailed or
+situational knowledge (long playbooks, per-table quirks, worked examples) belongs in skills,
+which load on demand: use the \`archive_section\` operation to move a section into a skill and
+leave a one-line pointer. When updates warn the directive is nearly full, archive detail first,
+then compact what remains.
+
 ---
 
 ## Console Guidance

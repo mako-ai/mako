@@ -9,7 +9,7 @@ The self-directive is the AI agent's persistent memory within a workspace. It st
 
 Each workspace has a self-directive — a text document (up to 10,000 characters) that the agent can read and update. It persists across all chat sessions in that workspace.
 
-Reads and updates report the current size and remaining capacity. Once the directive passes 80% of the limit, successful updates include a warning nudging the agent to compact it (merge overlapping rules, drop stale notes) before the cap is reached. An update that would exceed the limit is rejected with instructions to rewrite the directive concisely using `set` rather than retrying.
+Reads and updates report the current size and remaining capacity. Once the directive passes 80% of the limit, successful updates include a warning nudging the agent to free space before the cap is reached. An update that would exceed the limit is rejected with one-step recovery instructions rather than failing repeatedly.
 
 When the agent starts a conversation, it can read the self-directive to recall what it learned before. When it discovers something new — like a column naming convention, a data type gotcha, or a user preference — it writes it to the self-directive.
 
@@ -24,6 +24,7 @@ When the agent starts a conversation, it can read the self-directive to recall w
 |                         | `find_and_replace` | Replace a specific section      |
 |                         | `insert_after`     | Insert content after a marker   |
 |                         | `delete_section`   | Remove a section                |
+|                         | `archive_section`  | Move a section into a skill     |
 
 ## What Gets Stored
 
@@ -44,7 +45,18 @@ Typical self-directive content:
 
 This means the agent gets faster and more accurate over time for recurring work in the same workspace.
 
+## When Memory Fills Up
+
+The self-directive is injected into every prompt, so it stays deliberately small. Skills are the overflow tier: unbounded in count, loaded only when relevant. The two tiers together follow the same pattern as memory systems in OpenClaw, Hermes, and MemGPT — a small always-loaded core plus an on-demand archive, with an eviction path between them.
+
+`archive_section` is that eviction path. It moves a section of the directive into a workspace skill in one atomic step:
+
+1. The section text is saved as a new skill (with a `loadWhen` trigger and optional entities for retrieval). Archiving never overwrites an existing skill.
+2. The section is removed from the directive, leaving a one-line pointer such as `- → skill 'stripe_revenue': loading Stripe revenue quirks`.
+
+The skill is saved before the directive is rewritten, so a failure partway through can duplicate a section but never lose it. Detailed knowledge remains available in future sessions via skill retrieval; the directive keeps only the terse, always-relevant rules.
+
 ## Related: Skills
 
-The self-directive is always loaded. For playbooks that should only fire under specific conditions, use [Skills](/skills/) — named, workspace-scoped procedures that Mako retrieves on demand based on a trigger phrase and entity/semantic match.
+For playbooks that should only fire under specific conditions, use [Skills](/skills/) — named, workspace-scoped procedures that Mako retrieves on demand based on a trigger phrase and entity/semantic match.
 

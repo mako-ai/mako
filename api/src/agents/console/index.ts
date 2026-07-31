@@ -215,7 +215,10 @@ export const consoleAgentFactory: AgentFactory = (
     context.toolExecutionContext,
     { chatId: context.chatId },
   );
-  const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
+  const selfDirectiveTools = createSelfDirectiveTools(
+    workspaceId,
+    context.userId,
+  );
   const skillTools = createSkillTools(workspaceId, context.userId);
   const consoleSearchTools = createConsoleSearchTools(
     workspaceId,

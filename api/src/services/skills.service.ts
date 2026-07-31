@@ -218,6 +218,21 @@ export async function saveSkill(
   };
 }
 
+/**
+ * Existence check that does NOT bump useCount (unlike loadSkill). Used by
+ * self-directive archiving to refuse clobbering an unrelated skill.
+ */
+export async function skillExists(
+  workspaceId: string,
+  name: string,
+): Promise<boolean> {
+  const hit = await Skill.exists({
+    workspaceId: new Types.ObjectId(workspaceId),
+    name: name.trim(),
+  });
+  return hit !== null;
+}
+
 export async function deleteSkill(
   workspaceId: string,
   name: string,

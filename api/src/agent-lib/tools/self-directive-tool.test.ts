@@ -14,6 +14,8 @@ import assert from "node:assert/strict";
 import {
   MAX_SELF_DIRECTIVE_LENGTH,
   applySelfDirectiveOperation,
+  buildSkillPointer,
+  planArchiveSection,
   selfDirectiveCompactionWarning,
   selfDirectiveUsage,
 } from "./self-directive-tool";
@@ -163,11 +165,100 @@ const CURRENT = [
   const warning = selfDirectiveCompactionWarning(8000);
   assert.ok(warning);
   assert.match(warning, /80% full/);
-  assert.match(warning, /Compact it now with 'set'/);
+  assert.match(warning, /archive_section/);
 
   const nearCap = selfDirectiveCompactionWarning(9990);
   assert.ok(nearCap);
   assert.match(nearCap, /9990\/10000/);
 }
 
+// --- archive_section planning: pointer replaces section, spacing cleaned ---
+{
+  const directive = [
+    "# Rules",
+    "- workspace_id filter always",
+    "",
+    "## Stripe quirks",
+    "- amounts in cents",
+    "- refunds are negative rows",
+    "",
+    "- prefer CTEs",
+  ].join("\n");
+  const section = [
+    "## Stripe quirks",
+    "- amounts in cents",
+    "- refunds are negative rows",
+  ].join("\n");
+
+  const plan = planArchiveSection(directive, {
+    find: section,
+    skillName: "stripe_quirks",
+    loadWhen: "querying Stripe charges or refunds",
+    keepPointer: true,
+  });
+  assert.equal(plan.ok, true);
+  if (plan.ok) {
+    assert.equal(plan.section, section);
+    assert.match(
+      plan.newValue,
+      /- → skill 'stripe_quirks': querying Stripe charges or refunds/,
+    );
+    assert.doesNotMatch(plan.newValue, /amounts in cents/);
+    // Surrounding content intact, no triple blank lines.
+    assert.match(plan.newValue, /workspace_id filter always/);
+    assert.match(plan.newValue, /prefer CTEs/);
+    assert.doesNotMatch(plan.newValue, /\n{3,}/);
+  }
+
+  // keepPointer: false removes the section without a trace.
+  const silent = planArchiveSection(directive, {
+    find: section,
+    skillName: "stripe_quirks",
+    loadWhen: "querying Stripe",
+    keepPointer: false,
+  });
+  assert.equal(silent.ok, true);
+  if (silent.ok) assert.doesNotMatch(silent.newValue, /skill 'stripe_quirks'/);
+
+  // Section not present → error, nothing planned.
+  const miss = planArchiveSection(directive, {
+    find: "## Not there",
+    skillName: "x",
+    loadWhen: "y",
+    keepPointer: true,
+  });
+  assert.equal(miss.ok, false);
+  if (!miss.ok) assert.match(miss.error, /Text not found/);
+}
+
+// --- archiving must actually shrink an at-cap directive ---------------------
+{
+  const atCap = "x".repeat(MAX_SELF_DIRECTIVE_LENGTH);
+  const plan = planArchiveSection(atCap, {
+    find: "xx",
+    skillName: "tiny",
+    loadWhen: "a".repeat(200),
+    keepPointer: true,
+  });
+  // Removing 2 chars but inserting a ~115-char pointer would overflow.
+  assert.equal(plan.ok, false);
+  if (!plan.ok) assert.match(plan.error, /archive a larger section/);
+}
+
+// --- pointer builder truncates long triggers -------------------------------
+{
+  assert.equal(
+    buildSkillPointer("stripe_quirks", "querying Stripe"),
+    "- → skill 'stripe_quirks': querying Stripe",
+  );
+  const long = buildSkillPointer("s", "z".repeat(200));
+  assert.ok(long.length < 130);
+  assert.match(long, /\.\.\.$/);
+}
+
 console.log("self-directive-tool.test.ts passed");
+// The tool module now imports skills.service, whose transitive imports hold
+// live handles (embedding client, model registration); explicit exit keeps
+// the tsx test chain moving.
+// eslint-disable-next-line no-process-exit
+process.exit(0);

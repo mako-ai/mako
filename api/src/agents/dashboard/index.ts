@@ -36,7 +36,10 @@ export const dashboardAgentMeta: AgentMeta = {
 export function dashboardAgentFactory(context: AgentContext): AgentConfig {
   const { workspaceId } = context;
 
-  const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
+  const selfDirectiveTools = createSelfDirectiveTools(
+    workspaceId,
+    context.userId,
+  );
   const consoleSearchTools = createConsoleSearchTools(
     workspaceId,
     context.toolExecutionContext,
