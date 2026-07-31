@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   acpSupportsAdapterEnsure,
   acpSupportsModelWarm,
+  acpSupportsPromptImages,
   acpSupportsWorkspaceMcp,
 } from "./acp-capabilities";
 import type { AcpStatus } from "./acp-types";
@@ -31,6 +32,16 @@ describe("acp capabilities", () => {
     );
     expect(
       acpSupportsAdapterEnsure(status({ version: 3, adapterEnsure: true })),
+    ).toBe(true);
+  });
+
+  it("gates prompt images on bridge ≥ 8 or the promptImages flag", () => {
+    expect(acpSupportsPromptImages(null)).toBe(false);
+    expect(acpSupportsPromptImages(status(undefined))).toBe(false);
+    expect(acpSupportsPromptImages(status({ version: 7 }))).toBe(false);
+    expect(acpSupportsPromptImages(status({ version: 8 }))).toBe(true);
+    expect(
+      acpSupportsPromptImages(status({ version: 7, promptImages: true })),
     ).toBe(true);
   });
 });

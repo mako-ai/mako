@@ -5,6 +5,7 @@ import type { Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { isAcpProviderId } from "./providers";
 import { acpSessionManager } from "./manager";
+import { parsePromptImages } from "./prompt-images";
 import type {
   CreateAcpSessionRequest,
   PermissionResponseRequest,
@@ -126,7 +127,8 @@ export function registerAcpRoutes(app: Hono): void {
                 })
                 .join("")
             : "";
-      const result = await acpSessionManager.prompt(sessionId, text);
+      const images = parsePromptImages(body?.images);
+      const result = await acpSessionManager.prompt(sessionId, text, images);
       return c.json({ success: true, data: result });
     } catch (error) {
       const message =

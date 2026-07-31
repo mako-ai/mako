@@ -118,7 +118,7 @@ export interface AcpStatusResponse {
    * agent (raw "ACP connection closed" with no rewrite / no terminal auth).
    */
   acpBridge?: {
-    version: 3 | 4 | 5 | 6 | 7;
+    version: 3 | 4 | 5 | 6 | 7 | 8;
     terminalAuth: true;
     mcpProbe: true;
     reconnect: true;
@@ -129,6 +129,8 @@ export interface AcpStatusResponse {
     adapterEnsure?: true;
     /** Local Agent can warm model catalogs via a throwaway session/new. */
     modelWarm?: true;
+    /** Prompt route accepts `images` and forwards ACP image ContentBlocks. */
+    promptImages?: true;
   };
   /** Last Claude/Codex adapter stderr snippet (when a connection died). */
   lastAdapterError?: string | null;
@@ -205,9 +207,19 @@ export interface SetAcpSessionConfigRequest {
   value: string | boolean;
 }
 
+/** Image attachment forwarded to the ACP adapter as an `image` ContentBlock. */
+export interface AcpPromptImage {
+  /** Base64-encoded payload (no `data:` URL prefix). */
+  data: string;
+  /** e.g. `image/png` */
+  mimeType: string;
+  uri?: string;
+}
+
 export interface PromptAcpSessionRequest {
   text?: string;
   content?: unknown[];
+  images?: AcpPromptImage[];
 }
 
 export interface PermissionResponseRequest {

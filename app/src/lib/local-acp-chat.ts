@@ -3,9 +3,11 @@
  * Tool calls become `dynamic-tool` UIMessage parts so Chat uses the same
  * StreamingToolCard UI as the in-app agent.
  */
-import type { UIMessage } from "ai";
+import type { FileUIPart, UIMessage } from "ai";
 import { generateObjectId } from "../utils/objectId";
 import { acpClient } from "./acp-client";
+import { acpSupportsPromptImages } from "./acp-capabilities";
+import { fileUiPartsToAcpImages } from "./local-acp-images";
 import {
   isLocalAcpModelId,
   localAcpModelIdToProviderId,
@@ -233,6 +235,8 @@ export async function ensureAcpSessionForProvider(
 export interface LocalAcpChatTurnArgs {
   modelId: string;
   text: string;
+  /** Composer image attachments (base64 data URLs) — sent as ACP image blocks. */
+  files?: FileUIPart[];
   workspaceId?: string;
   /** Mako History chat id — when set, transcript is persisted after the turn. */
   chatId?: string;
@@ -257,6 +261,7 @@ export async function runLocalAcpChatTurn(
   const {
     modelId,
     text,
+    files,
     workspaceId,
     chatId,
     preferredSessionId,
@@ -272,7 +277,8 @@ export async function runLocalAcpChatTurn(
   }
 
   const trimmed = text.trim();
-  if (!trimmed) return true;
+  const { images, skipped: skippedAttachments } = fileUiPartsToAcpImages(files);
+  if (!trimmed && images.length === 0 && skippedAttachments === 0) return true;
 
   // Mirror message updates synchronously so we can persist after the turn
   // without racing React's batched setState flush.
@@ -298,7 +304,12 @@ export async function runLocalAcpChatTurn(
       {
         id: userId,
         role: "user",
-        parts: [{ type: "text", text: trimmed }],
+        // File parts first (same order the cloud transport uses) so the user
+        // bubble renders attachment thumbnails above the text.
+        parts: [
+          ...((files ?? []) as UIMessage["parts"]),
+          ...(trimmed ? [{ type: "text" as const, text: trimmed }] : []),
+        ],
       },
       {
         id: assistantId,
@@ -417,6 +428,18 @@ export async function runLocalAcpChatTurn(
       { forceNew, model: modelPreference },
     );
     sessionId = ensured.sessionId;
+    // Old Local Agents flatten prompt content to text and silently drop
+    // images — fail loudly instead so the user knows the screenshot never
+    // reached the model.
+    if (
+      images.length > 0 &&
+      !acpSupportsPromptImages(useAcpStore.getState().status)
+    ) {
+      throw new Error(
+        "This Local Agent build can't send image attachments. " +
+          "Update Mako Desktop (or restart the Local Agent), then retry.",
+      );
+    }
     useAcpStore.getState().ensureEventSubscription(sessionId);
     // Fail closed across turns: a missed end-of-turn revoke (renderer/network
     // interruption) must never carry an old plan grant into this request.
@@ -550,7 +573,7 @@ export async function runLocalAcpChatTurn(
 
     try {
       // Prompt includes UI context / continuity; transcript keeps raw user text.
-      await acpClient.prompt(activeSessionId, promptText);
+      await acpClient.prompt(activeSessionId, promptText, images);
       if (signal?.aborted) {
         throw new DOMException("Cancelled", "AbortError");
       }
@@ -600,6 +623,12 @@ export async function runLocalAcpChatTurn(
   try {
     if (signal?.aborted) {
       throw new DOMException("Cancelled", "AbortError");
+    }
+    if (skippedAttachments > 0) {
+      throw new Error(
+        "Only image attachments can be sent to local Claude/Codex. " +
+          "Remove other file types and try again.",
+      );
     }
 
     try {
