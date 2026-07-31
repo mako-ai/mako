@@ -158,7 +158,9 @@ export const PlanCard: React.FC<PlanCardProps> = ({
                 : undefined
             }
           >
-            {isStreaming && !title.trim() ? "Writing plan…" : title}
+            {isStreaming && !title.trim()
+              ? "Writing plan…"
+              : title.trim() || "Plan"}
           </Typography>
           <Typography variant="caption" color="text.secondary">
             {isStreaming

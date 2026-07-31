@@ -332,7 +332,13 @@ export const usePlanStore = create<PlanStore>()(
           if (!entry) return;
           entry.status = safe.decision;
           entry.output = safe;
-          if (safe.editedPlan) entry.draft = safe.editedPlan;
+          // Clone so draft never aliases output.editedPlan in the store.
+          if (safe.editedPlan) {
+            entry.draft = {
+              ...safe.editedPlan,
+              todos: safe.editedPlan.todos.map(t => ({ ...t })),
+            };
+          }
         });
       },
     })),
