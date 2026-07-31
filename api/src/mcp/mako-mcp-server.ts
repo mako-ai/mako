@@ -193,7 +193,7 @@ export function buildMakoMcpCandidateTools(
   const dashboardSearchTools = createDashboardSearchTools(workspaceId);
   const versionHistoryTools = createVersionHistoryTools(workspaceId);
   const skillTools = createSkillTools(workspaceId, userId);
-  const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
+  const selfDirectiveTools = createSelfDirectiveTools(workspaceId, userId);
   const webTools = createWebTools();
   const dbtTools = createDbtServerTools(workspaceId, userId, { chatId });
   // Headless adapter for the canonical run_app capability (external MCP
