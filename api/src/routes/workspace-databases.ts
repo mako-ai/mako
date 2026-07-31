@@ -811,6 +811,22 @@ workspaceDatabaseRoutes.openapi(
 
       // Update fields
       if (body.name) database.name = body.name;
+      if (typeof body.allowAgentWrites === "boolean") {
+        // Security-sensitive opt-in (scoped agent credentials may write to
+        // this connection) — owners/admins only, unlike general edits.
+        const memberRole = c.get("memberRole");
+        if (memberRole !== "owner" && memberRole !== "admin") {
+          return c.json(
+            {
+              success: false,
+              error:
+                "Only workspace owners or admins can change allowAgentWrites",
+            },
+            403,
+          );
+        }
+        database.allowAgentWrites = body.allowAgentWrites;
+      }
       if (body.connection) {
         // Build candidate connection using decrypted previous + incoming patch
         const previous =

@@ -260,6 +260,12 @@ export interface IDatabaseConnection extends Document {
     };
   };
   isDemo?: boolean; // True if this is a demo database connection
+  /**
+   * Opt-in: scoped agent credentials (MCP query:write keys) may run write
+   * statements against this connection. Off by default; read-only agent
+   * access is unaffected. Set it on connections created for agent writes.
+   */
+  allowAgentWrites?: boolean;
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
@@ -1428,6 +1434,10 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
       get: decryptObject,
     },
     isDemo: {
+      type: Boolean,
+      default: false,
+    },
+    allowAgentWrites: {
       type: Boolean,
       default: false,
     },
