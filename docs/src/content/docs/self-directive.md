@@ -9,6 +9,8 @@ The self-directive is the AI agent's persistent memory within a workspace. It st
 
 Each workspace has a self-directive — a text document (up to 10,000 characters) that the agent can read and update. It persists across all chat sessions in that workspace.
 
+Reads and updates report the current size and remaining capacity. Once the directive passes 80% of the limit, successful updates include a warning nudging the agent to compact it (merge overlapping rules, drop stale notes) before the cap is reached. An update that would exceed the limit is rejected with instructions to rewrite the directive concisely using `set` rather than retrying.
+
 When the agent starts a conversation, it can read the self-directive to recall what it learned before. When it discovers something new — like a column naming convention, a data type gotcha, or a user preference — it writes it to the self-directive.
 
 ## Tools
