@@ -9,6 +9,12 @@
  *     (e.g. Claude Code's local Playwright) can load and screenshot.
  *   render_app → deprecated alias of run_app, kept for existing clients.
  */
+import {
+  runAppBaseSchema,
+  runAppResultToMcpContent,
+  summarizeRunAppResult,
+  type RunAppResult,
+} from "@mako/agent-tools";
 import { tool } from "ai";
 import { Types } from "mongoose";
 import { z } from "zod";
@@ -64,24 +70,12 @@ async function previewBaseUnreachableError(
   }
 }
 
-const renderAppSchema = z.object({
-  appId: z.string().describe("The app whose DRAFT should be rendered"),
+// Shared cross-surface input, plus headless-only viewport extras. `rebuild`
+// from the base schema is accepted but moot here: a headless render is always
+// a fresh build.
+const renderAppSchema = runAppBaseSchema.extend({
   width: z.number().int().min(320).max(1920).optional(),
   height: z.number().int().min(320).max(1920).optional(),
-  timeoutMs: z
-    .number()
-    .int()
-    .min(5_000)
-    .max(45_000)
-    .optional()
-    .describe("How long to wait for the app to finish rendering (ms)"),
-  includeScreenshot: z
-    .boolean()
-    .optional()
-    .describe(
-      "Default true. Pass false to get status/errors/console only — much " +
-        "cheaper when you just need to know whether the render succeeded.",
-    ),
 });
 
 type RenderAppInput = z.infer<typeof renderAppSchema>;
@@ -95,8 +89,17 @@ async function executeHeadlessRender(
   workspaceId: string,
   { appId, width, height, timeoutMs, includeScreenshot }: RenderAppInput,
 ) {
+  const failed = (error: string): RunAppResult => ({
+    success: false,
+    status: "error",
+    errors: [],
+    consoleLogs: [],
+    source: "headless",
+    error,
+  });
+
   if (!Types.ObjectId.isValid(appId)) {
-    return { success: false, error: `Invalid app ID: ${appId}` };
+    return summarizeRunAppResult(failed(`Invalid app ID: ${appId}`));
   }
   const app = await MakoApp.findOne({
     _id: new Types.ObjectId(appId),
@@ -105,10 +108,11 @@ async function executeHeadlessRender(
     .select({ _id: 1 })
     .lean();
   if (!app) {
-    return {
-      success: false,
-      error: `App ${appId} not found. Use list_open_apps to see available apps.`,
-    };
+    return summarizeRunAppResult(
+      failed(
+        `App ${appId} not found. Use list_open_apps to see available apps.`,
+      ),
+    );
   }
 
   const baseUrl = clientBaseUrl();
@@ -117,7 +121,7 @@ async function executeHeadlessRender(
     // own "rendering disabled" message otherwise).
     const unreachable = await previewBaseUnreachableError(baseUrl);
     if (unreachable) {
-      return { success: false, error: unreachable };
+      return summarizeRunAppResult(failed(unreachable));
     }
   }
 
@@ -127,7 +131,7 @@ async function executeHeadlessRender(
     workspaceId,
     ttlSeconds: 300,
   });
-  const result = await renderAppPreview({
+  const rendered = await renderAppPreview({
     url: `${baseUrl}/preview/${token}`,
     width,
     height,
@@ -135,26 +139,34 @@ async function executeHeadlessRender(
     screenshot: includeScreenshot !== false,
   });
 
-  const summary = {
-    success: result.success,
-    status: result.status,
-    errors: result.errors,
-    consoleLogs: result.consoleLogs,
-    ...(result.error ? { error: result.error } : {}),
+  const result: RunAppResult = {
+    success: rendered.success,
+    status: rendered.status,
+    errors: rendered.errors,
+    consoleLogs: rendered.consoleLogs,
+    source: "headless",
+    ...(rendered.screenshotBase64
+      ? {
+          screenshot: {
+            mimeType: "image/jpeg",
+            base64: rendered.screenshotBase64,
+          },
+        }
+      : includeScreenshot !== false
+        ? {
+            screenshotUnavailableReason: isAppRenderEnabled()
+              ? "The headless render did not produce a screenshot."
+              : "Server-side rendering is not configured " +
+                "(RENDER_APP_BROWSER_PATH is unset).",
+          }
+        : {}),
+    ...(rendered.error ? { error: rendered.error } : {}),
   };
-  if (includeScreenshot === false || !result.screenshotBase64) {
-    return summary;
+
+  if (!result.screenshot) {
+    return summarizeRunAppResult(result);
   }
-  return {
-    mcpContent: [
-      { type: "text", text: JSON.stringify(summary) },
-      {
-        type: "image",
-        data: result.screenshotBase64,
-        mimeType: "image/jpeg",
-      },
-    ],
-  };
+  return { mcpContent: runAppResultToMcpContent(result) };
 }
 
 /**
