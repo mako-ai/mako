@@ -16,14 +16,11 @@
  * freshly-minted preview token — the tool takes an appId, never a URL, so
  * the pool cannot be steered at arbitrary targets (no SSRF surface).
  */
+import { clampRunAppTimeoutMs } from "@mako/agent-tools";
 import type { Browser } from "playwright-core";
 import { loggers } from "../logging";
 
 const logger = loggers.api("app-render");
-
-/** Wait budget for the preview to report ready/error after navigation. */
-const DEFAULT_SETTLE_TIMEOUT_MS = 20_000;
-const MAX_SETTLE_TIMEOUT_MS = 45_000;
 /** Post-ready delay so late paints (fonts, charts) land before screenshot. */
 const PAINT_DELAY_MS = 750;
 const MAX_CONCURRENT_RENDERS = 2;
@@ -122,10 +119,8 @@ export async function renderAppPreview(input: {
     };
   }
 
-  const timeoutMs = Math.min(
-    Math.max(input.timeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS, 5_000),
-    MAX_SETTLE_TIMEOUT_MS,
-  );
+  // Shared cross-surface settle budget (same clamp on every adapter).
+  const timeoutMs = clampRunAppTimeoutMs(input.timeoutMs);
 
   await acquireSlot();
   const consoleLogs: string[] = [];

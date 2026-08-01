@@ -32,9 +32,10 @@ All app tools run server-side except the live preview: `list_open_apps`,
 `create_app`, `get_app_state`, `app_search`, `app_read_resource`, the
 file/dependency/binding edits, `materialize_binding`, and versioning all operate
 on the server document,
-so you can build and operate an app with no browser attached. The only
-browser-only tool is `run_app` (rebuild the preview and read render/build
-errors); `open_app` just focuses a UI tab.
+so you can build and operate an app with no browser attached. `run_app` is the
+verify tool on every surface — it renders the app and returns status,
+build/runtime errors, and a screenshot (in a browser it rebuilds the live
+preview; headless MCP renders server-side); `open_app` just focuses a UI tab.
 
 ### Workflow
 
@@ -50,8 +51,8 @@ errors); `open_app` just focuses a UI tab.
    `truncated`, continue with its `nextOffset`. Do not dump every resource.
    `app_read_file` remains a deferred compatibility fallback for older flows;
    new work should use the bounded resource reader.
-   (Live preview build/runtime errors are only available in an attached browser
-   via `run_app`.)
+   (To verify the app actually renders — status, build/runtime errors, and a
+   screenshot — call `run_app`.)
 3. Modify existing files with `app_edit_file` — an anchored replacement: pass the
    exact current text as `oldString` (must match exactly once — include a few
    surrounding lines to disambiguate) and the replacement as `newString` (`""`
@@ -170,10 +171,13 @@ errors); `open_app` just focuses a UI tab.
    you genuinely need more rows, pass `useDuckDB(sql, { rowLimit: 2_000_000 })` or
    `{ rowLimit: null }` to disable the cap (costs memory + serialization time), and
    surface `truncated` in the UI whenever you render row-level data.
-6. After a batch of edits, in an attached browser call `run_app` to rebuild the
-   preview and read build/runtime errors, then fix them. Iterate until the preview
-   is error-free. (Headless, with no browser, you cannot render — rely on
-   `get_app_state` and careful editing.)
+6. After a batch of edits, call `run_app` to render the app and read its status,
+   build/runtime errors, and screenshot, then fix what you find. Iterate until
+   the preview is error-free. Pass `includeScreenshot: false` while iterating on
+   errors (much cheaper); fetch one screenshot at the end to confirm the visual
+   result. Note the screenshot reflects the surface you are on: in a browser it
+   is the user's live preview (including any dbt preview-env override); headless
+   MCP renders the draft server-side against prod data.
 7. Understand and validate data before coding against it using the shared data-source
    primitives (they work for apps and dashboards — pass `surface: { kind: "app", id: appId }`):
    `list_data_sources` shows every data source (connection, query, materialization, status);

@@ -137,6 +137,13 @@ interface AppState {
    */
   dataRefreshNonce: Record<string, number>;
   previewErrors: Record<string, AppPreviewError[]>;
+  /**
+   * Preview lifecycle per app: "building" from bumpPreview until the iframe
+   * bootstrap posts ready/error (which lands via setPreviewErrors — [] on
+   * ready, non-empty on error). Undefined until the first build/report. The
+   * run_app executor awaits this instead of sleeping a fixed delay.
+   */
+  previewStatus: Record<string, "building" | "ready" | "error">;
 
   /**
    * Per-user, per-app dbt environment override for the DRAFT PREVIEW only
@@ -324,6 +331,7 @@ const initialState: AppState = {
   previewNonce: {},
   dataRefreshNonce: {},
   previewErrors: {},
+  previewStatus: {},
   previewDbtEnv: {},
   dbtEnvInfo: {},
 };
@@ -473,6 +481,7 @@ export const useAppStore = create<AppStore>()(
           delete state.previewNonce[appId];
           delete state.dataRefreshNonce[appId];
           delete state.previewErrors[appId];
+          delete state.previewStatus[appId];
         });
         void get().fetchList(workspaceId);
         return true;
@@ -747,6 +756,7 @@ export const useAppStore = create<AppStore>()(
     bumpPreview: appId =>
       set(state => {
         state.previewNonce[appId] = (state.previewNonce[appId] || 0) + 1;
+        state.previewStatus[appId] = "building";
       }),
 
     requestDataRefresh: appId =>
@@ -771,6 +781,9 @@ export const useAppStore = create<AppStore>()(
     setPreviewErrors: (appId, errors) =>
       set(state => {
         state.previewErrors[appId] = errors;
+        // The iframe bootstrap reports exactly one of ready ([]) or error
+        // (non-empty), so error presence IS the settled preview status.
+        state.previewStatus[appId] = errors.length > 0 ? "error" : "ready";
       }),
 
     setPreviewDbtEnvironment: (appId, environment) => {

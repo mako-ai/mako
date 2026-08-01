@@ -14,6 +14,8 @@
 import { tool } from "ai";
 import { z } from "zod";
 
+import { runAppBaseSchema } from "./run-app";
+
 const appIdField = z.string().describe("App ID (from list_open_apps)");
 
 // NOTE: the mutation tools below (write/delete/rename file, add/remove
@@ -783,21 +785,13 @@ export const clientAppTools = {
   }),
   run_app: tool({
     description:
-      "Rebuild and reload the app's LIVE PREVIEW in the browser and return any " +
-      "build/runtime errors. Pass rebuild: false to read the current preview " +
-      "errors without forcing a rebuild. Use it to validate that edits render " +
-      "and to read preview errors. Requires an attached browser tab; it is " +
-      "not needed to author or persist an app.",
-    inputSchema: z.object({
-      appId: appIdField,
-      rebuild: z
-        .boolean()
-        .optional()
-        .describe(
-          "Default true. false = return the current preview errors without " +
-            "rebuilding the iframe (no preview flash).",
-        ),
-    }),
+      "Verify the app: rebuild and reload its LIVE PREVIEW, wait for it to " +
+      "render, and return status, build/runtime errors, and a screenshot of " +
+      "the rendered preview. Use after edits to confirm the app actually " +
+      "works. Pass rebuild: false to read the current preview state without " +
+      "forcing a rebuild, and includeScreenshot: false when you only need " +
+      "status/errors (much cheaper).",
+    inputSchema: runAppBaseSchema,
   }),
   app_set_preview_environment: tool({
     description:

@@ -204,11 +204,12 @@ export const APP_CAPABILITIES = [
     },
   }),
   define({
-    // One capability, one name, three adapters: Chat rebuilds the live
-    // iframe (client tool), Desktop delivers it via the mako-desktop
-    // loopback server, and external MCP runs the server-side headless
-    // renderer (api/src/mcp/preview-tools.ts). Rendering a draft mutates
-    // nothing, so it is read-risk on every surface.
+    // One capability, one name, one result envelope (run-app.ts), three
+    // adapters: Chat rebuilds the live iframe and self-captures a screenshot
+    // (client tool), Desktop delivers the same executor via the mako-desktop
+    // loopback server (screenshot as MCP image content), and external MCP
+    // runs the server-side headless renderer (api/src/mcp/preview-tools.ts).
+    // Rendering a draft mutates nothing, so it is read-risk on every surface.
     name: "run_app",
     pack: "app-ui",
     risk: "read",

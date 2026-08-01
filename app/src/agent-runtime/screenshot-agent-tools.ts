@@ -1,5 +1,8 @@
 import { useDashboardStore } from "../store/dashboardStore";
-import { PREVIEW_MESSAGE } from "../app-runtime/preview";
+import {
+  findAppPreviewIframes,
+  requestAppPreviewCapture,
+} from "../app-runtime/preview-capture";
 
 type ScreenshotTarget =
   | "active_dashboard"
@@ -10,7 +13,7 @@ type ScreenshotTarget =
   | "widget"
   | "selector";
 
-type ScreenshotRendererName = "modern-screenshot";
+type ScreenshotRendererName = "modern-screenshot" | "app-preview-self-capture";
 
 interface CaptureScreenshotInput {
   target?: ScreenshotTarget;
@@ -510,90 +513,6 @@ async function analyzeImageQuality(
   };
 }
 
-/**
- * App previews render in opaque-origin iframes (`sandbox="allow-scripts"`),
- * which modern-screenshot cannot rasterize from the parent — they come out
- * blank. Ask each visible app-preview iframe inside the capture target to
- * screenshot itself (the preview bootstrap handles `mako-app:capture`) and
- * composite the returned PNGs over the parent capture at the iframe rects.
- */
-const APP_PREVIEW_IFRAME_SELECTOR = "iframe[data-mako-app-preview]";
-// Per-iframe self-capture cap. Kept deliberately short: capture_screenshot is a
-// client-only, long-running tool, so the longer it runs the wider the window in
-// which a mobile lock / computer sleep / proxy idle timeout can interrupt the
-// turn and strand the card. Iframes are captured in parallel (Promise.all), so
-// this bounds the whole composite, not each iframe serially. A timed-out iframe
-// degrades gracefully (its region is reported as a capture failure).
-const APP_PREVIEW_CAPTURE_TIMEOUT_MS = 4000;
-let captureSeq = 0;
-
-function findAppPreviewIframes(target: HTMLElement): HTMLIFrameElement[] {
-  const iframes = Array.from(
-    target.querySelectorAll<HTMLIFrameElement>(APP_PREVIEW_IFRAME_SELECTOR),
-  );
-  if (
-    target instanceof HTMLIFrameElement &&
-    target.matches(APP_PREVIEW_IFRAME_SELECTOR)
-  ) {
-    iframes.unshift(target);
-  }
-  return iframes.filter(iframe => {
-    const rect = iframe.getBoundingClientRect();
-    return rect.width >= 8 && rect.height >= 8 && iframe.contentWindow != null;
-  });
-}
-
-function requestAppPreviewCapture(
-  iframe: HTMLIFrameElement,
-  options: { scale: number; backgroundColor?: string | null },
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const contentWindow = iframe.contentWindow;
-    if (!contentWindow) {
-      reject(new Error("App preview iframe has no content window"));
-      return;
-    }
-    const requestId = `capture_${Date.now()}_${++captureSeq}`;
-    const timeout = window.setTimeout(() => {
-      window.removeEventListener("message", onMessage);
-      reject(new Error("App preview capture timed out"));
-    }, APP_PREVIEW_CAPTURE_TIMEOUT_MS);
-
-    function onMessage(event: MessageEvent) {
-      const data = (event.data ?? {}) as {
-        type?: string;
-        requestId?: string;
-        success?: boolean;
-        dataUrl?: string;
-        error?: string;
-      };
-      if (
-        event.source !== contentWindow ||
-        data.type !== PREVIEW_MESSAGE.captureResult ||
-        data.requestId !== requestId
-      ) {
-        return;
-      }
-      window.clearTimeout(timeout);
-      window.removeEventListener("message", onMessage);
-      if (data.success && data.dataUrl) resolve(data.dataUrl);
-      else reject(new Error(data.error || "App preview capture failed"));
-    }
-
-    window.addEventListener("message", onMessage);
-    // The sandboxed iframe has an opaque origin, so "*" is required.
-    contentWindow.postMessage(
-      {
-        type: PREVIEW_MESSAGE.capture,
-        requestId,
-        scale: options.scale,
-        backgroundColor: options.backgroundColor,
-      },
-      "*",
-    );
-  });
-}
-
 async function compositeAppPreviews(
   baseDataUrl: string,
   target: HTMLElement,
@@ -693,8 +612,19 @@ async function captureWithModernScreenshot(
   };
 }
 
-function enqueueVisionAttachment(attachment: ScreenshotVisionAttachment): void {
+/**
+ * Queue an image to ride along as a REAL image input on the next chat model
+ * request (Chat drains the queue in prepareSendMessagesRequest). Shared by
+ * capture_screenshot and the run_app verify screenshot — base64 must never
+ * travel inside a JSON tool result. Returns false (and queues nothing) when
+ * the image exceeds the model-input size cap.
+ */
+export function enqueueScreenshotVisionAttachment(
+  attachment: ScreenshotVisionAttachment,
+): boolean {
+  if (attachment.outputBytes > MAX_MODEL_IMAGE_BYTES) return false;
   pendingVisionAttachments.push(attachment);
+  return true;
 }
 
 export function consumePendingScreenshotVisionAttachments(): ScreenshotVisionAttachment[] {
@@ -804,9 +734,8 @@ export async function captureScreenshot(
 
     if (
       input.passImageToModel !== false &&
-      outputBytes <= MAX_MODEL_IMAGE_BYTES
+      enqueueScreenshotVisionAttachment(attachment)
     ) {
-      enqueueVisionAttachment(attachment);
       imagesPassedToModel.push({
         renderer: attachment.renderer,
         filename: attachment.filename,
