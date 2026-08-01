@@ -19,11 +19,15 @@ import {
   queryAppDuckDB,
   disposeAppDuckDB,
   bindingTableName,
-  checkSandboxDuckDbSql,
   resolveSandboxRowLimit,
   applySandboxRowLimit,
 } from "../../app-runtime/duckdb";
-import type { AppDataBinding } from "@mako/schemas";
+import {
+  hydrateReadyBindings,
+  serveSandboxDuckDbRequest,
+  toLoadableBinding,
+  type TokenViewerBinding,
+} from "../../app-runtime/preview-duckdb";
 
 /**
  * Read-only public app renderer (/share/:token).
@@ -43,41 +47,13 @@ export interface PublicAppContent {
   allowLiveQueries?: boolean;
   files: Array<{ path: string; contents: string }>;
   dependencies: Record<string, string>;
-  dataBindings: Array<{
-    id: string;
-    name: string;
-    materialization: "live" | "parquet";
-    ready: boolean;
-    rowCount: number | null;
-    materializedAt: string | null;
-    artifactUrl: string | null;
-  }>;
+  dataBindings: TokenViewerBinding[];
 }
 
 interface Props {
   token: string;
   content: PublicAppContent;
   reloadContent: () => Promise<PublicAppContent | null>;
-}
-
-/** Adapt a public binding to the shape the app DuckDB loader expects. */
-function toLoadableBinding(
-  binding: PublicAppContent["dataBindings"][number],
-): AppDataBinding | null {
-  if (!binding.ready || !binding.artifactUrl) return null;
-  return {
-    id: binding.id,
-    name: binding.name,
-    connectionId: "",
-    language: "sql",
-    code: "",
-    materialization: "parquet",
-    cache: {
-      parquetUrl: binding.artifactUrl,
-      parquetBuildStatus: "ready",
-      artifactRevision: binding.materializedAt || binding.id,
-    },
-  } as AppDataBinding;
 }
 
 /** Per-binding snapshot timestamps used to detect when a refresh has finished. */
@@ -160,19 +136,10 @@ export default function PublicAppViewer({
     };
   }, [duckAppId]);
 
-  // (Re)load ready parquet bindings whenever content changes. ensureBindingLoaded
-  // is revision-cached (no-op when unchanged) and reloads in place when a new
-  // snapshot is ready, so bindings still mid-rematerialization keep their
-  // previously-loaded table instead of being dropped.
+  // (Re)load ready parquet bindings whenever content changes (revision-cached,
+  // in-place reloads — see hydrateReadyBindings).
   useEffect(() => {
-    for (const binding of content.dataBindings) {
-      const loadable = toLoadableBinding(binding);
-      if (loadable) {
-        void ensureBindingLoaded(duckAppId, loadable).catch(() => {
-          /* surfaced when the app actually queries it */
-        });
-      }
-    }
+    hydrateReadyBindings(duckAppId, content.dataBindings);
   }, [duckAppId, content]);
 
   // Bridge: serve binding + DuckDB requests from snapshot data only.
@@ -278,47 +245,14 @@ export default function PublicAppViewer({
             }),
           );
       } else if (data.type === PREVIEW_MESSAGE.runDuckDb) {
-        const safety = checkSandboxDuckDbSql(String(data.sql ?? ""));
-        if (!safety.ok) {
-          post({
-            type: PREVIEW_MESSAGE.duckDbResult,
-            requestId: data.requestId,
-            success: false,
-            error: safety.error,
-          });
-          return;
-        }
-        const loadables = content.dataBindings
-          .map(toLoadableBinding)
-          .filter((b): b is AppDataBinding => !!b);
-        const rowLimit = resolveSandboxRowLimit(data.rowLimit);
-        void Promise.all(
-          loadables.map(b =>
-            ensureBindingLoaded(duckAppId, b).catch(() => false),
-          ),
-        )
-          .then(() => queryAppDuckDB(duckAppId, data.sql))
-          .then(result => {
-            const limited = applySandboxRowLimit(result.rows, rowLimit);
-            post({
-              type: PREVIEW_MESSAGE.duckDbResult,
-              requestId: data.requestId,
-              success: true,
-              rows: limited.rows,
-              fields: result.fields,
-              rowCount: result.rows.length,
-              truncated: limited.truncated,
-              rowLimit,
-            });
-          })
-          .catch(err =>
-            post({
-              type: PREVIEW_MESSAGE.duckDbResult,
-              requestId: data.requestId,
-              success: false,
-              error: err instanceof Error ? err.message : "DuckDB query failed",
-            }),
-          );
+        serveSandboxDuckDbRequest({
+          duckAppId,
+          bindings: content.dataBindings,
+          requestId: data.requestId,
+          sql: data.sql,
+          rowLimit: data.rowLimit,
+          post,
+        });
       } else if (data.type === PREVIEW_MESSAGE.navigate) {
         if (typeof data.location === "string") {
           writeAppLocation(data.location, !!data.replace);
