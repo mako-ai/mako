@@ -38,8 +38,7 @@ Use \`${prefix}create_notebook\` / \`${prefix}list_open_notebooks\`, then \`${pr
 ## Apps (Desktop preview — not headless)
 The user can see apps in the Mako window. After \`${prefix}create_app\` / \`${prefix}app_write_file\` / \`${prefix}app_edit_file\`, Desktop opens/refreshes the app tab automatically.
 - \`create_preview_token\` / \`render_app\` / \`/preview/…\` URLs are **unavailable and forbidden** in Desktop Chat — never call them or invent preview links.
-- After edits, call \`${desktopPrefix}run_app\` with the appId to rebuild the iframe and read \`previewErrors\`. Pass \`rebuild: false\` to poll errors without rebuilding.
-- Describe what changed in the in-app preview; ask the user to look at the app tab if you need visual confirmation.
+- After edits, verify with \`${desktopPrefix}run_app\`: it rebuilds the iframe, waits for it to render, and returns status, build/runtime errors, and a screenshot of exactly what the user sees. Pass \`rebuild: false\` to poll the current state without rebuilding, and \`includeScreenshot: false\` when you only need status/errors (much cheaper).
 
 ## Workspace memory (Mako — not local Claude files)
 Durable knowledge for this workspace lives in Mako's self-directive:

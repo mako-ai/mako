@@ -100,7 +100,7 @@ Typical loop:
 2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
 3. create_app → app_write_file / app_edit_file → app_create_data_binding (bind the validated query; pass consoleId to seed from a console).
 4. For dbt work: read_dbt_project_tree → read/edit files → validate asynchronously, then poll dbt_get_run. For large or destructive work (warehouse runs, Git mutations, schedules), prefer proposing a plan via mako-desktop submit_plan before acting.
-5. Desktop opens/refreshes the app tab automatically. Do NOT create_preview_token, render_app, or paste /preview/… URLs. Use mako-desktop run_app for iframe errors (rebuild: false polls without rebuilding). For consoles use open_console / create_console; for notebooks use create_notebook / cell tools.
+5. Desktop opens/refreshes the app tab automatically. Do NOT create_preview_token, render_app, or paste /preview/… URLs. Verify with mako-desktop run_app: status, iframe errors, and a screenshot of the live tab (rebuild: false polls without rebuilding; includeScreenshot: false is much cheaper). For consoles use open_console / create_console; for notebooks use create_notebook / cell tools.
 6. Interactive UX: mako-desktop ask_clarifying_questions / submit_plan (docked Chat cards) — never ask as plain text.
 7. Durable memory: read_self_directive / update_self_directive only. Do NOT write .claude/**/MEMORY.md or other local Claude memory files.
 8. app_save_version to snapshot/publish.
