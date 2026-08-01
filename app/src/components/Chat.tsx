@@ -53,6 +53,7 @@ import {
   localAcpModelIdToProviderId,
 } from "../lib/local-acp-models";
 import { runLocalAcpChatTurn } from "../lib/local-acp-chat";
+import { resumeLocalAcpChatTurn } from "../lib/resume-local-acp-chat";
 import { clearLocalAcpChatBinding } from "../lib/persist-local-acp-chat";
 import {
   completeDesktopHitlJob,
@@ -309,6 +310,9 @@ const Chat: React.FC<ChatProps> = ({
   } | null>(null);
   /** Bumps on each ACP send so overlapping finally blocks don't clear busy early. */
   const localAcpGenerationRef = useRef(0);
+  /** In-flight refresh/wake reattach to a Local Agent turn (see resume below). */
+  const localAcpResumeAbortRef = useRef<AbortController | null>(null);
+  const requestLocalAcpResumeRef = useRef<(() => void) | undefined>();
   const [localAcpBusy, setLocalAcpBusy] = useState(false);
   const localAcpBusyRef = useRef(false);
   localAcpBusyRef.current = localAcpBusy;
@@ -684,6 +688,8 @@ const Chat: React.FC<ChatProps> = ({
     // Abort an in-flight local ACP (Claude Code / Codex) turn if any.
     localAcpAbortRef.current?.abort();
     localAcpAbortRef.current = null;
+    localAcpResumeAbortRef.current?.abort();
+    localAcpResumeAbortRef.current = null;
     setLocalAcpBusy(false);
     void useAcpStore
       .getState()
@@ -721,6 +727,10 @@ const Chat: React.FC<ChatProps> = ({
     if (!modelId || !isLocalAcpModelId(modelId)) return false;
 
     localAcpAbortRef.current?.abort();
+    // A refresh-reattach must yield to a fresh user send (it would otherwise
+    // race this turn's assistant bubble with replayed events).
+    localAcpResumeAbortRef.current?.abort();
+    localAcpResumeAbortRef.current = null;
     // Cancel the in-flight ACP prompt so the next turn can start cleanly.
     void useAcpStore
       .getState()
@@ -771,6 +781,84 @@ const Chat: React.FC<ChatProps> = ({
     }
     return true;
   };
+
+  // Refresh / History-reopen / tab-wake reattach for Local ACP: the Local
+  // Agent keeps running the turn (and buffering events for replay) while the
+  // page is gone, but nothing re-subscribed — the chat froze at the last
+  // checkpoint. Rebuild the in-flight turn from the replay backlog, stream
+  // the rest live, and persist the finished turn. Cheap no-op when idle.
+  requestLocalAcpResumeRef.current = () => {
+    const binding = localAcpBindingRef.current;
+    const workspaceId = workspaceIdRef.current;
+    const targetChatId = chatIdRef.current;
+    if (!binding || !workspaceId || !targetChatId) return;
+    // An in-page turn (or an already-attached resume) is streaming — leave it.
+    if (localAcpBusyRef.current) return;
+    localAcpResumeAbortRef.current?.abort();
+    const abort = new AbortController();
+    localAcpResumeAbortRef.current = abort;
+    let attached = false;
+    void resumeLocalAcpChatTurn({
+      binding,
+      workspaceId,
+      chatId: targetChatId,
+      setMessages,
+      getMessages: () => messagesRef.current,
+      signal: abort.signal,
+      onLiveAttach: () => {
+        if (abort.signal.aborted) return;
+        attached = true;
+        // Ref first: the state flush lags, and the wake handler must not
+        // start a second resume in that window.
+        localAcpBusyRef.current = true;
+        setLocalAcpBusy(true);
+        isLoadingRef.current = true;
+      },
+      onPersisted: b => {
+        if (b) localAcpBindingRef.current = b;
+        setIsExistingChat(true);
+        void fetchSessionsRef.current?.();
+      },
+    })
+      .catch(() => undefined)
+      .finally(() => {
+        if (localAcpResumeAbortRef.current === abort) {
+          localAcpResumeAbortRef.current = null;
+        }
+        // Clear busy only if no in-page send took over after aborting us.
+        if (attached && !localAcpAbortRef.current) {
+          localAcpBusyRef.current = false;
+          setLocalAcpBusy(false);
+          isLoadingRef.current = false;
+          queueMicrotask(() => drainQueuedPromptAfterTurnRef.current?.());
+        }
+      });
+  };
+
+  // Drop a stale reattach when the user switches chats (the loader kicks off
+  // a fresh one for the next chat if its binding warrants it) or unmounts.
+  useEffect(() => {
+    return () => {
+      localAcpResumeAbortRef.current?.abort();
+      localAcpResumeAbortRef.current = null;
+    };
+  }, [chatId]);
+
+  // Tab wake / network back: if the resume (or its SSE) died while the
+  // machine slept, reattach to a still-running local ACP turn. No-ops fast
+  // when there is no binding or a turn is already streaming in-page.
+  useEffect(() => {
+    const onWake = () => {
+      if (document.visibilityState !== "visible") return;
+      requestLocalAcpResumeRef.current?.();
+    };
+    document.addEventListener("visibilitychange", onWake);
+    window.addEventListener("online", onWake);
+    return () => {
+      document.removeEventListener("visibilitychange", onWake);
+      window.removeEventListener("online", onWake);
+    };
+  }, []);
 
   // Bottom-pin / streaming-follow machinery (see useChatScroll).
   const { isAtBottom, setIsAtBottom, scrollerElRef, handleListHeightChanged } =
@@ -851,6 +939,7 @@ const Chat: React.FC<ChatProps> = ({
     toolDispatchGateRef,
     loadPersistedMessagesRef,
     requestResumeRef,
+    requestLocalAcpResumeRef,
     localAcpBindingRef,
     localAcpBusyRef,
   });

@@ -141,6 +141,11 @@ export interface UseChatSessionLoaderArgs {
     ((opts?: { skipReload?: boolean }) => Promise<void>) | undefined
   >;
   /**
+   * Local ACP counterpart of requestResumeRef: reattaches to a Local Agent
+   * turn that kept running through a refresh (cheap no-op without a binding).
+   */
+  requestLocalAcpResumeRef?: MutableRefObject<(() => void) | undefined>;
+  /**
    * Bound Local Agent ACP session for this History chat (if any). Cleared by
    * Chat on new-session; set here when a persisted localAcp payload is loaded.
    */
@@ -172,6 +177,7 @@ export function useChatSessionLoader({
   toolDispatchGateRef,
   loadPersistedMessagesRef,
   requestResumeRef,
+  requestLocalAcpResumeRef,
   localAcpBindingRef,
   localAcpBusyRef,
 }: UseChatSessionLoaderArgs): void {
@@ -350,6 +356,10 @@ export function useChatSessionLoader({
       // (or unknown), making this a cheap no-op.
       if (!cancelled) {
         void requestResumeRef.current?.({ skipReload: true });
+        // Local ACP turns keep running on the Local Agent through a refresh;
+        // rebind + replay them after the persisted snapshot is in place
+        // (loadPersistedMessages set localAcpBindingRef just above).
+        requestLocalAcpResumeRef?.current?.();
       }
     };
     loadSession();
@@ -362,5 +372,6 @@ export function useChatSessionLoader({
     workspaceId,
     loadPersistedMessagesRef,
     requestResumeRef,
+    requestLocalAcpResumeRef,
   ]);
 }
