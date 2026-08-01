@@ -72,6 +72,15 @@ const TOOLS: Array<{
           description:
             "How long to wait for the preview to finish rendering, in ms (5000-45000, default 20000).",
         },
+        width: {
+          type: "number",
+          description:
+            "Viewport width in px (320-1920). Pass e.g. 390x844 to verify the MOBILE layout — applied for this render only, then the user's viewport is restored.",
+        },
+        height: {
+          type: "number",
+          description: "Viewport height in px (320-1920), with width.",
+        },
       },
       required: ["appId"],
     },

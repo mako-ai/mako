@@ -70,13 +70,10 @@ async function previewBaseUnreachableError(
   }
 }
 
-// Shared cross-surface input, plus headless-only viewport extras. `rebuild`
-// from the base schema is accepted but moot here: a headless render is always
-// a fresh build.
-const renderAppSchema = runAppBaseSchema.extend({
-  width: z.number().int().min(320).max(1920).optional(),
-  height: z.number().int().min(320).max(1920).optional(),
-});
+// Shared cross-surface input (width/height render the draft at that viewport
+// — e.g. 390x844 for the mobile layout). `rebuild` from the base schema is
+// accepted but moot here: a headless render is always a fresh build.
+const renderAppSchema = runAppBaseSchema;
 
 type RenderAppInput = z.infer<typeof renderAppSchema>;
 

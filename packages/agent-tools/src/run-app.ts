@@ -24,6 +24,36 @@ export function clampRunAppTimeoutMs(timeoutMs: number | undefined): number {
   );
 }
 
+/** Render viewport bounds shared by every adapter (headless + live iframe). */
+export const RUN_APP_MIN_VIEWPORT_PX = 320;
+export const RUN_APP_MAX_VIEWPORT_PX = 1920;
+
+/**
+ * Named viewports for verifying responsive layouts. One list feeds the
+ * preview toolbar toggle, the app_set_preview_viewport tool, and skill
+ * guidance — media queries respond to the (iframe or headless) viewport, so
+ * rendering at these sizes IS the mobile/tablet layout check.
+ */
+export const APP_PREVIEW_VIEWPORT_PRESETS = {
+  phone: { width: 390, height: 844 },
+  tablet: { width: 768, height: 1024 },
+} as const;
+
+export type AppPreviewViewportPreset = keyof typeof APP_PREVIEW_VIEWPORT_PRESETS;
+
+const viewportPxField = (axis: "width" | "height") =>
+  z
+    .number()
+    .int()
+    .min(RUN_APP_MIN_VIEWPORT_PX)
+    .max(RUN_APP_MAX_VIEWPORT_PX)
+    .optional()
+    .describe(
+      `Viewport ${axis} in px. Pass e.g. 390x844 to verify the MOBILE ` +
+        "layout (media queries respond to this size). Omit for the default " +
+        "desktop viewport.",
+    );
+
 export const runAppBaseSchema = z.object({
   appId: z.string().describe("App ID (from list_open_apps)"),
   rebuild: z
@@ -47,6 +77,8 @@ export const runAppBaseSchema = z.object({
     .max(RUN_APP_MAX_TIMEOUT_MS)
     .optional()
     .describe("How long to wait for the app to finish rendering (ms)"),
+  width: viewportPxField("width"),
+  height: viewportPxField("height"),
 });
 
 export type RunAppBaseInput = z.infer<typeof runAppBaseSchema>;

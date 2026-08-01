@@ -186,6 +186,27 @@ preview; headless MCP renders server-side); `open_app` just focuses a UI tab.
    `useDuckDB` calls. Data sources are also visible to the user under "Data sources" in the
    app's explorer tree.
 
+### Mobile & responsive layouts
+
+Apps are often opened on phones (shared links especially). Build responsive by
+default and **verify at mobile size before publishing** — media queries respond
+to the render viewport, so a run at phone size IS the mobile check:
+
+- **Verify loop**: before `app_save_version`, call `run_app` at
+  `width: 390, height: 844` (phone) and once at the default desktop viewport,
+  and fix what breaks. In a browser the phone-size render is applied for that
+  render only — the user's preview viewport is restored afterward.
+- **Iterating on mobile fixes in chat/Desktop**: `app_set_preview_viewport`
+  with `preset: "phone"` (or `"tablet"`, or custom `width`/`height`) switches
+  the on-screen preview so you and the user look at the same mobile layout
+  while you edit; `preset: "desktop"` resets. This is per-user view state —
+  it never changes the app definition. The user has the same toggle on the
+  preview toolbar.
+- **Design rules**: fluid layouts (flex/grid + `minmax`/`flex-wrap`), no fixed
+  pixel widths on containers, `max-width: 100%` on media, touch targets ≥ 44px,
+  collapse multi-column tables to cards/lists under ~640px, keep charts inside
+  responsive containers, and avoid hover-only affordances for primary actions.
+
 ### Version history, drafts & publishing
 
 Apps use a **draft → published** split:

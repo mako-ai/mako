@@ -182,6 +182,7 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "materialize_binding",
   "run_app",
   "app_set_preview_environment",
+  "app_set_preview_viewport",
   // Shared surface-scoped data-source primitives (apps + dashboards)
   "list_data_sources",
   "inspect_data_source",

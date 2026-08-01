@@ -229,4 +229,18 @@ export const APP_CAPABILITIES = [
       note: "Per-user browser preview state; headless agents use run_app / bindings directly.",
     },
   }),
+  define({
+    // Pure view state (which viewport the browser preview renders at) — the
+    // sticky sibling of run_app's ephemeral width/height. Mutates nothing
+    // durable, so read-risk; headless agents pass width/height to run_app.
+    name: "app_set_preview_viewport",
+    pack: "app-ui",
+    risk: "read",
+    surfaces: IN_CHAT_ONLY_SURFACES,
+    resultKind: "ui-effect",
+    mcpExclusion: {
+      why: "client-only",
+      note: "Per-user browser preview viewport; headless agents pass width/height to run_app.",
+    },
+  }),
 ] as const satisfies readonly AppCapabilityDefinition[];

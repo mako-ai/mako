@@ -114,6 +114,44 @@ function readStoredPreviewDbtEnv(appId: string): string | null {
   }
 }
 
+/**
+ * Per-user, per-app viewport override for the DRAFT PREVIEW (view state,
+ * mirrors previewDbtEnv). The iframe is laid out at exactly this size so
+ * media queries render the true mobile/tablet layout; null = fill the pane.
+ */
+export interface AppPreviewViewport {
+  width: number;
+  height: number;
+  /** Named preset ("phone" / "tablet") or undefined for a custom size. */
+  preset?: string;
+}
+
+const previewViewportStorageKey = (appId: string) =>
+  `mako:appPreviewViewport:${appId}`;
+
+function readStoredPreviewViewport(appId: string): AppPreviewViewport | null {
+  try {
+    const raw = localStorage.getItem(previewViewportStorageKey(appId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<AppPreviewViewport>;
+    if (
+      typeof parsed.width === "number" &&
+      typeof parsed.height === "number" &&
+      parsed.width > 0 &&
+      parsed.height > 0
+    ) {
+      return {
+        width: parsed.width,
+        height: parsed.height,
+        ...(typeof parsed.preset === "string" ? { preset: parsed.preset } : {}),
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 interface AppState {
   myApps: Record<string, AppListItem[]>;
   workspaceApps: Record<string, AppListItem[]>;
@@ -154,6 +192,14 @@ interface AppState {
   previewDbtEnv: Record<string, string | null>;
   /** Cached dbt project environments for binding resolution (by projectId). */
   dbtEnvInfo: Record<string, AppDbtEnvInfo>;
+
+  /**
+   * Per-user, per-app preview viewport override (view state, persisted in
+   * localStorage). null/undefined = fill the pane (desktop). AppRenderer
+   * lays the iframe out at exactly this size (scaled to fit visually), so
+   * media queries render the true responsive layout.
+   */
+  previewViewport: Record<string, AppPreviewViewport | null>;
 }
 
 interface AppActions {
@@ -237,6 +283,15 @@ interface AppActions {
    * data hooks re-run against the new schema.
    */
   setPreviewDbtEnvironment: (appId: string, environment: string | null) => void;
+
+  /**
+   * Switch the app preview's viewport (per-user view state; null = fill the
+   * pane). No rebuild — the iframe resizes and the app re-lays out live.
+   */
+  setPreviewViewport: (
+    appId: string,
+    viewport: AppPreviewViewport | null,
+  ) => void;
 
   /** Fetch (and cache) a dbt project's environments for binding resolution. */
   fetchDbtEnvInfo: (
@@ -332,6 +387,7 @@ const initialState: AppState = {
   dataRefreshNonce: {},
   previewErrors: {},
   previewStatus: {},
+  previewViewport: {},
   previewDbtEnv: {},
   dbtEnvInfo: {},
 };
@@ -436,6 +492,9 @@ export const useAppStore = create<AppStore>()(
           if (state.previewDbtEnv[appId] === undefined) {
             state.previewDbtEnv[appId] = readStoredPreviewDbtEnv(appId);
           }
+          if (state.previewViewport[appId] === undefined) {
+            state.previewViewport[appId] = readStoredPreviewViewport(appId);
+          }
         });
         return res.app;
       } catch (e) {
@@ -482,6 +541,7 @@ export const useAppStore = create<AppStore>()(
           delete state.dataRefreshNonce[appId];
           delete state.previewErrors[appId];
           delete state.previewStatus[appId];
+          delete state.previewViewport[appId];
         });
         void get().fetchList(workspaceId);
         return true;
@@ -802,6 +862,26 @@ export const useAppStore = create<AppStore>()(
       // No preview bump here: AppRenderer watches this state and posts a
       // data-refresh into the booted iframe, so data hooks re-run against the
       // new schema without a (slow) srcdoc rebuild or losing app UI state.
+    },
+
+    setPreviewViewport: (appId, viewport) => {
+      set(state => {
+        state.previewViewport[appId] = viewport;
+      });
+      try {
+        if (viewport) {
+          localStorage.setItem(
+            previewViewportStorageKey(appId),
+            JSON.stringify(viewport),
+          );
+        } else {
+          localStorage.removeItem(previewViewportStorageKey(appId));
+        }
+      } catch {
+        /* view state only — losing persistence is harmless */
+      }
+      // No preview bump: resizing the iframe re-lays the app out live and
+      // media queries re-evaluate — a rebuild would only add a flash.
     },
 
     fetchDbtEnvInfo: async (workspaceId, dbtProjectId) => {
