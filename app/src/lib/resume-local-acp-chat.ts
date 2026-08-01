@@ -147,9 +147,13 @@ export function extractResumeTail(
   if (lastUserIdx === -1 || !lastUserText) {
     return { matched: false, events: [], done: false };
   }
+  // Exact match (no prompt layers) or the layered form, which always ends
+  // with `[User message]\n<raw text>` (prependAcpPromptLayers). A bare
+  // endsWith would let a short message ("ok") match another chat's prompt
+  // that merely ends with the same words.
   const matched =
     lastUserChunkText === lastUserText ||
-    lastUserChunkText.endsWith(lastUserText);
+    lastUserChunkText.endsWith(`[User message]\n${lastUserText}`);
   const tail = events.slice(lastUserIdx + 1);
   return {
     matched,

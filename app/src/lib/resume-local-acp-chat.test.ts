@@ -110,6 +110,16 @@ describe("extractResumeTail", () => {
     const tail = extractResumeTail(events, "our last user message");
     expect(tail.matched).toBe(false);
   });
+
+  it("requires the [User message] boundary — a short suffix is not enough", () => {
+    const events = [
+      userChunk("[User message]\nis the migration ok"),
+      agentChunk("a"),
+    ];
+    // "ok" is a suffix of the other chat's prompt but not its user message.
+    expect(extractResumeTail(events, "ok").matched).toBe(false);
+    expect(extractResumeTail(events, "is the migration ok").matched).toBe(true);
+  });
 });
 
 describe("rebuildAssistantParts", () => {
