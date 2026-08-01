@@ -177,13 +177,19 @@ describe("desktop-bridge MCP", () => {
       jsonrpc: "2.0",
       id: 30,
       method: "tools/call",
-      params: { name: "run_app", arguments: { appId: "app-3" } },
+      params: {
+        name: "run_app",
+        arguments: { appId: "app-3", width: 390, height: 844 },
+      },
     });
     const job = await desktopBridgeRegistry.claim(5_000);
     assert.ok(job);
     // The renderer keys inline screenshot delivery off this marker — an
     // older Local Agent (no marker) must keep getting text-only results.
     assert.equal(job.capabilities?.imageContent, true);
+    // Viewport args flow through for the mobile-layout verify.
+    assert.equal(job.arguments.width, 390);
+    assert.equal(job.arguments.height, 844);
     desktopBridgeRegistry.complete(job.id, { success: true, errors: [] });
     await callPromise;
   });

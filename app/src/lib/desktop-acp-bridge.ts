@@ -101,6 +101,8 @@ async function executeImmediateJob(job: BridgeJob): Promise<unknown> {
         rebuild: job.arguments.rebuild,
         includeScreenshot: job.arguments.includeScreenshot,
         timeoutMs: job.arguments.timeoutMs,
+        width: job.arguments.width,
+        height: job.arguments.height,
       },
       {
         screenshotDelivery:

@@ -80,7 +80,7 @@ Typical loop:
 1. Discover data: list_connections, then sql_list_tables / sql_inspect_table.
 2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
 3. create_app → app_write_file / app_edit_file → app_create_data_binding (bind the validated query; pass consoleId to seed from a console).
-4. Verify with run_app after edits (server-side headless render). Pass includeScreenshot: false when you only need status/errors — it is much cheaper than the screenshot.
+4. Verify with run_app after edits (server-side headless render). Pass includeScreenshot: false when you only need status/errors — it is much cheaper than the screenshot. Pass width/height (e.g. 390x844) to verify the mobile layout before publishing.
 5. app_save_version to snapshot/publish.
 
 dbt: read_dbt_project_tree → read/edit files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run). Check dbt_git_status before finishing — edits are working-tree drafts until committed. Warehouse-mutating runs (dbt_run_model, dbt_run_job) appear only when the API key has the warehouse:write scope; Git mutations (dbt_commit_to_branch, branches, PRs) only with git:write.

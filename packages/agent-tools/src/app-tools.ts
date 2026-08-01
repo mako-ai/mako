@@ -14,7 +14,11 @@
 import { tool } from "ai";
 import { z } from "zod";
 
-import { runAppBaseSchema } from "./run-app";
+import {
+  runAppBaseSchema,
+  RUN_APP_MIN_VIEWPORT_PX,
+  RUN_APP_MAX_VIEWPORT_PX,
+} from "./run-app";
 
 const appIdField = z.string().describe("App ID (from list_open_apps)");
 
@@ -815,6 +819,40 @@ export const clientAppTools = {
           "dbt environment name from the linked project (e.g. 'dev' or a " +
             "personal environment), or null to reset to the prod default",
         ),
+    }),
+  }),
+  app_set_preview_viewport: tool({
+    description:
+      "Switch the app's DRAFT PREVIEW to a device viewport (phone 390x844, " +
+      "tablet 768x1024, or custom width/height) so you AND the user see the " +
+      "responsive layout while iterating — media queries re-evaluate at the " +
+      "new size, no rebuild. This is per-user VIEW state; it never changes " +
+      "the app definition or what viewers see. Pass preset: 'desktop' to go " +
+      "back to filling the pane. For a one-off verification without changing " +
+      "what's on screen, pass width/height to run_app instead.",
+    inputSchema: z.object({
+      appId: appIdField,
+      preset: z
+        .enum(["phone", "tablet", "desktop"])
+        .optional()
+        .describe(
+          "Named viewport: phone 390x844, tablet 768x1024, desktop = clear " +
+            "the override (fill the pane). Ignored when width/height are set.",
+        ),
+      width: z
+        .number()
+        .int()
+        .min(RUN_APP_MIN_VIEWPORT_PX)
+        .max(RUN_APP_MAX_VIEWPORT_PX)
+        .optional()
+        .describe("Custom viewport width in px (with height)"),
+      height: z
+        .number()
+        .int()
+        .min(RUN_APP_MIN_VIEWPORT_PX)
+        .max(RUN_APP_MAX_VIEWPORT_PX)
+        .optional()
+        .describe("Custom viewport height in px (with width)"),
     }),
   }),
 };

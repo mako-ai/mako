@@ -4,8 +4,10 @@ import assert from "node:assert/strict";
 import {
   clampRunAppTimeoutMs,
   isRunAppResult,
+  runAppBaseSchema,
   runAppResultToMcpContent,
   summarizeRunAppResult,
+  APP_PREVIEW_VIEWPORT_PRESETS,
   RUN_APP_DEFAULT_TIMEOUT_MS,
   RUN_APP_MAX_TIMEOUT_MS,
   RUN_APP_MIN_TIMEOUT_MS,
@@ -62,6 +64,21 @@ describe("run-app shared contract", () => {
       (content[0] as { text: string }).text,
       /renderer disabled/,
     );
+  });
+
+  it("accepts viewport width/height on every surface, within render bounds", () => {
+    const phone = runAppBaseSchema.safeParse({
+      appId: "a",
+      ...APP_PREVIEW_VIEWPORT_PRESETS.phone,
+    });
+    assert.equal(phone.success, true);
+    // Presets must themselves be valid run_app viewports.
+    assert.deepEqual(APP_PREVIEW_VIEWPORT_PRESETS.phone, {
+      width: 390,
+      height: 844,
+    });
+    const tooSmall = runAppBaseSchema.safeParse({ appId: "a", width: 100 });
+    assert.equal(tooSmall.success, false);
   });
 
   it("guards envelopes crossing loose boundaries", () => {

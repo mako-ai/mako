@@ -158,4 +158,73 @@ describe("run_app client executor", () => {
     expect(result).toMatchObject({ success: false, status: "timeout" });
     expect(String(result.error)).toMatch(/open_app/);
   }, 10_000);
+
+  it("applies width/height as an ephemeral viewport and restores the user's", async () => {
+    useAppStore.getState().setPreviewViewport(APP_ID, {
+      width: 768,
+      height: 1024,
+      preset: "tablet",
+    });
+    let viewportDuringCapture: unknown;
+    captureAppPreview.mockImplementation(async () => {
+      viewportDuringCapture = useAppStore.getState().previewViewport[APP_ID];
+      return PNG_DATA_URL;
+    });
+    reportPreview(200, []);
+    const result = await executeAppAgentTool("run_app", {
+      appId: APP_ID,
+      width: 390,
+      height: 844,
+    });
+    expect(result).toMatchObject({
+      success: true,
+      viewport: { width: 390, height: 844 },
+    });
+    // Captured at the requested size, then put back to what the user had.
+    expect(viewportDuringCapture).toEqual({ width: 390, height: 844 });
+    expect(useAppStore.getState().previewViewport[APP_ID]).toEqual({
+      width: 768,
+      height: 1024,
+      preset: "tablet",
+    });
+  });
+});
+
+describe("app_set_preview_viewport client executor", () => {
+  it("sets a named preset as sticky view state", async () => {
+    const result = await executeAppAgentTool("app_set_preview_viewport", {
+      appId: APP_ID,
+      preset: "phone",
+    });
+    expect(result).toMatchObject({
+      success: true,
+      viewport: { width: 390, height: 844, preset: "phone" },
+    });
+    expect(useAppStore.getState().previewViewport[APP_ID]).toEqual({
+      width: 390,
+      height: 844,
+      preset: "phone",
+    });
+  });
+
+  it("desktop preset clears the override", async () => {
+    useAppStore
+      .getState()
+      .setPreviewViewport(APP_ID, { width: 390, height: 844, preset: "phone" });
+    const result = await executeAppAgentTool("app_set_preview_viewport", {
+      appId: APP_ID,
+      preset: "desktop",
+    });
+    expect(result).toMatchObject({ success: true, viewport: null });
+    expect(useAppStore.getState().previewViewport[APP_ID]).toBeNull();
+  });
+
+  it("rejects a custom size missing one dimension", async () => {
+    const result = await executeAppAgentTool("app_set_preview_viewport", {
+      appId: APP_ID,
+      width: 390,
+    });
+    expect(result).toMatchObject({ success: false });
+    expect(String(result.error)).toMatch(/both width and height/);
+  });
 });

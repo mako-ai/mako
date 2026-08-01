@@ -8,6 +8,7 @@
  */
 
 import {
+  APP_PREVIEW_VIEWPORT_PRESETS,
   APP_READ_FILE_MAX_CHARS,
   appBindingResourceVersion,
   appResourceRef,
@@ -24,7 +25,11 @@ import {
 } from "@mako/agent-tools";
 import { enqueueScreenshotVisionAttachment } from "../agent-runtime/screenshot-agent-tools";
 import { useConsoleStore } from "../store/consoleStore";
-import { useAppStore, type AppEntity } from "../store/appStore";
+import {
+  useAppStore,
+  type AppEntity,
+  type AppPreviewViewport,
+} from "../store/appStore";
 import { captureAppPreview, findAppPreviewIframe } from "./preview-capture";
 import { focusAppTab, getCurrentWorkspaceId } from "./shell";
 
@@ -508,86 +513,155 @@ export async function executeAppAgentTool(
     case "run_app": {
       if (!appId) return fail("appId is required");
       await ensureApp(appId);
-      // rebuild: false = read the current preview state — no bumpPreview,
-      // which flashes a black "Building preview…" screen and can remount Chat.
-      if (input.rebuild !== false) {
-        store.bumpPreview(appId);
+      // Ephemeral viewport: verify the responsive layout at an exact size
+      // (e.g. 390x844 for mobile) without stickily changing what the user
+      // sees — the previous viewport is restored after the capture. Media
+      // queries respond to the iframe's own size, so a resize IS the
+      // responsive check; no rebuild is needed for it.
+      const requestedWidth =
+        typeof input.width === "number" ? input.width : undefined;
+      const requestedHeight =
+        typeof input.height === "number" ? input.height : undefined;
+      const ephemeralViewport: AppPreviewViewport | null =
+        requestedWidth !== undefined || requestedHeight !== undefined
+          ? { width: requestedWidth ?? 1280, height: requestedHeight ?? 800 }
+          : null;
+      const previousViewport = ephemeralViewport
+        ? (useAppStore.getState().previewViewport[appId] ?? null)
+        : null;
+      if (ephemeralViewport) {
+        store.setPreviewViewport(appId, ephemeralViewport);
       }
-      const timeoutMs = clampRunAppTimeoutMs(
-        typeof input.timeoutMs === "number" ? input.timeoutMs : undefined,
-      );
-      const settled = await waitForPreviewSettle(
-        appId,
-        timeoutMs,
-        options?.signal,
-      );
-      const errors = summarizePreviewErrors(
-        useAppStore.getState().previewErrors[appId],
-      );
-      const result: RunAppResult = {
-        success: settled.status === "ready",
-        status: settled.status,
-        errors,
-        consoleLogs: [],
-        source: "iframe",
-        ...(settled.noIframe
-          ? {
-              error:
-                "No visible preview iframe for this app — open it with " +
-                "open_app so the preview can build and report.",
-            }
-          : {}),
-      };
+      try {
+        // rebuild: false = read the current preview state — no bumpPreview,
+        // which flashes a black "Building preview…" screen and can remount
+        // Chat. With only a viewport change, give the app a beat to re-lay
+        // out before capturing.
+        if (input.rebuild !== false) {
+          store.bumpPreview(appId);
+        } else if (ephemeralViewport) {
+          await new Promise(resolve => setTimeout(resolve, 350));
+        }
+        const timeoutMs = clampRunAppTimeoutMs(
+          typeof input.timeoutMs === "number" ? input.timeoutMs : undefined,
+        );
+        const settled = await waitForPreviewSettle(
+          appId,
+          timeoutMs,
+          options?.signal,
+        );
+        const errors = summarizePreviewErrors(
+          useAppStore.getState().previewErrors[appId],
+        );
+        const result: RunAppResult = {
+          success: settled.status === "ready",
+          status: settled.status,
+          errors,
+          consoleLogs: [],
+          source: "iframe",
+          ...(settled.noIframe
+            ? {
+                error:
+                  "No visible preview iframe for this app — open it with " +
+                  "open_app so the preview can build and report.",
+              }
+            : {}),
+        };
 
-      const delivery = options?.screenshotDelivery ?? "vision-attachment";
-      const wantScreenshot = input.includeScreenshot !== false;
-      let screenshotPassedToModel = false;
-      if (wantScreenshot && delivery === "none") {
-        result.screenshotUnavailableReason =
-          "This client cannot deliver screenshots (update Mako Desktop / " +
-          "Local Agent). Status and errors above are still authoritative.";
-      } else if (wantScreenshot) {
-        try {
-          const dataUrl = await captureAppPreview(appId);
-          const parts = dataUrlToParts(dataUrl);
-          if (!parts) {
-            throw new Error("Preview returned an unreadable capture");
-          }
-          if (delivery === "inline") {
-            result.screenshot = {
-              mimeType: parts.mimeType,
-              base64: parts.base64,
-            };
-          } else {
-            const enqueued = enqueueScreenshotVisionAttachment({
-              renderer: "app-preview-self-capture",
-              filename: `run-app-${appId}-${Date.now()}.png`,
-              mediaType: "image/png",
-              dataUrl,
-              outputBytes: Math.ceil((parts.base64.length * 3) / 4),
-              targetLabel: "app-preview",
-            });
-            if (enqueued) {
-              screenshotPassedToModel = true;
-            } else {
-              result.screenshotUnavailableReason =
-                "Screenshot was too large to pass to the model.";
-            }
-          }
-        } catch (error) {
+        const delivery = options?.screenshotDelivery ?? "vision-attachment";
+        const wantScreenshot = input.includeScreenshot !== false;
+        let screenshotPassedToModel = false;
+        if (wantScreenshot && delivery === "none") {
           result.screenshotUnavailableReason =
-            error instanceof Error ? error.message : "Preview capture failed";
+            "This client cannot deliver screenshots (update Mako Desktop / " +
+            "Local Agent). Status and errors above are still authoritative.";
+        } else if (wantScreenshot) {
+          try {
+            const dataUrl = await captureAppPreview(appId);
+            const parts = dataUrlToParts(dataUrl);
+            if (!parts) {
+              throw new Error("Preview returned an unreadable capture");
+            }
+            if (delivery === "inline") {
+              result.screenshot = {
+                mimeType: parts.mimeType,
+                base64: parts.base64,
+              };
+            } else {
+              const enqueued = enqueueScreenshotVisionAttachment({
+                renderer: "app-preview-self-capture",
+                filename: `run-app-${appId}-${Date.now()}.png`,
+                mediaType: "image/png",
+                dataUrl,
+                outputBytes: Math.ceil((parts.base64.length * 3) / 4),
+                targetLabel: "app-preview",
+              });
+              if (enqueued) {
+                screenshotPassedToModel = true;
+              } else {
+                result.screenshotUnavailableReason =
+                  "Screenshot was too large to pass to the model.";
+              }
+            }
+          } catch (error) {
+            result.screenshotUnavailableReason =
+              error instanceof Error ? error.message : "Preview capture failed";
+          }
+        }
+
+        return {
+          ...result,
+          ...(ephemeralViewport
+            ? {
+                viewport: {
+                  width: ephemeralViewport.width,
+                  height: ephemeralViewport.height,
+                },
+              }
+            : {}),
+          ...(screenshotPassedToModel
+            ? {
+                screenshotPassedToModel: true,
+                note: "The preview screenshot is sent as a real image input in the next model request, not inside this tool result.",
+              }
+            : {}),
+        };
+      } finally {
+        // The verify viewport is ephemeral — put back whatever the user had.
+        if (ephemeralViewport) {
+          store.setPreviewViewport(appId, previousViewport);
         }
       }
+    }
 
+    case "app_set_preview_viewport": {
+      if (!appId) return fail("appId is required");
+      await ensureApp(appId);
+      const width = typeof input.width === "number" ? input.width : undefined;
+      const height =
+        typeof input.height === "number" ? input.height : undefined;
+      const preset = input.preset as "phone" | "tablet" | "desktop" | undefined;
+      let viewport: AppPreviewViewport | null;
+      if (width !== undefined && height !== undefined) {
+        viewport = { width, height };
+      } else if (width !== undefined || height !== undefined) {
+        return fail("Pass both width and height for a custom viewport.");
+      } else if (preset === "phone" || preset === "tablet") {
+        viewport = { ...APP_PREVIEW_VIEWPORT_PRESETS[preset], preset };
+      } else if (preset === "desktop") {
+        viewport = null;
+      } else {
+        return fail(
+          "Pass preset ('phone' | 'tablet' | 'desktop') or width + height.",
+        );
+      }
+      store.setPreviewViewport(appId, viewport);
       return {
-        ...result,
-        ...(screenshotPassedToModel
-          ? {
-              screenshotPassedToModel: true,
-              note: "The preview screenshot is sent as a real image input in the next model request, not inside this tool result.",
-            }
-          : {}),
+        success: true,
+        viewport,
+        hint: viewport
+          ? `Preview now renders at ${viewport.width}×${viewport.height} for you AND the user — no rebuild needed. Verify with run_app; reset with preset: "desktop".`
+          : "Preview viewport reset — the app fills the pane again.",
       };
     }
 
