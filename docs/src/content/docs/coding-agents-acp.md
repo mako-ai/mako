@@ -37,6 +37,12 @@ This is the reverse of [MCP Server](/mcp-server/):
    `session/set_config_option` — no Terminal `/model` required.
 4. Send messages in the normal Chat composer. Mako starts the local ACP session
    automatically and attaches workspace data tools.
+5. Optional: attach images in the composer (screenshots, diagrams). They are
+   sent to Claude Code / Codex as ACP image blocks, same as cloud chats.
+   Requires **Desktop 0.3.11+** — older Local Agents reject the turn with an
+   "update Mako Desktop" error instead of silently dropping the image.
+   Non-image and remote attachments are not supported on the local ACP path
+   and fail loudly.
 
 ACP traffic stays on loopback (`127.0.0.1:41720`). Mako Cloud does **not** proxy
 the ACP stdio pipe — prompts and tool calls do not transit Mako servers.
