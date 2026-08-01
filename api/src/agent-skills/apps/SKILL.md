@@ -32,9 +32,10 @@ All app tools run server-side except the live preview: `list_open_apps`,
 `create_app`, `get_app_state`, `app_search`, `app_read_resource`, the
 file/dependency/binding edits, `materialize_binding`, and versioning all operate
 on the server document,
-so you can build and operate an app with no browser attached. The only
-browser-only tool is `run_app` (rebuild the preview and read render/build
-errors); `open_app` just focuses a UI tab.
+so you can build and operate an app with no browser attached. `run_app` is the
+verify tool on every surface — it renders the app and returns status,
+build/runtime errors, and a screenshot (in a browser it rebuilds the live
+preview; headless MCP renders server-side); `open_app` just focuses a UI tab.
 
 ### Workflow
 
@@ -50,8 +51,8 @@ errors); `open_app` just focuses a UI tab.
    `truncated`, continue with its `nextOffset`. Do not dump every resource.
    `app_read_file` remains a deferred compatibility fallback for older flows;
    new work should use the bounded resource reader.
-   (Live preview build/runtime errors are only available in an attached browser
-   via `run_app`.)
+   (To verify the app actually renders — status, build/runtime errors, and a
+   screenshot — call `run_app`.)
 3. Modify existing files with `app_edit_file` — an anchored replacement: pass the
    exact current text as `oldString` (must match exactly once — include a few
    surrounding lines to disambiguate) and the replacement as `newString` (`""`
@@ -118,6 +119,12 @@ errors); `open_app` just focuses a UI tab.
    Prefer parquet + useDuckDB for dashboards/aggregations over larger result sets; prefer
    live useQuery for small, always-fresh lookups.
 
+   `run_app` verifies useDuckDB components with real data on every surface: the
+   headless preview hydrates ready parquet artifacts into DuckDB just like the
+   in-product editor. If a useDuckDB read errors with "no materialized
+   artifact", call `materialize_binding` and re-run — do not restructure the
+   app to work around it.
+
    **Toggle materialization IN PLACE — never delete/recreate:** to switch an
    existing binding between `live` and `parquet`, call
    `app_set_binding_materialization` with the binding `name` and the target
@@ -170,10 +177,13 @@ errors); `open_app` just focuses a UI tab.
    you genuinely need more rows, pass `useDuckDB(sql, { rowLimit: 2_000_000 })` or
    `{ rowLimit: null }` to disable the cap (costs memory + serialization time), and
    surface `truncated` in the UI whenever you render row-level data.
-6. After a batch of edits, in an attached browser call `run_app` to rebuild the
-   preview and read build/runtime errors, then fix them. Iterate until the preview
-   is error-free. (Headless, with no browser, you cannot render — rely on
-   `get_app_state` and careful editing.)
+6. After a batch of edits, call `run_app` to render the app and read its status,
+   build/runtime errors, and screenshot, then fix what you find. Iterate until
+   the preview is error-free. Pass `includeScreenshot: false` while iterating on
+   errors (much cheaper); fetch one screenshot at the end to confirm the visual
+   result. Note the screenshot reflects the surface you are on: in a browser it
+   is the user's live preview (including any dbt preview-env override); headless
+   MCP renders the draft server-side against prod data.
 7. Understand and validate data before coding against it using the shared data-source
    primitives (they work for apps and dashboards — pass `surface: { kind: "app", id: appId }`):
    `list_data_sources` shows every data source (connection, query, materialization, status);
@@ -181,6 +191,27 @@ errors); `open_app` just focuses a UI tab.
    SQL against the materialized tables so you can validate aggregations before writing
    `useDuckDB` calls. Data sources are also visible to the user under "Data sources" in the
    app's explorer tree.
+
+### Mobile & responsive layouts
+
+Apps are often opened on phones (shared links especially). Build responsive by
+default and **verify at mobile size before publishing** — media queries respond
+to the render viewport, so a run at phone size IS the mobile check:
+
+- **Verify loop**: before `app_save_version`, call `run_app` at
+  `width: 390, height: 844` (phone) and once at the default desktop viewport,
+  and fix what breaks. In a browser the phone-size render is applied for that
+  render only — the user's preview viewport is restored afterward.
+- **Iterating on mobile fixes in chat/Desktop**: `app_set_preview_viewport`
+  with `preset: "phone"` (or `"tablet"`, or custom `width`/`height`) switches
+  the on-screen preview so you and the user look at the same mobile layout
+  while you edit; `preset: "desktop"` resets. This is per-user view state —
+  it never changes the app definition. The user has the same toggle on the
+  preview toolbar.
+- **Design rules**: fluid layouts (flex/grid + `minmax`/`flex-wrap`), no fixed
+  pixel widths on containers, `max-width: 100%` on media, touch targets ≥ 44px,
+  collapse multi-column tables to cards/lists under ~640px, keep charts inside
+  responsive containers, and avoid hover-only affordances for primary actions.
 
 ### Version history, drafts & publishing
 

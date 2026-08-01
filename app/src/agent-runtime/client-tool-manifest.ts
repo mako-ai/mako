@@ -673,6 +673,23 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "database",
   },
+  app_set_preview_viewport: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    getLabel: input => {
+      const { preset, width, height } = (input ?? {}) as {
+        preset?: string;
+        width?: number;
+        height?: number;
+      };
+      if (width && height) return `Preview viewport ${width}×${height}`;
+      return preset && preset !== "desktop"
+        ? `Preview viewport: ${preset}`
+        : "Preview viewport: desktop";
+    },
+    icon: "eye",
+  },
   // dbt reads execute SERVER-SIDE (issue #475) — reading the authoritative
   // DbtProject/DbtFile docs avoids a pending client tool tearing down the SSE
   // turn ("stream disconnected before tool completed") when the tab is slow or

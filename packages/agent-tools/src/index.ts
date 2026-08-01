@@ -147,6 +147,28 @@ export {
   NOTEBOOK_SOURCE_PREVIEW_CHARS,
 } from "./notebook-tools";
 
+export {
+  runAppBaseSchema,
+  clampRunAppTimeoutMs,
+  summarizeRunAppResult,
+  runAppResultToMcpContent,
+  isRunAppResult,
+  RUN_APP_DEFAULT_TIMEOUT_MS,
+  RUN_APP_MIN_TIMEOUT_MS,
+  RUN_APP_MAX_TIMEOUT_MS,
+  RUN_APP_MIN_VIEWPORT_PX,
+  RUN_APP_MAX_VIEWPORT_PX,
+  APP_PREVIEW_VIEWPORT_PRESETS,
+} from "./run-app";
+export type {
+  AppPreviewViewportPreset,
+  RunAppBaseInput,
+  RunAppResult,
+  RunAppScreenshot,
+  RunAppSource,
+  RunAppMcpContent,
+} from "./run-app";
+
 export { clientScreenshotTools } from "./screenshot-tools";
 export type { CaptureScreenshotInput } from "./screenshot-tools";
 

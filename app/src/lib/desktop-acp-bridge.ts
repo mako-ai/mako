@@ -29,6 +29,12 @@ interface BridgeJob {
   arguments: Record<string, unknown>;
   agentSessionId?: string;
   workspaceId?: string;
+  /**
+   * Delivery capabilities of the enqueuing Local Agent build. Absent on
+   * older builds — which must never receive inline image payloads (they
+   * stringify the whole result into the model context).
+   */
+  capabilities?: { imageContent?: boolean };
 }
 
 interface ClaimEnvelope {
@@ -83,12 +89,26 @@ async function executeImmediateJob(job: BridgeJob): Promise<unknown> {
   }
 
   if (job.tool === "run_app") {
-    // rebuild: false = the executor skips the iframe rebuild and returns
-    // the current preview errors (the old get_preview_errors behavior).
-    return executeAppAgentTool("run_app", {
-      appId,
-      rebuild: job.arguments.rebuild,
-    });
+    // rebuild: false = the executor skips the iframe rebuild and reports
+    // the current preview state (the old get_preview_errors behavior).
+    // Screenshots go inline in the envelope ONLY when this Local Agent
+    // build declared it emits MCP image content; otherwise skip capture so
+    // an older build never stringifies base64 into the model context.
+    return executeAppAgentTool(
+      "run_app",
+      {
+        appId,
+        rebuild: job.arguments.rebuild,
+        includeScreenshot: job.arguments.includeScreenshot,
+        timeoutMs: job.arguments.timeoutMs,
+        width: job.arguments.width,
+        height: job.arguments.height,
+      },
+      {
+        screenshotDelivery:
+          job.capabilities?.imageContent === true ? "inline" : "none",
+      },
+    );
   }
 
   throw new Error(`Unsupported desktop bridge tool: ${job.tool}`);

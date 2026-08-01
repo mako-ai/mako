@@ -204,11 +204,12 @@ export const APP_CAPABILITIES = [
     },
   }),
   define({
-    // One capability, one name, three adapters: Chat rebuilds the live
-    // iframe (client tool), Desktop delivers it via the mako-desktop
-    // loopback server, and external MCP runs the server-side headless
-    // renderer (api/src/mcp/preview-tools.ts). Rendering a draft mutates
-    // nothing, so it is read-risk on every surface.
+    // One capability, one name, one result envelope (run-app.ts), three
+    // adapters: Chat rebuilds the live iframe and self-captures a screenshot
+    // (client tool), Desktop delivers the same executor via the mako-desktop
+    // loopback server (screenshot as MCP image content), and external MCP
+    // runs the server-side headless renderer (api/src/mcp/preview-tools.ts).
+    // Rendering a draft mutates nothing, so it is read-risk on every surface.
     name: "run_app",
     pack: "app-ui",
     risk: "read",
@@ -226,6 +227,20 @@ export const APP_CAPABILITIES = [
     mcpExclusion: {
       why: "client-only",
       note: "Per-user browser preview state; headless agents use run_app / bindings directly.",
+    },
+  }),
+  define({
+    // Pure view state (which viewport the browser preview renders at) — the
+    // sticky sibling of run_app's ephemeral width/height. Mutates nothing
+    // durable, so read-risk; headless agents pass width/height to run_app.
+    name: "app_set_preview_viewport",
+    pack: "app-ui",
+    risk: "read",
+    surfaces: IN_CHAT_ONLY_SURFACES,
+    resultKind: "ui-effect",
+    mcpExclusion: {
+      why: "client-only",
+      note: "Per-user browser preview viewport; headless agents pass width/height to run_app.",
     },
   }),
 ] as const satisfies readonly AppCapabilityDefinition[];

@@ -14,6 +14,12 @@
 import { tool } from "ai";
 import { z } from "zod";
 
+import {
+  runAppBaseSchema,
+  RUN_APP_MIN_VIEWPORT_PX,
+  RUN_APP_MAX_VIEWPORT_PX,
+} from "./run-app";
+
 const appIdField = z.string().describe("App ID (from list_open_apps)");
 
 // NOTE: the mutation tools below (write/delete/rename file, add/remove
@@ -783,21 +789,13 @@ export const clientAppTools = {
   }),
   run_app: tool({
     description:
-      "Rebuild and reload the app's LIVE PREVIEW in the browser and return any " +
-      "build/runtime errors. Pass rebuild: false to read the current preview " +
-      "errors without forcing a rebuild. Use it to validate that edits render " +
-      "and to read preview errors. Requires an attached browser tab; it is " +
-      "not needed to author or persist an app.",
-    inputSchema: z.object({
-      appId: appIdField,
-      rebuild: z
-        .boolean()
-        .optional()
-        .describe(
-          "Default true. false = return the current preview errors without " +
-            "rebuilding the iframe (no preview flash).",
-        ),
-    }),
+      "Verify the app: rebuild and reload its LIVE PREVIEW, wait for it to " +
+      "render, and return status, build/runtime errors, and a screenshot of " +
+      "the rendered preview. Use after edits to confirm the app actually " +
+      "works. Pass rebuild: false to read the current preview state without " +
+      "forcing a rebuild, and includeScreenshot: false when you only need " +
+      "status/errors (much cheaper).",
+    inputSchema: runAppBaseSchema,
   }),
   app_set_preview_environment: tool({
     description:
@@ -821,6 +819,40 @@ export const clientAppTools = {
           "dbt environment name from the linked project (e.g. 'dev' or a " +
             "personal environment), or null to reset to the prod default",
         ),
+    }),
+  }),
+  app_set_preview_viewport: tool({
+    description:
+      "Switch the app's DRAFT PREVIEW to a device viewport (phone 390x844, " +
+      "tablet 768x1024, or custom width/height) so you AND the user see the " +
+      "responsive layout while iterating — media queries re-evaluate at the " +
+      "new size, no rebuild. This is per-user VIEW state; it never changes " +
+      "the app definition or what viewers see. Pass preset: 'desktop' to go " +
+      "back to filling the pane. For a one-off verification without changing " +
+      "what's on screen, pass width/height to run_app instead.",
+    inputSchema: z.object({
+      appId: appIdField,
+      preset: z
+        .enum(["phone", "tablet", "desktop"])
+        .optional()
+        .describe(
+          "Named viewport: phone 390x844, tablet 768x1024, desktop = clear " +
+            "the override (fill the pane). Ignored when width/height are set.",
+        ),
+      width: z
+        .number()
+        .int()
+        .min(RUN_APP_MIN_VIEWPORT_PX)
+        .max(RUN_APP_MAX_VIEWPORT_PX)
+        .optional()
+        .describe("Custom viewport width in px (with height)"),
+      height: z
+        .number()
+        .int()
+        .min(RUN_APP_MIN_VIEWPORT_PX)
+        .max(RUN_APP_MAX_VIEWPORT_PX)
+        .optional()
+        .describe("Custom viewport height in px (with width)"),
     }),
   }),
 };

@@ -9,6 +9,17 @@ export type DesktopBridgeToolName =
   | "ask_clarifying_questions"
   | "submit_plan";
 
+/**
+ * What THIS Local Agent build can deliver back to the calling agent. Travels
+ * on every job so the renderer can shape results for the enqueuing version —
+ * an older Local Agent (no marker) must never receive inline image payloads
+ * it would stringify into the model context.
+ */
+export interface DesktopBridgeCapabilities {
+  /** This build emits MCP image content blocks from bridge results. */
+  imageContent?: boolean;
+}
+
 export interface DesktopBridgeJob {
   id: string;
   tool: DesktopBridgeToolName;
@@ -16,6 +27,7 @@ export interface DesktopBridgeJob {
   createdAt: number;
   agentSessionId?: string;
   workspaceId?: string;
+  capabilities?: DesktopBridgeCapabilities;
 }
 
 interface PendingJob extends DesktopBridgeJob {
@@ -32,6 +44,11 @@ interface ClaimWaiter {
 const DEFAULT_JOB_TTL_MS = 25_000;
 /** Clarifying questions / plan approval — user may take minutes. */
 const HITL_JOB_TTL_MS = 30 * 60 * 1000;
+/**
+ * run_app awaits the preview's ready/error report (up to the shared 45s
+ * settle cap) plus screenshot capture — needs headroom over the default TTL.
+ */
+const RUN_APP_JOB_TTL_MS = 60_000;
 const DEFAULT_CLAIM_WAIT_MS = 20_000;
 
 const HITL_TOOLS = new Set<DesktopBridgeToolName>([
@@ -46,7 +63,9 @@ export function isDesktopHitlTool(
 }
 
 function ttlForTool(tool: DesktopBridgeToolName): number {
-  return isDesktopHitlTool(tool) ? HITL_JOB_TTL_MS : DEFAULT_JOB_TTL_MS;
+  if (isDesktopHitlTool(tool)) return HITL_JOB_TTL_MS;
+  if (tool === "run_app") return RUN_APP_JOB_TTL_MS;
+  return DEFAULT_JOB_TTL_MS;
 }
 
 function newId(): string {
@@ -72,7 +91,11 @@ class DesktopBridgeRegistry {
     tool: DesktopBridgeToolName,
     args: Record<string, unknown>,
     timeoutMs = ttlForTool(tool),
-    context?: { agentSessionId?: string; workspaceId?: string },
+    context?: {
+      agentSessionId?: string;
+      workspaceId?: string;
+      capabilities?: DesktopBridgeCapabilities;
+    },
   ): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.hasRecentClient()) {
@@ -92,6 +115,7 @@ class DesktopBridgeRegistry {
         createdAt: Date.now(),
         agentSessionId: context?.agentSessionId,
         workspaceId: context?.workspaceId,
+        capabilities: context?.capabilities,
         resolve,
         reject,
         timer: setTimeout(() => {
@@ -173,6 +197,7 @@ function publicJob(job: PendingJob): DesktopBridgeJob {
     createdAt: job.createdAt,
     agentSessionId: job.agentSessionId,
     workspaceId: job.workspaceId,
+    capabilities: job.capabilities,
   };
 }
 

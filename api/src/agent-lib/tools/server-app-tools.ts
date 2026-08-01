@@ -14,9 +14,11 @@
  * MakoApp document here, so a headless / detached agent can build and operate
  * an app end-to-end with no browser.
  *
- * The only browser-only leg is `run_app` (rebuild the sandboxed-iframe preview
- * and read render/build errors); `open_app` is a pure UI tab-focus convenience.
- * A headless agent skips both and works on the appId directly.
+ * Verification (`run_app`) is one capability with per-surface adapters: the
+ * browser client rebuilds the sandboxed-iframe preview and self-captures a
+ * screenshot; external MCP uses the server-side headless renderer
+ * (api/src/mcp/preview-tools.ts). `open_app` is a pure UI tab-focus
+ * convenience a headless agent skips, working on the appId directly.
  *
  * Tool schemas live in @mako/agent-tools (shared with the app's tool cards).
  */
@@ -469,8 +471,8 @@ export function createServerAppTools({
         "data binding metadata (name/language/connection/codeLength + a short " +
         "codePreview — NOT full SQL), entrypoint, runtime, and version/publish " +
         "state. This is a manifest: use app_search, then app_read_resource for " +
-        "specific line ranges. NOTE: live preview build/runtime errors are only " +
-        "available in an attached browser via run_app.",
+        "specific line ranges. NOTE: to verify the app renders (status, " +
+        "build/runtime errors, screenshot), call run_app.",
       inputSchema: getAppStateSchema,
       execute: async ({ appId, resourceOffset, resourceLimit }) =>
         wrap("get_app_state", async () => {

@@ -53,6 +53,20 @@ export const acpClient = {
     return unwrap(body, "Failed to list ACP sessions");
   },
 
+  /** Null when the session is unknown or the Local Agent is unreachable. */
+  async getSession(sessionId: string): Promise<AcpSessionInfo | null> {
+    try {
+      const body = await localAgentClient.get<Envelope<AcpSessionInfo>>(
+        `/acp/sessions/${encodeURIComponent(sessionId)}`,
+        undefined,
+        { timeoutMs: 5000 },
+      );
+      return body?.success && body.data ? body.data : null;
+    } catch {
+      return null;
+    }
+  },
+
   async authenticate(
     providerId: AcpProviderId,
     methodId?: string,

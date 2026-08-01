@@ -171,6 +171,90 @@ describe("desktop-bridge MCP", () => {
     assert.match(body.result.content[0].text, /"decision":"approve"/);
   });
 
+  it("stamps every job with this build's delivery capabilities", async () => {
+    desktopBridgeRegistry.touchClient();
+    const callPromise = handleDesktopMcpExchange({
+      jsonrpc: "2.0",
+      id: 30,
+      method: "tools/call",
+      params: {
+        name: "run_app",
+        arguments: { appId: "app-3", width: 390, height: 844 },
+      },
+    });
+    const job = await desktopBridgeRegistry.claim(5_000);
+    assert.ok(job);
+    // The renderer keys inline screenshot delivery off this marker — an
+    // older Local Agent (no marker) must keep getting text-only results.
+    assert.equal(job.capabilities?.imageContent, true);
+    // Viewport args flow through for the mobile-layout verify.
+    assert.equal(job.arguments.width, 390);
+    assert.equal(job.arguments.height, 844);
+    desktopBridgeRegistry.complete(job.id, { success: true, errors: [] });
+    await callPromise;
+  });
+
+  it("emits a run_app envelope screenshot as an MCP image content block", async () => {
+    desktopBridgeRegistry.touchClient();
+    const callPromise = handleDesktopMcpExchange({
+      jsonrpc: "2.0",
+      id: 31,
+      method: "tools/call",
+      params: { name: "run_app", arguments: { appId: "app-4" } },
+    });
+    const job = await desktopBridgeRegistry.claim(5_000);
+    assert.ok(job);
+    desktopBridgeRegistry.complete(job.id, {
+      success: true,
+      status: "ready",
+      errors: [],
+      consoleLogs: [],
+      source: "desktop",
+      screenshot: { mimeType: "image/png", base64: "aGVsbG8=" },
+    });
+
+    const exchange = await callPromise;
+    const body = exchange.body as {
+      result: {
+        isError?: boolean;
+        content: Array<{
+          type: string;
+          text?: string;
+          data?: string;
+          mimeType?: string;
+        }>;
+      };
+    };
+    assert.equal(body.result.isError, undefined);
+    assert.equal(body.result.content.length, 2);
+    const [summary, image] = body.result.content;
+    assert.equal(summary.type, "text");
+    assert.match(summary.text ?? "", /"status":"ready"/);
+    // Base64 must never leak into the text part.
+    assert.doesNotMatch(summary.text ?? "", /aGVsbG8=/);
+    assert.equal(image.type, "image");
+    assert.equal(image.data, "aGVsbG8=");
+    assert.equal(image.mimeType, "image/png");
+  });
+
+  it("legacy get_preview_errors polls without rebuild or screenshot", async () => {
+    desktopBridgeRegistry.touchClient();
+    const callPromise = handleDesktopMcpExchange({
+      jsonrpc: "2.0",
+      id: 32,
+      method: "tools/call",
+      params: { name: "get_preview_errors", arguments: { appId: "app-5" } },
+    });
+    const job = await desktopBridgeRegistry.claim(5_000);
+    assert.ok(job);
+    assert.equal(job.tool, "run_app");
+    assert.equal(job.arguments.rebuild, false);
+    // Old cheap error poll must stay cheap — no screenshot capture.
+    assert.equal(job.arguments.includeScreenshot, false);
+    desktopBridgeRegistry.complete(job.id, { success: true, errors: [] });
+    await callPromise;
+  });
+
   it("translates legacy get_preview_errors into run_app({ rebuild: false })", async () => {
     desktopBridgeRegistry.touchClient();
     const callPromise = handleDesktopMcpExchange({

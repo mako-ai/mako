@@ -23,8 +23,12 @@ import {
   CheckCircle2 as PublishedIcon,
   MoreVertical as MoreIcon,
   Info as InfoIcon,
+  Monitor as DesktopViewportIcon,
+  Smartphone as PhoneViewportIcon,
+  Tablet as TabletViewportIcon,
 } from "lucide-react";
 import { containsDbtSchemaToken } from "@mako/schemas";
+import { APP_PREVIEW_VIEWPORT_PRESETS } from "@mako/agent-tools";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import EntityLoadErrorState, {
@@ -138,6 +142,46 @@ export default function AppRenderer({
   const dbtOverrideActive = Boolean(
     effectiveDbtEnv && prodEnvName && effectiveDbtEnv !== prodEnvName,
   );
+
+  // Preview viewport override (per-user view state): the iframe is laid out
+  // at exactly this CSS size so media queries render the true responsive
+  // layout; the pane scales it down visually when it doesn't fit.
+  const previewViewport = useAppStore(s => s.previewViewport[appId] ?? null);
+  const setPreviewViewport = useAppStore(s => s.setPreviewViewport);
+  const paneRef = useRef<HTMLDivElement | null>(null);
+  const [paneSize, setPaneSize] = useState<{ w: number; h: number } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!previewViewport) return;
+    const pane = paneRef.current;
+    if (!pane) return;
+    const update = () =>
+      setPaneSize({ w: pane.clientWidth, h: pane.clientHeight });
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(pane);
+    return () => observer.disconnect();
+  }, [previewViewport]);
+  // Fit the true-size viewport into the pane (never upscale). The 16px inset
+  // keeps the device frame's shadow off the pane edges.
+  const viewportScale =
+    previewViewport && paneSize
+      ? Math.min(
+          1,
+          (paneSize.w - 16) / previewViewport.width,
+          (paneSize.h - 16) / previewViewport.height,
+        )
+      : 1;
+  const cyclePreviewViewport = useCallback(() => {
+    const next =
+      previewViewport == null
+        ? { ...APP_PREVIEW_VIEWPORT_PRESETS.phone, preset: "phone" }
+        : previewViewport.preset === "phone"
+          ? { ...APP_PREVIEW_VIEWPORT_PRESETS.tablet, preset: "tablet" }
+          : null;
+    setPreviewViewport(appId, next);
+  }, [appId, previewViewport, setPreviewViewport]);
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
@@ -755,6 +799,29 @@ export default function AppRenderer({
           </Tooltip>
         )}
         <Box sx={{ flex: 1 }} />
+        <Tooltip
+          title={
+            previewViewport == null
+              ? "Preview viewport: desktop (fill) — click for phone"
+              : previewViewport.preset === "phone"
+                ? `Preview viewport: phone ${previewViewport.width}×${previewViewport.height} — click for tablet`
+                : `Preview viewport: ${previewViewport.preset === "tablet" ? "tablet" : "custom"} ${previewViewport.width}×${previewViewport.height} — click for desktop`
+          }
+        >
+          <IconButton
+            size="small"
+            onClick={cyclePreviewViewport}
+            sx={previewViewport ? { color: "info.main" } : undefined}
+          >
+            {previewViewport == null ? (
+              <DesktopViewportIcon size={18} strokeWidth={1.5} />
+            ) : previewViewport.preset === "phone" ? (
+              <PhoneViewportIcon size={18} strokeWidth={1.5} />
+            ) : (
+              <TabletViewportIcon size={18} strokeWidth={1.5} />
+            )}
+          </IconButton>
+        </Tooltip>
         {canManage &&
           (appEntity.hasUnpublishedChanges ? (
             <Button
@@ -926,27 +993,62 @@ export default function AppRenderer({
         </Alert>
       )}
 
-      {/* Full-screen preview */}
+      {/* Full-screen preview. With a viewport override the iframe keeps its
+          TRUE CSS size (so media queries render the real responsive layout)
+          and is only scaled visually to fit the pane. */}
       <Box
+        ref={paneRef}
         sx={{
           flex: 1,
           minHeight: 0,
-          bgcolor: "background.default",
+          bgcolor: previewViewport ? "action.hover" : "background.default",
           position: "relative",
+          ...(previewViewport && {
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            overflow: "hidden",
+          }),
         }}
       >
-        <iframe
-          // Keyed on the nonce so preview reboots after restore/publish: with
-          // unchanged code the regenerated srcDoc string is identical, so a
-          // srcdoc-prop update alone would be skipped by React entirely.
-          key={previewNonce}
-          ref={iframeRef}
-          title={`app-preview-${appId}`}
-          data-mako-app-preview={appId}
-          srcDoc={srcDoc}
-          sandbox="allow-scripts allow-downloads allow-popups allow-popups-to-escape-sandbox"
-          style={{ width: "100%", height: "100%", border: "none" }}
-        />
+        <Box
+          sx={
+            previewViewport
+              ? {
+                  width: previewViewport.width * viewportScale,
+                  height: previewViewport.height * viewportScale,
+                  borderRadius: 2,
+                  boxShadow: 6,
+                  overflow: "hidden",
+                  flexShrink: 0,
+                  bgcolor: "background.default",
+                }
+              : { width: "100%", height: "100%" }
+          }
+        >
+          <iframe
+            // Keyed on the nonce so preview reboots after restore/publish: with
+            // unchanged code the regenerated srcDoc string is identical, so a
+            // srcdoc-prop update alone would be skipped by React entirely.
+            key={previewNonce}
+            ref={iframeRef}
+            title={`app-preview-${appId}`}
+            data-mako-app-preview={appId}
+            srcDoc={srcDoc}
+            sandbox="allow-scripts allow-downloads allow-popups allow-popups-to-escape-sandbox"
+            style={
+              previewViewport
+                ? {
+                    width: previewViewport.width,
+                    height: previewViewport.height,
+                    border: "none",
+                    transform: `scale(${viewportScale})`,
+                    transformOrigin: "top left",
+                  }
+                : { width: "100%", height: "100%", border: "none" }
+            }
+          />
+        </Box>
         {booting && errors.length === 0 && (
           <Box
             sx={{
