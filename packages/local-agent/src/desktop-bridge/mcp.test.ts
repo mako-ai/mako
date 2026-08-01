@@ -100,6 +100,77 @@ describe("desktop-bridge MCP", () => {
     assert.match(body.result.content[0].text, /"success":true/);
   });
 
+  it("rejects submit_plan with malformed arguments as a correctable tool error", async () => {
+    desktopBridgeRegistry.touchClient();
+    // Missing `todos` — the exact shape that used to crash the Desktop
+    // renderer ("Cannot read properties of undefined (reading 'length')").
+    const exchange = await handleDesktopMcpExchange({
+      jsonrpc: "2.0",
+      id: 20,
+      method: "tools/call",
+      params: {
+        name: "submit_plan",
+        arguments: { title: "Plan", planMarkdown: "# Plan" },
+      },
+    });
+    assert.equal(exchange.status, 200);
+    const body = exchange.body as {
+      result: { isError?: boolean; content: Array<{ text: string }> };
+    };
+    assert.equal(body.result.isError, true);
+    assert.match(body.result.content[0].text, /Invalid submit_plan arguments/);
+    assert.match(body.result.content[0].text, /todos/);
+  });
+
+  it("rejects ask_clarifying_questions without questions", async () => {
+    desktopBridgeRegistry.touchClient();
+    const exchange = await handleDesktopMcpExchange({
+      jsonrpc: "2.0",
+      id: 21,
+      method: "tools/call",
+      params: { name: "ask_clarifying_questions", arguments: {} },
+    });
+    const body = exchange.body as {
+      result: { isError?: boolean; content: Array<{ text: string }> };
+    };
+    assert.equal(body.result.isError, true);
+    assert.match(
+      body.result.content[0].text,
+      /Invalid ask_clarifying_questions arguments/,
+    );
+  });
+
+  it("forwards a valid submit_plan to the bridge with parsed arguments", async () => {
+    desktopBridgeRegistry.touchClient();
+    const callPromise = handleDesktopMcpExchange({
+      jsonrpc: "2.0",
+      id: 22,
+      method: "tools/call",
+      params: {
+        name: "submit_plan",
+        arguments: {
+          title: "Plan",
+          planMarkdown: "# Plan",
+          todos: [{ content: "Step 1" }],
+        },
+      },
+    });
+    const job = await desktopBridgeRegistry.claim(5_000);
+    assert.ok(job);
+    assert.equal(job.tool, "submit_plan");
+    assert.deepEqual(job.arguments.todos, [{ content: "Step 1" }]);
+    desktopBridgeRegistry.complete(job.id, {
+      success: true,
+      decision: "approve",
+    });
+    const exchange = await callPromise;
+    const body = exchange.body as {
+      result: { isError?: boolean; content: Array<{ text: string }> };
+    };
+    assert.equal(body.result.isError, undefined);
+    assert.match(body.result.content[0].text, /"decision":"approve"/);
+  });
+
   it("translates legacy get_preview_errors into run_app({ rebuild: false })", async () => {
     desktopBridgeRegistry.touchClient();
     const callPromise = handleDesktopMcpExchange({
