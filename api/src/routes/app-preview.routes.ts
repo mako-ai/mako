@@ -13,6 +13,8 @@
  * JSON-RPC-free plain REST, but deliberately NOT part of the documented
  * OpenAPI surface (tokens are ephemeral machine credentials, not an API).
  */
+import { Readable } from "node:stream";
+
 import { Hono } from "hono";
 import { Types } from "mongoose";
 
@@ -21,6 +23,8 @@ import {
   buildAppSnapshot,
   type AppSnapshot,
 } from "../services/app-version.service";
+import { getBindingArtifactInfo } from "../services/app-binding-materialization.service";
+import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import { verifyAppPreviewToken } from "../services/app-preview-token.service";
 import { executeAppPreviewBinding } from "../services/public-live-query.service";
 import { loggers } from "../logging";
@@ -46,12 +50,16 @@ async function loadAppForToken(token: string) {
 }
 
 // GET /:token — the DRAFT definition, shaped like the public share content so
-// the frontend viewer machinery is reusable. Every binding is presented as
-// "live": preview always executes the draft's stored code server-side, so an
-// agent sees current data without waiting on parquet re-materialization.
+// the frontend viewer machinery is reusable. `useQuery` bindings always
+// execute live server-side (fresh draft data, no publish required), while
+// materialized (parquet) bindings additionally expose their artifact so the
+// preview can hydrate DuckDB and serve `useDuckDB` — the same data layer the
+// real app runs on. A parquet binding with no built artifact stays live-only
+// until the agent calls materialize_binding.
 appPreviewRoutes.get("/:token", async c => {
   try {
-    const loaded = await loadAppForToken(c.req.param("token"));
+    const token = c.req.param("token");
+    const loaded = await loadAppForToken(token);
     if (!loaded) {
       return c.json(
         { success: false, error: "Preview link is invalid or expired" },
@@ -60,6 +68,12 @@ appPreviewRoutes.get("/:token", async c => {
     }
     const { doc, grant } = loaded;
     const def = buildAppSnapshot(doc) as AppSnapshot;
+    // Materialization artifacts are server-owned and keyed by binding id; the
+    // snapshot intentionally excludes `cache`, so read it off the live doc
+    // (mirrors buildAppContent in public-share.ts).
+    const liveCacheById = new Map(
+      (doc.dataBindings || []).map(b => [b.id, b.cache]),
+    );
     return c.json({
       success: true,
       data: {
@@ -76,20 +90,69 @@ appPreviewRoutes.get("/:token", async c => {
         dependencies: def.dependencies || {},
         dataBindings: (
           (def.dataBindings || []) as Array<Record<string, unknown>>
-        ).map(b => ({
-          id: b.id,
-          name: b.name,
-          materialization: "live" as const,
-          ready: false,
-          rowCount: null,
-          materializedAt: null,
-          artifactUrl: null,
-        })),
+        ).map(b => {
+          const cache = liveCacheById.get(b.id as string);
+          const ready =
+            b.materialization === "parquet" &&
+            cache?.parquetBuildStatus === "ready" &&
+            !!cache?.parquetArtifactKey;
+          return {
+            id: b.id,
+            name: b.name,
+            materialization: (b.materialization ?? "live") as
+              | "live"
+              | "parquet",
+            ready,
+            rowCount: cache?.rowCount ?? null,
+            materializedAt: cache?.parquetBuiltAt ?? null,
+            artifactUrl: ready
+              ? `/api/preview/${token}/binding/${encodeURIComponent(String(b.id))}/artifact?rev=${encodeURIComponent(cache?.artifactRevision || "")}`
+              : null,
+          };
+        }),
       },
     });
   } catch (error) {
     logger.error("Preview content failed", { error });
     return c.json({ success: false, error: "Failed to load preview" }, 500);
+  }
+});
+
+// GET /:token/binding/:bindingId/artifact — stream a materialized binding's
+// parquet snapshot so the preview page can hydrate DuckDB (mirrors the public
+// share artifact route; the token IS the authorization, read-only).
+appPreviewRoutes.get("/:token/binding/:bindingId/artifact", async c => {
+  try {
+    const loaded = await loadAppForToken(c.req.param("token"));
+    if (!loaded) {
+      return c.json(
+        { success: false, error: "Preview link is invalid or expired" },
+        404,
+      );
+    }
+    const info = getBindingArtifactInfo(loaded.doc, c.req.param("bindingId"));
+    if (!info) {
+      return c.json({ success: false, error: "Artifact not found" }, 404);
+    }
+    const stream = await getDashboardArtifactStore().openReadStream(
+      info.artifactKey,
+    );
+    if (!stream) {
+      return c.json({ success: false, error: "Artifact not found" }, 404);
+    }
+    const rev = c.req.query("rev");
+    const cacheControl =
+      rev && info.revision && rev === info.revision
+        ? "private, max-age=86400, immutable"
+        : "private, no-store";
+    return c.body(Readable.toWeb(stream as Readable) as ReadableStream, 200, {
+      "Content-Type": "application/vnd.apache.parquet",
+      "X-Row-Count": String(info.rowCount ?? 0),
+      "Cache-Control": cacheControl,
+    });
+  } catch (error) {
+    logger.error("Preview artifact streaming failed", { error });
+    return c.json({ success: false, error: "Failed to serve artifact" }, 500);
   }
 });
 

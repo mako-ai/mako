@@ -119,6 +119,12 @@ preview; headless MCP renders server-side); `open_app` just focuses a UI tab.
    Prefer parquet + useDuckDB for dashboards/aggregations over larger result sets; prefer
    live useQuery for small, always-fresh lookups.
 
+   `run_app` verifies useDuckDB components with real data on every surface: the
+   headless preview hydrates ready parquet artifacts into DuckDB just like the
+   in-product editor. If a useDuckDB read errors with "no materialized
+   artifact", call `materialize_binding` and re-run — do not restructure the
+   app to work around it.
+
    **Toggle materialization IN PLACE — never delete/recreate:** to switch an
    existing binding between `live` and `parquet`, call
    `app_set_binding_materialization` with the binding `name` and the target
