@@ -69,6 +69,12 @@ function buildMcpOAuthSetups() {
         deeplinkLabel: "Add to Claude",
       },
       {
+        client: "ChatGPT",
+        instruction:
+          "In ChatGPT: Settings → Connectors → Create (if you don't see it, enable Developer mode under Advanced settings first). Name it mako, paste the URL, choose OAuth, and sign in. Works in chat and deep research — Mako implements ChatGPT's search / fetch connector contract.",
+        snippet: endpoint,
+      },
+      {
         client: "Cursor",
         instruction:
           "One click below — Cursor opens, installs the server, and prompts you to sign in. Or paste into .cursor/mcp.json:",

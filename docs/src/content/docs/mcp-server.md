@@ -1,9 +1,9 @@
 ---
 title: MCP Server (Use Mako from Claude Code)
-description: Connect Claude Code, Cursor, or Codex to your Mako workspace over MCP — explore data, run read-only queries, and build Mako apps headlessly with your own AI agent and your own AI subscription.
+description: Connect Claude Code, Cursor, Codex, or ChatGPT to your Mako workspace over MCP — explore data, run read-only queries, and build Mako apps headlessly with your own AI agent and your own AI subscription.
 ---
 
-Mako is itself an [MCP](https://modelcontextprotocol.io) **server**: point Claude Code, Cursor, Codex, or any MCP client at your workspace and your agent can explore your databases, validate queries, and build full Mako apps — using **your** AI subscription's tokens, not Mako's in-product agent.
+Mako is itself an [MCP](https://modelcontextprotocol.io) **server**: point Claude Code, Cursor, Codex, ChatGPT, or any MCP client at your workspace and your agent can explore your databases, validate queries, and build full Mako apps — using **your** AI subscription's tokens, not Mako's in-product agent.
 
 Where [MCP Connectors](/mcp-connectors/) let Mako's agent use *other* systems' tools, the MCP server is the reverse: it lets *your* agent use Mako.
 
@@ -30,6 +30,8 @@ Then type `/mcp` inside a session to trigger the sign-in.
 ```text
 https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=mako&connectorUrl=<percent-encoded MCP URL>
 ```
+
+**ChatGPT** — Mako implements ChatGPT's connector contract (top-level `search` / `fetch` tools), so it can be added as a ChatGPT connector and used in regular chat and deep research with citations back into your workspace. In ChatGPT (Plus/Pro/Business/Enterprise): **Settings → Connectors → Create** — if you don't see the option, enable **Developer mode** under **Settings → Connectors → Advanced settings** first. Name it `mako`, paste `https://your-mako-host/api/mcp`, choose **OAuth** authentication, and sign in when prompted (same consent flow: pick a workspace, read-only). In chat and deep research ChatGPT uses `search` / `fetch` to find and cite saved consoles, dashboards, apps, and skills; with developer mode on, the full Mako tool surface (SQL exploration, the apps loop, dbt) is available too.
 
 **Cursor** — add to `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global); Cursor prompts you to sign in on first use. **Settings → Connect Agents** also has a one-click **Add to Cursor** button.
 
@@ -95,6 +97,8 @@ The server ships usage instructions with the handshake, so agents discover this 
 
 Optional helpers: `web_search` / `fetch_url` for public docs (annotated `openWorldHint`).
 
+For ChatGPT compatibility the server also exposes a top-level `search` / `fetch` pair — workspace-wide search over saved consoles, dashboards, apps, and skills, plus document retrieval by id (`console:…`, `dashboard:…`, `app:…`, `skill:…`). ChatGPT requires exactly these two tools to accept a connector for chat and deep research; other clients can use them as a quick workspace search.
+
 The MCP tool surface is a curated subset of the in-product agent tools. Classification lives in `api/src/mcp/bridge-policy.ts` — every agent tool is either bridged, MCP-only, or explicitly excluded (client-only UI, security, in-product UX, or deferred). Adding an agent tool without classifying it fails the MCP inventory test.
 
 Read-only tools are annotated per the MCP spec (`readOnlyHint`), so well-behaved clients run the whole discovery/query loop without approval prompts. If you keep a Mako tab open on the app being edited, it live-reloads on every agent change.
@@ -133,3 +137,4 @@ To keep agent context lean, agents can pass `includeScreenshot: false` to `run_a
 | `Server-side rendering is not configured` | The deployment has no `RENDER_APP_BROWSER_PATH` (headless Chromium). Agents fall back to `create_preview_token` — open the URL in any browser. |
 | `Preview base URL … is unreachable` | `CLIENT_URL`/`PUBLIC_URL` on the API server is wrong — it must point at the Mako frontend. |
 | Client shows the server but tools error with 401 | The OAuth token or `Authorization: Bearer` key is missing/revoked — reconnect or rotate. |
+| ChatGPT rejects the connector ("does not implement our spec") | The deployment predates the `search` / `fetch` connector tools — update Mako. Custom MCP connectors also require Developer mode to be enabled under ChatGPT's connector settings. |
