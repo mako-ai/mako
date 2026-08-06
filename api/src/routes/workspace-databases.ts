@@ -14,6 +14,7 @@ import {
   SavedConsole,
 } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
+import { recordConnectionVerification } from "../services/connection-verification.service";
 import {
   queryExecutionService,
   QueryLanguage,
@@ -609,8 +610,18 @@ workspaceDatabaseRoutes.openapi(
         connection: body.connection,
       } as IDatabaseConnection;
 
+      const startedAt = Date.now();
       const result =
         await databaseConnectionService.testConnection(tempDatabase);
+      recordConnectionVerification({
+        userId: c.get("user")?.id,
+        workspaceId: c.get("workspace")?._id,
+        databaseType: body.type,
+        trigger: "standalone_test",
+        success: result.success,
+        durationMs: Date.now() - startedAt,
+        error: result.error,
+      });
 
       return c.json(result);
     } catch (error) {
@@ -700,8 +711,18 @@ workspaceDatabaseRoutes.openapi(
           type: body.type,
           connection: body.connection || {},
         } as IDatabaseConnection;
+        const startedAt = Date.now();
         const test =
           await databaseConnectionService.testConnection(tempDatabase);
+        recordConnectionVerification({
+          userId: user.id,
+          workspaceId: workspace._id,
+          databaseType: body.type,
+          trigger: "create_verify",
+          success: test.success,
+          durationMs: Date.now() - startedAt,
+          error: test.error,
+        });
         if (!test.success) {
           return c.json({
             success: false,
@@ -840,8 +861,19 @@ workspaceDatabaseRoutes.openapi(
             type: database.type,
             connection: candidate,
           } as IDatabaseConnection;
+          const startedAt = Date.now();
           const test =
             await databaseConnectionService.testConnection(tempDatabase);
+          recordConnectionVerification({
+            userId: c.get("user")?.id,
+            workspaceId: database.workspaceId,
+            connectionId: database._id,
+            databaseType: database.type,
+            trigger: "update_verify",
+            success: test.success,
+            durationMs: Date.now() - startedAt,
+            error: test.error,
+          });
           if (!test.success) {
             return c.json({
               success: false,
@@ -1011,7 +1043,18 @@ workspaceDatabaseRoutes.openapi(
         return c.json({ success: false, error: "Database not found" }, 404);
       }
 
+      const startedAt = Date.now();
       const result = await databaseConnectionService.testConnection(database);
+      recordConnectionVerification({
+        userId: c.get("user")?.id,
+        workspaceId: database.workspaceId,
+        connectionId: database._id,
+        databaseType: database.type,
+        trigger: "saved_test",
+        success: result.success,
+        durationMs: Date.now() - startedAt,
+        error: result.error,
+      });
 
       if (result.success) {
         // Update last connected timestamp
