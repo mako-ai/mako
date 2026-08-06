@@ -1171,6 +1171,28 @@ export interface IQueryExecution extends Document {
   bytesScanned?: number; // BigQuery, ClickHouse report this
 }
 
+export interface IConnectionVerification extends Document {
+  _id: Types.ObjectId;
+  verifiedAt: Date;
+
+  // Who triggered the test (absent for unauthenticated/system paths)
+  userId?: string;
+  workspaceId?: Types.ObjectId;
+
+  // Saved connection under test; absent for pre-save tests of unsaved configs
+  connectionId?: Types.ObjectId;
+  databaseType: string;
+
+  // Where in the product the test ran
+  trigger: "standalone_test" | "create_verify" | "update_verify" | "saved_test";
+
+  // Outcome
+  success: boolean;
+  durationMs: number;
+  errorClass?: string; // auth_failed, host_not_found, timeout, tls, ...
+  errorMessage?: string; // Truncated driver error, for drill-down
+}
+
 /**
  * Workspace Schema
  */
@@ -2825,6 +2847,49 @@ CdcStateTransitionSchema.index({ workspaceId: 1, flowId: 1, at: -1 });
  * QueryExecution Schema
  * Tracks all query executions for usage analytics and billing
  */
+const ConnectionVerificationSchema = new Schema<IConnectionVerification>(
+  {
+    verifiedAt: { type: Date, required: true, default: Date.now },
+    userId: { type: String, ref: "User", required: false },
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: false,
+    },
+    connectionId: {
+      type: Schema.Types.ObjectId,
+      ref: "DatabaseConnection",
+      required: false,
+    },
+    databaseType: { type: String, required: true },
+    trigger: {
+      type: String,
+      enum: ["standalone_test", "create_verify", "update_verify", "saved_test"],
+      required: true,
+    },
+    success: { type: Boolean, required: true },
+    durationMs: { type: Number, required: true },
+    errorClass: { type: String, required: false },
+    errorMessage: { type: String, required: false },
+  },
+  {
+    collection: "connection_verifications",
+    timestamps: false,
+  },
+);
+
+ConnectionVerificationSchema.index({ workspaceId: 1, verifiedAt: -1 });
+ConnectionVerificationSchema.index({ userId: 1, verifiedAt: -1 });
+ConnectionVerificationSchema.index({
+  success: 1,
+  errorClass: 1,
+  verifiedAt: -1,
+}); // Failure-mode rollups
+ConnectionVerificationSchema.index(
+  { verifiedAt: 1 },
+  { expireAfterSeconds: 7776000 },
+); // TTL: 90 days
+
 const QueryExecutionSchema = new Schema<IQueryExecution>(
   {
     executedAt: { type: Date, required: true, default: Date.now },
@@ -4040,6 +4105,10 @@ export const BigQueryCdcState = CdcEntityState;
 export const QueryExecution = mongoose.model<IQueryExecution>(
   "QueryExecution",
   QueryExecutionSchema,
+);
+export const ConnectionVerification = mongoose.model<IConnectionVerification>(
+  "ConnectionVerification",
+  ConnectionVerificationSchema,
 );
 export const ScheduledQueryRun = mongoose.model<IScheduledQueryRun>(
   "ScheduledQueryRun",
