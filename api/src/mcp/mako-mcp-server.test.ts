@@ -24,6 +24,7 @@ import {
   type CapabilityGrant,
 } from "@mako/agent-tools";
 import { buildMakoMcpServer } from "./mako-mcp-server";
+import { createChatGptConnectorTools } from "./chatgpt-connector-tools";
 import { StatelessMcpTransport } from "./stateless-transport";
 import {
   capabilityGrantsFromScopes,
@@ -795,6 +796,115 @@ async function main() {
       false,
       "Desktop ACP must get list_open_consoles from mako-desktop, not the Mako bridge",
     );
+  }
+
+  // 3g. ChatGPT connector contract: the route layer registers search/fetch
+  //     as extraTools for external clients (ChatGPT refuses a connector
+  //     without exactly this pair). Both are read-only and policy-classified.
+  {
+    const context = {
+      workspaceId: WORKSPACE_ID,
+      scopes: ["mcp", "query:read"] as WorkspaceApiKeyScope[],
+    };
+    const chatGptExchange = async (messages: Record<string, unknown>[]) => {
+      const server = buildMakoMcpServer(
+        context,
+        createChatGptConnectorTools(context),
+      );
+      const transport = new StatelessMcpTransport();
+      await server.connect(transport);
+      try {
+        return (await transport.handle(
+          messages as unknown as JSONRPCMessage[],
+          5_000,
+        )) as unknown as Record<string, unknown>[];
+      } finally {
+        await server.close().catch(() => undefined);
+      }
+    };
+
+    const [listRes] = await chatGptExchange([
+      { jsonrpc: "2.0", id: "chatgpt-list", method: "tools/list" },
+    ]);
+    const { tools } = listRes.result as {
+      tools: {
+        name: string;
+        inputSchema: { type?: string };
+        annotations?: { readOnlyHint?: boolean };
+      }[];
+    };
+    const byName = new Map(tools.map(tool => [tool.name, tool]));
+    for (const name of ["search", "fetch"]) {
+      const entry = byName.get(name);
+      assert.ok(entry, `ChatGPT connector tool missing: ${name}`);
+      assert.equal(entry?.inputSchema.type, "object");
+      assert.equal(
+        entry?.annotations?.readOnlyHint,
+        true,
+        `${name} must be annotated read-only`,
+      );
+      const policy = MCP_BRIDGE_POLICY[name];
+      assert.equal(
+        policy?.status,
+        "mcp-only",
+        `${name} must be classified mcp-only in the bridge policy`,
+      );
+    }
+
+    // Malformed / unknown document ids fail in-band before any DB access.
+    const [badId] = await chatGptExchange([
+      {
+        jsonrpc: "2.0",
+        id: "chatgpt-bad-id",
+        method: "tools/call",
+        params: { name: "fetch", arguments: { id: "bogus" } },
+      },
+    ]);
+    const badIdResult = badId.result as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+    assert.equal(badIdResult.isError, true);
+    assert.match(badIdResult.content[0].text, /console, dashboard, app/);
+
+    const [badKind] = await chatGptExchange([
+      {
+        jsonrpc: "2.0",
+        id: "chatgpt-bad-kind",
+        method: "tools/call",
+        params: { name: "fetch", arguments: { id: "widget:123" } },
+      },
+    ]);
+    assert.match(
+      (badKind.result as { content: { text: string }[] }).content[0].text,
+      /Unknown document kind/,
+    );
+
+    // Zod schema validation applies like every other bridged tool.
+    const [missingQuery] = await chatGptExchange([
+      {
+        jsonrpc: "2.0",
+        id: "chatgpt-no-query",
+        method: "tools/call",
+        params: { name: "search", arguments: {} },
+      },
+    ]);
+    assert.match(
+      (missingQuery.result as { content: { text: string }[] }).content[0].text,
+      /Invalid arguments/,
+    );
+
+    // ACP Desktop must NOT get the pair (route passes no extraTools there).
+    const [acpList] = await exchange(
+      [{ jsonrpc: "2.0", id: "chatgpt-acp", method: "tools/list" }],
+      ["mcp", "query:read"],
+      true,
+    );
+    const acpNames = new Set(
+      (acpList.result as { tools: { name: string }[] }).tools.map(t => t.name),
+    );
+    assert.equal(acpNames.has("search"), false);
+    assert.equal(acpNames.has("fetch"), false);
   }
 
   // 4. Arbitrary MongoDB JavaScript execution is never bridged over MCP.

@@ -150,6 +150,13 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   create_preview_token: mcpOnly(),
   render_app: mcpOnly(),
 
+  // ── MCP-only ChatGPT connector contract (chatgpt-connector-tools.ts) ──
+  // ChatGPT only accepts an MCP server as a chat/deep-research connector
+  // when it exposes this exact search/fetch pair; both are read-only views
+  // over content other bridged tools already expose.
+  fetch: mcpOnly(),
+  search: mcpOnly(),
+
   // ── Charts / screenshots (client) ─────────────────────────────────────
   capture_screenshot: exclude(
     "client-only",

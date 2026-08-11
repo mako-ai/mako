@@ -21,7 +21,7 @@ interface DashboardSearchResult {
   widgetCount: number;
 }
 
-async function searchDashboardsByQuery(
+export async function searchDashboardsByQuery(
   query: string,
   workspaceId: string,
   limit: number,
