@@ -43,7 +43,9 @@ import ShareDialog from "./ShareDialog";
 import { SaveCommentDialog } from "./SaveCommentDialog";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
 import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
-import ResourceRefreshControl from "./ResourceRefreshControl";
+import ResourceRefreshControl, {
+  LastRefreshedLabel,
+} from "./ResourceRefreshControl";
 import { buildPreviewHtml, PREVIEW_MESSAGE } from "../app-runtime/preview";
 import { appLocationFromHostSearch } from "../app-runtime/app-location";
 import {
@@ -270,6 +272,20 @@ export default function AppRenderer({
   );
 
   const hasAnyBindings = (appEntity?.dataBindings.length ?? 0) > 0;
+
+  // Oldest materialized artifact across parquet bindings — "every binding is
+  // at least this fresh". Null for live-only apps (data is queried on read).
+  const lastRefreshedAt = useMemo(() => {
+    let oldest: string | null = null;
+    for (const binding of appEntity?.dataBindings ?? []) {
+      if (binding.materialization !== "parquet") continue;
+      const builtAt =
+        binding.cache?.parquetBuiltAt ?? binding.cache?.lastRefreshedAt;
+      if (!builtAt || Number.isNaN(Date.parse(builtAt))) continue;
+      if (!oldest || Date.parse(builtAt) < Date.parse(oldest)) oldest = builtAt;
+    }
+    return oldest;
+  }, [appEntity?.dataBindings]);
 
   // Single "Refresh" action: force-rebuild every parquet binding, wait until
   // ALL settle, load DuckDB tables, then poke the running app once. Never
@@ -847,12 +863,16 @@ export default function AppRenderer({
               </Box>
             </Tooltip>
           ))}
-        {canManage && hasAnyBindings && (
+        {canManage && hasAnyBindings ? (
           <ResourceRefreshControl
             subject="binding"
             busy={rematerializing}
             onClick={() => void handleRefreshData()}
+            lastRefreshedAt={lastRefreshedAt}
           />
+        ) : (
+          // Viewers can't refresh, but data freshness still matters to them.
+          <LastRefreshedLabel lastRefreshedAt={lastRefreshedAt} />
         )}
         <Tooltip title="Share">
           <IconButton size="small" onClick={() => setShareOpen(true)}>
