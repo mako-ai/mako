@@ -127,7 +127,7 @@ preview; headless MCP renders server-side); `open_app` just focuses a UI tab.
 
    **Toggle materialization IN PLACE — never delete/recreate:** to switch an
    existing binding between `live` and `parquet`, call
-   `app_set_binding_materialization` with the binding `name` and the target
+   `app_update_data_binding` with the binding `name` and the target
    `materialization`. It flips the setting on the existing binding (preserving its
    id, code, and connection); after switching to `parquet`, call
    `materialize_binding` to build the artifact. Do NOT delete and recreate a binding
@@ -135,10 +135,12 @@ preview; headless MCP renders server-side); `open_app` just focuses a UI tab.
    anything referencing it.
 
    **Scheduled refresh:** a parquet binding can auto-refresh on a cron — set
-   `materializationSchedule` when creating it, or call `app_set_binding_schedule`
-   (e.g. `{ enabled: true, cron: "0 * * * *" }` for hourly, `"0 0 * * *"` for
-   daily) on an existing one. This mirrors dashboard data-source schedules. Only
-   parquet bindings can be scheduled (live bindings always run fresh). Scheduled
+   `materializationSchedule` when creating it, or pass it to
+   `app_update_data_binding` (e.g. `{ enabled: true, cron: "0 * * * *" }` for
+   hourly, `"0 0 * * *"` for daily) on an existing one. This mirrors dashboard
+   data-source schedules. Only parquet bindings can be scheduled (live bindings
+   always run fresh); to materialize and schedule in one call, pass
+   `materialization: "parquet"` and `materializationSchedule` together. Scheduled
    refresh runs in production; in local dev trigger a build with
    `materialize_binding`. An explicit `materialize_binding` always rebuilds from
    current upstream data (it force-refreshes past the query-definition cache).

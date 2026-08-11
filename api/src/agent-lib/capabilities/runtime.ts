@@ -69,6 +69,27 @@ export function filterAuthorizedCapabilities<T>(
 }
 
 /**
+ * Grant a call's input requires but the session does not hold, or null when
+ * the call is fine. Input-conditional grants let a broader tool carry a
+ * gated leg (app_update_data_binding's materializationSchedule keeps
+ * app_set_binding_schedule's schedule-write gate) without gating the whole
+ * tool. Shared by the execution wrapper below and the MCP call path.
+ */
+export function missingInputConditionalGrant(
+  name: string,
+  input: unknown,
+  grants: ReadonlySet<CapabilityGrant>,
+): { grant: CapabilityGrant; behavior: string } | null {
+  const conditional =
+    AGENT_CAPABILITY_BY_NAME.get(name)?.inputConditionalGrants;
+  if (!conditional) return null;
+  for (const entry of conditional) {
+    if (!grants.has(entry.grant) && entry.appliesTo(input)) return entry;
+  }
+  return null;
+}
+
+/**
  * Wrap grant-gated tools so the grant is enforced when the tool EXECUTES,
  * not by hiding the tool from the provider.
  *
@@ -90,13 +111,18 @@ export function enforceCapabilityGrantsAtExecution(
 ): ToolSet {
   const wrapped: ToolSet = { ...tools };
   for (const [name, toolDef] of Object.entries(tools)) {
-    const requiredGrant = AGENT_CAPABILITY_BY_NAME.get(name)?.requiredGrant;
+    const capability = AGENT_CAPABILITY_BY_NAME.get(name);
+    const requiredGrant = capability?.requiredGrant;
+    const hasConditional =
+      (capability?.inputConditionalGrants?.length ?? 0) > 0;
     const execute = toolDef.execute;
-    if (!requiredGrant || typeof execute !== "function") continue;
+    if ((!requiredGrant && !hasConditional) || typeof execute !== "function") {
+      continue;
+    }
     wrapped[name] = {
       ...toolDef,
       execute: (input: never, options: never) => {
-        if (!liveGrants().has(requiredGrant)) {
+        if (requiredGrant && !liveGrants().has(requiredGrant)) {
           return {
             success: false,
             error:
@@ -104,6 +130,17 @@ export function enforceCapabilityGrantsAtExecution(
               "Call submit_plan with requiredCapabilities including " +
               `"${requiredGrant}", wait for the user to approve the plan, ` +
               "then retry.",
+          };
+        }
+        const missing = missingInputConditionalGrant(name, input, liveGrants());
+        if (missing) {
+          return {
+            success: false,
+            error:
+              `${missing.behavior} requires an approved "${missing.grant}" ` +
+              "task grant. Call submit_plan with requiredCapabilities " +
+              `including "${missing.grant}", wait for the user to approve ` +
+              "the plan, then retry — or retry without that field.",
           };
         }
         return execute(input, options);

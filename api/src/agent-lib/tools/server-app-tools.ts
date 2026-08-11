@@ -46,6 +46,7 @@ import {
   materializeBindingSchema,
   setBindingScheduleSchema,
   setBindingMaterializationSchema,
+  type AppUpdateDataBindingInput,
   summarizeAppBindingForState,
   clipAgentText,
   APP_READ_FILE_MAX_CHARS,
@@ -362,6 +363,347 @@ export function createServerAppTools({
       language: doc.language || "sql",
       databaseId: doc.databaseId,
       databaseName: doc.databaseName,
+    };
+  };
+
+  // Plain-object view of a stored schedule for comparisons and tool output.
+  const plainSchedule = (
+    s?: {
+      enabled?: boolean | null;
+      cron?: string | null;
+      timezone?: string | null;
+      dataFreshnessTtlMs?: number | null;
+    } | null,
+  ) =>
+    s
+      ? {
+          enabled: s.enabled === true,
+          cron: s.cron ?? null,
+          timezone: s.timezone ?? "UTC",
+          dataFreshnessTtlMs: s.dataFreshnessTtlMs ?? null,
+        }
+      : undefined;
+
+  const schedulesEqual = (
+    a?: ReturnType<typeof plainSchedule>,
+    b?: ReturnType<typeof plainSchedule>,
+  ) =>
+    (a?.enabled ?? false) === (b?.enabled ?? false) &&
+    (a?.cron ?? null) === (b?.cron ?? null) &&
+    (a?.timezone ?? "UTC") === (b?.timezone ?? "UTC") &&
+    (a?.dataFreshnessTtlMs ?? null) === (b?.dataFreshnessTtlMs ?? null);
+
+  // Single write path for every in-place binding change: query definition,
+  // materialization, and refresh schedule. app_update_data_binding executes
+  // this directly; the deprecated setter aliases
+  // (app_set_binding_materialization / app_set_binding_schedule) map their
+  // inputs onto it.
+  const updateDataBinding = async (input: AppUpdateDataBindingInput) => {
+    const loaded = await loadApp(input.appId);
+    if (isLoadError(loaded)) return { success: false, ...loaded };
+    const { doc } = loaded;
+    if (!(await canWrite(doc))) return denied(input.appId);
+    const binding = (doc.dataBindings ?? []).find(b => b.name === input.name);
+    if (!binding) {
+      return {
+        success: false,
+        error: `No data binding named "${input.name}". Confirm the name with list_data_sources, or create it with app_create_data_binding.`,
+      };
+    }
+    const currentResourceVersion = appVersionedResourceVersion(
+      doc.version,
+      appBindingResourceVersion(binding),
+    );
+    if (
+      input.expectedResourceVersion &&
+      input.expectedResourceVersion !== currentResourceVersion
+    ) {
+      return {
+        success: false,
+        error:
+          `Binding changed since it was read (expected ${input.expectedResourceVersion}, ` +
+          `current ${currentResourceVersion}). Search/read it again before updating.`,
+        currentResourceVersion,
+      };
+    }
+
+    if (input.code !== undefined && input.oldString !== undefined) {
+      return {
+        success: false,
+        error:
+          "Pass either code (full replacement) or oldString/newString (anchored edit), not both.",
+      };
+    }
+
+    let nextCode = binding.code ?? "";
+    let diff: string | undefined;
+    let replacements: number | undefined;
+    if (input.oldString !== undefined) {
+      if (input.newString === undefined) {
+        return {
+          success: false,
+          error: "newString is required when oldString is provided.",
+        };
+      }
+      const result = applyStrReplace(
+        binding.code ?? "",
+        input.oldString,
+        input.newString,
+      );
+      if (!result.ok) {
+        return { success: false, error: result.error };
+      }
+      diff = buildStrReplaceDiff(
+        binding.code ?? "",
+        input.oldString,
+        input.newString,
+        result.replacements,
+      );
+      nextCode = result.contents;
+      replacements = result.replacements;
+    } else if (input.code !== undefined) {
+      nextCode = input.code;
+    }
+
+    if (input.connectionId !== undefined) {
+      const connCheck = await validateConnection(input.connectionId);
+      if (!connCheck.ok) {
+        return { success: false, error: connCheck.error };
+      }
+    }
+    if (input.dbtProjectId != null) {
+      const dbtCheck = await validateDbtProject(input.dbtProjectId);
+      if (!dbtCheck.ok) {
+        return { success: false, error: dbtCheck.error };
+      }
+    }
+
+    // Materialization / schedule legs (folded in from the setter tools).
+    const currentMaterialization =
+      binding.materialization === "parquet" ? "parquet" : "live";
+    const nextMaterialization = input.materialization ?? currentMaterialization;
+    const materializationChanged =
+      nextMaterialization !== currentMaterialization;
+
+    const currentSchedule = plainSchedule(binding.materializationSchedule);
+    let nextSchedule = currentSchedule;
+    if (input.materializationSchedule) {
+      if (
+        input.materializationSchedule.enabled &&
+        nextMaterialization !== "parquet"
+      ) {
+        return {
+          success: false,
+          error:
+            "Only 'parquet' bindings can have an enabled refresh schedule " +
+            `(live bindings always run fresh). Pass materialization: 'parquet' ` +
+            "in the same call, then build the artifact with materialize_binding.",
+        };
+      }
+      try {
+        nextSchedule = plainSchedule(
+          validateDashboardMaterializationSchedule(
+            input.materializationSchedule,
+          ),
+        );
+      } catch (error) {
+        return {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Invalid materialization schedule",
+        };
+      }
+    } else if (nextMaterialization === "live" && currentSchedule?.enabled) {
+      // Turning materialization off implicitly disables the schedule.
+      nextSchedule = { ...currentSchedule, enabled: false };
+    }
+    const scheduleChanged = !schedulesEqual(currentSchedule, nextSchedule);
+
+    const touchesDefinition =
+      input.code !== undefined ||
+      input.oldString !== undefined ||
+      input.connectionId !== undefined ||
+      input.language !== undefined ||
+      input.databaseId !== undefined ||
+      input.databaseName !== undefined ||
+      input.dbtProjectId !== undefined;
+    const nextLanguage = input.language ?? binding.language ?? "sql";
+    // Query-access is only needed when the update (re)runs the query:
+    // definition edits, enabling a schedule, or building a parquet artifact.
+    // A disable-only schedule change must stay possible for read-only keys.
+    if (
+      touchesDefinition ||
+      input.materializationSchedule?.enabled === true ||
+      (materializationChanged && nextMaterialization === "parquet")
+    ) {
+      const accessError = await bindingQueryAccessError(
+        nextLanguage,
+        nextCode,
+        input.connectionId ?? binding.connectionId,
+      );
+      if (accessError) return { success: false, error: accessError };
+    }
+
+    const nextDbtProjectId =
+      input.dbtProjectId === undefined
+        ? binding.dbtProjectId
+        : (input.dbtProjectId ?? undefined);
+    const definitionChanged =
+      nextCode !== (binding.code ?? "") ||
+      nextDbtProjectId !== binding.dbtProjectId ||
+      (input.connectionId !== undefined &&
+        input.connectionId !== binding.connectionId) ||
+      (input.language !== undefined && input.language !== binding.language) ||
+      (input.databaseId !== undefined &&
+        input.databaseId !== binding.databaseId) ||
+      (input.databaseName !== undefined &&
+        input.databaseName !== binding.databaseName);
+    if (!definitionChanged && !materializationChanged && !scheduleChanged) {
+      if (
+        input.materialization !== undefined ||
+        input.materializationSchedule !== undefined
+      ) {
+        // Idempotent materialization/schedule set — succeed as a no-op so
+        // repeated calls (and the deprecated setter aliases) stay green.
+        return {
+          success: true,
+          binding: {
+            name: binding.name,
+            materialization: currentMaterialization,
+            materializationSchedule: currentSchedule,
+          },
+          version: doc.version,
+          hint: "No changes — the binding already matches the requested state.",
+        };
+      }
+      return {
+        success: false,
+        error:
+          "Nothing to update — provide code, oldString/newString, a changed " +
+          "connection/language/database/dbtProjectId field, materialization, " +
+          "or materializationSchedule.",
+      };
+    }
+
+    // Mutate the existing embedded binding atomically. The app version
+    // predicate closes the race between resourceVersion validation and
+    // persistence; any concurrent app edit forces a fresh read/retry.
+    const setFields: Record<string, unknown> = {
+      "dataBindings.$.code": nextCode,
+    };
+    const unsetFields: Record<string, 1> = {};
+    if (input.dbtProjectId !== undefined) {
+      if (nextDbtProjectId === undefined) {
+        unsetFields["dataBindings.$.dbtProjectId"] = 1;
+      } else {
+        setFields["dataBindings.$.dbtProjectId"] = nextDbtProjectId;
+      }
+    }
+    if (input.connectionId !== undefined) {
+      setFields["dataBindings.$.connectionId"] = input.connectionId;
+    }
+    if (input.language !== undefined) {
+      setFields["dataBindings.$.language"] = input.language;
+    }
+    if (input.databaseId !== undefined) {
+      setFields["dataBindings.$.databaseId"] = input.databaseId;
+    }
+    if (input.databaseName !== undefined) {
+      setFields["dataBindings.$.databaseName"] = input.databaseName;
+    }
+    if (materializationChanged) {
+      setFields["dataBindings.$.materialization"] = nextMaterialization;
+    }
+    if (scheduleChanged) {
+      setFields["dataBindings.$.materializationSchedule"] = nextSchedule;
+    }
+    const updated = await MakoApp.findOneAndUpdate(
+      {
+        _id: doc._id,
+        version: doc.version,
+        "dataBindings.name": input.name,
+      },
+      {
+        $set: setFields,
+        ...(Object.keys(unsetFields).length > 0 ? { $unset: unsetFields } : {}),
+        $inc: { version: 1 },
+      },
+      { new: true },
+    );
+    if (!updated) {
+      return {
+        success: false,
+        error:
+          "App changed while this binding update was being applied. " +
+          "Search/read the resource again, then retry with its new " +
+          "resourceVersion.",
+      };
+    }
+    const updatedBinding = (updated.dataBindings ?? []).find(
+      candidate => candidate.name === input.name,
+    );
+    if (!updatedBinding) {
+      return {
+        success: false,
+        error: `Binding disappeared during update: ${input.name}`,
+      };
+    }
+    publishRealtimeEvent(workspaceId, {
+      type: "app.updated",
+      appId: input.appId,
+      version: updated.version,
+      updatedBy: userId ?? "agent",
+      clientId: agentClientId,
+      origin: "agent",
+    });
+
+    const isParquet = updatedBinding.materialization === "parquet";
+    // Schedule-only changes don't invalidate the artifact — skip the rebuild.
+    if (isParquet && (definitionChanged || materializationChanged)) {
+      // Queue the rebuild now (the hash change makes it a cache miss);
+      // the agent can wait on it with materialize_binding.
+      await queueAppBindingMaterialization({
+        workspaceId,
+        appId: input.appId,
+        bindingId: updatedBinding.id,
+      }).catch(() => undefined);
+    }
+
+    const baseHint =
+      definitionChanged || materializationChanged
+        ? isParquet
+          ? `Definition updated in place and a rebuild was queued. The app keeps serving the PREVIOUS data until the artifact is rebuilt — call materialize_binding for "${updatedBinding.name}" to wait for it.`
+          : `Definition updated in place. useQuery("${updatedBinding.name}") runs the new query on the next read.`
+        : `Binding "${updatedBinding.name}" updated in place.`;
+    const scheduleHint = scheduleChanged
+      ? nextSchedule?.enabled
+        ? ` Auto-refresh schedule: ${nextSchedule.cron} (${nextSchedule.timezone}). Scheduled refresh runs in production; in local dev trigger it with materialize_binding.`
+        : " Scheduled refresh is off."
+      : "";
+
+    return {
+      success: true,
+      binding: {
+        name: updatedBinding.name,
+        materialization: updatedBinding.materialization ?? "live",
+        ...(scheduleChanged || input.materializationSchedule !== undefined
+          ? {
+              materializationSchedule: plainSchedule(
+                updatedBinding.materializationSchedule,
+              ),
+            }
+          : {}),
+      },
+      version: updated.version,
+      resourceVersion: appVersionedResourceVersion(
+        updated.version,
+        appBindingResourceVersion(updatedBinding),
+      ),
+      ...(replacements !== undefined ? { replacements } : {}),
+      ...(diff ? { diff } : {}),
+      hint: baseHint + scheduleHint,
     };
   };
 
@@ -1147,235 +1489,27 @@ export function createServerAppTools({
 
     app_update_data_binding: tool({
       description:
-        "Update an EXISTING data binding's query IN PLACE by name — change " +
-        "its code (full replacement via code, or an anchored edit via " +
-        "oldString/newString), connection, language, or database. Preserves " +
-        "the binding's id, materialization, schedule, and artifact history — " +
-        "NEVER delete/recreate a binding (or invent a versioned name like " +
-        "my_data_v2) just to change its query. For 'parquet' bindings a " +
-        "rebuild is queued automatically; open tabs keep serving the " +
-        "PREVIOUS data until you call materialize_binding and it completes.",
+        "Update an EXISTING data binding IN PLACE by name — change its query " +
+        "code (full replacement via code, or an anchored edit via " +
+        "oldString/newString), connection, language, database, dbt link, " +
+        "materialization ('live' ↔ 'parquet'), or cron auto-refresh " +
+        "schedule (materializationSchedule, 'parquet' only — e.g. " +
+        "{ enabled: true, cron: '0 * * * *' }). Preserves the binding's id " +
+        "and artifact history — NEVER delete/recreate a binding (or invent " +
+        "a versioned name like my_data_v2) just to change any of these. For " +
+        "'parquet' bindings a rebuild is queued automatically on definition " +
+        "changes; open tabs keep serving the PREVIOUS data until you call " +
+        "materialize_binding and it completes.",
       inputSchema: updateDataBindingSchema,
       execute: async input =>
-        wrap("app_update_data_binding", async () => {
-          const loaded = await loadApp(input.appId);
-          if (isLoadError(loaded)) return { success: false, ...loaded };
-          const { doc } = loaded;
-          if (!(await canWrite(doc))) return denied(input.appId);
-          const binding = (doc.dataBindings ?? []).find(
-            b => b.name === input.name,
-          );
-          if (!binding) {
-            return {
-              success: false,
-              error: `No data binding named "${input.name}". Confirm the name with list_data_sources, or create it with app_create_data_binding.`,
-            };
-          }
-          const currentResourceVersion = appVersionedResourceVersion(
-            doc.version,
-            appBindingResourceVersion(binding),
-          );
-          if (
-            input.expectedResourceVersion &&
-            input.expectedResourceVersion !== currentResourceVersion
-          ) {
-            return {
-              success: false,
-              error:
-                `Binding changed since it was read (expected ${input.expectedResourceVersion}, ` +
-                `current ${currentResourceVersion}). Search/read it again before updating.`,
-              currentResourceVersion,
-            };
-          }
-
-          if (input.code !== undefined && input.oldString !== undefined) {
-            return {
-              success: false,
-              error:
-                "Pass either code (full replacement) or oldString/newString (anchored edit), not both.",
-            };
-          }
-
-          let nextCode = binding.code ?? "";
-          let diff: string | undefined;
-          let replacements: number | undefined;
-          if (input.oldString !== undefined) {
-            if (input.newString === undefined) {
-              return {
-                success: false,
-                error: "newString is required when oldString is provided.",
-              };
-            }
-            const result = applyStrReplace(
-              binding.code ?? "",
-              input.oldString,
-              input.newString,
-            );
-            if (!result.ok) {
-              return { success: false, error: result.error };
-            }
-            diff = buildStrReplaceDiff(
-              binding.code ?? "",
-              input.oldString,
-              input.newString,
-              result.replacements,
-            );
-            nextCode = result.contents;
-            replacements = result.replacements;
-          } else if (input.code !== undefined) {
-            nextCode = input.code;
-          }
-
-          if (input.connectionId !== undefined) {
-            const connCheck = await validateConnection(input.connectionId);
-            if (!connCheck.ok) {
-              return { success: false, error: connCheck.error };
-            }
-          }
-          if (input.dbtProjectId != null) {
-            const dbtCheck = await validateDbtProject(input.dbtProjectId);
-            if (!dbtCheck.ok) {
-              return { success: false, error: dbtCheck.error };
-            }
-          }
-          const nextLanguage = input.language ?? binding.language ?? "sql";
-          const accessError = await bindingQueryAccessError(
-            nextLanguage,
-            nextCode,
-            input.connectionId ?? binding.connectionId,
-          );
-          if (accessError) return { success: false, error: accessError };
-
-          const nextDbtProjectId =
-            input.dbtProjectId === undefined
-              ? binding.dbtProjectId
-              : (input.dbtProjectId ?? undefined);
-          const changed =
-            nextCode !== (binding.code ?? "") ||
-            nextDbtProjectId !== binding.dbtProjectId ||
-            (input.connectionId !== undefined &&
-              input.connectionId !== binding.connectionId) ||
-            (input.language !== undefined &&
-              input.language !== binding.language) ||
-            (input.databaseId !== undefined &&
-              input.databaseId !== binding.databaseId) ||
-            (input.databaseName !== undefined &&
-              input.databaseName !== binding.databaseName);
-          if (!changed) {
-            return {
-              success: false,
-              error:
-                "Nothing to update — provide code, oldString/newString, or a changed connection/language/database/dbtProjectId field.",
-            };
-          }
-
-          // Mutate the existing embedded binding atomically. The app version
-          // predicate closes the race between resourceVersion validation and
-          // persistence; any concurrent app edit forces a fresh read/retry.
-          const setFields: Record<string, unknown> = {
-            "dataBindings.$.code": nextCode,
-          };
-          const unsetFields: Record<string, 1> = {};
-          if (input.dbtProjectId !== undefined) {
-            if (nextDbtProjectId === undefined) {
-              unsetFields["dataBindings.$.dbtProjectId"] = 1;
-            } else {
-              setFields["dataBindings.$.dbtProjectId"] = nextDbtProjectId;
-            }
-          }
-          if (input.connectionId !== undefined) {
-            setFields["dataBindings.$.connectionId"] = input.connectionId;
-          }
-          if (input.language !== undefined) {
-            setFields["dataBindings.$.language"] = input.language;
-          }
-          if (input.databaseId !== undefined) {
-            setFields["dataBindings.$.databaseId"] = input.databaseId;
-          }
-          if (input.databaseName !== undefined) {
-            setFields["dataBindings.$.databaseName"] = input.databaseName;
-          }
-          const updated = await MakoApp.findOneAndUpdate(
-            {
-              _id: doc._id,
-              version: doc.version,
-              "dataBindings.name": input.name,
-            },
-            {
-              $set: setFields,
-              ...(Object.keys(unsetFields).length > 0
-                ? { $unset: unsetFields }
-                : {}),
-              $inc: { version: 1 },
-            },
-            { new: true },
-          );
-          if (!updated) {
-            return {
-              success: false,
-              error:
-                "App changed while this binding update was being applied. " +
-                "Search/read the resource again, then retry with its new " +
-                "resourceVersion.",
-            };
-          }
-          const updatedBinding = (updated.dataBindings ?? []).find(
-            candidate => candidate.name === input.name,
-          );
-          if (!updatedBinding) {
-            return {
-              success: false,
-              error: `Binding disappeared during update: ${input.name}`,
-            };
-          }
-          publishRealtimeEvent(workspaceId, {
-            type: "app.updated",
-            appId: input.appId,
-            version: updated.version,
-            updatedBy: userId ?? "agent",
-            clientId: agentClientId,
-            origin: "agent",
-          });
-
-          const isParquet = updatedBinding.materialization === "parquet";
-          if (isParquet) {
-            // Queue the rebuild now (the hash change makes it a cache miss);
-            // the agent can wait on it with materialize_binding.
-            await queueAppBindingMaterialization({
-              workspaceId,
-              appId: input.appId,
-              bindingId: updatedBinding.id,
-            }).catch(() => undefined);
-          }
-
-          return {
-            success: true,
-            binding: {
-              name: updatedBinding.name,
-              materialization: updatedBinding.materialization ?? "live",
-            },
-            version: updated.version,
-            resourceVersion: appVersionedResourceVersion(
-              updated.version,
-              appBindingResourceVersion(updatedBinding),
-            ),
-            ...(replacements !== undefined ? { replacements } : {}),
-            ...(diff ? { diff } : {}),
-            hint: isParquet
-              ? `Definition updated in place and a rebuild was queued. The app keeps serving the PREVIOUS data until the artifact is rebuilt — call materialize_binding for "${updatedBinding.name}" to wait for it.`
-              : `Definition updated in place. useQuery("${updatedBinding.name}") runs the new query on the next read.`,
-          };
-        }),
+        wrap("app_update_data_binding", () => updateDataBinding(input)),
     }),
 
     app_set_binding_schedule: tool({
       description:
-        "Set or clear the materialization schedule on an existing 'parquet' " +
-        "data binding so its artifact auto-refreshes on a cron. Use this when " +
-        "the user wants a data source to refresh periodically (e.g. hourly or " +
-        "daily) instead of only on demand. Pass enabled:false to turn the " +
-        "schedule off. The binding must be 'parquet' (live bindings always run " +
-        "fresh and can't be scheduled). Confirm the name with list_data_sources.",
+        "Deprecated alias of app_update_data_binding — pass " +
+        "materializationSchedule there instead. Sets or clears the cron " +
+        "auto-refresh on a 'parquet' data binding.",
       inputSchema: setBindingScheduleSchema,
       execute: async ({
         appId,
@@ -1385,72 +1519,25 @@ export function createServerAppTools({
         timezone,
         dataFreshnessTtlMs,
       }) =>
-        wrap("app_set_binding_schedule", async () => {
-          const loaded = await loadApp(appId);
-          if (isLoadError(loaded)) return { success: false, ...loaded };
-          const { doc } = loaded;
-          if (!(await canWrite(doc))) return denied(appId);
-          const binding = (doc.dataBindings ?? []).find(b => b.name === name);
-          if (!binding) {
-            return { success: false, error: `No data binding named "${name}"` };
-          }
-          if (binding.materialization !== "parquet") {
-            return {
-              success: false,
-              error:
-                `Binding "${name}" is 'live'. Switch it to 'parquet' in place ` +
-                "with app_set_binding_materialization before scheduling " +
-                "refreshes. Do not delete/recreate it.",
-            };
-          }
-          if (enabled) {
-            const accessError = await bindingQueryAccessError(
-              binding.language,
-              binding.code,
-              binding.connectionId,
-            );
-            if (accessError) return { success: false, error: accessError };
-          }
-          let schedule;
-          try {
-            schedule = validateDashboardMaterializationSchedule({
+        wrap("app_set_binding_schedule", () =>
+          updateDataBinding({
+            appId,
+            name,
+            materializationSchedule: {
               enabled,
               cron: cron ?? null,
               timezone,
               dataFreshnessTtlMs,
-            });
-          } catch (error) {
-            return {
-              success: false,
-              error:
-                error instanceof Error
-                  ? error.message
-                  : "Invalid materialization schedule",
-            };
-          }
-          binding.materializationSchedule = schedule;
-          doc.markModified("dataBindings");
-          const version = await saveAndPublish(doc);
-          return {
-            success: true,
-            binding: { name, materializationSchedule: schedule },
-            version,
-            hint: schedule.enabled
-              ? `"${name}" will auto-refresh on schedule (${schedule.cron}, ${schedule.timezone}). Scheduled refresh runs in production; in local dev trigger it with materialize_binding.`
-              : `Scheduled refresh for "${name}" is now off.`,
-          };
-        }),
+            },
+          }),
+        ),
     }),
 
     app_set_binding_materialization: tool({
       description:
-        "Switch an EXISTING data binding between 'live' and 'parquet' " +
-        "materialization IN PLACE — do NOT delete and recreate a binding just " +
-        "to change this. Use this when the user asks to materialize / cache a " +
-        "binding, or to turn materialization back off. Preserves the binding's " +
-        "id, code, and connection. After switching to 'parquet', call " +
-        "materialize_binding to build the artifact. Confirm the name with " +
-        "list_data_sources.",
+        "Deprecated alias of app_update_data_binding — pass materialization " +
+        "(and optionally materializationSchedule) there instead. Switches an " +
+        "existing data binding between 'live' and 'parquet' IN PLACE.",
       inputSchema: setBindingMaterializationSchema,
       execute: async ({
         appId,
@@ -1458,61 +1545,16 @@ export function createServerAppTools({
         materialization,
         materializationSchedule,
       }) =>
-        wrap("app_set_binding_materialization", async () => {
-          const loaded = await loadApp(appId);
-          if (isLoadError(loaded)) return { success: false, ...loaded };
-          const { doc } = loaded;
-          if (!(await canWrite(doc))) return denied(appId);
-          const binding = (doc.dataBindings ?? []).find(b => b.name === name);
-          if (!binding) {
-            return { success: false, error: `No data binding named "${name}"` };
-          }
-          const next = materialization === "parquet" ? "parquet" : "live";
-          // Validate the optional schedule the same way create/schedule do.
-          // Live bindings can't be scheduled, so force it disabled.
-          let schedule = binding.materializationSchedule;
-          if (materializationSchedule) {
-            try {
-              schedule = validateDashboardMaterializationSchedule(
-                next === "parquet"
-                  ? materializationSchedule
-                  : { ...materializationSchedule, enabled: false },
-              );
-            } catch (error) {
-              return {
-                success: false,
-                error:
-                  error instanceof Error
-                    ? error.message
-                    : "Invalid materialization schedule",
-              };
-            }
-          } else if (next === "live" && schedule?.enabled) {
-            // Turning materialization off implicitly disables any schedule.
-            schedule = { ...schedule, enabled: false };
-          }
-          if (next === "parquet") {
-            const accessError = await bindingQueryAccessError(
-              binding.language,
-              binding.code,
-              binding.connectionId,
-            );
-            if (accessError) return { success: false, error: accessError };
-          }
-          binding.materialization = next;
-          binding.materializationSchedule = schedule;
-          doc.markModified("dataBindings");
-          const version = await saveAndPublish(doc);
-          return {
-            success: true,
-            binding: { name, materialization: next },
-            version,
-            hint:
-              next === "parquet"
-                ? `"${name}" is now 'parquet'. Call materialize_binding for "${name}" to build the artifact, then read it with useQuery("${name}") or useDuckDB(sql).`
-                : `"${name}" is now 'live' — it runs fresh on every read via useQuery("${name}").`,
-          };
-        }),
+        wrap("app_set_binding_materialization", () =>
+          updateDataBinding({
+            appId,
+            name,
+            materialization,
+            ...(materializationSchedule !== undefined
+              ? { materializationSchedule }
+              : {}),
+          }),
+        ),
     }),
 
     app_delete_data_binding: tool({

@@ -135,6 +135,20 @@ export const APP_CAPABILITIES = [
     pack: "app-data",
     risk: "write",
     requiredGrant: "artifact-write",
+    // Scheduling folded in from app_set_binding_schedule: the schedule leg
+    // keeps that tool's schedule-write gate, applied only when the input
+    // actually touches the schedule.
+    inputConditionalGrants: [
+      {
+        grant: "schedule-write",
+        behavior: "changing a binding's materialization schedule",
+        appliesTo: input =>
+          typeof input === "object" &&
+          input !== null &&
+          (input as { materializationSchedule?: unknown })
+            .materializationSchedule !== undefined,
+      },
+    ],
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
@@ -147,6 +161,9 @@ export const APP_CAPABILITIES = [
     resultKind: "artifact",
   }),
   define({
+    // Deprecated alias of app_update_data_binding({ materialization }); kept
+    // registered for external MCP clients. Deferred out of the in-product
+    // working set (see DEFERRED_BUILTIN_TOOL_DOMAINS).
     name: "app_set_binding_materialization",
     pack: "app-data",
     risk: "write",
@@ -166,6 +183,9 @@ export const APP_CAPABILITIES = [
     requiresQueryAccess: true,
   }),
   define({
+    // Deprecated alias of app_update_data_binding({ materializationSchedule });
+    // kept registered for external MCP clients. Deferred out of the
+    // in-product working set (see DEFERRED_BUILTIN_TOOL_DOMAINS).
     name: "app_set_binding_schedule",
     pack: "app-data",
     risk: "write",

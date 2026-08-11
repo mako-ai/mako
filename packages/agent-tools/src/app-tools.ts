@@ -186,7 +186,7 @@ export const createDataBindingSchema = z.object({
       "Optional cron schedule that auto-refreshes a 'parquet' binding. Only " +
         "applies when materialization is 'parquet' (ignored/disabled for " +
         "'live'). You can also set or change this later with " +
-        "app_set_binding_schedule.",
+        "app_update_data_binding.",
     ),
 });
 
@@ -229,6 +229,24 @@ export const updateDataBindingSchema = z.object({
     .describe(
       "Link the binding to a dbt project (enables the {{ dbt_schema }} " +
         "token in code) or pass null to unlink it.",
+    ),
+  materialization: z
+    .enum(["live", "parquet"])
+    .optional()
+    .describe(
+      "Switch the binding's materialization IN PLACE (preserves its id, " +
+        "code, connection, and artifact history). 'live' runs the query " +
+        "server-side on every read; 'parquet' materializes it to a Parquet " +
+        "artifact for client-side DuckDB analytics — after switching to " +
+        "'parquet', call materialize_binding to build the artifact.",
+    ),
+  materializationSchedule: bindingMaterializationScheduleSchema
+    .optional()
+    .describe(
+      "Set or clear the cron auto-refresh on a 'parquet' binding, e.g. " +
+        "{ enabled: true, cron: '0 * * * *' } for hourly or " +
+        "{ enabled: false } to turn it off. Requires the binding to be (or " +
+        "become, via materialization in the same call) 'parquet'.",
     ),
   expectedResourceVersion: z
     .string()
@@ -756,7 +774,7 @@ export const setBindingMaterializationSchema = z.object({
     .describe(
       "Optional cron schedule to set at the same time. Only applies when " +
         "switching to 'parquet' (forced disabled for 'live'). Can also be set " +
-        "later with app_set_binding_schedule.",
+        "later with app_update_data_binding.",
     ),
 });
 

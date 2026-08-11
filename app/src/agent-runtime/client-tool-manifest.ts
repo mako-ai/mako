@@ -558,7 +558,14 @@ export const AGENT_TOOL_MANIFEST = {
     execution: "server",
     longRunning: true,
     getLabel: input => {
-      const name = (input as Record<string, unknown>)?.name;
+      const inp = input as Record<string, unknown>;
+      const name = inp?.name;
+      if (name && inp?.materialization) {
+        return `Switching "${name}" to ${inp.materialization}`;
+      }
+      if (name && inp?.materializationSchedule) {
+        return `Updating refresh schedule for "${name}"`;
+      }
       return name ? `Updating data binding "${name}"` : "Updating data binding";
     },
     icon: "database",
