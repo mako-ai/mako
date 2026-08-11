@@ -26,6 +26,21 @@ export const CAPABILITY_GRANTS = [
 
 export type CapabilityResultKind = "data" | "artifact" | "run" | "ui-effect";
 
+/**
+ * A grant required only when a call's INPUT exercises the gated behavior —
+ * e.g. app_update_data_binding needs schedule-write only when the input
+ * carries materializationSchedule. Enforced at execution (and on the MCP
+ * call path) alongside requiredGrant, so folding a gated setter into a
+ * broader tool cannot widen what a grant allows.
+ */
+export interface CapabilityInputConditionalGrant {
+  grant: CapabilityGrant;
+  /** Short label of the gated behavior, used in denial messages. */
+  behavior: string;
+  /** Returns true when this call's input exercises the gated behavior. */
+  appliesTo: (input: unknown) => boolean;
+}
+
 /** Mirrors the MCP bridge policy's exclusion taxonomy. */
 export type CapabilityMcpExclusionWhy =
   | "client-only"
@@ -42,6 +57,7 @@ export interface AgentCapabilityDefinition<
   pack: Pack;
   risk: CapabilityRisk;
   requiredGrant?: CapabilityGrant;
+  inputConditionalGrants?: readonly CapabilityInputConditionalGrant[];
   surfaces: readonly AgentSurface[];
   resultKind: CapabilityResultKind;
   requiresQueryAccess?: boolean;

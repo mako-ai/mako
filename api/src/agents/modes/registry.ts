@@ -58,6 +58,11 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   // Legacy full-file app read. Keep executable for compatibility, but the app
   // mode uses app_search + app_read_resource for bounded context.
   app_read_file: "apps",
+  // Deprecated aliases of app_update_data_binding (which now takes
+  // materialization + materializationSchedule directly). Kept executable for
+  // external MCP clients; the in-product agent uses the merged tool.
+  app_set_binding_materialization: "apps",
+  app_set_binding_schedule: "apps",
 };
 
 export const DEFERRED_BUILTIN_TOOL_NAMES: readonly string[] = Object.keys(
@@ -173,8 +178,6 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "app_create_data_binding",
   "app_update_data_binding",
   "app_delete_data_binding",
-  "app_set_binding_materialization",
-  "app_set_binding_schedule",
   "app_save_version",
   "app_restore_version",
   "browse_version_history",

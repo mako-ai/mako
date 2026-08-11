@@ -30,7 +30,10 @@ import {
   type CapabilityGrant,
 } from "@mako/agent-tools";
 
-import { authorizeAgentCapability } from "../agent-lib/capabilities/runtime";
+import {
+  authorizeAgentCapability,
+  missingInputConditionalGrant,
+} from "../agent-lib/capabilities/runtime";
 import { createHeadlessRunAppTool } from "./preview-tools";
 import { createServerAppTools } from "../agent-lib/tools/server-app-tools";
 import { createSqlToolsV2 } from "../agent-lib/tools/sql-tools";
@@ -404,23 +407,24 @@ export function buildMakoMcpServer(
         isError: true,
       };
     }
+    // Desktop ACP plan-grant gating is DISABLED pending product review:
+    // the philosophy there is "same capabilities everywhere", matching
+    // native Chat (see PLAN_GRANT_GATING_ENABLED in
+    // agents/modes/runtime.ts) — sessionCapabilityGrants hands ACP every
+    // grant. External MCP has no human in the loop, so it holds only the
+    // implicit headless-authoring grants plus whatever the API key's
+    // scopes explicitly opt into (warehouse:write → warehouse-write).
+    // Surface membership and query-access scopes still apply. To
+    // re-enable ACP gating, restore: artifact-write +
+    // context.capabilityGrants (from resolveAcpPlanGrants).
+    const grants = sessionCapabilityGrants(
+      context,
+      resolveWorkspaceApiKeyScopes(context.scopes),
+    );
     const authorization = authorizeAgentCapability(name, {
       surface: context.acpDesktop ? "desktop-acp" : "external-mcp",
       queryAccess,
-      // Desktop ACP plan-grant gating is DISABLED pending product review:
-      // the philosophy there is "same capabilities everywhere", matching
-      // native Chat (see PLAN_GRANT_GATING_ENABLED in
-      // agents/modes/runtime.ts) — sessionCapabilityGrants hands ACP every
-      // grant. External MCP has no human in the loop, so it holds only the
-      // implicit headless-authoring grants plus whatever the API key's
-      // scopes explicitly opt into (warehouse:write → warehouse-write).
-      // Surface membership and query-access scopes still apply. To
-      // re-enable ACP gating, restore: artifact-write +
-      // context.capabilityGrants (from resolveAcpPlanGrants).
-      grants: sessionCapabilityGrants(
-        context,
-        resolveWorkspaceApiKeyScopes(context.scopes),
-      ),
+      grants,
     });
     if (!authorization.allowed) {
       return {
@@ -449,6 +453,23 @@ export function buildMakoMcpServer(
         };
       }
       input = parsed.data;
+    }
+
+    // Input-conditional grants (e.g. app_update_data_binding's schedule leg
+    // requires schedule-write) — checked on the parsed input.
+    const missingGrant = missingInputConditionalGrant(name, input, grants);
+    if (missingGrant) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `${name}: ${missingGrant.behavior} requires the ` +
+              `"${missingGrant.grant}" grant on this session.`,
+          },
+        ],
+        isError: true,
+      };
     }
 
     try {
