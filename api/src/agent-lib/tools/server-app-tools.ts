@@ -84,6 +84,7 @@ import {
   applyAppSnapshot,
   type AppSnapshot,
 } from "../../services/app-version.service";
+import { minimizeDirtyPaths } from "../../utils/mongoose-dirty-paths";
 import { canReadResource, canWriteResource } from "../../utils/resource-acl";
 import { loggers } from "../../logging";
 import {
@@ -210,7 +211,10 @@ export function createServerAppTools({
     const expectedVersion = doc.version;
     const setFields: Record<string, unknown> = {};
     const unsetFields: Record<string, ""> = {};
-    for (const path of doc.directModifiedPaths()) {
+    // Minimized: $set-ing both "dataBindings" (markModified) and a nested
+    // "dataBindings.N...." (direct assignment) makes MongoDB reject the whole
+    // update with "would create a conflict at 'dataBindings'".
+    for (const path of minimizeDirtyPaths(doc.directModifiedPaths())) {
       if (
         path === "_id" ||
         path === "workspaceId" ||

@@ -52,6 +52,7 @@ import {
 import { generateAppVersionComment } from "../services/version-comment.service";
 import { getEntityChatPrompts } from "../services/entity-version-context.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
+import { minimizeDirtyPaths } from "../utils/mongoose-dirty-paths";
 import {
   canReadResource,
   canWriteResource,
@@ -676,7 +677,10 @@ app.openapi(
 
       const setFields: Record<string, unknown> = {};
       const unsetFields: Record<string, ""> = {};
-      for (const path of doc.directModifiedPaths()) {
+      // Minimized: $set-ing both an ancestor (markModified) and a nested
+      // descendant path (direct assignment) makes MongoDB reject the whole
+      // update with "would create a conflict at '<ancestor>'".
+      for (const path of minimizeDirtyPaths(doc.directModifiedPaths())) {
         if (
           path === "_id" ||
           path === "workspaceId" ||
