@@ -207,22 +207,26 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       .finally(() => setReloadingData(false));
   }, [workspaceId, dashboardId, reloadingData]);
 
-  const dataFreshness = useMemo(() => {
+  // Oldest materialized artifact across data sources — "every source is at
+  // least this fresh". Drives both the toolbar "Updated X ago" caption and
+  // the staleness banner.
+  const lastRefreshedAt = useMemo(() => {
     if (!dashboard || dashboard.dataSources.length === 0) return null;
-    const ttl = dashboard.materializationSchedule?.dataFreshnessTtlMs;
-    const threshold = ttl ?? 24 * 60 * 60 * 1000;
-    let oldestDate: Date | null = null;
+    let oldest: string | null = null;
     for (const ds of dashboard.dataSources) {
       const builtAt = ds.cache?.parquetBuiltAt;
-      if (!builtAt) continue;
-      const d = new Date(builtAt);
-      if (!oldestDate || d < oldestDate) oldestDate = d;
+      if (!builtAt || Number.isNaN(Date.parse(builtAt))) continue;
+      if (!oldest || Date.parse(builtAt) < Date.parse(oldest)) oldest = builtAt;
     }
-    if (!oldestDate) {
-      const lr = dashboard.cache?.lastRefreshedAt;
-      if (lr) oldestDate = new Date(lr);
-    }
-    if (!oldestDate) return null;
+    return oldest ?? dashboard.cache?.lastRefreshedAt ?? null;
+  }, [dashboard]);
+
+  const dataFreshness = useMemo(() => {
+    if (!dashboard || !lastRefreshedAt) return null;
+    const ttl = dashboard.materializationSchedule?.dataFreshnessTtlMs;
+    const threshold = ttl ?? 24 * 60 * 60 * 1000;
+    const oldestDate = new Date(lastRefreshedAt);
+    if (Number.isNaN(oldestDate.getTime())) return null;
     const ageMs = Date.now() - oldestDate.getTime();
     if (ageMs < threshold) return null;
     const hours = Math.floor(ageMs / (1000 * 60 * 60));
@@ -232,7 +236,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         ? `${days} day${days !== 1 ? "s" : ""} ago`
         : `${hours} hour${hours !== 1 ? "s" : ""} ago`;
     return { ageMs, label };
-  }, [dashboard]);
+  }, [dashboard, lastRefreshedAt]);
 
   useEffect(() => {
     setFreshnessDismissed(false);
@@ -429,6 +433,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           subject="data source"
           busy={reloadingData}
           onClick={handleRefresh}
+          lastRefreshedAt={lastRefreshedAt}
         />
 
         {canManageShare && (
