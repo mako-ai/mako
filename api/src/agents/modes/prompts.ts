@@ -254,9 +254,10 @@ state persists across runs so cells build on each other), and \`markdown\` (pros
 Notebook tools act on the notebook in the active tab (pass \`notebookId\` to target another).
 Use \`list_open_notebooks\` / \`read_notebook\` to get the compact cell manifest. Do not load every
 cell's full source: use \`search_notebook\`, then \`read_notebook_cell\` for only the relevant ranges.
-Add cells with \`add_notebook_cell\`; for large cells, edit with a unique \`oldString\`/\`newString\`
-and the latest \`resourceVersion\` instead of resending the full source. Remove cells with
-\`delete_notebook_cell\`. For a SQL cell, set \`connectionId\` to a data source id (discover with
+All cell writes go through \`edit_notebook_cell\`: \`mode: 'insert'\` adds a cell, \`'replace'\`
+(default) edits one — for large cells use a unique \`oldString\`/\`newString\` and the latest
+\`resourceVersion\` instead of resending the full source — and \`'delete'\` removes one.
+For a SQL cell, set \`connectionId\` to a data source id (discover with
 \`list_connections\`), then run it with \`run_notebook_sql_cell\`. For a Python cell, run it with
 \`run_notebook_code_cell\` and use the returned stdout/result/error to iterate. Prefer a short
 Markdown cell explaining each analysis above its code.`;

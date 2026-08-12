@@ -1306,24 +1306,31 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Reading notebook cell",
     icon: "eye",
   },
+  edit_notebook_cell: {
+    domain: "notebook",
+    execution: "server",
+    getLabel: input => {
+      const inp = input as Record<string, unknown>;
+      if (inp?.mode === "insert") {
+        const type = inp?.type;
+        return typeof type === "string" ? `Adding ${type} cell` : "Adding cell";
+      }
+      if (inp?.mode === "delete") return "Deleting cell";
+      return "Editing cell";
+    },
+    icon: "pencil",
+    preview: { field: "source", language: "sql" },
+  },
+  // Deprecated aliases of edit_notebook_cell (mode: 'insert' / 'delete');
+  // still registered for external MCP clients, so keep their tool cards.
   add_notebook_cell: {
     domain: "notebook",
     execution: "server",
     getLabel: input => {
       const type = (input as Record<string, unknown>)?.type;
-      return `Adding ${typeof type === "string" ? type : ""} cell`.replace(
-        "  ",
-        " ",
-      );
+      return typeof type === "string" ? `Adding ${type} cell` : "Adding cell";
     },
     icon: "plus",
-    preview: { field: "source", language: "sql" },
-  },
-  edit_notebook_cell: {
-    domain: "notebook",
-    execution: "server",
-    getLabel: () => "Editing cell",
-    icon: "pencil",
     preview: { field: "source", language: "sql" },
   },
   delete_notebook_cell: {
