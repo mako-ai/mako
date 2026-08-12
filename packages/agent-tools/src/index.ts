@@ -135,6 +135,8 @@ export { clientDataSourceTools } from "./data-source-tools";
 
 export {
   clientNotebookTools,
+  addNotebookCellSchema,
+  deleteNotebookCellSchema,
   editNotebookCellSchema,
   notebookCellResourceVersion,
   readNotebookCellRange,
@@ -146,6 +148,7 @@ export {
   NOTEBOOK_CELL_PAGE_LIMIT,
   NOTEBOOK_SOURCE_PREVIEW_CHARS,
 } from "./notebook-tools";
+export type { EditNotebookCellInput } from "./notebook-tools";
 
 export {
   runAppBaseSchema,

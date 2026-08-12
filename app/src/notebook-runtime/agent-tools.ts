@@ -147,6 +147,84 @@ export async function executeNotebookAgentTool(
   if (!doc) return fail("Notebook not found");
   const store = useNotebookStore.getState();
 
+  // Shared cell CRUD: edit_notebook_cell dispatches on mode, and the
+  // deprecated add/delete alias tools reuse the same legs.
+  const insertCell = (inp: Record<string, unknown>): ToolResult => {
+    const type = (inp.type as NotebookBlockType) || "code";
+    const atIndex = typeof inp.atIndex === "number" ? inp.atIndex : undefined;
+    const cell = store.addCell(notebookId, type, atIndex);
+    if (!cell) return fail("Failed to add cell");
+    const patch: Partial<NotebookBlock> = {};
+    if (typeof inp.source === "string") patch.source = inp.source;
+    if (typeof inp.connectionId === "string") {
+      patch.connectionId = inp.connectionId;
+    }
+    if (Object.keys(patch).length > 0) {
+      store.updateCell(notebookId, cell.id, patch);
+    }
+    return { success: true, cellId: cell.id, type };
+  };
+
+  const replaceCell = (inp: Record<string, unknown>): ToolResult => {
+    const cellId = inp.cellId as string;
+    const current = doc.blocks.find(block => block.id === cellId);
+    if (!current) {
+      return fail(`No cell with id "${cellId}"`);
+    }
+    const currentResourceVersion = notebookCellResourceVersion(
+      current,
+      doc.version,
+    );
+    if (
+      typeof inp.resourceVersion === "string" &&
+      inp.resourceVersion !== currentResourceVersion
+    ) {
+      return {
+        success: false,
+        error:
+          "Cell changed since it was read. Re-read it and retry with the " +
+          "latest resourceVersion.",
+        currentResourceVersion,
+      };
+    }
+    const patch: Partial<NotebookBlock> = {};
+    if (
+      typeof inp.oldString === "string" &&
+      typeof inp.newString === "string"
+    ) {
+      const edit = applyStrReplace(
+        current.source,
+        inp.oldString,
+        inp.newString,
+        inp.replaceAll === true,
+      );
+      if (!edit.ok) return fail(edit.error);
+      patch.source = edit.contents;
+    } else if (typeof inp.source === "string") {
+      patch.source = inp.source;
+    }
+    if (typeof inp.type === "string") {
+      patch.type = inp.type as NotebookBlockType;
+    }
+    if (typeof inp.connectionId === "string") {
+      patch.connectionId = inp.connectionId;
+    }
+    store.updateCell(notebookId, cellId, patch);
+    return {
+      success: true,
+      cellId,
+    };
+  };
+
+  const deleteCell = (inp: Record<string, unknown>): ToolResult => {
+    const cellId = inp.cellId as string;
+    if (!doc.blocks.some(b => b.id === cellId)) {
+      return fail(`No cell with id "${cellId}"`);
+    }
+    store.deleteCell(notebookId, cellId);
+    return { success: true, cellId, deleted: true };
+  };
+
   switch (toolName) {
     case "read_notebook": {
       const cellOffset =
@@ -220,82 +298,17 @@ export async function executeNotebookAgentTool(
       };
     }
 
-    case "add_notebook_cell": {
-      const type = (input.type as NotebookBlockType) || "code";
-      const atIndex =
-        typeof input.atIndex === "number" ? input.atIndex : undefined;
-      const cell = store.addCell(notebookId, type, atIndex);
-      if (!cell) return fail("Failed to add cell");
-      const patch: Partial<NotebookBlock> = {};
-      if (typeof input.source === "string") patch.source = input.source;
-      if (typeof input.connectionId === "string") {
-        patch.connectionId = input.connectionId;
-      }
-      if (Object.keys(patch).length > 0) {
-        store.updateCell(notebookId, cell.id, patch);
-      }
-      return { success: true, cellId: cell.id, type };
-    }
-
     case "edit_notebook_cell": {
-      const cellId = input.cellId as string;
-      const current = doc.blocks.find(block => block.id === cellId);
-      if (!current) {
-        return fail(`No cell with id "${cellId}"`);
-      }
-      const currentResourceVersion = notebookCellResourceVersion(
-        current,
-        doc.version,
-      );
-      if (
-        typeof input.resourceVersion === "string" &&
-        input.resourceVersion !== currentResourceVersion
-      ) {
-        return {
-          success: false,
-          error:
-            "Cell changed since it was read. Re-read it and retry with the " +
-            "latest resourceVersion.",
-          currentResourceVersion,
-        };
-      }
-      const patch: Partial<NotebookBlock> = {};
-      if (
-        typeof input.oldString === "string" &&
-        typeof input.newString === "string"
-      ) {
-        const edit = applyStrReplace(
-          current.source,
-          input.oldString,
-          input.newString,
-          input.replaceAll === true,
-        );
-        if (!edit.ok) return fail(edit.error);
-        patch.source = edit.contents;
-      } else if (typeof input.source === "string") {
-        patch.source = input.source;
-      }
-      if (typeof input.type === "string") {
-        patch.type = input.type as NotebookBlockType;
-      }
-      if (typeof input.connectionId === "string") {
-        patch.connectionId = input.connectionId;
-      }
-      store.updateCell(notebookId, cellId, patch);
-      return {
-        success: true,
-        cellId,
-      };
+      if (input.mode === "insert") return insertCell(input);
+      if (input.mode === "delete") return deleteCell(input);
+      return replaceCell(input);
     }
 
-    case "delete_notebook_cell": {
-      const cellId = input.cellId as string;
-      if (!doc.blocks.some(b => b.id === cellId)) {
-        return fail(`No cell with id "${cellId}"`);
-      }
-      store.deleteCell(notebookId, cellId);
-      return { success: true, cellId };
-    }
+    case "add_notebook_cell":
+      return insertCell(input);
+
+    case "delete_notebook_cell":
+      return deleteCell(input);
 
     case "run_notebook_sql_cell": {
       const cellId = input.cellId as string;

@@ -63,6 +63,11 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   // external MCP clients; the in-product agent uses the merged tool.
   app_set_binding_materialization: "apps",
   app_set_binding_schedule: "apps",
+  // Deprecated aliases of edit_notebook_cell (mode: 'insert' | 'delete').
+  // Kept executable for external MCP clients; the in-product agent uses the
+  // merged tool.
+  add_notebook_cell: "notebooks",
+  delete_notebook_cell: "notebooks",
 };
 
 export const DEFERRED_BUILTIN_TOOL_NAMES: readonly string[] = Object.keys(
@@ -248,9 +253,7 @@ const NOTEBOOK_MODE_TOOL_NAMES: string[] = [
   "read_notebook",
   "search_notebook",
   "read_notebook_cell",
-  "add_notebook_cell",
   "edit_notebook_cell",
-  "delete_notebook_cell",
   "run_notebook_sql_cell",
   "run_notebook_code_cell",
   // Discovery: find data sources + tables for SQL cells

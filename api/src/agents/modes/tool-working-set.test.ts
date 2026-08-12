@@ -575,6 +575,21 @@ async function endToEnd() {
     false,
     "redundant app_get_data_binding should not be registered",
   );
+  // Notebook cell CRUD fold: only the merged edit_notebook_cell stays in the
+  // notebook working set; the add/delete aliases remain loadable.
+  const notebookModeTools = toolNamesForModes(new Set(["notebook"] as const));
+  assert.ok(notebookModeTools.has("edit_notebook_cell"));
+  for (const alias of ["add_notebook_cell", "delete_notebook_cell"]) {
+    assert.equal(
+      notebookModeTools.has(alias),
+      false,
+      `deprecated ${alias} should stay out of the notebook working set`,
+    );
+    assert.ok(
+      DEFERRED_BUILTIN_TOOL_NAMES.includes(alias),
+      `deprecated ${alias} should remain loadable for compatibility`,
+    );
+  }
 
   // Preload: a Slack-flavored user message pre-activates relevant tools
   // with zero search/load round-trips.

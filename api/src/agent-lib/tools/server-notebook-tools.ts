@@ -14,7 +14,9 @@ import { z } from "zod";
 import { randomUUID } from "crypto";
 import { Types } from "mongoose";
 import {
+  addNotebookCellSchema,
   applyStrReplace,
+  deleteNotebookCellSchema,
   editNotebookCellSchema,
   notebookCellResourceVersion,
   readNotebookCellRange,
@@ -23,6 +25,7 @@ import {
   searchNotebookCells,
   searchNotebookSchema,
   summarizeNotebookCell,
+  type EditNotebookCellInput,
 } from "@mako/agent-tools";
 
 import { getNotebookStore } from "../../notebooks/store";
@@ -68,13 +71,6 @@ const notebookIdField = z
   .string()
   .optional()
   .describe("Notebook id. Defaults to the notebook the user is viewing.");
-
-const cellTypeField = z
-  .enum(["code", "sql", "markdown"])
-  .describe(
-    "Cell type: 'sql' runs against a data source, 'code' is Python (managed " +
-      "kernel), 'markdown' renders as prose.",
-  );
 
 /** Truncate outputs so the persisted notebook doc stays small. */
 function capOutputs(outputs: KernelOutput[]): KernelOutput[] {
@@ -200,6 +196,133 @@ export function createNotebookServerTools({
       notebookId,
       title,
     });
+  };
+
+  // Shared cell CRUD: edit_notebook_cell dispatches on mode, and the
+  // deprecated add/delete aliases delegate here with mode preset.
+  const editCellImpl = async (input: EditNotebookCellInput) => {
+    const id = resolveId(input);
+    if (!id) return noNotebook;
+    const access = await assertWriteAccess(id);
+    if (!access.ok) return { success: false, error: access.error };
+    const doc = await store.get(workspaceId, id);
+    if (!doc) return { success: false, error: `Notebook ${id} not found` };
+    const mode = input.mode ?? "replace";
+
+    if (mode === "insert") {
+      if (!input.type) {
+        return { success: false, error: "type is required to insert a cell" };
+      }
+      const cell: NotebookBlock = {
+        id: randomUUID(),
+        type: input.type as NotebookBlockType,
+        source: input.source ?? "",
+        ...(input.connectionId ? { connectionId: input.connectionId } : {}),
+      };
+      const blocks = [...doc.blocks];
+      blocks.splice(input.atIndex ?? blocks.length, 0, cell);
+      const version = await saveBlocks(id, blocks, doc.version);
+      if (version === SAVE_CONFLICT) {
+        return {
+          success: false,
+          error: "Notebook changed while adding the cell. Re-read and retry.",
+        };
+      }
+      if (version == null) {
+        return { success: false, error: "Failed to add cell" };
+      }
+      return { success: true, cellId: cell.id, type: cell.type };
+    }
+
+    if (!input.cellId) {
+      return { success: false, error: `cellId is required to ${mode} a cell` };
+    }
+    const current = doc.blocks.find(block => block.id === input.cellId);
+    if (!current) {
+      return { success: false, error: `No cell with id "${input.cellId}"` };
+    }
+
+    if (mode === "delete") {
+      const version = await saveBlocks(
+        id,
+        doc.blocks.filter(b => b.id !== input.cellId),
+        doc.version,
+      );
+      if (version === SAVE_CONFLICT) {
+        return {
+          success: false,
+          error: "Notebook changed while deleting the cell. Re-read and retry.",
+        };
+      }
+      if (version == null) {
+        return { success: false, error: "Failed to delete cell" };
+      }
+      return { success: true, cellId: input.cellId, deleted: true };
+    }
+
+    const currentResourceVersion = notebookCellResourceVersion(
+      current,
+      doc.version,
+    );
+    if (
+      input.resourceVersion &&
+      input.resourceVersion !== currentResourceVersion
+    ) {
+      return {
+        success: false,
+        error:
+          "Cell changed since it was read. Re-read it and retry with the " +
+          "latest resourceVersion.",
+        currentResourceVersion,
+      };
+    }
+    let nextSource = input.source;
+    let replacements: number | undefined;
+    if (input.oldString !== undefined && input.newString !== undefined) {
+      const edit = applyStrReplace(
+        current.source,
+        input.oldString,
+        input.newString,
+        input.replaceAll,
+      );
+      if (!edit.ok) return { success: false, error: edit.error };
+      nextSource = edit.contents;
+      replacements = edit.replacements;
+    }
+    const blocks = doc.blocks.map(b =>
+      b.id === input.cellId
+        ? {
+            ...b,
+            ...(nextSource !== undefined ? { source: nextSource } : {}),
+            ...(input.type ? { type: input.type as NotebookBlockType } : {}),
+            ...(input.connectionId !== undefined
+              ? { connectionId: input.connectionId }
+              : {}),
+          }
+        : b,
+    );
+    const version = await saveBlocks(id, blocks, doc.version);
+    if (version === SAVE_CONFLICT) {
+      return {
+        success: false,
+        error:
+          "Notebook changed while editing the cell. Re-read and retry with " +
+          "the latest resourceVersion.",
+      };
+    }
+    if (version == null) {
+      return { success: false, error: "Failed to edit cell" };
+    }
+    const updated = blocks.find(block => block.id === input.cellId);
+    return {
+      success: true,
+      cellId: input.cellId,
+      version,
+      resourceVersion: updated
+        ? notebookCellResourceVersion(updated, version)
+        : undefined,
+      replacements,
+    };
   };
 
   return {
@@ -395,170 +518,34 @@ export function createNotebookServerTools({
       },
     }),
 
-    add_notebook_cell: tool({
-      description:
-        "Append (or insert at atIndex) a cell. For a SQL cell set connectionId " +
-        "to a data source id (from list_connections) so it can run.",
-      inputSchema: z.object({
-        notebookId: notebookIdField,
-        type: cellTypeField,
-        source: z.string().optional().describe("Cell contents"),
-        connectionId: z
-          .string()
-          .optional()
-          .describe("Data source id for SQL cells"),
-        atIndex: z
-          .number()
-          .int()
-          .optional()
-          .describe("Insert position; appends when omitted"),
-      }),
-      execute: async input => {
-        const id = resolveId(input);
-        if (!id) return noNotebook;
-        const access = await assertWriteAccess(id);
-        if (!access.ok) return { success: false, error: access.error };
-        const doc = await store.get(workspaceId, id);
-        if (!doc) return { success: false, error: `Notebook ${id} not found` };
-        const cell: NotebookBlock = {
-          id: randomUUID(),
-          type: input.type as NotebookBlockType,
-          source: input.source ?? "",
-          ...(input.connectionId ? { connectionId: input.connectionId } : {}),
-        };
-        const blocks = [...doc.blocks];
-        blocks.splice(input.atIndex ?? blocks.length, 0, cell);
-        const version = await saveBlocks(id, blocks, doc.version);
-        if (version === SAVE_CONFLICT) {
-          return {
-            success: false,
-            error: "Notebook changed while adding the cell. Re-read and retry.",
-          };
-        }
-        if (version == null) {
-          return { success: false, error: "Failed to add cell" };
-        }
-        return { success: true, cellId: cell.id, type: cell.type };
-      },
-    }),
-
     edit_notebook_cell: tool({
       description:
-        "Edit a cell's source or metadata. For large cells, use a unique " +
-        "oldString/newString plus resourceVersion instead of replacing the full source.",
+        "Insert, replace, or delete a cell (mode; default 'replace'). insert " +
+        "adds a new cell of `type` — for SQL cells set connectionId (a data " +
+        "source id from list_connections). replace edits cellId's source/" +
+        "metadata; for large cells prefer oldString/newString + " +
+        "resourceVersion. delete removes cellId.",
       inputSchema: editNotebookCellSchema,
-      execute: async input => {
-        const id = resolveId(input);
-        if (!id) return noNotebook;
-        const access = await assertWriteAccess(id);
-        if (!access.ok) return { success: false, error: access.error };
-        const doc = await store.get(workspaceId, id);
-        if (!doc) return { success: false, error: `Notebook ${id} not found` };
-        const current = doc.blocks.find(block => block.id === input.cellId);
-        if (!current) {
-          return { success: false, error: `No cell with id "${input.cellId}"` };
-        }
-        const currentResourceVersion = notebookCellResourceVersion(
-          current,
-          doc.version,
-        );
-        if (
-          input.resourceVersion &&
-          input.resourceVersion !== currentResourceVersion
-        ) {
-          return {
-            success: false,
-            error:
-              "Cell changed since it was read. Re-read it and retry with the " +
-              "latest resourceVersion.",
-            currentResourceVersion,
-          };
-        }
-        let nextSource = input.source;
-        let replacements: number | undefined;
-        if (input.oldString !== undefined && input.newString !== undefined) {
-          const edit = applyStrReplace(
-            current.source,
-            input.oldString,
-            input.newString,
-            input.replaceAll,
-          );
-          if (!edit.ok) return { success: false, error: edit.error };
-          nextSource = edit.contents;
-          replacements = edit.replacements;
-        }
-        const blocks = doc.blocks.map(b =>
-          b.id === input.cellId
-            ? {
-                ...b,
-                ...(nextSource !== undefined ? { source: nextSource } : {}),
-                ...(input.type
-                  ? { type: input.type as NotebookBlockType }
-                  : {}),
-                ...(input.connectionId !== undefined
-                  ? { connectionId: input.connectionId }
-                  : {}),
-              }
-            : b,
-        );
-        const version = await saveBlocks(id, blocks, doc.version);
-        if (version === SAVE_CONFLICT) {
-          return {
-            success: false,
-            error:
-              "Notebook changed while editing the cell. Re-read and retry with " +
-              "the latest resourceVersion.",
-          };
-        }
-        if (version == null) {
-          return { success: false, error: "Failed to edit cell" };
-        }
-        const updated = blocks.find(block => block.id === input.cellId);
-        return {
-          success: true,
-          cellId: input.cellId,
-          version,
-          resourceVersion: updated
-            ? notebookCellResourceVersion(updated, version)
-            : undefined,
-          replacements,
-        };
-      },
+      execute: editCellImpl,
+    }),
+
+    add_notebook_cell: tool({
+      description:
+        "Deprecated alias of edit_notebook_cell (mode: 'insert') — use that instead.",
+      inputSchema: addNotebookCellSchema,
+      execute: async input => editCellImpl({ ...input, mode: "insert" }),
     }),
 
     delete_notebook_cell: tool({
-      description: "Delete a cell by id.",
-      inputSchema: z.object({
-        notebookId: notebookIdField,
-        cellId: z.string(),
-      }),
-      execute: async input => {
-        const id = resolveId(input);
-        if (!id) return noNotebook;
-        const access = await assertWriteAccess(id);
-        if (!access.ok) return { success: false, error: access.error };
-        const doc = await store.get(workspaceId, id);
-        if (!doc) return { success: false, error: `Notebook ${id} not found` };
-        if (!doc.blocks.some(b => b.id === input.cellId)) {
-          return { success: false, error: `No cell with id "${input.cellId}"` };
-        }
-        const version = await saveBlocks(
-          id,
-          doc.blocks.filter(b => b.id !== input.cellId),
-          doc.version,
-        );
-        if (version === SAVE_CONFLICT) {
-          return {
-            success: false,
-            error:
-              "Notebook changed while deleting the cell. Re-read and retry.",
-          };
-        }
-        if (version == null) {
-          return { success: false, error: "Failed to delete cell" };
-        }
-        return { success: true, cellId: input.cellId };
-      },
+      description:
+        "Deprecated alias of edit_notebook_cell (mode: 'delete') — use that instead.",
+      inputSchema: deleteNotebookCellSchema,
+      execute: async input =>
+        editCellImpl({
+          notebookId: input.notebookId,
+          cellId: input.cellId,
+          mode: "delete",
+        }),
     }),
 
     run_notebook_sql_cell: tool({
