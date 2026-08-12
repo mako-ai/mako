@@ -660,7 +660,8 @@ export class CdcBackfillService {
       flow.streamState === "paused" &&
       flow.syncStateMeta?.lastEvent === "REPARTITION_PAUSE"
     ) {
-      flow.streamState = (previousStreamState as IFlow["streamState"]) || "idle";
+      flow.streamState =
+        (previousStreamState as IFlow["streamState"]) || "idle";
       flow.syncStateMeta = {
         ...(flow.syncStateMeta || {}),
         lastEvent: "REPARTITION_RESUME",
@@ -685,7 +686,10 @@ export class CdcBackfillService {
     workspaceId: string;
     flowId: string;
     entity: string;
-  }): Promise<{ outcome: "repartitioned" | "missing" | "failed"; error?: string }> {
+  }): Promise<{
+    outcome: "repartitioned" | "missing" | "failed";
+    error?: string;
+  }> {
     const { workspaceId, flowId, entity } = params;
     const flow = await Flow.findOne({
       _id: new Types.ObjectId(flowId),
@@ -736,11 +740,16 @@ export class CdcBackfillService {
         entity,
         error: message,
       });
-      await this.setEntityRepartitionStatus(flow.workspaceId, flow._id, entity, {
-        status: "failed",
-        completedAt: new Date(),
-        error: message.slice(0, 500),
-      });
+      await this.setEntityRepartitionStatus(
+        flow.workspaceId,
+        flow._id,
+        entity,
+        {
+          status: "failed",
+          completedAt: new Date(),
+          error: message.slice(0, 500),
+        },
+      );
       return { outcome: "failed", error: message };
     }
   }
@@ -798,10 +807,7 @@ export class CdcBackfillService {
       .select({ _id: 1, workspaceId: 1 })
       .lean();
     for (const flow of stuck) {
-      await this.recoverRepartition(
-        String(flow.workspaceId),
-        String(flow._id),
-      );
+      await this.recoverRepartition(String(flow.workspaceId), String(flow._id));
     }
     if (stuck.length > 0) {
       log.warn("Recovered stale repartition pauses", { count: stuck.length });
@@ -839,7 +845,11 @@ export class CdcBackfillService {
     entities: string[],
     deleteDestination?: boolean,
   ): Promise<void> {
-    await getCdcEventStore().deleteFlowEvents({ workspaceId, flowId, entities });
+    await getCdcEventStore().deleteFlowEvents({
+      workspaceId,
+      flowId,
+      entities,
+    });
     await CdcEntityState.deleteMany({
       workspaceId: new Types.ObjectId(workspaceId),
       flowId: new Types.ObjectId(flowId),
@@ -943,32 +953,12 @@ export class CdcBackfillService {
       );
     }
 
+    // Do NOT rewind lastMaterializedSeq under the oldest pending event.
+    // readAfter() already selects pending rows independent of the cursor, and
+    // findEntitiesWithPendingEvents() triggers drain without a rewind. Rewinding
+    // invents a huge ingest/materialized seq gap that the status UI used to
+    // surface as hundreds of thousands of fake "pending" events.
     for (const entity of entities) {
-      const minPending = await CdcChangeEvent.findOne({
-        flowId: new Types.ObjectId(params.flowId),
-        entity,
-        materializationStatus: "pending",
-      })
-        .sort({ ingestSeq: 1 })
-        .select({ ingestSeq: 1 })
-        .lean();
-      if (minPending) {
-        await CdcEntityState.updateOne(
-          {
-            flowId: new Types.ObjectId(params.flowId),
-            entity,
-          },
-          {
-            $set: {
-              lastMaterializedSeq: Math.max(
-                0,
-                (parseInt(String(minPending.ingestSeq), 10) || 0) - 1,
-              ),
-            },
-          },
-        );
-      }
-
       await inngest.send({
         name: "cdc/materialize",
         data: {
@@ -1084,7 +1074,6 @@ export class CdcBackfillService {
       ]);
 
     let materializeTriggered = 0;
-    let cursorsRewound = 0;
     let pendingEntities = 0;
     const drainErrors: string[] = [];
 
@@ -1102,41 +1091,9 @@ export class CdcBackfillService {
       pendingEntities++;
 
       try {
-        // Rewind the consumer cursor just below the oldest pending event so the
-        // scheduler's findStaleEntities re-flags this entity (lastIngestSeq >
-        // lastMaterializedSeq) and a forced materialize actually reads it.
-        const minPending = await CdcChangeEvent.findOne({
-          flowId: new Types.ObjectId(params.flowId),
-          entity: item.entity,
-          materializationStatus: "pending",
-        })
-          .sort({ ingestSeq: 1 })
-          .select({ ingestSeq: 1 })
-          .lean();
-
-        if (minPending) {
-          const targetSeq = Math.max(
-            0,
-            (parseInt(String(minPending.ingestSeq), 10) || 0) - 1,
-          );
-          const state = await CdcEntityState.findOne({
-            flowId: new Types.ObjectId(params.flowId),
-            entity: item.entity,
-          })
-            .select({ lastMaterializedSeq: 1 })
-            .lean();
-          if (state && Number(state.lastMaterializedSeq || 0) > targetSeq) {
-            await CdcEntityState.updateOne(
-              {
-                flowId: new Types.ObjectId(params.flowId),
-                entity: item.entity,
-              },
-              { $set: { lastMaterializedSeq: targetSeq } },
-            );
-            cursorsRewound++;
-          }
-        }
-
+        // Force-trigger materialize only. Do not rewind lastMaterializedSeq —
+        // readAfter() + findEntitiesWithPendingEvents() already drain orphans
+        // without inventing a cursor seq gap that inflates the pending UI.
         await inngest.send({
           name: "cdc/materialize",
           data: {
@@ -1181,7 +1138,6 @@ export class CdcBackfillService {
       resetFailedWebhooks,
       pendingEntities,
       materializeTriggered,
-      cursorsRewound,
       orphanedResolved,
       drainErrors: drainErrors.length,
     });
@@ -1192,7 +1148,6 @@ export class CdcBackfillService {
       resetFailedWebhooks,
       pendingEntities,
       materializeTriggered,
-      cursorsRewound,
       orphanedResolved,
       drainErrors,
     };
@@ -1904,30 +1859,8 @@ export async function forceDrainCdcFlow(params: {
   for (const item of byEntity) {
     if (item.count <= 0) continue;
 
-    const minPending = await CdcChangeEvent.findOne({
-      flowId: new Types.ObjectId(params.flowId),
-      entity: item.entity,
-      materializationStatus: "pending",
-    })
-      .sort({ ingestSeq: 1 })
-      .select({ ingestSeq: 1 })
-      .lean();
-
-    if (minPending) {
-      const targetSeq = Math.max(
-        0,
-        (parseInt(String(minPending.ingestSeq), 10) || 0) - 1,
-      );
-      await CdcEntityState.updateOne(
-        {
-          flowId: new Types.ObjectId(params.flowId),
-          entity: item.entity,
-          lastMaterializedSeq: { $gt: targetSeq },
-        },
-        { $set: { lastMaterializedSeq: targetSeq } },
-      );
-    }
-
+    // Force materialize without rewinding the consumer cursor (see
+    // reprocessStaleEvents / retryFailedMaterialization).
     await inngest.send({
       name: "cdc/materialize",
       data: {
