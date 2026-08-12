@@ -5,7 +5,7 @@ import SettingsMcp from "./settings/SettingsMcp";
 import SettingsAgents from "./settings/SettingsAgents";
 import SettingsCodingAgents from "./settings/SettingsCodingAgents";
 import SettingsModels from "./settings/SettingsModels";
-import SettingsDashboardRefresh from "./settings/SettingsDashboardRefresh";
+import SettingsLimits from "./settings/SettingsLimits";
 import SettingsBilling from "./settings/SettingsBilling";
 import SettingsMembers from "./settings/SettingsMembers";
 import SettingsApiKeys from "./settings/SettingsApiKeys";
@@ -38,8 +38,8 @@ function Settings({ section = "prompt" }: Props) {
       return <SettingsCodingAgents />;
     case "models":
       return <SettingsModels />;
-    case "dashboard-refresh":
-      return <SettingsDashboardRefresh />;
+    case "limits":
+      return <SettingsLimits />;
     case "billing":
       return <SettingsBilling />;
     case "members":

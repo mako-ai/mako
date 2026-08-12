@@ -10,7 +10,7 @@ import {
   countBuildingDashboardRefreshes,
   getWorkspaceDashboardRefreshConcurrency,
   shouldDeferDashboardRefresh,
-} from "../../services/dashboard-refresh-concurrency.service";
+} from "../../services/workspace-refresh-limits.service";
 import {
   listActiveMaterializationRuns,
   markStaleRunsAbandoned,

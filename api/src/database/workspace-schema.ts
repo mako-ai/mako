@@ -168,6 +168,11 @@ export interface IWorkspace extends Document {
      * workspace. Clamped to [1, DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX].
      */
     dashboardRefreshConcurrency?: number;
+    /**
+     * Max concurrent app parquet binding materializations for this workspace.
+     * Clamped to [1, APP_BINDING_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX].
+     */
+    appBindingRefreshConcurrency?: number;
   };
   billing: IWorkspaceBilling;
   selfDirective?: string;
@@ -1258,6 +1263,11 @@ Add any specific instructions for how the AI should interpret your data or respo
       },
       disabledModelIds: [{ type: String }],
       dashboardRefreshConcurrency: {
+        type: Number,
+        default: 2,
+        min: 1,
+      },
+      appBindingRefreshConcurrency: {
         type: Number,
         default: 2,
         min: 1,

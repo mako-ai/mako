@@ -15,10 +15,13 @@ import {
 } from "../auth/mcp-oauth.service";
 import { workspaceService } from "../services/workspace.service";
 import {
+  APP_BINDING_REFRESH_CONCURRENCY_MAX,
+  clampAppBindingRefreshConcurrency,
   clampDashboardRefreshConcurrency,
   DASHBOARD_REFRESH_CONCURRENCY_MAX,
+  DEFAULT_APP_BINDING_REFRESH_CONCURRENCY,
   DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
-} from "../services/dashboard-refresh-concurrency.service";
+} from "../services/workspace-refresh-limits.service";
 import {
   approveAcpPlanGrant,
   revokeAcpPlanGrant,
@@ -793,13 +796,19 @@ workspaceRoutes.openapi(
   },
 );
 
-// Get dashboard refresh concurrency for the workspace.
+function isFiniteNumberish(value: unknown): boolean {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string") return Number.isFinite(parseInt(value, 10));
+  return false;
+}
+
+// Get workspace refresh / concurrency limits.
 workspaceRoutes.openapi(
   createRoute({
     method: "get",
-    path: "/{id}/settings/dashboard-refresh",
+    path: "/{id}/settings/limits",
     tags: ["Workspaces"],
-    summary: "Get dashboard refresh concurrency settings",
+    summary: "Get workspace refresh concurrency limits",
     security: AUTH_SECURITY,
     middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
     request: { params: IdParam },
@@ -812,18 +821,27 @@ workspaceRoutes.openapi(
         workspace.settings?.dashboardRefreshConcurrency ??
           DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
       );
+      const appBindingRefreshConcurrency = clampAppBindingRefreshConcurrency(
+        workspace.settings?.appBindingRefreshConcurrency ??
+          DEFAULT_APP_BINDING_REFRESH_CONCURRENCY,
+      );
       return c.json({
         success: true,
         dashboardRefreshConcurrency,
-        max: DASHBOARD_REFRESH_CONCURRENCY_MAX,
-        default: DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
+        appBindingRefreshConcurrency,
+        dashboardRefreshConcurrencyMax: DASHBOARD_REFRESH_CONCURRENCY_MAX,
+        appBindingRefreshConcurrencyMax: APP_BINDING_REFRESH_CONCURRENCY_MAX,
+        dashboardRefreshConcurrencyDefault:
+          DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
+        appBindingRefreshConcurrencyDefault:
+          DEFAULT_APP_BINDING_REFRESH_CONCURRENCY,
       });
     } catch (error) {
-      logger.error("Error fetching dashboard refresh settings", { error });
+      logger.error("Error fetching workspace limits settings", { error });
       return c.json(
         {
           success: false,
-          error: "Failed to fetch dashboard refresh settings",
+          error: "Failed to fetch workspace limits settings",
         },
         500,
       );
@@ -831,13 +849,13 @@ workspaceRoutes.openapi(
   },
 );
 
-// Update dashboard refresh concurrency for the workspace.
+// Update workspace refresh / concurrency limits.
 workspaceRoutes.openapi(
   createRoute({
     method: "put",
-    path: "/{id}/settings/dashboard-refresh",
+    path: "/{id}/settings/limits",
     tags: ["Workspaces"],
-    summary: "Update dashboard refresh concurrency settings",
+    summary: "Update workspace refresh concurrency limits",
     security: AUTH_SECURITY,
     middleware: [
       unifiedAuthMiddleware,
@@ -856,15 +874,28 @@ workspaceRoutes.openapi(
         return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
       }
 
-      const body = await c.req.json();
-      const raw = (body as { dashboardRefreshConcurrency?: unknown })
-        .dashboardRefreshConcurrency;
+      const body = (await c.req.json()) as {
+        dashboardRefreshConcurrency?: unknown;
+        appBindingRefreshConcurrency?: unknown;
+      };
 
       if (
-        (typeof raw !== "number" && typeof raw !== "string") ||
-        !Number.isFinite(
-          typeof raw === "number" ? raw : parseInt(String(raw), 10),
-        )
+        body.dashboardRefreshConcurrency === undefined &&
+        body.appBindingRefreshConcurrency === undefined
+      ) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "Provide dashboardRefreshConcurrency and/or appBindingRefreshConcurrency",
+          },
+          400,
+        );
+      }
+
+      if (
+        body.dashboardRefreshConcurrency !== undefined &&
+        !isFiniteNumberish(body.dashboardRefreshConcurrency)
       ) {
         return c.json(
           {
@@ -875,34 +906,63 @@ workspaceRoutes.openapi(
         );
       }
 
-      const dashboardRefreshConcurrency = clampDashboardRefreshConcurrency(raw);
+      if (
+        body.appBindingRefreshConcurrency !== undefined &&
+        !isFiniteNumberish(body.appBindingRefreshConcurrency)
+      ) {
+        return c.json(
+          {
+            success: false,
+            error: "appBindingRefreshConcurrency must be a number",
+          },
+          400,
+        );
+      }
+
+      const dashboardRefreshConcurrency = clampDashboardRefreshConcurrency(
+        body.dashboardRefreshConcurrency ??
+          workspace.settings?.dashboardRefreshConcurrency ??
+          DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
+      );
+      const appBindingRefreshConcurrency = clampAppBindingRefreshConcurrency(
+        body.appBindingRefreshConcurrency ??
+          workspace.settings?.appBindingRefreshConcurrency ??
+          DEFAULT_APP_BINDING_REFRESH_CONCURRENCY,
+      );
 
       await Workspace.findByIdAndUpdate(workspaceId, {
         $set: {
           "settings.dashboardRefreshConcurrency": dashboardRefreshConcurrency,
+          "settings.appBindingRefreshConcurrency": appBindingRefreshConcurrency,
         },
       });
 
-      logger.info("Updated workspace dashboard refresh concurrency", {
+      logger.info("Updated workspace refresh limits", {
         workspaceId,
         dashboardRefreshConcurrency,
+        appBindingRefreshConcurrency,
       });
 
       return c.json({
         success: true,
         dashboardRefreshConcurrency,
-        max: DASHBOARD_REFRESH_CONCURRENCY_MAX,
-        default: DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
+        appBindingRefreshConcurrency,
+        dashboardRefreshConcurrencyMax: DASHBOARD_REFRESH_CONCURRENCY_MAX,
+        appBindingRefreshConcurrencyMax: APP_BINDING_REFRESH_CONCURRENCY_MAX,
+        dashboardRefreshConcurrencyDefault:
+          DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
+        appBindingRefreshConcurrencyDefault:
+          DEFAULT_APP_BINDING_REFRESH_CONCURRENCY,
       });
     } catch (error) {
-      logger.error("Error updating dashboard refresh settings", { error });
+      logger.error("Error updating workspace limits settings", { error });
       return c.json(
         {
           success: false,
           error:
             error instanceof Error
               ? error.message
-              : "Failed to update dashboard refresh settings",
+              : "Failed to update workspace limits settings",
         },
         500,
       );

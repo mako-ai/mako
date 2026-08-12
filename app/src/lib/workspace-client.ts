@@ -40,6 +40,7 @@ export interface Workspace {
     maxMembers: number;
     billingTier: "free" | "pro" | "enterprise";
     dashboardRefreshConcurrency?: number;
+    appBindingRefreshConcurrency?: number;
   };
   billing?: WorkspaceBilling;
 }
