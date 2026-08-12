@@ -254,6 +254,9 @@ async function main() {
     // Annotations drive client-side auto-approval: pure reads must say so,
     // and under a query:read key the enforced-read-only query loop too.
     for (const readOnlyTool of [
+      "list_databases",
+      "list_tables",
+      "inspect_table",
       "sql_list_tables",
       "sql_inspect_table",
       "sql_execute_query",
@@ -303,6 +306,9 @@ async function main() {
       "app_save_version",
       "app_restore_version",
       "list_connections",
+      "list_databases",
+      "list_tables",
+      "inspect_table",
       "sql_list_connections",
       "sql_list_databases",
       "sql_list_tables",
@@ -389,6 +395,10 @@ async function main() {
       false,
       "skill writes stay in-product",
     );
+    // Generic version save/restore is client-side; MCP keeps the server-side
+    // app_save_version / app_restore_version pair instead.
+    assert.equal(names.has("save_version"), false);
+    assert.equal(names.has("restore_version"), false);
     assert.equal(
       names.has("open_app"),
       false,

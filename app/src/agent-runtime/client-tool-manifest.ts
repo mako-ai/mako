@@ -403,6 +403,38 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Reading chart template",
     icon: "eye",
   },
+  save_version: {
+    domain: "dashboard",
+    execution: "client",
+    clientExecutor: "dashboard",
+    longRunning: true,
+    getLabel: input => {
+      const inp = input as Record<string, unknown>;
+      const comment = inp?.comment;
+      const entity = inp?.entityType === "app" ? "app" : "dashboard";
+      return comment
+        ? `Publishing version: "${comment}"`
+        : `Publishing ${entity} version`;
+    },
+    icon: "clock",
+  },
+  restore_version: {
+    domain: "dashboard",
+    execution: "client",
+    clientExecutor: "dashboard",
+    longRunning: true,
+    getLabel: input => {
+      const inp = input as Record<string, unknown>;
+      const version = inp?.version;
+      const entity = inp?.entityType === "app" ? "app" : "dashboard";
+      return version
+        ? `Restoring ${entity} version ${version}`
+        : `Restoring ${entity} version`;
+    },
+    icon: "clock",
+  },
+  // Deprecated aliases of save_version / restore_version (entityType:
+  // "dashboard"); entries kept so historical chats render proper tool cards.
   dashboard_save_version: {
     domain: "dashboard",
     execution: "client",
@@ -1168,19 +1200,22 @@ export const AGENT_TOOL_MANIFEST = {
     icon: "list",
   },
   list_databases: {
-    domain: "flow",
+    domain: "database",
     execution: "server",
     getLabel: () => "Listing databases",
     icon: "database",
   },
   list_tables: {
-    domain: "flow",
+    domain: "database",
     execution: "server",
-    getLabel: () => "Listing tables",
+    getLabel: input => {
+      const db = (input as Record<string, unknown>)?.database;
+      return db ? `Listing tables in ${db}` : "Listing tables";
+    },
     icon: "table",
   },
   inspect_table: {
-    domain: "flow",
+    domain: "database",
     execution: "server",
     getLabel: input => {
       const table = (input as Record<string, unknown>)?.table;

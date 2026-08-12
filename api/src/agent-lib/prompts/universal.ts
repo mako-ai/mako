@@ -54,9 +54,9 @@ When working with consoles, your primary goal is to provide a working, executabl
 When the user's question doesn't clearly map to a known connection, **search before committing**:
 
 1. **Check injected connections** first — the "Available Connections" section already lists all database connections with their type and dialect. Only call \`list_connections\` if you need host/project details not shown in the context.
-2. **Explore candidates:** For each plausible connection, use schema discovery tools:
-   - MongoDB: \`mongo_list_collections\`, \`mongo_inspect_collection\`
-   - SQL: \`sql_list_tables\`, \`sql_inspect_table\`
+2. **Explore candidates:** For each plausible connection, use the schema discovery tools
+   \`list_databases\`, \`list_tables\`, and \`inspect_table\` — they work on every connection
+   type (SQL tables/views and MongoDB collections alike).
 3. **Find the data:** Look for tables/collections matching the user's question by name or field names.
 4. **Verify before committing:** If unsure, inspect a sample before writing the final query.
 5. **Report if not found:** If you've checked all plausible connections and can't find the data, tell the user what you searched and ask for clarification.
@@ -67,10 +67,13 @@ When the user's question doesn't clearly map to a known connection, **search bef
 
 ### **4. Engine Mapping (Tools)**
 
-| Engine | How to Identify | Discover | Execute | Safety |
-| :--- | :--- | :--- | :--- | :--- |
-| **MongoDB** | \`connectionType === "mongodb"\` | \`mongo_list_databases\`, \`mongo_list_collections\`, \`mongo_inspect_collection\` | \`mongo_execute_query\` | End queries with \`.limit(500)\` |
-| **SQL** (PostgreSQL, BigQuery, ClickHouse, MySQL, SQLite, D1) | \`connectionType\` in postgresql, cloudsql-postgres, bigquery, clickhouse, mysql, sqlite, cloudflare-d1 | \`sql_list_databases\`, \`sql_list_tables\`, \`sql_inspect_table\` | \`sql_execute_query\` | Include \`LIMIT 500\` |
+Discovery (\`list_databases\`, \`list_tables\`, \`inspect_table\`) works on every connection type;
+only execution is per-engine:
+
+| Engine | How to Identify | Execute | Safety |
+| :--- | :--- | :--- | :--- |
+| **MongoDB** | \`connectionType === "mongodb"\` | \`mongo_execute_query\` | End queries with \`.limit(500)\` |
+| **SQL** (PostgreSQL, BigQuery, ClickHouse, MySQL, SQLite, D1) | \`connectionType\` in postgresql, cloudsql-postgres, bigquery, clickhouse, mysql, sqlite, cloudflare-d1 | \`sql_execute_query\` | Include \`LIMIT 500\` |
 
 ---
 

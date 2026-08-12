@@ -189,27 +189,19 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "Flow template placeholder docs; not needed for apps authoring.",
   ),
   get_form_state: exclude("client-only", "Reads the open flow form in the UI."),
+  // NOTE: list_databases / list_tables / inspect_table are the unified
+  // cross-engine discovery family, classified via the capability registry
+  // above (bridged). The standalone flow agent's same-named discovery tools
+  // are shadowed by that classification.
   inspect_collection: exclude(
     "deferred",
-    "Unnamespaced mongo alias; MCP uses mongo_inspect_collection.",
-  ),
-  inspect_table: exclude(
-    "deferred",
-    "Unnamespaced flow discovery duplicate of sql_inspect_table.",
+    "Unnamespaced mongo alias; MCP uses inspect_table (or mongo_inspect_collection).",
   ),
   list_collections: exclude(
     "deferred",
-    "Unnamespaced mongo alias; MCP uses mongo_list_collections.",
-  ),
-  list_databases: exclude(
-    "deferred",
-    "Unnamespaced mongo/flow discovery alias; MCP uses sql_list_databases / mongo_list_databases.",
+    "Unnamespaced mongo alias; MCP uses list_tables (or mongo_list_collections).",
   ),
   list_flow_tabs: exclude("client-only", "Lists open flow editor tabs."),
-  list_tables: exclude(
-    "deferred",
-    "Unnamespaced flow discovery duplicate of sql_list_tables.",
-  ),
   set_form_field: exclude(
     "client-only",
     "Writes the open flow form in the UI.",
@@ -234,11 +226,11 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   create_data_source: exclude("client-only", "Dashboard builder UI."),
   dashboard_restore_version: exclude(
     "deferred",
-    "Dashboard versioning stays in-product until dashboards are MCP-bridged.",
+    "Deprecated alias of restore_version; dashboard versioning stays in-product until dashboards are MCP-bridged.",
   ),
   dashboard_save_version: exclude(
     "deferred",
-    "Dashboard versioning stays in-product until dashboards are MCP-bridged.",
+    "Deprecated alias of save_version; dashboard versioning stays in-product until dashboards are MCP-bridged.",
   ),
   enter_edit_mode: exclude("client-only", "Dashboard builder UI."),
   get_dashboard_state: exclude(
@@ -319,6 +311,17 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // ── Version history ───────────────────────────────────────────────────
   browse_version_history: bridge(),
   get_version_snapshot: bridge(),
+  // Generic save/restore dispatches in the browser (dashboard drafts live in
+  // the open tab); MCP keeps the server-side app_save_version /
+  // app_restore_version pair instead.
+  restore_version: exclude(
+    "client-only",
+    "Dispatches in the browser (dashboard drafts live in the open tab); MCP uses app_restore_version.",
+  ),
+  save_version: exclude(
+    "client-only",
+    "Dispatches in the browser (dashboard drafts live in the open tab); MCP uses app_save_version.",
+  ),
 
   // ── Web ───────────────────────────────────────────────────────────────
   fetch_url: bridge({ openWorldHint: true }),

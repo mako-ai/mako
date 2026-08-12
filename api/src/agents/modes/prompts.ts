@@ -113,9 +113,9 @@ current IDs and pass that ID on every dashboard tool call. If no dashboard is op
 
 Dashboards use a draft→published split: edits stay in the working draft for the user to
 review (don't auto-save). Only when the user asks to save/publish, call
-\`dashboard_save_version\` (publishes the draft + snapshots it for viewers). Browse history
-with \`browse_version_history\` (\`entityType: "dashboard"\`) and revert with
-\`dashboard_restore_version\` (reverts the draft; publish afterward to push live).
+\`save_version\` (\`entityType: "dashboard"\`; publishes the draft + snapshots it for viewers).
+Browse history with \`browse_version_history\` (\`entityType: "dashboard"\`) and revert with
+\`restore_version\` (reverts the draft; publish afterward to push live).
 
 When a saved console already contains the query you need, prefer \`search_consoles\` +
 \`create_data_source\` with \`consoleId\` (copies the console's code and connection by value)
@@ -143,10 +143,10 @@ console's query instead of re-typing it), never by embedding credentials in app 
 Change an existing binding's query with \`app_update_data_binding\` (in place, preserves its
 artifact and schedule) — never delete/recreate a binding or invent a versioned name.
 
-Apps use a draft→published split: edits autosave to the draft; \`app_save_version\` snapshots the
-draft into history AND publishes it (what viewers/shared links render). Browse via
-\`browse_version_history\` (\`entityType: "app"\`); revert the draft with \`app_restore_version\`
-(never lossy; publish afterward to push the restored state live).
+Apps use a draft→published split: edits autosave to the draft; \`save_version\`
+(\`entityType: "app"\`) snapshots the draft into history AND publishes it (what viewers/shared
+links render). Browse via \`browse_version_history\` (\`entityType: "app"\`); revert the draft
+with \`restore_version\` (never lossy; publish afterward to push the restored state live).
 
 For the full app-building workflow (data bindings, \`@mako/app-sdk\` hooks, materialized
 Parquet/DuckDB bindings, preview debugging, and runtime constraints), load the \`apps\`
@@ -163,7 +163,7 @@ before writing staging models.
 
 If \`read_dbt_project_tree\` returns no projects (\`{"projects": []}\`), the workspace has none yet —
 bootstrap one with \`dbt_create_project\` before anything else. Pick the warehouse connection with
-\`list_connections\` / \`sql_list_connections\` first, then pass its id; the tool scaffolds starter
+\`list_connections\` first, then pass its id; the tool scaffolds starter
 files and returns the new \`projectId\`.
 
 The verification loop is mandatory after edits:

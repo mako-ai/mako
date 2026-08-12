@@ -200,7 +200,7 @@ Apps are often opened on phones (shared links especially). Build responsive by
 default and **verify at mobile size before publishing** — media queries respond
 to the render viewport, so a run at phone size IS the mobile check:
 
-- **Verify loop**: before `app_save_version`, call `run_app` at
+- **Verify loop**: before publishing a version, call `run_app` at
   `width: 390, height: 844` (phone) and once at the default desktop viewport,
   and fix what breaks. In a browser the phone-size render is applied for that
   render only — the user's preview viewport is restored afterward.
@@ -226,16 +226,18 @@ Apps use a **draft → published** split:
   render. So a half-finished or in-progress draft is never shown to viewers
   until you publish.
 
-Tools:
+Tools (in-product chat uses the generic `save_version` / `restore_version` with
+`entityType: "app"`; over MCP the same operations are `app_save_version` /
+`app_restore_version`):
 
-- `app_save_version` — snapshot the current draft into history **and publish it**
+- `save_version` — snapshot the current draft into history **and publish it**
   (it becomes the viewer-facing version). Use at meaningful milestones (after
   finishing a feature, before a risky refactor) and whenever the user asks to
   "save"/"publish"/"snapshot" the app. Give a short `comment`.
 - `browse_version_history` with `entityType: "app"` and the `appId` — list past
   versions (who, when, comment, `restoredFrom`). Use `get_version_snapshot` to
   inspect a version's files before restoring.
-- `app_restore_version` — revert the **draft** to a past version by number. The
+- `restore_version` — revert the **draft** to a past version by number. The
   current draft is snapshotted first, so restoring is never lossy; it does NOT
   auto-publish (publish afterward to push the restored state live). Open tabs
   reload automatically. Binding materialization artifacts are kept (snapshots
