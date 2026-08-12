@@ -162,6 +162,89 @@ export async function executeAppAgentTool(
     if (workspaceId && appId) await store.persistApp(workspaceId, appId);
   };
 
+  // Viewport leg of app_set_preview (and its deprecated alias
+  // app_set_preview_viewport): sticky per-user preview viewport.
+  const applyPreviewViewport = async (
+    id: string,
+    legInput: Record<string, unknown>,
+  ): Promise<ToolResult> => {
+    await ensureApp(id);
+    const width =
+      typeof legInput.width === "number" ? legInput.width : undefined;
+    const height =
+      typeof legInput.height === "number" ? legInput.height : undefined;
+    const preset = legInput.preset as
+      | "phone"
+      | "tablet"
+      | "desktop"
+      | undefined;
+    let viewport: AppPreviewViewport | null;
+    if (width !== undefined && height !== undefined) {
+      viewport = { width, height };
+    } else if (width !== undefined || height !== undefined) {
+      return fail("Pass both width and height for a custom viewport.");
+    } else if (preset === "phone" || preset === "tablet") {
+      viewport = { ...APP_PREVIEW_VIEWPORT_PRESETS[preset], preset };
+    } else if (preset === "desktop") {
+      viewport = null;
+    } else {
+      return fail(
+        "Pass preset ('phone' | 'tablet' | 'desktop') or width + height.",
+      );
+    }
+    store.setPreviewViewport(id, viewport);
+    return {
+      success: true,
+      viewport,
+      hint: viewport
+        ? `Preview now renders at ${viewport.width}×${viewport.height} for you AND the user — no rebuild needed. Verify with run_app; reset with preset: "desktop".`
+        : "Preview viewport reset — the app fills the pane again.",
+    };
+  };
+
+  // Environment leg of app_set_preview (and its deprecated alias
+  // app_set_preview_environment): per-user dbt environment override.
+  const applyPreviewEnvironment = async (
+    id: string,
+    legInput: Record<string, unknown>,
+  ): Promise<ToolResult> => {
+    if (!workspaceId) return fail("No active workspace");
+    const appEntity = await ensureApp(id);
+    if (!appEntity) return fail("App not found");
+    const environment = (legInput.environment ?? null) as string | null;
+    const dbtProjectId = appEntity.dataBindings.find(
+      b => b.dbtProjectId,
+    )?.dbtProjectId;
+    if (!dbtProjectId) {
+      return fail(
+        "This app has no dbt-linked data bindings. Link a binding to a " +
+          "dbt project (dbtProjectId + the {{ dbt_schema }} token) first.",
+      );
+    }
+    if (environment) {
+      const info = await store.fetchDbtEnvInfo(workspaceId, dbtProjectId);
+      if (!info) return fail("Failed to load the linked dbt project");
+      if (!info.environments.some(env => env.name === environment)) {
+        return fail(
+          `Environment "${environment}" not found on the linked dbt ` +
+            `project. Available: ${info.environments
+              .map(env => env.name)
+              .join(", ")}`,
+        );
+      }
+    }
+    store.setPreviewDbtEnvironment(id, environment);
+    return {
+      success: true,
+      appId: id,
+      environment,
+      hint: environment
+        ? `Draft preview now reads dbt environment "${environment}". This ` +
+          "is your view only — published/shared viewers still read prod."
+        : "Draft preview reset to the default (prod) dbt environment.",
+    };
+  };
+
   switch (toolName) {
     case "list_open_apps":
       return { success: true, apps: listOpenApps() };
@@ -634,74 +717,52 @@ export async function executeAppAgentTool(
       }
     }
 
-    case "app_set_preview_viewport": {
+    // app_set_preview merges the two deprecated per-leg setters below; all
+    // three share the same viewport/environment legs.
+    case "app_set_preview": {
       if (!appId) return fail("appId is required");
-      await ensureApp(appId);
-      const width = typeof input.width === "number" ? input.width : undefined;
-      const height =
-        typeof input.height === "number" ? input.height : undefined;
-      const preset = input.preset as "phone" | "tablet" | "desktop" | undefined;
-      let viewport: AppPreviewViewport | null;
-      if (width !== undefined && height !== undefined) {
-        viewport = { width, height };
-      } else if (width !== undefined || height !== undefined) {
-        return fail("Pass both width and height for a custom viewport.");
-      } else if (preset === "phone" || preset === "tablet") {
-        viewport = { ...APP_PREVIEW_VIEWPORT_PRESETS[preset], preset };
-      } else if (preset === "desktop") {
-        viewport = null;
-      } else {
+      const wantsViewport =
+        input.preset !== undefined ||
+        input.width !== undefined ||
+        input.height !== undefined;
+      const wantsEnvironment = input.environment !== undefined;
+      if (!wantsViewport && !wantsEnvironment) {
         return fail(
-          "Pass preset ('phone' | 'tablet' | 'desktop') or width + height.",
+          "Pass at least one of preset, width + height, or environment.",
         );
       }
-      store.setPreviewViewport(appId, viewport);
-      return {
-        success: true,
-        viewport,
-        hint: viewport
-          ? `Preview now renders at ${viewport.width}×${viewport.height} for you AND the user — no rebuild needed. Verify with run_app; reset with preset: "desktop".`
-          : "Preview viewport reset — the app fills the pane again.",
-      };
+      const result: ToolResult = { success: true };
+      if (wantsViewport) {
+        const viewportResult = await applyPreviewViewport(appId, input);
+        if (viewportResult.success !== true) return viewportResult;
+        result.viewport = viewportResult.viewport;
+        result.viewportHint = viewportResult.hint;
+      }
+      if (wantsEnvironment) {
+        const envResult = await applyPreviewEnvironment(appId, input);
+        if (envResult.success !== true) {
+          return wantsViewport
+            ? {
+                ...envResult,
+                viewport: result.viewport,
+                note: "The viewport change was applied; the environment change failed.",
+              }
+            : envResult;
+        }
+        result.environment = envResult.environment;
+        result.environmentHint = envResult.hint;
+      }
+      return result;
+    }
+
+    case "app_set_preview_viewport": {
+      if (!appId) return fail("appId is required");
+      return applyPreviewViewport(appId, input);
     }
 
     case "app_set_preview_environment": {
       if (!appId) return fail("appId is required");
-      if (!workspaceId) return fail("No active workspace");
-      const appEntity = await ensureApp(appId);
-      if (!appEntity) return fail("App not found");
-      const environment = (input.environment ?? null) as string | null;
-      const dbtProjectId = appEntity.dataBindings.find(
-        b => b.dbtProjectId,
-      )?.dbtProjectId;
-      if (!dbtProjectId) {
-        return fail(
-          "This app has no dbt-linked data bindings. Link a binding to a " +
-            "dbt project (dbtProjectId + the {{ dbt_schema }} token) first.",
-        );
-      }
-      if (environment) {
-        const info = await store.fetchDbtEnvInfo(workspaceId, dbtProjectId);
-        if (!info) return fail("Failed to load the linked dbt project");
-        if (!info.environments.some(env => env.name === environment)) {
-          return fail(
-            `Environment "${environment}" not found on the linked dbt ` +
-              `project. Available: ${info.environments
-                .map(env => env.name)
-                .join(", ")}`,
-          );
-        }
-      }
-      store.setPreviewDbtEnvironment(appId, environment);
-      return {
-        success: true,
-        appId,
-        environment,
-        hint: environment
-          ? `Draft preview now reads dbt environment "${environment}". This ` +
-            "is your view only — published/shared viewers still read prod."
-          : "Draft preview reset to the default (prod) dbt environment.",
-      };
+      return applyPreviewEnvironment(appId, input);
     }
 
     default:

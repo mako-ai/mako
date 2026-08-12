@@ -62,8 +62,7 @@ Dashboards use a draft → published split:
 
 **Dashboard Management:**
 * `create_dashboard` — Create a brand new empty dashboard. After creation, use `create_data_source` to add data. Use when the user explicitly asks to create a NEW dashboard, or when the request is unrelated to any existing dashboard.
-* `create_data_source` — Create a dashboard-local data source directly from a connection and query definition. Requires `dashboardId`.
-* `import_console_as_data_source` — Import a saved console by value into a dashboard. Requires `dashboardId`.
+* `create_data_source` — Create a dashboard-local data source: either directly from a connection and query definition, or pass `consoleId` to import a saved console by value. Requires `dashboardId`.
 * `update_data_source_query` — Modify an existing data source's query definition. By default this only saves the definition; it does NOT rerun the query. Set `run: true` to immediately execute it and stream fresh draft data into DuckDB, or call `run_data_source_query` separately. Supports `action`: 'replace' (default, full code replacement), 'patch' (line-range edit via startLine/endLine — preferred for small changes), 'append' (add to end). Non-code fields are always shallow-merged.
 * `run_data_source_query` — Execute a data source query and stream fresh draft data into DuckDB. Use after `update_data_source_query` whenever the tool response says the definition was saved only or recommends another run. Automatically recovers if DuckDB crashes. Requires `dashboardId`.
 * `get_dashboard_state` — Read the full dashboard spec and data source schemas. Requires `dashboardId`.
@@ -79,8 +78,7 @@ Dashboards use a draft → published split:
 * `remove_widget` — Remove a widget. Requires `dashboardId`.
 
 **Chart Templates:**
-* `get_chart_templates` — List best-practice chart patterns (line, stacked bar, donut, etc.)
-* `get_chart_template` — Get a specific template with full spec and SQL pattern. Prefer simple templates first; only use layered Vega for uncommon custom interactions.
+* `get_chart_template` — Get a specific template with full spec and SQL pattern, or omit `templateId` to list best-practice chart patterns (line, stacked bar, donut, etc.). Prefer simple templates first; only use layered Vega for uncommon custom interactions.
 
 **Filters & Relationships:**
 * `add_global_filter` — Add a dashboard-level filter. Requires `dashboardId`.
@@ -101,7 +99,7 @@ Load these tier-3 references with `read_skill_resource` only when the task needs
 **Working with an existing dashboard (most common):**
 1. Use `list_open_dashboards` to get the dashboard ID. If the dashboard isn't open, use `search_dashboards` then `open_dashboard`.
 2. Use `enter_edit_mode` with the `dashboardId` before making changes.
-3. When a saved console already contains the query (or something close), PREFER `search_consoles` + `import_console_as_data_source` — it copies the console's code and connection by reference, so you never re-type the SQL. Only use `create_data_source` to define a genuinely new query from scratch. Pass `dashboardId` to both.
+3. When a saved console already contains the query (or something close), PREFER `search_consoles` + `create_data_source` with `consoleId` — it copies the console's code and connection by value, so you never re-type the SQL. Only define a query from scratch (connectionId + code) when no console fits. Pass `dashboardId` either way.
 4. Use `get_dashboard_state` with `dashboardId`, or `query_duckdb` / `inspect_data_source` with `surface: { kind: "dashboard", id: dashboardId }`, to understand the data shape.
 5. Use `add_widget` with `dashboardId` to create charts, KPIs, or tables.
 

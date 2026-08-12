@@ -420,7 +420,10 @@ export async function executeDashboardAgentTool(
 
   if (
     toolName === "add_data_source" ||
-    toolName === "import_console_as_data_source"
+    toolName === "import_console_as_data_source" ||
+    // create_data_source with consoleId imports the console by value — same
+    // path as the deprecated import aliases above.
+    (toolName === "create_data_source" && typeof input.consoleId === "string")
   ) {
     const ctx = requireDashboardId(input);
     if (!ctx) {
@@ -481,13 +484,22 @@ export async function executeDashboardAgentTool(
     }
 
     if (typeof input.name !== "string") {
-      return { success: false, error: "name is required" };
+      return {
+        success: false,
+        error: "name is required (unless consoleId is given)",
+      };
     }
     if (typeof input.connectionId !== "string") {
-      return { success: false, error: "connectionId is required" };
+      return {
+        success: false,
+        error: "connectionId is required (unless consoleId is given)",
+      };
     }
     if (typeof input.code !== "string") {
-      return { success: false, error: "code is required" };
+      return {
+        success: false,
+        error: "code is required (unless consoleId is given)",
+      };
     }
 
     try {
@@ -789,13 +801,14 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "get_chart_template") {
     if (typeof input.templateId !== "string") {
-      return { success: false, error: "templateId is required" };
+      // No templateId = list mode (folded in from get_chart_templates).
+      return { success: true, templates: getAllTemplates() };
     }
     const tpl = getTemplate(input.templateId);
     if (!tpl) {
       return {
         success: false,
-        error: `Template "${input.templateId}" not found. Call get_chart_templates to see available IDs.`,
+        error: `Template "${input.templateId}" not found. Call get_chart_template without templateId to see available IDs.`,
       };
     }
     return { success: true, template: tpl };

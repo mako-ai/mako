@@ -88,7 +88,7 @@ The draft preview can render at phone or tablet size so you can check responsive
 
 The choice is per-user view state (remembered per app, like the dbt environment switcher) — it never changes the app definition, and published/shared viewers are unaffected.
 
-The AI agent verifies mobile layouts the same way: it runs `run_app` with an explicit `width`/`height` (e.g. 390×844 for phone) and inspects the screenshot, or switches your on-screen preview with `app_set_preview_viewport` while iterating in chat.
+The AI agent verifies mobile layouts the same way: it runs `run_app` with an explicit `width`/`height` (e.g. 390×844 for phone) and inspects the screenshot, or switches your on-screen preview with `app_set_preview` while iterating in chat.
 
 ## Versioning & Publishing
 
