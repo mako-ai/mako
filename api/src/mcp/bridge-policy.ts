@@ -261,7 +261,8 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   run_data_source_query: exclude("client-only", "Dashboard builder UI."),
   search_dashboards: bridge(),
   set_time_dimension: exclude("client-only", "Dashboard builder UI."),
-  update_data_source_query: exclude("client-only", "Dashboard builder UI."),
+  // update_data_source_query migrated to the capability registry (dashboard
+  // domain) with a server leg — its bridge entry now derives from there.
 
   // ── Shared DuckDB data-source primitives (client) ─────────────────────
   inspect_data_source: exclude(

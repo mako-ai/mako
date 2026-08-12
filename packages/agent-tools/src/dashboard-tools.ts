@@ -14,6 +14,7 @@
 
 import { tool } from "ai";
 import { z } from "zod";
+import { bindingMaterializationScheduleSchema } from "./app-tools";
 import { clientScreenshotTools } from "./screenshot-tools";
 
 // A loose record instead of the full ~98 KB Vega-Lite JSON Schema. The model
@@ -220,7 +221,7 @@ const createDataSourceSchema = z.object({
     ),
 });
 
-const updateDataSourceQuerySchema = z.object({
+export const updateDataSourceQuerySchema = z.object({
   dashboardId: z.string().describe("Dashboard ID"),
   dataSourceId: z.string().describe("Dashboard data source ID"),
   action: z
@@ -253,6 +254,16 @@ const updateDataSourceQuerySchema = z.object({
       "Switch this data source between 'live' (stream on every load) and " +
         "'parquet' (cached materialized artifact).",
     ),
+  materializationSchedule: bindingMaterializationScheduleSchema
+    .optional()
+    .describe(
+      "Set or clear the cron auto-refresh, e.g. { enabled: true, cron: " +
+        "'0 * * * *' } for hourly or { enabled: false } to turn it off. " +
+        "NOTE: unlike apps (per-binding), a dashboard has ONE schedule that " +
+        "refreshes all of its 'parquet' data sources — setting it here " +
+        "updates the whole dashboard's schedule. Mirrors " +
+        "app_update_data_binding's materializationSchedule.",
+    ),
   startLine: z
     .number()
     .optional()
@@ -271,6 +282,80 @@ const updateDataSourceQuerySchema = z.object({
         "If false (default), only saves the query definition. The dashboard keeps using the previously loaded data until run_data_source_query is called.",
     ),
 });
+
+export type UpdateDataSourceQueryInput = z.infer<
+  typeof updateDataSourceQuerySchema
+>;
+
+/**
+ * Resolve the `action`-based code edit for update_data_source_query. Shared
+ * by the browser executor and the server (MCP) leg so the edit semantics
+ * cannot drift between surfaces. Returns the unchanged code when no `code`
+ * was provided (non-patch actions treat code as optional).
+ */
+export function resolveDataSourceCodeEdit(
+  existingCode: string,
+  input: {
+    action?: string;
+    code?: string;
+    startLine?: number;
+    endLine?: number;
+  },
+): { ok: true; code: string } | { ok: false; error: string } {
+  const action = typeof input.action === "string" ? input.action : "replace";
+  if (action === "patch") {
+    if (
+      typeof input.startLine !== "number" ||
+      typeof input.endLine !== "number"
+    ) {
+      return {
+        ok: false,
+        error:
+          "startLine and endLine are required for patch action. Use get_dashboard_state to see the current query code.",
+      };
+    }
+    if (typeof input.code !== "string") {
+      return { ok: false, error: "code is required for patch action." };
+    }
+  }
+  if (typeof input.code !== "string") {
+    return { ok: true, code: existingCode };
+  }
+  switch (action) {
+    case "patch": {
+      const lines = existingCode.split("\n");
+      const rawStart = input.startLine as number;
+      const rawEnd = input.endLine as number;
+      if (rawStart < 1 || rawStart > lines.length) {
+        return {
+          ok: false,
+          error: `startLine ${rawStart} is out of range — the query only has ${lines.length} line(s). Use get_dashboard_state to see the current query code.`,
+        };
+      }
+      if (rawEnd < rawStart || rawEnd > lines.length) {
+        return {
+          ok: false,
+          error: `endLine ${rawEnd} is out of range — the query only has ${lines.length} line(s) and startLine is ${rawStart}. Use get_dashboard_state to see the current query code.`,
+        };
+      }
+      const before = lines.slice(0, rawStart - 1);
+      const after = lines.slice(rawEnd);
+      return {
+        ok: true,
+        code: [...before, ...input.code.split("\n"), ...after].join("\n"),
+      };
+    }
+    case "append":
+      return {
+        ok: true,
+        code:
+          existingCode + (existingCode.endsWith("\n") ? "" : "\n") + input.code,
+      };
+    case "replace":
+    default:
+      return { ok: true, code: input.code };
+  }
+}
 
 const runDataSourceQuerySchema = z.object({
   dashboardId: z.string().describe("Dashboard ID"),
@@ -351,7 +436,8 @@ export const clientDashboardTools = {
       "'replace' (default — full code replacement), " +
       "'patch' (replace a specific line range — requires startLine/endLine, preferred for small edits), " +
       "'append' (add lines to the end of the existing code). " +
-      "Non-code fields (name, connectionId, language, etc.) are always shallow-merged regardless of action. " +
+      "Non-code fields (name, connectionId, language, materialization, etc.) are always shallow-merged regardless of action. " +
+      "materializationSchedule sets the dashboard's cron auto-refresh (dashboard-level — one schedule refreshes all parquet sources). " +
       "When run=false, treat the response as definition_saved_only and use the returned nextRecommendedTool if you need fresh data. " +
       "IMPORTANT for 'patch': line numbers are 1-indexed and inclusive; do NOT include line number prefixes in your code content.",
     inputSchema: updateDataSourceQuerySchema,
