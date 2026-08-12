@@ -14,26 +14,52 @@ const logger = loggers.inngest();
 
 const WORKER_ID = `inngest-${os.hostname()}-${process.pid}`;
 
+/**
+ * Cap concurrent dashboard refreshes per workspace. Per-dashboard concurrency
+ * alone lets N scheduled dashboards in the same workspace hit BigQuery in
+ * parallel (multi-source scans + retries) and starve shared reservations.
+ * Override with DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE (default 2).
+ */
+const DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE = Math.max(
+  parseInt(
+    process.env.DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE || "2",
+    10,
+  ) || 2,
+  1,
+);
+
 export const dashboardRefreshFunction = inngest.createFunction(
   {
     id: "dashboard-refresh",
     name: "Refresh Dashboard Data Sources",
-    concurrency: {
-      limit: 1,
-      key: "event.data.dashboardId",
-    },
+    concurrency: [
+      {
+        scope: "fn",
+        // Requires workspaceId on the event (queueDashboardArtifactRefresh and
+        // the scheduler below both set it).
+        key: "event.data.workspaceId",
+        limit: DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE,
+      },
+      {
+        scope: "fn",
+        key: "event.data.dashboardId",
+        limit: 1,
+      },
+    ],
     retries: 2,
   },
   { event: "dashboard.refresh" },
   async ({ event, step }) => {
     const {
       dashboardId,
+      workspaceId,
       dataSourceIds,
       force,
       triggerType,
       queuedRunIdsByDataSourceId,
     } = event.data as {
       dashboardId: string;
+      workspaceId?: string;
       dataSourceIds?: string[];
       queuedRunIdsByDataSourceId?: Record<string, string>;
       force?: boolean;
@@ -52,6 +78,7 @@ export const dashboardRefreshFunction = inngest.createFunction(
 
     logger.info("Refreshing dashboard data sources", {
       dashboardId,
+      workspaceId: workspaceId ?? dashboard.workspaceId?.toString(),
       dataSourceCount: filteredDataSources.length,
       workerId: WORKER_ID,
     });
@@ -94,7 +121,7 @@ export const dashboardSchedulerFunction = inngest.createFunction(
       return Dashboard.find({
         "materializationSchedule.enabled": true,
         "materializationSchedule.cron": { $type: "string", $ne: "" },
-      }).select("_id cache dataSources materializationSchedule");
+      }).select("_id workspaceId cache dataSources materializationSchedule");
     })) as any[];
 
     let triggered = 0;
@@ -118,6 +145,15 @@ export const dashboardSchedulerFunction = inngest.createFunction(
       }
 
       if (isDue && dashboard.dataSources?.length > 0) {
+        const workspaceId = dashboard.workspaceId?.toString();
+        if (!workspaceId) {
+          logger.warn(
+            "Skipping scheduled refresh: dashboard missing workspaceId",
+            { dashboardId: dashboard._id.toString() },
+          );
+          continue;
+        }
+
         await Dashboard.findByIdAndUpdate(dashboard._id, {
           $set: { "cache.lastRefreshedAt": new Date() },
         });
@@ -125,6 +161,7 @@ export const dashboardSchedulerFunction = inngest.createFunction(
           name: "dashboard.refresh",
           data: {
             dashboardId: dashboard._id.toString(),
+            workspaceId,
             triggerType: "schedule",
             force: true,
           },
