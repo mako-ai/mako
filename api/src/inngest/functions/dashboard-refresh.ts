@@ -14,14 +14,32 @@ const logger = loggers.inngest();
 
 const WORKER_ID = `inngest-${os.hostname()}-${process.pid}`;
 
+/**
+ * Global cap across all dashboard refreshes. Per-dashboard concurrency alone
+ * lets N scheduled dashboards hit BigQuery in parallel (each with multiple
+ * heavy sources + retries) and starve shared reservations.
+ * Override with DASHBOARD_REFRESH_CONCURRENCY (default 2).
+ */
+const DASHBOARD_REFRESH_CONCURRENCY = Math.max(
+  parseInt(process.env.DASHBOARD_REFRESH_CONCURRENCY || "2", 10) || 2,
+  1,
+);
+
 export const dashboardRefreshFunction = inngest.createFunction(
   {
     id: "dashboard-refresh",
     name: "Refresh Dashboard Data Sources",
-    concurrency: {
-      limit: 1,
-      key: "event.data.dashboardId",
-    },
+    concurrency: [
+      {
+        scope: "fn",
+        limit: DASHBOARD_REFRESH_CONCURRENCY,
+      },
+      {
+        scope: "fn",
+        key: "event.data.dashboardId",
+        limit: 1,
+      },
+    ],
     retries: 2,
   },
   { event: "dashboard.refresh" },
