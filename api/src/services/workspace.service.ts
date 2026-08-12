@@ -54,6 +54,7 @@ export class WorkspaceService {
           maxDatabases: 5,
           maxMembers: 10,
           billingTier: "free",
+          dashboardRefreshConcurrency: 2,
         },
       });
       await workspace.save({ session });
@@ -558,6 +559,7 @@ export class WorkspaceService {
           maxDatabases: 5,
           maxMembers: 10,
           billingTier: "free",
+          dashboardRefreshConcurrency: 2,
         },
       });
       await workspace.save({ session });

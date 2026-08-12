@@ -38,6 +38,7 @@ export type SettingsSection =
   | "agents"
   | "coding-agents"
   | "models"
+  | "dashboard-refresh"
   | "billing"
   | "members"
   | "api-keys"

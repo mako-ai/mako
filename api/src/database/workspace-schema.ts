@@ -163,6 +163,11 @@ export interface IWorkspace extends Document {
     billingTier: "free" | "pro" | "enterprise";
     customPrompt?: string;
     disabledModelIds?: string[];
+    /**
+     * Max concurrent scheduled/manual dashboard artifact refreshes for this
+     * workspace. Clamped to [1, DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX].
+     */
+    dashboardRefreshConcurrency?: number;
   };
   billing: IWorkspaceBilling;
   selfDirective?: string;
@@ -1252,6 +1257,11 @@ Add any specific instructions for how the AI should interpret your data or respo
 *This prompt is combined with the system prompt to provide context-aware responses. You can edit this through the Settings page.*`,
       },
       disabledModelIds: [{ type: String }],
+      dashboardRefreshConcurrency: {
+        type: Number,
+        default: 2,
+        min: 1,
+      },
     },
     billing: {
       stripeCustomerId: { type: String, default: null },

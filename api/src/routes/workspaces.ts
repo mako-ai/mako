@@ -15,6 +15,11 @@ import {
 } from "../auth/mcp-oauth.service";
 import { workspaceService } from "../services/workspace.service";
 import {
+  clampDashboardRefreshConcurrency,
+  DASHBOARD_REFRESH_CONCURRENCY_MAX,
+  DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
+} from "../services/dashboard-refresh-concurrency.service";
+import {
   approveAcpPlanGrant,
   revokeAcpPlanGrant,
 } from "../services/acp-plan-grant.service";
@@ -782,6 +787,123 @@ workspaceRoutes.openapi(
       logger.error("Error fetching workspace model blocklist", { error });
       return c.json(
         { success: false, error: "Failed to fetch disabled models" },
+        500,
+      );
+    }
+  },
+);
+
+// Get dashboard refresh concurrency for the workspace.
+workspaceRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/settings/dashboard-refresh",
+    tags: ["Workspaces"],
+    summary: "Get dashboard refresh concurrency settings",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: { params: IdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspace = c.get("workspace");
+      const dashboardRefreshConcurrency = clampDashboardRefreshConcurrency(
+        workspace.settings?.dashboardRefreshConcurrency ??
+          DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
+      );
+      return c.json({
+        success: true,
+        dashboardRefreshConcurrency,
+        max: DASHBOARD_REFRESH_CONCURRENCY_MAX,
+        default: DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
+      });
+    } catch (error) {
+      logger.error("Error fetching dashboard refresh settings", { error });
+      return c.json(
+        {
+          success: false,
+          error: "Failed to fetch dashboard refresh settings",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// Update dashboard refresh concurrency for the workspace.
+workspaceRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/settings/dashboard-refresh",
+    tags: ["Workspaces"],
+    summary: "Update dashboard refresh concurrency settings",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: { params: IdParam, body: JsonBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspace = c.get("workspace");
+      const workspaceId = c.req.param("id");
+
+      if (workspaceId !== workspace._id.toString()) {
+        return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
+      }
+
+      const body = await c.req.json();
+      const raw = (body as { dashboardRefreshConcurrency?: unknown })
+        .dashboardRefreshConcurrency;
+
+      if (
+        (typeof raw !== "number" && typeof raw !== "string") ||
+        !Number.isFinite(
+          typeof raw === "number" ? raw : parseInt(String(raw), 10),
+        )
+      ) {
+        return c.json(
+          {
+            success: false,
+            error: "dashboardRefreshConcurrency must be a number",
+          },
+          400,
+        );
+      }
+
+      const dashboardRefreshConcurrency = clampDashboardRefreshConcurrency(raw);
+
+      await Workspace.findByIdAndUpdate(workspaceId, {
+        $set: {
+          "settings.dashboardRefreshConcurrency": dashboardRefreshConcurrency,
+        },
+      });
+
+      logger.info("Updated workspace dashboard refresh concurrency", {
+        workspaceId,
+        dashboardRefreshConcurrency,
+      });
+
+      return c.json({
+        success: true,
+        dashboardRefreshConcurrency,
+        max: DASHBOARD_REFRESH_CONCURRENCY_MAX,
+        default: DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
+      });
+    } catch (error) {
+      logger.error("Error updating dashboard refresh settings", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to update dashboard refresh settings",
+        },
         500,
       );
     }
