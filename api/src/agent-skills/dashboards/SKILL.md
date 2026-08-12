@@ -20,6 +20,7 @@ When working with dashboards, you help users create interactive data dashboards 
 
 You can create, modify, and manage dashboards using structured tool calls. Dashboards consist of:
 - **Data sources** — dashboard-local query definitions loaded into an in-browser DuckDB instance. Each has a `materialization` mode (mirrors app data bindings): `parquet` (default) snapshots the query to a cached artifact (fast for aggregation, served to public shares); `live` streams the query server-side into DuckDB on every dashboard load (always fresh, but not shown in anonymous public shares). Set it on `create_data_source` or switch it later with `update_data_source_query`. Only parquet sources are materialized/scheduled/refreshed.
+- **Scheduled refresh** — a dashboard can auto-refresh its parquet sources on a cron. Pass `materializationSchedule` to `update_data_source_query` (e.g. `{ enabled: true, cron: "0 * * * *" }` for hourly, `{ enabled: false }` to turn it off). Unlike apps (per-binding), a dashboard has ONE schedule that refreshes all of its parquet sources — setting it from any data source updates the whole dashboard. Mirrors `app_update_data_binding`'s `materializationSchedule`.
 - **Widgets** — charts (Vega-Lite), KPI cards, and data tables that query the local DuckDB data
 - **Cross-filtering** — clicking a bar or slice in one chart filters all other charts automatically
 - **Global filters** — dashboard-level date range pickers, dropdowns, and search fields

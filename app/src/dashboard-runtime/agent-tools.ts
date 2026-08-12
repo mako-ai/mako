@@ -12,13 +12,15 @@ import {
 } from "./commands";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useVersionStore } from "../store/versionStore";
-import type { DashboardDataSource, DashboardWidget } from "./types";
+import type { Dashboard, DashboardDataSource, DashboardWidget } from "./types";
+import { CronExpressionParser } from "cron-parser";
 import { classifyDuckDBError, classifySourceError } from "./error-kinds";
 import { computeDashboardStateHash } from "../utils/stateHash";
 import {
   DASHBOARD_EXECUTOR_TOOL_NAMES,
   type AgentToolName,
 } from "../agent-runtime/client-tool-manifest";
+import { resolveDataSourceCodeEdit } from "@mako/agent-tools";
 import { captureScreenshot } from "../agent-runtime/screenshot-agent-tools";
 import { focusDashboardTab, getCurrentWorkspaceId } from "./shell";
 import {
@@ -575,69 +577,17 @@ export async function executeDashboardAgentTool(
       return { success: false, error: "Data source not found" };
     }
 
-    const action = typeof input.action === "string" ? input.action : "replace";
-
-    if (action === "patch") {
-      if (
-        typeof input.startLine !== "number" ||
-        typeof input.endLine !== "number"
-      ) {
-        return {
-          success: false,
-          error:
-            "startLine and endLine are required for patch action. Use get_dashboard_state to see the current query code.",
-        };
-      }
-      if (typeof input.code !== "string") {
-        return {
-          success: false,
-          error: "code is required for patch action.",
-        };
-      }
+    const edit = resolveDataSourceCodeEdit(existing.query.code ?? "", {
+      action: typeof input.action === "string" ? input.action : undefined,
+      code: typeof input.code === "string" ? input.code : undefined,
+      startLine:
+        typeof input.startLine === "number" ? input.startLine : undefined,
+      endLine: typeof input.endLine === "number" ? input.endLine : undefined,
+    });
+    if (!edit.ok) {
+      return { success: false, error: edit.error };
     }
-
-    const existingCode = existing.query.code ?? "";
-    let resolvedCode = existingCode;
-
-    if (typeof input.code === "string") {
-      switch (action) {
-        case "patch": {
-          const lines = existingCode.split("\n");
-          const rawStart = input.startLine as number;
-          const rawEnd = input.endLine as number;
-          if (rawStart < 1 || rawStart > lines.length) {
-            return {
-              success: false,
-              error: `startLine ${rawStart} is out of range — the query only has ${lines.length} line(s). Use get_dashboard_state to see the current query code.`,
-            };
-          }
-          if (rawEnd < rawStart || rawEnd > lines.length) {
-            return {
-              success: false,
-              error: `endLine ${rawEnd} is out of range — the query only has ${lines.length} line(s) and startLine is ${rawStart}. Use get_dashboard_state to see the current query code.`,
-            };
-          }
-          const startLine = rawStart;
-          const endLine = rawEnd;
-          const before = lines.slice(0, startLine - 1);
-          const after = lines.slice(endLine);
-          const patchLines = input.code.split("\n");
-          resolvedCode = [...before, ...patchLines, ...after].join("\n");
-          break;
-        }
-        case "append": {
-          resolvedCode =
-            existingCode +
-            (existingCode.endsWith("\n") ? "" : "\n") +
-            input.code;
-          break;
-        }
-        case "replace":
-        default:
-          resolvedCode = input.code;
-          break;
-      }
-    }
+    const resolvedCode = edit.code;
 
     const nextLanguage = (
       typeof input.language === "string"
@@ -690,6 +640,91 @@ export async function executeDashboardAgentTool(
       });
       throwIfAborted(signal);
 
+      // Dashboard-level cron auto-refresh (parity with
+      // app_update_data_binding's materializationSchedule): one schedule
+      // refreshes every parquet source of the dashboard.
+      let scheduleMessage = "";
+      if (
+        input.materializationSchedule &&
+        typeof input.materializationSchedule === "object"
+      ) {
+        const requested = input.materializationSchedule as {
+          enabled?: boolean;
+          cron?: string | null;
+          timezone?: string;
+          dataFreshnessTtlMs?: number | null;
+        };
+        const enabled = requested.enabled === true;
+        const cron = enabled ? (requested.cron ?? "").trim() || null : null;
+        if (enabled) {
+          if (!cron) {
+            return {
+              success: false,
+              error:
+                "materializationSchedule.cron is required when enabling the schedule (5-field cron, e.g. '0 * * * *' = hourly).",
+            };
+          }
+          try {
+            CronExpressionParser.parse(cron, {
+              tz: requested.timezone ?? "UTC",
+            });
+          } catch {
+            return {
+              success: false,
+              error: `Invalid materialization schedule cron: "${cron}"`,
+            };
+          }
+          const dashboardAfterUpdate =
+            useDashboardStore.getState().openDashboards[ctx.dashboardId];
+          const hasParquetSource = dashboardAfterUpdate?.dataSources.some(
+            ds => ds.materialization === "parquet",
+          );
+          if (!hasParquetSource) {
+            return {
+              success: false,
+              error:
+                "Scheduled refresh only rebuilds 'parquet' data sources and this dashboard has none. Switch a data source to materialization: 'parquet' first (this tool can do both in one call).",
+            };
+          }
+        }
+        const current =
+          useDashboardStore.getState().openDashboards[ctx.dashboardId]
+            ?.materializationSchedule;
+        const nextSchedule = {
+          enabled,
+          cron,
+          timezone: requested.timezone ?? current?.timezone ?? "UTC",
+          dataFreshnessTtlMs:
+            requested.dataFreshnessTtlMs !== undefined
+              ? requested.dataFreshnessTtlMs
+              : (current?.dataFreshnessTtlMs ?? null),
+        };
+        await useDashboardStore
+          .getState()
+          .updateDashboard(ctx.workspaceId, ctx.dashboardId, {
+            materializationSchedule: nextSchedule,
+          } as Partial<Dashboard>);
+        throwIfAborted(signal);
+        // updateDashboard swallows request errors — confirm the write landed
+        // before reporting success to the agent.
+        const persisted =
+          useDashboardStore.getState().openDashboards[ctx.dashboardId]
+            ?.materializationSchedule;
+        if (
+          (persisted?.enabled ?? false) !== enabled ||
+          (persisted?.cron ?? null) !== cron
+        ) {
+          return {
+            success: false,
+            error:
+              "The data source was updated, but persisting the dashboard schedule failed. Retry the schedule change, or check write access to this dashboard.",
+          };
+        }
+        scheduleMessage = enabled
+          ? ` Dashboard auto-refresh schedule set: ${cron} (${nextSchedule.timezone}) — one schedule refreshes all parquet sources.`
+          : " Dashboard auto-refresh schedule is now off.";
+      }
+
       if (shouldRun) {
         const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
         const runtimeSource = snapshot.dataSources.find(
@@ -706,7 +741,7 @@ export async function executeDashboardAgentTool(
           rowCount: runtimeSource?.rowCount ?? null,
           schema: runtimeSource?.columns ?? [],
           sampleRows: runtimeSource?.sampleRows?.slice(0, 5) ?? [],
-          message: `Updated "${existing.name}" and loaded fresh draft-stream data into DuckDB.`,
+          message: `Updated "${existing.name}" and loaded fresh draft-stream data into DuckDB.${scheduleMessage}`,
         };
       }
       const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
@@ -724,8 +759,7 @@ export async function executeDashboardAgentTool(
         rowCount: null,
         schema: [],
         sampleRows: [],
-        message:
-          "Definition saved only. The dashboard is still using the previously loaded data until run_data_source_query is called.",
+        message: `Definition saved only. The dashboard is still using the previously loaded data until run_data_source_query is called.${scheduleMessage}`,
       };
     } catch (error) {
       const message =

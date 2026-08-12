@@ -40,6 +40,7 @@ import { createSqlToolsV2 } from "../agent-lib/tools/sql-tools";
 import { createMongoToolsV2 } from "../agent-lib/tools/mongodb-tools";
 import { createUniversalTools } from "../agent-lib/tools/universal-tools";
 import { createServerConsoleTools } from "../agent-lib/tools/server-console-tools";
+import { createServerDashboardTools } from "../agent-lib/tools/server-dashboard-tools";
 import { createNotebookServerTools } from "../agent-lib/tools/server-notebook-tools";
 import { createConsoleSearchTools } from "../agent-lib/tools/console-search-tools";
 import { createDashboardSearchTools } from "../agent-lib/tools/dashboard-search-tools";
@@ -171,6 +172,17 @@ export function buildMakoMcpCandidateTools(
     surface: "mcp",
   });
 
+  // Dashboards manage data sources the same way apps manage bindings: the
+  // server leg of update_data_source_query (per-surface adapter, run_app
+  // pattern) lets headless agents edit queries, toggle materialization, and
+  // set the dashboard refresh schedule.
+  const dashboardTools = createServerDashboardTools({
+    workspaceId,
+    userId,
+    chatId,
+    queryAccess,
+  });
+
   const notebookTools = createNotebookServerTools({
     workspaceId,
     userId,
@@ -208,6 +220,7 @@ export function buildMakoMcpCandidateTools(
     ...appTools,
     ...headlessRunApp,
     ...consoleTools,
+    ...dashboardTools,
     ...notebookTools,
     ...selfDirectiveTools,
     list_connections,

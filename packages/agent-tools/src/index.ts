@@ -55,7 +55,12 @@ export type {
 export { clientChartTools } from "./chart-tools";
 export type { ModifyChartSpecInput } from "./chart-tools";
 
-export { clientDashboardTools } from "./dashboard-tools";
+export {
+  clientDashboardTools,
+  updateDataSourceQuerySchema,
+  resolveDataSourceCodeEdit,
+  type UpdateDataSourceQueryInput,
+} from "./dashboard-tools";
 export { clientFlowTools } from "./flow-tools";
 
 export { clientAppTools } from "./app-tools";

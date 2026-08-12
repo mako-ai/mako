@@ -88,10 +88,7 @@ import {
 import { minimizeDirtyPaths } from "../../utils/mongoose-dirty-paths";
 import { canReadResource, canWriteResource } from "../../utils/resource-acl";
 import { loggers } from "../../logging";
-import {
-  MONGO_QUERY_WRITE_SCOPE_REQUIRED,
-  sqlReadOnlyAccessError,
-} from "../../services/read-only-query.service";
+import { bindingQueryAccessError as sharedBindingQueryAccessError } from "./shared/binding-query-access";
 import type { QueryAccess } from "../../auth/api-key-scopes";
 
 const logger = loggers.agent();
@@ -167,38 +164,18 @@ export function createServerAppTools({
     return canWriteResource(doc, userId, await memberRole());
   };
 
-  const bindingQueryAccessError = async (
+  const bindingQueryAccessError = (
     language: unknown,
     code: unknown,
     connectionId: unknown,
-  ): Promise<string | null> => {
-    // In-product agents keep their existing behavior. MCP data bindings are
-    // always read-only: a binding is a data source,
-    // not an arbitrary command channel.
-    if (queryAccess === undefined) return null;
-    if (queryAccess === "none") {
-      return "This API key does not have query access.";
-    }
-    if (
-      typeof connectionId !== "string" ||
-      !Types.ObjectId.isValid(connectionId)
-    ) {
-      return "Data binding connection is invalid.";
-    }
-    const connection = await DatabaseConnection.findOne({
-      _id: new Types.ObjectId(connectionId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    }).select("type");
-    if (!connection) return "Data binding connection is invalid.";
-    if (
-      connection.type === "mongodb" ||
-      language === "javascript" ||
-      language === "mongodb"
-    ) {
-      return MONGO_QUERY_WRITE_SCOPE_REQUIRED;
-    }
-    return sqlReadOnlyAccessError(typeof code === "string" ? code : "");
-  };
+  ): Promise<string | null> =>
+    sharedBindingQueryAccessError({
+      workspaceId,
+      queryAccess,
+      language,
+      code,
+      connectionId,
+    });
 
   // Display name stamped on version checkpoints the agent creates.
   const savedByName = async (): Promise<string> =>
