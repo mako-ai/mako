@@ -272,14 +272,19 @@ export function createServerDashboardTools({
           if (input.databaseName !== undefined) {
             dataSource.query.databaseName = input.databaseName;
           }
-          if (input.name !== undefined) dataSource.name = input.name;
+          if (input.name !== undefined) {
+            dataSource.name = input.name;
+          }
           if (input.timeDimension !== undefined) {
             dataSource.timeDimension = input.timeDimension;
           }
-          if (input.rowLimit !== undefined)
+          if (input.rowLimit !== undefined) {
             dataSource.rowLimit = input.rowLimit;
+          }
           dataSource.materialization = nextMaterialization;
-          if (scheduleChanged) doc.materializationSchedule = nextSchedule;
+          if (scheduleChanged) {
+            doc.materializationSchedule = nextSchedule;
+          }
           doc.markModified("dataSources");
           // Version bump so open tabs treat the realtime poke as newer and
           // pull the updated definition; UI saves against the old version
