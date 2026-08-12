@@ -815,19 +815,59 @@ export const clientAppTools = {
       "status/errors (much cheaper).",
     inputSchema: runAppBaseSchema,
   }),
+  app_set_preview: tool({
+    description:
+      "Configure the app's DRAFT PREVIEW: a device viewport (preset phone " +
+      "390x844 / tablet 768x1024 / desktop = fill the pane, or custom " +
+      "width/height — media queries re-evaluate, no rebuild) and/or which " +
+      "dbt ENVIRONMENT it reads data from (for dbt-linked bindings using the " +
+      "{{ dbt_schema }} token; null resets to prod). Pass at least one of " +
+      "preset, width+height, or environment. This is per-user VIEW state — " +
+      "it never changes the app definition or what published/shared viewers " +
+      "see (those always read prod). While a dbt override is active, " +
+      "dbt-linked parquet bindings serve a live (row-capped) run against the " +
+      "override schema — do NOT call materialize_binding to preview dev data " +
+      "(materialization always builds from prod). For a one-off size check " +
+      "without changing what's on screen, pass width/height to run_app " +
+      "instead.",
+    inputSchema: z.object({
+      appId: appIdField,
+      preset: z
+        .enum(["phone", "tablet", "desktop"])
+        .optional()
+        .describe(
+          "Named viewport: phone 390x844, tablet 768x1024, desktop = clear " +
+            "the override (fill the pane). Ignored when width/height are set.",
+        ),
+      width: z
+        .number()
+        .int()
+        .min(RUN_APP_MIN_VIEWPORT_PX)
+        .max(RUN_APP_MAX_VIEWPORT_PX)
+        .optional()
+        .describe("Custom viewport width in px (with height)"),
+      height: z
+        .number()
+        .int()
+        .min(RUN_APP_MIN_VIEWPORT_PX)
+        .max(RUN_APP_MAX_VIEWPORT_PX)
+        .optional()
+        .describe("Custom viewport height in px (with width)"),
+      environment: z
+        .string()
+        .nullable()
+        .optional()
+        .describe(
+          "dbt environment name from the linked project (e.g. 'dev' or a " +
+            "personal environment), or null to reset to the prod default. " +
+            "Omit to leave the environment unchanged.",
+        ),
+    }),
+  }),
   app_set_preview_environment: tool({
     description:
-      "Switch which dbt ENVIRONMENT the app's DRAFT PREVIEW reads data from " +
-      "(for dbt-linked bindings using the {{ dbt_schema }} token). This is " +
-      "per-user VIEW state — it never changes the app definition, other " +
-      "editors' previews, or what published/shared viewers see (those always " +
-      "read the prod environment). While an override is active, dbt-linked " +
-      "parquet bindings serve a live (row-capped) run against the override " +
-      "schema — useQuery, useDuckDB, and query_duckdb all read it; do NOT " +
-      "call materialize_binding to preview dev data (materialization always " +
-      "builds from prod). Pass environment: null to go back to the default " +
-      "(prod). Use it to verify an app against models you just built in a " +
-      "dev/personal schema before promoting them to prod.",
+      "Deprecated alias of app_set_preview({ environment }) — switch which " +
+      "dbt environment the app's draft preview reads data from.",
     inputSchema: z.object({
       appId: appIdField,
       environment: z
@@ -841,13 +881,8 @@ export const clientAppTools = {
   }),
   app_set_preview_viewport: tool({
     description:
-      "Switch the app's DRAFT PREVIEW to a device viewport (phone 390x844, " +
-      "tablet 768x1024, or custom width/height) so you AND the user see the " +
-      "responsive layout while iterating — media queries re-evaluate at the " +
-      "new size, no rebuild. This is per-user VIEW state; it never changes " +
-      "the app definition or what viewers see. Pass preset: 'desktop' to go " +
-      "back to filling the pane. For a one-off verification without changing " +
-      "what's on screen, pass width/height to run_app instead.",
+      "Deprecated alias of app_set_preview({ preset | width+height }) — " +
+      "switch the app's draft preview to a device viewport.",
     inputSchema: z.object({
       appId: appIdField,
       preset: z

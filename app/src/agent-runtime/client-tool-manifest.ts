@@ -285,7 +285,13 @@ export const AGENT_TOOL_MANIFEST = {
     clientExecutor: "dashboard",
     longRunning: true,
     getLabel: input => {
-      const name = (input as Record<string, unknown>)?.name;
+      const inp = input as Record<string, unknown>;
+      const name = inp?.name;
+      if (inp?.consoleId) {
+        return name
+          ? `Importing console as "${name}"`
+          : "Importing console as data source";
+      }
       return name ? `Creating data source "${name}"` : "Creating data source";
     },
     icon: "plus",
@@ -665,6 +671,30 @@ export const AGENT_TOOL_MANIFEST = {
     execution: "client",
     clientExecutor: "app",
     getLabel: () => "Checking preview errors",
+    icon: "eye",
+  },
+  app_set_preview: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    longRunning: true,
+    getLabel: input => {
+      const { environment, preset, width, height } = (input ?? {}) as {
+        environment?: string | null;
+        preset?: string;
+        width?: number;
+        height?: number;
+      };
+      const parts: string[] = [];
+      if (width && height) parts.push(`${width}×${height}`);
+      else if (preset) parts.push(preset);
+      if (environment !== undefined) {
+        parts.push(environment ? `dbt env "${environment}"` : "dbt env prod");
+      }
+      return parts.length > 0
+        ? `Preview: ${parts.join(", ")}`
+        : "Configuring preview";
+    },
     icon: "eye",
   },
   app_set_preview_environment: {

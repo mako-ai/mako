@@ -118,8 +118,8 @@ with \`browse_version_history\` (\`entityType: "dashboard"\`) and revert with
 \`dashboard_restore_version\` (reverts the draft; publish afterward to push live).
 
 When a saved console already contains the query you need, prefer \`search_consoles\` +
-\`import_console_as_data_source\` (copies its code and connection by reference) over
-re-typing the SQL with \`create_data_source\`.
+\`create_data_source\` with \`consoleId\` (copies the console's code and connection by value)
+over re-typing the SQL from scratch.
 
 For dashboard creation, editing, widget SQL, Vega-Lite specs, layout, and cross-filtering
 guidance, load the \`dashboards\` system skill. If that skill points to a needed

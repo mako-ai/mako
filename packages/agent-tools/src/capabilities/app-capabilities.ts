@@ -238,6 +238,34 @@ export const APP_CAPABILITIES = [
     desktopDelivery: "mako-desktop",
   }),
   define({
+    // Merged preview setter (viewport + dbt environment). The environment leg
+    // keeps app_set_preview_environment's artifact-write gate, applied only
+    // when the input actually switches the environment; viewport-only calls
+    // are pure per-user view state.
+    name: "app_set_preview",
+    pack: "app-ui",
+    risk: "write",
+    inputConditionalGrants: [
+      {
+        grant: "artifact-write",
+        behavior: "switching the draft preview's dbt environment",
+        appliesTo: input =>
+          typeof input === "object" &&
+          input !== null &&
+          (input as { environment?: unknown }).environment !== undefined,
+      },
+    ],
+    surfaces: IN_CHAT_ONLY_SURFACES,
+    resultKind: "ui-effect",
+    mcpExclusion: {
+      why: "client-only",
+      note: "Per-user browser preview state; headless agents pass width/height to run_app.",
+    },
+  }),
+  define({
+    // Deprecated alias of app_set_preview({ environment }); kept registered
+    // for old chats. Deferred out of the in-product working set (see
+    // DEFERRED_BUILTIN_TOOL_DOMAINS).
     name: "app_set_preview_environment",
     pack: "app-ui",
     risk: "write",
@@ -250,7 +278,8 @@ export const APP_CAPABILITIES = [
     },
   }),
   define({
-    // Pure view state (which viewport the browser preview renders at) — the
+    // Deprecated alias of app_set_preview({ preset | width+height }). Pure
+    // view state (which viewport the browser preview renders at) — the
     // sticky sibling of run_app's ephemeral width/height. Mutates nothing
     // durable, so read-risk; headless agents pass width/height to run_app.
     name: "app_set_preview_viewport",
