@@ -157,7 +157,7 @@ preview; headless MCP renders server-side); `open_app` just focuses a UI tab.
 
    The token resolves to the dbt project's PROD-like environment schema for
    published apps, parquet materialization, and public shares. In the DRAFT
-   preview it can be switched per user with `app_set_preview_environment`
+   preview it can be switched per user with `app_set_preview`
    (e.g. to a personal `dbt_<user>` schema) to verify an app against
    freshly-built dev models WITHOUT affecting other editors or viewers —
    pass `environment: null` to reset to prod. While an override is active,
@@ -204,7 +204,7 @@ to the render viewport, so a run at phone size IS the mobile check:
   `width: 390, height: 844` (phone) and once at the default desktop viewport,
   and fix what breaks. In a browser the phone-size render is applied for that
   render only — the user's preview viewport is restored afterward.
-- **Iterating on mobile fixes in chat/Desktop**: `app_set_preview_viewport`
+- **Iterating on mobile fixes in chat/Desktop**: `app_set_preview`
   with `preset: "phone"` (or `"tablet"`, or custom `width`/`height`) switches
   the on-screen preview so you and the user look at the same mobile layout
   while you edit; `preset: "desktop"` resets. This is per-user view state —

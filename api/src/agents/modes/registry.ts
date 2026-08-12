@@ -63,6 +63,20 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   // external MCP clients; the in-product agent uses the merged tool.
   app_set_binding_materialization: "apps",
   app_set_binding_schedule: "apps",
+  // Deprecated aliases of app_set_preview (environment + viewport folded into
+  // one preview setter). Kept executable for old chats.
+  app_set_preview_environment: "apps",
+  app_set_preview_viewport: "apps",
+  // Deprecated single-field alias of set_multiple_fields (which updates one
+  // or many fields). Its FIELD_PATHS enum makes it one of the heaviest
+  // schemas in the catalog, so it stays out of the flow working set.
+  set_form_field: "flows",
+  // Deprecated aliases of create_data_source({ consoleId }) — both imported a
+  // saved console into a dashboard by value. Kept executable for old chats.
+  import_console_as_data_source: "dashboards",
+  add_data_source: "dashboards",
+  // Deprecated alias of get_chart_template without templateId (lists all).
+  get_chart_templates: "dashboards",
 };
 
 export const DEFERRED_BUILTIN_TOOL_NAMES: readonly string[] = Object.keys(
@@ -109,8 +123,6 @@ const DASHBOARD_MODE_TOOL_NAMES: string[] = [
   "open_dashboard",
   "enter_edit_mode",
   "create_dashboard",
-  "import_console_as_data_source",
-  "add_data_source",
   "create_data_source",
   "update_data_source_query",
   "run_data_source_query",
@@ -126,7 +138,6 @@ const DASHBOARD_MODE_TOOL_NAMES: string[] = [
   "remove_global_filter",
   "link_tables",
   "set_time_dimension",
-  "get_chart_templates",
   "get_chart_template",
   "dashboard_save_version",
   "dashboard_restore_version",
@@ -150,7 +161,6 @@ const FLOW_MODE_TOOL_NAMES: string[] = [
   "explain_template",
   // Client flow form tools
   "get_form_state",
-  "set_form_field",
   "set_multiple_fields",
   "create_flow_tab",
   "list_flow_tabs",
@@ -184,8 +194,7 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "get_version_snapshot",
   "materialize_binding",
   "run_app",
-  "app_set_preview_environment",
-  "app_set_preview_viewport",
+  "app_set_preview",
   // Shared surface-scoped data-source primitives (apps + dashboards)
   "list_data_sources",
   "inspect_data_source",

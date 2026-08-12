@@ -190,7 +190,53 @@ describe("run_app client executor", () => {
   });
 });
 
-describe("app_set_preview_viewport client executor", () => {
+describe("app_set_preview client executor", () => {
+  it("sets a named preset as sticky view state via the merged tool", async () => {
+    const result = await executeAppAgentTool("app_set_preview", {
+      appId: APP_ID,
+      preset: "phone",
+    });
+    expect(result).toMatchObject({
+      success: true,
+      viewport: { width: 390, height: 844, preset: "phone" },
+    });
+    expect(useAppStore.getState().previewViewport[APP_ID]).toEqual({
+      width: 390,
+      height: 844,
+      preset: "phone",
+    });
+  });
+
+  it("requires at least one of viewport or environment", async () => {
+    const result = await executeAppAgentTool("app_set_preview", {
+      appId: APP_ID,
+    });
+    expect(result).toMatchObject({ success: false });
+    expect(String(result.error)).toMatch(/at least one/);
+  });
+
+  it("reports an applied viewport when the environment leg fails", async () => {
+    // getCurrentWorkspaceId is mocked to null, so the environment leg fails
+    // after the viewport leg already applied.
+    const result = await executeAppAgentTool("app_set_preview", {
+      appId: APP_ID,
+      preset: "tablet",
+      environment: "dev",
+    });
+    expect(result).toMatchObject({
+      success: false,
+      viewport: { width: 768, height: 1024, preset: "tablet" },
+    });
+    expect(String(result.note)).toMatch(/viewport change was applied/);
+    expect(useAppStore.getState().previewViewport[APP_ID]).toEqual({
+      width: 768,
+      height: 1024,
+      preset: "tablet",
+    });
+  });
+});
+
+describe("app_set_preview_viewport client executor (deprecated alias)", () => {
   it("sets a named preset as sticky view state", async () => {
     const result = await executeAppAgentTool("app_set_preview_viewport", {
       appId: APP_ID,

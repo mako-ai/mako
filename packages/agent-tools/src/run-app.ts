@@ -30,7 +30,7 @@ export const RUN_APP_MAX_VIEWPORT_PX = 1920;
 
 /**
  * Named viewports for verifying responsive layouts. One list feeds the
- * preview toolbar toggle, the app_set_preview_viewport tool, and skill
+ * preview toolbar toggle, the app_set_preview tool, and skill
  * guidance — media queries respond to the (iframe or headless) viewport, so
  * rendering at these sizes IS the mobile/tablet layout check.
  */

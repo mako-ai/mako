@@ -66,13 +66,13 @@ LIMIT {{limit}}
 4. **Write Query:** Create an appropriate query with template placeholders based on the user's needs.
 5. **Validate Query:** Use `validate_query` to test the query BEFORE setting form fields. This returns columns and sample data so you can verify it works. Template placeholders like `{{limit}}` are automatically substituted with safe defaults during validation.
 6. **⭐ Get Source Schema (CRITICAL):** Use `sql_inspect_table` to get the authoritative source column types (declared types, nullability). If you need more information, use `execute_query` to run any query - introspection queries, NULL checks, data sampling, etc.
-7. **Set Schema Mappings:** Use `set_form_field` with `fieldName="typeCoercions"` to set column type mappings. Each item has: `column` (name), `sourceType`, `targetType`, `nullable` (boolean), and optional `transformer`. Explain your reasoning to the user.
+7. **Set Schema Mappings:** Use `set_multiple_fields` with a `"typeCoercions"` key to set column type mappings. Each item has: `column` (name), `sourceType`, `targetType`, `nullable` (boolean), and optional `transformer`. Explain your reasoning to the user.
 8. **Discover Destination Options:** 
    - Use `sql_list_databases` on the destination connection to get available databases/datasets
    - **For BigQuery:** You MUST set `tableDestination.schema` (the dataset name). If not specified by user, ask which dataset to use.
    - **For PostgreSQL:** Optionally set `tableDestination.schema` for the schema (defaults to "public")
 9. **Configure Settings:** Set pagination mode, sync mode, conflict resolution, etc.
-10. **Set Query:** Once validated and schema mapped, use `set_form_field` or `set_multiple_fields` to update the form.
+10. **Set Query:** Once validated and schema mapped, use `set_multiple_fields` to update the form.
 
 **⚠️ IMPORTANT:** Before configuring the destination, ALWAYS:
 1. Check the destination connection type (use `list_connections`)
@@ -97,14 +97,13 @@ Flow-specific discovery tools:
 
 **Form Manipulation (Client-side):**
 * `get_form_state` - Read current form configuration values
-* `set_form_field` - Update a single form field using nested path (e.g., "databaseSource.query", "schedule.cron", "tableDestination.tableName")
-* `set_multiple_fields` - Update multiple fields at once using nested paths
+* `set_multiple_fields` - Update one or more fields at once using nested paths (e.g., "databaseSource.query", "schedule.cron", "tableDestination.tableName")
 
 **IMPORTANT:** 
 1. Use `validate_query` (server-side) to test queries first
 2. Use `sql_inspect_table` to get the authoritative source column types
 3. Use `execute_query` if you need to run additional queries (introspection, NULL checks, data sampling)
-4. Use `set_form_field` with `fieldName="typeCoercions"` to apply type mappings (array of {column, sourceType, targetType, nullable, transformer})
+4. Use `set_multiple_fields` with a `"typeCoercions"` key to apply type mappings (array of {column, sourceType, targetType, nullable, transformer})
 
 ---
 
@@ -213,7 +212,7 @@ After writing and validating the query, you MUST get the source schema to propos
    - TEXT columns with JSON data → suggest JSON type for structured storage
    - Columns named `*_at` or `*_time` with DATETIME type → TIMESTAMP
    - Ask user if unsure about ambiguous mappings
-5. **Set the mappings** using `set_form_field` with fieldName="typeCoercions" - each item: {column, sourceType, targetType, nullable, transformer}
+5. **Set the mappings** using `set_multiple_fields` with a "typeCoercions" key - each item: {column, sourceType, targetType, nullable, transformer}
 6. **Explain your choices** to the user so they can make informed edits
 
 **Example Reasoning:**
