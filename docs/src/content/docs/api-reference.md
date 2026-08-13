@@ -44,6 +44,8 @@ Create API keys in **Workspace settings → API Keys**. The same page surfaces y
 | `GET`  | `/api/workspaces`     | List user's workspaces |
 | `POST` | `/api/workspaces`     | Create a workspace     |
 | `GET`  | `/api/workspaces/:id` | Get workspace details  |
+| `GET`  | `/api/workspaces/:id/settings/limits` | Get refresh concurrency limits (`dashboardRefreshConcurrency`, `appBindingRefreshConcurrency`; defaults 2, clamped to the per-workspace max) |
+| `PUT`  | `/api/workspaces/:id/settings/limits` | Update refresh concurrency limits |
 
 ## Database Connections
 

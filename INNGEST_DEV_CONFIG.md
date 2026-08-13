@@ -138,6 +138,22 @@ slot reservation -- it is the first knob to lower if interactive or hasura-crm
 queries start queueing during CDC catch-up. If a single flow is starving others,
 lower `CDC_MATERIALIZE_CONCURRENCY_PER_FLOW` instead of the global cap.
 
+## Dashboard / app binding refresh concurrency
+
+Dashboard and app-binding materialization refreshes are capped **per workspace**
+so one workspace's scheduled dashboards cannot starve others (or the shared
+BigQuery reservation). The effective limit is a workspace setting
+(**Workspace settings → Limits**, `GET/PUT /api/workspaces/:id/settings/limits`)
+defaulting to 2 for each class; runs beyond the limit soft-gate with
+`RetryAfterError` and the scheduler throttles per workspace. The env vars below
+only set the hard ceiling the setting is clamped to and the Inngest function
+concurrency key (`event.data.workspaceId`).
+
+| Variable | Default | Applies to | Description |
+|---|---|---|---|
+| `DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX` | `10` | `dashboardRefreshFunction` (per workspace) | Hard ceiling on parallel dashboard refreshes within one workspace. Per-dashboard concurrency is independently 1. |
+| `APP_BINDING_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX` | `10` | app binding refresh (per workspace) | Hard ceiling on parallel app binding materializations within one workspace. |
+
 ## Environment summary
 
 | Environment    | Artifact Store | Artifact Prefix                         | Inngest Routing           | Schedulers             |
