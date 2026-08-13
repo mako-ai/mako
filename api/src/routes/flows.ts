@@ -26,6 +26,11 @@ import { syncMachineService } from "../sync-cdc/sync-state";
 import { databaseRegistry } from "../databases/registry";
 import { cdcLiveTableName, cdcStageTableName } from "../sync-cdc/normalization";
 import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
+import {
+  computeEntityPendingBacklog,
+  computeEntitySeqGap,
+  computePendingLagSeconds,
+} from "../sync-cdc/backlog";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import { databaseDataSourceManager } from "../sync/database-data-source-manager";
 import { databaseConnectionService } from "../services/database-connection.service";
@@ -137,11 +142,6 @@ function resolveWebhookBaseUrl(
   }
 
   return requestBaseUrl;
-}
-
-function toLagSeconds(value: Date | null): number | null {
-  if (!value) return null;
-  return Math.max(Math.floor((Date.now() - value.getTime()) / 1000), 0);
 }
 
 const DESTINATION_COUNT_CACHE_TTL_MS = 60_000;
@@ -3527,23 +3527,24 @@ flowRoutes.openapi(
           (state?.backfillCursor as any)?.hasMore === false;
         const ingestSeq = state?.lastIngestSeq || 0;
         const materializedSeq = state?.lastMaterializedSeq || 0;
-        const backlogCount = Math.max(
+        // Real pending rows only — never inflate with ingest/materialized seq
+        // gap (Recover/Reprocess used to rewind the cursor and make the gap
+        // look like hundreds of thousands of "pending" events).
+        const backlogCount = computeEntityPendingBacklog(
           pendingCountMap.get(entity) || 0,
-          ingestSeq - materializedSeq,
-          state?.backlogCount || 0,
         );
+        const seqGap = computeEntitySeqGap(ingestSeq, materializedSeq);
         const oldestPendingTs = pendingOldestTsMap.get(entity) ?? null;
         return {
           entity,
           lastIngestSeq: ingestSeq,
           lastMaterializedSeq: materializedSeq,
           backlogCount,
-          lagSeconds:
-            backlogCount > 0
-              ? oldestPendingTs
-                ? toLagSeconds(oldestPendingTs)
-                : toLagSeconds(lastMaterializedAt)
-              : 0,
+          seqGap,
+          lagSeconds: computePendingLagSeconds({
+            pendingCount: backlogCount,
+            oldestPendingTs,
+          }),
           lastMaterializedAt,
           destinationRowCount: (state as any)?.destinationRowCount ?? null,
           lifetimeEventsProcessed,
@@ -3569,26 +3570,13 @@ flowRoutes.openapi(
       const materializedDates = entities
         .map(e => e.lastMaterializedAt)
         .filter((d): d is Date => d instanceof Date);
-      let lagSeconds: number | null;
-      if (totalBacklog === 0) {
-        lagSeconds = 0;
-      } else {
-        const oldestPendingTs = Array.from(pendingOldestTsMap.values()).sort(
-          (a, b) => a.getTime() - b.getTime(),
-        )[0];
-        if (oldestPendingTs) {
-          lagSeconds = toLagSeconds(oldestPendingTs);
-        } else {
-          const oldestMaterialized = entities
-            .filter(e => e.backlogCount > 0)
-            .map(e => e.lastMaterializedAt)
-            .filter((d): d is Date => d instanceof Date)
-            .sort((a, b) => a.getTime() - b.getTime())[0];
-          lagSeconds = oldestMaterialized
-            ? toLagSeconds(oldestMaterialized)
-            : -1;
-        }
-      }
+      const oldestPendingTs = Array.from(pendingOldestTsMap.values()).sort(
+        (a, b) => a.getTime() - b.getTime(),
+      )[0];
+      const lagSeconds = computePendingLagSeconds({
+        pendingCount: totalBacklog,
+        oldestPendingTs,
+      });
 
       let backfillStatus = flow.backfillState?.status || "idle";
       if (
@@ -3635,11 +3623,10 @@ flowRoutes.openapi(
           consecutiveFailures: flow.backfillState?.consecutiveFailures ?? 0,
           lastError,
           backlogCount: totalBacklog,
-          // The UI "pending" counter must reflect the TRUE CDC materialization
-          // backlog (pending CdcChangeEvents + cursor lag), not the raw
-          // WebhookEvent.applyStatus count — the latter stays inflated by
-          // orphaned/deduped rows that will never materialize, which made the
-          // count look stuck at 50k+ even when nothing was actually pending.
+          // The UI "pending" counter must reflect real pending CdcChangeEvents
+          // only — not cursor seq gaps (Recover rewind used to inflate those
+          // into hundreds of thousands of fake "pending" events) and not the
+          // raw WebhookEvent.applyStatus count (orphaned/deduped rows).
           webhookPendingCount: totalBacklog,
           // Raw applyStatus=pending count kept for diagnostics only.
           webhookApplyPendingCount,
