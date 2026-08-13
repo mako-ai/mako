@@ -19,6 +19,7 @@ import {
 } from "@mako/agent-tools";
 import { createMongoToolsV2 } from "./mongodb-tools";
 import { createSqlToolsV2 } from "./sql-tools";
+import { createUnifiedDiscoveryTools } from "./discovery-tools";
 import { createServerConsoleTools } from "./server-console-tools";
 import {
   ALL_SUPPORTED_TYPES,
@@ -219,6 +220,11 @@ export const createUniversalTools = (
         }
       },
     }),
+
+    // Unified discovery family (server-side): dispatches on connection type
+    // (MongoDB vs SQL). This is the primary discovery surface; the namespaced
+    // mongo_*/sql_* discovery tools below stay registered as deferred aliases.
+    ...createUnifiedDiscoveryTools(workspaceId, toolExecutionContext),
 
     // MongoDB tools (namespaced with mongo_ prefix) - server-side
     mongo_list_connections: mongoListConnections,

@@ -241,7 +241,8 @@ The full safe-iteration loop:
    `dbt_run_job` — ONLY with explicit user confirmation.
 4. After the prod build succeeds, reset the preview
    (`app_set_preview` with `environment: null`) and, if app code
-   changed, publish with `app_save_version`.
+   changed, publish with `save_version` (`entityType: "app"`; over MCP:
+   `app_save_version`).
 
 ## Tier-3 references
 

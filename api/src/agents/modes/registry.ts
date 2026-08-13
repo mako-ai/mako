@@ -82,6 +82,25 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   // merged tool.
   add_notebook_cell: "notebooks",
   delete_notebook_cell: "notebooks",
+  // Deprecated per-engine discovery aliases of the unified
+  // list_databases / list_tables / inspect_table family (which dispatches on
+  // connection type). Kept executable for existing chats and external MCP
+  // clients; execution stays split (sql_execute_query / mongo_execute_query).
+  sql_list_connections: "sql",
+  sql_list_databases: "sql",
+  sql_list_tables: "sql",
+  sql_inspect_table: "sql",
+  mongo_list_connections: "mongodb",
+  mongo_list_databases: "mongodb",
+  mongo_list_collections: "mongodb",
+  mongo_inspect_collection: "mongodb",
+  // Deprecated per-entity aliases of the generic save_version /
+  // restore_version pair (which takes an entityType + entityId ref). The
+  // app_* pair stays the MCP-facing surface (the generic pair is client-side).
+  app_save_version: "apps",
+  app_restore_version: "apps",
+  dashboard_save_version: "dashboards",
+  dashboard_restore_version: "dashboards",
 };
 
 export const DEFERRED_BUILTIN_TOOL_NAMES: readonly string[] = Object.keys(
@@ -102,20 +121,15 @@ const QUERY_MODE_TOOL_NAMES: string[] = [
   "get_chart_template",
   "capture_screenshot",
   // Discovery (search_consoles was core before tiering; query is the
-  // default mode, so keep console lookup available without a load step)
+  // default mode, so keep console lookup available without a load step).
+  // list_databases/list_tables/inspect_table dispatch on connection type
+  // (MongoDB vs SQL); only execution stays per-engine.
   "search_consoles",
   "list_connections",
-  // MongoDB
-  "mongo_list_connections",
-  "mongo_list_databases",
-  "mongo_list_collections",
-  "mongo_inspect_collection",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
   "mongo_execute_query",
-  // SQL
-  "sql_list_connections",
-  "sql_list_databases",
-  "sql_list_tables",
-  "sql_inspect_table",
   "sql_execute_query",
   // Long-running query lifecycle (pairs with sql_execute_query / run_console)
   "check_query_status",
@@ -144,8 +158,8 @@ const DASHBOARD_MODE_TOOL_NAMES: string[] = [
   "link_tables",
   "set_time_dimension",
   "get_chart_template",
-  "dashboard_save_version",
-  "dashboard_restore_version",
+  "save_version",
+  "restore_version",
   "browse_version_history",
   "get_version_snapshot",
   "capture_screenshot",
@@ -153,9 +167,9 @@ const DASHBOARD_MODE_TOOL_NAMES: string[] = [
   "search_consoles",
   "search_dashboards",
   "list_connections",
-  "sql_list_databases",
-  "sql_list_tables",
-  "sql_inspect_table",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
 ];
 
 const FLOW_MODE_TOOL_NAMES: string[] = [
@@ -171,9 +185,9 @@ const FLOW_MODE_TOOL_NAMES: string[] = [
   "list_flow_tabs",
   // Discovery
   "list_connections",
-  "sql_list_databases",
-  "sql_list_tables",
-  "sql_inspect_table",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
 ];
 
 const APP_MODE_TOOL_NAMES: string[] = [
@@ -193,8 +207,8 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "app_create_data_binding",
   "app_update_data_binding",
   "app_delete_data_binding",
-  "app_save_version",
-  "app_restore_version",
+  "save_version",
+  "restore_version",
   "browse_version_history",
   "get_version_snapshot",
   "materialize_binding",
@@ -208,17 +222,12 @@ const APP_MODE_TOOL_NAMES: string[] = [
   // Discovery for validating binding queries
   "search_consoles",
   "list_connections",
-  "sql_list_connections",
-  "sql_list_databases",
-  "sql_list_tables",
-  "sql_inspect_table",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
   "sql_execute_query",
   "check_query_status",
   "cancel_query",
-  "mongo_list_connections",
-  "mongo_list_databases",
-  "mongo_list_collections",
-  "mongo_inspect_collection",
   "mongo_execute_query",
 ];
 
@@ -227,10 +236,9 @@ const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   // Discovery: inspect sources before writing staging models; preview built
   // tables after dbt_run_model.
   "list_connections",
-  "sql_list_connections",
-  "sql_list_databases",
-  "sql_list_tables",
-  "sql_inspect_table",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
   "sql_execute_query",
   "check_query_status",
   "cancel_query",
@@ -238,14 +246,9 @@ const TRANSFORM_MODE_TOOL_NAMES: string[] = [
 
 const EXPLORE_MODE_TOOL_NAMES: string[] = [
   "list_connections",
-  "sql_list_connections",
-  "sql_list_databases",
-  "sql_list_tables",
-  "sql_inspect_table",
-  "mongo_list_connections",
-  "mongo_list_databases",
-  "mongo_list_collections",
-  "mongo_inspect_collection",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
   "search_consoles",
   "search_dashboards",
   "read_console",
@@ -267,10 +270,9 @@ const NOTEBOOK_MODE_TOOL_NAMES: string[] = [
   "run_notebook_code_cell",
   // Discovery: find data sources + tables for SQL cells
   "list_connections",
-  "sql_list_connections",
-  "sql_list_databases",
-  "sql_list_tables",
-  "sql_inspect_table",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
 ];
 
 export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {

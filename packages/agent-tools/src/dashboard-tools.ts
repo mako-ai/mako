@@ -41,6 +41,32 @@ const saveDashboardVersionSchema = z.object({
     ),
 });
 
+const versionEntityRefFields = {
+  entityType: z.enum(["app", "dashboard"]),
+  entityId: z
+    .string()
+    .describe("App ID (from list_open_apps) or dashboard ID (from list_open_dashboards)"),
+};
+
+const saveVersionSchema = z.object({
+  ...versionEntityRefFields,
+  comment: z
+    .string()
+    .optional()
+    .describe("Short message shown in the version history list"),
+});
+
+const restoreVersionSchema = z.object({
+  ...versionEntityRefFields,
+  version: z
+    .number()
+    .describe("Version number to restore (from browse_version_history)"),
+  comment: z
+    .string()
+    .optional()
+    .describe("Optional note explaining the restore"),
+});
+
 const restoreDashboardVersionSchema = z.object({
   dashboardId: z.string().describe("Dashboard ID (from list_open_dashboards)"),
   version: z
@@ -539,24 +565,35 @@ export const clientDashboardTools = {
         ),
     }),
   }),
+  save_version: tool({
+    description:
+      "Save AND publish a version of an app or dashboard: snapshots the " +
+      "working draft into history and publishes it (what viewers and shared " +
+      "links render). Dashboards: requires edit mode; only save when the user " +
+      "asks to save/publish.",
+    inputSchema: saveVersionSchema,
+  }),
+  restore_version: tool({
+    description:
+      "Restore an app or dashboard to a previous version. Reverts the working " +
+      "draft (the current state is checkpointed first, so it is never lossy) " +
+      "WITHOUT publishing — call save_version afterward to push it live. " +
+      "Dashboards: replaces unsaved edits in the open tab.",
+    inputSchema: restoreVersionSchema,
+  }),
+  // Deprecated aliases of save_version / restore_version (entityType:
+  // "dashboard"). Deferred in the in-product working set; kept executable so
+  // existing chats that replay these calls keep working.
   dashboard_save_version: tool({
     description:
-      "Save AND publish the dashboard's current edits as a new version. Persists " +
-      "the working draft to the server, creates an immutable version snapshot in " +
-      "history, and publishes it — the published snapshot is what viewers and " +
-      "shared/public links render. Call enter_edit_mode first. Only call this " +
-      "when the user asks to save/publish/snapshot; otherwise leave changes in " +
-      "edit mode for the user to review. Give a short `comment`.",
+      "Deprecated alias of save_version with entityType:'dashboard'. Save AND " +
+      "publish the dashboard's current edits as a new version.",
     inputSchema: saveDashboardVersionSchema,
   }),
   dashboard_restore_version: tool({
     description:
-      "Restore the dashboard to a previous version (get the number from " +
-      "browse_version_history with entityType:'dashboard'). Reverts the working " +
-      "draft to that snapshot and reloads the dashboard; the current state is " +
-      "preserved as a new version first, so it is never lossy. Restoring does " +
-      "NOT publish — call dashboard_save_version afterward to push the restored " +
-      "state live to viewers. This replaces any unsaved edits in the open tab.",
+      "Deprecated alias of restore_version with entityType:'dashboard'. " +
+      "Restore the dashboard's working draft to a previous version.",
     inputSchema: restoreDashboardVersionSchema,
   }),
 };

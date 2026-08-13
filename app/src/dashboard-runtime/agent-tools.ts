@@ -100,7 +100,80 @@ const EDIT_MODE_EXEMPT_TOOLS = new Set([
   // Restore is a server-side revert + reload; it does not require holding the
   // edit lock (it replaces the open tab's state with the restored draft).
   "dashboard_restore_version",
+  // Generic version tools take an entityType/entityId ref (not dashboardId),
+  // so the blanket dashboardId edit-mode gate below cannot apply; the
+  // dashboard save leg re-checks edit mode itself.
+  "save_version",
+  "restore_version",
 ]);
+
+async function saveDashboardVersionLeg(
+  dashboardId: string,
+  comment: string,
+): Promise<Record<string, unknown>> {
+  const store = useDashboardStore.getState();
+  if (!store.openDashboards[dashboardId]) {
+    return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+  }
+  if (!store.isEditMode(dashboardId)) {
+    return {
+      success: false,
+      error:
+        "Dashboard is in read mode. Use enter_edit_mode first to enable editing.",
+      errorKind: "not_in_edit_mode",
+    };
+  }
+  const workspaceId = store.openDashboards[dashboardId].workspaceId;
+  const result = await store.saveDashboard(workspaceId, dashboardId, comment);
+  if (!result.ok) {
+    return {
+      success: false,
+      error:
+        result.error ||
+        "Save failed (the dashboard may have been modified elsewhere; reload and retry).",
+    };
+  }
+  const d = useDashboardStore.getState().openDashboards[dashboardId] as
+    | (Record<string, any> & { version?: number; publishedVersion?: number })
+    | undefined;
+  return {
+    success: true,
+    version: d?.version,
+    publishedVersion: d?.publishedVersion,
+    message: `Saved and published "${d?.title ?? "dashboard"}" as version ${d?.publishedVersion ?? d?.version}.`,
+  };
+}
+
+async function restoreDashboardVersionLeg(
+  dashboardId: string,
+  version: number,
+  comment: string | undefined,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const store = useDashboardStore.getState();
+  const dashboard = store.openDashboards[dashboardId];
+  if (!dashboard) {
+    return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+  }
+  const workspaceId = dashboard.workspaceId;
+  const res = await useVersionStore
+    .getState()
+    .restoreVersion(workspaceId, "dashboard", dashboardId, version, comment);
+  if (!res.success) {
+    return { success: false, error: res.error || "Restore failed" };
+  }
+  await useDashboardStore.getState().reloadDashboard(workspaceId, dashboardId);
+  throwIfAborted(signal);
+  const d = useDashboardStore.getState().openDashboards[dashboardId];
+  return {
+    success: true,
+    restoredFrom: version,
+    title: (d as any)?.title,
+    message:
+      `Restored the dashboard draft to version ${version}. This is not yet ` +
+      "published — save a version to push it live to viewers.",
+  };
+}
 
 export async function executeDashboardAgentTool(
   toolName: string,
@@ -196,6 +269,80 @@ export async function executeDashboardAgentTool(
     }
   }
 
+  // Generic version tools: dispatch on entityType. Dashboards go through the
+  // local draft flows (the working draft lives in this tab); apps are
+  // server-authoritative (autosaved), so the REST endpoints via the version
+  // store are the full save/restore — open app tabs follow along through the
+  // server's realtime app.updated poke.
+  if (toolName === "save_version" || toolName === "restore_version") {
+    const entityType =
+      input.entityType === "app" || input.entityType === "dashboard"
+        ? input.entityType
+        : null;
+    const entityId = typeof input.entityId === "string" ? input.entityId : null;
+    if (!entityType || !entityId) {
+      return {
+        success: false,
+        error: "entityType ('app' | 'dashboard') and entityId are required.",
+      };
+    }
+    const comment =
+      typeof input.comment === "string" ? input.comment : undefined;
+
+    if (toolName === "save_version") {
+      if (entityType === "dashboard") {
+        return saveDashboardVersionLeg(entityId, comment ?? "");
+      }
+      const workspaceId = getCurrentWorkspaceId();
+      if (!workspaceId) {
+        return { success: false, error: "No active workspace" };
+      }
+      const res = await useVersionStore
+        .getState()
+        .saveVersion(workspaceId, "app", entityId, comment);
+      if (!res.success) {
+        return {
+          success: false,
+          error: res.error || "Failed to save version",
+        };
+      }
+      return {
+        success: true,
+        version: res.version,
+        publishedVersion: res.version,
+        message: `Saved and published app version ${res.version}.`,
+      };
+    }
+
+    const version =
+      typeof input.version === "number" ? input.version : Number(input.version);
+    if (!Number.isFinite(version)) {
+      return { success: false, error: "version (number) is required" };
+    }
+    if (entityType === "dashboard") {
+      return restoreDashboardVersionLeg(entityId, version, comment, signal);
+    }
+    const workspaceId = getCurrentWorkspaceId();
+    if (!workspaceId) {
+      return { success: false, error: "No active workspace" };
+    }
+    const res = await useVersionStore
+      .getState()
+      .restoreVersion(workspaceId, "app", entityId, version, comment);
+    if (!res.success) {
+      return { success: false, error: res.error || "Restore failed" };
+    }
+    return {
+      success: true,
+      restoredFrom: version,
+      message:
+        `Restored the app draft to version ${version}. This is not yet ` +
+        "published — save a version to push it live to viewers.",
+    };
+  }
+
+  // Deprecated aliases of restore_version / save_version (entityType:
+  // "dashboard") — existing chats may replay these names.
   if (toolName === "dashboard_restore_version") {
     const ctx = requireDashboardId(input);
     if (!ctx) return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
@@ -206,57 +353,19 @@ export async function executeDashboardAgentTool(
     }
     const comment =
       typeof input.comment === "string" ? input.comment : undefined;
-    const res = await useVersionStore
-      .getState()
-      .restoreVersion(
-        ctx.workspaceId,
-        "dashboard",
-        ctx.dashboardId,
-        version,
-        comment,
-      );
-    if (!res.success) {
-      return { success: false, error: res.error || "Restore failed" };
-    }
-    await useDashboardStore
-      .getState()
-      .reloadDashboard(ctx.workspaceId, ctx.dashboardId);
-    throwIfAborted(signal);
-    const d = useDashboardStore.getState().openDashboards[ctx.dashboardId];
-    return {
-      success: true,
-      restoredFrom: version,
-      title: (d as any)?.title,
-      message:
-        `Restored the dashboard draft to version ${version}. This is not yet ` +
-        "published — call dashboard_save_version to push it live to viewers.",
-    };
+    return restoreDashboardVersionLeg(
+      ctx.dashboardId,
+      version,
+      comment,
+      signal,
+    );
   }
 
   if (toolName === "dashboard_save_version") {
     const ctx = requireDashboardId(input);
     if (!ctx) return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     const comment = typeof input.comment === "string" ? input.comment : "";
-    const result = await useDashboardStore
-      .getState()
-      .saveDashboard(ctx.workspaceId, ctx.dashboardId, comment);
-    if (!result.ok) {
-      return {
-        success: false,
-        error:
-          result.error ||
-          "Save failed (the dashboard may have been modified elsewhere; reload and retry).",
-      };
-    }
-    const d = useDashboardStore.getState().openDashboards[ctx.dashboardId] as
-      | (Record<string, any> & { version?: number; publishedVersion?: number })
-      | undefined;
-    return {
-      success: true,
-      version: d?.version,
-      publishedVersion: d?.publishedVersion,
-      message: `Saved and published "${d?.title ?? "dashboard"}" as version ${d?.publishedVersion ?? d?.version}.`,
-    };
+    return saveDashboardVersionLeg(ctx.dashboardId, comment);
   }
 
   if (toolName === "capture_screenshot") {

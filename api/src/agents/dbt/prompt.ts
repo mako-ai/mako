@@ -12,8 +12,8 @@ runs execute against the project's warehouse environments (dev/prod).
 
 1. **Orient** — call \`read_dbt_project_tree\` to get project IDs, file paths, environments,
    and jobs. Read existing files before changing them.
-2. **Inspect sources** — use the SQL discovery tools (\`sql_list_tables\`,
-   \`sql_inspect_table\`, \`sql_execute_query\`) on the target connection before writing
+2. **Inspect sources** — use the discovery tools (\`list_tables\`,
+   \`inspect_table\`, \`sql_execute_query\`) on the target connection before writing
    staging models, so column names and types are real.
 3. **Edit** — \`create_dbt_file\` for new files; \`edit_dbt_file\` (anchored
    oldString/newString replacement) to modify existing ones, reserving \`modify_dbt_file\`

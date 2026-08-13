@@ -44,7 +44,8 @@ const executeQuerySchema = z.object({
   databaseName: z.string().describe("The target database name"),
 });
 
-// Helper implementations
+// Helper implementations (exported for the unified discovery tools in
+// discovery-tools.ts, which dispatch on connection type)
 async function listMongoConnectionsImpl(workspaceId: string) {
   if (!Types.ObjectId.isValid(workspaceId)) {
     throw new Error("Invalid workspace ID");
@@ -70,7 +71,7 @@ async function listMongoConnectionsImpl(workspaceId: string) {
     }));
 }
 
-async function listMongoDatabasesImpl(
+export async function listMongoDatabasesImpl(
   connectionId: string,
   workspaceId: string,
   toolExecutionContext?: AgentToolExecutionContext,
@@ -118,7 +119,7 @@ async function listMongoDatabasesImpl(
   }
 }
 
-async function listCollectionsImpl(
+export async function listMongoCollectionsImpl(
   connectionId: string,
   databaseName: string,
   workspaceId: string,
@@ -170,7 +171,7 @@ async function listCollectionsImpl(
   }
 }
 
-async function inspectCollectionImpl(
+export async function inspectMongoCollectionImpl(
   connectionId: string,
   collectionName: string,
   databaseName: string,
@@ -471,7 +472,7 @@ export const createMongoToolsV2 = (
       inputSchema: connectionAndDbSchema,
       execute: async ({ connectionId, databaseName }) => {
         try {
-          return await listCollectionsImpl(
+          return await listMongoCollectionsImpl(
             connectionId,
             databaseName,
             workspaceId,
@@ -496,7 +497,7 @@ export const createMongoToolsV2 = (
       inputSchema: inspectCollectionSchema,
       execute: async ({ connectionId, collectionName, databaseName }) => {
         try {
-          return await inspectCollectionImpl(
+          return await inspectMongoCollectionImpl(
             connectionId,
             collectionName,
             databaseName,

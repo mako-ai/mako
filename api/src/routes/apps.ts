@@ -43,6 +43,7 @@ import {
   appHasUnpublishedChanges,
   type AppSnapshot,
 } from "../services/app-version.service";
+import { persistMutatedAppDraft } from "../services/persist-app-draft";
 import {
   createVersion,
   listVersions,
@@ -52,7 +53,6 @@ import {
 import { generateAppVersionComment } from "../services/version-comment.service";
 import { getEntityChatPrompts } from "../services/entity-version-context.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
-import { minimizeDirtyPaths } from "../utils/mongoose-dirty-paths";
 import {
   canReadResource,
   canWriteResource,
@@ -675,40 +675,7 @@ app.openapi(
         }
       }
 
-      const setFields: Record<string, unknown> = {};
-      const unsetFields: Record<string, ""> = {};
-      // Minimized: $set-ing both an ancestor (markModified) and a nested
-      // descendant path (direct assignment) makes MongoDB reject the whole
-      // update with "would create a conflict at '<ancestor>'".
-      for (const path of minimizeDirtyPaths(doc.directModifiedPaths())) {
-        if (
-          path === "_id" ||
-          path === "workspaceId" ||
-          path === "version" ||
-          path === "createdAt" ||
-          path === "updatedAt"
-        ) {
-          continue;
-        }
-        const value = doc.get(path);
-        if (value === undefined) unsetFields[path] = "";
-        else setFields[path] = value;
-      }
-      const updated = await MakoApp.findOneAndUpdate(
-        {
-          _id: doc._id,
-          workspaceId: doc.workspaceId,
-          version: expectedVersion,
-        },
-        {
-          ...(Object.keys(setFields).length > 0 ? { $set: setFields } : {}),
-          ...(Object.keys(unsetFields).length > 0
-            ? { $unset: unsetFields }
-            : {}),
-          $inc: { version: 1 },
-        },
-        { new: true, runValidators: true },
-      );
+      const updated = await persistMutatedAppDraft(doc, expectedVersion);
       if (!updated) {
         return c.json(
           {
@@ -1294,8 +1261,18 @@ app.openapi(
       }
 
       applyAppSnapshot(doc, old.snapshot as unknown as AppSnapshot);
-      doc.version += 1;
-      await doc.save();
+      const updated = await persistMutatedAppDraft(doc);
+      if (!updated) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "App changed while this restore was being applied. Re-read the app and retry.",
+            code: "version_conflict",
+          },
+          409,
+        );
+      }
 
       // Record the restore as a fresh checkpoint so history stays append-only.
       const body = (await c.req.json().catch(() => ({}))) as {
@@ -1304,9 +1281,12 @@ app.openapi(
       const displayName = await getUserDisplayName(userId ?? "system");
       await createVersion({
         entityType: "app",
-        entityId: doc._id,
+        entityId: updated._id,
         workspaceId: new Types.ObjectId(workspaceId),
-        snapshot: buildAppSnapshot(doc) as unknown as Record<string, unknown>,
+        snapshot: buildAppSnapshot(updated) as unknown as Record<
+          string,
+          unknown
+        >,
         savedBy: userId ?? "system",
         savedByName: displayName,
         comment: (body.comment ?? `Restored from version ${versionNum}`).slice(
@@ -1319,8 +1299,8 @@ app.openapi(
       // Poke open tabs so they pull the reverted definition and rebuild preview.
       publishRealtimeEvent(workspaceId, {
         type: "app.updated",
-        appId: doc._id.toString(),
-        version: doc.version,
+        appId: updated._id.toString(),
+        version: updated.version,
         updatedBy: userId ?? "system",
         origin: "save",
       });
@@ -1328,7 +1308,7 @@ app.openapi(
       return c.json({
         success: true,
         message: `Restored to version ${versionNum}`,
-        app: serializeApp(doc),
+        app: serializeApp(updated),
       });
     } catch (error) {
       logger.error("Error restoring app version", { error });

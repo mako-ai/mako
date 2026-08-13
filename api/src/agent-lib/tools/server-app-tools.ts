@@ -85,7 +85,10 @@ import {
   applyAppSnapshot,
   type AppSnapshot,
 } from "../../services/app-version.service";
-import { minimizeDirtyPaths } from "../../utils/mongoose-dirty-paths";
+import {
+  APP_DRAFT_VERSION_CONFLICT,
+  persistMutatedAppDraft,
+} from "../../services/persist-app-draft";
 import { canReadResource, canWriteResource } from "../../utils/resource-acl";
 import { loggers } from "../../logging";
 import { bindingQueryAccessError as sharedBindingQueryAccessError } from "./shared/binding-query-access";
@@ -186,43 +189,9 @@ export function createServerAppTools({
   // A plain doc.save() here can overwrite a concurrent atomic file/binding edit
   // with the stale snapshot loaded at the start of this tool invocation.
   const saveAndPublish = async (doc: IMakoApp): Promise<number> => {
-    const expectedVersion = doc.version;
-    const setFields: Record<string, unknown> = {};
-    const unsetFields: Record<string, ""> = {};
-    // Minimized: $set-ing both "dataBindings" (markModified) and a nested
-    // "dataBindings.N...." (direct assignment) makes MongoDB reject the whole
-    // update with "would create a conflict at 'dataBindings'".
-    for (const path of minimizeDirtyPaths(doc.directModifiedPaths())) {
-      if (
-        path === "_id" ||
-        path === "workspaceId" ||
-        path === "version" ||
-        path === "createdAt" ||
-        path === "updatedAt"
-      ) {
-        continue;
-      }
-      const value = doc.get(path);
-      if (value === undefined) unsetFields[path] = "";
-      else setFields[path] = value;
-    }
-    const updated = await MakoApp.findOneAndUpdate(
-      {
-        _id: doc._id,
-        workspaceId: doc.workspaceId,
-        version: expectedVersion,
-      },
-      {
-        ...(Object.keys(setFields).length > 0 ? { $set: setFields } : {}),
-        ...(Object.keys(unsetFields).length > 0 ? { $unset: unsetFields } : {}),
-        $inc: { version: 1 },
-      },
-      { new: true, runValidators: true },
-    );
+    const updated = await persistMutatedAppDraft(doc);
     if (!updated) {
-      throw new Error(
-        "App changed while this update was being applied. Re-read the app and retry.",
-      );
+      throw new Error(APP_DRAFT_VERSION_CONFLICT);
     }
     publishRealtimeEvent(workspaceId, {
       type: "app.updated",

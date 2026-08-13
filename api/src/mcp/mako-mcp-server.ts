@@ -81,7 +81,7 @@ const SERVER_VERSION = "0.1.0";
 const SERVER_INSTRUCTIONS = `Mako builds data apps (React + data bindings) inside one workspace.
 
 Typical loop:
-1. Discover data: list_connections, then sql_list_tables / sql_inspect_table.
+1. Discover data: list_connections, then list_databases / list_tables / inspect_table (they dispatch on connection type — SQL or MongoDB).
 2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
 3. create_app → app_write_file / app_edit_file → app_create_data_binding (bind the validated query; pass consoleId to seed from a console).
 4. Verify with run_app after edits (server-side headless render). Pass includeScreenshot: false when you only need status/errors — it is much cheaper than the screenshot. Pass width/height (e.g. 390x844) to verify the mobile layout before publishing.
@@ -100,7 +100,7 @@ Optional: search_dashboards, web_search / fetch_url for public docs.`;
 const ACP_DESKTOP_SERVER_INSTRUCTIONS = `Mako builds data apps (React + data bindings) inside Mako Desktop Chat.
 
 Typical loop:
-1. Discover data: list_connections, then sql_list_tables / sql_inspect_table.
+1. Discover data: list_connections, then list_databases / list_tables / inspect_table (they dispatch on connection type — SQL or MongoDB).
 2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
 3. create_app → app_write_file / app_edit_file → app_create_data_binding (bind the validated query; pass consoleId to seed from a console).
 4. For dbt work: read_dbt_project_tree → read/edit files → validate asynchronously, then poll dbt_get_run. For large or destructive work (warehouse runs, Git mutations, schedules), prefer proposing a plan via mako-desktop submit_plan before acting.
@@ -198,12 +198,8 @@ export function buildMakoMcpCandidateTools(
     queryAccess,
   );
   const mongoTools = createMongoToolsV2(workspaceId, [], undefined, userId);
-  const { list_connections } = createUniversalTools(
-    workspaceId,
-    [],
-    undefined,
-    userId,
-  );
+  const { list_connections, list_databases, list_tables, inspect_table } =
+    createUniversalTools(workspaceId, [], undefined, userId);
   const consoleSearchTools = createConsoleSearchTools(workspaceId);
   const dashboardSearchTools = createDashboardSearchTools(workspaceId);
   const versionHistoryTools = createVersionHistoryTools(workspaceId);
@@ -223,7 +219,13 @@ export function buildMakoMcpCandidateTools(
     ...dashboardTools,
     ...notebookTools,
     ...selfDirectiveTools,
+    // Unified cross-engine discovery (dispatches on connection type). The
+    // namespaced sql_*/mongo_* discovery tools below remain as aliases for
+    // existing external clients.
     list_connections,
+    list_databases,
+    list_tables,
+    inspect_table,
     ...sqlTools,
     // Namespace mongo the same way the unified agent does.
     mongo_list_connections: mongoTools.list_connections,

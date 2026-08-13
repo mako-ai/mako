@@ -45,7 +45,7 @@ Notebooks are organized like dashboards and consoles: a **My Notebooks** section
 
 Notebooks have their own [expertise mode](/ai-agent/#expertise-modes) — opening a notebook tab defaults the agent to **Notebook** mode. The agent can create notebooks, add/edit/delete cells, run SQL cells against a data source, and run Python cells on the kernel, reading each run's stdout/result/error to iterate. Tools:
 
-`create_notebook`, `list_open_notebooks`, `read_notebook`, `edit_notebook_cell` (insert / replace / delete a cell via its `mode` parameter), `run_notebook_sql_cell`, `run_notebook_code_cell` — plus the SQL discovery tools (`list_connections`, `sql_list_tables`, `sql_inspect_table`, …) for finding data sources.
+`create_notebook`, `list_open_notebooks`, `read_notebook`, `edit_notebook_cell` (insert / replace / delete a cell via its `mode` parameter), `run_notebook_sql_cell`, `run_notebook_code_cell` — plus the discovery tools (`list_connections`, `list_tables`, `inspect_table`, …) for finding data sources.
 
 Agent runs execute server-side against the durable document and live-update any open tabs. Agent SQL runs persist up to 200 result rows with the cell. Notebook tools are deliberately **not** exposed over the [MCP server](/mcp-server/) yet — authoring stays in-product until notebooks get a dedicated MCP surface.
 

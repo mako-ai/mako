@@ -12,15 +12,14 @@ export const createVersionHistoryTools = (workspaceId: string) => ({
       "Returns a list of past versions with who saved them, when, and their commit comment. " +
       "Use after search_consoles, search_dashboards, or list_open_apps to inspect change history, " +
       "understand who changed what, or help the user decide which version to restore " +
-      "(restore consoles/dashboards via their own flows; restore apps with app_restore_version). " +
+      "(restore dashboards and apps with restore_version — over MCP, apps use " +
+      "app_restore_version; consoles restore via their own flows). " +
       "Pass the entityId from a search result (for apps, the appId).",
     inputSchema: z.object({
       entityType: z
         .enum(["console", "dashboard", "app"])
         .describe("Whether this is a console, dashboard, or app"),
-      entityId: z
-        .string()
-        .describe("The ID of the console, dashboard, or app"),
+      entityId: z.string().describe("The ID of the console, dashboard, or app"),
       limit: z
         .number()
         .optional()
@@ -70,9 +69,7 @@ export const createVersionHistoryTools = (workspaceId: string) => ({
       entityType: z
         .enum(["console", "dashboard", "app"])
         .describe("Whether this is a console, dashboard, or app"),
-      entityId: z
-        .string()
-        .describe("The ID of the console, dashboard, or app"),
+      entityId: z.string().describe("The ID of the console, dashboard, or app"),
       version: z.number().describe("The version number to retrieve"),
     }),
     execute: async ({ entityType, entityId, version }) => {

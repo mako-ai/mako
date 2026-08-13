@@ -120,7 +120,7 @@ const executeQuerySchema = z.object({
         "configured database (Postgres/MySQL/SQLite). For BigQuery and " +
         "ClickHouse, omit it and fully qualify tables in the query " +
         "(dataset.table / db.table), or pass the dataset name. " +
-        "For Cloudflare D1, pass the database UUID from sql_list_databases.",
+        "For Cloudflare D1, pass the database UUID from list_databases.",
     ),
   query: z.string().describe("The SQL query to execute"),
 });
@@ -173,7 +173,9 @@ async function listSqlConnectionsImpl(workspaceId: string) {
 // ============================================================================
 // sql_list_databases
 // ============================================================================
-async function listDatabasesImpl(
+// Exported for the unified discovery tools (discovery-tools.ts), which
+// dispatch on connection type.
+export async function listSqlDatabasesImpl(
   connectionId: string,
   workspaceId: string,
   toolExecutionContext?: AgentToolExecutionContext,
@@ -315,7 +317,7 @@ async function listDatabasesImpl(
 // ============================================================================
 // sql_list_tables
 // ============================================================================
-async function listTablesImpl(
+export async function listSqlTablesImpl(
   connectionId: string,
   databaseName: string,
   workspaceId: string,
@@ -488,7 +490,7 @@ async function listTablesImpl(
 // ============================================================================
 // sql_inspect_table
 // ============================================================================
-async function inspectTableImpl(
+export async function inspectSqlTableImpl(
   connectionId: string,
   databaseName: string,
   tableName: string,
@@ -948,7 +950,7 @@ async function executeQueryImpl(
   ) {
     throw new Error(
       "'database' is required for this connection (it has no configured " +
-        "default). Call sql_list_databases with this connectionId and retry " +
+        "default). Call list_databases with this connectionId and retry " +
         "with one of the returned names.",
     );
   }
@@ -1130,7 +1132,7 @@ export const createSqlToolsV2 = (
       inputSchema: connectionIdSchema,
       execute: async ({ connectionId }) => {
         try {
-          return await listDatabasesImpl(
+          return await listSqlDatabasesImpl(
             connectionId,
             workspaceId,
             toolExecutionContext,
@@ -1154,7 +1156,7 @@ export const createSqlToolsV2 = (
       inputSchema: connectionAndDbSchema,
       execute: async ({ connectionId, database }) => {
         try {
-          return await listTablesImpl(
+          return await listSqlTablesImpl(
             connectionId,
             database,
             workspaceId,
@@ -1179,7 +1181,7 @@ export const createSqlToolsV2 = (
       inputSchema: inspectTableSchema,
       execute: async ({ connectionId, database, table }) => {
         try {
-          return await inspectTableImpl(
+          return await inspectSqlTableImpl(
             connectionId,
             database,
             table,
@@ -1205,7 +1207,7 @@ export const createSqlToolsV2 = (
 
     sql_execute_query: tool({
       description:
-        "Execute a SQL query and return results. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. The 'database' parameter is optional: when omitted, the query runs against the connection's default database (Postgres/MySQL) — for BigQuery/ClickHouse fully qualify tables (dataset.table) or pass the dataset as 'database'. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
+        "Execute a SQL query and return results. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. The 'database' parameter is optional: when omitted, the query runs against the connection's default database (Postgres/MySQL) — for BigQuery/ClickHouse fully qualify tables (dataset.table) or pass the dataset as 'database'. IMPORTANT for Cloudflare D1: use the UUID from list_databases 'id' field as the database parameter.",
       inputSchema: executeQuerySchema,
       execute: async ({ connectionId, database, query }) => {
         try {
