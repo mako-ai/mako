@@ -200,6 +200,16 @@ interface AppState {
    * media queries render the true responsive layout.
    */
   previewViewport: Record<string, AppPreviewViewport | null>;
+
+  /**
+   * Per-environment parquet build status: appId -> bindingId -> environment -> status.
+   * Tracks materialization progress for environment-specific artifacts (dev/staging/prod).
+   * Updated alongside the app cache for multi-environment build tracking.
+   */
+  bindingBuildStatusByEnv: Record<
+    string,
+    Record<string, Record<string, BindingMaterializationStatus>>
+  >;
 }
 
 interface AppActions {
@@ -321,6 +331,9 @@ interface AppActions {
    * data-then-UI refresh (DuckDB load + data-refresh) when the binding
    * becomes ready. Bulk rematerialize passes false so the caller applies
    * data once after every binding settles.
+   *
+   * `environment` (optional) specifies a dbt environment for dev/staging
+   * preview-scoped artifacts. Omit for prod (default).
    */
   materializeBinding: (
     workspaceId: string,
@@ -331,6 +344,7 @@ interface AppActions {
       signal?: AbortSignal;
       timeoutMs?: number;
       refreshPreview?: boolean;
+      environment?: string;
     },
   ) => Promise<{
     success: boolean;
@@ -390,6 +404,7 @@ const initialState: AppState = {
   previewViewport: {},
   previewDbtEnv: {},
   dbtEnvInfo: {},
+  bindingBuildStatusByEnv: {},
 };
 
 function genId(): string {
@@ -984,6 +999,7 @@ export const useAppStore = create<AppStore>()(
       const signal = options?.signal;
       const timeoutMs = options?.timeoutMs ?? MATERIALIZE_DEFAULT_TIMEOUT_MS;
       const refreshPreview = options?.refreshPreview !== false;
+      const environment = options?.environment;
 
       // Mirror the server-reported status onto the open app so UI chips
       // (binding editor, explorer) update live while the build runs.
@@ -992,15 +1008,30 @@ export const useAppStore = create<AppStore>()(
         error?: string | null,
       ) => {
         set(state => {
-          const binding = state.openApps[appId]?.dataBindings.find(
-            b => b.id === bindingId,
-          );
-          if (!binding) return;
-          binding.cache = {
-            ...(binding.cache ?? {}),
-            parquetBuildStatus: status,
-            parquetLastError: error ?? null,
-          };
+          if (environment) {
+            // Track per-environment status separately
+            if (!state.bindingBuildStatusByEnv[appId]) {
+              state.bindingBuildStatusByEnv[appId] = {};
+            }
+            if (!state.bindingBuildStatusByEnv[appId][bindingId]) {
+              state.bindingBuildStatusByEnv[appId][bindingId] = {};
+            }
+            state.bindingBuildStatusByEnv[appId][bindingId][environment] = {
+              status,
+              error: error ?? null,
+            };
+          } else {
+            // Update prod cache (legacy top-level fields)
+            const binding = state.openApps[appId]?.dataBindings.find(
+              b => b.id === bindingId,
+            );
+            if (!binding) return;
+            binding.cache = {
+              ...(binding.cache ?? {}),
+              parquetBuildStatus: status,
+              parquetLastError: error ?? null,
+            };
+          }
         });
       };
 
@@ -1016,12 +1047,16 @@ export const useAppStore = create<AppStore>()(
       };
 
       try {
+        const body = {
+          ...(options?.force ? { force: true } : {}),
+          ...(environment ? { environment } : {}),
+        };
         const res = unwrapBody(
           await api.POST(
             "/api/workspaces/{workspaceId}/apps/{id}/bindings/{bindingId}/materialize",
             {
               params: { path: { workspaceId, id: appId, bindingId } },
-              body: options?.force ? { force: true } : undefined,
+              body: Object.keys(body).length > 0 ? body : undefined,
               signal,
             },
           ),
@@ -1057,9 +1092,10 @@ export const useAppStore = create<AppStore>()(
           return await finishReady();
         }
 
-        setLocalStatus(
-          res.status?.status === "building" ? "building" : "queued",
-        );
+        const initialStatus = res.status?.status === "building"
+          ? "building"
+          : "queued";
+        setLocalStatus(initialStatus);
 
         // Poll the status endpoint until the background build terminates,
         // the bounded wait elapses, or the caller aborts.
@@ -1070,25 +1106,41 @@ export const useAppStore = create<AppStore>()(
             await api.GET(
               "/api/workspaces/{workspaceId}/apps/{id}/bindings/{bindingId}/materialization",
               {
-                params: { path: { workspaceId, id: appId, bindingId } },
+                params: {
+                  path: { workspaceId, id: appId, bindingId },
+                  ...(environment ? { query: { env: environment } } : {}),
+                },
                 signal,
               },
             ),
           ) as {
             success: boolean;
-            data?: BindingMaterializationStatus;
+            data?: BindingMaterializationStatus & {
+              environments?: Record<
+                string,
+                BindingMaterializationStatus
+              >;
+            };
           };
           const data = poll.data;
           if (!data) continue;
-          setLocalStatus(data.status, data.error);
-          if (data.status === "ready") {
+
+          // For environment-specific requests, extract status from environments map
+          const status = environment
+            ? data.environments?.[environment]
+            : data;
+
+          if (!status) continue;
+
+          setLocalStatus(status.status, status.error);
+          if (status.status === "ready") {
             return await finishReady();
           }
-          if (data.status === "error") {
+          if (status.status === "error") {
             return {
               success: false,
               status: "error",
-              error: data.error || "Materialization failed",
+              error: status.error || "Materialization failed",
             };
           }
         }
