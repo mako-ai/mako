@@ -166,6 +166,35 @@ export async function loadBindingRowsTable(
 }
 
 /**
+ * Load a binding's table from an environment-specific Parquet artifact.
+ * Used for dev/staging preview artifacts that were materialized on-demand.
+ * Returns false if the artifact could not be loaded, true on success.
+ */
+export async function loadEnvironmentArtifact(
+  appId: string,
+  binding: AppDataBinding,
+  environment: string,
+  artifactUrl: string,
+  _revision: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const inst = await getInstance(appId);
+  const table = bindingTableName(binding.name);
+
+  return loadTableSerialized(inst, table, `artifact:${environment}`, async () => {
+    const response = await fetch(artifactUrl, {
+      credentials: "include",
+      signal,
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`Failed to fetch parquet for "${binding.name}"`);
+    }
+    const buffer = await collectStreamBytes(response.body);
+    await loadParquetTable(inst.db, table, buffer);
+  });
+}
+
+/**
  * Drop a binding's table when its loaded revision starts with
  * `revisionPrefix`. Used when a preview-env override resets but the prod
  * artifact cannot be (re)loaded (not materialized yet / build failed): rows

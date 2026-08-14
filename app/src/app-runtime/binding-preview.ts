@@ -1,15 +1,17 @@
 /**
  * dbt preview-environment support for materialized (parquet) app bindings.
  *
- * Parquet artifacts ALWAYS hold prod data (materialization resolves
+ * By default, parquet artifacts hold prod data (materialization resolves
  * `{{ dbt_schema }}` against the prod-like environment server-side). When an
- * editor activates a preview env override, dbt-linked parquet bindings must
- * not read those prod artifacts: this module executes the binding live
- * (row-capped) against the override schema and loads the rows into the app's
- * DuckDB table under the same name, so BOTH read paths — `useQuery` and
- * `useDuckDB` / `query_duckdb` — see the preview data. The prod artifact is
- * never rebuilt or touched; resetting the override reloads the parquet
- * snapshot (the table revision encodes the override).
+ * editor activates a preview env override, dbt-linked parquet bindings
+ * prioritize environment-specific artifacts:
+ *
+ * 1. If an env-specific artifact is ready, load it (full-fidelity data)
+ * 2. Otherwise, execute live (row-capped) against the override schema
+ * 3. If no override, load the prod artifact as always
+ *
+ * The table revision encodes the source (artifact environment or live preview),
+ * allowing resetting the override to reload the correct data.
  */
 
 import { containsDbtSchemaToken, type AppDataBinding } from "@mako/schemas";
@@ -18,6 +20,7 @@ import {
   ensureBindingLoaded,
   loadBindingRowsTable,
   dropBindingTableByRevisionPrefix,
+  loadEnvironmentArtifact,
 } from "./duckdb";
 
 /**
@@ -52,11 +55,41 @@ export async function getBindingPreviewOverride(
 }
 
 /**
+ * Check if an environment-specific artifact is ready and available.
+ * Returns artifact metadata if ready, null otherwise.
+ */
+function getEnvironmentArtifactInfo(
+  appId: string,
+  binding: AppDataBinding,
+  environment: string,
+): { url: string; revision: string } | null {
+  const store = useAppStore.getState();
+  const app = store.openApps[appId];
+  if (!app) return null;
+
+  const envStatus = app.dataBindings
+    .find((b: AppDataBinding) => b.id === binding.id)
+    ?.cache?.environments?.[environment];
+
+  if (envStatus?.status === "ready" && envStatus.parquetUrl) {
+    return {
+      url: envStatus.parquetUrl,
+      revision: envStatus.artifactRevision || envStatus.definitionHash || "",
+    };
+  }
+  return null;
+}
+
+
+/**
  * Ensure a parquet binding's DuckDB table holds the data the CURRENT preview
- * environment should see: the prod Parquet artifact by default, or a live
- * (row-capped) execution against the override schema while a dbt preview env
- * override is active. Returns false when the table could not be loaded (e.g.
- * artifact not built yet).
+ * environment should see:
+ *
+ * 1. If no override: load the prod artifact (existing behavior)
+ * 2. If override + env artifact ready: load the environment artifact
+ * 3. If override + env artifact not ready: execute live (row-capped)
+ *
+ * Returns false when the table could not be loaded.
  */
 export async function ensureBindingLoadedForPreview(
   workspaceId: string,
@@ -82,6 +115,32 @@ export async function ensureBindingLoadedForPreview(
     return loaded;
   }
 
+  // Prefer environment-specific artifact if ready
+  const envArtifact = getEnvironmentArtifactInfo(
+    appId,
+    binding,
+    override.environment,
+  );
+  if (envArtifact) {
+    try {
+      return await loadEnvironmentArtifact(
+        appId,
+        binding,
+        override.environment,
+        envArtifact.url,
+        envArtifact.revision,
+        signal,
+      );
+    } catch (error) {
+      console.warn(
+        `Failed to load environment artifact for "${binding.name}" (${override.environment}):`,
+        error,
+      );
+      // Fall through to live query on error
+    }
+  }
+
+  // Fall back to live query (row-capped)
   return loadBindingRowsTable(
     appId,
     binding,
