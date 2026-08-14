@@ -117,32 +117,75 @@ This implementation enables Mako apps to preview data against different dbt envi
 ## Implementation Status
 
 ### Completed ✅
-- [x] Database schema with per-environment artifact support
-- [x] Materialization service functions for environment-specific builds
-- [x] dbt environment resolution for any environment
-- [x] Inngest function support for background environment builds
-- [x] API endpoints with environment parameter support
+- [x] Database schema with per-environment artifact support (Phase 1)
+- [x] Materialization service functions for environment-specific builds (Phase 2)
+- [x] dbt environment resolution for any environment (Phase 3)
+- [x] Inngest function support for background environment builds (Phase 4)
+- [x] API endpoints with environment parameter support (Phase 5)
 - [x] Published view enforcement (never serve env artifacts)
+- [x] App store state management with per-environment tracking (Phase 6)
+- [x] Environment-aware artifact loading with fallback logic (Phase 7)
+- [x] EnvironmentArtifactStatus component for status display (Phase 8)
+- [x] useEnvironmentMaterialization hook for build management (Phase 8)
+
+### Phase 6: Frontend State Management (App Store) ✅
+
+**Files Modified:**
+- `app/src/store/appStore.ts`
+
+**Changes:**
+- Added `bindingBuildStatusByEnv` state to track per-environment artifact status
+- Extended `materializeBinding()` action to accept optional `environment` parameter
+- Updated status tracking to store per-environment status separately from prod
+- Modified API call to pass environment parameter in request body
+- Updated polling logic to handle environment-specific responses from API
+- Per-environment builds run independently (prod build doesn't block dev, etc.)
+
+### Phase 7: Frontend Artifact Loading ✅
+
+**Files Modified:**
+- `app/src/app-runtime/binding-preview.ts`
+- `app/src/app-runtime/duckdb.ts`
+
+**Changes:**
+- Added `loadEnvironmentArtifact()` function for environment-scoped parquet loading
+- Updated `ensureBindingLoadedForPreview()` to prioritize environment artifacts:
+  1. If preview override inactive → load prod artifact (existing behavior)
+  2. If override + env artifact ready → load environment artifact (new)
+  3. If override + env artifact not ready → execute live query (fallback)
+- Environment artifacts use distinct revision prefix (`artifact:${env}`) for proper reload logic
+- Error handling with fallback to live query when environment artifact loading fails
+
+### Phase 8: Frontend UI Components ✅
+
+**Files Created:**
+- `app/src/components/EnvironmentArtifactStatus.tsx`
+- `app/src/hooks/useEnvironmentMaterialization.ts`
+
+**EnvironmentArtifactStatus Component:**
+- Display per-environment artifact status (ready, building, queued, error, missing)
+- Show row count and freshness when artifact is ready
+- Provide "Build now?" button when artifact missing or failed
+- Warning banner when falling back to live query (with ~500 row cap notice)
+- Display source schema and environment provenance
+- Compact variant for space-constrained layouts (preview selector)
+- Real-time status updates via app store subscriptions
+
+**useEnvironmentMaterialization Hook:**
+- Manage environment-specific materialization workflows
+- Track build status and error messages
+- Provide `buildArtifact()` function to queue builds
+- Support timeout and AbortSignal for cancellation
+- Detect when "Build now?" prompt should be shown
+- Separate from refreshPreview to avoid unnecessary reloading
 
 ### In Progress / Pending 🔄
 
-#### Frontend State Management (App Store)
-- [ ] `bindingBuildStatusByEnv` state to track per-environment build status
-- [ ] `materializeBinding()` action accepting environment parameter
-- [ ] Polling logic for environment-specific status
-- [ ] Environment selection state tied to preview override
-
-#### Frontend UI Components
-- [ ] Environment selector in binding editor
-- [ ] Build status indicators ("building 2/5", "ready 1h ago")
-- [ ] "Build now?" prompt for missing dev artifacts
-- [ ] Row cap warning banner when falling back to live query
-
-#### Artifact Loading
-- [ ] Update `binding-preview.ts` to select artifact by environment
-- [ ] Load from dev artifact when preview env active and ready
-- [ ] Fallback to prod if dev artifact not ready
-- [ ] Further fallback to live query if neither ready
+#### Integration Work
+- [ ] Wire EnvironmentArtifactStatus into preview environment selector
+- [ ] Add environment selector to binding editor UI
+- [ ] Integrate buildArtifact() triggers into UI workflows
+- [ ] Update preview override panel to show environment status
 
 #### Lifecycle Management
 - [ ] Scheduled cleanup Inngest function (evict TTL'd artifacts)
@@ -155,6 +198,54 @@ This implementation enables Mako apps to preview data against different dbt envi
 - [ ] Stale build detection per environment
 - [ ] Row cap warnings during live fallback
 - [ ] Artifact provenance badge in preview UI
+
+## Frontend Hook & Component APIs
+
+### useEnvironmentMaterialization Hook
+
+```typescript
+const { status, materializing, buildError, canBuild, shouldAutoPrompt, buildArtifact } =
+  useEnvironmentMaterialization({
+    workspaceId,
+    appId,
+    bindingId,
+    environment: previewEnvironment, // e.g., "dev" or "staging"
+    timeoutMs: 10 * 60 * 1000,       // 10 minute timeout
+  });
+
+// Trigger a build
+if (canBuild) {
+  await buildArtifact(force = false);
+}
+```
+
+Returns:
+- `status`: "missing" | "queued" | "building" | "ready" | "error"
+- `materializing`: boolean (build in flight)
+- `buildError`: string | null (last error message)
+- `canBuild`: boolean (status is missing or error)
+- `shouldAutoPrompt`: boolean (show "Build now?" UI)
+- `buildArtifact()`: async function to queue a build
+
+### EnvironmentArtifactStatus Component
+
+```typescript
+<EnvironmentArtifactStatus
+  appId={appId}
+  bindingId={bindingId}
+  environment="dev"
+  onBuildClick={() => buildArtifact()}
+  buildInProgress={materializing}
+  compact={false}
+/>
+```
+
+Displays:
+- Artifact status badge (ready, building, error, etc.)
+- Row count and freshness (if ready)
+- "Build now?" button (if missing/error)
+- Warning banner (if falling back to live query)
+- Source schema provenance
 
 ## API Contract Examples
 
@@ -310,16 +401,18 @@ cache?: {
 ## Code Locations
 
 **Backend (Node/TypeScript):**
-- `api/src/database/workspace-schema.ts` - Schema definitions
-- `api/src/services/app-binding-materialization.service.ts` - Materialization logic
-- `api/src/dbt/dbt-environments.service.ts` - Environment resolution
-- `api/src/routes/apps.ts` - API endpoints
-- `api/src/inngest/functions/app-binding-materialize.ts` - Background job
+- `api/src/database/workspace-schema.ts` - Database schema definitions
+- `api/src/services/app-binding-materialization.service.ts` - Materialization core logic
+- `api/src/dbt/dbt-environments.service.ts` - Environment resolution and schema mapping
+- `api/src/routes/apps.ts` - API endpoints for materialization
+- `api/src/inngest/functions/app-binding-materialize.ts` - Background job for queued builds
 
 **Frontend (React/TypeScript):**
-- `app/src/store/appStore.ts` - State management (TODO)
-- `app/src/components/DataSourceMaterializationControls.tsx` - Build status UI (TODO)
-- `app/src/app-runtime/binding-preview.ts` - Artifact loading (TODO)
+- `app/src/store/appStore.ts` - App store with per-environment build status
+- `app/src/app-runtime/binding-preview.ts` - Artifact loading with env prioritization
+- `app/src/app-runtime/duckdb.ts` - Environment artifact loading into DuckDB
+- `app/src/components/EnvironmentArtifactStatus.tsx` - Build status UI component
+- `app/src/hooks/useEnvironmentMaterialization.ts` - Build management hook
 
 ## References
 
