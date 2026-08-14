@@ -64,15 +64,9 @@ The API handles:
 
 ### AI Agent (`api/src/agent-lib/`)
 
-The agent system uses a multi-agent architecture:
+The agent system is a **single unified agent** that switches *expertise modes* mid-conversation (query, dashboard, sync flow, React app, transforms, notebook, explore) via the `enable_mode` tool. Each mode unlocks a domain-specific toolset on top of a small always-on core (memory, skill retrieval, web access, planning, tool discovery). See [AI Agent](/ai-agent/) for the full mode model.
 
-| Agent               | Purpose                                                                |
-| ------------------- | ---------------------------------------------------------------------- |
-| **Console Agent**   | SQL generation, schema inspection, query execution. The primary agent. |
-| **Flow Agent**      | Experimental. Orchestrates data sync pipelines.                        |
-| **Universal Tools** | Shared tooling: schema inspection, query execution, self-directive     |
-
-The console agent has access to real database schemas via `inspect_schema` and can execute queries via `sql_execute_query` / `mongodb_execute_query`. Results flow back to the chat and — critically — get placed directly in the console editor via `write_to_interface`.
+The agent inspects real database schemas before writing anything — the cross-engine discovery family (`list_connections`, `list_databases`, `list_tables`, `inspect_table`) dispatches on connection type, SQL or MongoDB — and executes queries via `sql_execute_query` / `mongo_execute_query`. Results flow back to the chat and — critically — get placed directly in the console editor via `modify_console`.
 
 ### Query Runner (`api/src/databases/`)
 
@@ -111,7 +105,7 @@ React App → POST /api/chat (streaming)
 Hono API → Build agent context (schema + self-directive + history)
         │
         ▼
-AI Agent → inspect_schema → sql_execute_query → write_to_interface
+AI Agent → list_databases / inspect_table → sql_execute_query → modify_console
         │
         ▼
 Streaming response → Chat UI + Console editor updated
