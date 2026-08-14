@@ -4183,7 +4183,38 @@ export interface IMakoAppBindingMaterializationRun {
   error?: string;
 }
 
+/**
+ * Per-environment artifact metadata. Tracks build status, row count, byte size,
+ * and provenance (schema, environment name, build time) for a specific dbt
+ * environment's materialization. Prod artifacts are canonical (served to
+ * published/shared views); environment-specific are preview-scoped.
+ */
+export interface IMakoAppBindingEnvironmentArtifact {
+  /** Build status for this environment's artifact */
+  status?: "missing" | "queued" | "building" | "ready" | "error" | null;
+  /** Heartbeat: refreshed while building to detect stale/crashed workers */
+  statusAt?: Date | null;
+  /** Artifact storage key (includes environment in path) */
+  artifactKey?: string;
+  /** Hash of query definition (used for cache invalidation) */
+  definitionHash?: string;
+  /** Opaque revision ID for cache-busting */
+  artifactRevision?: string;
+  /** Last error if status is error */
+  error?: string | null;
+  /** Materialized data stats */
+  rowCount?: number;
+  byteSize?: number;
+  /** When the artifact was built */
+  builtAt?: Date;
+  /** Name of the dbt schema this artifact was built against (provenance) */
+  sourceSchema?: string;
+  /** Build history for this environment */
+  history?: IMakoAppBindingMaterializationRun[];
+}
+
 export interface IMakoAppBindingCache {
+  /** Legacy: prod artifact (kept for backward compat, merged into prod env cache) */
   parquetArtifactKey?: string;
   definitionHash?: string;
   artifactRevision?: string;
@@ -4205,6 +4236,9 @@ export interface IMakoAppBindingCache {
   lastRefreshedAt?: Date;
   parquetBuiltAt?: Date;
   history?: IMakoAppBindingMaterializationRun[];
+
+  /** Per-environment artifacts keyed by environment name (prod, dev, etc) */
+  environments?: Record<string, IMakoAppBindingEnvironmentArtifact>;
 }
 
 export interface IMakoAppDataBinding {
@@ -4289,6 +4323,31 @@ const MakoAppBindingMaterializationRunSchema =
     { _id: false },
   );
 
+const MakoAppBindingEnvironmentArtifactSchema =
+  new Schema<IMakoAppBindingEnvironmentArtifact>(
+    {
+      status: {
+        type: String,
+        enum: ["missing", "queued", "building", "ready", "error", null],
+        default: null,
+      },
+      statusAt: { type: Date, default: null },
+      artifactKey: { type: String },
+      definitionHash: { type: String },
+      artifactRevision: { type: String },
+      error: { type: String, default: null },
+      rowCount: { type: Number },
+      byteSize: { type: Number },
+      builtAt: { type: Date },
+      sourceSchema: { type: String },
+      history: {
+        type: [MakoAppBindingMaterializationRunSchema],
+        default: undefined,
+      },
+    },
+    { _id: false },
+  );
+
 const MakoAppBindingCacheSchema = new Schema<IMakoAppBindingCache>(
   {
     parquetArtifactKey: { type: String },
@@ -4308,6 +4367,10 @@ const MakoAppBindingCacheSchema = new Schema<IMakoAppBindingCache>(
     history: {
       type: [MakoAppBindingMaterializationRunSchema],
       default: undefined,
+    },
+    environments: {
+      type: Schema.Types.Mixed,
+      default: {},
     },
   },
   { _id: false },

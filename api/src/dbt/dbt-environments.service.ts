@@ -323,6 +323,7 @@ export async function resolveDbtBoundCode(params: {
   workspaceId: string | Types.ObjectId;
   dbtProjectId?: string;
   code: string;
+  environment?: string;
 }): Promise<string> {
   if (!params.dbtProjectId || !containsDbtSchemaToken(params.code)) {
     return params.code;
@@ -330,6 +331,7 @@ export async function resolveDbtBoundCode(params: {
   const resolved = await resolveDbtSchemaForBinding({
     workspaceId: params.workspaceId,
     dbtProjectId: params.dbtProjectId,
+    environmentName: params.environment,
   });
   if (!resolved) {
     throw new Error(

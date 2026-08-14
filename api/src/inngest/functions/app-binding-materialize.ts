@@ -11,6 +11,7 @@ import { inngest } from "../client";
 import { MakoApp } from "../../database/workspace-schema";
 import {
   materializeAppBinding,
+  materializeAppBindingForEnvironment,
   queueAppBindingMaterialization,
 } from "../../services/app-binding-materialization.service";
 import { isDashboardMaterializationDue } from "../../services/dashboard-materialization-schedule.service";
@@ -48,11 +49,12 @@ export const appBindingMaterializeFunction = inngest.createFunction(
   },
   { event: "app/binding.materialize" },
   async ({ event, step }) => {
-    const { workspaceId, appId, bindingId, force } = event.data as {
+    const { workspaceId, appId, bindingId, force, environment } = event.data as {
       workspaceId: string;
       appId: string;
       bindingId: string;
       force?: boolean;
+      environment?: string;
     };
 
     // Must throw outside step.run so Inngest releases concurrency for RetryAfterError.
@@ -66,6 +68,7 @@ export const appBindingMaterializeFunction = inngest.createFunction(
         workspaceId,
         appId,
         bindingId,
+        environment,
         activeOthers: gate.activeOthers,
         limit: gate.limit,
       });
@@ -76,12 +79,22 @@ export const appBindingMaterializeFunction = inngest.createFunction(
     }
 
     const result = await step.run("materialize-binding", async () => {
-      return await materializeAppBinding({
-        workspaceId,
-        appId,
-        bindingId,
-        force,
-      });
+      if (environment) {
+        return await materializeAppBindingForEnvironment({
+          workspaceId,
+          appId,
+          bindingId,
+          environment,
+          force,
+        });
+      } else {
+        return await materializeAppBinding({
+          workspaceId,
+          appId,
+          bindingId,
+          force,
+        });
+      }
     });
 
     if (result.status === "error") {
@@ -91,6 +104,7 @@ export const appBindingMaterializeFunction = inngest.createFunction(
         workspaceId,
         appId,
         bindingId,
+        environment,
         error: result.error,
       });
     } else {
@@ -98,6 +112,7 @@ export const appBindingMaterializeFunction = inngest.createFunction(
         workspaceId,
         appId,
         bindingId,
+        environment,
         rowCount: result.rowCount,
         byteSize: result.byteSize,
       });
