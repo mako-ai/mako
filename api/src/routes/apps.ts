@@ -27,6 +27,7 @@ import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { AppDefinitionSchema, normalizeAppFiles } from "@mako/schemas";
 import {
   queueAppBindingMaterialization,
+  queueAppBindingMaterializationForEnvironment,
   buildAppBindingMaterializationStatus,
   buildAppBindingDefinitionHash,
   hydrateAppBindingUrls,
@@ -768,6 +769,7 @@ app.openapi(
 // POST /:id/bindings/:bindingId/materialize — queue the Parquet build.
 // Returns immediately: the build runs in the background (Inngest). Clients
 // poll GET .../materialization until the status is ready/error.
+// Optional environment parameter for dbt preview artifacts (default: prod).
 app.openapi(
   createRoute({
     method: "post",
@@ -775,7 +777,13 @@ app.openapi(
     tags: ["Apps"],
     summary: "Materialize an app data binding",
     security: AUTH_SECURITY,
-    request: { params: BindingParam, body: AppBody },
+    request: {
+      params: BindingParam,
+      body: z.object({
+        force: z.boolean().optional(),
+        environment: z.string().optional().describe("dbt environment name (e.g. 'dev', 'prod'). Defaults to prod."),
+      }),
+    },
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
@@ -800,13 +808,40 @@ app.openapi(
 
       const body = (await c.req.json().catch(() => ({}))) as {
         force?: boolean;
+        environment?: string;
       };
-      const result = await queueAppBindingMaterialization({
-        workspaceId,
-        appId: id,
-        bindingId,
-        force: body.force === true,
-      });
+
+      // Validate dbt environment if specified and binding is dbt-linked
+      if (body.environment) {
+        const binding = doc.dataBindings.find(b => b.id === bindingId);
+        if (binding?.dbtProjectId) {
+          const project = await DbtProject.findOne({
+            _id: new Types.ObjectId(binding.dbtProjectId),
+            workspaceId: new Types.ObjectId(workspaceId),
+          }).select("environments");
+          if (!project?.environments?.some(env => env.name === body.environment)) {
+            return c.json(
+              { success: false, error: `Environment "${body.environment}" not found in dbt project` },
+              400,
+            );
+          }
+        }
+      }
+
+      const result = body.environment
+        ? await queueAppBindingMaterializationForEnvironment({
+            workspaceId,
+            appId: id,
+            bindingId,
+            environment: body.environment,
+            force: body.force === true,
+          })
+        : await queueAppBindingMaterialization({
+            workspaceId,
+            appId: id,
+            bindingId,
+            force: body.force === true,
+          });
 
       // On a cache hit nothing was queued — return the refreshed app so the
       // client immediately gets the hydrated parquetUrl.
@@ -892,7 +927,10 @@ app.openapi(
     security: AUTH_SECURITY,
     request: {
       params: BindingParam,
-      query: z.object({ rev: z.string().optional() }),
+      query: z.object({
+        rev: z.string().optional(),
+        env: z.string().optional().describe("dbt environment name (e.g. 'dev', 'prod'). Defaults to prod."),
+      }),
     },
     responses: {
       ...OPEN_RESPONSES,
@@ -912,6 +950,7 @@ app.openapi(
       const id = c.req.param("id");
       const bindingId = c.req.param("bindingId");
       const userId = c.get("user")?.id;
+      const environment = c.req.query("env");
 
       if (!Types.ObjectId.isValid(id)) {
         return c.json({ success: false, error: "Invalid app ID" }, 400);
@@ -926,7 +965,12 @@ app.openapi(
         return c.json({ success: false, error: "Access denied" }, 403);
       }
 
-      const info = getBindingArtifactInfo(doc, bindingId);
+      // Published/shared views never serve environment artifacts
+      if (environment && doc.published) {
+        return c.json({ success: false, error: "Environment artifacts not available in published views" }, 403);
+      }
+
+      const info = getBindingArtifactInfo(doc, bindingId, environment);
       if (!info) {
         return c.json({ success: false, error: "Artifact not found" }, 404);
       }
@@ -940,11 +984,20 @@ app.openapi(
         // queueAppBindingMaterialization dedupes the concurrent 404s a page
         // load produces — and return a clean 404 for this read. Open tabs
         // pick the fresh artifact up via the post-build app.updated poke.
-        void queueAppBindingMaterialization({
-          workspaceId,
-          appId: id,
-          bindingId,
-        }).catch(() => undefined);
+        if (environment) {
+          void queueAppBindingMaterializationForEnvironment({
+            workspaceId,
+            appId: id,
+            bindingId,
+            environment,
+          }).catch(() => undefined);
+        } else {
+          void queueAppBindingMaterialization({
+            workspaceId,
+            appId: id,
+            bindingId,
+          }).catch(() => undefined);
+        }
         return c.json({ success: false, error: "Artifact not found" }, 404);
       }
 

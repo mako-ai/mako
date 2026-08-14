@@ -220,6 +220,7 @@ export function buildAppBindingMaterializationStatus(
   lastRefreshedAt?: Date;
   parquetBuiltAt?: Date;
   updatedAt?: Date | null;
+  environments?: Record<string, any>;
 } | null {
   const binding = app.dataBindings.find(b => b.id === bindingId);
   if (!binding) return null;
@@ -227,6 +228,31 @@ export function buildAppBindingMaterializationStatus(
   const rawStatus = cache?.parquetBuildStatus ?? "missing";
   const inFlight = rawStatus === "queued" || rawStatus === "building";
   const stale = inFlight && !isAppBindingBuildActive(cache);
+
+  // Build per-environment status if available
+  const environments: Record<string, any> = {};
+  if (cache?.environments) {
+    for (const [envName, envArtifact] of Object.entries(cache.environments)) {
+      const envRawStatus = (envArtifact as any)?.status ?? "missing";
+      const envInFlight =
+        envRawStatus === "queued" || envRawStatus === "building";
+      const envStale = envInFlight && !isEnvironmentBuildActive(envArtifact);
+      environments[envName] = {
+        status: envStale ? "error" : envRawStatus,
+        error: envStale
+          ? "Materialization stalled (worker stopped reporting progress). Re-run materialize to retry."
+          : (envArtifact as any)?.error,
+        stale: envStale,
+        rowCount: (envArtifact as any)?.rowCount,
+        byteSize: (envArtifact as any)?.byteSize,
+        artifactRevision: (envArtifact as any)?.artifactRevision,
+        sourceSchema: (envArtifact as any)?.sourceSchema,
+        builtAt: (envArtifact as any)?.builtAt,
+        updatedAt: (envArtifact as any)?.statusAt,
+      };
+    }
+  }
+
   return {
     bindingId,
     materialization: binding.materialization,
@@ -241,6 +267,7 @@ export function buildAppBindingMaterializationStatus(
     lastRefreshedAt: cache?.lastRefreshedAt,
     parquetBuiltAt: cache?.parquetBuiltAt,
     updatedAt: cache?.parquetBuildStatusAt,
+    environments: Object.keys(environments).length > 0 ? environments : undefined,
   };
 }
 
