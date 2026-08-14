@@ -4323,31 +4323,6 @@ const MakoAppBindingMaterializationRunSchema =
     { _id: false },
   );
 
-const MakoAppBindingEnvironmentArtifactSchema =
-  new Schema<IMakoAppBindingEnvironmentArtifact>(
-    {
-      status: {
-        type: String,
-        enum: ["missing", "queued", "building", "ready", "error", null],
-        default: null,
-      },
-      statusAt: { type: Date, default: null },
-      artifactKey: { type: String },
-      definitionHash: { type: String },
-      artifactRevision: { type: String },
-      error: { type: String, default: null },
-      rowCount: { type: Number },
-      byteSize: { type: Number },
-      builtAt: { type: Date },
-      sourceSchema: { type: String },
-      history: {
-        type: [MakoAppBindingMaterializationRunSchema],
-        default: undefined,
-      },
-    },
-    { _id: false },
-  );
-
 const MakoAppBindingCacheSchema = new Schema<IMakoAppBindingCache>(
   {
     parquetArtifactKey: { type: String },
@@ -4368,9 +4343,13 @@ const MakoAppBindingCacheSchema = new Schema<IMakoAppBindingCache>(
       type: [MakoAppBindingMaterializationRunSchema],
       default: undefined,
     },
+    // Keyed by dbt environment name (dynamic keys), so this is a Mixed map
+    // rather than a typed sub-schema. Every write goes through a narrow
+    // `cache.environments.<env>.<field>` $set in the materialization service,
+    // never a whole-map replace — see app-binding-materialization.service.ts.
     environments: {
       type: Schema.Types.Mixed,
-      default: {},
+      default: undefined,
     },
   },
   { _id: false },

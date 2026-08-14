@@ -82,6 +82,36 @@ export type AppBindingMaterializationRun = z.infer<
 >;
 
 /**
+ * A per-dbt-environment materialized artifact (dev/staging preview builds).
+ *
+ * The root cache fields hold the PROD artifact — the only one published apps,
+ * public shares, and scheduled refreshes ever read. These entries hold
+ * preview-scoped artifacts an editor built for a non-prod dbt environment, so
+ * a dbt-linked parquet binding can be previewed at full fidelity instead of
+ * falling back to a row-capped live query. Keyed by dbt environment name.
+ * `parquetUrl` is hydrated on read (a proxied API path), never persisted.
+ */
+export const AppBindingEnvironmentArtifactSchema = z.object({
+  status: AppBindingParquetStatusSchema.nullish(),
+  /** Heartbeat for the current build (stale detection), per environment. */
+  statusAt: z.string().nullish(),
+  artifactKey: z.string().optional(),
+  definitionHash: z.string().optional(),
+  artifactRevision: z.string().optional(),
+  error: z.string().nullish(),
+  rowCount: z.number().optional(),
+  byteSize: z.number().optional(),
+  builtAt: z.string().optional(),
+  /** Provenance: the warehouse schema this artifact was materialized from. */
+  sourceSchema: z.string().optional(),
+  parquetUrl: z.string().optional(),
+  history: z.array(AppBindingMaterializationRunSchema).optional(),
+});
+export type AppBindingEnvironmentArtifact = z.infer<
+  typeof AppBindingEnvironmentArtifactSchema
+>;
+
+/**
  * Materialized-artifact cache metadata for a binding. Mirrors the dashboard
  * data source `cache` shape so the same artifact store + serve pipeline applies.
  * `parquetUrl` is hydrated on read (a proxied API path), never persisted.
@@ -104,6 +134,13 @@ export const AppBindingCacheSchema = z.object({
   parquetUrl: z.string().optional(),
   /** Most-recent materialization runs (newest first, bounded). */
   history: z.array(AppBindingMaterializationRunSchema).optional(),
+  /**
+   * Preview-scoped artifacts keyed by dbt environment name. Never read by
+   * published apps or public shares — those always use the root (prod) fields.
+   */
+  environments: z
+    .record(z.string(), AppBindingEnvironmentArtifactSchema)
+    .optional(),
 });
 export type AppBindingCache = z.infer<typeof AppBindingCacheSchema>;
 

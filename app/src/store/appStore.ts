@@ -1092,9 +1092,8 @@ export const useAppStore = create<AppStore>()(
           return await finishReady();
         }
 
-        const initialStatus = res.status?.status === "building"
-          ? "building"
-          : "queued";
+        const initialStatus =
+          res.status?.status === "building" ? "building" : "queued";
         setLocalStatus(initialStatus);
 
         // Poll the status endpoint until the background build terminates,
@@ -1102,34 +1101,28 @@ export const useAppStore = create<AppStore>()(
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
           await abortableSleep(MATERIALIZE_POLL_INTERVAL_MS, signal);
+          // One status response carries prod plus every environment, so the
+          // poll is the same request either way — just read the slice we want.
           const poll = unwrapBody(
             await api.GET(
               "/api/workspaces/{workspaceId}/apps/{id}/bindings/{bindingId}/materialization",
               {
-                params: {
-                  path: { workspaceId, id: appId, bindingId },
-                  ...(environment ? { query: { env: environment } } : {}),
-                },
+                params: { path: { workspaceId, id: appId, bindingId } },
                 signal,
               },
             ),
           ) as {
             success: boolean;
             data?: BindingMaterializationStatus & {
-              environments?: Record<
-                string,
-                BindingMaterializationStatus
-              >;
+              environments?: Record<string, BindingMaterializationStatus>;
             };
           };
           const data = poll.data;
           if (!data) continue;
 
-          // For environment-specific requests, extract status from environments map
-          const status = environment
-            ? data.environments?.[environment]
-            : data;
-
+          const status = environment ? data.environments?.[environment] : data;
+          // An environment entry only appears once its build has been
+          // claimed; keep polling until the worker writes it.
           if (!status) continue;
 
           setLocalStatus(status.status, status.error);

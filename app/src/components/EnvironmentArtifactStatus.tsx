@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useMemo } from "react";
 import {
   Box,
   Typography,
@@ -8,35 +8,40 @@ import {
   Alert,
   Stack,
   CircularProgress,
-  Divider,
 } from "@mui/material";
-import {
-  RotateCw as BuildIcon,
-  AlertCircle as WarningIcon,
-  CheckCircle2 as ReadyIcon,
-  Clock as PendingIcon,
-} from "lucide-react";
+import { RotateCw as BuildIcon } from "lucide-react";
 import { useAppStore } from "../store/appStore";
 
 interface EnvironmentArtifactStatusProps {
   appId: string;
   bindingId: string;
+  /** dbt environment the preview is pinned to (never the prod-like one). */
   environment: string;
   onBuildClick: () => void;
   buildInProgress: boolean;
+  /** Render as a single inline chip (for tight toolbars). */
   compact?: boolean;
 }
 
+type BuildStatus = "missing" | "queued" | "building" | "ready" | "error";
+
+function formatRelative(ms: number): string {
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return "just now";
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  return `${Math.round(hr / 24)}d ago`;
+}
+
 /**
- * Shows the materialization status of a parquet binding for a specific
- * dbt environment. Used in the preview environment selector to indicate
- * whether dev/staging artifacts are ready or need to be built.
+ * Build state of a parquet binding's artifact for ONE dbt environment.
  *
- * Displays:
- * - Build status indicator (ready, building, queued, error, missing)
- * - Row count and freshness (if ready)
- * - "Build now?" button (if missing/error)
- * - Warning banner (if falling back to live query)
+ * Parquet bindings materialize prod data by default, so a dev/staging preview
+ * has nothing to read until an environment artifact is built. This surfaces
+ * that explicitly — ready / building / failed / not built — and offers the
+ * build, rather than silently degrading to a row-capped live query.
  */
 export default function EnvironmentArtifactStatus({
   appId,
@@ -46,95 +51,83 @@ export default function EnvironmentArtifactStatus({
   buildInProgress,
   compact = false,
 }: EnvironmentArtifactStatusProps) {
-  const store = useAppStore.getState();
-  const app = store.openApps[appId];
-  const binding = app?.dataBindings.find(b => b.id === bindingId);
+  // Subscribe (not getState) so the chip tracks a build as it progresses.
+  const artifact = useAppStore(
+    state =>
+      state.openApps[appId]?.dataBindings.find(b => b.id === bindingId)?.cache
+        ?.environments?.[environment],
+  );
+  // In-flight status from the poller lands here before the app is refetched.
+  const polled = useAppStore(
+    state => state.bindingBuildStatusByEnv[appId]?.[bindingId]?.[environment],
+  );
 
-  const envStatus = useMemo(() => {
-    return binding?.cache?.environments?.[environment] || {
-      status: "missing" as const,
-    };
-  }, [binding, environment]);
+  const status = (polled?.status ??
+    artifact?.status ??
+    "missing") as BuildStatus;
+  const error = polled?.error ?? artifact?.error ?? null;
 
-  const isFallbackToLiveQuery = useMemo(() => {
-    // If the preview override is set for this environment and no artifact is
-    // ready, we're falling back to a row-capped live query
-    return (
-      envStatus.status !== "ready" &&
-      ["missing", "error"].includes(envStatus.status || "missing")
-    );
-  }, [envStatus.status]);
+  const detail = useMemo(() => {
+    if (status !== "ready") return null;
+    const rows =
+      artifact?.rowCount != null
+        ? `${artifact.rowCount.toLocaleString()} rows`
+        : null;
+    const age = artifact?.builtAt
+      ? formatRelative(Date.now() - new Date(artifact.builtAt).getTime())
+      : null;
+    return [rows, age].filter(Boolean).join(" · ") || null;
+  }, [status, artifact?.rowCount, artifact?.builtAt]);
 
-  const rowCount = envStatus.rowCount
-    ? `${envStatus.rowCount.toLocaleString()} rows`
-    : null;
-
-  const builtAtMs = envStatus.builtAt
-    ? new Date(envStatus.builtAt).getTime()
-    : null;
-
-  const age = useMemo(() => {
-    if (!builtAtMs) return null;
-    const ageMs = Date.now() - builtAtMs;
-    const sec = Math.round(ageMs / 1000);
-    if (sec < 60) return "just now";
-    const min = Math.round(sec / 60);
-    if (min < 60) return `${min}m ago`;
-    const hr = Math.round(min / 60);
-    if (hr < 24) return `${hr}h ago`;
-    return `${Math.round(hr / 24)}d ago`;
-  }, [builtAtMs]);
-
-  const statusInfo = useCallback(() => {
-    switch (envStatus.status) {
+  const chip = useMemo(() => {
+    switch (status) {
       case "ready":
         return {
-          icon: ReadyIcon,
-          label: [rowCount, age].filter(Boolean).join(" · ") || "Ready",
+          label: detail ?? "Ready",
           color: "success" as const,
-          tooltip: "Environment artifact ready for preview",
+          tooltip: `Previewing the full "${environment}" dataset.`,
         };
       case "building":
         return {
-          icon: CircularProgress,
           label: "Building…",
           color: "info" as const,
-          tooltip: "Materialization in progress",
+          tooltip: `Materializing "${environment}" data.`,
         };
       case "queued":
         return {
-          icon: PendingIcon,
           label: "Queued",
-          color: "warning" as const,
-          tooltip: "Build queued, waiting to start",
+          color: "info" as const,
+          tooltip: "Waiting for a build slot.",
         };
       case "error":
         return {
-          icon: WarningIcon,
-          label: "Error",
+          label: "Build failed",
           color: "error" as const,
-          tooltip: envStatus.error || "Build failed",
+          tooltip: error || "The last build failed.",
         };
       default:
         return {
-          icon: WarningIcon,
-          label: "No artifact",
+          label: "Not built",
           color: "default" as const,
-          tooltip: "Build now to use full-fidelity environment data",
+          tooltip: `No "${environment}" data has been built for this data source yet.`,
         };
     }
-  }, [envStatus.status, envStatus.error, rowCount, age]);
+  }, [status, detail, error, environment]);
 
-  const info = statusInfo();
-  const Icon = info.icon;
+  const busy = status === "building" || status === "queued";
+  // Only these two states have nothing to read, so the preview degrades.
+  const fallingBack = status === "missing" || status === "error";
 
   if (compact) {
     return (
-      <Tooltip title={info.tooltip}>
-        <Stack direction="row" alignItems="center" spacing={0.5}>
-          <Icon size={16} strokeWidth={1.5} />
-          <Typography variant="caption">{info.label}</Typography>
-        </Stack>
+      <Tooltip title={chip.tooltip}>
+        <Chip
+          size="small"
+          variant="outlined"
+          color={chip.color}
+          icon={busy ? <CircularProgress size={12} /> : undefined}
+          label={`${environment}: ${chip.label}`}
+        />
       </Tooltip>
     );
   }
@@ -142,18 +135,16 @@ export default function EnvironmentArtifactStatus({
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
       <Stack direction="row" alignItems="center" spacing={1}>
-        <Tooltip title={info.tooltip}>
+        <Tooltip title={chip.tooltip}>
           <Chip
             size="small"
-            icon={
-              Icon === CircularProgress ? <CircularProgress size={16} /> : undefined
-            }
-            label={info.label}
-            color={info.color}
             variant="outlined"
+            color={chip.color}
+            icon={busy ? <CircularProgress size={12} /> : undefined}
+            label={chip.label}
           />
         </Tooltip>
-        {(envStatus.status === "missing" || envStatus.status === "error") && (
+        {fallingBack && (
           <Button
             size="small"
             variant="outlined"
@@ -172,19 +163,27 @@ export default function EnvironmentArtifactStatus({
         )}
       </Stack>
 
-      {isFallbackToLiveQuery && (
-        <Alert severity="info" sx={{ py: 0.5 }} icon={<WarningIcon size={16} />}>
+      {fallingBack && (
+        <Alert severity="info" sx={{ py: 0.5 }}>
           <Typography variant="caption">
-            Falling back to live query (
-            {envStatus.status === "error" ? "build failed" : "no artifact built yet"}
-            ). Results limited to ~500 rows.
+            {status === "error"
+              ? `The last "${environment}" build failed, so the preview is running the query live.`
+              : `No "${environment}" data built yet, so the preview is running the query live.`}{" "}
+            Live previews are capped at 500 rows — build to see the full
+            dataset.
           </Typography>
         </Alert>
       )}
 
-      {envStatus.sourceSchema && (
+      {status === "error" && error && (
+        <Typography variant="caption" color="error">
+          {error}
+        </Typography>
+      )}
+
+      {status === "ready" && artifact?.sourceSchema && (
         <Typography variant="caption" color="textSecondary">
-          Source schema: <strong>{envStatus.sourceSchema}</strong>
+          Built from <strong>{artifact.sourceSchema}</strong>
         </Typography>
       )}
     </Box>

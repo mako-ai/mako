@@ -21,6 +21,7 @@ import {
   loadBindingRowsTable,
   dropBindingTableByRevisionPrefix,
   loadEnvironmentArtifact,
+  ENV_ARTIFACT_REVISION_PREFIX,
 } from "./duckdb";
 
 /**
@@ -55,31 +56,24 @@ export async function getBindingPreviewOverride(
 }
 
 /**
- * Check if an environment-specific artifact is ready and available.
- * Returns artifact metadata if ready, null otherwise.
+ * The ready per-environment artifact for a binding, or null when none has
+ * been built (or its build failed) — in which case the caller runs the query
+ * live instead.
  */
 function getEnvironmentArtifactInfo(
   appId: string,
   binding: AppDataBinding,
   environment: string,
 ): { url: string; revision: string } | null {
-  const store = useAppStore.getState();
-  const app = store.openApps[appId];
-  if (!app) return null;
-
-  const envStatus = app.dataBindings
-    .find((b: AppDataBinding) => b.id === binding.id)
-    ?.cache?.environments?.[environment];
-
-  if (envStatus?.status === "ready" && envStatus.parquetUrl) {
-    return {
-      url: envStatus.parquetUrl,
-      revision: envStatus.artifactRevision || envStatus.definitionHash || "",
-    };
-  }
-  return null;
+  const app = useAppStore.getState().openApps[appId];
+  const artifact = app?.dataBindings.find(b => b.id === binding.id)?.cache
+    ?.environments?.[environment];
+  if (artifact?.status !== "ready" || !artifact.parquetUrl) return null;
+  return {
+    url: artifact.parquetUrl,
+    revision: artifact.artifactRevision || artifact.definitionHash || "",
+  };
 }
-
 
 /**
  * Ensure a parquet binding's DuckDB table holds the data the CURRENT preview
@@ -104,12 +98,18 @@ export async function ensureBindingLoadedForPreview(
     const loaded = await ensureBindingLoaded(appId, binding, signal);
     if (!loaded) {
       // No ready prod artifact to reload (never materialized / build failed):
-      // evict rows a previous override run left behind so prod reads fail
-      // loudly instead of silently serving the other environment's data.
+      // evict rows a previous override left behind — from either a live run
+      // or an environment artifact — so prod reads fail loudly instead of
+      // silently serving another environment's data.
       await dropBindingTableByRevisionPrefix(
         appId,
         binding.name,
         DBT_PREVIEW_REVISION_PREFIX,
+      );
+      await dropBindingTableByRevisionPrefix(
+        appId,
+        binding.name,
+        ENV_ARTIFACT_REVISION_PREFIX,
       );
     }
     return loaded;

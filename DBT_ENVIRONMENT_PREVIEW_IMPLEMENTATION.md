@@ -379,16 +379,41 @@ cache?: {
 5. **Live query caching:** Cache dev live queries in DuckDB to avoid repeated warehouse hits
 6. **Build parallelization:** Materialize multiple bindings concurrently for the same environment
 
-## Testing Checklist
+## Verification status
 
-- [ ] Unit tests: artifact key generation, status calculation, environment resolution
-- [ ] Integration tests: queue → build → fetch for multiple environments
-- [ ] E2E: Switch preview env → materialize dev → load artifact → verify data
-- [ ] Concurrency: Two editors materializing prod & dev simultaneously
-- [ ] Quota: Workspace size limits, eviction order
-- [ ] Safety: Published views reject env artifact requests
-- [ ] Fallback: Live query with row cap warning when artifact not ready
-- [ ] Stale detection: Build status updates correctly, stale builds recoverable
+**Verified locally**
+
+- `pnpm build` (lint + typecheck + compile, all packages) passes.
+- `pnpm --filter app exec vitest run` — 61 files / 438 tests pass.
+- `api/src/services/app-binding-materialization.service.test.ts` (new) passes:
+  artifact key segregation per environment, the artifact URL's `env` query
+  param, environment-name validation, per-environment stale detection, and
+  `parquetUrl` hydration for ready environment artifacts.
+
+The addressing helpers were extracted into
+`api/src/services/app-binding-artifact-paths.ts` precisely so they can be
+tested — importing the materialization service pulls in Inngest and the
+storage clients, which keeps the process alive and can't run in a unit test.
+
+**Not verified — environment limits**
+
+- 7 API test files fail in this sandbox because `mongodb-memory-server` cannot
+  download its binary (`403` from `fastdl.mongodb.org`). Pre-existing and
+  unrelated to this change, but it means `pnpm --filter api test` halts before
+  reaching the new suite; run it directly with
+  `tsx src/services/app-binding-materialization.service.test.ts`.
+
+**Not verified — needs a real workspace**
+
+No end-to-end run has happened: nothing here has executed against a live
+warehouse, dbt project, or browser. Specifically untested:
+
+- [ ] Queue → build → fetch against a real dbt environment
+- [ ] Preview actually loading a dev artifact into DuckDB
+- [ ] Two editors materializing prod + dev concurrently
+- [ ] The 403 for viewers requesting an environment artifact
+- [ ] Live-query fallback and its row-cap warning
+- [ ] Recovery from a crashed build via the per-environment heartbeat
 
 ## Implementation Branches & PRs
 
@@ -401,7 +426,9 @@ cache?: {
 ## Code Locations
 
 **Backend (Node/TypeScript):**
+- `api/src/services/app-binding-artifact-paths.ts` - Pure artifact addressing (keys, URLs, env-name validation) + its test
 - `api/src/database/workspace-schema.ts` - Database schema definitions
+- `packages/schemas/src/app.schema.ts` - Shared binding cache contract (`environments`), consumed by the frontend
 - `api/src/services/app-binding-materialization.service.ts` - Materialization core logic
 - `api/src/dbt/dbt-environments.service.ts` - Environment resolution and schema mapping
 - `api/src/routes/apps.ts` - API endpoints for materialization

@@ -170,6 +170,28 @@ function serializeApp(doc: IMakoApp) {
               durationMs: run.durationMs,
               error: run.error,
             })),
+            // Per-environment preview artifacts. `parquetUrl` for each is
+            // filled in by hydrateAppBindingUrls below; history is dropped
+            // here (the status route serves it) to keep app payloads small.
+            environments: b.cache.environments
+              ? Object.fromEntries(
+                  Object.entries(b.cache.environments).map(([env, a]) => [
+                    env,
+                    {
+                      status: a?.status,
+                      statusAt: a?.statusAt,
+                      artifactKey: a?.artifactKey,
+                      definitionHash: a?.definitionHash,
+                      artifactRevision: a?.artifactRevision,
+                      error: a?.error,
+                      rowCount: a?.rowCount,
+                      byteSize: a?.byteSize,
+                      builtAt: a?.builtAt,
+                      sourceSchema: a?.sourceSchema,
+                    },
+                  ]),
+                )
+              : undefined,
           }
         : undefined,
     })) as Array<Record<string, any>>,
@@ -779,18 +801,29 @@ app.openapi(
     security: AUTH_SECURITY,
     request: {
       params: BindingParam,
-      body: z.object({
-        force: z.boolean().optional(),
-        environment: z.string().optional().describe("dbt environment name (e.g. 'dev', 'prod'). Defaults to prod."),
-      }),
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              force: z.boolean().optional(),
+              environment: z
+                .string()
+                .optional()
+                .describe(
+                  "dbt environment name (e.g. 'dev'). Builds a preview-scoped artifact for that environment; omit for the prod artifact.",
+                ),
+            }),
+          },
+        },
+      },
     },
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
     try {
       const workspaceId = c.req.param("workspaceId") as string;
-      const id = c.req.param("id");
-      const bindingId = c.req.param("bindingId");
+      const id = c.req.param("id") as string;
+      const bindingId = c.req.param("bindingId") as string;
       const userId = c.get("user")?.id;
 
       if (!Types.ObjectId.isValid(id)) {
@@ -811,20 +844,39 @@ app.openapi(
         environment?: string;
       };
 
-      // Validate dbt environment if specified and binding is dbt-linked
+      // An environment build only means something for a dbt-linked binding —
+      // the environment is what `{{ dbt_schema }}` resolves against. Without a
+      // link there is nothing to vary, so reject rather than writing an
+      // artifact under an arbitrary caller-supplied environment name.
       if (body.environment) {
         const binding = doc.dataBindings.find(b => b.id === bindingId);
-        if (binding?.dbtProjectId) {
-          const project = await DbtProject.findOne({
-            _id: new Types.ObjectId(binding.dbtProjectId),
-            workspaceId: new Types.ObjectId(workspaceId),
-          }).select("environments");
-          if (!project?.environments?.some(env => env.name === body.environment)) {
-            return c.json(
-              { success: false, error: `Environment "${body.environment}" not found in dbt project` },
-              400,
-            );
-          }
+        if (!binding) {
+          return c.json({ success: false, error: "Binding not found" }, 404);
+        }
+        if (!binding.dbtProjectId) {
+          return c.json(
+            {
+              success: false,
+              error:
+                "This data source is not linked to a dbt project, so it has no per-environment data to build.",
+            },
+            400,
+          );
+        }
+        const project = await DbtProject.findOne({
+          _id: new Types.ObjectId(binding.dbtProjectId),
+          workspaceId: new Types.ObjectId(workspaceId),
+        }).select("environments");
+        if (
+          !project?.environments?.some(env => env.name === body.environment)
+        ) {
+          return c.json(
+            {
+              success: false,
+              error: `Environment "${body.environment}" not found in dbt project`,
+            },
+            400,
+          );
         }
       }
 
@@ -929,7 +981,12 @@ app.openapi(
       params: BindingParam,
       query: z.object({
         rev: z.string().optional(),
-        env: z.string().optional().describe("dbt environment name (e.g. 'dev', 'prod'). Defaults to prod."),
+        env: z
+          .string()
+          .optional()
+          .describe(
+            "dbt environment name (e.g. 'dev', 'prod'). Defaults to prod.",
+          ),
       }),
     },
     responses: {
@@ -965,9 +1022,20 @@ app.openapi(
         return c.json({ success: false, error: "Access denied" }, 403);
       }
 
-      // Published/shared views never serve environment artifacts
-      if (environment && doc.published) {
-        return c.json({ success: false, error: "Environment artifacts not available in published views" }, 403);
+      // Environment artifacts are an editor-only preview: they hold non-prod
+      // (dev/staging) data, so only callers who can edit the app may read
+      // them. Viewers — including everyone on a published or shared view —
+      // fall through to the prod artifact, never this one. Gating on edit
+      // rights (not on whether the app has ever been published) keeps dev
+      // preview working for editors of a published app.
+      if (environment && !canManage(doc, userId, c.get("memberRole"))) {
+        return c.json(
+          {
+            success: false,
+            error: "Environment previews are only available to app editors",
+          },
+          403,
+        );
       }
 
       const info = getBindingArtifactInfo(doc, bindingId, environment);

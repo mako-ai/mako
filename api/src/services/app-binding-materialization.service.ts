@@ -31,17 +31,29 @@ import {
 import { inngest } from "../inngest/client";
 import { publishRealtimeEvent } from "./realtime.service";
 import { loggers } from "../logging";
+import {
+  assertSafeEnvironmentName,
+  buildAppBindingArtifactKeyWithPrefix,
+  envCachePath,
+  isEnvironmentBuildActive,
+  BUILD_STALE_THRESHOLD_MS,
+} from "./app-binding-artifact-paths";
+
+// Artifact addressing lives in a side-effect-free module so it stays unit
+// testable; re-exported here so callers keep one import site.
+export {
+  assertSafeEnvironmentName,
+  buildAppBindingArtifactPath,
+  envCachePath,
+  hydrateAppBindingUrls,
+  isEnvironmentBuildActive,
+  BUILD_STALE_THRESHOLD_MS,
+} from "./app-binding-artifact-paths";
 
 const logger = loggers.api("app-materialization");
 
 /** How often a running build refreshes its heartbeat (`parquetBuildStatusAt`). */
 const BUILD_HEARTBEAT_INTERVAL_MS = 30 * 1000;
-
-/**
- * A queued/building status with a heartbeat older than this is considered
- * stale (the worker crashed or was redeployed mid-build) and may be re-queued.
- */
-export const BUILD_STALE_THRESHOLD_MS = 3 * 60 * 1000;
 
 export interface AppBindingMaterializationStatus {
   bindingId: string;
@@ -115,47 +127,10 @@ export function buildAppBindingArtifactKey(input: {
   definitionHash: string;
   environment?: string;
 }): string {
-  const env = input.environment ? `/${input.environment}` : "";
-  return `${getArtifactPrefix()}/workspaces/${input.workspaceId}/apps/${input.appId}/bindings/${input.bindingId}${env}/${input.definitionHash}.parquet`;
-}
-
-/** Proxied API path the browser fetches to read a binding's Parquet artifact. */
-export function buildAppBindingArtifactPath(input: {
-  workspaceId: string;
-  appId: string;
-  bindingId: string;
-  revision?: string | null;
-  environment?: string;
-}): string {
-  const env = input.environment ? `/${input.environment}` : "";
-  const base = `/api/workspaces/${input.workspaceId}/apps/${input.appId}/bindings/${input.bindingId}${env}/materialization/artifact`;
-  return input.revision
-    ? `${base}?rev=${encodeURIComponent(input.revision)}`
-    : base;
-}
-
-/**
- * Hydrate `cache.parquetUrl` for every ready, materialized binding on a
- * serialized app object. Pure (string building) — no store calls.
- */
-export function hydrateAppBindingUrls(app: {
-  _id: string;
-  workspaceId: string;
-  dataBindings?: Array<Record<string, any>>;
-}): typeof app {
-  if (!Array.isArray(app.dataBindings)) return app;
-  for (const binding of app.dataBindings) {
-    const cache = binding.cache;
-    if (cache?.parquetArtifactKey && cache.parquetBuildStatus === "ready") {
-      cache.parquetUrl = buildAppBindingArtifactPath({
-        workspaceId: app.workspaceId,
-        appId: app._id,
-        bindingId: binding.id,
-        revision: cache.artifactRevision || undefined,
-      });
-    }
-  }
-  return app;
+  return buildAppBindingArtifactKeyWithPrefix({
+    prefix: getArtifactPrefix(),
+    ...input,
+  });
 }
 
 /** Whether a queued/building status is genuinely in flight (fresh heartbeat). */
@@ -179,26 +154,20 @@ export function isAppBindingBuildActive(
   return Date.now() - at < BUILD_STALE_THRESHOLD_MS;
 }
 
-/** Whether an environment artifact's build is in flight (fresh heartbeat). */
-export function isEnvironmentBuildActive(artifact: any): boolean {
-  if (artifact?.status !== "queued" && artifact?.status !== "building") {
-    return false;
-  }
-  const at = artifact?.statusAt ? new Date(artifact.statusAt).getTime() : 0;
-  return Date.now() - at < BUILD_STALE_THRESHOLD_MS;
-}
+const BUILD_STALLED_MESSAGE =
+  "Materialization stalled (worker stopped reporting progress). Re-run materialize to retry.";
 
-/** Get or initialize environment-specific cache entry. */
-export function getOrInitEnvironmentArtifact(
-  cache: any,
-  environmentName: string,
-): any {
-  if (!cache) return undefined;
-  if (!cache.environments) cache.environments = {};
-  if (!cache.environments[environmentName]) {
-    cache.environments[environmentName] = {};
-  }
-  return cache.environments[environmentName];
+/** Serializable per-environment build status returned by the status route. */
+export interface AppBindingEnvironmentStatus {
+  status: "missing" | "queued" | "building" | "ready" | "error";
+  error?: string | null;
+  stale: boolean;
+  rowCount?: number;
+  byteSize?: number;
+  artifactRevision?: string;
+  sourceSchema?: string;
+  builtAt?: Date;
+  updatedAt?: Date | null;
 }
 
 /**
@@ -220,7 +189,7 @@ export function buildAppBindingMaterializationStatus(
   lastRefreshedAt?: Date;
   parquetBuiltAt?: Date;
   updatedAt?: Date | null;
-  environments?: Record<string, any>;
+  environments?: Record<string, AppBindingEnvironmentStatus>;
 } | null {
   const binding = app.dataBindings.find(b => b.id === bindingId);
   if (!binding) return null;
@@ -229,37 +198,34 @@ export function buildAppBindingMaterializationStatus(
   const inFlight = rawStatus === "queued" || rawStatus === "building";
   const stale = inFlight && !isAppBindingBuildActive(cache);
 
-  // Build per-environment status if available
-  const environments: Record<string, any> = {};
-  if (cache?.environments) {
-    for (const [envName, envArtifact] of Object.entries(cache.environments)) {
-      const envRawStatus = (envArtifact as any)?.status ?? "missing";
-      const envInFlight =
-        envRawStatus === "queued" || envRawStatus === "building";
-      const envStale = envInFlight && !isEnvironmentBuildActive(envArtifact);
-      environments[envName] = {
-        status: envStale ? "error" : envRawStatus,
-        error: envStale
-          ? "Materialization stalled (worker stopped reporting progress). Re-run materialize to retry."
-          : (envArtifact as any)?.error,
-        stale: envStale,
-        rowCount: (envArtifact as any)?.rowCount,
-        byteSize: (envArtifact as any)?.byteSize,
-        artifactRevision: (envArtifact as any)?.artifactRevision,
-        sourceSchema: (envArtifact as any)?.sourceSchema,
-        builtAt: (envArtifact as any)?.builtAt,
-        updatedAt: (envArtifact as any)?.statusAt,
-      };
-    }
+  // Per-environment status, with the same stale-build handling as prod so a
+  // crashed dev build reports as an error instead of polling forever.
+  const environments: Record<string, AppBindingEnvironmentStatus> = {};
+  for (const [envName, envArtifact] of Object.entries(
+    cache?.environments ?? {},
+  )) {
+    const envRawStatus = envArtifact?.status ?? "missing";
+    const envInFlight =
+      envRawStatus === "queued" || envRawStatus === "building";
+    const envStale = envInFlight && !isEnvironmentBuildActive(envArtifact);
+    environments[envName] = {
+      status: envStale ? "error" : envRawStatus,
+      error: envStale ? BUILD_STALLED_MESSAGE : envArtifact?.error,
+      stale: envStale,
+      rowCount: envArtifact?.rowCount,
+      byteSize: envArtifact?.byteSize,
+      artifactRevision: envArtifact?.artifactRevision,
+      sourceSchema: envArtifact?.sourceSchema,
+      builtAt: envArtifact?.builtAt,
+      updatedAt: envArtifact?.statusAt,
+    };
   }
 
   return {
     bindingId,
     materialization: binding.materialization,
     status: stale ? "error" : rawStatus,
-    error: stale
-      ? "Materialization stalled (worker stopped reporting progress). Re-run materialize to retry."
-      : cache?.parquetLastError,
+    error: stale ? BUILD_STALLED_MESSAGE : cache?.parquetLastError,
     stale,
     rowCount: cache?.rowCount,
     byteSize: cache?.byteSize,
@@ -267,7 +233,8 @@ export function buildAppBindingMaterializationStatus(
     lastRefreshedAt: cache?.lastRefreshedAt,
     parquetBuiltAt: cache?.parquetBuiltAt,
     updatedAt: cache?.parquetBuildStatusAt,
-    environments: Object.keys(environments).length > 0 ? environments : undefined,
+    environments:
+      Object.keys(environments).length > 0 ? environments : undefined,
   };
 }
 
@@ -726,7 +693,12 @@ export function getBindingArtifactInfo(
   app: IMakoApp,
   bindingId: string,
   environment?: string,
-): { artifactKey: string; rowCount?: number; revision?: string; sourceSchema?: string } | null {
+): {
+  artifactKey: string;
+  rowCount?: number;
+  revision?: string;
+  sourceSchema?: string;
+} | null {
   const binding = app.dataBindings.find(b => b.id === bindingId);
   if (!binding?.cache) return null;
 
@@ -830,7 +802,23 @@ export async function queueAppBindingMaterializationForEnvironment(input: {
 
   // For non-environment builds or prod environment, use legacy path
   if (!environment) {
-    return queueAppBindingMaterialization({ workspaceId, appId, bindingId, force });
+    return queueAppBindingMaterialization({
+      workspaceId,
+      appId,
+      bindingId,
+      force,
+    });
+  }
+
+  try {
+    assertSafeEnvironmentName(environment);
+  } catch (error) {
+    return {
+      bindingId,
+      status: "error",
+      queued: false,
+      error: error instanceof Error ? error.message : "Invalid environment",
+    };
   }
 
   // Validate the query for the specified environment
@@ -864,7 +852,7 @@ export async function queueAppBindingMaterializationForEnvironment(input: {
   });
 
   // Environment cache hit
-  const envCache = (binding.cache?.environments ??  {})[environment];
+  const envCache = (binding.cache?.environments ?? {})[environment];
   if (
     !force &&
     envCache?.artifactKey === artifactKey &&
@@ -892,27 +880,34 @@ export async function queueAppBindingMaterializationForEnvironment(input: {
     };
   }
 
-  // Atomically claim the environment artifact
+  // Atomically claim THIS environment: the guard lives in the filter (like the
+  // prod path) so only one caller can flip it to "queued" unless the previous
+  // build's heartbeat went stale. Writing narrow dotted paths — rather than
+  // replacing the whole `environments` map — keeps concurrent builds for other
+  // environments from clobbering each other, and preserves the currently-ready
+  // artifact's metadata so the preview keeps working while a rebuild runs.
   const staleCutoff = new Date(Date.now() - BUILD_STALE_THRESHOLD_MS);
+  const statusPath = `cache.environments.${environment}.status`;
+  const statusAtPath = `cache.environments.${environment}.statusAt`;
   const claim = await MakoApp.updateOne(
     {
       _id: appDoc._id,
       dataBindings: {
         $elemMatch: {
           id: bindingId,
+          $or: [
+            { [statusPath]: { $nin: ["queued", "building"] } },
+            { [statusAtPath]: { $lt: staleCutoff } },
+            { [statusAtPath]: null },
+          ],
         },
       },
     },
     {
       $set: {
-        "dataBindings.$.cache.environments": {
-          ...(binding.cache?.environments || {}),
-          [environment]: {
-            status: "queued",
-            statusAt: new Date(),
-            error: null,
-          },
-        },
+        [envCachePath(environment, "status")]: "queued",
+        [envCachePath(environment, "statusAt")]: new Date(),
+        [envCachePath(environment, "error")]: null,
       },
     },
   );
@@ -980,6 +975,16 @@ export async function materializeAppBindingForEnvironment(input: {
     return materializeAppBinding({ workspaceId, appId, bindingId, force });
   }
 
+  try {
+    assertSafeEnvironmentName(environment);
+  } catch (error) {
+    return {
+      bindingId,
+      status: "error",
+      error: error instanceof Error ? error.message : "Invalid environment",
+    };
+  }
+
   const appDoc = await MakoApp.findOne({
     _id: new Types.ObjectId(appId),
     workspaceId: new Types.ObjectId(workspaceId),
@@ -1041,25 +1046,9 @@ export async function materializeAppBindingForEnvironment(input: {
   }
 
   return withArtifactBuildLock(artifactKey, async () => {
-    const refreshed = await MakoApp.findOne({
-      _id: appDoc._id,
-    });
-    if (!refreshed) {
-      return { bindingId, status: "error" as const, error: "App not found" };
-    }
+    const envCache = binding.cache?.environments?.[environment];
 
-    const updatedBinding = refreshed.dataBindings.find(b => b.id === bindingId);
-    if (!updatedBinding?.cache) {
-      return {
-        bindingId,
-        status: "error" as const,
-        error: "Binding cache not found",
-      };
-    }
-
-    const envCache = updatedBinding.cache.environments?.[environment];
-
-    // Environment cache hit
+    // Cache hit — reuse the existing environment artifact.
     if (
       !force &&
       envCache?.artifactKey === artifactKey &&
@@ -1076,96 +1065,141 @@ export async function materializeAppBindingForEnvironment(input: {
       };
     }
 
-    const recordRun = async (runResult: any) => {
-      const history = envCache?.history || [];
-      history.unshift(runResult);
-      history.splice(20);
+    await MakoApp.updateOne(
+      { _id: appDoc._id, "dataBindings.id": bindingId },
+      {
+        $set: {
+          [envCachePath(environment, "status")]: "building",
+          [envCachePath(environment, "statusAt")]: new Date(),
+          [envCachePath(environment, "error")]: null,
+        },
+      },
+    );
 
+    // Heartbeat so a dead worker's "building" state goes stale and becomes
+    // reclaimable, independently of every other environment's build.
+    const heartbeat = setInterval(() => {
+      void MakoApp.updateOne(
+        { _id: appDoc._id, "dataBindings.id": bindingId },
+        { $set: { [envCachePath(environment, "statusAt")]: new Date() } },
+      ).catch(() => undefined);
+    }, BUILD_HEARTBEAT_INTERVAL_MS);
+    heartbeat.unref?.();
+
+    const startedAt = Date.now();
+    const recordRun = async (run: {
+      status: "ready" | "error";
+      rowCount?: number;
+      byteSize?: number;
+      error?: string;
+    }) => {
       await MakoApp.updateOne(
-        { _id: refreshed._id, "dataBindings.id": bindingId },
+        { _id: appDoc._id, "dataBindings.id": bindingId },
         {
-          $set: {
-            "dataBindings.$.cache.environments": {
-              ...(updatedBinding.cache?.environments || {}),
-              [environment]: {
-                ...(updatedBinding.cache?.environments?.[environment] || {}),
-                ...runResult,
-                history,
-              },
+          $push: {
+            [envCachePath(environment, "history")]: {
+              $each: [
+                { ...run, at: new Date(), durationMs: Date.now() - startedAt },
+              ],
+              $position: 0,
+              $slice: 20,
             },
           },
         },
       );
     };
 
-    const heartbeatInterval = 30 * 1000;
-    let lastHeartbeat = Date.now();
-    const heartbeat = setInterval(async () => {
-      try {
-        await MakoApp.updateOne(
-          { _id: refreshed._id, "dataBindings.id": bindingId },
-          {
-            $set: {
-              "dataBindings.$.cache.environments": {
-                ...(updatedBinding.cache?.environments || {}),
-                [environment]: {
-                  ...(updatedBinding.cache?.environments?.[environment] || {}),
-                  statusAt: new Date(),
-                },
-              },
-            },
-          },
-        );
-        lastHeartbeat = Date.now();
-      } catch (err) {
-        logger.warn("Failed to update environment build heartbeat", {
-          appId,
-          bindingId,
-          environment,
-          error: err,
-        });
-      }
-    }, heartbeatInterval);
-
     try {
-      const result = await buildQueryParquetFile({
-        query: executableQuery,
-        connectionId: binding.connectionId,
+      const connection = await DatabaseConnection.findById(
+        binding.connectionId,
+      );
+      if (!connection) throw new Error("Connection not found");
+
+      const parquet = await buildQueryParquetFile({
+        connection,
+        executableQuery,
         databaseId: binding.databaseId,
         databaseName: binding.databaseName,
-        probeMode: schemaProbeMode(binding),
+        rowLimit: PARQUET_ROW_LIMIT,
+        filenameBase: `app-${appId}-${bindingId}-${environment}`,
+        schemaProbe: schemaProbeMode(binding),
       });
-
       await storeParquetArtifactFile({
+        filePath: parquet.filePath,
         artifactKey,
-        parquetBuffer: result.buffer,
+        metadata: { appId, bindingId, definitionHash, environment },
       });
 
-      const runData = {
-        at: new Date(),
-        status: "ready" as const,
-        rowCount: result.rowCount,
-        byteSize: result.buffer.length,
-        durationMs: result.durationMs,
-      };
-      await recordRun(runData);
+      const builtAt = new Date();
+      const artifactRevision = String(builtAt.getTime());
+      await MakoApp.updateOne(
+        { _id: appDoc._id, "dataBindings.id": bindingId },
+        {
+          $set: {
+            [envCachePath(environment, "artifactKey")]: artifactKey,
+            [envCachePath(environment, "definitionHash")]: definitionHash,
+            [envCachePath(environment, "artifactRevision")]: artifactRevision,
+            [envCachePath(environment, "rowCount")]: parquet.rowCount,
+            [envCachePath(environment, "byteSize")]: parquet.byteSize,
+            [envCachePath(environment, "builtAt")]: builtAt,
+            [envCachePath(environment, "sourceSchema")]: sourceSchema,
+            [envCachePath(environment, "status")]: "ready",
+            [envCachePath(environment, "statusAt")]: builtAt,
+            [envCachePath(environment, "error")]: null,
+          },
+        },
+      );
+      await recordRun({
+        status: "ready",
+        rowCount: parquet.rowCount,
+        byteSize: parquet.byteSize,
+      });
+
+      // Poke open editors so they refetch and pick up the new artifact URL.
+      const bumped = await MakoApp.findByIdAndUpdate(
+        appDoc._id,
+        { $inc: { version: 1 } },
+        { new: true },
+      );
+      publishRealtimeEvent(workspaceId, {
+        type: "app.updated",
+        appId,
+        version: bumped?.version ?? appDoc.version + 1,
+        updatedBy: "system",
+        origin: "save",
+      });
+
+      logger.info("Materialized app binding for environment", {
+        workspaceId,
+        appId,
+        bindingId,
+        environment,
+        sourceSchema,
+        rowCount: parquet.rowCount,
+        byteSize: parquet.byteSize,
+      });
 
       return {
         bindingId,
         status: "ready" as const,
-        rowCount: result.rowCount,
-        byteSize: result.buffer.length,
+        rowCount: parquet.rowCount,
+        byteSize: parquet.byteSize,
+        artifactRevision,
       };
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Materialization failed";
-      const runData = {
-        at: new Date(),
-        status: "error" as const,
-        error: message,
-        durationMs: Date.now() - lastHeartbeat,
-      };
-      await recordRun(runData);
+      await MakoApp.updateOne(
+        { _id: appDoc._id, "dataBindings.id": bindingId },
+        {
+          $set: {
+            [envCachePath(environment, "status")]: "error",
+            [envCachePath(environment, "statusAt")]: new Date(),
+            [envCachePath(environment, "error")]: message,
+          },
+        },
+      );
+      await recordRun({ status: "error", error: message });
       logger.error("Failed to materialize app binding for environment", {
         workspaceId,
         appId,

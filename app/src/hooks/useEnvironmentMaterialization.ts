@@ -1,28 +1,27 @@
-import { useCallback, useState, useEffect } from "react";
+import { useCallback, useState } from "react";
 import { useAppStore } from "../store/appStore";
 
 interface UseEnvironmentMaterializationOptions {
   workspaceId: string;
   appId: string;
   bindingId: string;
+  /**
+   * dbt environment to build for. Omit (or pass undefined) while the preview
+   * is on the prod-like environment — there is nothing per-environment to
+   * build then, and `buildArtifact` becomes a no-op.
+   */
   environment?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
 }
 
 /**
- * Hook for managing environment-specific parquet materialization.
- * Handles queuing builds, polling status, and updating local state.
+ * Drives the per-environment parquet build for one binding: current status,
+ * whether a build is worth offering, and the action to start one.
  *
- * Usage:
- * ```
- * const { status, materializing, buildArtifact, canBuild } =
- *   useEnvironmentMaterialization({
- *     workspaceId, appId, bindingId,
- *     environment: previewEnvironment
- *   });
- *
- * if (!canBuild) return <button onClick={buildArtifact}>Build</button>;
+ * ```tsx
+ * const { status, materializing, canBuild, buildArtifact } =
+ *   useEnvironmentMaterialization({ workspaceId, appId, bindingId, environment });
  * ```
  */
 export function useEnvironmentMaterialization({
@@ -35,21 +34,25 @@ export function useEnvironmentMaterialization({
 }: UseEnvironmentMaterializationOptions) {
   const [materializing, setMaterializing] = useState(false);
   const [buildError, setBuildError] = useState<string | null>(null);
-  const store = useAppStore.getState();
 
-  const app = store.openApps[appId];
-  const binding = app?.dataBindings.find(b => b.id === bindingId);
+  // Subscribe so status changes during a build re-render the caller. The
+  // poller writes `bindingBuildStatusByEnv`; a refetched app carries the
+  // persisted artifact — prefer the former while a build is in flight.
+  const polled = useAppStore(state =>
+    environment
+      ? state.bindingBuildStatusByEnv[appId]?.[bindingId]?.[environment]
+      : undefined,
+  );
+  const artifact = useAppStore(state =>
+    environment
+      ? state.openApps[appId]?.dataBindings.find(b => b.id === bindingId)?.cache
+          ?.environments?.[environment]
+      : undefined,
+  );
 
-  // Current artifact status for this environment (or prod if no environment specified)
-  const artifactStatus = environment
-    ? binding?.cache?.environments?.[environment]
-    : { status: binding?.cache?.parquetBuildStatus };
-
-  const status = artifactStatus?.status ?? "missing";
-
-  // Whether we should show a "Build now?" prompt
-  const canBuild = ["missing", "error"].includes(status);
-  const shouldAutoPrompt = canBuild && !materializing;
+  const status = polled?.status ?? artifact?.status ?? "missing";
+  const canBuild =
+    !!environment && (status === "missing" || status === "error");
 
   const buildArtifact = useCallback(
     async (force = false) => {
@@ -57,50 +60,44 @@ export function useEnvironmentMaterialization({
 
       setMaterializing(true);
       setBuildError(null);
-
       try {
-        const result = await store.materializeBinding(
-          workspaceId,
-          appId,
-          bindingId,
-          {
+        const result = await useAppStore
+          .getState()
+          .materializeBinding(workspaceId, appId, bindingId, {
             force,
             environment,
             timeoutMs,
             signal,
-            refreshPreview: false, // Don't refresh until user explicitly switches envs
-          },
-        );
-
-        if (!result.success) {
-          setBuildError(result.error || "Build failed");
-        }
+            // The preview only swaps to this artifact when the editor is
+            // actually pinned to this environment, so don't force a data
+            // reload from here.
+            refreshPreview: false,
+          });
+        if (!result.success) setBuildError(result.error || "Build failed");
+        return result;
       } catch (error) {
-        setBuildError(error instanceof Error ? error.message : "Build failed");
+        const message = error instanceof Error ? error.message : "Build failed";
+        setBuildError(message);
       } finally {
         setMaterializing(false);
       }
     },
-    [workspaceId, appId, bindingId, environment, timeoutMs, signal, materializing],
+    [
+      workspaceId,
+      appId,
+      bindingId,
+      environment,
+      timeoutMs,
+      signal,
+      materializing,
+    ],
   );
-
-  // Auto-prompt for dev/staging artifacts on first load
-  useEffect(() => {
-    if (shouldAutoPrompt && environment) {
-      // Only auto-build if the binding is configured for parquet materialization
-      if (binding?.materialization === "parquet") {
-        // Don't auto-build automatically; let the UI prompt the user
-        // This would be called explicitly via the UI component
-      }
-    }
-  }, [shouldAutoPrompt, environment, binding?.materialization]);
 
   return {
     status,
     materializing,
-    buildError,
+    buildError: buildError ?? polled?.error ?? artifact?.error ?? null,
     canBuild,
-    shouldAutoPrompt,
     buildArtifact,
   };
 }

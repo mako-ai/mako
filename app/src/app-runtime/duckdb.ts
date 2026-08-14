@@ -29,6 +29,13 @@ interface AppDuckDB {
 const instances = new Map<string, AppDuckDB>();
 const initializing = new Map<string, Promise<AppDuckDB>>();
 
+/**
+ * Revision prefix for a table loaded from a per-environment artifact. Marks
+ * the table as preview-env data so resetting the override can evict it when
+ * no prod artifact is available to reload in its place.
+ */
+export const ENV_ARTIFACT_REVISION_PREFIX = "dbt-env-artifact:";
+
 /** DuckDB-safe table name derived from a binding name. */
 export function bindingTableName(name: string): string {
   const safe = name.replace(/[^a-zA-Z0-9_]/g, "_");
@@ -166,32 +173,41 @@ export async function loadBindingRowsTable(
 }
 
 /**
- * Load a binding's table from an environment-specific Parquet artifact.
- * Used for dev/staging preview artifacts that were materialized on-demand.
- * Returns false if the artifact could not be loaded, true on success.
+ * Load a binding's table from a per-dbt-environment Parquet artifact (a
+ * dev/staging preview build) instead of the prod artifact. The revision
+ * encodes BOTH the environment and the artifact revision, so switching
+ * environments — or rebuilding this one — reloads the table, while a
+ * re-render with the same artifact is a no-op.
  */
 export async function loadEnvironmentArtifact(
   appId: string,
   binding: AppDataBinding,
   environment: string,
   artifactUrl: string,
-  _revision: string,
+  revision: string,
   signal?: AbortSignal,
 ): Promise<boolean> {
   const inst = await getInstance(appId);
   const table = bindingTableName(binding.name);
 
-  return loadTableSerialized(inst, table, `artifact:${environment}`, async () => {
-    const response = await fetch(artifactUrl, {
-      credentials: "include",
-      signal,
-    });
-    if (!response.ok || !response.body) {
-      throw new Error(`Failed to fetch parquet for "${binding.name}"`);
-    }
-    const buffer = await collectStreamBytes(response.body);
-    await loadParquetTable(inst.db, table, buffer);
-  });
+  return loadTableSerialized(
+    inst,
+    table,
+    `${ENV_ARTIFACT_REVISION_PREFIX}${environment}:${revision}`,
+    async () => {
+      const response = await fetch(artifactUrl, {
+        credentials: "include",
+        signal,
+      });
+      if (!response.ok || !response.body) {
+        throw new Error(
+          `Failed to fetch the "${environment}" parquet for "${binding.name}"`,
+        );
+      }
+      const buffer = await collectStreamBytes(response.body);
+      await loadParquetTable(inst.db, table, buffer);
+    },
+  );
 }
 
 /**
