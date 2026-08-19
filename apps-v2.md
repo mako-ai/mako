@@ -3,7 +3,7 @@
 > Git-backed filesystem, real shell, real builds, and open editing for Mako apps.
 
 - **Status:** Merged proposal (synthesis of this RFC and the parallel draft on `cursor/apps-v2-rfc-9359`); git substrate and workspace monorepo built (§10.1), local-first developer surface not started (§11.7)
-- **Read this first:** §11 states the current vision — why we are doing this (unit economics, not just ergonomics), the `main`-is-production monorepo model, the two open decisions, and the sequencing. §§1–9 remain accurate as design history; where §11 disagrees with §4.8's framing or §6's ordering, §11 wins.
+- **Read this first:** §11 states the current vision — why we are doing this (unit economics, not just ergonomics), the `main`-is-production monorepo model, the decided access model, the remaining open decision, and the sequencing. §§1–9 remain accurate as design history; where §11 disagrees with §4.8's framing or §6's ordering, §11 wins.
 - **Scope:** Apps module rework (storage, agent runtime, hosting, external editing). Touches: git infrastructure, sandbox execution, agent tools, app runtime/hosting, auth, desktop/local agent, MCP. **Apps v1 is not modified; v2 runs in parallel.**
 
 ## 0. Decision log (merged from both drafts)
@@ -37,7 +37,7 @@ Two RFCs were written independently against the same brief and then merged. Wher
 | **Workspace monorepo (radical simplification)** | ONE repo per workspace (the N-repo model + org/repo explorer tree dies); `dbt/`, `apps/`, `consoles/`, `skills/` are folders at the repo root and leave Mongo; branch state is **per-user-session** (not per-workspace — preserves branch-per-conversation), and switching it re-checkouts everything the session sees: explorer, open tabs, sandbox. Manual saves auto-commit (agent turns already do) — the Commit button and change-count badge die. Folder privacy remains organization-not-authorization (Mako's API is the ACL plane). Plan: §10. | User (2026-07-16) |
 | **Local-first is the strategy, not a feature (supersedes §4.8's framing)** | Reselling inference at API rates loses to the Claude Code / Codex subscriptions our users already hold: the same building hour costs us gateway tokens + E2B minutes + kernel time in the browser, and **zero marginal compute** in their terminal — with a better harness than we will ever staff. Mako repositions as the **data and deployment control plane, not an inference reseller**; the moat is credential-free warehouse access with real schema tools (over MCP) plus instant deploy/hosting, neither of which a clone gives you. The web tier is NOT replaced — E2B, the kernel and the gateway remain, serving non-technical seats and the on-ramp. **Pricing must move from token-shaped to seats/workspaces/deployments before local-first goes wide**, or the product gets better exactly as revenue evaporates (decision required, not yet made). Detail: §11.1–11.2. | User (2026-08-19) |
 | **`main` is production; the workspace repo is an app monorepo** | Target workflow: `git clone` the workspace repo → `mako` serves the UI at localhost:6969 → `claude` in the checkout is fully Mako-aware → commit, push, PR → **merging deploys**. Publishing stops being a concept separate from merging; conversation branches and human feature branches are the same kind of proposal. Per-PR preview deploys are desirable and explicitly NOT a blocker. Detail: §11.3–11.4. | User (2026-08-19) |
-| **Clone access vs. the ACL plane (OPEN)** | §10's "folders are organization, never authorization" was justified for the cloud tier by cloud users having no direct repo access — local-first hands them exactly that, so a clone is permanent offline read access to every app, console, skill and `users/<otherUserId>/` folder in the workspace. This is §8's original mega-repo objection coming due. Options: (a) accept and document, (b) clone as an explicit admin-granted capability, (c) split `users/<id>/` into per-user repos. **Proposed default (b); not decided.** Detail: §11.5. | Raised 2026-08-19 |
+| **Repo access is a builder tier, not a member right (DECIDED)** | Git is not a member interface. **Normal users never touch the repo** — they reach content only through Mako's API, which enforces per-app ACLs exactly as today, so their ACL plane is unchanged and airtight. Repo access is a distinct **builder tier**: an explicit per-workspace capability carrying workspace-wide read as an accepted, documented property (the trust model every company runs on its monorepo). **Read and write are separate boundaries**: clone = confidentiality, push-to-`main` = integrity — builders push branches freely, `main` is branch-protected, and GitHub branch protection becomes the deploy gate for free. Consequence: `users/<id>/` means "not cluttering the workspace view", NOT "confidential from builders" — product copy must stop promising privacy the substrate does not deliver; splitting personal content into per-user repos is the trigger-based later fix. Open sub-decision: how builders get access — GitHub collaborators via the Cloud Storage App (proposed for pilot) vs. a Mako git proxy (`api.mako.ai/git/<workspace>`, a partial return of §4.3). Today no human has ANY access to cloud repos, so this is net-new work either way. Detail: §11.5. | User (2026-08-19) |
 | **What `mako` runs locally (OPEN)** | Two readings of "the full Mako app at localhost:6969": a **thin local shell** (serves the UI, owns the local checkout, runs `vite dev`, proxies control plane + data execution to the cloud — materially `packages/desktop` + `packages/local-agent` minus Electron; ships in weeks, no new deployment target) versus a **full local stack** (API + database + Inngest + kernel on the laptop; true self-host, permanent second deployment target and support surface). **Proposed default: thin shell**, full stack only if self-hosting proves to be a sales requirement. Detail: §11.6. | Raised 2026-08-19 |
 | **Sequencing: cheap half first; `mako agent` deferred indefinitely** | Order: (1) scaffold `CLAUDE.md`/`.mcp.json` + §10 Block D1 `skills/` so `git clone && claude` is Mako-capable with no CLI at all — generated from the same source as `buildMakoSystemPromptAppend` to avoid drift; (2) **deploy on merge** (`publishedSha` is currently read but never written — no pipeline exists, so §11.4 is not yet true); (3) minimal `@mako/cli` (`login` + `dev` only); then Block D2 consoles + Block C branch state; then revisit §11.6. The **`mako agent` terminal harness (§4.8c) is deferred indefinitely** — building a competing harness with our tokens contradicts the reason for the work. Detail: §11.7–11.9. | User (2026-08-19) |
 
@@ -634,34 +634,68 @@ This is the model the RFC has been converging on since §10 ("merge to main =
 publish"); §11 states it as the product model rather than an implementation
 detail, and notes the piece that makes it true is missing today (§11.7).
 
-### 11.5 Open decision A — clone access vs. the ACL plane
+### 11.5 Repo access is a builder tier, not a member right (decided 2026-08-19)
 
 §10 committed to _"folders are organization, never authorization — Mako's API
 stays the ACL plane"_, and justified it for the cloud tier on the grounds that
 **cloud-tier users have no direct repo access, so Mako's ACL is airtight
-there.** §11.3 hands them exactly that access. The moment a builder clones
-`ws-<workspaceId>`, they hold every app, every console, every `skills/` file
-and every `users/<otherUserId>/` folder in the repo — permanently, offline, and
-outside any revocation we control. This is §8's original objection to the
-workspace mega-repo, arriving on schedule.
+there.** §11.3 hands exactly that access to anyone who clones: every app, every
+console, every `skills/` file and every `users/<otherUserId>/` folder,
+permanently, offline, and outside any revocation we control. This is §8's
+original objection to the workspace mega-repo, arriving on schedule.
 
-Options, in increasing order of cost:
+**Decision: git is not a member interface.** Normal users never touch the repo.
+They reach content only through Mako's API, which enforces per-app ACLs exactly
+as it does today — so for them the ACL plane is unchanged and airtight. Repo
+access is a distinct **builder tier**: an explicit capability, granted per
+workspace, that carries workspace-wide read as an accepted and documented
+property. This is the trust model every company already runs on its monorepo —
+engineers can read the whole thing — and it is a tier, not a per-object grant,
+which is what keeps it comprehensible.
 
-- **(a) Accept and document it.** The repo is the tenant; clone access means
-  workspace-wide read access. Fine for a small team; not fine for the first
-  customer whose `users/<id>/consoles/` holds something private.
-- **(b) Gate clone access.** Cloning is an explicit, admin-granted,
-  per-workspace capability, not a property of being a member. Personal folders
-  stay in the repo. Cheap, and probably right for a pilot.
-- **(c) Split personal content out.** `users/<userId>/` moves to a per-user
-  repo the workspace repo does not contain. Preserves the ACL story exactly,
-  costs a second repo per active user and breaks the "one clone has
-  everything" pitch that makes §11.3 nice.
+**Read and write are separate boundaries.** Clone is the confidentiality
+boundary; push to `main` is the integrity boundary. With `main` = production
+(§11.4) they decouple cleanly: builders clone and push branches freely, `main`
+is branch-protected, and merges land via review or via Mako's API (which can
+still enforce per-app publish rights). GitHub branch protection becomes the
+deploy gate at no cost.
 
-**Proposed default: (b) now, revisit (c) if personal content grows into
-something people actually keep secrets in.** Not yet decided.
+**Consequence — "personal" stops meaning "private".** §10 places
+`users/<userId>/consoles/` in the workspace repo. The builder tier protects
+normal users *from* git but not *in* it: a builder who clones reads every
+user's personal content, and that user never opted into the builder tier's
+trust model. Two honest resolutions:
 
-### 11.6 Open decision B — what `mako` actually runs locally
+- **Now (accepted):** `users/<id>/` means "not cluttering the workspace view",
+  not "confidential from builders". Product copy must say so — no UI may
+  promise privacy the substrate does not deliver.
+- **Later (trigger-based):** if personal content becomes somewhere people keep
+  secrets, `users/<id>/` moves to a per-user repo outside the workspace repo.
+  Costs a second repo per active user and weakens the "one clone has
+  everything" property that makes §11.3 attractive; do it only when the trigger
+  fires.
+
+**Open sub-decision — how builders actually get access.** Today *no human has
+any access to cloud repos at all*: `mako-ai-cloud` repos are touched only by
+Mako's installation token. Granting the builder tier is therefore net-new work,
+with a fork:
+
+- **(i) GitHub collaborators.** Mako adds/removes builders on the workspace
+  repo through the Cloud Storage App (already holds `administration:write` —
+  verify it covers the collaborator endpoints). Nearly free, and PR review
+  comes with it. Cost: builders need GitHub accounts, coupling workspace
+  membership to GitHub identity — the exact mismatch §0 flagged, though it is a
+  safe assumption for builders specifically, who are already using git.
+  Revocation must be wired to workspace membership removal.
+- **(ii) A Mako git proxy.** `git clone https://api.mako.ai/git/<workspace>`
+  authenticated by a Mako PAT, proxying to GitHub underneath. One identity
+  system, no GitHub account required, and a natural policy chokepoint — partly
+  a return of the smart-HTTP clone endpoint from §4.3 / §6 Phase 1.
+
+**Proposed: (i) for the pilot, (ii) as the escape hatch if the GitHub-account
+requirement bites.** Not yet decided.
+
+### 11.6 Open decision — what `mako` actually runs locally
 
 "`mako` starts the service and the full app appears at localhost:6969" admits
 two very different implementations:
@@ -706,6 +740,7 @@ The substrate is largely built. The local developer surface is close to zero.
 | **App SDK for data access from a local checkout**                                                                                                | ❌ no `@mako/app-sdk` package exists, though §5 and §6 Phase 3 both assume one                                                                                             |
 | Consoles in the repo (§10 Block D2)                                                                                                              | ❌ still Mongo `SavedConsole`                                                                                                                                              |
 | Per-session branch state (§10 Block C)                                                                                                           | ❌ not started                                                                                                                                                             |
+| **Human (builder) access to workspace repos**                                                                                                     | ❌ cloud repos are touched only by Mako's installation token — no human has any access. The builder tier of §11.5 is net-new: collaborator management or a git proxy, plus revocation wired to workspace membership |
 | dbt in the repo (§10 Block D3)                                                                                                                   | ❌ last; own RFC section                                                                                                                                                   |
 
 Net: **`git clone` works today; `claude` in that clone is Mako-blind; and a
