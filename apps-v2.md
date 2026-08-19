@@ -39,7 +39,7 @@ Two RFCs were written independently against the same brief and then merged. Wher
 | **`main` is production; the workspace repo is an app monorepo** | Target workflow: `git clone` the workspace repo → `mako` serves the UI at localhost:6969 → `claude` in the checkout is fully Mako-aware → commit, push, PR → **merging deploys**. Publishing stops being a concept separate from merging; conversation branches and human feature branches are the same kind of proposal. Per-PR preview deploys are desirable and explicitly NOT a blocker. Detail: §11.3–11.4. | User (2026-08-19) |
 | **Repo access is a builder tier, not a member right (DECIDED)** | Git is not a member interface. **Normal users never touch the repo** — they reach content only through Mako's API, which enforces per-app ACLs exactly as today, so their ACL plane is unchanged and airtight. Repo access is a distinct **builder tier**: an explicit per-workspace capability carrying workspace-wide read as an accepted, documented property (the trust model every company runs on its monorepo). **Read and write are separate boundaries**: clone = confidentiality, push-to-`main` = integrity — builders push branches freely, `main` is branch-protected, and GitHub branch protection becomes the deploy gate for free. Consequence: `users/<id>/` means "not cluttering the workspace view", NOT "confidential from builders" — product copy must stop promising privacy the substrate does not deliver; splitting personal content into per-user repos is the trigger-based later fix. Open sub-decision: how builders get access — GitHub collaborators via the Cloud Storage App (proposed for pilot) vs. a Mako git proxy (`api.mako.ai/git/<workspace>`, a partial return of §4.3). Today no human has ANY access to cloud repos, so this is net-new work either way. Detail: §11.5. | User (2026-08-19) |
 | **Repo layout stays owner-first; signal/noise is a checkout-scope problem** | Reconsidered and re-affirmed §10's layout: `apps/<slug>/`, `consoles/`, `skills/`, `dbt/` at the root, personal content under `users/<userId>/apps/…` and `users/<userId>/consoles/…`. Type-first (`apps/workspace/`, `apps/users/joan/`) rejected again — for a reason §10 did not state: **both access and noise are "exclude one subtree" operations**, so owner-first needs ONE rule where type-first needs one per content type, a list that grows with every new type and fails silently in the unsafe direction when someone forgets. Type-first wins only on uniform globbing — a cost paid once in code against a risk paid forever. **Layout alone does not fix noise: checkout scope does.** Sparse-checkout (nonexistent today) should default BOTH the builder's clone and the agent's sandbox to workspace content + the caller's own `users/<id>/`, with `CLAUDE.md` stating the scope. Converges with §11.5: if the per-user-repo trigger fires, the workspace repo becomes type-first by construction and the question dissolves — and owner-first `git subtree split`s cleanly into that end state where type-first would have to scatter-gather. Free to settle now: `users/<id>/` is unimplemented and nothing needs migrating. Detail: §11.10. | User (2026-08-19) |
-| **Prior art: git-as-truth is orthodox; the price is real-time co-editing** | Netlify/Vercel are a deploy layer on a repo GitHub already governs — they never own the store, so they never answer "who may clone", never bridge platform↔git identity, and have no personal-content-in-a-shared-repo concept; Mako's cloud tier inherits all three as the price of instant-start. They validate §11.4 wholesale (many projects per repo with base directories + build-skip, production branch → prod deploy, **PR previews as table stakes** — evidence against deferring them) and settle §7's secrets question (platform, not repo). Their template flow is the origin of §11.5 option (iii). **Retool and Hex mirror a document store to git — the two-sources-of-truth pattern §8 rejected.** Hex is the instructive counterexample: it cannot go git-native because **real-time multiplayer editing and commit-based history are in genuine tension**, so git-as-truth is a differentiation axis it cannot cross by shipping a feature — and the unstated price we accept is **async/branch collaboration instead of co-editing** (fine for code, an unremarked regression for notebook-shaped content; must be stated, not discovered). dbt Cloud remains our own strongest precedent. Detail: §11.11. | Research 2026-08-19 |
+| **Prior art (verified 2026-08-19): the differentiator is source-vs-serialized-state, not git-vs-no-git** | Netlify/Vercel are a deploy layer on a repo GitHub already governs — never owning the store, they never answer "who may clone", never bridge platform↔git identity, and have no personal-content-in-a-shared-repo concept; our cloud tier inherits all three as the price of instant-start. They validate §11.4 wholesale (many projects per repo with base directories + build-skip, production branch → prod deploy, **PR previews as table stakes** — evidence against deferring them), and their template flow is the origin of §11.5 option (iii). **Correction to an earlier draft:** Retool/Hex/Appsmith are NOT simply "a mirror". Retool Source Control has real git feature branching and PR-gated main-is-prod, serializing apps to **ToolScript** (`.rsx`, JSX-style, replaced YAML for readability) — but *"Retool recommends you not modify Toolscript files directly"*, no linting or type-checking: **reviewable by design, not authorable**. Hex Git export is **one-way only** (Hex is source of truth; manual YAML re-import exists but is not a sync) and is **incompatible with branch protection**. Appsmith (open source) keeps the **database authoritative** with one server-side mirror clone. So the real differentiator is **what the repo contains**: their serialized GUI state vs. our actual source (a real Vite/React app, real `.sql`), which is exactly why Claude Code works on a Mako repo and cannot work on a `.rsx`. Also corrected: multiplayer and git are NOT inherently in tension (Retool/Appsmith have both) — the trade is resolved by **whoever holds truth**, and git-authoritative costs us real-time co-editing, which must be stated rather than discovered. Lessons stolen: Appsmith's git-ops-too-slow→timeout→corruption and metadata-churn warnings; Hex's branch-protection incompatibility (our publish must go THROUGH a PR, never around it); secrets in the DB not the repo (consensus, settles §7). Detail: §11.11. | Verified research 2026-08-19 |
 | **What `mako` runs locally (OPEN)** | Two readings of "the full Mako app at localhost:6969": a **thin local shell** (serves the UI, owns the local checkout, runs `vite dev`, proxies control plane + data execution to the cloud — materially `packages/desktop` + `packages/local-agent` minus Electron; ships in weeks, no new deployment target) versus a **full local stack** (API + database + Inngest + kernel on the laptop; true self-host, permanent second deployment target and support surface). **Proposed default: thin shell**, full stack only if self-hosting proves to be a sales requirement. Detail: §11.6. | Raised 2026-08-19 |
 | **Sequencing: cheap half first; `mako agent` deferred indefinitely** | Order: (1) scaffold `CLAUDE.md`/`.mcp.json` + §10 Block D1 `skills/` so `git clone && claude` is Mako-capable with no CLI at all — generated from the same source as `buildMakoSystemPromptAppend` to avoid drift; (2) **deploy on merge** (`publishedSha` is currently read but never written — no pipeline exists, so §11.4 is not yet true); (3) minimal `@mako/cli` (`login` + `dev` only); then Block D2 consoles + Block C branch state; then revisit §11.6. The **`mako agent` terminal harness (§4.8c) is deferred indefinitely** — building a competing harness with our tokens contradicts the reason for the work. Detail: §11.7–11.9. | User (2026-08-19) |
 
@@ -889,30 +889,74 @@ IDE, scheduler, and credentials. §1.3 already cites the dbt module as proof the
 model works for us; it remains the strongest precedent because we have operated
 it.
 
-**Retool and Hex — the rejected pattern, and the counterexample that matters.**
-Both keep projects in their own database and *mirror* to git (Retool source
-control; Hex's GitHub sync exporting projects as YAML) — two sources of truth,
-which §8 rejected. Hex is the closer analog and the more instructive one: a Hex
-project is a notebook of SQL/Python/no-code cells that publishes as an
-interactive data app, versioned by a bespoke draft/published/named-version
-system that is §1.3's complaint built by someone else.
+**Retool, Hex, Appsmith — verified against their docs, 2026-08-19.** An earlier
+draft of this section called these "a mirror, the pattern §8 rejected." That
+under-credited them, and worse, it put the differentiator in the wrong place.
+Corrected:
 
-The reason Hex has not gone git-native is the finding: **real-time multiplayer
-editing and commit-based history are in genuine tension.** Hex leads with
-Google-Docs-style co-editing, and a document store is what that wants. This
-cuts both ways for us:
+- **Retool Source Control** is genuinely git-native: feature branching across
+  Apps, Modules, Resources, Workflows and the Query Library, with the flow
+  branch-in-git → sync into Retool → edit → commits to the feature branch → PR
+  → merge to main → Retool syncs from main. That is `main`-is-prod with PR
+  gating, for real. Apps serialize to **ToolScript** (`.rsx`), a JSX-style
+  markup that explicitly replaced an earlier YAML format for readability, plus
+  autogenerated JSON dotfiles (`.defaults.json`, `.positions`). The decisive
+  line: *"Retool recommends you not modify Toolscript files directly and only
+  make changes when resolving merge conflicts"* — there is no linting or
+  type-checking for `.rsx`. Reviewable, deliberately not authorable.
+- **Hex Git export** is **one-way only** (Hex → git); Hex is explicitly the
+  source of truth. YAML can be manually re-imported as a new project or a new
+  version, but that is a manual round-trip, not a sync. Publishing creates a
+  merge commit on the publish branch. Note for us: it is **incompatible with
+  repositories using branch protection** — the repo must allow merging without
+  review. (Hex's marketing blog describes a two-way, PR-gated model the docs do
+  not support; check which one anyone citing it means.)
+- **Appsmith** is open source, so the internals are public and worth reading:
+  the **database stays authoritative** and the server keeps a local git repo
+  mirroring it — `[web client] — [Appsmith server] — [remote]`, one server-side
+  clone rather than per-user clones.
 
-- *Evidence for the bet.* Hex structurally cannot offer a local clone, Claude
-  Code against your own project, a real PR, or a real diff without unwinding
-  its collaboration model. Git-as-truth is a differentiation axis the closest
-  competitor cannot cross by shipping a feature.
-- *The unstated price.* Choosing git chooses **async, branch-based
-  collaboration over real-time co-editing**. §10's one-branch-per-user-session
-  model already commits to this — two people do not co-edit
-  `apps/foo/src/App.tsx`, they branch and merge. Correct for code; an
-  unremarked-on regression for anything notebook-shaped, where side-by-side
-  editing is the expectation. **This should be a stated trade, not a discovery
-  during a customer call.**
+**The differentiator is not "we use git and they don't."** All three use git,
+with branches, PRs, and main-is-production. It is **what the repo contains**:
+
+- *Them:* a serialized representation of GUI-authored state (YAML, `.rsx` +
+  JSON, JSON) — reviewable by design, explicitly not authorable. Hex will not
+  take your edits back, Retool tells you not to make them, Appsmith's database
+  remains the truth.
+- *Us:* **actual source** — a real Vite/React app, real `.sql` files — with git
+  as the only store. That is precisely what makes §11.3 possible: Claude Code
+  works on a Mako repo because it is a React app, and cannot productively work
+  on a `.rsx` file the vendor tells you not to edit.
+
+**The collaboration trade, restated correctly.** An earlier draft claimed
+multiplayer editing and git are in tension. Retool and Appsmith have both, so
+that is wrong as stated. The tension is resolved by **whoever holds truth**:
+database-authoritative buys real-time co-editing and git-as-export;
+git-authoritative buys real source, branches and local checkouts, and costs
+real-time co-editing. §10's one-branch-per-user-session model commits us to the
+second — correct for code, an unremarked-on regression for anything
+notebook-shaped, where side-by-side editing is the expectation. **A stated
+trade, not a discovery during a customer call.**
+
+**Two operational lessons worth stealing.**
+
+- *Appsmith on performance:* early git operations were "simply too slow, which
+  caused the Appsmith client to time out," leading to corruption. They
+  recovered ~4x by skipping components unchanged since the last commit and
+  moving non-user-facing metadata into separate ignorable files. Their still-
+  unresolved problem — version upgrades churning metadata and polluting user
+  commits — is a direct warning about `mako.json` and any generated file we
+  commit. Our architecture already avoids the worst of this (the sandbox runs
+  git, the API is stateless, commits are per-turn), but the metadata-churn
+  lesson transfers intact.
+- *Hex on branch protection:* their publish path cannot coexist with protected
+  branches. §11.5 leans on branch protection as the deploy gate, so our publish
+  must go **through** a PR/merge that respects protection, never around it. If
+  we ever find ourselves needing an unprotected branch to publish, we have
+  rebuilt Hex's constraint.
+- *All three on secrets:* configuration in committed files, encrypted secrets
+  only in the platform database, never in the repo. That is consensus, and it
+  settles §7's open question.
 
 **Gap this surfaced: notebooks have no repo home.** §10's layout is `apps/`,
 `consoles/`, `skills/`, `dbt/`. Notebooks are absent from this RFC entirely,
@@ -923,3 +967,12 @@ land in git — path convention, and whether outputs are committed or stripped
 (committed outputs make diffs unreadable and repos heavy; stripped outputs make
 a clone non-reproducible without a kernel run). Needs its own decision under
 §10 Block D alongside `consoles/`.
+
+**Sources (fetched 2026-08-19).**
+[Hex Git export](https://learn.hex.tech/docs/explore-data/projects/git-export) ·
+[Hex import/export](https://learn.hex.tech/docs/explore-data/projects/import-export) ·
+[Hex GitHub sync (blog)](https://hex.tech/blog/github-sync/) ·
+[Retool Source Control](https://docs.retool.com/source-control/) ·
+[Retool ToolScript](https://docs.retool.com/source-control/concepts/toolscript) ·
+[Retool git branching (blog)](https://retool.com/blog/git-branching-with-source-control) ·
+[Appsmith git internals](https://www.appsmith.com/blog/appsmith-git-internal-tools-2)
