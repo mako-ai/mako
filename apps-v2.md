@@ -2,7 +2,8 @@
 
 > Git-backed filesystem, real shell, real builds, and open editing for Mako apps.
 
-- **Status:** Merged proposal (synthesis of this RFC and the parallel draft on `cursor/apps-v2-rfc-9359`); foundation under implementation as a parallel v2 module
+- **Status:** Merged proposal (synthesis of this RFC and the parallel draft on `cursor/apps-v2-rfc-9359`); git substrate and workspace monorepo built (§10.1), local-first developer surface not started (§11.7)
+- **Read this first:** §11 states the current vision — why we are doing this (unit economics, not just ergonomics), the `main`-is-production monorepo model, the two open decisions, and the sequencing. §§1–9 remain accurate as design history; where §11 disagrees with §4.8's framing or §6's ordering, §11 wins.
 - **Scope:** Apps module rework (storage, agent runtime, hosting, external editing). Touches: git infrastructure, sandbox execution, agent tools, app runtime/hosting, auth, desktop/local agent, MCP. **Apps v1 is not modified; v2 runs in parallel.**
 
 ## 0. Decision log (merged from both drafts)
@@ -34,6 +35,11 @@ Two RFCs were written independently against the same brief and then merged. Wher
 | **Data bindings v2 (bindings-as-files) — Phase 1 BUILT** | A v2 binding is repo content: `mako.json` declares `bindings: [{name, connectionId}]`, the SQL lives in `bindings/<name>.sql` — authored with the ordinary file tools, versioned/branchable with the app, no bespoke CRUD. Materialization reuses v1's read-only-enforced parquet pipeline (`buildQueryParquetFile` + artifact store), artifacts keyed `apps-v2/<projectId>/<name>.parquet`, via `POST /{id}/bindings/{name}/materialize`. The preview runtime serves `__data/<name>.parquet` app-relative (resolves under the token prefix in both static and dev previews), so app code fetches a relative URL and reads it with DuckDB-WASM — v1's useRows pattern ports with a URL change. Next: `app2_materialize` agent tool (+ bridge-policy entry), scheduled refresh, dbt-schema templating (`{{ dbt_schema }}`), live (non-parquet) bindings. | User (2026-07-15), unblocking the v1→v2 Engagement Score port |
 | **Mako Cloud storage (instant start) — BUILT** | Org **`mako-ai-cloud`** (github.com/mako-ai-cloud; "mako-cloud" was squatted) + private GitHub App **"Mako Cloud Storage"** (id 4300530, slug `mako-cloud-storage`, `administration:write` + `contents:write` + `metadata:read`), installed once org-wide (all current+future repos). **No per-user install flow exists on this path at all** — the entire setup-callback/stale-installation/wrong-slug bug class only applies to BYO repos. One org + one app serves every environment; repo names are namespaced per backing DB: `<prefix>-<workspaceId>-<projectId>` with prefix `ws` (prod) / `staging` (all PR previews) / `dev` (local). **One repo per app project** — mirrors the local one-bare-repo-per-project layout 1:1, so durability is a literal `git push --mirror` (auth via installation token in an HTTP header, never in the URL). Implemented: `cloud-app-auth.ts` (JWT + runtime-resolved installation id — private app ⇒ only possible install is the owner org), `cloud-repo.service.ts` (idempotent ensure-repo on app creation, delete-on-app-delete, per-project serialized+coalesced mirror pushes after commit/turn-commit/merge — not per WIP flush, too chatty), `canCreate` probe field (creation allowed = BYO binding ∨ cloud configured; the 409 link-first gate is gone). WIP refs may be pushed to cloud repos (we own the remote — the never-push-WIP-to-customer-remotes rule is BYO-only). E2E-verified 2026-07-15: create-app with no binding → private repo + scaffold on GitHub; commit → mirror lands the exact commit; delete app → repo deleted. | User's plan (2026-07-15), implemented same day |
 | **Workspace monorepo (radical simplification)** | ONE repo per workspace (the N-repo model + org/repo explorer tree dies); `dbt/`, `apps/`, `consoles/`, `skills/` are folders at the repo root and leave Mongo; branch state is **per-user-session** (not per-workspace — preserves branch-per-conversation), and switching it re-checkouts everything the session sees: explorer, open tabs, sandbox. Manual saves auto-commit (agent turns already do) — the Commit button and change-count badge die. Folder privacy remains organization-not-authorization (Mako's API is the ACL plane). Plan: §10. | User (2026-07-16) |
+| **Local-first is the strategy, not a feature (supersedes §4.8's framing)** | Reselling inference at API rates loses to the Claude Code / Codex subscriptions our users already hold: the same building hour costs us gateway tokens + E2B minutes + kernel time in the browser, and **zero marginal compute** in their terminal — with a better harness than we will ever staff. Mako repositions as the **data and deployment control plane, not an inference reseller**; the moat is credential-free warehouse access with real schema tools (over MCP) plus instant deploy/hosting, neither of which a clone gives you. The web tier is NOT replaced — E2B, the kernel and the gateway remain, serving non-technical seats and the on-ramp. **Pricing must move from token-shaped to seats/workspaces/deployments before local-first goes wide**, or the product gets better exactly as revenue evaporates (decision required, not yet made). Detail: §11.1–11.2. | User (2026-08-19) |
+| **`main` is production; the workspace repo is an app monorepo** | Target workflow: `git clone` the workspace repo → `mako` serves the UI at localhost:6969 → `claude` in the checkout is fully Mako-aware → commit, push, PR → **merging deploys**. Publishing stops being a concept separate from merging; conversation branches and human feature branches are the same kind of proposal. Per-PR preview deploys are desirable and explicitly NOT a blocker. Detail: §11.3–11.4. | User (2026-08-19) |
+| **Clone access vs. the ACL plane (OPEN)** | §10's "folders are organization, never authorization" was justified for the cloud tier by cloud users having no direct repo access — local-first hands them exactly that, so a clone is permanent offline read access to every app, console, skill and `users/<otherUserId>/` folder in the workspace. This is §8's original mega-repo objection coming due. Options: (a) accept and document, (b) clone as an explicit admin-granted capability, (c) split `users/<id>/` into per-user repos. **Proposed default (b); not decided.** Detail: §11.5. | Raised 2026-08-19 |
+| **What `mako` runs locally (OPEN)** | Two readings of "the full Mako app at localhost:6969": a **thin local shell** (serves the UI, owns the local checkout, runs `vite dev`, proxies control plane + data execution to the cloud — materially `packages/desktop` + `packages/local-agent` minus Electron; ships in weeks, no new deployment target) versus a **full local stack** (API + database + Inngest + kernel on the laptop; true self-host, permanent second deployment target and support surface). **Proposed default: thin shell**, full stack only if self-hosting proves to be a sales requirement. Detail: §11.6. | Raised 2026-08-19 |
+| **Sequencing: cheap half first; `mako agent` deferred indefinitely** | Order: (1) scaffold `CLAUDE.md`/`.mcp.json` + §10 Block D1 `skills/` so `git clone && claude` is Mako-capable with no CLI at all — generated from the same source as `buildMakoSystemPromptAppend` to avoid drift; (2) **deploy on merge** (`publishedSha` is currently read but never written — no pipeline exists, so §11.4 is not yet true); (3) minimal `@mako/cli` (`login` + `dev` only); then Block D2 consoles + Block C branch state; then revisit §11.6. The **`mako agent` terminal harness (§4.8c) is deferred indefinitely** — building a competing harness with our tokens contradicts the reason for the work. Detail: §11.7–11.9. | User (2026-08-19) |
 
 ---
 
@@ -256,6 +262,8 @@ This answers "if the app installs packages, how do we host it": packages are res
 
 ### 4.8 External harnesses & local workflow
 
+> **Framing superseded by §11.** This section treats external harnesses as one surface among several; §11.1 promotes them to the strategically primary surface for technical users, and §11.8 reorders what gets built. The mechanics below (MCP server, local clone flow, auth staging, desktop local-first) remain correct — but note that `mako agent` (c) is now **deferred indefinitely** per §11.9, and that the repo scaffold promised in (b) is still unbuilt (§11.7), which is exactly what §11.8 step 1 fixes.
+
 **(a) Mako MCP server** (net new — today we are MCP *client* only, `api/src/services/mcp-client.service.ts`). A streamable-HTTP MCP endpoint at `/api/mcp`, authenticated by API key / PAT, exposing: schema discovery (`sql_list_tables`, `sql_inspect_table`, ...), query execution (row-capped), binding validation/materialization, `publish_app`, and docs/skills lookup. This makes Claude Desktop / Claude Code / Codex / Cursor first-class Mako citizens with USP #1 intact. Implementation is thin: the tools already exist as server tool impls; we're adding a protocol adapter and an auth path.
 
 **(b) Local clone + Claude Code.** The flow the user described — no Mako app open at all:
@@ -308,6 +316,8 @@ An Inngest function (same pattern as `dbt-run.ts` / `app-binding-materialize.ts`
 - **Kept:** `MakoApp` doc slims down to metadata + sharing + publish pointer (`repoPath`, `publishedSha`, `publicShare`, ACLs) — sharing and ACLs are workspace concerns and stay in Mongo; execute/materialization/public-share services; `@mako/app-sdk` API surface.
 
 ## 6. Phasing
+
+> **Phases 4–5 reordered by §11.8.** Phases 1–3 describe what was built (see §10.1 for actual status). The open-editing work in Phase 4 is now split: repo-resident agent instructions + `skills/` come FIRST (they need no CLI at all), deploy-on-merge second, and the `mako` CLI shrinks to `login` + `dev`. `mako agent` moves out of Phase 4 entirely (§11.9).
 
 Everything lands as a **parallel v2 module**: `api/src/apps-v2/**`, new Mongo collections (`app_projects_v2`, `app_worktrees_v2`, later `app_deployments_v2`), new routes (`/api/workspaces/:id/apps-v2/...`), and new agent tools (`app2_*`). No v1 route, schema, tool, or renderer is modified; v1 and v2 apps coexist until per-app migration.
 
@@ -517,3 +527,233 @@ Block B substrate design (execution spec for the remaining slices):
 Execution order (each lands green): repository.service →
 cloud-repo.service → worktree.service (+scaffold) → routes/tools/bindings →
 preview/dev-server → store/explorer → migration script → tests.
+
+---
+
+## 11. Local-first: unit economics, the monorepo, and the developer surface (2026-08-19)
+
+> Relationship to the rest of this RFC: §10 (workspace monorepo) is the
+> substrate this section stands on and is unchanged. §11 **supersedes the
+> framing of §4.8** (external harnesses were "a surface we should also have";
+> they are now the strategically primary surface for technical users) and
+> **reorders §6 Phases 4–5**. It also reopens one line in §8: the alternative
+> "one repo per workspace" was rejected there because _"clone access = read
+> access to all objects"_ — §10 reversed the topology, and §11.5 is where that
+> objection comes due.
+
+### 11.1 Why — the third reason, stated properly
+
+Three arguments carry this work. Two are already in §1 and settled:
+
+1. **Don't reinvent version control.** A file tree, versions, diffs, conflict
+   resolution, and change descriptions are what git _is_. We built each of them
+   badly on top of Mongo, twice (§1.3).
+2. **Agents work best with a filesystem, a shell, and a sandbox.** The Claude
+   Code / Codex / Cursor result is unambiguous: the same model is dramatically
+   more effective when it can compose unix tools instead of waiting for us to
+   ship bespoke ones (§1.1).
+
+The third is a different kind of claim — not about product quality, about the
+business — and it is the one that should drive sequencing:
+
+3. **Reselling inference is a losing position.** Mako-web usage costs us
+   gateway tokens at API rates, E2B sandbox minutes, notebook kernel time, and
+   the maintenance of our own harness. The same user, in their own terminal,
+   against a Claude Code or Codex subscription they already pay for, costs us
+   **zero marginal compute** — and gets a better harness than we will ever
+   staff. Every hour of serious building we move from our tokens to theirs
+   improves gross margin and product quality _at the same time_. That is a rare
+   alignment and we should lean into it hard.
+
+The synthesis: **Mako is the data and deployment control plane, not an
+inference reseller.** We stop competing with Claude Code and start being the
+thing that makes Claude Code useful against a company's warehouse.
+
+### 11.2 What Mako sells when the harness is BYO
+
+If the user brings their own agent and their own machine, the value has to be
+somewhere we cannot be cloned out of. It is, and it is the same pair §1 already
+named as the USP — this section just promotes them from "must not lose" to
+"the entire basis of the business":
+
+- **Credential-free data access with real schema tools.** Connections,
+  `sql_list_tables` / `sql_inspect_table` / query execution, bindings and
+  materialization — over MCP, authenticated, row-capped, with warehouse
+  credentials never leaving our backend. A local clone gets you the code; it
+  does not get you the data. This is the moat.
+- **Instant deploy and hosting.** Merge and it is live, shareable, and
+  scheduled. No Vercel account, no CI, no DNS.
+- **The web tier itself.** Non-technical users never clone anything. The
+  browser app, with our sandbox and our harness, remains the on-ramp and for
+  most seats the only surface. Local-first is a **second tier, not a
+  replacement** — E2B, the kernel, and the gateway do not go away.
+
+**Pricing consequence (decision required, not yet made).** If serious usage
+moves to BYO harnesses, revenue cannot be token-shaped or it evaporates exactly
+as the product gets better. Pricing must move to seats / workspaces /
+deployments / connected data volume before local-first goes wide. Shipping the
+local path on token-based pricing is how this becomes a very elegant way to
+lose money.
+
+### 11.3 The target workflow
+
+The builder-facing story, end to end, with no Mako tab open until the last step:
+
+```bash
+git clone https://github.com/<org>/ws-<workspaceId>.git acme && cd acme
+mako                  # serves the full Mako UI at http://localhost:6969
+claude                # sees CLAUDE.md, .mcp.json, skills/ — fully Mako-aware
+# ...build apps and consoles locally, with real workspace data...
+git commit && git push && gh pr create
+```
+
+Merging the PR deploys. Everyone else opens the web app and the change is
+simply there. If the PR is open rather than merged, a cloud preview deploy is
+_nice to have, explicitly not a blocker_.
+
+The load-bearing property is that **`claude` in a fresh clone is immediately as
+capable as Mako's own chat** — same skills, same data tools, same conventions.
+It gets there via the MCP server (already built) plus repo-resident
+instructions (not built; §11.7).
+
+### 11.4 `main` is production
+
+The workspace repo behaves like an ordinary application monorepo containing
+many apps:
+
+- **`main` is the production deployment.** The deployed state of every app is
+  whatever `main` holds. Publishing is not a separate concept from merging.
+- **Branches are proposals.** A conversation branch (`chat/<chatId>`) and a
+  human's feature branch are the same kind of thing; both merge to `main` to go
+  live. §10's per-session branch model (Block C) already matches this.
+- **A PR is the review surface** for anyone who wants one. Mako's in-app
+  "publish" button and `gh pr merge` are two doors onto the same mechanism.
+- **Preview deploys per PR** are the natural extension and are deferred.
+
+This is the model the RFC has been converging on since §10 ("merge to main =
+publish"); §11 states it as the product model rather than an implementation
+detail, and notes the piece that makes it true is missing today (§11.7).
+
+### 11.5 Open decision A — clone access vs. the ACL plane
+
+§10 committed to _"folders are organization, never authorization — Mako's API
+stays the ACL plane"_, and justified it for the cloud tier on the grounds that
+**cloud-tier users have no direct repo access, so Mako's ACL is airtight
+there.** §11.3 hands them exactly that access. The moment a builder clones
+`ws-<workspaceId>`, they hold every app, every console, every `skills/` file
+and every `users/<otherUserId>/` folder in the repo — permanently, offline, and
+outside any revocation we control. This is §8's original objection to the
+workspace mega-repo, arriving on schedule.
+
+Options, in increasing order of cost:
+
+- **(a) Accept and document it.** The repo is the tenant; clone access means
+  workspace-wide read access. Fine for a small team; not fine for the first
+  customer whose `users/<id>/consoles/` holds something private.
+- **(b) Gate clone access.** Cloning is an explicit, admin-granted,
+  per-workspace capability, not a property of being a member. Personal folders
+  stay in the repo. Cheap, and probably right for a pilot.
+- **(c) Split personal content out.** `users/<userId>/` moves to a per-user
+  repo the workspace repo does not contain. Preserves the ACL story exactly,
+  costs a second repo per active user and breaks the "one clone has
+  everything" pitch that makes §11.3 nice.
+
+**Proposed default: (b) now, revisit (c) if personal content grows into
+something people actually keep secrets in.** Not yet decided.
+
+### 11.6 Open decision B — what `mako` actually runs locally
+
+"`mako` starts the service and the full app appears at localhost:6969" admits
+two very different implementations:
+
+- **Thin local shell (recommended).** `mako` serves the web UI, reads and
+  writes the local checkout, runs `vite dev` for previews, and **proxies the
+  control plane and all data execution to the cloud API**. Auth is the existing
+  API-key / OAuth path. Warehouse credentials still never reach the machine.
+  This is materially what `packages/desktop` + `packages/local-agent` already
+  are, minus Electron — including the local-agent's existing loopback/CORS
+  trust model and its ACP bridge. Ships in weeks; adds no new deployment
+  target.
+- **Full local stack.** `mako` stands up the API, its database (Mongo today,
+  Postgres per §0's end-state), Inngest, and a kernel. True offline capability
+  and a genuine self-host story, at the cost of a permanent second deployment
+  target, a local migration story, and a support surface we have never carried.
+
+**Proposed default: the thin shell**, with the full stack revisited only if
+self-hosting turns out to be a sales requirement rather than a preference. The
+thin shell also degrades honestly: everything works offline except data queries
+and deploys, which is exactly the boundary §4.8(d) already drew for desktop
+local-first sessions.
+
+### 11.7 Gap analysis (2026-08-19)
+
+The substrate is largely built. The local developer surface is close to zero.
+
+| Capability                                                                                                                                       | State                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workspace = one git repo; apps are `apps/<slug>/` folders                                                                                        | ✅ §10 Block B, built                                                                                                                                                      |
+| Every save is a commit; no dirty/uncommitted UI state                                                                                            | ✅ §10 Block A, built                                                                                                                                                      |
+| Cloud storage (`mako-ai-cloud` org + GitHub App) and BYO repo linking                                                                            | ✅ built                                                                                                                                                                   |
+| Real sandbox with shell, git, pnpm; `app2_*` tools over a real filesystem                                                                        | ✅ built                                                                                                                                                                   |
+| Bindings as files (`bindings/*.sql` + `mako.json`)                                                                                               | ✅ Phase 1 built (§9)                                                                                                                                                      |
+| MCP server — `POST /api/mcp`, OAuth 2.1 + scoped workspace API keys                                                                              | ✅ built                                                                                                                                                                   |
+| Local Claude Code / Codex over ACP, auto-wired to Mako MCP with a generated system prompt (`packages/local-agent/src/acp/mako-system-append.ts`) | ✅ built — **the sleeper asset; §11.8 step 1 is mostly a retargeting of this**                                                                                             |
+| Merge a branch into `main` (`POST /{id}/merge`)                                                                                                  | ✅ built                                                                                                                                                                   |
+| **Deploy on merge to `main`**                                                                                                                    | ❌ `publishedSha` is exposed on reads and **never written**; no pipeline. Previews are token-gated sandbox builds, not durable deployments                                 |
+| **Repo-resident agent instructions** (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`)                                                                     | ❌ `api/src/apps-v2/scaffold.ts` writes only `package.json`, `mako.json`, `index.html`, `vite.config.ts`, `tsconfig.json`. A fresh clone tells `claude` nothing about Mako |
+| **Skills in the repo** (§10 Block D1)                                                                                                            | ❌ system skills live in the API image (`api/src/agent-skills/`)                                                                                                           |
+| **`mako` CLI / npm package**                                                                                                                     | ❌ does not exist. The `mako-agent` bin in `packages/local-agent` is the local-database daemon + ACP bridge — a different product                                          |
+| **App SDK for data access from a local checkout**                                                                                                | ❌ no `@mako/app-sdk` package exists, though §5 and §6 Phase 3 both assume one                                                                                             |
+| Consoles in the repo (§10 Block D2)                                                                                                              | ❌ still Mongo `SavedConsole`                                                                                                                                              |
+| Per-session branch state (§10 Block C)                                                                                                           | ❌ not started                                                                                                                                                             |
+| dbt in the repo (§10 Block D3)                                                                                                                   | ❌ last; own RFC section                                                                                                                                                   |
+
+Net: **`git clone` works today; `claude` in that clone is Mako-blind; and a
+merged PR deploys nothing.** Those are the three gaps between here and §11.3.
+
+### 11.8 Revised sequencing
+
+The vision splits into a cheap half and an expensive half, and the cheap half
+delivers nearly all of §11.1. Do the cheap half first, and let real usage
+decide whether the expensive half is wanted.
+
+**Step 1 — make `git clone && claude` work, with no CLI at all.**
+Scaffold `CLAUDE.md` + `.mcp.json` into the workspace repo and land §10 Block D1
+(`skills/` in the repo). Generate the repo's `CLAUDE.md` from the same source as
+`buildMakoSystemPromptAppend` so there is one place to maintain "how to be good
+at Mako" rather than two that drift. Nothing else is required: the MCP server
+already exposes the data tools and already authenticates.
+_Acceptance test:_ clone the workspace repo on a laptop with no Mako tab open,
+run `claude`, add a chart backed by real workspace data to an existing app,
+commit, push — and see it in the web app. That single test proves §11.1 end to
+end.
+
+**Step 2 — deploy on merge to `main`.**
+Write `publishedSha`, build from it, serve it durably. Without this, §11.4 is
+aspirational and the monorepo model does not actually exist. PR preview deploys
+remain deferred.
+
+**Step 3 — minimal `@mako/cli`: `login` + `dev`.**
+Auth (device flow or pasted API key) and a dev server that proxies bindings and
+queries to the cloud execute API, so a local checkout renders with real data.
+This is what makes local editing _useful_ rather than merely possible. Not the
+full `mako` UI server yet — that is §11.6 and waits for the decision.
+
+**Then** §10 Block D2 (consoles into the repo) and Block C (per-session branch
+state), which together make the local checkout contain the _whole_ workspace
+rather than only its apps.
+
+**Only after that**, revisit `mako` as a local UI server (§11.6). By then we
+will know from real usage whether people want the entire app locally or just
+their editor plus a browser tab pointed at the cloud.
+
+### 11.9 What this defers, and why
+
+- **`mako agent` (the terminal harness, §4.8c) is deferred indefinitely.**
+  §11.1's third argument says users already pay for a harness that is better
+  than ours. Spending our tokens to build a competing one contradicts the
+  reason we are doing this work at all. Revisit only if MCP-over-BYO-harness
+  proves materially worse in practice.
+- **PR preview deploys** — desirable, explicitly not a blocker for §11.3.
+- **Full local stack** (§11.6) — pending evidence of demand.
+- **Scheduled jobs from `mako.json`** (§4.9) — unchanged, still post-D2.
