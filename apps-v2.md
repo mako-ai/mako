@@ -39,6 +39,7 @@ Two RFCs were written independently against the same brief and then merged. Wher
 | **`main` is production; the workspace repo is an app monorepo** | Target workflow: `git clone` the workspace repo → `mako` serves the UI at localhost:6969 → `claude` in the checkout is fully Mako-aware → commit, push, PR → **merging deploys**. Publishing stops being a concept separate from merging; conversation branches and human feature branches are the same kind of proposal. Per-PR preview deploys are desirable and explicitly NOT a blocker. Detail: §11.3–11.4. | User (2026-08-19) |
 | **Repo access is a builder tier, not a member right (DECIDED)** | Git is not a member interface. **Normal users never touch the repo** — they reach content only through Mako's API, which enforces per-app ACLs exactly as today, so their ACL plane is unchanged and airtight. Repo access is a distinct **builder tier**: an explicit per-workspace capability carrying workspace-wide read as an accepted, documented property (the trust model every company runs on its monorepo). **Read and write are separate boundaries**: clone = confidentiality, push-to-`main` = integrity — builders push branches freely, `main` is branch-protected, and GitHub branch protection becomes the deploy gate for free. Consequence: `users/<id>/` means "not cluttering the workspace view", NOT "confidential from builders" — product copy must stop promising privacy the substrate does not deliver; splitting personal content into per-user repos is the trigger-based later fix. Open sub-decision: how builders get access — GitHub collaborators via the Cloud Storage App (proposed for pilot) vs. a Mako git proxy (`api.mako.ai/git/<workspace>`, a partial return of §4.3). Today no human has ANY access to cloud repos, so this is net-new work either way. Detail: §11.5. | User (2026-08-19) |
 | **Repo layout stays owner-first; signal/noise is a checkout-scope problem** | Reconsidered and re-affirmed §10's layout: `apps/<slug>/`, `consoles/`, `skills/`, `dbt/` at the root, personal content under `users/<userId>/apps/…` and `users/<userId>/consoles/…`. Type-first (`apps/workspace/`, `apps/users/joan/`) rejected again — for a reason §10 did not state: **both access and noise are "exclude one subtree" operations**, so owner-first needs ONE rule where type-first needs one per content type, a list that grows with every new type and fails silently in the unsafe direction when someone forgets. Type-first wins only on uniform globbing — a cost paid once in code against a risk paid forever. **Layout alone does not fix noise: checkout scope does.** Sparse-checkout (nonexistent today) should default BOTH the builder's clone and the agent's sandbox to workspace content + the caller's own `users/<id>/`, with `CLAUDE.md` stating the scope. Converges with §11.5: if the per-user-repo trigger fires, the workspace repo becomes type-first by construction and the question dissolves — and owner-first `git subtree split`s cleanly into that end state where type-first would have to scatter-gather. Free to settle now: `users/<id>/` is unimplemented and nothing needs migrating. Detail: §11.10. | User (2026-08-19) |
+| **Prior art: git-as-truth is orthodox; the price is real-time co-editing** | Netlify/Vercel are a deploy layer on a repo GitHub already governs — they never own the store, so they never answer "who may clone", never bridge platform↔git identity, and have no personal-content-in-a-shared-repo concept; Mako's cloud tier inherits all three as the price of instant-start. They validate §11.4 wholesale (many projects per repo with base directories + build-skip, production branch → prod deploy, **PR previews as table stakes** — evidence against deferring them) and settle §7's secrets question (platform, not repo). Their template flow is the origin of §11.5 option (iii). **Retool and Hex mirror a document store to git — the two-sources-of-truth pattern §8 rejected.** Hex is the instructive counterexample: it cannot go git-native because **real-time multiplayer editing and commit-based history are in genuine tension**, so git-as-truth is a differentiation axis it cannot cross by shipping a feature — and the unstated price we accept is **async/branch collaboration instead of co-editing** (fine for code, an unremarked regression for notebook-shaped content; must be stated, not discovered). dbt Cloud remains our own strongest precedent. Detail: §11.11. | Research 2026-08-19 |
 | **What `mako` runs locally (OPEN)** | Two readings of "the full Mako app at localhost:6969": a **thin local shell** (serves the UI, owns the local checkout, runs `vite dev`, proxies control plane + data execution to the cloud — materially `packages/desktop` + `packages/local-agent` minus Electron; ships in weeks, no new deployment target) versus a **full local stack** (API + database + Inngest + kernel on the laptop; true self-host, permanent second deployment target and support surface). **Proposed default: thin shell**, full stack only if self-hosting proves to be a sales requirement. Detail: §11.6. | Raised 2026-08-19 |
 | **Sequencing: cheap half first; `mako agent` deferred indefinitely** | Order: (1) scaffold `CLAUDE.md`/`.mcp.json` + §10 Block D1 `skills/` so `git clone && claude` is Mako-capable with no CLI at all — generated from the same source as `buildMakoSystemPromptAppend` to avoid drift; (2) **deploy on merge** (`publishedSha` is currently read but never written — no pipeline exists, so §11.4 is not yet true); (3) minimal `@mako/cli` (`login` + `dev` only); then Block D2 consoles + Block C branch state; then revisit §11.6. The **`mako agent` terminal harness (§4.8c) is deferred indefinitely** — building a competing harness with our tokens contradicts the reason for the work. Detail: §11.7–11.9. | User (2026-08-19) |
 
@@ -635,6 +636,10 @@ This is the model the RFC has been converging on since §10 ("merge to main =
 publish"); §11 states it as the product model rather than an implementation
 detail, and notes the piece that makes it true is missing today (§11.7).
 
+**This shape is orthodox, not invented here** — production-branch deploys, PR
+previews, and many projects per repo with a base directory each are exactly how
+Netlify and Vercel work. See §11.11.
+
 ### 11.5 Repo access is a builder tier, not a member right (decided 2026-08-19)
 
 §10 committed to _"folders are organization, never authorization — Mako's API
@@ -693,8 +698,23 @@ with a fork:
   system, no GitHub account required, and a natural policy chokepoint — partly
   a return of the smart-HTTP clone endpoint from §4.3 / §6 Phase 1.
 
-**Proposed: (i) for the pilot, (ii) as the escape hatch if the GitHub-account
-requirement bites.** Not yet decided.
+- **(iii) Put the repo in the customer's own GitHub org.** The pattern Vercel
+  and Netlify use when they create a repo from a template: the platform creates
+  it in *your* account/org, never in a platform-owned one. Then "builder
+  access" is simply GitHub access the customer already administers — no
+  collaborator management, no proxy, and revocation is automatic when they
+  remove someone from their org. Mako keeps its installation token and never
+  becomes an identity provider for git. Cost: requires a GitHub org up front,
+  which is exactly the friction the cloud tier's "instant start, no GitHub
+  setup" promise exists to remove.
+
+**Proposed: reframe as a tier split rather than one global answer.** BYO / pro
+tier takes (iii) — the repo lives in the customer's org and this sub-decision
+evaporates entirely. Cloud tier keeps `mako-ai-cloud` and takes (i) for the
+pilot, with (ii) as the escape hatch if the GitHub-account requirement bites.
+Note the pleasing asymmetry: the tier that most needs Mako to solve git access
+is the tier whose users are least likely to want a clone at all, so (i) can
+stay minimal for a long time. Not yet decided.
 
 ### 11.6 Open decision — what `mako` actually runs locally
 
@@ -743,6 +763,8 @@ The substrate is largely built. The local developer surface is close to zero.
 | Per-session branch state (§10 Block C)                                                                                                           | ❌ not started                                                                                                                                                             |
 | **Human (builder) access to workspace repos**                                                                                                     | ❌ cloud repos are touched only by Mako's installation token — no human has any access. The builder tier of §11.5 is net-new: collaborator management or a git proxy, plus revocation wired to workspace membership |
 | **Checkout scope (sparse-checkout) for clones and sandboxes**                                                                                      | ❌ does not exist anywhere. Personal `users/<userId>/` content is also unimplemented, so §11.10's owner-first layout + scoped checkout can be built correctly from the start rather than migrated                    |
+| **A repo home for notebooks**                                                                                                                       | ❌ notebooks appear nowhere in this RFC; §10's layout is `apps/ consoles/ skills/ dbt/`. Path convention and the commit-outputs-or-strip question are both undecided (§11.11)                                         |
+| **PR preview deploys**                                                                                                                              | ❌ deferred in §11.9 — but table stakes at Netlify/Vercel (§11.11), so the deferral is worth revisiting once deploy-on-merge exists                                                                                   |
 | dbt in the repo (§10 Block D3)                                                                                                                   | ❌ last; own RFC section                                                                                                                                                   |
 
 Net: **`git clone` works today; `claude` in that clone is Mako-blind; and a
@@ -843,3 +865,61 @@ Owner-first is therefore both the better interim and the better stepping stone.
 (`worktree.service.ts:83`), `users/<userId>/` is **not implemented at all**, and
 sparse-checkout does not exist anywhere. Nothing to migrate; only to decide,
 which this section does.
+
+### 11.11 Prior art — and the two things it surfaces (2026-08-19)
+
+**Netlify / Vercel — they dodge our hardest question.** Both are a deploy layer
+bolted onto a repo GitHub already governs, via a GitHub App installation scoped
+to selected repos. They never own the store, so they never answer "who may
+clone" (GitHub's ACL, the customer's to manage and revoke), never bridge
+platform identity to git identity (dashboard accounts and GitHub accounts are
+simply different things), and have no concept of personal-content-inside-a-
+shared-repo. Mako's cloud tier *is* the store, so it inherits all three — the
+price of "instant start, no GitHub setup," which is a real advantage they do
+not offer. What they *do* validate is most of §11.4: many projects in one repo
+with a base directory each and build-skip so touching `apps/a` does not rebuild
+`apps/b`; production branch → production deploy; and **PR previews as the
+review surface, which is table stakes for both** — mild evidence against
+leaving them deferred in §11.9. Secrets in the platform rather than the repo is
+settled prior art for §7's open question. Their one repo-creating flow
+(deploying a template) is the origin of §11.5 option (iii).
+
+**dbt Cloud — our own precedent.** Repo is truth; the platform supplies the
+IDE, scheduler, and credentials. §1.3 already cites the dbt module as proof the
+model works for us; it remains the strongest precedent because we have operated
+it.
+
+**Retool and Hex — the rejected pattern, and the counterexample that matters.**
+Both keep projects in their own database and *mirror* to git (Retool source
+control; Hex's GitHub sync exporting projects as YAML) — two sources of truth,
+which §8 rejected. Hex is the closer analog and the more instructive one: a Hex
+project is a notebook of SQL/Python/no-code cells that publishes as an
+interactive data app, versioned by a bespoke draft/published/named-version
+system that is §1.3's complaint built by someone else.
+
+The reason Hex has not gone git-native is the finding: **real-time multiplayer
+editing and commit-based history are in genuine tension.** Hex leads with
+Google-Docs-style co-editing, and a document store is what that wants. This
+cuts both ways for us:
+
+- *Evidence for the bet.* Hex structurally cannot offer a local clone, Claude
+  Code against your own project, a real PR, or a real diff without unwinding
+  its collaboration model. Git-as-truth is a differentiation axis the closest
+  competitor cannot cross by shipping a feature.
+- *The unstated price.* Choosing git chooses **async, branch-based
+  collaboration over real-time co-editing**. §10's one-branch-per-user-session
+  model already commits to this — two people do not co-edit
+  `apps/foo/src/App.tsx`, they branch and merge. Correct for code; an
+  unremarked-on regression for anything notebook-shaped, where side-by-side
+  editing is the expectation. **This should be a stated trade, not a discovery
+  during a customer call.**
+
+**Gap this surfaced: notebooks have no repo home.** §10's layout is `apps/`,
+`consoles/`, `skills/`, `dbt/`. Notebooks are absent from this RFC entirely,
+despite `api/src/notebooks/`, the kernel providers, and substantial ongoing
+work. They are the content type most like Hex's, the one where the multiplayer
+trade bites hardest, and the one with the most open sub-questions once they
+land in git — path convention, and whether outputs are committed or stripped
+(committed outputs make diffs unreadable and repos heavy; stripped outputs make
+a clone non-reproducible without a kernel run). Needs its own decision under
+§10 Block D alongside `consoles/`.
