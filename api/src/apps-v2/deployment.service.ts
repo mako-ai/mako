@@ -18,6 +18,7 @@
  * viewers open an app without a hundred microVMs booting (§13.2).
  */
 import path from "node:path";
+import { Readable } from "node:stream";
 import fs from "node:fs/promises";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import { AppProjectV2, type IAppProjectV2 } from "../database/workspace-schema";
@@ -199,72 +200,118 @@ export async function readDeploymentAsset(
 }
 
 /**
- * Build the app from a checked-out worktree and publish it.
+ * Install if needed and produce a production build in the app's sandbox.
  *
- * The caller is responsible for having merged to `main` and for the worktree
- * being on the commit identified by `sha` — this function does the build,
- * the upload, and the repoint.
+ * The single place that knows how an app is built. Publishing, deploy-on-push
+ * and the preview all need exactly this, and having each keep its own copy is
+ * how they drift — one gains a flag, another does not, and the thing you
+ * previewed stops being the thing you shipped.
+ *
+ * `--base=./` because a deployment is always served under a path prefix
+ * (`/live/`, `/api/share/<token>/app/`), never at a domain root.
  */
-export async function publishFromWorktree(
+export async function buildApp(
   handle: WorktreeHandle,
+  exec: (
+    handle: WorktreeHandle,
+    command: string,
+    options: { timeoutMs: number },
+  ) => Promise<{ exitCode: number; stdout: string; stderr: string }>,
+): Promise<{ ok: boolean; output: string }> {
+  const install = await exec(
+    handle,
+    "[ -d node_modules ] || npm install --no-audit --no-fund",
+    { timeoutMs: 300_000 },
+  );
+  if (install.exitCode !== 0) {
+    return {
+      ok: false,
+      output: `npm install failed\n${install.stdout.slice(-2000)}${install.stderr.slice(-2000)}`,
+    };
+  }
+  const build = await exec(handle, "npm run build -- --base=./", {
+    timeoutMs: 300_000,
+  });
+  return {
+    ok: build.exitCode === 0,
+    output: `${build.stdout.slice(-3000)}${build.stderr.slice(-3000)}`,
+  };
+}
+
+/**
+ * Store a finished build as the deployment for `sha` and point the app at it.
+ *
+ * Deploying is exactly these two steps, and separating them from the build is
+ * what lets `main` advance only after a build has succeeded (§13.3).
+ */
+export async function deployBuild(
+  project: IAppProjectV2,
   sha: string,
-  runBuild: () => Promise<{ ok: boolean; output: string }>,
+  handle: WorktreeHandle,
 ): Promise<PublishResult> {
-  const projectId = handle.project._id.toString();
-
-  if (await deploymentExists(projectId, sha)) {
-    await setPublishedSha(handle.project, sha);
-    return { sha, fileCount: 0, reused: true };
-  }
-
-  const build = await runBuild();
-  if (!build.ok) {
-    // Deliberately does NOT touch publishedSha: a failed build must leave the
-    // previous deployment serving (§13.4.3).
-    throw new Error(
-      `Build failed, previous deployment left in place:\n${build.output}`,
-    );
-  }
-
-  const distDir = path.join(handle.sessionDir, handle.appRoot, "dist");
-  const result = await uploadDeployment(handle.project, sha, distDir);
-  await setPublishedSha(handle.project, sha);
+  const result = await uploadDeployment(
+    project,
+    sha,
+    path.join(handle.sessionDir, handle.appRoot, "dist"),
+  );
+  await setPublishedSha(project, sha);
   return result;
 }
 
 /**
- * Build the current `main` for one app and deploy it.
+ * Serve one file of a published app: a build asset, or a materialized data
+ * binding at `__data/<name>.parquet`.
  *
- * The publish route merges first and then calls this shape of work; a push to
- * `main` has already moved the branch, so there is nothing to merge — just
- * build what is there and point at it.
- *
- * A failed build leaves the previous deployment serving, exactly as a failed
- * publish does. `main` is not reverted: it already moved, and rewriting a
- * branch someone pushed to would be far worse than briefly serving an older
- * deployment.
+ * The only difference between the signed-in viewer and an anonymous share is
+ * WHO is allowed to call it; what gets served is identical. Keeping that in
+ * one place is what stops the two drifting into serving different things —
+ * which is exactly how the viewer ended up returning index.html for every
+ * asset while the share route did not.
  */
-export async function deployFromMain(
-  project: IAppProjectV2,
-  runBuild: () => Promise<{ ok: boolean; output: string }>,
-  sha: string,
-  sessionDir: string,
-  appRoot: string,
-): Promise<PublishResult> {
-  const projectId = project._id.toString();
-  if (await deploymentExists(projectId, sha)) {
-    await setPublishedSha(project, sha);
-    return { sha, fileCount: 0, reused: true };
-  }
-  const build = await runBuild();
-  if (!build.ok) {
-    throw new Error(`Build failed:\n${build.output}`);
-  }
-  const result = await uploadDeployment(
-    project,
-    sha,
-    path.join(sessionDir, appRoot, "dist"),
+export async function serveDeploymentFile(input: {
+  projectId: string;
+  sha: string;
+  assetPath: string;
+  /** Anonymous shares must not be cached by anything in between. */
+  private?: boolean;
+}): Promise<Response | null> {
+  const { projectId, sha, assetPath } = input;
+  const cache = input.private ? "private, no-cache" : "no-cache";
+
+  const dataMatch = assetPath.match(
+    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.parquet$/,
   );
-  await setPublishedSha(project, sha);
-  return result;
+  if (dataMatch) {
+    const store = getDashboardArtifactStore();
+    const key = `apps-v2/${projectId}/${dataMatch[1]}.parquet`;
+    const stream = await store.openReadStream(key);
+    if (!stream) return null;
+    const size = await store.getSize(key);
+    return new Response(Readable.toWeb(stream as Readable) as ReadableStream, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/vnd.apache.parquet",
+        ...(size !== null ? { "Content-Length": String(size) } : {}),
+        // Parquet readers need the length to find the footer.
+        "Cache-Control": input.private ? "private, no-store" : "no-store",
+      },
+    });
+  }
+
+  const asset = await readDeploymentAsset(projectId, sha, assetPath);
+  if (!asset) return null;
+  return new Response(
+    Readable.toWeb(asset.stream as Readable) as ReadableStream,
+    {
+      status: 200,
+      headers: {
+        "Content-Type": asset.contentType,
+        ...(asset.size !== null
+          ? { "Content-Length": String(asset.size) }
+          : {}),
+        "Cache-Control": cache,
+        "X-Content-Type-Options": "nosniff",
+      },
+    },
+  );
 }

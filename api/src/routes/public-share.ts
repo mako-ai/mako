@@ -42,7 +42,7 @@ import {
 } from "../services/app-binding-materialization.service";
 import { executePublicAppLiveBinding } from "../services/public-live-query.service";
 import { bindingArtifactKey } from "../apps-v2/bindings.service";
-import { readDeploymentAsset } from "../apps-v2/deployment.service";
+import { serveDeploymentFile } from "../apps-v2/deployment.service";
 
 const logger = loggers.api("public-share");
 
@@ -836,43 +836,13 @@ async function serveSharedAppV2(c: Context): Promise<Response> {
     "",
   );
 
-  const dataMatch = assetPath.match(
-    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.parquet$/,
-  );
-  if (dataMatch) {
-    const store = getDashboardArtifactStore();
-    const key = bindingArtifactKey(projectId, dataMatch[1]);
-    const stream = await store.openReadStream(key);
-    if (!stream) {
-      return c.json({ success: false, error: "Data not available" }, 404);
-    }
-    const size = await store.getSize(key);
-    return new Response(Readable.toWeb(stream as Readable) as ReadableStream, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/vnd.apache.parquet",
-        ...(size !== null ? { "Content-Length": String(size) } : {}),
-        "Cache-Control": "private, no-store",
-      },
-    });
-  }
-
-  const asset = await readDeploymentAsset(projectId, sha, assetPath);
-  if (!asset) return c.json({ success: false, error: "Not found" }, 404);
-  return new Response(
-    Readable.toWeb(asset.stream as Readable) as ReadableStream,
-    {
-      status: 200,
-      headers: {
-        "Content-Type": asset.contentType,
-        ...(asset.size !== null
-          ? { "Content-Length": String(asset.size) }
-          : {}),
-        "Cache-Control": "private, no-cache",
-        "X-Content-Type-Options": "nosniff",
-      },
-    },
-  );
+  const response = await serveDeploymentFile({
+    projectId,
+    sha,
+    assetPath,
+    private: true,
+  });
+  return response ?? c.json({ success: false, error: "Not found" }, 404);
 }
 
 app.get("/:token/app", serveSharedAppV2);

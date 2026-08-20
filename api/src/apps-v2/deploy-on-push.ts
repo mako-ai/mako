@@ -21,7 +21,12 @@ import {
   listAppFolders,
   synthesizeProjectFromFolder,
 } from "./worktree.service";
-import { deployFromMain } from "./deployment.service";
+import {
+  buildApp,
+  deployBuild,
+  deploymentExists,
+  setPublishedSha,
+} from "./deployment.service";
 import { getMakoCloudRepoPrefix } from "../integrations/github/cloud-app-auth";
 import { Types } from "mongoose";
 
@@ -98,35 +103,24 @@ export async function deployAppsForPush(input: {
       const handle = await ensureWorktree(
         project as IAppProjectV2,
         PUBLISH_ACTOR,
-        {
-          branch: project.defaultBranch || "main",
-        },
+        { branch: project.defaultBranch || "main" },
       );
-      await deployFromMain(
-        project as IAppProjectV2,
-        async () => {
-          const install = await execInWorktree(
-            handle,
-            "[ -d node_modules ] || npm install --no-audit --no-fund",
-            { timeoutMs: 300_000 },
-          );
-          if (install.exitCode !== 0) {
-            return { ok: false, output: install.stderr.slice(-2000) };
-          }
-          const build = await execInWorktree(
-            handle,
-            "npm run build -- --base=./",
-            { timeoutMs: 300_000 },
-          );
-          return {
-            ok: build.exitCode === 0,
-            output: `${build.stdout.slice(-2000)}${build.stderr.slice(-2000)}`,
-          };
-        },
-        after,
-        handle.sessionDir,
-        handle.appRoot,
-      );
+
+      // Already built this commit (the Publish button gets here first when it
+      // is the one that moved main) — just make sure it is the live one.
+      if (await deploymentExists(project._id.toString(), after)) {
+        await setPublishedSha(project as IAppProjectV2, after);
+        deployed.push(slug);
+        continue;
+      }
+
+      const build = await buildApp(handle, execInWorktree);
+      if (!build.ok) {
+        // main is NOT reverted: it already moved, and rewriting a branch
+        // someone pushed to would be worse than serving the previous build.
+        throw new Error(build.output);
+      }
+      await deployBuild(project as IAppProjectV2, after, handle);
       deployed.push(slug);
       logger.info("Deployed app from push to main", {
         workspaceId,

@@ -60,6 +60,7 @@ import {
   defaultBranchForActor,
   listAppFolders,
   synthesizeProjectFromFolder,
+  derivedAppId,
   trialMerge,
   promoteToMain,
   projectHistory,
@@ -70,15 +71,15 @@ import {
 import { APPS_V2_EXEC_MAX_TIMEOUT_MS } from "../apps-v2/config";
 import { registerPublicShareRoutes } from "./lib/public-share-routes";
 import {
-  uploadDeployment,
+  buildApp,
+  deployBuild,
   setPublishedSha,
   deploymentExists,
-  readDeploymentAsset,
+  serveDeploymentFile,
 } from "../apps-v2/deployment.service";
 import { mintPreviewGrant } from "../apps-v2/preview.service";
 import { ensureDevServer } from "../apps-v2/dev-server.service";
 import { Readable } from "node:stream";
-import path from "node:path";
 import {
   bindingArtifactKey,
   getBindingState,
@@ -1161,39 +1162,12 @@ appsV2Routes.openapi(
           })
         : await ensureWorktree(loaded.project, loaded.userId ?? "api-key");
 
-      const install = await execInWorktree(
-        handle,
-        // Install only when node_modules is missing/stale-empty — repeat
-        // previews stay fast on the warm session.
-        "[ -d node_modules ] || npm install --no-audit --no-fund",
-        { timeoutMs: 300_000 },
-      );
-      if (install.exitCode !== 0) {
+      // Same build as a publish would run: the whole point of previewing a
+      // build is that it is the same artifact, produced the same way.
+      const build = await buildApp(handle, execInWorktree);
+      if (!build.ok) {
         return c.json(
-          {
-            success: false,
-            error: "npm install failed",
-            stdout: install.stdout.slice(-4000),
-            stderr: install.stderr.slice(-4000),
-          },
-          422,
-        );
-      }
-
-      // --base=./ makes the emitted asset URLs relative so they resolve
-      // under the token-prefixed preview path (works for apps whose
-      // vite.config predates the scaffold's relative base too).
-      const build = await execInWorktree(handle, "npm run build -- --base=./", {
-        timeoutMs: 300_000,
-      });
-      if (build.exitCode !== 0) {
-        return c.json(
-          {
-            success: false,
-            error: "Build failed",
-            stdout: build.stdout.slice(-4000),
-            stderr: build.stderr.slice(-4000),
-          },
+          { success: false, error: "Build failed", output: build.output },
           422,
         );
       }
@@ -1220,7 +1194,7 @@ appsV2Routes.openapi(
           token: grant.token,
           url: `/api/apps-v2-preview/${grant.token}/`,
           expiresAt: grant.expiresAt,
-          buildOutput: build.stdout.slice(-2000),
+          buildOutput: build.output.slice(-2000),
         },
         200,
       );
@@ -1400,35 +1374,14 @@ appsV2Routes.openapi(
         );
       }
 
-      const install = await execInWorktree(
-        handle,
-        "[ -d node_modules ] || npm install --no-audit --no-fund",
-        { timeoutMs: 300_000 },
-      );
-      if (install.exitCode !== 0) {
-        return c.json(
-          {
-            success: false,
-            error: "npm install failed",
-            stdout: install.stdout.slice(-4000),
-            stderr: install.stderr.slice(-4000),
-          },
-          422,
-        );
-      }
-      // Relative asset URLs: a deployment is served under a path prefix
-      // (/live/, /api/share/<token>/), not at a domain root.
-      const build = await execInWorktree(handle, "npm run build -- --base=./", {
-        timeoutMs: 300_000,
-      });
-      if (build.exitCode !== 0) {
+      const build = await buildApp(handle, execInWorktree);
+      if (!build.ok) {
         // main never moved, so there is nothing to roll back.
         return c.json(
           {
             success: false,
             error: "Build failed — nothing was published and main is unchanged",
-            stdout: build.stdout.slice(-4000),
-            stderr: build.stderr.slice(-4000),
+            output: build.output,
           },
           422,
         );
@@ -1448,12 +1401,7 @@ appsV2Routes.openapi(
         );
       }
 
-      const result = await uploadDeployment(
-        loaded.project,
-        sha,
-        path.join(handle.sessionDir, handle.appRoot, "dist"),
-      );
-      await setPublishedSha(loaded.project, sha);
+      const result = await deployBuild(loaded.project, sha, handle);
 
       return c.json(
         {
@@ -1550,53 +1498,13 @@ async function serveLive(c: AuthenticatedContext): Promise<Response> {
   const marker = `/apps-v2/${ref}/live`;
   const at = c.req.path.indexOf(marker);
   const rest = at === -1 ? "" : c.req.path.slice(at + marker.length);
-  const assetPath = rest.replace(/^\/+/, "");
 
-  const dataMatch = assetPath.match(
-    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.parquet$/,
-  );
-  if (dataMatch) {
-    const store = getDashboardArtifactStore();
-    const key = bindingArtifactKey(projectId, dataMatch[1]);
-    const stream = await store.openReadStream(key);
-    if (!stream) {
-      return c.json(
-        { success: false, error: `Binding "${dataMatch[1]}" not materialized` },
-        404,
-      );
-    }
-    const size = await store.getSize(key);
-    return new Response(Readable.toWeb(stream as Readable) as ReadableStream, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/vnd.apache.parquet",
-        ...(size !== null ? { "Content-Length": String(size) } : {}),
-        "Cache-Control": "no-store",
-      },
-    });
-  }
-
-  const asset = await readDeploymentAsset(projectId, sha, assetPath);
-  if (!asset) {
-    return c.json({ success: false, error: "Not found" }, 404);
-  }
-  return new Response(
-    Readable.toWeb(asset.stream as Readable) as ReadableStream,
-    {
-      status: 200,
-      headers: {
-        "Content-Type": asset.contentType,
-        ...(asset.size !== null
-          ? { "Content-Length": String(asset.size) }
-          : {}),
-        // Deployments are immutable per sha, so the bytes for a given URL can
-        // never change — but the URL itself is stable across publishes, so
-        // revalidate rather than cache hard.
-        "Cache-Control": "no-cache",
-        "X-Content-Type-Options": "nosniff",
-      },
-    },
-  );
+  const response = await serveDeploymentFile({
+    projectId,
+    sha,
+    assetPath: rest.replace(/^\/+/, ""),
+  });
+  return response ?? c.json({ success: false, error: "Not found" }, 404);
 }
 
 appsV2Routes.get("/:id/live", serveLive);
@@ -1610,10 +1518,36 @@ registerPublicShareRoutes(appsV2Routes, {
   load: async c => {
     const id = c.req.param("id");
     const workspaceId = c.req.param("workspaceId");
-    if (!id || !Types.ObjectId.isValid(id)) return null;
-    return AppProjectV2.findOne({
-      _id: new Types.ObjectId(id),
+    if (!id || !workspaceId) return null;
+    const ref = id.replace(/^apps\//, "");
+    const existing = Types.ObjectId.isValid(ref)
+      ? await AppProjectV2.findOne({
+          _id: new Types.ObjectId(ref),
+          workspaceId: new Types.ObjectId(workspaceId),
+        })
+      : await AppProjectV2.findOne({
+          slug: ref,
+          workspaceId: new Types.ObjectId(workspaceId),
+        });
+    if (existing) return existing;
+
+    // Sharing is one of the three things that gives an app a database row
+    // (§13.6) — a share token and its password hash cannot live in a repo the
+    // customer can clone. So if the app exists only as a folder, materialize
+    // the row now, with the id derived from (workspace, folder) so every
+    // artifact key stays stable.
+    const folder = await synthesizeProjectFromFolder(workspaceId, ref);
+    if (!folder) return null;
+    return AppProjectV2.create({
+      _id: derivedAppId(workspaceId, ref),
       workspaceId: new Types.ObjectId(workspaceId),
+      title: folder.title,
+      slug: ref,
+      description: folder.description,
+      access: "workspace",
+      createdBy: actingUserId(c) ?? "",
+      owner_id: actingUserId(c),
+      defaultBranch: "main",
     });
   },
   getTitle: doc => (doc as unknown as IAppProjectV2).title,
