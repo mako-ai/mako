@@ -1,202 +1,147 @@
 /**
- * Apps v2 live dev preview — prototype of apps-v2.md §4.7's "dev preview"
- * tier (LOCAL SANDBOX PROVIDER ONLY).
+ * Apps v2 live dev preview — `vite dev` INSIDE the sandbox (apps-v2.md §12.4).
  *
- * §4.7's end state runs `vite dev` inside an E2B microVM and has E2B expose
- * it at a public per-sandbox URL; that public-URL exposure is unbuilt. This
- * is a narrower prototype: it spawns `vite` directly as a subprocess of the
- * API host (same substrate the "local" sandbox provider already uses for
- * exec) and the API proxies to it, so local dev gets a continuously-live
- * preview with native HMR instead of a one-shot static build. Refuses to run
- * under the "e2b" provider — mirrors local-provider.ts's own NODE_ENV guard;
- * this is not a path to production.
+ * The previous implementation spawned vite as a child process of the API host
+ * and proxied to it. That could only ever work under the deleted local sandbox
+ * provider, because it is exactly what N1 forbids: tenant code executing in the
+ * API process. So the throwaway dev substrate had live preview and every real
+ * environment had none.
+ *
+ * Now the dev server runs where the app's files already are. E2B exposes a
+ * per-sandbox public origin for any port (`https://<port>-<sandboxId>.e2b.app`),
+ * which the browser loads directly — no Mako proxy, no WebSocket relay of our
+ * own (HMR rides that same origin), and nothing of the tenant's on our host.
+ *
+ * Two details the sandbox forces, both handled here rather than in the app's
+ * own files:
+ *
+ * - Vite must bind `0.0.0.0`, and since 5.4 it rejects requests whose Host it
+ *   does not recognise — the E2B origin is exactly such a Host. Both are server
+ *   options, and we set them through Vite's JS API so they take precedence over
+ *   whatever the app's `vite.config.ts` says WITHOUT editing a file the user
+ *   owns and commits.
+ * - The sandbox's idle timeout would pause the microVM out from under a dev
+ *   server that is running but momentarily idle, so it is pushed out explicitly.
  */
-import { type ChildProcess, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import net from "node:net";
-import os from "node:os";
-import path from "node:path";
-import { appsV2SandboxProviderId } from "./config";
+import { getSandboxProvider } from "./sandbox/provider";
 import type { WorktreeHandle } from "./worktree.service";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps-v2-dev-server");
 
-interface DevServer {
-  process: ChildProcess;
-  port: number;
-  /**
-   * The preview token this process's `--base` was started with — vite bakes
-   * `base` into every absolute-root asset path it emits (HTML script tags,
-   * the injected HMR client, `/@react-refresh`), so the token must stay
-   * fixed for this process's lifetime; a fresh token per request would
-   * desync those paths from whatever the proxy is actually serving under.
-   */
-  token: string;
-  lastAccessedAt: number;
-  ready: Promise<void>;
+/** Fixed inside the sandbox: one dev server per session, its own microVM. */
+const DEV_PORT = 5173;
+
+/** How long to hold the sandbox open past the last preview request. */
+const DEV_SESSION_KEEPALIVE_MS = 30 * 60 * 1000;
+
+/** Absolute path of the launcher we write into the sandbox (never the repo). */
+const LAUNCHER_PATH = "/tmp/mako-dev-server.mjs";
+
+/**
+ * Node launcher, run inside the sandbox. Uses Vite's JS API because inline
+ * `server` options there beat the app's config file; the CLI has no flag for
+ * `allowedHosts`, and editing the app's `vite.config.ts` to add one would be
+ * committing our infrastructure into the user's repository.
+ *
+ * `.e2b.app` is matched as a suffix, so it covers the sandbox's own origin
+ * without our having to know the sandbox id at write time.
+ */
+function launcherSource(appDir: string): string {
+  return `
+import { createServer } from "${appDir}/node_modules/vite/dist/node/index.js";
+
+const server = await createServer({
+  root: ${JSON.stringify(appDir)},
+  server: {
+    host: "0.0.0.0",
+    port: ${DEV_PORT},
+    strictPort: true,
+    // The browser reaches us on the sandbox's public origin; without this
+    // Vite answers 403 "Blocked request. This host is not allowed."
+    allowedHosts: [".e2b.app"],
+  },
+});
+await server.listen();
+console.log("mako dev server listening on ${DEV_PORT}");
+`.trimStart();
 }
 
-// Keyed by worktree id. In-process only (single-instance dev API) — same
-// scoping caveat as preview.service.ts's token grants.
-const servers = new Map<string, DevServer>();
-
-async function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.on("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const address = srv.address();
-      if (address && typeof address === "object") {
-        const { port } = address;
-        srv.close(() => resolve(port));
-      } else {
-        srv.close(() => reject(new Error("Failed to allocate a port")));
-      }
-    });
-  });
+export interface DevPreview {
+  /** Public origin the browser should iframe. */
+  url: string;
 }
 
-async function waitForReady(
-  port: number,
-  base: string,
-  timeoutMs = 30_000,
-): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}${base}`, {
-        signal: AbortSignal.timeout(2000),
-      });
-      if (res.status < 500) return;
-    } catch {
-      // Not up yet — vite is still booting (or installing deps on cold start).
-    }
-    await new Promise(r => setTimeout(r, 300));
-  }
-  throw new Error("vite dev server did not become ready in time");
-}
-
-function isAlive(server: DevServer): boolean {
-  return server.process.exitCode === null && !server.process.killed;
+async function isListening(
+  handle: WorktreeHandle,
+  provider: ReturnType<typeof getSandboxProvider>,
+): Promise<boolean> {
+  const probe = await provider.exec(
+    { hostDir: handle.sessionDir, sessionKey: handle.doc._id.toString() },
+    `curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:${DEV_PORT}/ && echo up || echo down`,
+    { timeoutMs: 15_000 },
+  );
+  return probe.stdout.includes("up");
 }
 
 /**
- * Start (or reuse) a persistent `vite dev` process bound to the worktree's
- * session directory. Assumes dependencies are already installed — callers
- * run the same install-if-needed step `/preview` does before calling this.
+ * Ensure a dev server is running for this app and return its public URL.
+ *
+ * Idempotent: a server that is already listening is reused, so repeated
+ * previews do not restart vite and lose its module graph.
  */
 export async function ensureDevServer(
   handle: WorktreeHandle,
-): Promise<{ port: number; token: string }> {
-  if (appsV2SandboxProviderId() !== "local") {
-    throw new Error(
-      "Live dev preview is a local-provider-only prototype — apps-v2.md §4.7's E2B public-URL exposure is not built yet",
+): Promise<DevPreview> {
+  const provider = getSandboxProvider();
+  const ctx = {
+    hostDir: handle.sessionDir,
+    sessionKey: handle.doc._id.toString(),
+  };
+  const appDir = `/home/user/app/${handle.appRoot}`;
+
+  await provider.keepAlive(ctx, DEV_SESSION_KEEPALIVE_MS);
+
+  if (!(await isListening(handle, provider))) {
+    const write = await provider.exec(
+      ctx,
+      `cat > ${LAUNCHER_PATH} <<'MAKO_LAUNCHER_EOF'\n${launcherSource(appDir)}\nMAKO_LAUNCHER_EOF\necho written`,
+      { timeoutMs: 30_000 },
     );
-  }
-
-  // §10: the worktree spans the workspace; dev servers are per-app.
-  const worktreeId = `${handle.doc._id.toString()}:${handle.appRoot}`;
-  const appDir = path.join(handle.sessionDir, handle.appRoot);
-  const existing = servers.get(worktreeId);
-  if (existing && isAlive(existing)) {
-    existing.lastAccessedAt = Date.now();
-    await existing.ready;
-    return { port: existing.port, token: existing.token };
-  }
-  if (existing) servers.delete(worktreeId);
-
-  const port = await findFreePort();
-  const token = randomBytes(24).toString("base64url");
-  const base = `/api/apps-v2-preview/${token}/`;
-  // Same cache-root convention as local-provider.ts's sandboxEnv: HOME must
-  // NOT be the worktree dir, or vite/node's own cache writes would pollute
-  // the git-tracked tree (this is exactly the bug fixed there).
-  const cacheRoot = path.join(os.tmpdir(), "mako-apps-v2-cache");
-  const viteBin = path.join(appDir, "node_modules", ".bin", "vite");
-
-  const child = spawn(
-    viteBin,
-    [
-      "--port",
-      String(port),
-      "--strictPort",
-      "--host",
-      "127.0.0.1",
-      "--base",
-      base,
-    ],
-    {
-      cwd: appDir,
-      env: {
-        PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
-        HOME: path.join(cacheRoot, "home"),
-        npm_config_cache: path.join(cacheRoot, "npm"),
-        XDG_CACHE_HOME: path.join(cacheRoot, "xdg"),
-        CI: "1",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-  child.on("exit", code => {
-    logger.info("Apps v2 dev server exited", { worktreeId, code });
-    servers.delete(worktreeId);
-  });
-  child.on("error", err => {
-    logger.warn("Apps v2 dev server failed to start", {
-      worktreeId,
-      error: err.message,
-    });
-    servers.delete(worktreeId);
-  });
-  child.stderr?.on("data", chunk => {
-    logger.debug("vite dev stderr", {
-      worktreeId,
-      chunk: chunk.toString().slice(0, 500),
-    });
-  });
-
-  // Vite serves under `base` now, so readiness must probe that path — "/"
-  // 404s once --base is anything other than "/".
-  const ready = waitForReady(port, base).catch(err => {
-    child.kill();
-    servers.delete(worktreeId);
-    throw err;
-  });
-
-  servers.set(worktreeId, {
-    process: child,
-    port,
-    token,
-    lastAccessedAt: Date.now(),
-    ready,
-  });
-  logger.info("Apps v2 dev server started", { worktreeId, port });
-  await ready;
-  return { port, token };
-}
-
-/** Live dev-server state for a worktree, if one is running. */
-export function getDevServer(
-  worktreeId: string,
-): { port: number; token: string } | null {
-  const server = servers.get(worktreeId);
-  if (!server || !isAlive(server)) return null;
-  server.lastAccessedAt = Date.now();
-  return { port: server.port, token: server.token };
-}
-
-const IDLE_TTL_MS = 30 * 60 * 1000;
-setInterval(
-  () => {
-    const now = Date.now();
-    for (const [worktreeId, server] of servers) {
-      if (now - server.lastAccessedAt > IDLE_TTL_MS) {
-        logger.info("Killing idle apps-v2 dev server", { worktreeId });
-        server.process.kill();
-        servers.delete(worktreeId);
-      }
+    if (write.exitCode !== 0) {
+      throw new Error(
+        `Could not write the dev-server launcher: ${write.stderr}`,
+      );
     }
-  },
-  5 * 60 * 1000,
-).unref();
+
+    await provider.execDetached(
+      ctx,
+      `nohup node ${LAUNCHER_PATH} > /tmp/mako-dev-server.log 2>&1 & echo started`,
+      { cwd: handle.appRoot, timeoutMs: 60_000 },
+    );
+
+    // Vite is usually listening in a few hundred ms; poll briefly rather than
+    // sleeping a fixed amount, and surface its own log if it never comes up.
+    let up = false;
+    for (let attempt = 0; attempt < 15 && !up; attempt++) {
+      up = await isListening(handle, provider);
+    }
+    if (!up) {
+      const log = await provider.exec(
+        ctx,
+        `tail -20 /tmp/mako-dev-server.log`,
+        { timeoutMs: 15_000 },
+      );
+      throw new Error(
+        `Dev server did not start. Vite output:\n${log.stdout.slice(-1500)}`,
+      );
+    }
+  }
+
+  const url = await provider.publicUrlForPort(ctx, DEV_PORT);
+  logger.info("Apps v2 dev preview ready", {
+    projectId: handle.project._id.toString(),
+    appRoot: handle.appRoot,
+  });
+  return { url };
+}

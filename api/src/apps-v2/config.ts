@@ -27,31 +27,6 @@ export function appsV2SessionsRoot(): string {
 
 export type AppsV2SandboxProviderId = "local" | "e2b";
 
-/**
- * Which sandbox provider executes shell commands.
- *
- * - "local": commands run as subprocesses of the API host inside the session
- *   directory with an allowlisted environment. This is a DEVELOPMENT provider
- *   (single-tenant VMs, local dev). It intentionally refuses to activate in
- *   production, where tenant code must never run on the API host (RFC N1).
- * - "e2b": Firecracker microVM provider — the production target, implemented
- *   behind the same seam in a later phase.
- */
-export function appsV2SandboxProviderId(): AppsV2SandboxProviderId {
-  const configured = (process.env.APPS_V2_SANDBOX_PROVIDER ?? "").trim();
-  if (configured === "local" || configured === "e2b") return configured;
-  if (configured) {
-    throw new Error(
-      `Unknown APPS_V2_SANDBOX_PROVIDER "${configured}" (expected "local" or "e2b")`,
-    );
-  }
-  // Default: local outside production, unconfigured (error on use) in prod.
-  if (process.env.NODE_ENV !== "production") return "local";
-  throw new Error(
-    "Apps v2 sandbox provider is not configured. Set APPS_V2_SANDBOX_PROVIDER.",
-  );
-}
-
 /** Default and ceiling for sandbox command execution time. */
 export const APPS_V2_EXEC_DEFAULT_TIMEOUT_MS = 120_000;
 export const APPS_V2_EXEC_MAX_TIMEOUT_MS = 600_000;

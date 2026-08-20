@@ -61,14 +61,8 @@ import {
   worktreeStatus,
   writeFile,
 } from "../apps-v2/worktree.service";
-import {
-  APPS_V2_EXEC_MAX_TIMEOUT_MS,
-  appsV2SandboxProviderId,
-} from "../apps-v2/config";
-import {
-  mintDevPreviewGrant,
-  mintPreviewGrant,
-} from "../apps-v2/preview.service";
+import { APPS_V2_EXEC_MAX_TIMEOUT_MS } from "../apps-v2/config";
+import { mintPreviewGrant } from "../apps-v2/preview.service";
 import { ensureDevServer } from "../apps-v2/dev-server.service";
 import { Readable } from "node:stream";
 import {
@@ -232,11 +226,6 @@ appsV2Routes.openapi(
         // Creation works without a connected repo when Mako-hosted cloud
         // storage is configured (per-app repos under MAKO_CLOUD_GITHUB_ORG).
         canCreate: repos.length > 0 || isMakoCloudConfigured(),
-        // The live `vite dev` preview spawns a subprocess of the API host and
-        // is refused under the E2B provider (dev-server.service.ts): §4.7's
-        // per-sandbox public URL is unbuilt. Tell the client, so it stops
-        // offering an action that cannot succeed in this environment.
-        devPreviewAvailable: appsV2SandboxProviderId() === "local",
         repos: repos.map(r => ({
           owner: r.owner,
           repo: r.repo,
@@ -1233,10 +1222,12 @@ appsV2Routes.openapi(
         );
       }
 
-      let devPort: number;
-      let devToken: string;
+      // §12.4: vite runs inside the sandbox and E2B publishes the port, so
+      // the browser loads it directly — there is no Mako-side proxy or token
+      // to mint for this tier.
       try {
-        ({ port: devPort, token: devToken } = await ensureDevServer(handle));
+        const { url } = await ensureDevServer(handle);
+        return c.json({ success: true as const, url }, 200);
       } catch (error) {
         return c.json(
           {
@@ -1246,25 +1237,9 @@ appsV2Routes.openapi(
                 ? error.message
                 : "Failed to start dev server",
           },
-          501,
+          500,
         );
       }
-
-      const grant = mintDevPreviewGrant({
-        workspaceId: loaded.project.workspaceId.toString(),
-        projectId: loaded.project._id.toString(),
-        devPort,
-        token: devToken,
-      });
-      return c.json(
-        {
-          success: true as const,
-          token: grant.token,
-          url: `/api/apps-v2-preview/${grant.token}/`,
-          expiresAt: grant.expiresAt,
-        },
-        200,
-      );
     } catch (error) {
       return handleError(c, error);
     }

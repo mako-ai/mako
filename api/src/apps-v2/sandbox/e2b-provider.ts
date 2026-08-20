@@ -425,9 +425,71 @@ async function execE2b(
   };
 }
 
+/**
+ * Start a detached process and return as soon as it is running.
+ *
+ * Syncs the tree IN (the process needs current sources) but deliberately not
+ * back OUT: the command has not finished, and a sync-out mid-run would race a
+ * live dev server writing caches. Long-running work reaches the host through
+ * the ordinary per-command syncs that follow.
+ */
+async function execDetachedE2b(
+  ctx: SandboxExecContext,
+  command: string,
+  options: SandboxExecOptions = {},
+): Promise<void> {
+  const sandbox = await connectSession(ctx.sessionKey);
+  await sandbox.setTimeout(IDLE_TIMEOUT_MS);
+  await syncIn(sandbox, ctx.hostDir);
+  const cwd = options.cwd
+    ? path.posix.join(REMOTE_ROOT, options.cwd)
+    : REMOTE_ROOT;
+  if (!cwd.startsWith(REMOTE_ROOT)) {
+    throw new Error(
+      `cwd escapes the session root: ${JSON.stringify(options.cwd)}`,
+    );
+  }
+  const result = await sandbox.commands.run(command, {
+    user: SANDBOX_USER,
+    cwd,
+    timeoutMs: 60_000,
+    envs: {
+      HOME: "/home/user",
+      LANG: "C.UTF-8",
+      TERM: "dumb",
+      CI: "1",
+      ...(options.env ?? {}),
+    },
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `Failed to start detached process: ${result.stderr.slice(0, 500)}`,
+    );
+  }
+}
+
+async function publicUrlForPortE2b(
+  ctx: SandboxExecContext,
+  port: number,
+): Promise<string> {
+  const sandbox = await connectSession(ctx.sessionKey);
+  return `https://${sandbox.getHost(port)}`;
+}
+
+async function keepAliveE2b(
+  ctx: SandboxExecContext,
+  ms: number,
+): Promise<void> {
+  const sandbox = await connectSession(ctx.sessionKey);
+  await sandbox.setTimeout(Math.max(IDLE_TIMEOUT_MS, ms));
+}
+
 export const e2bSandboxProvider: SandboxProvider = {
   id: "e2b",
   exec: execE2b,
+  execDetached: execDetachedE2b,
+  publicUrlForPort: publicUrlForPortE2b,
+  keepAlive: keepAliveE2b,
   destroySession: async sessionKey => {
     const sandboxId = sessions.get(sessionKey);
     sessions.delete(sessionKey);

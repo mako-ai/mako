@@ -219,13 +219,6 @@ export default function AppV2Workspace({
   const history = useAppsV2Store(s => s.historyByApp[appId]);
   const branches = useAppsV2Store(s => s.branchesByApp[appId]);
   const preview = useAppsV2Store(s => s.previewByApp[appId]);
-  // Deployed environments run E2B, where the live `vite dev` preview cannot
-  // work at all (§4.7's per-sandbox public URL is unbuilt). Treat only an
-  // explicit `false` as unavailable, so the button stays enabled while the
-  // status probe is still in flight rather than flickering disabled.
-  const devPreviewUnavailable = useAppsV2Store(
-    s => s.devPreviewAvailable === false,
-  );
 
   const fetchApps = useAppsV2Store(s => s.fetchApps);
   const fetchFiles = useAppsV2Store(s => s.fetchFiles);
@@ -294,21 +287,11 @@ export default function AppV2Workspace({
           />
         )}
         <Box sx={{ flex: 1 }} />
-        <Tooltip
-          title={
-            devPreviewUnavailable
-              ? "Live preview isn't available here yet. It only works when Mako runs on your own machine; this workspace runs apps in cloud sandboxes. Use Build & preview instead — it compiles the app and shows the result."
-              : "Live preview: keeps the app running so your edits show up instantly, with no rebuild step."
-          }
-        >
+        <Tooltip title="Live preview: keeps the app running in its sandbox so your edits show up instantly, with no rebuild step.">
           <span>
             <Button
               size="small"
-              variant={
-                devPreviewUnavailable || preview?.mode === "dev"
-                  ? "outlined"
-                  : "contained"
-              }
+              variant={preview?.mode === "dev" ? "outlined" : "contained"}
               startIcon={
                 preview?.building ? (
                   <CircularProgress size={14} color="inherit" />
@@ -316,7 +299,7 @@ export default function AppV2Workspace({
                   <PlayIcon size={14} />
                 )
               }
-              disabled={preview?.building || devPreviewUnavailable}
+              disabled={preview?.building}
               onClick={() =>
                 void startDevPreview(
                   workspaceId,
@@ -343,13 +326,7 @@ export default function AppV2Workspace({
           <span>
             <Button
               size="small"
-              variant={
-                devPreviewUnavailable
-                  ? "contained"
-                  : preview?.mode === "dev"
-                    ? "text"
-                    : "outlined"
-              }
+              variant={preview?.mode === "dev" ? "text" : "outlined"}
               disabled={preview?.building}
               onClick={() =>
                 void buildPreview(
@@ -413,7 +390,24 @@ export default function AppV2Workspace({
           <iframe
             title="App preview"
             src={preview.url}
-            sandbox="allow-scripts allow-forms"
+            // The two preview tiers need DIFFERENT sandboxes.
+            //
+            // Static builds are served by Mako from Mako's own origin, so
+            // `allow-same-origin` would hand app code our origin and let it
+            // escape the sandbox entirely — it stays off, and the opaque
+            // origin is why those assets are served with `Access-Control-
+            // Allow-Origin: *`.
+            //
+            // The live dev server (§12.4) is a genuinely foreign origin
+            // (`<port>-<sandbox>.e2b.app`), so `allow-same-origin` grants it
+            // only ITS OWN origin, never ours. It is required there: with an
+            // opaque origin, Vite's HMR socket and its cross-origin module
+            // scripts do not work.
+            sandbox={
+              preview.mode === "dev"
+                ? "allow-scripts allow-forms allow-same-origin"
+                : "allow-scripts allow-forms"
+            }
             style={{ border: 0, width: "100%", height: "100%" }}
           />
         ) : (

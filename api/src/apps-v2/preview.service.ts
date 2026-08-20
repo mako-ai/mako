@@ -24,8 +24,6 @@ export interface PreviewGrant {
   projectId: string;
   /** Absolute directory a "static" grant serves (the session's dist/). */
   rootDir?: string;
-  /** Port a "dev" grant proxies to (a live `vite dev` process). */
-  devPort?: number;
   expiresAt: number;
 }
 
@@ -41,7 +39,7 @@ function sweep(): void {
 
 function mint(
   input: { workspaceId: string; projectId: string; token?: string },
-  scope: Pick<PreviewGrant, "rootDir" | "devPort">,
+  scope: Pick<PreviewGrant, "rootDir">,
   dedupe: (grant: PreviewGrant) => boolean,
 ): PreviewGrant {
   sweep();
@@ -85,19 +83,6 @@ export function mintPreviewGrant(input: {
  * proxy prefix); it must stay the same across every "Start dev session"
  * click that reuses that already-running process.
  */
-export function mintDevPreviewGrant(input: {
-  workspaceId: string;
-  projectId: string;
-  devPort: number;
-  token?: string;
-}): PreviewGrant {
-  return mint(
-    input,
-    { devPort: input.devPort },
-    grant => grant.devPort === input.devPort,
-  );
-}
-
 export function resolvePreviewGrant(token: string): PreviewGrant | null {
   sweep();
   return grants.get(token) ?? null;

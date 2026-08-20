@@ -1,24 +1,19 @@
 /**
- * Apps v2 sandbox provider seam (apps-v2.md §4.5).
+ * Apps v2 sandbox provider seam (apps-v2.md §4.5, §12).
  *
- * Two implementations:
+ * One implementation today: "e2b" — Firecracker microVMs. The host session
+ * directory remains the git staging area; the provider syncs it into the
+ * sandbox before a command and back out after (rsync-style, tar over the E2B
+ * filesystem API), so everything above the seam — worktree durability, WIP
+ * flushes, tools, routes — never learns where the shell actually ran.
  *
- * - "local": commands run as subprocesses of the API host inside the session
- *   directory with an allowlisted environment. Development-only — refuses to
- *   activate in production (tenant code must never run on the API host).
- * - "e2b": Firecracker microVMs (the production target). The host session
- *   directory remains the git staging area; the provider syncs it into the
- *   sandbox before the command and back out after (rsync-style, tar over the
- *   E2B filesystem API), so everything above the seam — worktree durability,
- *   WIP-ref flushes, tools, routes — is identical for both substrates.
- *
- * Nothing above this seam may depend on where the shell actually runs.
+ * The seam is kept with a single implementation on purpose: §7 wants Fly
+ * Machines / Modal reachable as a vendor fallback without touching callers.
+ * It is NOT kept for a local-execution mode — §12 deleted that. Mako developers
+ * run on E2B too, so we exercise the substrate we ship, and tenant code never
+ * runs on the API host (N1).
  */
-import {
-  appsV2SandboxProviderId,
-  type AppsV2SandboxProviderId,
-} from "../config";
-import { localSandboxProvider } from "./local-provider";
+import type { AppsV2SandboxProviderId } from "../config";
 import { e2bSandboxProvider } from "./e2b-provider";
 
 export interface SandboxExecOptions {
@@ -64,12 +59,32 @@ export interface SandboxProvider {
     command: string,
     options?: SandboxExecOptions,
   ): Promise<SandboxExecResult>;
+  /**
+   * Start a long-running process in the session and return once it is
+   * detached. Unlike {@link exec} this does NOT sync the working tree back
+   * out — the process is still running and the tree is still moving.
+   */
+  execDetached(
+    ctx: SandboxExecContext,
+    command: string,
+    options?: SandboxExecOptions,
+  ): Promise<void>;
+  /**
+   * Publicly reachable origin for a port inside the sandbox, e.g.
+   * `https://5173-<sandboxId>.e2b.app`. This is how a dev server reaches a
+   * browser without any Mako-side proxy (§12.4).
+   */
+  publicUrlForPort(ctx: SandboxExecContext, port: number): Promise<string>;
+  /**
+   * Keep the session alive for at least this long. Dev servers outlive the
+   * command that started them, so the idle timeout has to be pushed out
+   * explicitly or E2B pauses the sandbox out from under the preview.
+   */
+  keepAlive(ctx: SandboxExecContext, ms: number): Promise<void>;
   /** Tear down any remote session for the given affinity key (best effort). */
   destroySession?(sessionKey: string): Promise<void>;
 }
 
 export function getSandboxProvider(): SandboxProvider {
-  const id = appsV2SandboxProviderId();
-  if (id === "local") return localSandboxProvider;
   return e2bSandboxProvider;
 }

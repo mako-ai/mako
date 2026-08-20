@@ -32,66 +32,6 @@ function assetPathFor(c: Context, token: string): string {
 
 // Headers that must never be forwarded verbatim to (or from) the proxied
 // dev server — hop-by-hop / connection-management, not payload semantics.
-const HOP_BY_HOP = new Set([
-  "connection",
-  "keep-alive",
-  "transfer-encoding",
-  "upgrade",
-  "host",
-  "content-length",
-]);
-
-/**
- * Reverse-proxy a request to a live `vite dev` process (dev grants only).
- * Unlike the static grant's asset lookup, this forwards the FULL original
- * path (token prefix included) — the vite process was started with
- * `--base=/api/apps-v2-preview/<token>/` (see dev-server.service.ts), so it
- * expects requests, and generates its own asset references, at that exact
- * prefix rather than the site root.
- */
-async function proxyToDevServer(
-  c: Context,
-  devPort: number,
-): Promise<Response> {
-  const url = new URL(c.req.url);
-  const target = `http://127.0.0.1:${devPort}${url.pathname}${url.search}`;
-  const headers = new Headers();
-  c.req.raw.headers.forEach((value, key) => {
-    if (!HOP_BY_HOP.has(key.toLowerCase())) headers.set(key, value);
-  });
-
-  let upstream: Response;
-  try {
-    upstream = await fetch(target, {
-      method: c.req.method,
-      headers,
-      body: ["GET", "HEAD"].includes(c.req.method)
-        ? undefined
-        : await c.req.arrayBuffer(),
-      // @ts-expect-error -- Node's fetch requires this for streamed request bodies.
-      duplex: "half",
-    });
-  } catch {
-    return c.json(
-      { success: false, error: "Dev server is not responding" },
-      502,
-    );
-  }
-
-  const outHeaders = new Headers();
-  upstream.headers.forEach((value, key) => {
-    if (!HOP_BY_HOP.has(key.toLowerCase())) outHeaders.set(key, value);
-  });
-  // Same reasoning as the static server: the preview iframe is sandboxed
-  // WITHOUT allow-same-origin (opaque origin), so module fetches carry
-  // `Origin: null` — token-gated and cookie-free, so a wildcard is safe.
-  outHeaders.set("Access-Control-Allow-Origin", "*");
-  outHeaders.set("X-Content-Type-Options", "nosniff");
-  return new Response(upstream.body, {
-    status: upstream.status,
-    headers: outHeaders,
-  });
-}
 
 async function serveAsset(c: Context): Promise<Response> {
   const token = c.req.param("token");
@@ -132,10 +72,6 @@ async function serveAsset(c: Context): Promise<Response> {
         "Access-Control-Allow-Origin": "*",
       },
     });
-  }
-
-  if (grant.devPort) {
-    return proxyToDevServer(c, grant.devPort);
   }
 
   const asset = await readPreviewAsset(grant, assetPathFor(c, token));

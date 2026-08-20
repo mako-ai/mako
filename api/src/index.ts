@@ -1,6 +1,5 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { serve } from "@hono/node-server";
-import { attachAppsV2DevPreviewWsProxy } from "./apps-v2/dev-preview-ws-proxy";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
@@ -352,15 +351,13 @@ async function main(): Promise<void> {
     },
   });
 
-  // Start the server
-  const server = serve({
+  // Start the server. Nothing needs the handle any more: the raw WebSocket
+  // upgrade hook existed only for the dev-preview proxy, which §12.4 removed —
+  // vite now runs in the sandbox and HMR rides E2B's public origin.
+  serve({
     fetch: app.fetch,
     port,
   });
-  // Hono only handles regular HTTP requests; apps-v2's live dev preview
-  // (vite's HMR client) needs a raw WebSocket upgrade proxy — see
-  // apps-v2/dev-preview-ws-proxy.ts.
-  attachAppsV2DevPreviewWsProxy(server);
 
   if (!process.env.AI_GATEWAY_API_KEY) {
     logger.error(
