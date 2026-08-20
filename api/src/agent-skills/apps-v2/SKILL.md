@@ -40,14 +40,40 @@ only `app2_*` tools. Never read or mutate the project with v1 `app_*`,
 3. Edit with `app2_edit_file` (anchored oldString/newString; re-read after a
    failed anchor) or `app2_write_file` for new files / full rewrites. Deletes
    and renames go through `app2_bash` (`rm`, `mv`) — the flush picks them up.
-4. `app2_bash` runs real bash in the app's sandbox (E2B microVM), cwd = repo
-   root: `npm install <pkg>`, `npm run build`, `node`, `git log/diff/status`.
-   File changes are flushed to the durable WIP snapshot after every command.
-   Do NOT `git commit` or `git push` in the shell — commits go through
-   `app2_commit` (checkpoints) or the automatic end-of-turn commit, and the
-   session has no push credentials by design.
+4. `app2_bash` runs real bash in the app's sandbox (E2B microVM). **cwd is the
+   app's own folder** (`apps/<slug>`), not the repo root — `package.json` and
+   `src/` are right there. `npm install <pkg>`, `npm run build`, `node`,
+   `git log/diff/status`. File changes are flushed to the durable WIP snapshot
+   after every command. Do NOT `git commit` or `git push` in the shell —
+   commits go through `app2_commit` (checkpoints) or the automatic end-of-turn
+   commit, and the session has no push credentials by design.
 5. Verify with `npm run build` via `app2_bash` before telling the user the
    app works. Build errors come back on stdout/stderr.
+
+## Reporting results honestly
+
+The user can see the app's build panel. Claiming success it contradicts
+destroys their trust in everything else you report.
+
+- **If the last build failed, say so.** Never describe an app as working,
+  running, live, or ready when `npm run build` exited non-zero. Lead with the
+  failure and the actual error line, then what you propose to do about it.
+- **Never invent a URL the user can visit.** Each `app2_bash` call is one-shot:
+  backgrounding a server (`vite &`, `npm run dev &`) leaves nothing running
+  that the user can reach, and its `localhost:5173` banner is not a link that
+  works for them. Previews reach the user only through the app's preview
+  controls, never through a port you started in the shell.
+- **Do not claim the app is visible in a tab** unless a preview actually
+  succeeded in this turn.
+- If you cannot get it working, say exactly that and describe what you tried.
+  A clear failure report is far more useful than optimism.
+
+## Resolving the app id
+
+Call `app2_list_apps` FIRST and use an id it returns. Never guess or infer an
+id from context — a fabricated id costs a round-trip per attempt and the
+"not found" error looks like a broken app rather than a bad guess. If the list
+is empty, there is no app yet: create one with `app2_create_app`.
 6. `app2_list_branches` / `app2_merge_to_main` manage the branch model; merge
    only when the user asks for the changes to land on main.
 

@@ -188,7 +188,7 @@ export function createAppsV2Tools({
 
     app2_bash: tool({
       description:
-        "Run a bash command inside the app's sandbox session working tree (cwd = repo root). Use for anything a developer would do in a terminal: ls, grep, sed, cat, node, npm/pnpm install, npm run build, git status/log/diff. File changes are automatically flushed to the app's durable WIP snapshot after the command. Not for committing (use app2_commit) and not for pushing (the session has no remote credentials).",
+        "Run a bash command in the app's sandbox session. cwd is the APP's folder (apps/<slug>) inside the workspace repo, not the repo root, so package.json and src/ are right here and `cwd` is interpreted relative to it. Use for anything a developer would do in a terminal: ls, grep, sed, cat, node, npm/pnpm install, npm run build, git status/log/diff. File changes are flushed to the app's durable WIP snapshot after the command. Each call is a one-shot command: backgrounding a long-running process (`vite &`) does NOT leave a server running the user can reach — use the app's preview controls for that. Not for committing (use app2_commit) and not for pushing (the session has no remote credentials).",
       inputSchema: z.object({
         appId: z.string().describe("Apps v2 project id"),
         command: z.string().min(1).describe("Bash command line to execute"),
