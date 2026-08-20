@@ -57,6 +57,10 @@ export interface AcpSessionInfo {
   busy: boolean;
   /** True when Mako `/api/mcp` was attached on session/new. */
   makoMcpAttached?: boolean;
+  /** Non-secret API identity bound to this session's Mako MCP token. */
+  makoAgentSessionId?: string;
+  /** Workspace bound to the attached Mako MCP token. */
+  makoWorkspaceId?: string;
   /** Current Claude/Codex model id from session configOptions (when known). */
   currentModel?: string | null;
   /** Selectable models advertised by the adapter for this session. */
@@ -114,7 +118,7 @@ export interface AcpStatusResponse {
    * agent (raw "ACP connection closed" with no rewrite / no terminal auth).
    */
   acpBridge?: {
-    version: 3 | 4 | 5 | 6 | 7;
+    version: 3 | 4 | 5 | 6 | 7 | 8;
     terminalAuth: true;
     mcpProbe: true;
     reconnect: true;
@@ -125,6 +129,8 @@ export interface AcpStatusResponse {
     adapterEnsure?: true;
     /** Local Agent can warm model catalogs via a throwaway session/new. */
     modelWarm?: true;
+    /** Prompt route accepts `images` and forwards ACP image ContentBlocks. */
+    promptImages?: true;
   };
   /** Last Claude/Codex adapter stderr snippet (when a connection died). */
   lastAdapterError?: string | null;
@@ -173,6 +179,10 @@ export interface CreateAcpSessionRequest {
   mcpUrl?: string;
   /** `Bearer mcpat_…` (or raw token — normalized to Bearer). */
   mcpAuthorization?: string;
+  /** Non-secret API identity returned alongside the MCP token. */
+  makoAgentSessionId?: string;
+  /** Workspace bound to the attached MCP token. */
+  makoWorkspaceId?: string;
   /**
    * MCP server name advertised to the agent (Claude tool prefix mcp__{name}__).
    * Default `mako-workspace` — avoid `mako` which collides with Claude.ai connectors.
@@ -197,9 +207,19 @@ export interface SetAcpSessionConfigRequest {
   value: string | boolean;
 }
 
+/** Image attachment forwarded to the ACP adapter as an `image` ContentBlock. */
+export interface AcpPromptImage {
+  /** Base64-encoded payload (no `data:` URL prefix). */
+  data: string;
+  /** e.g. `image/png` */
+  mimeType: string;
+  uri?: string;
+}
+
 export interface PromptAcpSessionRequest {
   text?: string;
   content?: unknown[];
+  images?: AcpPromptImage[];
 }
 
 export interface PermissionResponseRequest {

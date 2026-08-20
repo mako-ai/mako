@@ -39,6 +39,7 @@ import {
   useShareStore,
   shareKey,
   buildPublicShareUrl,
+  buildWorkspaceResourceUrl,
   type ShareResourceType,
   type ShareRole,
   type ShareAccess,
@@ -96,6 +97,25 @@ const AVATAR_COLORS = [
   "#b80672",
   "#5f6368",
 ];
+
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Clipboard API needs a focused, secure document; fall back to the
+    // legacy textarea trick (e.g. embedded/unfocused webviews).
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const ok = document.execCommand("copy");
+    textarea.remove();
+    return ok;
+  }
+}
 
 function avatarColor(seed: string): string {
   let hash = 0;
@@ -252,6 +272,7 @@ export default function ShareDialog({
   );
   const [password, setPassword] = useState("");
   const [copied, setCopied] = useState(false);
+  const [internalCopied, setInternalCopied] = useState(false);
   const [revealedPassword, setRevealedPassword] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [editingLink, setEditingLink] = useState(false);
@@ -264,6 +285,7 @@ export default function ShareDialog({
     if (!open) return;
     setError(null);
     setCopied(false);
+    setInternalCopied(false);
     setPassword("");
     setRevealedPassword(null);
     setShowPassword(false);
@@ -486,26 +508,25 @@ export default function ShareDialog({
   const handleCopyLink = async () => {
     if (!publicShare.token) return;
     const url = buildPublicShareUrl(publicShare.token, currentWorkspace?.name);
-    try {
-      await navigator.clipboard.writeText(url);
-    } catch {
-      // Clipboard API needs a focused, secure document; fall back to the
-      // legacy textarea trick (e.g. embedded/unfocused webviews).
-      const textarea = document.createElement("textarea");
-      textarea.value = url;
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      const ok = document.execCommand("copy");
-      textarea.remove();
-      if (!ok) {
-        setError("Failed to copy link");
-        return;
-      }
+    if (!(await copyTextToClipboard(url))) {
+      setError("Failed to copy link");
+      return;
     }
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  // Workspace-internal link for logged-in collaborators. The desktop shell
+  // has no address bar, so this button is the only way to get the URL there.
+  const handleCopyInternalLink = async () => {
+    if (!resourceId) return;
+    const url = buildWorkspaceResourceUrl(resourceType, resourceId);
+    if (!(await copyTextToClipboard(url))) {
+      setError("Failed to copy link");
+      return;
+    }
+    setInternalCopied(true);
+    setTimeout(() => setInternalCopied(false), 2000);
   };
 
   return (
@@ -1064,7 +1085,21 @@ export default function ShareDialog({
           </>
         )}
       </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2.5 }}>
+      <DialogActions sx={{ px: 3, pb: 2.5, justifyContent: "space-between" }}>
+        <Tooltip title="Copy a link for people with access — they must be signed in to open it">
+          <span>
+            <Button
+              variant="outlined"
+              startIcon={
+                internalCopied ? <Check size={16} /> : <LinkIcon size={16} />
+              }
+              disabled={!resourceId}
+              onClick={() => void handleCopyInternalLink()}
+            >
+              {internalCopied ? "Copied" : "Copy link"}
+            </Button>
+          </span>
+        </Tooltip>
         <Button variant="contained" disableElevation onClick={onClose}>
           Done
         </Button>

@@ -621,6 +621,25 @@ async function testGrantsAndNeedsApproval() {
       true,
     );
 
+    // A tool captured earlier in the turn must not execute after the server is
+    // disconnected or removed from availability.
+    await McpServer.updateOne(
+      { _id: server._id },
+      { $set: { status: "error" } },
+    );
+    const staleReadTool = chatTools.tools["mcp_close_crm_lead_search"];
+    assert.ok(staleReadTool.execute);
+    const disconnected = (await staleReadTool.execute(
+      {},
+      { toolCallId: "t", messages: [], experimental_context: undefined },
+    )) as { success: boolean; error?: string };
+    assert.equal(disconnected.success, false);
+    assert.match(disconnected.error ?? "", /no longer connected/i);
+    await McpServer.updateOne(
+      { _id: server._id },
+      { $set: { status: "connected" } },
+    );
+
     // User-performer servers without the user's credential are skipped.
     await McpServer.updateOne(
       { _id: server._id },

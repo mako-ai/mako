@@ -31,6 +31,8 @@ How it behaves:
 - **Identical behavior** — the agent reuses the exact same database drivers as the cloud API, so query execution, preview safety checks, schema trees, and autocomplete work identically. All connection types are supported locally, including PostgreSQL, MySQL, MongoDB, ClickHouse, Redshift, BigQuery, Cloud SQL, and Cloudflare D1/KV.
 - **Loopback only** — the agent listens on `127.0.0.1` exclusively and allows requests only from Mako origins. It is never reachable from the network.
 
+Beyond local databases, the bundled agent also hosts the **ACP bridge** for [Coding Agents](/coding-agents-acp/) — running Claude Code or Codex inside Mako Chat on your own subscription.
+
 Using the **web app** instead of the desktop app? You can still query local databases by running the agent standalone — see [`packages/local-agent`](https://github.com/mako-ai/mako/tree/master/packages/local-agent) for details. Your browser will ask once for permission to reach the local agent (Chromium's Local Network Access prompt).
 
 ## Troubleshooting

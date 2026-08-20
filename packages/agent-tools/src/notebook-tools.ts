@@ -91,37 +91,66 @@ export const readNotebookCellSchema = z.object({
 export const editNotebookCellSchema = z
   .object({
     notebookId: notebookIdField,
-    cellId: z.string().describe("Cell id from read_notebook"),
-    source: z
+    mode: z.enum(["insert", "replace", "delete"]).optional(),
+    cellId: z
       .string()
       .optional()
-      .describe(
-        "Replace the full source. Prefer oldString/newString for large cells.",
-      ),
+      .describe("Target cell id (required for replace/delete)."),
+    type: cellTypeField.optional(),
+    source: z.string().optional().describe("Cell contents."),
     oldString: z
       .string()
       .optional()
-      .describe(
-        "Unique source text to replace without resending the full cell.",
-      ),
+      .describe("Unique source text to replace."),
     newString: z.string().optional().describe("Replacement for oldString."),
     replaceAll: z
       .boolean()
       .optional()
-      .describe("Replace every occurrence of oldString (default false)."),
+      .describe("Replace every occurrence (default false)."),
     resourceVersion: z
       .string()
       .optional()
       .describe(
-        "Version from read_notebook, search_notebook, or read_notebook_cell. " +
-          "The edit is rejected if the cell changed since it was read.",
+        "Version from a read/search result; the edit is rejected if the " +
+          "cell changed since.",
       ),
-    type: cellTypeField.optional(),
-    connectionId: z.string().optional(),
+    connectionId: z
+      .string()
+      .optional()
+      .describe("Data source id for SQL cells."),
+    atIndex: z
+      .number()
+      .int()
+      .optional()
+      .describe("Insert position; appends when omitted."),
   })
   .superRefine((value, ctx) => {
+    const mode = value.mode ?? "replace";
     const hasTargetedEdit =
       value.oldString !== undefined || value.newString !== undefined;
+    if (mode === "insert") {
+      if (value.type === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          message: "type is required to insert a cell",
+        });
+      }
+      if (value.cellId !== undefined || hasTargetedEdit) {
+        ctx.addIssue({
+          code: "custom",
+          message:
+            "insert creates a new cell — omit cellId/oldString/newString",
+        });
+      }
+      return;
+    }
+    if (value.cellId === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: `cellId is required to ${mode} a cell`,
+      });
+    }
+    if (mode === "delete") return;
     if (
       hasTargetedEdit &&
       (value.oldString === undefined || value.newString === undefined)
@@ -138,6 +167,27 @@ export const editNotebookCellSchema = z
       });
     }
   });
+
+export type EditNotebookCellInput = z.infer<typeof editNotebookCellSchema>;
+
+/** Deprecated alias schema — edit_notebook_cell(mode: 'insert'). */
+export const addNotebookCellSchema = z.object({
+  notebookId: notebookIdField,
+  type: cellTypeField,
+  source: z.string().optional().describe("Cell contents"),
+  connectionId: z.string().optional().describe("Data source id for SQL cells"),
+  atIndex: z
+    .number()
+    .int()
+    .optional()
+    .describe("Insert position; appends when omitted"),
+});
+
+/** Deprecated alias schema — edit_notebook_cell(mode: 'delete'). */
+export const deleteNotebookCellSchema = z.object({
+  notebookId: notebookIdField,
+  cellId: z.string(),
+});
 
 export function notebookCellResourceVersion(
   cell: {
@@ -278,37 +328,24 @@ export const clientNotebookTools = {
       "metadata and a resourceVersion for safe targeted edits.",
     inputSchema: readNotebookCellSchema,
   }),
-  add_notebook_cell: tool({
-    description:
-      "Append (or insert at atIndex) a cell. For a SQL cell, set connectionId " +
-      "to a data source id (from list_connections) so it can run.",
-    inputSchema: z.object({
-      notebookId: notebookIdField,
-      type: cellTypeField,
-      source: z.string().optional().describe("Cell contents"),
-      connectionId: z
-        .string()
-        .optional()
-        .describe("Data source id for SQL cells"),
-      atIndex: z
-        .number()
-        .int()
-        .optional()
-        .describe("Insert position; appends when omitted"),
-    }),
-  }),
   edit_notebook_cell: tool({
     description:
-      "Edit a cell's source or metadata. For large cells, use a unique " +
-      "oldString/newString plus resourceVersion instead of replacing the full source.",
+      "Insert, replace, or delete a cell (mode; default 'replace'). insert " +
+      "adds a new cell of `type` — for SQL cells set connectionId (a data " +
+      "source id from list_connections). replace edits cellId's source/" +
+      "metadata; for large cells prefer oldString/newString + " +
+      "resourceVersion. delete removes cellId.",
     inputSchema: editNotebookCellSchema,
   }),
+  add_notebook_cell: tool({
+    description:
+      "Deprecated alias of edit_notebook_cell (mode: 'insert') — use that instead.",
+    inputSchema: addNotebookCellSchema,
+  }),
   delete_notebook_cell: tool({
-    description: "Delete a cell by id.",
-    inputSchema: z.object({
-      notebookId: notebookIdField,
-      cellId: z.string(),
-    }),
+    description:
+      "Deprecated alias of edit_notebook_cell (mode: 'delete') — use that instead.",
+    inputSchema: deleteNotebookCellSchema,
   }),
   run_notebook_sql_cell: tool({
     description:
@@ -325,7 +362,7 @@ export const clientNotebookTools = {
       "its stdout/stderr, any error + traceback, and the result. Kernel state " +
       "persists across runs (variables, imports), so cells build on each other. " +
       "pandas, polars, numpy, matplotlib, plotly, duckdb and the `mako` SDK are " +
-      "preinstalled. Use after add_notebook_cell to execute + iterate: run, read " +
+      "preinstalled. Use after edit_notebook_cell to execute + iterate: run, read " +
       "the output/error, fix the cell, rerun.",
     inputSchema: z.object({
       notebookId: notebookIdField,

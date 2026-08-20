@@ -134,7 +134,8 @@ INNGEST_EVENT_KEY=your_inngest_event_key
 INNGEST_SIGNING_KEY=your_inngest_signing_key
 
 # Optional: headless Chromium for server-side app rendering
-# (MCP render_app tool; unset = agents fall back to preview tokens)
+# (MCP run_app tool — render_app is a deprecated alias; unset = agents fall
+# back to preview tokens)
 # RENDER_APP_BROWSER_PATH=/usr/bin/chromium
 
 # Notebook Python kernel (local dev — see .env.example)

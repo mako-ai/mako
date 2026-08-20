@@ -56,11 +56,7 @@ import {
   generateDescriptionAndEmbedding,
 } from "../services/console-description.service";
 import { searchConsoles } from "../agent-lib/tools/console-search-tools";
-import {
-  retrieveRelevantSkills,
-  renderSkillsPromptBlock,
-} from "../services/skills.service";
-import { resolveDbtRulesBlockForTurn } from "../dbt/dbt-rules-turn.service";
+import { prepareAgentTurnGuidance } from "../services/agent-turn-preparation.service";
 import { isDbtShapedTurn } from "../dbt/dbt-turn-shape";
 import { sanitizeMessagesForModel } from "../utils/message-sanitizer";
 import { resolveChatAttachmentsForModel } from "../services/chat-attachment.service";
@@ -643,53 +639,30 @@ agentRoutes.openapi(
       }
     }
 
-    // Skills retrieval — runs for console + unified agents (parity with
-    // self-directive). Index is always included when any skills exist;
-    // bodies are only pulled in when score clears threshold.
     let skillsBlock = "";
+    let dbtRulesBlock = "";
     if (resolvedAgentId === "console" || resolvedAgentId === "unified") {
       try {
-        const retrieval = await retrieveRelevantSkills(
-          workspaceId,
-          lastUserText,
-        );
-        skillsBlock = renderSkillsPromptBlock(retrieval);
-      } catch (err) {
-        logger.debug("Skills block injection skipped", { error: err });
-      }
-    }
-
-    // `.makorules` — the dbt project's own SQL conventions. Binding for any
-    // model the agent writes, so it is injected rather than left for the agent
-    // to look up. `detectAgentId` always resolves to "unified", so gating on
-    // resolvedAgentId would fire on every turn — gate on the turn actually
-    // being dbt-shaped instead (open dbt tab, or an active dbt-* tab kind),
-    // otherwise non-dbt turns (console, notebook) pay uncached prompt tokens
-    // for rules that don't apply to them. Never fatal: a failed lookup just
-    // means no rules this turn.
-    let dbtRulesBlock = "";
-    if (isDbtShapedTurn({ openTabs, tabKind })) {
-      try {
+        const includeDbtRules = isDbtShapedTurn({ openTabs, tabKind });
         const dbtTabs = (openTabs ?? []).filter(t => t.dbtProjectId);
         const activeDbtProjectId = dbtTabs.find(t => t.isActive)?.dbtProjectId;
         const distinctProjectIds = new Set(dbtTabs.map(t => t.dbtProjectId));
-        // No active dbt tab and several distinct projects open: falling back
-        // to dbtTabs[0] would pick a project by arbitrary tab order and tell
-        // the model its rules are binding while the user edits another one.
-        // Resolve nothing instead — read_dbt_project_tree still returns the
-        // right project's rules inline once the agent orients.
         const dbtProjectId =
           activeDbtProjectId ??
           (distinctProjectIds.size === 1
             ? dbtTabs[0]?.dbtProjectId
             : undefined);
-        dbtRulesBlock = await resolveDbtRulesBlockForTurn({
+        const guidance = await prepareAgentTurnGuidance({
           workspaceId,
           userId: actorId,
+          userText: lastUserText,
+          includeDbtRules,
           dbtProjectId,
         });
+        skillsBlock = guidance.skillsBlock;
+        dbtRulesBlock = guidance.dbtRulesBlock;
       } catch (err) {
-        logger.warn("dbt rules injection skipped", { error: err });
+        logger.warn("Turn guidance injection skipped", { error: err });
       }
     }
 

@@ -60,8 +60,9 @@ Projects can be **imported from GitHub** and kept in sync via Mako's multi-tenan
 Beyond the file IDE, the editor mirrors **dbt Studio**:
 
 - **Live auto-compile** of the model you're editing.
-- **Build / Run / Test** node menu with graph operators: `model`, `model+`, `+model`, `+model+`.
-- **Persistent bottom panel** — Compiled / Problems / Results / Lineage tabs and a status bar.
+- **Toolbar** mirroring dbt Cloud: **Preview** (`Cmd+Enter`) · **Compile** · **Build** split-button. The Build menu carries the Build / Run / Test × graph-operator matrix: `model`, `model+`, `+model`, `+model+`.
+- **Preview** runs `dbt show --select <model> --limit 500 --output json` — a bounded, read-only SELECT that materializes nothing — and fills the Results grid with real rows. Because it never writes to the warehouse, Preview is allowed on every environment and is never recorded to run history. CSV / NDJSON export included.
+- **Persistent bottom panel** — Commands · Problems · Results · Compiled code · Lineage tabs and a status bar. Node outcomes (Build / Run / Test) live in **Commands** next to the invocation that produced them; **Results** is the data grid filled by Preview.
 - **jinja-sql** Monaco language support, a dbt version selector, and project create/import/settings drawers.
 
 ## Running models
@@ -70,6 +71,7 @@ Three ways to execute dbt, all routed through the same validated runner:
 
 | Action | What it runs | Where |
 | ------ | ------------ | ----- |
+| **Preview** | `dbt show --select <model> --limit 500 --output json` | Bounded read-only SELECT; renders rows in the Results grid. Allowed on every environment, never written to run history |
 | **Compile / Parse** | `dbt parse` or `dbt compile --select <model>` | Renders Jinja, validates refs/sources without touching the warehouse |
 | **Run selection** | `dbt build --select <model>` | Builds the model **and its tests** on the chosen environment |
 | **Command bar** | Any allow-listed `dbt` command | dbt Cloud parity — free-form command bar |
@@ -133,6 +135,7 @@ dbt routes are mounted under `/api/workspaces/:workspaceId/dbt`. Highlights (ful
 | `GET` | `/projects/:projectId/runs/:runId/artifacts/:kind` | Stream an artifact (`manifest`, `runResults`, `catalog`, `sources`) |
 | `POST` | `/projects/:projectId/compile` | Parse / compile a selection |
 | `POST` | `/projects/:projectId/run-select` | `dbt build --select` a selection |
+| `POST` | `/projects/:projectId/preview` | `dbt show --select` — bounded read-only row preview |
 | `POST` | `/projects/:projectId/command` | Run an allow-listed free-form command |
 | `GET` | `/projects/:projectId/lineage` | DAG nodes + edges from the latest manifest |
 

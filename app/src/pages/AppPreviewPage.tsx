@@ -7,6 +7,12 @@ import {
   appLocationFromHostSearch,
   appLocationToHostSearch,
 } from "../app-runtime/app-location";
+import { disposeAppDuckDB } from "../app-runtime/duckdb";
+import {
+  hydrateReadyBindings,
+  serveSandboxDuckDbRequest,
+  type TokenViewerBinding,
+} from "../app-runtime/preview-duckdb";
 
 /**
  * Draft-app preview for signed preview tokens (/preview/:token).
@@ -21,9 +27,10 @@ import {
  *   - `window.__MAKO_PREVIEW_STATE__` = { status, errors[] } for polling
  *   - console lines prefixed `[mako-preview-error]` / `[mako-preview-ready]`
  *
- * Bindings always execute live against the DRAFT's stored code (the token
- * endpoint refuses everything else), so what the agent sees is what the
- * draft would do — no publish required.
+ * useQuery bindings execute live against the DRAFT's stored code (fresh data,
+ * no publish required). Materialized (parquet) bindings ALSO hydrate their
+ * artifact into this page's DuckDB instance, so useDuckDB apps run their real
+ * data layer here — the agent can verify data-populated UI headlessly.
  */
 
 interface PreviewContent {
@@ -34,7 +41,7 @@ interface PreviewContent {
   expiresAt: string;
   files: Array<{ path: string; contents: string }>;
   dependencies: Record<string, string>;
-  dataBindings: Array<{ id: string; name: string }>;
+  dataBindings: TokenViewerBinding[];
 }
 
 type PreviewStatus = "booting" | "ready" | "error";
@@ -109,7 +116,22 @@ export default function AppPreviewPage() {
     else window.history.pushState(null, "", next);
   }, []);
 
-  // Bridge: draft bindings run server-side through the token endpoint.
+  // DuckDB instance for materialized bindings (torn down with the page).
+  const duckAppId = `preview-${token}`;
+  useEffect(() => {
+    return () => {
+      void disposeAppDuckDB(duckAppId);
+    };
+  }, [duckAppId]);
+
+  // Hydrate ready parquet artifacts so useDuckDB runs the real data layer.
+  useEffect(() => {
+    if (!content) return;
+    hydrateReadyBindings(duckAppId, content.dataBindings);
+  }, [duckAppId, content]);
+
+  // Bridge: useQuery bindings run live server-side through the token
+  // endpoint; useDuckDB runs against the hydrated artifacts in-page.
   useEffect(() => {
     if (!content) return;
     const post = (message: Record<string, unknown>) =>
@@ -160,14 +182,31 @@ export default function AppPreviewPage() {
             }),
           );
       } else if (data.type === PREVIEW_MESSAGE.runDuckDb) {
-        // Parquet snapshots aren't hydrated in token previews (bindings are
-        // served live instead); useDuckDB apps need the in-product editor.
-        post({
-          type: PREVIEW_MESSAGE.duckDbResult,
+        const readyBindings = content.dataBindings.filter(
+          b => b.ready && b.artifactUrl,
+        );
+        if (readyBindings.length === 0) {
+          const parquetNames = content.dataBindings
+            .filter(b => b.materialization === "parquet")
+            .map(b => `"${b.name}"`);
+          post({
+            type: PREVIEW_MESSAGE.duckDbResult,
+            requestId: data.requestId,
+            success: false,
+            error:
+              parquetNames.length > 0
+                ? `No materialized artifact for ${parquetNames.join(", ")} yet — run materialize_binding first, then reload the preview.`
+                : "useDuckDB needs a 'parquet' data binding. Create one (materialization: 'parquet') and run materialize_binding, or read live data with useQuery instead.",
+          });
+          return;
+        }
+        serveSandboxDuckDbRequest({
+          duckAppId,
+          bindings: content.dataBindings,
           requestId: data.requestId,
-          success: false,
-          error:
-            "useDuckDB is not available in draft previews — data bindings run live here",
+          sql: data.sql,
+          rowLimit: data.rowLimit,
+          post,
         });
       } else if (data.type === PREVIEW_MESSAGE.navigate) {
         if (typeof data.location === "string") {
@@ -190,7 +229,7 @@ export default function AppPreviewPage() {
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [content, token, writeAppLocation]);
+  }, [content, token, duckAppId, writeAppLocation]);
 
   // Reflect browser back/forward into the booted iframe.
   useEffect(() => {

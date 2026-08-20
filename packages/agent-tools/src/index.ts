@@ -55,7 +55,12 @@ export type {
 export { clientChartTools } from "./chart-tools";
 export type { ModifyChartSpecInput } from "./chart-tools";
 
-export { clientDashboardTools } from "./dashboard-tools";
+export {
+  clientDashboardTools,
+  updateDataSourceQuerySchema,
+  resolveDataSourceCodeEdit,
+  type UpdateDataSourceQueryInput,
+} from "./dashboard-tools";
 export { clientFlowTools } from "./flow-tools";
 
 export { clientAppTools } from "./app-tools";
@@ -135,6 +140,8 @@ export { clientDataSourceTools } from "./data-source-tools";
 
 export {
   clientNotebookTools,
+  addNotebookCellSchema,
+  deleteNotebookCellSchema,
   editNotebookCellSchema,
   notebookCellResourceVersion,
   readNotebookCellRange,
@@ -146,11 +153,38 @@ export {
   NOTEBOOK_CELL_PAGE_LIMIT,
   NOTEBOOK_SOURCE_PREVIEW_CHARS,
 } from "./notebook-tools";
+export type { EditNotebookCellInput } from "./notebook-tools";
+
+export {
+  runAppBaseSchema,
+  clampRunAppTimeoutMs,
+  summarizeRunAppResult,
+  runAppResultToMcpContent,
+  isRunAppResult,
+  RUN_APP_DEFAULT_TIMEOUT_MS,
+  RUN_APP_MIN_TIMEOUT_MS,
+  RUN_APP_MAX_TIMEOUT_MS,
+  RUN_APP_MIN_VIEWPORT_PX,
+  RUN_APP_MAX_VIEWPORT_PX,
+  APP_PREVIEW_VIEWPORT_PRESETS,
+} from "./run-app";
+export type {
+  AppPreviewViewportPreset,
+  RunAppBaseInput,
+  RunAppResult,
+  RunAppScreenshot,
+  RunAppSource,
+  RunAppMcpContent,
+} from "./run-app";
 
 export { clientScreenshotTools } from "./screenshot-tools";
 export type { CaptureScreenshotInput } from "./screenshot-tools";
 
-export { clientPlanTools } from "./plan-tools";
+export {
+  clientPlanTools,
+  HITL_TOOL_JSON_SCHEMAS,
+  validateHitlToolArguments,
+} from "./plan-tools";
 export type {
   ClarifyingQuestion,
   AskClarifyingQuestionsInput,
@@ -159,6 +193,7 @@ export type {
   SubmitPlanInput,
   SubmitPlanOutput,
   PlanDecision,
+  HitlToolName,
 } from "./plan-tools";
 
 export {
@@ -166,6 +201,56 @@ export {
   PLAN_GATE_ALLOWED_TOOL_NAMES,
   isReadOnlyToolName,
 } from "./read-only-tools";
+
+export {
+  CAPABILITY_GRANTS,
+  type AgentCapabilityDefinition,
+  type AgentSurface,
+  type CapabilityGrant,
+  type CapabilityMcpExclusionWhy,
+  type CapabilityResultKind,
+  type CapabilityRisk,
+} from "./capabilities/types";
+
+export {
+  DBT_CAPABILITIES,
+  DBT_CAPABILITY_BY_NAME,
+  DBT_CAPABILITY_NAMES,
+  dbtCapabilitiesForPack,
+  dbtCapabilitiesForSurface,
+  type DbtCapabilityDefinition,
+  type DbtCapabilityPack,
+} from "./capabilities/dbt-capabilities";
+
+export {
+  APP_CAPABILITIES,
+  type AppCapabilityDefinition,
+  type AppCapabilityPack,
+} from "./capabilities/app-capabilities";
+
+export {
+  CONSOLE_CAPABILITIES,
+  type ConsoleCapabilityDefinition,
+  type ConsoleCapabilityPack,
+} from "./capabilities/console-capabilities";
+
+export {
+  QUERY_CAPABILITIES,
+  type QueryCapabilityDefinition,
+  type QueryCapabilityPack,
+} from "./capabilities/query-capabilities";
+
+export {
+  NOTEBOOK_CAPABILITIES,
+  type NotebookCapabilityDefinition,
+  type NotebookCapabilityPack,
+} from "./capabilities/notebook-capabilities";
+
+export {
+  AGENT_CAPABILITIES,
+  AGENT_CAPABILITY_BY_NAME,
+  agentCapabilitiesForSurface,
+} from "./capabilities/registry";
 
 export {
   applyModification,

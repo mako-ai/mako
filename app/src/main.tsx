@@ -6,6 +6,7 @@ import CssBaseline from "@mui/material/CssBaseline";
 import { LicenseInfo } from "@mui/x-license";
 import { enableMapSet } from "immer";
 import App from "./App.tsx";
+import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { AuthProvider } from "./contexts/auth-context.tsx";
 import { initializeStoreVersion } from "./store/lib/storeVersion";
@@ -37,13 +38,15 @@ if (!rootElement) throw new Error("Root element not found");
 
 ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
-    <BrowserRouter>
-      <ThemeProvider>
-        <CssBaseline />
-        <AuthProvider>
-          <App />
-        </AuthProvider>
-      </ThemeProvider>
-    </BrowserRouter>
+    <AppErrorBoundary>
+      <BrowserRouter>
+        <ThemeProvider>
+          <CssBaseline />
+          <AuthProvider>
+            <App />
+          </AuthProvider>
+        </ThemeProvider>
+      </BrowserRouter>
+    </AppErrorBoundary>
   </React.StrictMode>,
 );

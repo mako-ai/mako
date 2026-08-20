@@ -73,7 +73,10 @@ export function registerDesktopBridgeRoutes(app: Hono): void {
         400,
       );
     }
-    const exchange = await handleDesktopMcpExchange(body);
+    const exchange = await handleDesktopMcpExchange(body, {
+      agentSessionId: c.req.query("agentSessionId"),
+      workspaceId: c.req.query("workspaceId"),
+    });
     if (exchange.status === 202) {
       return c.body(null, 202);
     }

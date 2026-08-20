@@ -16,7 +16,8 @@ export interface ConvertedUiMessage {
   parts: Array<Record<string, unknown>>;
 }
 
-const INTERRUPTED_TEXT =
+/** Exported for the Local ACP resume path's incomplete-turn heuristic. */
+export const INTERRUPTED_TOOL_TEXT =
   "Interrupted — stream disconnected before tool completed";
 
 // Human-in-the-loop tools resolve via an interactive card, so a persisted
@@ -138,7 +139,7 @@ function convertStoredPart(
       state: "output-error",
       input: p.input ?? {},
       output: undefined,
-      errorText: INTERRUPTED_TEXT,
+      errorText: INTERRUPTED_TOOL_TEXT,
     };
   }
   // Unknown part type - pass through as-is

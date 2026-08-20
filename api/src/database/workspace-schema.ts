@@ -163,6 +163,16 @@ export interface IWorkspace extends Document {
     billingTier: "free" | "pro" | "enterprise";
     customPrompt?: string;
     disabledModelIds?: string[];
+    /**
+     * Max concurrent scheduled/manual dashboard artifact refreshes for this
+     * workspace. Clamped to [1, DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX].
+     */
+    dashboardRefreshConcurrency?: number;
+    /**
+     * Max concurrent app parquet binding materializations for this workspace.
+     * Clamped to [1, APP_BINDING_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX].
+     */
+    appBindingRefreshConcurrency?: number;
   };
   billing: IWorkspaceBilling;
   selfDirective?: string;
@@ -260,6 +270,12 @@ export interface IDatabaseConnection extends Document {
     };
   };
   isDemo?: boolean; // True if this is a demo database connection
+  /**
+   * Opt-in: scoped agent credentials (MCP query:write keys) may run write
+   * statements against this connection. Off by default; read-only agent
+   * access is unaffected. Set it on connections created for agent writes.
+   */
+  allowAgentWrites?: boolean;
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
@@ -628,6 +644,15 @@ export interface IMessagePart {
   input?: unknown; // Tool input/arguments (named 'input' for AI SDK v6 compat, was 'args')
   output?: unknown; // Tool result (named 'output' for AI SDK v6 compat, was 'result')
   state?: string; // Tool state: "input-streaming", "input-available", "output-streaming", "output-available", "error"
+  approval?: { id?: string; approved?: boolean }; // AI SDK MCP approval lifecycle
+  errorText?: string;
+  rawInput?: unknown;
+  providerExecuted?: boolean;
+  preliminary?: boolean;
+  callProviderMetadata?: unknown;
+  resultProviderMetadata?: unknown;
+  toolMetadata?: unknown;
+  title?: string;
   // File parts (AI SDK FileUIPart). Without these fields, persisted attachments
   // are reduced to `{ type: "file", _id }` and break `convertToModelMessages`
   // with "The messages do not match the ModelMessage[] schema."
@@ -1156,6 +1181,28 @@ export interface IQueryExecution extends Document {
   bytesScanned?: number; // BigQuery, ClickHouse report this
 }
 
+export interface IConnectionVerification extends Document {
+  _id: Types.ObjectId;
+  verifiedAt: Date;
+
+  // Who triggered the test (absent for unauthenticated/system paths)
+  userId?: string;
+  workspaceId?: Types.ObjectId;
+
+  // Saved connection under test; absent for pre-save tests of unsaved configs
+  connectionId?: Types.ObjectId;
+  databaseType: string;
+
+  // Where in the product the test ran
+  trigger: "standalone_test" | "create_verify" | "update_verify" | "saved_test";
+
+  // Outcome
+  success: boolean;
+  durationMs: number;
+  errorClass?: string; // auth_failed, host_not_found, timeout, tls, ...
+  errorMessage?: string; // Truncated driver error, for drill-down
+}
+
 /**
  * Workspace Schema
  */
@@ -1215,6 +1262,16 @@ Add any specific instructions for how the AI should interpret your data or respo
 *This prompt is combined with the system prompt to provide context-aware responses. You can edit this through the Settings page.*`,
       },
       disabledModelIds: [{ type: String }],
+      dashboardRefreshConcurrency: {
+        type: Number,
+        default: 2,
+        min: 1,
+      },
+      appBindingRefreshConcurrency: {
+        type: Number,
+        default: 2,
+        min: 1,
+      },
     },
     billing: {
       stripeCustomerId: { type: String, default: null },
@@ -1419,6 +1476,10 @@ const DatabaseConnectionSchema = new Schema<IDatabaseConnection>(
       get: decryptObject,
     },
     isDemo: {
+      type: Boolean,
+      default: false,
+    },
+    allowAgentWrites: {
       type: Boolean,
       default: false,
     },
@@ -1897,6 +1958,17 @@ const ChatSchema = new Schema<IChat>(
             input: Schema.Types.Mixed,
             output: Schema.Types.Mixed,
             state: String,
+            // AI SDK tool lifecycle fields. Approval metadata is required to
+            // continue an MCP tool call after the chat is persisted/reloaded.
+            approval: Schema.Types.Mixed,
+            errorText: String,
+            rawInput: Schema.Types.Mixed,
+            providerExecuted: Boolean,
+            preliminary: Boolean,
+            callProviderMetadata: Schema.Types.Mixed,
+            resultProviderMetadata: Schema.Types.Mixed,
+            toolMetadata: Schema.Types.Mixed,
+            title: String,
             // File parts (AI SDK FileUIPart). Persisting these keeps attachments
             // round-trippable; without them Mongoose strict mode strips the
             // fields and breaks convertToModelMessages on the next turn.
@@ -2795,6 +2867,49 @@ CdcStateTransitionSchema.index({ workspaceId: 1, flowId: 1, at: -1 });
  * QueryExecution Schema
  * Tracks all query executions for usage analytics and billing
  */
+const ConnectionVerificationSchema = new Schema<IConnectionVerification>(
+  {
+    verifiedAt: { type: Date, required: true, default: Date.now },
+    userId: { type: String, ref: "User", required: false },
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: false,
+    },
+    connectionId: {
+      type: Schema.Types.ObjectId,
+      ref: "DatabaseConnection",
+      required: false,
+    },
+    databaseType: { type: String, required: true },
+    trigger: {
+      type: String,
+      enum: ["standalone_test", "create_verify", "update_verify", "saved_test"],
+      required: true,
+    },
+    success: { type: Boolean, required: true },
+    durationMs: { type: Number, required: true },
+    errorClass: { type: String, required: false },
+    errorMessage: { type: String, required: false },
+  },
+  {
+    collection: "connection_verifications",
+    timestamps: false,
+  },
+);
+
+ConnectionVerificationSchema.index({ workspaceId: 1, verifiedAt: -1 });
+ConnectionVerificationSchema.index({ userId: 1, verifiedAt: -1 });
+ConnectionVerificationSchema.index({
+  success: 1,
+  errorClass: 1,
+  verifiedAt: -1,
+}); // Failure-mode rollups
+ConnectionVerificationSchema.index(
+  { verifiedAt: 1 },
+  { expireAfterSeconds: 7776000 },
+); // TTL: 90 days
+
 const QueryExecutionSchema = new Schema<IQueryExecution>(
   {
     executedAt: { type: Date, required: true, default: Date.now },
@@ -4011,6 +4126,10 @@ export const QueryExecution = mongoose.model<IQueryExecution>(
   "QueryExecution",
   QueryExecutionSchema,
 );
+export const ConnectionVerification = mongoose.model<IConnectionVerification>(
+  "ConnectionVerification",
+  ConnectionVerificationSchema,
+);
 export const ScheduledQueryRun = mongoose.model<IScheduledQueryRun>(
   "ScheduledQueryRun",
   ScheduledQueryRunSchema,
@@ -5002,6 +5121,11 @@ export interface IDbtRun extends Document {
   logs: IDbtRunLogLine[];
   /** Parsed from run_results.json after each command. */
   stepResults: IDbtRunStepResult[];
+  /** Structured bounded output for commands whose result is not run_results. */
+  output?: {
+    kind: "show-preview";
+    text: string;
+  };
   artifactKeys: {
     manifest?: string;
     runResults?: string;
@@ -5104,6 +5228,10 @@ const DbtRunSchema = new Schema<IDbtRun>(
         ),
       ],
       default: [],
+    },
+    output: {
+      kind: { type: String, enum: ["show-preview"] },
+      text: { type: String },
     },
     artifactKeys: {
       manifest: { type: String },

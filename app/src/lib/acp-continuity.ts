@@ -73,13 +73,16 @@ export function prependAcpPromptLayers(args: {
   userText: string;
   continuitySeed?: string;
   uiContext?: string;
+  turnGuidance?: string;
 }): string {
   const trimmed = args.userText.trim();
   const layers: string[] = [];
   const continuity = args.continuitySeed?.trim();
   const ui = args.uiContext?.trim();
+  const guidance = args.turnGuidance?.trim();
   if (continuity) layers.push(continuity);
   if (ui) layers.push(ui);
+  if (guidance) layers.push(guidance);
   if (layers.length === 0) return trimmed;
   return `${layers.join("\n\n")}\n\n[User message]\n${trimmed}`;
 }

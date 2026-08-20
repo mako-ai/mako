@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { resolve as resolvePath } from "node:path";
-import type { ActiveSession } from "@agentclientprotocol/sdk";
+import type { ActiveSession, ContentBlock } from "@agentclientprotocol/sdk";
 import {
   openProviderConnection,
   type AcpProviderConnection,
@@ -48,6 +48,7 @@ import {
 import type {
   AcpAuthenticateResult,
   AcpBridgeEvent,
+  AcpPromptImage,
   AcpProviderStatus,
   AcpSessionInfo,
   AcpStatusResponse,
@@ -140,6 +141,11 @@ function normalizeBearerAuth(value: string): string {
 
 export class AcpSessionManager {
   private connections = new Map<AcpProviderId, AcpProviderConnection>();
+  private connectionInFlight = new Map<
+    AcpProviderId,
+    Promise<AcpProviderConnection>
+  >();
+  private shuttingDown = false;
   private sessions = new Map<string, ManagedSession>();
   private pendingPermissions = new Map<string, PendingPermission>();
   /** Global listeners (all sessions) — used by tests. */
@@ -261,7 +267,7 @@ export class AcpSessionManager {
       defaultCwd: defaultCwd(),
       providers,
       acpBridge: {
-        version: 7,
+        version: 8,
         terminalAuth: true,
         mcpProbe: true,
         reconnect: true,
@@ -270,6 +276,7 @@ export class AcpSessionManager {
         hitlTools: true,
         adapterEnsure: true,
         modelWarm: true,
+        promptImages: true,
       },
       lastAdapterError: this.lastAdapterError,
       ensureByProvider,
@@ -532,11 +539,7 @@ export class AcpSessionManager {
         : `${acpReconnectMessage(label)} (${reason})`;
     if (conn) {
       this.connections.delete(providerId);
-      try {
-        conn.close();
-      } catch {
-        // already dead
-      }
+      void conn.close().catch(() => undefined);
     }
 
     const deadSessionIds: string[] = [];
@@ -577,6 +580,30 @@ export class AcpSessionManager {
   }
 
   private async ensureConnection(
+    providerId: AcpProviderId,
+  ): Promise<AcpProviderConnection> {
+    if (this.shuttingDown) {
+      throw new Error("ACP session manager is shutting down");
+    }
+
+    const existing = this.connections.get(providerId);
+    if (existing && isConnectionAlive(existing)) {
+      return existing;
+    }
+
+    const inFlight = this.connectionInFlight.get(providerId);
+    if (inFlight) return inFlight;
+
+    const pending = this.openConnection(providerId).finally(() => {
+      if (this.connectionInFlight.get(providerId) === pending) {
+        this.connectionInFlight.delete(providerId);
+      }
+    });
+    this.connectionInFlight.set(providerId, pending);
+    return pending;
+  }
+
+  private async openConnection(
     providerId: AcpProviderId,
   ): Promise<AcpProviderConnection> {
     const existing = this.connections.get(providerId);
@@ -969,7 +996,22 @@ export class AcpSessionManager {
           Number.isFinite(parsedPort) && parsedPort > 0
             ? parsedPort
             : LOCAL_AGENT_PORT;
-        const desktopMcpUrl = `http://127.0.0.1:${agentPort}${DESKTOP_MCP_PATH}`;
+        const desktopMcpUrlValue = new URL(
+          `http://127.0.0.1:${agentPort}${DESKTOP_MCP_PATH}`,
+        );
+        if (body.makoAgentSessionId?.trim()) {
+          desktopMcpUrlValue.searchParams.set(
+            "agentSessionId",
+            body.makoAgentSessionId.trim(),
+          );
+        }
+        if (body.makoWorkspaceId?.trim()) {
+          desktopMcpUrlValue.searchParams.set(
+            "workspaceId",
+            body.makoWorkspaceId.trim(),
+          );
+        }
+        const desktopMcpUrl = desktopMcpUrlValue.toString();
         builder = builder.withMcpServer({
           type: "http",
           name: DESKTOP_MCP_SERVER_NAME,
@@ -995,6 +1037,12 @@ export class AcpSessionManager {
         updatedAt: nowIso(),
         busy: false,
         makoMcpAttached: attachMakoMcp,
+        makoAgentSessionId: attachMakoMcp
+          ? body.makoAgentSessionId?.trim()
+          : undefined,
+        makoWorkspaceId: attachMakoMcp
+          ? body.makoWorkspaceId?.trim()
+          : undefined,
       };
 
       const managed: ManagedSession = {
@@ -1124,6 +1172,7 @@ export class AcpSessionManager {
   async prompt(
     sessionId: string,
     text: string,
+    images: AcpPromptImage[] = [],
   ): Promise<{ stopReason: string }> {
     const session = this.sessions.get(sessionId);
     if (!session?.active) {
@@ -1131,7 +1180,7 @@ export class AcpSessionManager {
         `Unknown or expired ACP session: ${sessionId}. Send again to reconnect.`,
       );
     }
-    if (!text.trim()) {
+    if (!text.trim() && images.length === 0) {
       throw new Error("Prompt text is required");
     }
 
@@ -1150,9 +1199,21 @@ export class AcpSessionManager {
     }
 
     const providerId = session.info.providerId;
-    if (!isConnectionAlive(this.connections.get(providerId))) {
+    const connection = this.connections.get(providerId);
+    if (!isConnectionAlive(connection)) {
       this.invalidateProvider(providerId, "adapter not alive before prompt");
       throw new Error(acpReconnectMessage(ACP_PROVIDERS[providerId].label));
+    }
+
+    // Silently dropping attachments is worse than failing: the model answers
+    // as if the screenshot never existed. Fail loudly when the adapter did
+    // not advertise image support on initialize.
+    if (images.length > 0 && connection?.promptCapabilities?.image !== true) {
+      throw new Error(
+        `${ACP_PROVIDERS[providerId].label} (this adapter version) does not ` +
+          "support image attachments. Update the adapter via Settings → " +
+          "Coding Agents → Update, then retry.",
+      );
     }
 
     session.busy = true;
@@ -1191,8 +1252,22 @@ export class AcpSessionManager {
 
     // Capture after the null guard — nested async closures lose the narrow.
     const active = session.active;
+    const promptContent: string | ContentBlock[] =
+      images.length === 0
+        ? promptText
+        : [
+            ...(promptText
+              ? [{ type: "text" as const, text: promptText }]
+              : []),
+            ...images.map(img => ({
+              type: "image" as const,
+              data: img.data,
+              mimeType: img.mimeType,
+              ...(img.uri ? { uri: img.uri } : {}),
+            })),
+          ];
     const drainPrompt = async (): Promise<{ stopReason: string }> => {
-      const promptPromise = active.prompt(promptText);
+      const promptPromise = active.prompt(promptContent);
       for (;;) {
         const message = await active.nextUpdate();
         if (message.kind === "session_update") {
@@ -1516,6 +1591,7 @@ export class AcpSessionManager {
   }
 
   async shutdown(): Promise<void> {
+    this.shuttingDown = true;
     const warms = [...this.modelWarmInFlight.values()];
     if (warms.length > 0) {
       await Promise.race([
@@ -1525,13 +1601,18 @@ export class AcpSessionManager {
         }),
       ]);
     }
+    const connectionStarts = [...this.connectionInFlight.values()];
+    if (connectionStarts.length > 0) {
+      await Promise.allSettled(connectionStarts);
+    }
     await Promise.allSettled(
       [...this.sessions.keys()].map(id => this.closeSession(id)),
     );
-    for (const conn of this.connections.values()) {
-      conn.close();
-    }
+    await Promise.allSettled(
+      [...this.connections.values()].map(conn => conn.close()),
+    );
     this.connections.clear();
+    this.connectionInFlight.clear();
   }
 }
 

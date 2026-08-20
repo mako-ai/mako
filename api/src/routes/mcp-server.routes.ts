@@ -29,11 +29,13 @@ import {
   resolveWorkspaceApiKeyScopes,
 } from "../auth/api-key-scopes";
 import { buildMakoMcpServer } from "../mcp/mako-mcp-server";
+import { createChatGptConnectorTools } from "../mcp/chatgpt-connector-tools";
 import { createMcpPreviewTools } from "../mcp/preview-tools";
 import { StatelessMcpTransport } from "../mcp/stateless-transport";
 import { ACP_MCP_CLIENT_ID } from "../auth/mcp-oauth.service";
 import type { AuthEnv } from "../openapi/core";
 import { loggers } from "../logging";
+import { resolveAcpPlanGrants } from "../services/acp-plan-grant.service";
 
 const logger = loggers.api("mcp-server");
 
@@ -135,15 +137,32 @@ mcpProtocolRoutes.post(
     // Desktop ACP attaches via a fixed OAuth client. Those sessions already
     // have a live iframe — hide headless create_preview_token / render_app.
     const acpDesktop = c.get("mcpOAuthClientId") === ACP_MCP_CLIENT_ID;
+    const capabilityGrants =
+      acpDesktop && user
+        ? await resolveAcpPlanGrants({
+            workspaceId,
+            userId: String(user.id),
+            agentSessionId: c.get("mcpAgentSessionId"),
+          })
+        : undefined;
     const mcpContext = {
       workspaceId,
       userId: user ? String(user.id) : undefined,
       scopes,
       acpDesktop,
+      capabilityGrants,
     };
+    // External clients also get the ChatGPT connector contract (search /
+    // fetch) — required for ChatGPT to accept the server as a connector,
+    // harmless workspace search for everyone else.
     const server = buildMakoMcpServer(
       mcpContext,
-      acpDesktop ? undefined : createMcpPreviewTools(mcpContext),
+      acpDesktop
+        ? undefined
+        : {
+            ...createMcpPreviewTools(mcpContext),
+            ...createChatGptConnectorTools(mcpContext),
+          },
     );
     const transport = new StatelessMcpTransport();
 

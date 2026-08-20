@@ -1,9 +1,16 @@
 import * as os from "os";
+import { RetryAfterError } from "inngest";
 import { inngest } from "../client";
 import { Dashboard } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import { rebuildDashboardArtifacts } from "../../services/dashboard-artifact-rebuild.service";
 import { isDashboardMaterializationDue } from "../../services/dashboard-materialization-schedule.service";
+import {
+  DASHBOARD_REFRESH_CONCURRENCY_MAX,
+  countBuildingDashboardRefreshes,
+  getWorkspaceDashboardRefreshConcurrency,
+  shouldDeferDashboardRefresh,
+} from "../../services/workspace-refresh-limits.service";
 import {
   listActiveMaterializationRuns,
   markStaleRunsAbandoned,
@@ -18,22 +25,34 @@ export const dashboardRefreshFunction = inngest.createFunction(
   {
     id: "dashboard-refresh",
     name: "Refresh Dashboard Data Sources",
-    concurrency: {
-      limit: 1,
-      key: "event.data.dashboardId",
-    },
+    concurrency: [
+      {
+        scope: "fn",
+        // Hard ceiling per workspace. The effective limit is
+        // Workspace.settings.dashboardRefreshConcurrency (enforced below).
+        key: "event.data.workspaceId",
+        limit: DASHBOARD_REFRESH_CONCURRENCY_MAX,
+      },
+      {
+        scope: "fn",
+        key: "event.data.dashboardId",
+        limit: 1,
+      },
+    ],
     retries: 2,
   },
   { event: "dashboard.refresh" },
   async ({ event, step }) => {
     const {
       dashboardId,
+      workspaceId: eventWorkspaceId,
       dataSourceIds,
       force,
       triggerType,
       queuedRunIdsByDataSourceId,
     } = event.data as {
       dashboardId: string;
+      workspaceId?: string;
       dataSourceIds?: string[];
       queuedRunIdsByDataSourceId?: Record<string, string>;
       force?: boolean;
@@ -46,12 +65,37 @@ export const dashboardRefreshFunction = inngest.createFunction(
       return doc.toObject();
     })) as any;
 
+    const workspaceId =
+      eventWorkspaceId ?? dashboard.workspaceId?.toString() ?? "";
+    if (!workspaceId) {
+      throw new Error(`Dashboard ${dashboardId} is missing workspaceId`);
+    }
+
+    // Must throw outside step.run so Inngest releases concurrency for RetryAfterError.
+    const gate = await shouldDeferDashboardRefresh({
+      workspaceId,
+      dashboardId,
+    });
+    if (gate.defer) {
+      logger.info("Deferring dashboard refresh: workspace concurrency full", {
+        dashboardId,
+        workspaceId,
+        activeOthers: gate.activeOthers,
+        limit: gate.limit,
+      });
+      throw new RetryAfterError(
+        `Workspace dashboard refresh concurrency limit (${gate.limit})`,
+        "30s",
+      );
+    }
+
     const filteredDataSources = dashboard.dataSources.filter(
       (ds: any) => !dataSourceIds?.length || dataSourceIds.includes(ds.id),
     );
 
     logger.info("Refreshing dashboard data sources", {
       dashboardId,
+      workspaceId,
       dataSourceCount: filteredDataSources.length,
       workerId: WORKER_ID,
     });
@@ -94,10 +138,14 @@ export const dashboardSchedulerFunction = inngest.createFunction(
       return Dashboard.find({
         "materializationSchedule.enabled": true,
         "materializationSchedule.cron": { $type: "string", $ne: "" },
-      }).select("_id cache dataSources materializationSchedule");
+      }).select("_id workspaceId cache dataSources materializationSchedule");
     })) as any[];
 
     let triggered = 0;
+    let deferred = 0;
+    const triggeredByWorkspace = new Map<string, number>();
+    const limitByWorkspace = new Map<string, number>();
+    const buildingByWorkspace = new Map<string, number>();
 
     for (const dashboard of dashboards) {
       let isDue = false;
@@ -118,6 +166,34 @@ export const dashboardSchedulerFunction = inngest.createFunction(
       }
 
       if (isDue && dashboard.dataSources?.length > 0) {
+        const workspaceId = dashboard.workspaceId?.toString();
+        if (!workspaceId) {
+          logger.warn(
+            "Skipping scheduled refresh: dashboard missing workspaceId",
+            { dashboardId: dashboard._id.toString() },
+          );
+          continue;
+        }
+
+        if (!limitByWorkspace.has(workspaceId)) {
+          limitByWorkspace.set(
+            workspaceId,
+            await getWorkspaceDashboardRefreshConcurrency(workspaceId),
+          );
+          buildingByWorkspace.set(
+            workspaceId,
+            await countBuildingDashboardRefreshes(workspaceId),
+          );
+        }
+
+        const limit = limitByWorkspace.get(workspaceId) ?? 2;
+        const building = buildingByWorkspace.get(workspaceId) ?? 0;
+        const alreadyTriggered = triggeredByWorkspace.get(workspaceId) ?? 0;
+        if (building + alreadyTriggered >= limit) {
+          deferred++;
+          continue;
+        }
+
         await Dashboard.findByIdAndUpdate(dashboard._id, {
           $set: { "cache.lastRefreshedAt": new Date() },
         });
@@ -125,10 +201,12 @@ export const dashboardSchedulerFunction = inngest.createFunction(
           name: "dashboard.refresh",
           data: {
             dashboardId: dashboard._id.toString(),
+            workspaceId,
             triggerType: "schedule",
             force: true,
           },
         });
+        triggeredByWorkspace.set(workspaceId, alreadyTriggered + 1);
         triggered++;
       }
     }
@@ -136,9 +214,10 @@ export const dashboardSchedulerFunction = inngest.createFunction(
     logger.info("Dashboard scheduler run", {
       total: dashboards.length,
       triggered,
+      deferred,
     });
 
-    return { total: dashboards.length, triggered };
+    return { total: dashboards.length, triggered, deferred };
   },
 );
 

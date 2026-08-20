@@ -12,12 +12,13 @@
     "start": "tsx src/index.ts",
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/acp/manager.test.ts src/acp/permissions.test.ts src/acp/mcp-probe.test.ts src/acp/mako-system-append.test.ts src/acp/connection-errors.test.ts src/acp/terminal-auth.test.ts src/acp/codex-models.test.ts src/acp/codex-login-status.test.ts src/acp/ensure-adapter.test.ts src/acp/session-config.test.ts src/acp/prompt-guidance.test.ts src/desktop-bridge/mcp.test.ts",
+    "test": "tsx --test src/acp/manager.test.ts src/acp/permissions.test.ts src/acp/mcp-probe.test.ts src/acp/mako-system-append.test.ts src/acp/connection-errors.test.ts src/acp/connection.test.ts src/acp/terminal-auth.test.ts src/acp/codex-models.test.ts src/acp/codex-login-status.test.ts src/acp/ensure-adapter.test.ts src/acp/session-config.test.ts src/acp/prompt-guidance.test.ts src/acp/prompt-images.test.ts src/desktop-bridge/mcp.test.ts",
     "acp:mock-agent": "tsx src/acp/mock-agent.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.3.0",
     "@hono/node-server": "^1.14.4",
+    "@mako/agent-tools": "workspace:*",
     "hono": "^4.7.11"
   },
   "devDependencies": {

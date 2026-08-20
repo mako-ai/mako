@@ -55,6 +55,7 @@ export interface AcpStatus {
     hitlTools?: boolean;
     adapterEnsure?: boolean;
     modelWarm?: boolean;
+    promptImages?: boolean;
   };
   lastAdapterError?: string | null;
   ensureByProvider?: Partial<
@@ -98,6 +99,10 @@ export interface AcpSessionInfo {
   cwd: string;
   createdAt: string;
   updatedAt: string;
+  /** API-side identity bound to this session's Mako MCP Bearer. */
+  makoAgentSessionId?: string;
+  /** Workspace bound to this session's Mako MCP Bearer. */
+  makoWorkspaceId?: string;
   busy: boolean;
   /** True when Mako `/api/mcp` was attached on session/new. */
   makoMcpAttached?: boolean;
@@ -144,6 +149,14 @@ export type AcpBridgeEvent =
       message: string;
       at: string;
     };
+
+/** Image attachment forwarded to the Local Agent as an ACP image ContentBlock. */
+export interface AcpPromptImage {
+  /** Base64 payload (no `data:` URL prefix). */
+  data: string;
+  /** e.g. `image/png` */
+  mimeType: string;
+}
 
 export interface AcpChatMessage {
   id: string;

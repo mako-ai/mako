@@ -285,7 +285,13 @@ export const AGENT_TOOL_MANIFEST = {
     clientExecutor: "dashboard",
     longRunning: true,
     getLabel: input => {
-      const name = (input as Record<string, unknown>)?.name;
+      const inp = input as Record<string, unknown>;
+      const name = inp?.name;
+      if (inp?.consoleId) {
+        return name
+          ? `Importing console as "${name}"`
+          : "Importing console as data source";
+      }
       return name ? `Creating data source "${name}"` : "Creating data source";
     },
     icon: "plus",
@@ -397,6 +403,38 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Reading chart template",
     icon: "eye",
   },
+  save_version: {
+    domain: "dashboard",
+    execution: "client",
+    clientExecutor: "dashboard",
+    longRunning: true,
+    getLabel: input => {
+      const inp = input as Record<string, unknown>;
+      const comment = inp?.comment;
+      const entity = inp?.entityType === "app" ? "app" : "dashboard";
+      return comment
+        ? `Publishing version: "${comment}"`
+        : `Publishing ${entity} version`;
+    },
+    icon: "clock",
+  },
+  restore_version: {
+    domain: "dashboard",
+    execution: "client",
+    clientExecutor: "dashboard",
+    longRunning: true,
+    getLabel: input => {
+      const inp = input as Record<string, unknown>;
+      const version = inp?.version;
+      const entity = inp?.entityType === "app" ? "app" : "dashboard";
+      return version
+        ? `Restoring ${entity} version ${version}`
+        : `Restoring ${entity} version`;
+    },
+    icon: "clock",
+  },
+  // Deprecated aliases of save_version / restore_version (entityType:
+  // "dashboard"); entries kept so historical chats render proper tool cards.
   dashboard_save_version: {
     domain: "dashboard",
     execution: "client",
@@ -558,7 +596,14 @@ export const AGENT_TOOL_MANIFEST = {
     execution: "server",
     longRunning: true,
     getLabel: input => {
-      const name = (input as Record<string, unknown>)?.name;
+      const inp = input as Record<string, unknown>;
+      const name = inp?.name;
+      if (name && inp?.materialization) {
+        return `Switching "${name}" to ${inp.materialization}`;
+      }
+      if (name && inp?.materializationSchedule) {
+        return `Updating refresh schedule for "${name}"`;
+      }
       return name ? `Updating data binding "${name}"` : "Updating data binding";
     },
     icon: "database",
@@ -646,15 +691,42 @@ export const AGENT_TOOL_MANIFEST = {
     execution: "client",
     clientExecutor: "app",
     longRunning: true,
-    getLabel: () => "Rebuilding app preview",
+    getLabel: input =>
+      (input as { rebuild?: boolean } | undefined)?.rebuild === false
+        ? "Checking preview errors"
+        : "Rebuilding app preview",
     icon: "play",
   },
-  // Desktop ACP (mako-desktop) — read live iframe errors without rebuilding.
+  // Legacy alias from pre-0.3 Local Agent builds — run_app({ rebuild: false }).
   get_preview_errors: {
     domain: "app",
     execution: "client",
     clientExecutor: "app",
     getLabel: () => "Checking preview errors",
+    icon: "eye",
+  },
+  app_set_preview: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    longRunning: true,
+    getLabel: input => {
+      const { environment, preset, width, height } = (input ?? {}) as {
+        environment?: string | null;
+        preset?: string;
+        width?: number;
+        height?: number;
+      };
+      const parts: string[] = [];
+      if (width && height) parts.push(`${width}×${height}`);
+      else if (preset) parts.push(preset);
+      if (environment !== undefined) {
+        parts.push(environment ? `dbt env "${environment}"` : "dbt env prod");
+      }
+      return parts.length > 0
+        ? `Preview: ${parts.join(", ")}`
+        : "Configuring preview";
+    },
     icon: "eye",
   },
   app_set_preview_environment: {
@@ -669,6 +741,23 @@ export const AGENT_TOOL_MANIFEST = {
         : "Resetting preview dbt env to prod";
     },
     icon: "database",
+  },
+  app_set_preview_viewport: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    getLabel: input => {
+      const { preset, width, height } = (input ?? {}) as {
+        preset?: string;
+        width?: number;
+        height?: number;
+      };
+      if (width && height) return `Preview viewport ${width}×${height}`;
+      return preset && preset !== "desktop"
+        ? `Preview viewport: ${preset}`
+        : "Preview viewport: desktop";
+    },
+    icon: "eye",
   },
   // dbt reads execute SERVER-SIDE (issue #475) — reading the authoritative
   // DbtProject/DbtFile docs avoids a pending client tool tearing down the SSE
@@ -1111,19 +1200,22 @@ export const AGENT_TOOL_MANIFEST = {
     icon: "list",
   },
   list_databases: {
-    domain: "flow",
+    domain: "database",
     execution: "server",
     getLabel: () => "Listing databases",
     icon: "database",
   },
   list_tables: {
-    domain: "flow",
+    domain: "database",
     execution: "server",
-    getLabel: () => "Listing tables",
+    getLabel: input => {
+      const db = (input as Record<string, unknown>)?.database;
+      return db ? `Listing tables in ${db}` : "Listing tables";
+    },
     icon: "table",
   },
   inspect_table: {
-    domain: "flow",
+    domain: "database",
     execution: "server",
     getLabel: input => {
       const table = (input as Record<string, unknown>)?.table;
@@ -1249,24 +1341,31 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Reading notebook cell",
     icon: "eye",
   },
+  edit_notebook_cell: {
+    domain: "notebook",
+    execution: "server",
+    getLabel: input => {
+      const inp = input as Record<string, unknown>;
+      if (inp?.mode === "insert") {
+        const type = inp?.type;
+        return typeof type === "string" ? `Adding ${type} cell` : "Adding cell";
+      }
+      if (inp?.mode === "delete") return "Deleting cell";
+      return "Editing cell";
+    },
+    icon: "pencil",
+    preview: { field: "source", language: "sql" },
+  },
+  // Deprecated aliases of edit_notebook_cell (mode: 'insert' / 'delete');
+  // still registered for external MCP clients, so keep their tool cards.
   add_notebook_cell: {
     domain: "notebook",
     execution: "server",
     getLabel: input => {
       const type = (input as Record<string, unknown>)?.type;
-      return `Adding ${typeof type === "string" ? type : ""} cell`.replace(
-        "  ",
-        " ",
-      );
+      return typeof type === "string" ? `Adding ${type} cell` : "Adding cell";
     },
     icon: "plus",
-    preview: { field: "source", language: "sql" },
-  },
-  edit_notebook_cell: {
-    domain: "notebook",
-    execution: "server",
-    getLabel: () => "Editing cell",
-    icon: "pencil",
     preview: { field: "source", language: "sql" },
   },
   delete_notebook_cell: {

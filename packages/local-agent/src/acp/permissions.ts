@@ -34,7 +34,7 @@ export function extractToolCallKind(toolCall: unknown): string {
 /**
  * True for Mako workspace / desktop MCP tools under either naming scheme:
  * - Claude Agent SDK: `mcp__mako-workspace__list_connections`
- * - Codex ACP titles: `mcp.mako-desktop.get_preview_errors` /
+ * - Codex ACP titles: `mcp.mako-desktop.run_app` /
  *   `Mcp.Mako-Workspace.Sql Execute Query`
  *
  * Codex marks these `kind: "execute"`, so without this match they sit in

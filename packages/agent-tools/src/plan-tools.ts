@@ -84,6 +84,20 @@ export const submitPlanSchema = z.object({
     .array(planTodoSchema)
     .min(1)
     .describe("Ordered list of concrete steps you will execute once approved."),
+  requiredCapabilities: z
+    .array(
+      z.enum([
+        "artifact-write",
+        "warehouse-write",
+        "git-write",
+        "schedule-write",
+      ]),
+    )
+    .optional()
+    .describe(
+      "Task-scoped mutation capabilities this plan needs. Include only those " +
+        "the plan visibly describes. Desktop ACP enforces this list after approval.",
+    ),
 });
 
 /**
@@ -115,6 +129,56 @@ export const clientPlanTools = {
     // No execute function - resolved by the client via the plan card.
   }),
 };
+
+/**
+ * MCP-ready JSON Schemas for the HITL pair, derived from the zod schemas
+ * above — the single source of truth for every surface. Chat uses the zod
+ * `clientPlanTools` directly; the mako-desktop loopback server (Desktop ACP)
+ * serves these same schemas under the same tool names.
+ */
+function toMcpJsonSchema(schema: z.ZodType): Record<string, unknown> {
+  const json = z.toJSONSchema(schema, {
+    target: "draft-7",
+    io: "input",
+  }) as Record<string, unknown>;
+  delete json.$schema;
+  return json;
+}
+
+export const HITL_TOOL_JSON_SCHEMAS = {
+  ask_clarifying_questions: toMcpJsonSchema(askClarifyingQuestionsSchema),
+  submit_plan: toMcpJsonSchema(submitPlanSchema),
+} as const;
+
+export type HitlToolName = keyof typeof HITL_TOOL_JSON_SCHEMAS;
+
+/**
+ * Validate raw MCP arguments for the HITL pair. ACP agents call these tools
+ * with unvalidated JSON — a malformed payload must be bounced back to the
+ * agent as a tool error it can correct, never forwarded to the Desktop
+ * renderer (where a missing `todos`/`questions` array crashes the card).
+ */
+export function validateHitlToolArguments(
+  tool: HitlToolName,
+  args: unknown,
+):
+  | { ok: true; data: Record<string, unknown> }
+  | { ok: false; error: string } {
+  const schema =
+    tool === "submit_plan" ? submitPlanSchema : askClarifyingQuestionsSchema;
+  const parsed = schema.safeParse(args);
+  if (parsed.success) {
+    return { ok: true, data: parsed.data as Record<string, unknown> };
+  }
+  const issues = parsed.error.issues
+    .slice(0, 5)
+    .map(i => `${i.path.join(".") || "(root)"}: ${i.message}`)
+    .join("; ");
+  return {
+    ok: false,
+    error: `Invalid ${tool} arguments — ${issues}. Fix the payload to match the tool's input schema and call ${tool} again.`,
+  };
+}
 
 export type ClarifyingQuestion = z.infer<typeof clarifyingQuestionSchema>;
 export type AskClarifyingQuestionsInput = z.infer<

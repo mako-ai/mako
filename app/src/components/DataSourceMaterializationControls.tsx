@@ -14,7 +14,7 @@ import {
   Divider,
 } from "@mui/material";
 import {
-  DatabaseZap as MaterializeIcon,
+  RefreshCw as RefreshIcon,
   CalendarClock as ScheduleIcon,
   History as HistoryIcon,
   Eye as PreviewIcon,
@@ -27,7 +27,7 @@ import type { MaterializationScheduleValue } from "../lib/materializationSchedul
 
 /**
  * Shared materialization toolbar for app data bindings and dashboard data
- * sources. Both surfaces present the same controls — Materialize button, one
+ * sources. Both surfaces present the same controls — Refresh button, one
  * combined status/freshness chip, and a ⋮ menu holding the snapshot preview,
  * schedule, and history — so the two editors look and behave identically and
  * the (already crowded) data-source toolbar keeps a small footprint.
@@ -164,7 +164,7 @@ export default function DataSourceMaterializationControls({
       label: [rows, age].filter(Boolean).join(" · ") || "ready",
       color: freshness?.stale ? "warning" : "success",
       tooltip: freshness?.stale
-        ? "The snapshot is older than its freshness window — click Materialize to refresh."
+        ? "The snapshot is older than its freshness window — click Refresh."
         : "The snapshot is up to date.",
     };
   } else if (buildStatus) {
@@ -184,17 +184,17 @@ export default function DataSourceMaterializationControls({
 
       {showMaterializeControls && (
         <>
-          <Tooltip title="Re-materialize this query's Parquet file">
+          <Tooltip title="Refresh this query's data from source">
             <span>
               <Button
                 size="small"
                 variant="outlined"
                 color="inherit"
-                startIcon={<MaterializeIcon size={16} strokeWidth={1.5} />}
+                startIcon={<RefreshIcon size={16} strokeWidth={1.5} />}
                 onClick={onMaterialize}
                 disabled={materializing}
               >
-                {materializing ? "Materializing…" : "Materialize"}
+                {materializing ? "Refreshing…" : "Refresh"}
               </Button>
             </span>
           </Tooltip>
@@ -234,9 +234,7 @@ export default function DataSourceMaterializationControls({
                 </ListItemIcon>
                 <ListItemText
                   primary="Preview snapshot"
-                  secondary={
-                    canPreview ? undefined : "Materialize the data first"
-                  }
+                  secondary={canPreview ? undefined : "Refresh the data first"}
                 />
               </MenuItem>
             )}

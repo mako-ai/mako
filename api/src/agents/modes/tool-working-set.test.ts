@@ -15,8 +15,11 @@ import {
   computeActiveTools,
   deriveModeState,
   buildToolInventoryBlock,
+  nativeCapabilityGrants,
   type WorkingSetOptions,
 } from "./runtime";
+import { enforceCapabilityGrantsAtExecution } from "../../agent-lib/capabilities/runtime";
+import { CAPABILITY_GRANTS, type CapabilityGrant } from "@mako/agent-tools";
 import {
   CORE_ALWAYS_TOOL_NAMES,
   DEFERRED_BUILTIN_TOOL_NAMES,
@@ -62,6 +65,7 @@ const baseModeState = (loaded: string[] = []): ModeState => ({
   enabledModes: new Set(["query"]),
   planSubmitted: false,
   planApproved: false,
+  approvedCapabilityGrants: new Set(),
   loadedToolNames: loaded,
 });
 
@@ -162,6 +166,7 @@ const baseModeState = (loaded: string[] = []): ModeState => ({
     enabledModes: new Set(),
     planSubmitted: false,
     planApproved: false,
+    approvedCapabilityGrants: new Set(),
     loadedToolNames: ["heavy_a", "heavy_b"],
   };
   const active = computeActiveTools(state, all, undefined, {
@@ -194,6 +199,7 @@ const baseModeState = (loaded: string[] = []): ModeState => ({
     enabledModes: new Set(),
     planSubmitted: true,
     planApproved: false,
+    approvedCapabilityGrants: new Set(),
     loadedToolNames: ["mcp_read_tool", "mcp_write_tool"],
   };
   const active = computeActiveTools(
@@ -209,6 +215,165 @@ const baseModeState = (loaded: string[] = []): ModeState => ({
   assert.ok(active.includes("load_tools"), "loading allowed under gate");
   assert.ok(active.includes("mcp_read_tool"), "read MCP allowed under gate");
   assert.ok(!active.includes("mcp_write_tool"), "write MCP gated");
+}
+
+// --- grant-gated tools STAY in the working set (schemas reach the provider) ---
+// Hiding them desynced the system-prompt inventory ("active, schemas
+// provided") from the provider tool list, and models snapped intended calls
+// onto a similarly named available tool (dbt_run_model → dbt_list_pull_requests).
+// The grant is enforced when the tool executes instead.
+{
+  const all = new Set([
+    "edit_dbt_file",
+    "dbt_run_model",
+    "dbt_commit_and_push",
+    "app_write_file",
+    // Carries the schedule-write gate as an input-conditional grant since the
+    // app_set_binding_schedule fold (that name is now a deferred alias).
+    "app_update_data_binding",
+    "materialize_binding",
+  ]);
+  const withoutPlan: ModeState = {
+    enabledModes: new Set(["transform", "app"]),
+    planSubmitted: false,
+    planApproved: false,
+    approvedCapabilityGrants: new Set(),
+    loadedToolNames: [],
+  };
+  const active = computeActiveTools(withoutPlan, all);
+  for (const name of all) {
+    assert.ok(active.includes(name), `${name} stays in the working set`);
+  }
+}
+
+// --- grant machinery: enforced at EXECUTION with an actionable error ----------
+async function grantEnforcement() {
+  const calls: string[] = [];
+  const fakeTool = (name: string) =>
+    tool({
+      description: name,
+      inputSchema: z.object({}),
+      execute: async () => {
+        calls.push(name);
+        return { success: true };
+      },
+    });
+  const grants = new Set<CapabilityGrant>(["artifact-write"]);
+  const tools = enforceCapabilityGrantsAtExecution(
+    {
+      dbt_run_model: fakeTool("dbt_run_model"),
+      dbt_commit_and_push: fakeTool("dbt_commit_and_push"),
+      dbt_git_status: fakeTool("dbt_git_status"),
+      edit_dbt_file: fakeTool("edit_dbt_file"),
+    } as ToolSet,
+    () => grants,
+  );
+  const run = async (name: string) => {
+    const execute = tools[name]?.execute as (
+      input: unknown,
+      options: unknown,
+    ) => Promise<unknown>;
+    return execute({}, { toolCallId: "t1", messages: [] });
+  };
+
+  const denied = (await run("dbt_run_model")) as {
+    success: boolean;
+    error?: string;
+  };
+  assert.equal(denied.success, false, "warehouse-write denied without grant");
+  assert.ok(denied.error?.includes("warehouse-write"));
+  assert.ok(denied.error?.includes("submit_plan"), "error names the recovery");
+
+  const deniedGit = (await run("dbt_commit_and_push")) as { success: boolean };
+  assert.equal(deniedGit.success, false, "git-write denied without grant");
+
+  // Grant-free reads and artifact-write edits run untouched.
+  await run("dbt_git_status");
+  await run("edit_dbt_file");
+  assert.deepEqual(calls, ["dbt_git_status", "edit_dbt_file"]);
+
+  // Acquiring the grant unlocks execution (grants read live per call).
+  grants.add("warehouse-write");
+  const allowed = (await run("dbt_run_model")) as { success: boolean };
+  assert.equal(allowed.success, true, "held grant executes");
+  const stillDenied = (await run("dbt_commit_and_push")) as {
+    success: boolean;
+  };
+  assert.equal(stillDenied.success, false, "unheld git-write still denied");
+  assert.deepEqual(calls, ["dbt_git_status", "edit_dbt_file", "dbt_run_model"]);
+}
+
+// --- input-conditional grants: schedule leg of app_update_data_binding -------
+// app_set_binding_schedule's schedule-write gate survives the fold into
+// app_update_data_binding: the merged tool needs schedule-write only when the
+// input actually carries materializationSchedule.
+async function conditionalGrantEnforcement() {
+  const calls: unknown[] = [];
+  const grants = new Set<CapabilityGrant>(["artifact-write"]);
+  const tools = enforceCapabilityGrantsAtExecution(
+    {
+      app_update_data_binding: tool({
+        description: "app_update_data_binding",
+        inputSchema: z.object({}).passthrough(),
+        execute: async (input: unknown) => {
+          calls.push(input);
+          return { success: true };
+        },
+      }),
+    } as unknown as ToolSet,
+    () => grants,
+  );
+  const run = async (input: unknown) => {
+    const execute = tools.app_update_data_binding?.execute as (
+      input: unknown,
+      options: unknown,
+    ) => Promise<unknown>;
+    return execute(input, { toolCallId: "t1", messages: [] });
+  };
+
+  // Query-definition updates need only artifact-write.
+  const plain = (await run({ appId: "a", name: "b", code: "SELECT 1" })) as {
+    success: boolean;
+  };
+  assert.equal(plain.success, true, "definition update runs on artifact-write");
+
+  // Touching the schedule without schedule-write is denied with recovery.
+  const denied = (await run({
+    appId: "a",
+    name: "b",
+    materializationSchedule: { enabled: true, cron: "0 * * * *" },
+  })) as { success: boolean; error?: string };
+  assert.equal(denied.success, false, "schedule change denied without grant");
+  assert.ok(denied.error?.includes("schedule-write"), "error names the grant");
+  assert.ok(denied.error?.includes("submit_plan"), "error names the recovery");
+
+  // Acquiring schedule-write unlocks the schedule leg.
+  grants.add("schedule-write");
+  const allowed = (await run({
+    appId: "a",
+    name: "b",
+    materializationSchedule: { enabled: false, cron: null },
+  })) as { success: boolean };
+  assert.equal(allowed.success, true, "held schedule-write executes");
+  assert.equal(calls.length, 2, "denied call never reached the tool");
+}
+
+// --- policy: plan-grant gating is DISABLED in native Chat pending review ------
+// Until the #755 gating gets a proper product review, Chat implicitly holds
+// every grant, so no plan approval is required to execute warehouse/git/
+// schedule mutations (pre-#755 behavior).
+{
+  const noPlan: ModeState = {
+    enabledModes: new Set(["transform"]),
+    planSubmitted: false,
+    planApproved: false,
+    approvedCapabilityGrants: new Set(),
+    loadedToolNames: [],
+  };
+  const held = nativeCapabilityGrants(noPlan);
+  for (const grant of CAPABILITY_GRANTS) {
+    assert.ok(held.has(grant), `chat implicitly holds ${grant}`);
+  }
 }
 
 // --- provider caps ------------------------------------------------------------
@@ -410,6 +575,21 @@ async function endToEnd() {
     false,
     "redundant app_get_data_binding should not be registered",
   );
+  // Notebook cell CRUD fold: only the merged edit_notebook_cell stays in the
+  // notebook working set; the add/delete aliases remain loadable.
+  const notebookModeTools = toolNamesForModes(new Set(["notebook"] as const));
+  assert.ok(notebookModeTools.has("edit_notebook_cell"));
+  for (const alias of ["add_notebook_cell", "delete_notebook_cell"]) {
+    assert.equal(
+      notebookModeTools.has(alias),
+      false,
+      `deprecated ${alias} should stay out of the notebook working set`,
+    );
+    assert.ok(
+      DEFERRED_BUILTIN_TOOL_NAMES.includes(alias),
+      `deprecated ${alias} should remain loadable for compatibility`,
+    );
+  }
 
   // Preload: a Slack-flavored user message pre-activates relevant tools
   // with zero search/load round-trips.
@@ -427,7 +607,9 @@ async function endToEnd() {
 // runtime.ts transitively imports the full agent stack (loggers, mongoose
 // schemas), which keeps the event loop alive — exit explicitly like
 // derive-mode-state.test.ts does.
-void endToEnd()
+void grantEnforcement()
+  .then(conditionalGrantEnforcement)
+  .then(endToEnd)
   .then(() => {
     // eslint-disable-next-line no-console
     console.log("tool-working-set.test.ts: all assertions passed");

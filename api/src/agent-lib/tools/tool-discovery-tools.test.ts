@@ -91,6 +91,7 @@ async function endToEnd() {
     enabledModes: new Set(["query"]),
     planSubmitted: false,
     planApproved: false,
+    approvedCapabilityGrants: new Set(),
     loadedToolNames: ["save_skill"],
   };
 

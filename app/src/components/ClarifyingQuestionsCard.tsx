@@ -279,7 +279,26 @@ const PAGER_CHEVRON_SX = {
 export const ClarifyingQuestionsCard: React.FC<
   ClarifyingQuestionsCardProps
 > = ({ input, output, onResolve, docked }) => {
-  const questions = useMemo(() => input?.questions ?? [], [input]);
+  // ACP bridge input is unvalidated raw agent arguments — never trust the
+  // shape. Keep only entries with the semantic minimum (string id + prompt)
+  // and coerce options so nothing non-string reaches a React child.
+  const questions = useMemo(() => {
+    if (!Array.isArray(input?.questions)) return [];
+    return input.questions
+      .filter(
+        (q): q is ClarifyingQuestion =>
+          !!q &&
+          typeof q === "object" &&
+          typeof (q as { id?: unknown }).id === "string" &&
+          typeof (q as { prompt?: unknown }).prompt === "string",
+      )
+      .map(q => ({
+        ...q,
+        options: Array.isArray(q.options)
+          ? q.options.filter((o): o is string => typeof o === "string")
+          : undefined,
+      }));
+  }, [input]);
   const [answers, setAnswers] = useState<AnswerMap>({});
   const [step, setStep] = useState(0);
   const advanceTimerRef = useRef<number | null>(null);

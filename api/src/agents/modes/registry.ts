@@ -1,4 +1,7 @@
-import { PLAN_GATE_ALLOWED_TOOL_NAMES } from "@mako/agent-tools";
+import {
+  DBT_CAPABILITY_NAMES,
+  PLAN_GATE_ALLOWED_TOOL_NAMES,
+} from "@mako/agent-tools";
 import type { AgentContext } from "../types";
 import type { AgentMode, ExpertiseModeId } from "./types";
 import {
@@ -55,6 +58,49 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   // Legacy full-file app read. Keep executable for compatibility, but the app
   // mode uses app_search + app_read_resource for bounded context.
   app_read_file: "apps",
+  // Deprecated aliases of app_update_data_binding (which now takes
+  // materialization + materializationSchedule directly). Kept executable for
+  // external MCP clients; the in-product agent uses the merged tool.
+  app_set_binding_materialization: "apps",
+  app_set_binding_schedule: "apps",
+  // Deprecated aliases of app_set_preview (environment + viewport folded into
+  // one preview setter). Kept executable for old chats.
+  app_set_preview_environment: "apps",
+  app_set_preview_viewport: "apps",
+  // Deprecated single-field alias of set_multiple_fields (which updates one
+  // or many fields). Its FIELD_PATHS enum makes it one of the heaviest
+  // schemas in the catalog, so it stays out of the flow working set.
+  set_form_field: "flows",
+  // Deprecated aliases of create_data_source({ consoleId }) — both imported a
+  // saved console into a dashboard by value. Kept executable for old chats.
+  import_console_as_data_source: "dashboards",
+  add_data_source: "dashboards",
+  // Deprecated alias of get_chart_template without templateId (lists all).
+  get_chart_templates: "dashboards",
+  // Deprecated aliases of edit_notebook_cell (mode: 'insert' | 'delete').
+  // Kept executable for external MCP clients; the in-product agent uses the
+  // merged tool.
+  add_notebook_cell: "notebooks",
+  delete_notebook_cell: "notebooks",
+  // Deprecated per-engine discovery aliases of the unified
+  // list_databases / list_tables / inspect_table family (which dispatches on
+  // connection type). Kept executable for existing chats and external MCP
+  // clients; execution stays split (sql_execute_query / mongo_execute_query).
+  sql_list_connections: "sql",
+  sql_list_databases: "sql",
+  sql_list_tables: "sql",
+  sql_inspect_table: "sql",
+  mongo_list_connections: "mongodb",
+  mongo_list_databases: "mongodb",
+  mongo_list_collections: "mongodb",
+  mongo_inspect_collection: "mongodb",
+  // Deprecated per-entity aliases of the generic save_version /
+  // restore_version pair (which takes an entityType + entityId ref). The
+  // app_* pair stays the MCP-facing surface (the generic pair is client-side).
+  app_save_version: "apps",
+  app_restore_version: "apps",
+  dashboard_save_version: "dashboards",
+  dashboard_restore_version: "dashboards",
 };
 
 export const DEFERRED_BUILTIN_TOOL_NAMES: readonly string[] = Object.keys(
@@ -75,20 +121,15 @@ const QUERY_MODE_TOOL_NAMES: string[] = [
   "get_chart_template",
   "capture_screenshot",
   // Discovery (search_consoles was core before tiering; query is the
-  // default mode, so keep console lookup available without a load step)
+  // default mode, so keep console lookup available without a load step).
+  // list_databases/list_tables/inspect_table dispatch on connection type
+  // (MongoDB vs SQL); only execution stays per-engine.
   "search_consoles",
   "list_connections",
-  // MongoDB
-  "mongo_list_connections",
-  "mongo_list_databases",
-  "mongo_list_collections",
-  "mongo_inspect_collection",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
   "mongo_execute_query",
-  // SQL
-  "sql_list_connections",
-  "sql_list_databases",
-  "sql_list_tables",
-  "sql_inspect_table",
   "sql_execute_query",
   // Long-running query lifecycle (pairs with sql_execute_query / run_console)
   "check_query_status",
@@ -101,8 +142,6 @@ const DASHBOARD_MODE_TOOL_NAMES: string[] = [
   "open_dashboard",
   "enter_edit_mode",
   "create_dashboard",
-  "import_console_as_data_source",
-  "add_data_source",
   "create_data_source",
   "update_data_source_query",
   "run_data_source_query",
@@ -118,10 +157,9 @@ const DASHBOARD_MODE_TOOL_NAMES: string[] = [
   "remove_global_filter",
   "link_tables",
   "set_time_dimension",
-  "get_chart_templates",
   "get_chart_template",
-  "dashboard_save_version",
-  "dashboard_restore_version",
+  "save_version",
+  "restore_version",
   "browse_version_history",
   "get_version_snapshot",
   "capture_screenshot",
@@ -129,9 +167,9 @@ const DASHBOARD_MODE_TOOL_NAMES: string[] = [
   "search_consoles",
   "search_dashboards",
   "list_connections",
-  "sql_list_databases",
-  "sql_list_tables",
-  "sql_inspect_table",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
 ];
 
 const FLOW_MODE_TOOL_NAMES: string[] = [
@@ -142,15 +180,14 @@ const FLOW_MODE_TOOL_NAMES: string[] = [
   "explain_template",
   // Client flow form tools
   "get_form_state",
-  "set_form_field",
   "set_multiple_fields",
   "create_flow_tab",
   "list_flow_tabs",
   // Discovery
   "list_connections",
-  "sql_list_databases",
-  "sql_list_tables",
-  "sql_inspect_table",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
 ];
 
 const APP_MODE_TOOL_NAMES: string[] = [
@@ -170,15 +207,13 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "app_create_data_binding",
   "app_update_data_binding",
   "app_delete_data_binding",
-  "app_set_binding_materialization",
-  "app_set_binding_schedule",
-  "app_save_version",
-  "app_restore_version",
+  "save_version",
+  "restore_version",
   "browse_version_history",
   "get_version_snapshot",
   "materialize_binding",
   "run_app",
-  "app_set_preview_environment",
+  "app_set_preview",
   // Shared surface-scoped data-source primitives (apps + dashboards)
   "list_data_sources",
   "inspect_data_source",
@@ -187,68 +222,23 @@ const APP_MODE_TOOL_NAMES: string[] = [
   // Discovery for validating binding queries
   "search_consoles",
   "list_connections",
-  "sql_list_connections",
-  "sql_list_databases",
-  "sql_list_tables",
-  "sql_inspect_table",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
   "sql_execute_query",
   "check_query_status",
   "cancel_query",
-  "mongo_list_connections",
-  "mongo_list_databases",
-  "mongo_list_collections",
-  "mongo_inspect_collection",
   "mongo_execute_query",
 ];
 
 const TRANSFORM_MODE_TOOL_NAMES: string[] = [
-  // Bootstrap: create a project when the workspace has none
-  "dbt_create_project",
-  // Personal (per-developer) environment for safe fast iteration
-  "dbt_ensure_dev_environment",
-  // Client dbt file tools
-  "read_dbt_project_tree",
-  "read_dbt_file",
-  "create_dbt_file",
-  "modify_dbt_file",
-  "edit_dbt_file",
-  "delete_dbt_file",
-  // Server dbt verification + execution tools
-  "dbt_parse",
-  "dbt_compile_model",
-  "dbt_run_model",
-  "dbt_run_job",
-  "dbt_cancel_run",
-  "dbt_get_run",
-  "dbt_show",
-  "dbt_create_job",
-  "dbt_update_job",
-  "dbt_delete_job",
-  // Git: commit/push edits to the connected repo (only when the user asks).
-  "dbt_git_status",
-  "dbt_sync_from_repo",
-  "dbt_commit_and_push",
-  "dbt_commit_to_branch",
-  "dbt_create_branch",
-  "dbt_switch_branch",
-  "dbt_list_branches",
-  "dbt_compare_branches",
-  "dbt_delete_branch",
-  "dbt_open_pull_request",
-  "dbt_merge_pull_request",
-  "dbt_list_pull_requests",
-  "dbt_update_pull_request",
-  "dbt_close_pull_request",
-  // Recovery: surface + restore work hidden by a destructive switch/sync.
-  "dbt_list_recoverable_files",
-  "dbt_restore_file",
+  ...DBT_CAPABILITY_NAMES,
   // Discovery: inspect sources before writing staging models; preview built
   // tables after dbt_run_model.
   "list_connections",
-  "sql_list_connections",
-  "sql_list_databases",
-  "sql_list_tables",
-  "sql_inspect_table",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
   "sql_execute_query",
   "check_query_status",
   "cancel_query",
@@ -256,14 +246,9 @@ const TRANSFORM_MODE_TOOL_NAMES: string[] = [
 
 const EXPLORE_MODE_TOOL_NAMES: string[] = [
   "list_connections",
-  "sql_list_connections",
-  "sql_list_databases",
-  "sql_list_tables",
-  "sql_inspect_table",
-  "mongo_list_connections",
-  "mongo_list_databases",
-  "mongo_list_collections",
-  "mongo_inspect_collection",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
   "search_consoles",
   "search_dashboards",
   "read_console",
@@ -280,17 +265,14 @@ const NOTEBOOK_MODE_TOOL_NAMES: string[] = [
   "read_notebook",
   "search_notebook",
   "read_notebook_cell",
-  "add_notebook_cell",
   "edit_notebook_cell",
-  "delete_notebook_cell",
   "run_notebook_sql_cell",
   "run_notebook_code_cell",
   // Discovery: find data sources + tables for SQL cells
   "list_connections",
-  "sql_list_connections",
-  "sql_list_databases",
-  "sql_list_tables",
-  "sql_inspect_table",
+  "list_databases",
+  "list_tables",
+  "inspect_table",
 ];
 
 export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {

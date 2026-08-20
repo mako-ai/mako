@@ -61,6 +61,16 @@ const logger = loggers.inngest("dbt");
 const MAX_LOG_LINES = 5000;
 const LOG_FLUSH_INTERVAL_MS = 2000;
 
+function extractShowPreview(logs: DbtLogLine[]): string {
+  const infoLines = logs
+    .filter(log => log.level === "info")
+    .map(log => log.line);
+  const markerIndex = infoLines.findIndex(line => line.includes("Previewing"));
+  return (markerIndex >= 0 ? infoLines.slice(markerIndex) : infoLines)
+    .join("\n")
+    .slice(0, 8_000);
+}
+
 /** Buffered writer for dbt_runs.logs — capped, batched $push. */
 function createLogWriter(runId: Types.ObjectId) {
   let buffer: DbtLogLine[] = [];
@@ -453,6 +463,12 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             const update: Record<string, unknown> = {};
             for (const [kind, key] of Object.entries(artifactKeys)) {
               update[`artifactKeys.${kind}`] = key;
+            }
+            if (parsed.subcommand === "show" && commandResult?.logLines) {
+              update.output = {
+                kind: "show-preview",
+                text: extractShowPreview(commandResult.logLines),
+              };
             }
             if (stepResults.length > 0 || Object.keys(update).length > 0) {
               await DbtRun.updateOne(

@@ -17,16 +17,18 @@ import {
   Snackbar,
 } from "@mui/material";
 import {
-  RefreshCw as RefreshIcon,
   Share2 as ShareIcon,
   History as HistoryIcon,
   UploadCloud as PublishIcon,
   CheckCircle2 as PublishedIcon,
-  DatabaseZap as RematerializeIcon,
   MoreVertical as MoreIcon,
   Info as InfoIcon,
+  Monitor as DesktopViewportIcon,
+  Smartphone as PhoneViewportIcon,
+  Tablet as TabletViewportIcon,
 } from "lucide-react";
 import { containsDbtSchemaToken } from "@mako/schemas";
+import { APP_PREVIEW_VIEWPORT_PRESETS } from "@mako/agent-tools";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import EntityLoadErrorState, {
@@ -41,6 +43,9 @@ import ShareDialog from "./ShareDialog";
 import { SaveCommentDialog } from "./SaveCommentDialog";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
 import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
+import ResourceRefreshControl, {
+  LastRefreshedLabel,
+} from "./ResourceRefreshControl";
 import { buildPreviewHtml, PREVIEW_MESSAGE } from "../app-runtime/preview";
 import { appLocationFromHostSearch } from "../app-runtime/app-location";
 import {
@@ -96,6 +101,7 @@ export default function AppRenderer({
   const appEntity = useAppStore(s => s.openApps[appId]);
   const appLoadError = useAppStore(s => s.openAppErrors[appId]);
   const previewNonce = useAppStore(s => s.previewNonce[appId] ?? 0);
+  const dataRefreshNonce = useAppStore(s => s.dataRefreshNonce[appId] ?? 0);
   const previewErrors = useAppStore(s => s.previewErrors[appId]);
   const fetchApp = useAppStore(s => s.fetchApp);
   const bumpPreview = useAppStore(s => s.bumpPreview);
@@ -138,6 +144,46 @@ export default function AppRenderer({
   const dbtOverrideActive = Boolean(
     effectiveDbtEnv && prodEnvName && effectiveDbtEnv !== prodEnvName,
   );
+
+  // Preview viewport override (per-user view state): the iframe is laid out
+  // at exactly this CSS size so media queries render the true responsive
+  // layout; the pane scales it down visually when it doesn't fit.
+  const previewViewport = useAppStore(s => s.previewViewport[appId] ?? null);
+  const setPreviewViewport = useAppStore(s => s.setPreviewViewport);
+  const paneRef = useRef<HTMLDivElement | null>(null);
+  const [paneSize, setPaneSize] = useState<{ w: number; h: number } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!previewViewport) return;
+    const pane = paneRef.current;
+    if (!pane) return;
+    const update = () =>
+      setPaneSize({ w: pane.clientWidth, h: pane.clientHeight });
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(pane);
+    return () => observer.disconnect();
+  }, [previewViewport]);
+  // Fit the true-size viewport into the pane (never upscale). The 16px inset
+  // keeps the device frame's shadow off the pane edges.
+  const viewportScale =
+    previewViewport && paneSize
+      ? Math.min(
+          1,
+          (paneSize.w - 16) / previewViewport.width,
+          (paneSize.h - 16) / previewViewport.height,
+        )
+      : 1;
+  const cyclePreviewViewport = useCallback(() => {
+    const next =
+      previewViewport == null
+        ? { ...APP_PREVIEW_VIEWPORT_PRESETS.phone, preset: "phone" }
+        : previewViewport.preset === "phone"
+          ? { ...APP_PREVIEW_VIEWPORT_PRESETS.tablet, preset: "tablet" }
+          : null;
+    setPreviewViewport(appId, next);
+  }, [appId, previewViewport, setPreviewViewport]);
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
@@ -225,16 +271,27 @@ export default function AppRenderer({
     [workspaceId, appId, persistApp, saveVersion, fetchApp, publishSuggestion],
   );
 
-  const hasParquetBindings = !!appEntity?.dataBindings.some(
-    b => b.materialization === "parquet",
-  );
+  const hasAnyBindings = (appEntity?.dataBindings.length ?? 0) > 0;
 
-  // Rebuild every parquet binding's artifact in one shot. Recovers an app whose
-  // materialized cache was lost (e.g. a DB restore) — the query definitions and
-  // bindings are untouched; only the Parquet artifacts + cache are regenerated.
-  // Wait for every binding to settle, load fresh DuckDB tables, then post a
-  // data-refresh — never rebuild the preview mid-flight with partial data.
-  const handleRematerialize = useCallback(async () => {
+  // Oldest materialized artifact across parquet bindings — "every binding is
+  // at least this fresh". Null for live-only apps (data is queried on read).
+  const lastRefreshedAt = useMemo(() => {
+    let oldest: string | null = null;
+    for (const binding of appEntity?.dataBindings ?? []) {
+      if (binding.materialization !== "parquet") continue;
+      const builtAt =
+        binding.cache?.parquetBuiltAt ?? binding.cache?.lastRefreshedAt;
+      if (!builtAt || Number.isNaN(Date.parse(builtAt))) continue;
+      if (!oldest || Date.parse(builtAt) < Date.parse(oldest)) oldest = builtAt;
+    }
+    return oldest;
+  }, [appEntity?.dataBindings]);
+
+  // Single "Refresh" action: force-rebuild every parquet binding, wait until
+  // ALL settle, load DuckDB tables, then poke the running app once. Never
+  // reload the preview mid-flight with partial data (parity with public share
+  // and dashboard Refresh).
+  const handleRefreshData = useCallback(async () => {
     if (!workspaceId || rematerializing) return;
     setRematerializing(true);
     setRematerializeProgress({
@@ -244,14 +301,20 @@ export default function AppRenderer({
       failed: 0,
       phase: "building",
     });
-    setPublishedNotice("Rebuilding data for all bindings…");
+    setPublishedNotice("Refreshing data for all bindings…");
     try {
       const result = await materializeAllBindings(workspaceId, appId, {
+        force: true,
         onProgress: progress =>
           setRematerializeProgress({ ...progress, phase: "building" }),
       });
       if (result.total === 0) {
-        setPublishedNotice("No materialized bindings to rebuild.");
+        // Live-only app: just re-query in the running preview.
+        iframeRef.current?.contentWindow?.postMessage(
+          { type: PREVIEW_MESSAGE.dataRefresh },
+          "*",
+        );
+        setPublishedNotice("Refreshed live bindings.");
         return;
       }
 
@@ -283,16 +346,16 @@ export default function AppRenderer({
 
       if (result.failed === 0) {
         setPublishedNotice(
-          `Rebuilt data for ${result.ready} binding${result.ready === 1 ? "" : "s"}.`,
+          `Refreshed data for ${result.ready} binding${result.ready === 1 ? "" : "s"}.`,
         );
       } else {
         setPublishedNotice(
-          `Rebuilt ${result.ready}/${result.total}. Failed: ${result.errors.join("; ")}`,
+          `Refreshed ${result.ready}/${result.total}. Failed: ${result.errors.join("; ")}`,
         );
       }
     } catch (error) {
       setPublishedNotice(
-        error instanceof Error ? error.message : "Failed to rebuild data.",
+        error instanceof Error ? error.message : "Failed to refresh data.",
       );
     } finally {
       setRematerializing(false);
@@ -361,13 +424,20 @@ export default function AppRenderer({
       const hasArtifact =
         status === "ready" && Boolean(binding.cache?.parquetUrl);
       if (hasArtifact || status === "error") continue;
+      // A build is already in flight — an explicit Refresh (bulk or single),
+      // the agent, or a scheduled run flipped this binding to queued/building.
+      // Do NOT start a competing refreshPreview build: that path refreshes the
+      // running app once per binding, so the whole batch would poke the preview
+      // N times instead of once when every binding settles. The in-flight
+      // build's own caller applies data when it's done.
+      if (status === "queued" || status === "building") continue;
       if (autoMaterializeAttempted.current.has(binding.id)) continue;
       autoMaterializeAttempted.current.add(binding.id);
       setPublishedNotice(`Building data for "${binding.name}"…`);
       void materializeBinding(workspaceId, appId, binding.id).then(result => {
         if (result.status === "ready") {
-          // materializeBinding already refetched the app and bumped the
-          // preview, so the fresh artifact loads on the rebuilt preview.
+          // materializeBinding refetches + requestDataRefresh so DuckDB loads
+          // before the running preview re-queries (data → UI).
           setPublishedNotice(`Data for "${binding.name}" is ready.`);
         } else if (result.status === "error") {
           setPublishedNotice(
@@ -575,6 +645,40 @@ export default function AppRenderer({
     lastDbtEnvRef.current = current;
   }, [effectiveDbtEnv]);
 
+  // Explicit binding refresh settled: load every ready parquet table into
+  // DuckDB first, then poke the running preview once (data → UI).
+  const lastDataRefreshNonceRef = useRef(0);
+  useEffect(() => {
+    if (
+      !dataRefreshNonce ||
+      dataRefreshNonce === lastDataRefreshNonceRef.current
+    ) {
+      return;
+    }
+    lastDataRefreshNonceRef.current = dataRefreshNonce;
+    if (!workspaceId || !appEntity) return;
+    let cancelled = false;
+    void (async () => {
+      await Promise.all(
+        appEntity.dataBindings
+          .filter(binding => binding.materialization === "parquet")
+          .map(binding =>
+            ensureBindingLoadedForPreview(workspaceId, appId, binding).catch(
+              () => false,
+            ),
+          ),
+      );
+      if (cancelled) return;
+      iframeRef.current?.contentWindow?.postMessage(
+        { type: PREVIEW_MESSAGE.dataRefresh },
+        "*",
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [dataRefreshNonce, workspaceId, appId, appEntity]);
+
   // Rebuild the preview document whenever files/deps change (nonce bumps).
   // The theme is read from a ref on purpose: it only seeds the boot paint and
   // must not trigger an expensive rebuild on toggle (set-theme handles that).
@@ -711,6 +815,29 @@ export default function AppRenderer({
           </Tooltip>
         )}
         <Box sx={{ flex: 1 }} />
+        <Tooltip
+          title={
+            previewViewport == null
+              ? "Preview viewport: desktop (fill) — click for phone"
+              : previewViewport.preset === "phone"
+                ? `Preview viewport: phone ${previewViewport.width}×${previewViewport.height} — click for tablet`
+                : `Preview viewport: ${previewViewport.preset === "tablet" ? "tablet" : "custom"} ${previewViewport.width}×${previewViewport.height} — click for desktop`
+          }
+        >
+          <IconButton
+            size="small"
+            onClick={cyclePreviewViewport}
+            sx={previewViewport ? { color: "info.main" } : undefined}
+          >
+            {previewViewport == null ? (
+              <DesktopViewportIcon size={18} strokeWidth={1.5} />
+            ) : previewViewport.preset === "phone" ? (
+              <PhoneViewportIcon size={18} strokeWidth={1.5} />
+            ) : (
+              <TabletViewportIcon size={18} strokeWidth={1.5} />
+            )}
+          </IconButton>
+        </Tooltip>
         {canManage &&
           (appEntity.hasUnpublishedChanges ? (
             <Button
@@ -736,14 +863,20 @@ export default function AppRenderer({
               </Box>
             </Tooltip>
           ))}
+        {canManage && hasAnyBindings ? (
+          <ResourceRefreshControl
+            subject="binding"
+            busy={rematerializing}
+            onClick={() => void handleRefreshData()}
+            lastRefreshedAt={lastRefreshedAt}
+          />
+        ) : (
+          // Viewers can't refresh, but data freshness still matters to them.
+          <LastRefreshedLabel lastRefreshedAt={lastRefreshedAt} />
+        )}
         <Tooltip title="Share">
           <IconButton size="small" onClick={() => setShareOpen(true)}>
             <ShareIcon size={18} strokeWidth={1.5} />
-          </IconButton>
-        </Tooltip>
-        <Tooltip title="Rebuild preview">
-          <IconButton size="small" onClick={() => bumpPreview(appId)}>
-            <RefreshIcon size={18} strokeWidth={1.5} />
           </IconButton>
         </Tooltip>
         <Tooltip title="More">
@@ -772,27 +905,6 @@ export default function AppRenderer({
           </ListItemIcon>
           <ListItemText>Version history</ListItemText>
         </MenuItem>
-        {canManage && hasParquetBindings && (
-          <MenuItem
-            disabled={rematerializing}
-            onClick={() => {
-              setMoreAnchor(null);
-              void handleRematerialize();
-            }}
-          >
-            <ListItemIcon>
-              {rematerializing ? (
-                <CircularProgress size={14} />
-              ) : (
-                <RematerializeIcon size={16} strokeWidth={1.5} />
-              )}
-            </ListItemIcon>
-            <ListItemText
-              primary={rematerializing ? "Materializing…" : "Materialize data"}
-              secondary="Rebuild every query's Parquet file"
-            />
-          </MenuItem>
-        )}
         <Divider />
         <MenuItem disabled sx={{ "&.Mui-disabled": { opacity: 1 } }}>
           <ListItemText
@@ -880,11 +992,12 @@ export default function AppRenderer({
             {rematerializeProgress.phase === "loading"
               ? "Loading refreshed data into the preview…"
               : rematerializeProgress.total > 0
-                ? `Rebuilding data ${rematerializeProgress.settled}/${rematerializeProgress.total}` +
+                ? `Refreshing data ${rematerializeProgress.settled}/${rematerializeProgress.total}` +
                   (rematerializeProgress.failed > 0
                     ? ` (${rematerializeProgress.failed} failed)`
-                    : "")
-                : "Rebuilding data for all bindings…"}
+                    : "") +
+                  ". App reloads when every binding is ready."
+                : "Refreshing data for all bindings…"}
           </Typography>
         </Box>
       )}
@@ -900,27 +1013,62 @@ export default function AppRenderer({
         </Alert>
       )}
 
-      {/* Full-screen preview */}
+      {/* Full-screen preview. With a viewport override the iframe keeps its
+          TRUE CSS size (so media queries render the real responsive layout)
+          and is only scaled visually to fit the pane. */}
       <Box
+        ref={paneRef}
         sx={{
           flex: 1,
           minHeight: 0,
-          bgcolor: "background.default",
+          bgcolor: previewViewport ? "action.hover" : "background.default",
           position: "relative",
+          ...(previewViewport && {
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            overflow: "hidden",
+          }),
         }}
       >
-        <iframe
-          // Keyed on the nonce so "Rebuild preview" always reboots: with
-          // unchanged code the regenerated srcDoc string is identical, so a
-          // srcdoc-prop update alone would be skipped by React entirely.
-          key={previewNonce}
-          ref={iframeRef}
-          title={`app-preview-${appId}`}
-          data-mako-app-preview={appId}
-          srcDoc={srcDoc}
-          sandbox="allow-scripts allow-downloads allow-popups allow-popups-to-escape-sandbox"
-          style={{ width: "100%", height: "100%", border: "none" }}
-        />
+        <Box
+          sx={
+            previewViewport
+              ? {
+                  width: previewViewport.width * viewportScale,
+                  height: previewViewport.height * viewportScale,
+                  borderRadius: 2,
+                  boxShadow: 6,
+                  overflow: "hidden",
+                  flexShrink: 0,
+                  bgcolor: "background.default",
+                }
+              : { width: "100%", height: "100%" }
+          }
+        >
+          <iframe
+            // Keyed on the nonce so preview reboots after restore/publish: with
+            // unchanged code the regenerated srcDoc string is identical, so a
+            // srcdoc-prop update alone would be skipped by React entirely.
+            key={previewNonce}
+            ref={iframeRef}
+            title={`app-preview-${appId}`}
+            data-mako-app-preview={appId}
+            srcDoc={srcDoc}
+            sandbox="allow-scripts allow-downloads allow-popups allow-popups-to-escape-sandbox"
+            style={
+              previewViewport
+                ? {
+                    width: previewViewport.width,
+                    height: previewViewport.height,
+                    border: "none",
+                    transform: `scale(${viewportScale})`,
+                    transformOrigin: "top left",
+                  }
+                : { width: "100%", height: "100%", border: "none" }
+            }
+          />
+        </Box>
         {booting && errors.length === 0 && (
           <Box
             sx={{

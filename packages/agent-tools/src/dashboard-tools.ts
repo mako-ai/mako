@@ -14,6 +14,7 @@
 
 import { tool } from "ai";
 import { z } from "zod";
+import { bindingMaterializationScheduleSchema } from "./app-tools";
 import { clientScreenshotTools } from "./screenshot-tools";
 
 // A loose record instead of the full ~98 KB Vega-Lite JSON Schema. The model
@@ -38,6 +39,32 @@ const saveDashboardVersionSchema = z.object({
       "Short message describing this version, e.g. 'Add revenue KPI'. Shown in " +
         "the version history list.",
     ),
+});
+
+const versionEntityRefFields = {
+  entityType: z.enum(["app", "dashboard"]),
+  entityId: z
+    .string()
+    .describe("App ID (from list_open_apps) or dashboard ID (from list_open_dashboards)"),
+};
+
+const saveVersionSchema = z.object({
+  ...versionEntityRefFields,
+  comment: z
+    .string()
+    .optional()
+    .describe("Short message shown in the version history list"),
+});
+
+const restoreVersionSchema = z.object({
+  ...versionEntityRefFields,
+  version: z
+    .number()
+    .describe("Version number to restore (from browse_version_history)"),
+  comment: z
+    .string()
+    .optional()
+    .describe("Optional note explaining the restore"),
 });
 
 const restoreDashboardVersionSchema = z.object({
@@ -192,15 +219,39 @@ const importConsoleAsDataSourceSchema = z.object({
 
 const createDataSourceSchema = z.object({
   dashboardId: z.string().describe("Dashboard ID to add the data source to"),
-  name: z.string().describe("Dashboard-local data source name"),
+  name: z
+    .string()
+    .optional()
+    .describe(
+      "Dashboard-local data source name. Required unless consoleId is given " +
+        "(then defaults to the console's name).",
+    ),
+  consoleId: z
+    .string()
+    .optional()
+    .describe(
+      "Import a saved console by ID (from search_consoles): its query code, " +
+        "connection, and language are copied by value, so you do not need to " +
+        "re-type the SQL. When set, omit connectionId/language/code.",
+    ),
   connectionId: z
     .string()
-    .describe("Connection ID to execute the query against"),
+    .optional()
+    .describe(
+      "Connection ID to execute the query against (required unless " +
+        "consoleId is given)",
+    ),
   language: z
     .enum(["sql", "javascript", "mongodb"])
-    .default("sql")
-    .describe("Query language"),
-  code: z.string().describe("Query text/code to materialize into DuckDB"),
+    .optional()
+    .describe("Query language (default sql)"),
+  code: z
+    .string()
+    .optional()
+    .describe(
+      "Query text/code to materialize into DuckDB (required unless " +
+        "consoleId is given)",
+    ),
   databaseId: z.string().optional().describe("Optional sub-database ID"),
   databaseName: z.string().optional().describe("Optional database name"),
   timeDimension: z.string().optional().describe("Default time column"),
@@ -220,7 +271,7 @@ const createDataSourceSchema = z.object({
     ),
 });
 
-const updateDataSourceQuerySchema = z.object({
+export const updateDataSourceQuerySchema = z.object({
   dashboardId: z.string().describe("Dashboard ID"),
   dataSourceId: z.string().describe("Dashboard data source ID"),
   action: z
@@ -253,6 +304,16 @@ const updateDataSourceQuerySchema = z.object({
       "Switch this data source between 'live' (stream on every load) and " +
         "'parquet' (cached materialized artifact).",
     ),
+  materializationSchedule: bindingMaterializationScheduleSchema
+    .optional()
+    .describe(
+      "Set or clear the cron auto-refresh, e.g. { enabled: true, cron: " +
+        "'0 * * * *' } for hourly or { enabled: false } to turn it off. " +
+        "NOTE: unlike apps (per-binding), a dashboard has ONE schedule that " +
+        "refreshes all of its 'parquet' data sources — setting it here " +
+        "updates the whole dashboard's schedule. Mirrors " +
+        "app_update_data_binding's materializationSchedule.",
+    ),
   startLine: z
     .number()
     .optional()
@@ -271,6 +332,80 @@ const updateDataSourceQuerySchema = z.object({
         "If false (default), only saves the query definition. The dashboard keeps using the previously loaded data until run_data_source_query is called.",
     ),
 });
+
+export type UpdateDataSourceQueryInput = z.infer<
+  typeof updateDataSourceQuerySchema
+>;
+
+/**
+ * Resolve the `action`-based code edit for update_data_source_query. Shared
+ * by the browser executor and the server (MCP) leg so the edit semantics
+ * cannot drift between surfaces. Returns the unchanged code when no `code`
+ * was provided (non-patch actions treat code as optional).
+ */
+export function resolveDataSourceCodeEdit(
+  existingCode: string,
+  input: {
+    action?: string;
+    code?: string;
+    startLine?: number;
+    endLine?: number;
+  },
+): { ok: true; code: string } | { ok: false; error: string } {
+  const action = typeof input.action === "string" ? input.action : "replace";
+  if (action === "patch") {
+    if (
+      typeof input.startLine !== "number" ||
+      typeof input.endLine !== "number"
+    ) {
+      return {
+        ok: false,
+        error:
+          "startLine and endLine are required for patch action. Use get_dashboard_state to see the current query code.",
+      };
+    }
+    if (typeof input.code !== "string") {
+      return { ok: false, error: "code is required for patch action." };
+    }
+  }
+  if (typeof input.code !== "string") {
+    return { ok: true, code: existingCode };
+  }
+  switch (action) {
+    case "patch": {
+      const lines = existingCode.split("\n");
+      const rawStart = input.startLine as number;
+      const rawEnd = input.endLine as number;
+      if (rawStart < 1 || rawStart > lines.length) {
+        return {
+          ok: false,
+          error: `startLine ${rawStart} is out of range — the query only has ${lines.length} line(s). Use get_dashboard_state to see the current query code.`,
+        };
+      }
+      if (rawEnd < rawStart || rawEnd > lines.length) {
+        return {
+          ok: false,
+          error: `endLine ${rawEnd} is out of range — the query only has ${lines.length} line(s) and startLine is ${rawStart}. Use get_dashboard_state to see the current query code.`,
+        };
+      }
+      const before = lines.slice(0, rawStart - 1);
+      const after = lines.slice(rawEnd);
+      return {
+        ok: true,
+        code: [...before, ...input.code.split("\n"), ...after].join("\n"),
+      };
+    }
+    case "append":
+      return {
+        ok: true,
+        code:
+          existingCode + (existingCode.endsWith("\n") ? "" : "\n") + input.code,
+      };
+    case "replace":
+    default:
+      return { ok: true, code: input.code };
+  }
+}
 
 const runDataSourceQuerySchema = z.object({
   dashboardId: z.string().describe("Dashboard ID"),
@@ -326,20 +461,21 @@ export const clientDashboardTools = {
   }),
   import_console_as_data_source: tool({
     description:
-      "Import a saved console into a dashboard by value. " +
-      "This duplicates the console's query definition into a dashboard-local data source and materializes it into DuckDB. " +
-      "Use search_consoles first to find the console ID.",
+      "Deprecated alias of create_data_source({ consoleId }) — import a saved console into a dashboard by value. " +
+      "Prefer create_data_source with consoleId.",
     inputSchema: importConsoleAsDataSourceSchema,
   }),
   add_data_source: tool({
     description:
-      "Legacy alias for importing a saved console into the dashboard. Prefer import_console_as_data_source.",
+      "Legacy alias for importing a saved console into the dashboard. Prefer create_data_source with consoleId.",
     inputSchema: importConsoleAsDataSourceSchema,
   }),
   create_data_source: tool({
     description:
-      "Create a dashboard-local data source directly from a connection and query definition. " +
-      "Use this when the user wants to add data without saving a console first.",
+      "Create a dashboard-local data source. Either define the query from scratch " +
+      "(connectionId + code), or pass consoleId to import a saved console by value " +
+      "(copies its query, connection, and language — use search_consoles to find it). " +
+      "The query is materialized into DuckDB either way.",
     inputSchema: createDataSourceSchema,
   }),
   update_data_source_query: tool({
@@ -351,7 +487,8 @@ export const clientDashboardTools = {
       "'replace' (default — full code replacement), " +
       "'patch' (replace a specific line range — requires startLine/endLine, preferred for small edits), " +
       "'append' (add lines to the end of the existing code). " +
-      "Non-code fields (name, connectionId, language, etc.) are always shallow-merged regardless of action. " +
+      "Non-code fields (name, connectionId, language, materialization, etc.) are always shallow-merged regardless of action. " +
+      "materializationSchedule sets the dashboard's cron auto-refresh (dashboard-level — one schedule refreshes all parquet sources). " +
       "When run=false, treat the response as definition_saved_only and use the returned nextRecommendedTool if you need fresh data. " +
       "IMPORTANT for 'patch': line numbers are 1-indexed and inclusive; do NOT include line number prefixes in your code content.",
     inputSchema: updateDataSourceQuerySchema,
@@ -408,37 +545,55 @@ export const clientDashboardTools = {
   }),
   get_chart_templates: tool({
     description:
-      "List available best-practice chart templates with IDs and descriptions. " +
-      "Call before creating charts to discover proven simple patterns " +
-      "(e.g. multi-series line with hover rule, donut, stacked bar).",
+      "Deprecated alias of get_chart_template without templateId — lists available " +
+      "best-practice chart templates with IDs and descriptions.",
     inputSchema: z.object({}),
   }),
   get_chart_template: tool({
     description:
-      "Get a specific chart template with full vegaLiteSpec, SQL pattern, and implementation notes. " +
-      "Prefer template-driven simple specs over hand-written complex layering.",
+      "Get a best-practice chart template with full vegaLiteSpec, SQL pattern, and implementation notes. " +
+      "Omit templateId to list all available templates with IDs and descriptions. " +
+      "Prefer template-driven simple specs over hand-written complex layering " +
+      "(e.g. multi-series line with hover rule, donut, stacked bar).",
     inputSchema: z.object({
-      templateId: z.string().describe("Template ID from get_chart_templates"),
+      templateId: z
+        .string()
+        .optional()
+        .describe(
+          "Template ID (e.g. 'multi-series-line-hover', 'donut'). Omit to " +
+            "list all available templates.",
+        ),
     }),
   }),
+  save_version: tool({
+    description:
+      "Save AND publish a version of an app or dashboard: snapshots the " +
+      "working draft into history and publishes it (what viewers and shared " +
+      "links render). Dashboards: requires edit mode; only save when the user " +
+      "asks to save/publish.",
+    inputSchema: saveVersionSchema,
+  }),
+  restore_version: tool({
+    description:
+      "Restore an app or dashboard to a previous version. Reverts the working " +
+      "draft (the current state is checkpointed first, so it is never lossy) " +
+      "WITHOUT publishing — call save_version afterward to push it live. " +
+      "Dashboards: replaces unsaved edits in the open tab.",
+    inputSchema: restoreVersionSchema,
+  }),
+  // Deprecated aliases of save_version / restore_version (entityType:
+  // "dashboard"). Deferred in the in-product working set; kept executable so
+  // existing chats that replay these calls keep working.
   dashboard_save_version: tool({
     description:
-      "Save AND publish the dashboard's current edits as a new version. Persists " +
-      "the working draft to the server, creates an immutable version snapshot in " +
-      "history, and publishes it — the published snapshot is what viewers and " +
-      "shared/public links render. Call enter_edit_mode first. Only call this " +
-      "when the user asks to save/publish/snapshot; otherwise leave changes in " +
-      "edit mode for the user to review. Give a short `comment`.",
+      "Deprecated alias of save_version with entityType:'dashboard'. Save AND " +
+      "publish the dashboard's current edits as a new version.",
     inputSchema: saveDashboardVersionSchema,
   }),
   dashboard_restore_version: tool({
     description:
-      "Restore the dashboard to a previous version (get the number from " +
-      "browse_version_history with entityType:'dashboard'). Reverts the working " +
-      "draft to that snapshot and reloads the dashboard; the current state is " +
-      "preserved as a new version first, so it is never lossy. Restoring does " +
-      "NOT publish — call dashboard_save_version afterward to push the restored " +
-      "state live to viewers. This replaces any unsaved edits in the open tab.",
+      "Deprecated alias of restore_version with entityType:'dashboard'. " +
+      "Restore the dashboard's working draft to a previous version.",
     inputSchema: restoreDashboardVersionSchema,
   }),
 };

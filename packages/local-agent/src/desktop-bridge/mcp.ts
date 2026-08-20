@@ -3,14 +3,30 @@
  * Claude ACP attaches this as `mako-desktop` over loopback HTTP.
  */
 import {
+  HITL_TOOL_JSON_SCHEMAS,
+  isRunAppResult,
+  runAppResultToMcpContent,
+  validateHitlToolArguments,
+} from "@mako/agent-tools";
+
+import {
   desktopBridgeRegistry,
   isDesktopHitlTool,
+  type DesktopBridgeCapabilities,
   type DesktopBridgeToolName,
 } from "./registry";
 
 const SERVER_NAME = "mako-desktop";
-const SERVER_VERSION = "0.2.0";
+const SERVER_VERSION = "0.4.0";
 const PROTOCOL_VERSION = "2024-11-05";
+
+/**
+ * Delivery capabilities of THIS build, stamped on every bridge job. The
+ * renderer inlines screenshot payloads only when the enqueuing Local Agent
+ * declares it can emit them as MCP image content — an older build without
+ * the marker keeps getting the old text-only result shape.
+ */
+const BRIDGE_CAPABILITIES: DesktopBridgeCapabilities = { imageContent: true };
 
 type JsonRpcId = string | number | null;
 
@@ -36,23 +52,35 @@ const TOOLS: Array<{
   {
     name: "run_app",
     description:
-      "Rebuild the in-Desktop app preview iframe and return live build/runtime errors (previewErrors). Prefer this over create_preview_token / render_app when Chat is open in Mako Desktop.",
+      "Verify the app: rebuild the in-Desktop preview iframe, wait for it to render, and return status, live build/runtime errors, and a screenshot of exactly what the user sees. Pass rebuild: false to read the current preview state without forcing a rebuild, and includeScreenshot: false when you only need status/errors (much cheaper). Prefer this over create_preview_token when Chat is open in Mako Desktop.",
     inputSchema: {
       type: "object",
       properties: {
         appId: { type: "string", description: "App id to preview" },
-      },
-      required: ["appId"],
-    },
-  },
-  {
-    name: "get_preview_errors",
-    description:
-      "Return the current Desktop iframe previewErrors for an open app without forcing a rebuild.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        appId: { type: "string", description: "App id" },
+        rebuild: {
+          type: "boolean",
+          description:
+            "Default true. false = return the current preview state without rebuilding the iframe.",
+        },
+        includeScreenshot: {
+          type: "boolean",
+          description:
+            "Default true. false = status/errors only, no screenshot (much cheaper).",
+        },
+        timeoutMs: {
+          type: "number",
+          description:
+            "How long to wait for the preview to finish rendering, in ms (5000-45000, default 20000).",
+        },
+        width: {
+          type: "number",
+          description:
+            "Viewport width in px (320-1920). Pass e.g. 390x844 to verify the MOBILE layout — applied for this render only, then the user's viewport is restored.",
+        },
+        height: {
+          type: "number",
+          description: "Viewport height in px (320-1920), with width.",
+        },
       },
       required: ["appId"],
     },
@@ -64,61 +92,19 @@ const TOOLS: Array<{
     inputSchema: { type: "object", properties: {} },
   },
   {
+    // Schemas are single-sourced from @mako/agent-tools (same zod
+    // definitions the in-app agent uses); only the description is
+    // Desktop-tailored.
     name: "ask_clarifying_questions",
     description:
       "Pause and show clarifying questions in the Mako Chat dock (same UI as the in-app agent). Use this instead of asking questions as plain text. Returns the user's answers.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        questions: {
-          type: "array",
-          minItems: 1,
-          items: {
-            type: "object",
-            properties: {
-              id: { type: "string" },
-              prompt: { type: "string" },
-              type: { type: "string", enum: ["choice", "text"] },
-              options: { type: "array", items: { type: "string" } },
-              allowMultiple: { type: "boolean" },
-              allowOther: { type: "boolean" },
-              recommendedOption: { type: "string" },
-            },
-            required: ["id", "prompt", "type"],
-          },
-        },
-      },
-      required: ["questions"],
-    },
+    inputSchema: HITL_TOOL_JSON_SCHEMAS.ask_clarifying_questions,
   },
   {
     name: "submit_plan",
     description:
-      "Present a reviewable plan in the Mako Chat dock for Approve / Request changes / Cancel. Use before large or multi-step work. Returns the user's decision.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        title: { type: "string" },
-        planMarkdown: { type: "string" },
-        todos: {
-          type: "array",
-          minItems: 1,
-          items: {
-            type: "object",
-            properties: {
-              id: { type: "string" },
-              content: { type: "string" },
-              status: {
-                type: "string",
-                enum: ["pending", "in_progress", "completed", "cancelled"],
-              },
-            },
-            required: ["content"],
-          },
-        },
-      },
-      required: ["title", "planMarkdown", "todos"],
-    },
+      "Present a reviewable plan in the Mako Chat dock for Approve / Request changes / Cancel. Use before large, destructive, or multi-step work. Include only the requiredCapabilities visibly described by the plan — approval grants exactly those. Returns the user's decision.",
+    inputSchema: HITL_TOOL_JSON_SCHEMAS.submit_plan,
   },
 ];
 
@@ -132,24 +118,63 @@ function fail(id: JsonRpcId, code: number, message: string): JsonRpcResponse {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
+type McpContent = Array<Record<string, unknown>>;
+
+function textContent(text: string): McpContent {
+  return [{ type: "text", text }];
+}
+
 async function callTool(
-  name: string,
-  args: Record<string, unknown>,
-): Promise<{ text: string; isError?: boolean }> {
+  rawName: string,
+  rawArgs: Record<string, unknown>,
+  context?: { agentSessionId?: string; workspaceId?: string },
+): Promise<{ content: McpContent; isError?: boolean }> {
+  // Legacy alias from pre-0.3 tool lists: agents mid-session across an
+  // update may still call it — same job as run_app({ rebuild: false }),
+  // minus the screenshot (the old cheap error poll).
+  const legacyPreviewErrors = rawName === "get_preview_errors";
+  const name = legacyPreviewErrors ? "run_app" : rawName;
+  let args = legacyPreviewErrors
+    ? { ...rawArgs, rebuild: false, includeScreenshot: false }
+    : rawArgs;
   if (!TOOL_NAMES.has(name as DesktopBridgeToolName)) {
-    return { text: `Unknown tool: ${name}`, isError: true };
+    return { content: textContent(`Unknown tool: ${name}`), isError: true };
+  }
+  // HITL payloads render directly in the Desktop dock — bounce malformed
+  // arguments back to the agent as a correctable tool error instead of
+  // forwarding a shape the renderer cannot display.
+  if (isDesktopHitlTool(name)) {
+    const validated = validateHitlToolArguments(name, args);
+    if (!validated.ok) {
+      return { content: textContent(validated.error), isError: true };
+    }
+    args = validated.data;
   }
   try {
     const result = await desktopBridgeRegistry.enqueue(
       name as DesktopBridgeToolName,
       args && typeof args === "object" ? args : {},
+      undefined,
+      { ...context, capabilities: BRIDGE_CAPABILITIES },
     );
+    // run_app envelopes with a screenshot become text + image content blocks
+    // (shared formatter — same shape the Mako MCP server emits). The
+    // renderer only inlines screenshots because we declared imageContent.
+    if (isRunAppResult(result) && result.screenshot) {
+      return {
+        content: runAppResultToMcpContent(result).map(part => ({ ...part })),
+      };
+    }
     return {
-      text: typeof result === "string" ? result : JSON.stringify(result),
+      content: textContent(
+        typeof result === "string" ? result : JSON.stringify(result),
+      ),
     };
   } catch (error) {
     return {
-      text: error instanceof Error ? error.message : String(error),
+      content: textContent(
+        error instanceof Error ? error.message : String(error),
+      ),
       isError: true,
     };
   }
@@ -157,6 +182,7 @@ async function callTool(
 
 async function handleOne(
   message: JsonRpcRequest,
+  context?: { agentSessionId?: string; workspaceId?: string },
 ): Promise<JsonRpcResponse | null> {
   const id = message.id ?? null;
   const method = message.method;
@@ -192,10 +218,15 @@ async function handleOne(
         ? (params.arguments as Record<string, unknown>)
         : {};
     // HITL tools block the HTTP exchange until Desktop completes — expected.
-    if (isDesktopHitlTool(name) || TOOL_NAMES.has(name as DesktopBridgeToolName)) {
-      const result = await callTool(name, args);
+    // get_preview_errors is a legacy alias resolved inside callTool.
+    if (
+      isDesktopHitlTool(name) ||
+      TOOL_NAMES.has(name as DesktopBridgeToolName) ||
+      name === "get_preview_errors"
+    ) {
+      const result = await callTool(name, args, context);
       return ok(id, {
-        content: [{ type: "text", text: result.text }],
+        content: result.content,
         ...(result.isError ? { isError: true } : {}),
       });
     }
@@ -211,6 +242,7 @@ async function handleOne(
 
 export async function handleDesktopMcpExchange(
   body: unknown,
+  context?: { agentSessionId?: string; workspaceId?: string },
 ): Promise<{ status: 200 | 202 | 400; body: unknown }> {
   const incoming = Array.isArray(body) ? body : [body];
   if (
@@ -234,7 +266,7 @@ export async function handleDesktopMcpExchange(
 
   const responses: JsonRpcResponse[] = [];
   for (const message of incoming) {
-    const response = await handleOne(message as JsonRpcRequest);
+    const response = await handleOne(message as JsonRpcRequest, context);
     if (response) responses.push(response);
   }
 

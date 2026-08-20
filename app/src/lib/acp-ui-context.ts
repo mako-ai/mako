@@ -13,6 +13,47 @@ import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { useAppStore } from "../store/appStore";
 
 const MAX_CONTEXT_CHARS = 6_000;
+const DBT_TAB_KINDS = new Set([
+  "dbt-file",
+  "dbt-job",
+  "dbt-console",
+  "dbt-runs",
+]);
+
+export function getAcpDbtFocus(): {
+  active: boolean;
+  projectId?: string;
+} {
+  const consoleStore = useConsoleStore.getState();
+  const dbtTabs = Object.values(consoleStore.tabs).filter(
+    tab => tab.kind && DBT_TAB_KINDS.has(tab.kind),
+  );
+  if (dbtTabs.length === 0) return { active: false };
+  const activeTab = consoleStore.activeTabId
+    ? consoleStore.tabs[consoleStore.activeTabId]
+    : undefined;
+  const activeProjectId =
+    activeTab?.kind && DBT_TAB_KINDS.has(activeTab.kind)
+      ? activeTab.metadata?.projectId
+      : undefined;
+  const projectIds = new Set(
+    dbtTabs
+      .map(tab => tab.metadata?.projectId)
+      .filter(
+        (projectId): projectId is string => typeof projectId === "string",
+      ),
+  );
+  const projectId =
+    typeof activeProjectId === "string"
+      ? activeProjectId
+      : projectIds.size === 1
+        ? [...projectIds][0]
+        : undefined;
+  return {
+    active: true,
+    projectId,
+  };
+}
 
 export function buildAcpUiContextBlock(args: {
   workspaceId?: string;
@@ -88,6 +129,7 @@ export function buildAcpUiContextBlock(args: {
           id: t.id,
           dashboardId: t.dashboardId,
           notebookId: t.notebookId,
+          dbtProjectId: t.dbtProjectId,
         })),
       )}`,
     );

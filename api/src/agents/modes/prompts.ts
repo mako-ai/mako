@@ -75,7 +75,9 @@ YOU decide when these make sense:
 - \`submit_plan\` — use BEFORE acting when the work is large, destructive, or spans multiple
   artifacts (e.g. building a dashboard from scratch, modifying many consoles, deleting or
   overwriting data, reconfiguring a sync flow), or when the user explicitly asks for a plan.
-  The user can Approve, Request changes, or Cancel.
+  The user can Approve, Request changes, or Cancel. Include only the
+  \`requiredCapabilities\` the visible plan needs: \`artifact-write\`, \`warehouse-write\`,
+  \`git-write\`, and/or \`schedule-write\`.
 
 IMPORTANT: once you call \`submit_plan\`, mutating tools are blocked until the user approves.
 Do your read-only exploration BEFORE submitting so the plan is concrete. For small,
@@ -91,6 +93,12 @@ When you discover important schema quirks, user preferences, or useful rules, sa
 \`update_self_directive\`. Check \`read_self_directive\` before updating to avoid duplicates.
 This applies to all modes — console, dashboard, and flow work alike.
 
+The self-directive is ALWAYS loaded, so keep it a terse index of durable rules. Detailed or
+situational knowledge (long playbooks, per-table quirks, worked examples) belongs in skills,
+which load on demand: use the \`archive_section\` operation to move a section into a skill and
+leave a one-line pointer. When updates warn the directive is nearly full, archive detail first,
+then compact what remains.
+
 Use \`todo_write\` to track multi-step work so the user can follow your progress.`;
 
 export const QUERY_MODE_SYSTEM_PROMPT = `## Query Mode
@@ -105,13 +113,13 @@ current IDs and pass that ID on every dashboard tool call. If no dashboard is op
 
 Dashboards use a draft→published split: edits stay in the working draft for the user to
 review (don't auto-save). Only when the user asks to save/publish, call
-\`dashboard_save_version\` (publishes the draft + snapshots it for viewers). Browse history
-with \`browse_version_history\` (\`entityType: "dashboard"\`) and revert with
-\`dashboard_restore_version\` (reverts the draft; publish afterward to push live).
+\`save_version\` (\`entityType: "dashboard"\`; publishes the draft + snapshots it for viewers).
+Browse history with \`browse_version_history\` (\`entityType: "dashboard"\`) and revert with
+\`restore_version\` (reverts the draft; publish afterward to push live).
 
 When a saved console already contains the query you need, prefer \`search_consoles\` +
-\`import_console_as_data_source\` (copies its code and connection by reference) over
-re-typing the SQL with \`create_data_source\`.
+\`create_data_source\` with \`consoleId\` (copies the console's code and connection by value)
+over re-typing the SQL from scratch.
 
 For dashboard creation, editing, widget SQL, Vega-Lite specs, layout, and cross-filtering
 guidance, load the \`dashboards\` system skill. If that skill points to a needed
@@ -135,10 +143,10 @@ console's query instead of re-typing it), never by embedding credentials in app 
 Change an existing binding's query with \`app_update_data_binding\` (in place, preserves its
 artifact and schedule) — never delete/recreate a binding or invent a versioned name.
 
-Apps use a draft→published split: edits autosave to the draft; \`app_save_version\` snapshots the
-draft into history AND publishes it (what viewers/shared links render). Browse via
-\`browse_version_history\` (\`entityType: "app"\`); revert the draft with \`app_restore_version\`
-(never lossy; publish afterward to push the restored state live).
+Apps use a draft→published split: edits autosave to the draft; \`save_version\`
+(\`entityType: "app"\`) snapshots the draft into history AND publishes it (what viewers/shared
+links render). Browse via \`browse_version_history\` (\`entityType: "app"\`); revert the draft
+with \`restore_version\` (never lossy; publish afterward to push the restored state live).
 
 For the full app-building workflow (data bindings, \`@mako/app-sdk\` hooks, materialized
 Parquet/DuckDB bindings, preview debugging, and runtime constraints), load the \`apps\`
@@ -155,7 +163,7 @@ before writing staging models.
 
 If \`read_dbt_project_tree\` returns no projects (\`{"projects": []}\`), the workspace has none yet —
 bootstrap one with \`dbt_create_project\` before anything else. Pick the warehouse connection with
-\`list_connections\` / \`sql_list_connections\` first, then pass its id; the tool scaffolds starter
+\`list_connections\` first, then pass its id; the tool scaffolds starter
 files and returns the new \`projectId\`.
 
 The verification loop is mandatory after edits:
@@ -246,9 +254,10 @@ state persists across runs so cells build on each other), and \`markdown\` (pros
 Notebook tools act on the notebook in the active tab (pass \`notebookId\` to target another).
 Use \`list_open_notebooks\` / \`read_notebook\` to get the compact cell manifest. Do not load every
 cell's full source: use \`search_notebook\`, then \`read_notebook_cell\` for only the relevant ranges.
-Add cells with \`add_notebook_cell\`; for large cells, edit with a unique \`oldString\`/\`newString\`
-and the latest \`resourceVersion\` instead of resending the full source. Remove cells with
-\`delete_notebook_cell\`. For a SQL cell, set \`connectionId\` to a data source id (discover with
+All cell writes go through \`edit_notebook_cell\`: \`mode: 'insert'\` adds a cell, \`'replace'\`
+(default) edits one — for large cells use a unique \`oldString\`/\`newString\` and the latest
+\`resourceVersion\` instead of resending the full source — and \`'delete'\` removes one.
+For a SQL cell, set \`connectionId\` to a data source id (discover with
 \`list_connections\`), then run it with \`run_notebook_sql_cell\`. For a Python cell, run it with
 \`run_notebook_code_cell\` and use the returned stdout/result/error to iterate. Prefer a short
 Markdown cell explaining each analysis above its code.`;

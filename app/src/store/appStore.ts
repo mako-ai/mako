@@ -114,6 +114,44 @@ function readStoredPreviewDbtEnv(appId: string): string | null {
   }
 }
 
+/**
+ * Per-user, per-app viewport override for the DRAFT PREVIEW (view state,
+ * mirrors previewDbtEnv). The iframe is laid out at exactly this size so
+ * media queries render the true mobile/tablet layout; null = fill the pane.
+ */
+export interface AppPreviewViewport {
+  width: number;
+  height: number;
+  /** Named preset ("phone" / "tablet") or undefined for a custom size. */
+  preset?: string;
+}
+
+const previewViewportStorageKey = (appId: string) =>
+  `mako:appPreviewViewport:${appId}`;
+
+function readStoredPreviewViewport(appId: string): AppPreviewViewport | null {
+  try {
+    const raw = localStorage.getItem(previewViewportStorageKey(appId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<AppPreviewViewport>;
+    if (
+      typeof parsed.width === "number" &&
+      typeof parsed.height === "number" &&
+      parsed.width > 0 &&
+      parsed.height > 0
+    ) {
+      return {
+        width: parsed.width,
+        height: parsed.height,
+        ...(typeof parsed.preset === "string" ? { preset: parsed.preset } : {}),
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 interface AppState {
   myApps: Record<string, AppListItem[]>;
   workspaceApps: Record<string, AppListItem[]>;
@@ -130,7 +168,20 @@ interface AppState {
 
   /** Bumping the nonce forces the renderer to rebuild that app's preview. */
   previewNonce: Record<string, number>;
+  /**
+   * Bumping the nonce tells the renderer to reload DuckDB tables from the
+   * latest artifacts, then post a data-refresh to the running preview (data
+   * first, then UI — never a mid-flight iframe reboot).
+   */
+  dataRefreshNonce: Record<string, number>;
   previewErrors: Record<string, AppPreviewError[]>;
+  /**
+   * Preview lifecycle per app: "building" from bumpPreview until the iframe
+   * bootstrap posts ready/error (which lands via setPreviewErrors — [] on
+   * ready, non-empty on error). Undefined until the first build/report. The
+   * run_app executor awaits this instead of sleeping a fixed delay.
+   */
+  previewStatus: Record<string, "building" | "ready" | "error">;
 
   /**
    * Per-user, per-app dbt environment override for the DRAFT PREVIEW only
@@ -141,6 +192,14 @@ interface AppState {
   previewDbtEnv: Record<string, string | null>;
   /** Cached dbt project environments for binding resolution (by projectId). */
   dbtEnvInfo: Record<string, AppDbtEnvInfo>;
+
+  /**
+   * Per-user, per-app preview viewport override (view state, persisted in
+   * localStorage). null/undefined = fill the pane (desktop). AppRenderer
+   * lays the iframe out at exactly this size (scaled to fit visually), so
+   * media queries render the true responsive layout.
+   */
+  previewViewport: Record<string, AppPreviewViewport | null>;
 }
 
 interface AppActions {
@@ -195,6 +254,11 @@ interface AppActions {
   setRuntime: (appId: string, runtime: "cdn" | "webcontainer") => void;
 
   bumpPreview: (appId: string) => void;
+  /**
+   * Ask the open preview to reload data into DuckDB and re-query — without
+   * rebuilding the iframe. Used after an explicit binding refresh settles.
+   */
+  requestDataRefresh: (appId: string) => void;
   setPreviewErrors: (appId: string, errors: AppPreviewError[]) => void;
 
   /** Sync sharing settings updated by the ShareDialog into the open app. */
@@ -220,6 +284,15 @@ interface AppActions {
    */
   setPreviewDbtEnvironment: (appId: string, environment: string | null) => void;
 
+  /**
+   * Switch the app preview's viewport (per-user view state; null = fill the
+   * pane). No rebuild — the iframe resizes and the app re-lays out live.
+   */
+  setPreviewViewport: (
+    appId: string,
+    viewport: AppPreviewViewport | null,
+  ) => void;
+
   /** Fetch (and cache) a dbt project's environments for binding resolution. */
   fetchDbtEnvInfo: (
     workspaceId: string,
@@ -244,9 +317,10 @@ interface AppActions {
    * caps the wait and `signal` aborts the polling (the build itself keeps
    * running server-side either way).
    *
-   * `refreshPreview` (default true) refetches the app and bumps the preview
-   * when the binding becomes ready. Bulk rematerialize passes false so the
-   * preview refreshes once after every binding settles.
+   * `refreshPreview` (default true) refetches the app and requests a
+   * data-then-UI refresh (DuckDB load + data-refresh) when the binding
+   * becomes ready. Bulk rematerialize passes false so the caller applies
+   * data once after every binding settles.
    */
   materializeBinding: (
     workspaceId: string,
@@ -310,7 +384,10 @@ const initialState: AppState = {
   openAppErrors: {},
   activeAppId: null,
   previewNonce: {},
+  dataRefreshNonce: {},
   previewErrors: {},
+  previewStatus: {},
+  previewViewport: {},
   previewDbtEnv: {},
   dbtEnvInfo: {},
 };
@@ -415,6 +492,9 @@ export const useAppStore = create<AppStore>()(
           if (state.previewDbtEnv[appId] === undefined) {
             state.previewDbtEnv[appId] = readStoredPreviewDbtEnv(appId);
           }
+          if (state.previewViewport[appId] === undefined) {
+            state.previewViewport[appId] = readStoredPreviewViewport(appId);
+          }
         });
         return res.app;
       } catch (e) {
@@ -458,7 +538,10 @@ export const useAppStore = create<AppStore>()(
           delete state.openApps[appId];
           delete state.openAppErrors[appId];
           delete state.previewNonce[appId];
+          delete state.dataRefreshNonce[appId];
           delete state.previewErrors[appId];
+          delete state.previewStatus[appId];
+          delete state.previewViewport[appId];
         });
         void get().fetchList(workspaceId);
         return true;
@@ -733,6 +816,13 @@ export const useAppStore = create<AppStore>()(
     bumpPreview: appId =>
       set(state => {
         state.previewNonce[appId] = (state.previewNonce[appId] || 0) + 1;
+        state.previewStatus[appId] = "building";
+      }),
+
+    requestDataRefresh: appId =>
+      set(state => {
+        state.dataRefreshNonce[appId] =
+          (state.dataRefreshNonce[appId] || 0) + 1;
       }),
 
     applySharingChanges: (appId, changes) =>
@@ -751,6 +841,9 @@ export const useAppStore = create<AppStore>()(
     setPreviewErrors: (appId, errors) =>
       set(state => {
         state.previewErrors[appId] = errors;
+        // The iframe bootstrap reports exactly one of ready ([]) or error
+        // (non-empty), so error presence IS the settled preview status.
+        state.previewStatus[appId] = errors.length > 0 ? "error" : "ready";
       }),
 
     setPreviewDbtEnvironment: (appId, environment) => {
@@ -769,6 +862,26 @@ export const useAppStore = create<AppStore>()(
       // No preview bump here: AppRenderer watches this state and posts a
       // data-refresh into the booted iframe, so data hooks re-run against the
       // new schema without a (slow) srcdoc rebuild or losing app UI state.
+    },
+
+    setPreviewViewport: (appId, viewport) => {
+      set(state => {
+        state.previewViewport[appId] = viewport;
+      });
+      try {
+        if (viewport) {
+          localStorage.setItem(
+            previewViewportStorageKey(appId),
+            JSON.stringify(viewport),
+          );
+        } else {
+          localStorage.removeItem(previewViewportStorageKey(appId));
+        }
+      } catch {
+        /* view state only — losing persistence is harmless */
+      }
+      // No preview bump: resizing the iframe re-lays the app out live and
+      // media queries re-evaluate — a rebuild would only add a flash.
     },
 
     fetchDbtEnvInfo: async (workspaceId, dbtProjectId) => {
@@ -893,8 +1006,11 @@ export const useAppStore = create<AppStore>()(
 
       const finishReady = async () => {
         if (refreshPreview) {
+          // Data first, then UI: refetch binding caches, then ask the renderer
+          // to load DuckDB and post data-refresh. Do NOT bumpPreview — that
+          // reboots the iframe before tables are ready.
           await get().fetchApp(workspaceId, appId);
-          get().bumpPreview(appId);
+          get().requestDataRefresh(appId);
         }
         return { success: true, status: "ready" as const };
       };
@@ -932,7 +1048,7 @@ export const useAppStore = create<AppStore>()(
               set(state => {
                 state.openApps[appId] = res.app as AppEntity;
               });
-              get().bumpPreview(appId);
+              get().requestDataRefresh(appId);
             } else {
               setLocalStatus("ready");
             }

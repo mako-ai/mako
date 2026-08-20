@@ -51,12 +51,12 @@ You don't configure dialects — Mako reads the connection metadata and does the
 
 Before writing any query, Mako inspects your actual schema. No guessing, no hallucinated column names:
 
-| Tool                                             | What It Does                                    |
-| ------------------------------------------------ | ----------------------------------------------- |
-| `list_connections`                               | Shows all database connections in the workspace |
-| `sql_list_databases` / `mongo_list_databases`    | Lists databases on a connection                 |
-| `sql_list_tables` / `mongo_list_collections`     | Lists tables/collections with row counts        |
-| `sql_inspect_table` / `mongo_inspect_collection` | Gets column types, constraints, and sample data |
+| Tool               | What It Does                                                          |
+| ------------------ | --------------------------------------------------------------------- |
+| `list_connections` | Shows all database connections in the workspace                       |
+| `list_databases`   | Lists databases on a connection (any type — SQL or MongoDB)           |
+| `list_tables`      | Lists tables/views (SQL) or collections (MongoDB)                     |
+| `inspect_table`    | Gets column types, constraints, and sample data (or MongoDB fields)   |
 
 The agent uses sample data to understand real values — not just types. If your `status` column contains `'active'`, `'churned'`, `'trial'`, it knows what to filter on.
 
@@ -182,6 +182,8 @@ Mako routes all AI requests through the **Vercel AI Gateway**, which provides ac
 
 Models are discovered dynamically at runtime by merging the Gateway model catalog with [arena.ai](https://arena.ai) code leaderboard ELO scores. The catalog refreshes hourly.
 
+On **Mako Desktop**, the model dropdown also shows an **On this machine** group — Claude Code and Codex running locally via ACP on your own subscription. See [Coding Agents (ACP)](/coding-agents-acp/).
+
 ### Free vs Pro Models
 
 When billing is enabled, models are split into two tiers:
@@ -230,6 +232,7 @@ The agent then calls `check_query_status` to fetch the result, and can stop a ru
 | `run_console`        | Executes a console's query as a detached run; returns rows, or `status: "running"` + `executionId`   |
 | `check_query_status` | Polls a running query by `consoleId` (+ optional `executionId`); returns `running`/`success`/`error`/`cancelled` |
 | `cancel_query`       | Aborts a running detached query (task + engine-native cancel)                                         |
+| `list_console_executions` | Lists a console's recent executions with trigger source (App UI / API key / MCP / AI agent / Schedule / Flow), status, duration, and row count |
 
 Results land via the persisted `lastRun` record and the realtime `console.run.completed` pipeline, so result polling works across server instances for **every engine** — no re-attach and no Inngest dependency (multi-instance realtime fan-out uses `REDIS_URL`). A server-side hard cap (`QUERY_HARD_MAX_EXECUTION_MS`, 5 minutes default) aborts any detached run that exceeds it, so no query can run forever.
 

@@ -63,6 +63,8 @@ export interface IMcpOAuthToken extends Document {
   clientId: string;
   userId: string;
   workspaceId: string;
+  /** Server-generated identity for one attached Desktop ACP session. */
+  agentSessionId?: string;
   scopes: string[];
   accessExpiresAt: Date;
   refreshExpiresAt: Date;
@@ -76,6 +78,7 @@ const McpOAuthTokenSchema = new Schema<IMcpOAuthToken>({
   clientId: { type: String, required: true },
   userId: { type: String, required: true },
   workspaceId: { type: String, required: true },
+  agentSessionId: { type: String, index: true },
   scopes: { type: [String], required: true },
   accessExpiresAt: { type: Date, required: true },
   refreshExpiresAt: { type: Date, required: true },

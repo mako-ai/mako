@@ -1,13 +1,20 @@
 /**
- * MCP-only preview tools — the "render" leg of the headless iteration loop.
+ * Headless preview tools — the "verify" leg for external MCP clients.
  *
- * These are not part of the in-product agent's toolset (the in-product
- * agent has a live browser tab via run_app); they exist for external MCP
- * clients that need to see a draft render without a human tab open:
+ * `run_app` is the canonical cross-surface verify capability; this module
+ * provides its headless adapter (Chat uses the live iframe, Desktop ACP the
+ * mako-desktop bridge). Also here:
  *
  *   create_preview_token → signed short-TTL URL an agent-driven browser
  *     (e.g. Claude Code's local Playwright) can load and screenshot.
+ *   render_app → deprecated alias of run_app, kept for existing clients.
  */
+import {
+  runAppBaseSchema,
+  runAppResultToMcpContent,
+  summarizeRunAppResult,
+  type RunAppResult,
+} from "@mako/agent-tools";
 import { tool } from "ai";
 import { Types } from "mongoose";
 import { z } from "zod";
@@ -63,25 +70,127 @@ async function previewBaseUnreachableError(
   }
 }
 
-const renderAppSchema = z.object({
-  appId: z.string().describe("The app whose DRAFT should be rendered"),
-  width: z.number().int().min(320).max(1920).optional(),
-  height: z.number().int().min(320).max(1920).optional(),
-  timeoutMs: z
-    .number()
-    .int()
-    .min(5_000)
-    .max(45_000)
-    .optional()
-    .describe("How long to wait for the app to finish rendering (ms)"),
-  includeScreenshot: z
-    .boolean()
-    .optional()
-    .describe(
-      "Default true. Pass false to get status/errors/console only — much " +
-        "cheaper when you just need to know whether the render succeeded.",
-    ),
-});
+// Shared cross-surface input (width/height render the draft at that viewport
+// — e.g. 390x844 for the mobile layout). `rebuild` from the base schema is
+// accepted but moot here: a headless render is always a fresh build.
+const renderAppSchema = runAppBaseSchema;
+
+type RenderAppInput = z.infer<typeof renderAppSchema>;
+
+/**
+ * Shared execute for the headless verify leg. `run_app` is the canonical
+ * cross-surface name (Chat iframe / mako-desktop bridge / this renderer);
+ * `render_app` remains as a deprecated alias for existing MCP clients.
+ */
+async function executeHeadlessRender(
+  workspaceId: string,
+  { appId, width, height, timeoutMs, includeScreenshot }: RenderAppInput,
+) {
+  const failed = (error: string): RunAppResult => ({
+    success: false,
+    status: "error",
+    errors: [],
+    consoleLogs: [],
+    source: "headless",
+    error,
+  });
+
+  if (!Types.ObjectId.isValid(appId)) {
+    return summarizeRunAppResult(failed(`Invalid app ID: ${appId}`));
+  }
+  const app = await MakoApp.findOne({
+    _id: new Types.ObjectId(appId),
+    workspaceId: new Types.ObjectId(workspaceId),
+  })
+    .select({ _id: 1 })
+    .lean();
+  if (!app) {
+    return summarizeRunAppResult(
+      failed(
+        `App ${appId} not found. Use list_open_apps to see available apps.`,
+      ),
+    );
+  }
+
+  const baseUrl = clientBaseUrl();
+  if (isAppRenderEnabled()) {
+    // Probe only when we will actually render (renderAppPreview reports its
+    // own "rendering disabled" message otherwise).
+    const unreachable = await previewBaseUnreachableError(baseUrl);
+    if (unreachable) {
+      return summarizeRunAppResult(failed(unreachable));
+    }
+  }
+
+  // Short-lived token minted per render; never returned to the caller.
+  const { token } = mintAppPreviewToken({
+    appId,
+    workspaceId,
+    ttlSeconds: 300,
+  });
+  const rendered = await renderAppPreview({
+    url: `${baseUrl}/preview/${token}`,
+    width,
+    height,
+    timeoutMs,
+    screenshot: includeScreenshot !== false,
+  });
+
+  const result: RunAppResult = {
+    success: rendered.success,
+    status: rendered.status,
+    errors: rendered.errors,
+    consoleLogs: rendered.consoleLogs,
+    source: "headless",
+    ...(rendered.screenshotBase64
+      ? {
+          screenshot: {
+            mimeType: "image/jpeg",
+            base64: rendered.screenshotBase64,
+          },
+        }
+      : includeScreenshot !== false
+        ? {
+            screenshotUnavailableReason: isAppRenderEnabled()
+              ? "The headless render did not produce a screenshot."
+              : "Server-side rendering is not configured " +
+                "(RENDER_APP_BROWSER_PATH is unset).",
+          }
+        : {}),
+    ...(rendered.error ? { error: rendered.error } : {}),
+  };
+
+  if (!result.screenshot) {
+    return summarizeRunAppResult(result);
+  }
+  return { mcpContent: runAppResultToMcpContent(result) };
+}
+
+/**
+ * Headless adapter for the canonical `run_app` capability: external MCP
+ * clients get the same tool name Chat and Desktop use, backed by the
+ * server-side renderer. Registered in the MCP candidate set; the bridge
+ * policy omits it for Desktop ACP (mako-desktop provides `run_app` there).
+ */
+export function createHeadlessRunAppTool(context: MakoMcpContext) {
+  const { workspaceId } = context;
+  return {
+    run_app: tool({
+      description:
+        "Verify the app: render its current DRAFT in a server-side headless " +
+        "browser and return render status, build/runtime errors, filtered " +
+        "console output, and a screenshot. Use after edits to confirm the " +
+        "app actually works — no browser needed on your side. " +
+        (isAppRenderEnabled()
+          ? ""
+          : "NOTE: server-side rendering is not configured on this " +
+            "deployment; use create_preview_token with your own browser instead."),
+      inputSchema: renderAppSchema,
+      execute: (input: RenderAppInput) =>
+        executeHeadlessRender(workspaceId, input),
+    }),
+  };
+}
 
 const createPreviewTokenSchema = z.object({
   appId: z.string().describe("The app whose DRAFT should be previewable"),
@@ -145,83 +254,13 @@ export function createMcpPreviewTools(context: MakoMcpContext) {
 
     render_app: tool({
       description:
-        "Render the app's current DRAFT in a server-side headless browser " +
-        "and return its render status, any build/runtime errors, filtered " +
-        "console output, and a screenshot. Use this after edits to verify " +
-        "the app actually works — it needs no browser on your side. " +
-        (isAppRenderEnabled()
-          ? ""
-          : "NOTE: server-side rendering is not configured on this " +
-            "deployment; use create_preview_token with your own browser instead."),
+        "DEPRECATED alias of run_app — call run_app instead (same inputs, " +
+        "same result). Renders the app's current DRAFT in a server-side " +
+        "headless browser and returns render status, errors, console " +
+        "output, and a screenshot.",
       inputSchema: renderAppSchema,
-      execute: async ({
-        appId,
-        width,
-        height,
-        timeoutMs,
-        includeScreenshot,
-      }) => {
-        if (!Types.ObjectId.isValid(appId)) {
-          return { success: false, error: `Invalid app ID: ${appId}` };
-        }
-        const app = await MakoApp.findOne({
-          _id: new Types.ObjectId(appId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        })
-          .select({ _id: 1 })
-          .lean();
-        if (!app) {
-          return {
-            success: false,
-            error: `App ${appId} not found. Use list_open_apps to see available apps.`,
-          };
-        }
-
-        const baseUrl = clientBaseUrl();
-        if (isAppRenderEnabled()) {
-          // Probe only when we will actually render (renderAppPreview
-          // reports its own "rendering disabled" message otherwise).
-          const unreachable = await previewBaseUnreachableError(baseUrl);
-          if (unreachable) {
-            return { success: false, error: unreachable };
-          }
-        }
-
-        // Short-lived token minted per render; never returned to the caller.
-        const { token } = mintAppPreviewToken({
-          appId,
-          workspaceId,
-          ttlSeconds: 300,
-        });
-        const result = await renderAppPreview({
-          url: `${baseUrl}/preview/${token}`,
-          width,
-          height,
-          timeoutMs,
-          screenshot: includeScreenshot !== false,
-        });
-
-        const summary = {
-          success: result.success,
-          status: result.status,
-          errors: result.errors,
-          consoleLogs: result.consoleLogs,
-          ...(result.error ? { error: result.error } : {}),
-        };
-        if (includeScreenshot === false || !result.screenshotBase64) {
-          return summary;
-        }
-        return {
-          mcpContent: [
-            { type: "text", text: JSON.stringify(summary) },
-            {
-              type: "image",
-              data: result.screenshotBase64,
-              mimeType: "image/jpeg",
-            },
-          ],
-        };
-      },
+      execute: (input: RenderAppInput) =>
+        executeHeadlessRender(workspaceId, input),
     }),
   };
 }

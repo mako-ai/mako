@@ -42,10 +42,6 @@ import {
   getUserDisplayName,
 } from "../../services/entity-version.service";
 import {
-  loadDbtDeferState,
-  runAdhocDbtCommand,
-} from "../../dbt/dbt-project.service";
-import {
   ensurePersonalDbtEnvironment,
   findPersonalEnvironment,
   getUserDevEnvPreference,
@@ -354,6 +350,34 @@ export const createDbtServerTools = (
   ): boolean =>
     Boolean(project.lastProdManifestKey) &&
     environmentName !== resolveProdLikeEnvironmentName(project);
+
+  const queueAgentRun = async (
+    project: Awaited<ReturnType<typeof assertProject>>,
+    environment: string,
+    commands: string[],
+    deferToProduction = false,
+  ) => {
+    const run = await triggerDbtRun({
+      workspaceId,
+      projectId: project._id.toString(),
+      environment,
+      commands,
+      trigger: "agent",
+      triggeredBy: "agent",
+      workingTreeUserId: project.repo ? actingUserId : undefined,
+      deferToProduction,
+    });
+    publishRunUpdated(project._id.toString(), {
+      runId: run._id.toString(),
+    });
+    return {
+      success: true as const,
+      runId: run._id.toString(),
+      status: run.status,
+      environment: run.environment,
+      commands: run.commands,
+    };
+  };
 
   const deferField = z
     .boolean()
@@ -857,7 +881,8 @@ export const createDbtServerTools = (
       description:
         "Validate the entire dbt project (dbt parse): catches Jinja errors, " +
         "bad refs/sources, and schema.yml problems WITHOUT touching the " +
-        "warehouse. Run this after editing YAML or multiple files.",
+        "warehouse. Queues an asynchronous run and returns runId immediately; " +
+        "poll dbt_get_run for the result.",
       inputSchema: z.object({
         projectId: projectIdField,
         environment: z
@@ -871,20 +896,16 @@ export const createDbtServerTools = (
       execute: async ({ projectId, environment }) => {
         try {
           const project = await assertProject(projectId);
-          const result = await runAdhocDbtCommand({
-            workspaceId,
-            projectId,
-            environmentName: await resolveEnvironment(project, environment),
-            userId: actingUserId,
-            command: "parse",
-            timeoutMs: 2 * 60 * 1000,
-          });
+          const environmentName = await resolveEnvironment(
+            project,
+            environment,
+          );
+          const result = await queueAgentRun(project, environmentName, [
+            "parse",
+          ]);
           return {
-            success: result.success,
-            ...(result.success
-              ? { message: "Project parsed successfully" }
-              : { error: "dbt parse failed" }),
-            logs: summarizeLogs(result.logs),
+            ...result,
+            message: "Parse queued. Poll dbt_get_run with runId.",
           };
         } catch (error) {
           return toolError(error, "Failed to run dbt parse");
@@ -894,11 +915,11 @@ export const createDbtServerTools = (
 
     dbt_compile_model: tool({
       description:
-        "Compile dbt nodes (dbt compile --select <selector>) and return the " +
-        "rendered SQL for a single model, or the Jinja/compilation error. No " +
+        "Compile dbt nodes (dbt compile --select <selector>) and surface the " +
+        "Jinja/compilation result through dbt_get_run. No " +
         "warehouse writes. `model` accepts a node name (stg_orders) or a dbt " +
         "selector with graph operators/methods (+stg_orders, tag:nightly, " +
-        "path:models/staging). Use after writing or editing a model.",
+        "path:models/staging). Queues an asynchronous run and returns runId.",
       inputSchema: z.object({
         projectId: projectIdField,
         model: z
@@ -921,23 +942,16 @@ export const createDbtServerTools = (
           );
           const wantsDefer =
             defer ?? shouldDeferByDefault(project, environmentName);
-          const result = await runAdhocDbtCommand({
-            workspaceId,
-            projectId,
+          const result = await queueAgentRun(
+            project,
             environmentName,
-            userId: actingUserId,
-            command: `compile --select ${model}`,
-            select: model,
-            deferState: wantsDefer
-              ? await loadDbtDeferState(project)
-              : undefined,
-            timeoutMs: 3 * 60 * 1000,
-          });
+            [`compile --select ${model}`],
+            wantsDefer,
+          );
           return {
-            success: result.success,
-            environment: environmentName,
-            compiledSql: result.compiledSql,
-            logs: summarizeLogs(result.logs),
+            ...result,
+            defer: wantsDefer,
+            message: "Compile queued. Poll dbt_get_run with runId.",
           };
         } catch (error) {
           return toolError(error, "Failed to compile model");
@@ -1207,8 +1221,9 @@ export const createDbtServerTools = (
     dbt_get_run: tool({
       description:
         "Read the status, step results, and logs of a dbt run — use this " +
-        "AFTER dbt_run_model or dbt_run_job to see whether the run passed or " +
-        "failed (those only queue it). Pass `runId` for a specific run, or " +
+        "AFTER dbt_parse, dbt_compile_model, dbt_show, dbt_run_model, or " +
+        "dbt_run_job to see whether the run passed or failed (those only " +
+        "queue it). Pass `runId` for a specific run, or " +
         "`jobId` to get that job's most recent run. Pass `waitMs` to block " +
         "server-side until the run reaches a terminal status (success/error/" +
         "cancelled) or the wait elapses — call it ONCE with waitMs ~90000 " +
@@ -1297,6 +1312,7 @@ export const createDbtServerTools = (
             completedAt: run.completedAt,
             durationMs: run.durationMs,
             error: run.error,
+            output: run.output,
             stepResults: (run.stepResults ?? []).map(step => ({
               name: step.name,
               resourceType: step.resourceType,
@@ -1324,7 +1340,8 @@ export const createDbtServerTools = (
         "Preview the rows a model/selector would return (dbt show --select " +
         "<selector> --limit N) WITHOUT materializing it. Runs a bounded " +
         "SELECT against the environment; no warehouse writes. Use to validate " +
-        "that a transform produces the expected output.",
+        "that a transform produces the expected output. Queues an asynchronous " +
+        "run; poll dbt_get_run for the preview logs.",
       inputSchema: z.object({
         projectId: projectIdField,
         model: z
@@ -1352,46 +1369,16 @@ export const createDbtServerTools = (
           );
           const wantsDefer =
             defer ?? shouldDeferByDefault(project, environmentName);
-          const result = await runAdhocDbtCommand({
-            workspaceId,
-            projectId,
+          const result = await queueAgentRun(
+            project,
             environmentName,
-            userId: actingUserId,
-            command: `show --select ${model} --limit ${limit}`,
-            deferState: wantsDefer
-              ? await loadDbtDeferState(project)
-              : undefined,
-            timeoutMs: 3 * 60 * 1000,
-          });
-          // The preview table arrives as info-level log line(s) (ShowNode);
-          // anchor on the "Previewing" marker to drop dbt startup boilerplate,
-          // falling back to all info lines if the marker text ever changes.
-          const infoLines = result.logs
-            .filter(log => log.level === "info")
-            .map(log => log.line);
-          const markerIdx = infoLines.findIndex(line =>
-            line.includes("Previewing"),
+            [`show --select ${model} --limit ${limit}`],
+            wantsDefer,
           );
-          const preview = (
-            markerIdx >= 0 ? infoLines.slice(markerIdx) : infoLines
-          )
-            .join("\n")
-            .slice(0, 8000);
-          if (!result.success) {
-            const reason = result.logs
-              .filter(log => log.level === "error")
-              .map(log => log.line)
-              .join("\n");
-            return {
-              success: false,
-              error: reason || "dbt show failed",
-              logs: summarizeLogs(result.logs),
-            };
-          }
           return {
-            success: true,
-            preview,
-            logs: summarizeLogs(result.logs),
+            ...result,
+            defer: wantsDefer,
+            message: "Preview queued. Poll dbt_get_run with runId.",
           };
         } catch (error) {
           return toolError(error, "Failed to preview model");

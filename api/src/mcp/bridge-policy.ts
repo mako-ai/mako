@@ -12,7 +12,11 @@
  * Adding a new agent tool without classifying it here fails the MCP
  * inventory test — that's how we stay smart about what's missing.
  */
-import { READ_ONLY_TOOL_NAMES } from "@mako/agent-tools";
+import {
+  AGENT_CAPABILITIES,
+  READ_ONLY_TOOL_NAMES,
+  type AgentCapabilityDefinition,
+} from "@mako/agent-tools";
 
 /** Why a tool is kept off the MCP surface. */
 export type McpBridgeExclusionWhy =
@@ -26,6 +30,13 @@ export type McpBridgeEntry =
       status: "bridge";
       /** Omit when the API key has no query access (`query:read`). */
       requiresQueryAccess?: boolean;
+      /** Expose only to the signed-in Mako Desktop ACP client. */
+      acpDesktopOnly?: boolean;
+      /**
+       * Omit for Desktop ACP clients: the mako-desktop loopback server
+       * delivers this same tool name there (one name, one provider).
+       */
+      omitForAcpDesktop?: boolean;
       /**
        * Factory may omit this tool without credentials/config (e.g. web_search
        * when no search provider is configured). Still classified so the catalog
@@ -62,85 +73,94 @@ const mcpOnly = (
   opts: Omit<Extract<McpBridgeEntry, { status: "mcp-only" }>, "status"> = {},
 ): McpBridgeEntry => ({ status: "mcp-only", ...opts });
 
+function capabilityBridgePolicyEntries(
+  capabilities: readonly AgentCapabilityDefinition[],
+): Record<string, McpBridgeEntry> {
+  return Object.fromEntries(
+    capabilities.map(capability => {
+      if (capability.requiresAsyncMcp) {
+        return [
+          capability.name,
+          exclude(
+            "deferred",
+            "Move this operation to the async run lifecycle before MCP exposure.",
+          ),
+        ];
+      }
+
+      const external = capability.surfaces.includes("external-mcp");
+      const desktop = capability.surfaces.includes("desktop-acp");
+      if (external) {
+        return [
+          capability.name,
+          bridge({
+            requiresQueryAccess: capability.requiresQueryAccess,
+            destructiveHint: capability.risk === "destructive",
+            omitForAcpDesktop:
+              capability.desktopDelivery === "mako-desktop" || undefined,
+          }),
+        ];
+      }
+      if (desktop && capability.desktopDelivery === "mako-desktop") {
+        // Desktop ACP gets this tool from the mako-desktop loopback server;
+        // the Mako bridge never serves it on any MCP surface.
+        return [
+          capability.name,
+          exclude(
+            capability.mcpExclusion?.why ?? "client-only",
+            capability.mcpExclusion?.note ??
+              "Delivered by the mako-desktop loopback server on Desktop ACP.",
+          ),
+        ];
+      }
+      if (desktop) {
+        return [
+          capability.name,
+          bridge({
+            acpDesktopOnly: true,
+            requiresQueryAccess: capability.requiresQueryAccess,
+            destructiveHint: capability.risk === "destructive",
+          }),
+        ];
+      }
+      if (capability.mcpExclusion) {
+        return [
+          capability.name,
+          exclude(capability.mcpExclusion.why, capability.mcpExclusion.note),
+        ];
+      }
+      return [
+        capability.name,
+        exclude("deferred", "Not available on an MCP surface."),
+      ];
+    }),
+  );
+}
+
 /**
  * Complete classification of every agent / MCP tool name.
  * Keep alphabetical within each section so diffs stay reviewable.
  */
 export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
-  // ── Apps (server) — full headless authoring surface ───────────────────
-  app_add_dependency: bridge(),
-  app_create_data_binding: bridge(),
-  app_delete_data_binding: bridge({ destructiveHint: true }),
-  app_delete_file: bridge({ destructiveHint: true }),
-  app_edit_file: bridge(),
-  app_read_file: bridge(),
-  app_remove_dependency: bridge({ destructiveHint: true }),
-  app_rename_file: bridge(),
-  app_restore_version: bridge(),
-  app_save_version: bridge(),
-  app_set_binding_materialization: bridge(),
-  app_set_binding_schedule: bridge(),
-  app_set_preview_environment: exclude(
-    "client-only",
-    "Per-user browser preview state; headless agents use render_app / bindings directly.",
-  ),
-  app_update_data_binding: bridge(),
-  app_write_file: bridge(),
-  create_app: bridge(),
-  get_app_state: bridge(),
-  app_search: bridge(),
-  app_read_resource: bridge(),
-  list_open_apps: bridge(),
-  materialize_binding: bridge(),
-  open_app: exclude(
-    "client-only",
-    "UI tab focus only; MCP operates on appId directly.",
-  ),
-  run_app: exclude(
-    "client-only",
-    "Browser iframe preview; MCP uses render_app instead.",
-  ),
-
-  // ── Notebooks (server) — durable GCS + kernel; Desktop opens tabs via focus ─
-  add_notebook_cell: bridge(),
-  create_notebook: bridge(),
-  delete_notebook_cell: bridge(),
-  edit_notebook_cell: bridge(),
-  list_open_notebooks: bridge(),
-  read_notebook: bridge(),
-  read_notebook_cell: bridge(),
-  run_notebook_code_cell: bridge(),
-  run_notebook_sql_cell: bridge(),
-  search_notebook: bridge(),
+  // ── Apps / notebooks / consoles / SQL / Mongo / dbt — derived from the
+  //    shared capability registry (@mako/agent-tools capabilities/*) ───────
+  ...capabilityBridgePolicyEntries(AGENT_CAPABILITIES),
 
   // ── MCP-only preview / render ─────────────────────────────────────────
   create_preview_token: mcpOnly(),
   render_app: mcpOnly(),
 
-  // ── Console / query (server) ───────────────────────────────────────────
-  cancel_query: bridge({ requiresQueryAccess: true }),
-  check_query_status: bridge({ requiresQueryAccess: true }),
-  create_console: bridge(),
-  list_open_consoles: exclude(
-    "client-only",
-    "Open browser tabs; Desktop ACP uses mako-desktop list_open_consoles / UI context.",
-  ),
-  modify_console: bridge(),
-  open_console: bridge(),
-  read_console: bridge(),
-  run_console: bridge({ requiresQueryAccess: true }),
-  list_console_executions: bridge(),
-  schedule_query: exclude(
-    "in-product-only",
-    "Scheduled writes need session auth + console ownership UX; not in MCP read-only apps loop.",
-  ),
-  search_consoles: bridge(),
-  set_console_connection: bridge(),
+  // ── MCP-only ChatGPT connector contract (chatgpt-connector-tools.ts) ──
+  // ChatGPT only accepts an MCP server as a chat/deep-research connector
+  // when it exposes this exact search/fetch pair; both are read-only views
+  // over content other bridged tools already expose.
+  fetch: mcpOnly(),
+  search: mcpOnly(),
 
   // ── Charts / screenshots (client) ─────────────────────────────────────
   capture_screenshot: exclude(
     "client-only",
-    "Captures the open browser tab; MCP uses render_app screenshots.",
+    "Captures the open browser tab; MCP uses run_app screenshots.",
   ),
   get_chart_template: exclude(
     "client-only",
@@ -154,22 +174,6 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "client-only",
     "Mutates the open console chart in the browser.",
   ),
-
-  // ── SQL / Mongo discovery + execute ───────────────────────────────────
-  list_connections: bridge(),
-  mongo_execute_query: exclude(
-    "security",
-    "Arbitrary MongoDB JavaScript has no reliable per-query read-only mode.",
-  ),
-  mongo_inspect_collection: bridge(),
-  mongo_list_collections: bridge(),
-  mongo_list_connections: bridge(),
-  mongo_list_databases: bridge(),
-  sql_execute_query: bridge({ requiresQueryAccess: true }),
-  sql_inspect_table: bridge(),
-  sql_list_connections: bridge(),
-  sql_list_databases: bridge(),
-  sql_list_tables: bridge(),
 
   // ── Flow / sync (mostly UI + deferred) ────────────────────────────────
   create_flow_tab: exclude(
@@ -185,27 +189,19 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "Flow template placeholder docs; not needed for apps authoring.",
   ),
   get_form_state: exclude("client-only", "Reads the open flow form in the UI."),
+  // NOTE: list_databases / list_tables / inspect_table are the unified
+  // cross-engine discovery family, classified via the capability registry
+  // above (bridged). The standalone flow agent's same-named discovery tools
+  // are shadowed by that classification.
   inspect_collection: exclude(
     "deferred",
-    "Unnamespaced mongo alias; MCP uses mongo_inspect_collection.",
-  ),
-  inspect_table: exclude(
-    "deferred",
-    "Unnamespaced flow discovery duplicate of sql_inspect_table.",
+    "Unnamespaced mongo alias; MCP uses inspect_table (or mongo_inspect_collection).",
   ),
   list_collections: exclude(
     "deferred",
-    "Unnamespaced mongo alias; MCP uses mongo_list_collections.",
-  ),
-  list_databases: exclude(
-    "deferred",
-    "Unnamespaced mongo/flow discovery alias; MCP uses sql_list_databases / mongo_list_databases.",
+    "Unnamespaced mongo alias; MCP uses list_tables (or mongo_list_collections).",
   ),
   list_flow_tabs: exclude("client-only", "Lists open flow editor tabs."),
-  list_tables: exclude(
-    "deferred",
-    "Unnamespaced flow discovery duplicate of sql_list_tables.",
-  ),
   set_form_field: exclude(
     "client-only",
     "Writes the open flow form in the UI.",
@@ -230,11 +226,11 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   create_data_source: exclude("client-only", "Dashboard builder UI."),
   dashboard_restore_version: exclude(
     "deferred",
-    "Dashboard versioning stays in-product until dashboards are MCP-bridged.",
+    "Deprecated alias of restore_version; dashboard versioning stays in-product until dashboards are MCP-bridged.",
   ),
   dashboard_save_version: exclude(
     "deferred",
-    "Dashboard versioning stays in-product until dashboards are MCP-bridged.",
+    "Deprecated alias of save_version; dashboard versioning stays in-product until dashboards are MCP-bridged.",
   ),
   enter_edit_mode: exclude("client-only", "Dashboard builder UI."),
   get_dashboard_state: exclude(
@@ -257,7 +253,8 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   run_data_source_query: exclude("client-only", "Dashboard builder UI."),
   search_dashboards: bridge(),
   set_time_dimension: exclude("client-only", "Dashboard builder UI."),
-  update_data_source_query: exclude("client-only", "Dashboard builder UI."),
+  // update_data_source_query migrated to the capability registry (dashboard
+  // domain) with a server leg — its bridge entry now derives from there.
 
   // ── Shared DuckDB data-source primitives (client) ─────────────────────
   inspect_data_source: exclude(
@@ -272,54 +269,6 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "client-only",
     "Queries in-browser DuckDB; MCP validates via sql_execute_query.",
   ),
-
-  // ── dbt / transform (server-capable, not yet on MCP) ──────────────────
-  create_dbt_file: exclude(
-    "deferred",
-    "Transform mode is in-product; MCP v1 is the apps + data loop.",
-  ),
-  dbt_cancel_run: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_close_pull_request: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_commit_and_push: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_commit_to_branch: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_compare_branches: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_compile_model: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_create_branch: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_create_job: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_create_project: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_delete_branch: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_delete_job: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_ensure_dev_environment: exclude(
-    "deferred",
-    "Transform mode not yet on MCP.",
-  ),
-  dbt_get_run: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_git_status: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_list_branches: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_list_pull_requests: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_list_recoverable_files: exclude(
-    "deferred",
-    "Transform mode not yet on MCP.",
-  ),
-  dbt_merge_pull_request: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_open_pull_request: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_parse: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_restore_file: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_run_job: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_run_model: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_show: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_switch_branch: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_sync_from_repo: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_update_job: exclude("deferred", "Transform mode not yet on MCP."),
-  dbt_update_pull_request: exclude(
-    "deferred",
-    "Transform mode not yet on MCP.",
-  ),
-  delete_dbt_file: exclude("deferred", "Transform mode not yet on MCP."),
-  edit_dbt_file: exclude("deferred", "Transform mode not yet on MCP."),
-  modify_dbt_file: exclude("deferred", "Transform mode not yet on MCP."),
-  read_dbt_file: exclude("deferred", "Transform mode not yet on MCP."),
-  read_dbt_project_tree: exclude("deferred", "Transform mode not yet on MCP."),
 
   // ── Skills / memory / modes / plan ────────────────────────────────────
   ask_clarifying_questions: exclude(
@@ -362,6 +311,17 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // ── Version history ───────────────────────────────────────────────────
   browse_version_history: bridge(),
   get_version_snapshot: bridge(),
+  // Generic save/restore dispatches in the browser (dashboard drafts live in
+  // the open tab); MCP keeps the server-side app_save_version /
+  // app_restore_version pair instead.
+  restore_version: exclude(
+    "client-only",
+    "Dispatches in the browser (dashboard drafts live in the open tab); MCP uses app_restore_version.",
+  ),
+  save_version: exclude(
+    "client-only",
+    "Dispatches in the browser (dashboard drafts live in the open tab); MCP uses app_save_version.",
+  ),
 
   // ── Web ───────────────────────────────────────────────────────────────
   fetch_url: bridge({ openWorldHint: true }),
@@ -452,7 +412,7 @@ export function assertBridgePolicyNotStale(
  */
 export function mcpReadOnlyHint(
   name: string,
-  queryAccess: "none" | "read" | "write",
+  queryAccess: "none" | "read" | "write-opt-in" | "write",
 ): boolean {
   if (READ_ONLY_TOOL_NAMES.has(name)) return true;
   const entry = MCP_BRIDGE_POLICY[name];
@@ -464,13 +424,22 @@ export function mcpReadOnlyHint(
     queryAccess === "read" &&
     (name === "sql_execute_query" ||
       name === "run_console" ||
-      name === "check_query_status" ||
-      name === "list_console_executions" ||
       name === "cancel_query")
   ) {
-    // Under query:read the SQL loop is forced read-only; status/cancel/list
-    // are part of that same lifecycle and should not look like writes to MCP
-    // clients (affects auto-approval annotations).
+    // Under query:read the SQL loop is forced read-only; cancel is part of
+    // that same lifecycle and should not look like a write to MCP clients
+    // (affects auto-approval annotations). check_query_status and
+    // list_console_executions are read-risk in the capability registry, so
+    // they are covered by READ_ONLY_TOOL_NAMES above regardless of scope.
+    return true;
+  }
+  if (
+    queryAccess === "write-opt-in" &&
+    (name === "run_console" || name === "cancel_query")
+  ) {
+    // Console runs fail closed to read under write-opt-in (only
+    // sql_execute_query resolves the per-connection allowAgentWrites flag,
+    // so it must NOT be annotated read-only here).
     return true;
   }
   return false;

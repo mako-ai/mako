@@ -192,6 +192,10 @@ interface McpActions {
 
 type McpStore = McpState & McpActions;
 
+let fetchServersRequestId = 0;
+let fetchToolInfoRequestId = 0;
+let toolInfoWorkspaceId: string | null = null;
+
 export const useMcpStore = create<McpStore>()(
   immer((set, get) => ({
     servers: [],
@@ -204,6 +208,7 @@ export const useMcpStore = create<McpStore>()(
     oauthReturn: null,
 
     fetchServers: async workspaceId => {
+      const requestId = ++fetchServersRequestId;
       set(state => {
         state.loading = true;
         state.error = null;
@@ -214,11 +219,13 @@ export const useMcpStore = create<McpStore>()(
             params: { path: { workspaceId } },
           }),
         ) as { servers: McpServerInfo[] };
+        if (requestId !== fetchServersRequestId) return;
         set(state => {
           state.servers = response.servers ?? [];
           state.loading = false;
         });
       } catch (error) {
+        if (requestId !== fetchServersRequestId) return;
         set(state => {
           state.loading = false;
           state.error =
@@ -244,12 +251,20 @@ export const useMcpStore = create<McpStore>()(
     },
 
     fetchToolInfo: async workspaceId => {
+      const requestId = ++fetchToolInfoRequestId;
+      if (toolInfoWorkspaceId !== workspaceId) {
+        toolInfoWorkspaceId = workspaceId;
+        set(state => {
+          state.toolInfo = {};
+        });
+      }
       try {
         const response = unwrapBody(
           await api.GET("/api/workspaces/{workspaceId}/mcp-servers/tool-info", {
             params: { path: { workspaceId } },
           }),
         ) as { tools: McpToolUiInfo[] };
+        if (requestId !== fetchToolInfoRequestId) return;
         set(state => {
           state.toolInfo = Object.fromEntries(
             (response.tools ?? []).map(t => [t.prefixedName, t]),
@@ -304,7 +319,10 @@ export const useMcpStore = create<McpStore>()(
           body,
         }),
       );
-      await get().fetchServers(workspaceId);
+      await Promise.all([
+        get().fetchServers(workspaceId),
+        get().fetchToolInfo(workspaceId),
+      ]);
     },
 
     deleteServer: async (workspaceId, serverId) => {
@@ -313,7 +331,20 @@ export const useMcpStore = create<McpStore>()(
           params: { path: { workspaceId, id: serverId } },
         }),
       );
-      await get().fetchServers(workspaceId);
+      // Remove client-side metadata immediately so a deleted server cannot
+      // remain visible as an available tool while the lists refresh.
+      set(state => {
+        state.toolInfo = Object.fromEntries(
+          Object.entries(state.toolInfo).filter(
+            ([, tool]) => tool.serverId !== serverId,
+          ),
+        );
+        delete state.grants[serverId];
+      });
+      await Promise.all([
+        get().fetchServers(workspaceId),
+        get().fetchToolInfo(workspaceId),
+      ]);
     },
 
     saveCredentials: async (workspaceId, serverId, headers) => {
@@ -350,10 +381,16 @@ export const useMcpStore = create<McpStore>()(
             { params: { path: { workspaceId, id: serverId } } },
           ),
         );
-        await get().fetchServers(workspaceId);
+        await Promise.all([
+          get().fetchServers(workspaceId),
+          get().fetchToolInfo(workspaceId),
+        ]);
         return { ok: true };
       } catch (error) {
-        await get().fetchServers(workspaceId);
+        await Promise.all([
+          get().fetchServers(workspaceId),
+          get().fetchToolInfo(workspaceId),
+        ]);
         return {
           ok: false,
           error: error instanceof Error ? error.message : "Connection failed",

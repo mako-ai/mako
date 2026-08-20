@@ -522,13 +522,20 @@ export async function buildMcpToolsForChat(params: {
           // Re-check the admin ceiling at execution time: an admin may have
           // blocked the tool after this chat's toolset was built (or between
           // an approval and its continuation).
-          const freshPolicy = await McpServer.findById(server._id)
-            .select("toolPolicy writeScope")
+          const freshServer = await McpServer.findById(server._id)
+            .select("toolPolicy writeScope status isActive")
             .lean();
           if (
-            freshPolicy &&
-            mcpToolRestriction(freshPolicy, cachedTool) === "block"
+            !freshServer ||
+            !freshServer.isActive ||
+            freshServer.status !== "connected"
           ) {
+            return {
+              success: false,
+              error: `${server.name} is no longer connected. Reconnect it in Settings → MCP Servers before trying again.`,
+            };
+          }
+          if (mcpToolRestriction(freshServer, cachedTool) === "block") {
             return {
               success: false,
               denied: true,

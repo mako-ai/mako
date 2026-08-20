@@ -20,6 +20,7 @@ import {
 } from "../lib/mako-mcp-attach";
 import { fetchWorkspaceGuidanceForAcp } from "../lib/acp-system-append";
 import { startDesktopAcpCliLogin } from "../lib/desktop";
+import { apiClient } from "../lib/api-client";
 import {
   sanitizeAcpUserError,
   shouldClearAcpAuthGuidance,
@@ -130,6 +131,22 @@ interface AcpState {
     outcome: "cancelled" | "selected",
     optionId?: string,
   ) => Promise<void>;
+  applyPlanDecision: (input: {
+    workspaceId: string;
+    agentSessionId: string;
+    decision: "approve" | "request_changes" | "cancel";
+    planMarkdown?: string;
+    grants?: Array<
+      "artifact-write" | "warehouse-write" | "git-write" | "schedule-write"
+    >;
+  }) => Promise<void>;
+  revokeSessionGrant: (sessionId: string) => Promise<void>;
+  fetchTurnGuidance: (input: {
+    workspaceId: string;
+    userText: string;
+    includeDbtRules: boolean;
+    dbtProjectId?: string;
+  }) => Promise<string>;
   /** Start SSE for the active session (idempotent per session). */
   ensureEventSubscription: (sessionId: string) => void;
 }
@@ -189,7 +206,18 @@ export const useAcpStore = create<AcpState>()(
       try {
         const sessions = await acpClient.listSessions();
         set(s => {
-          s.sessions = sessions;
+          const existingById = new Map(
+            s.sessions.map(session => [session.id, session]),
+          );
+          s.sessions = sessions.map(session => ({
+            ...session,
+            makoAgentSessionId:
+              existingById.get(session.id)?.makoAgentSessionId ??
+              session.makoAgentSessionId,
+            makoWorkspaceId:
+              existingById.get(session.id)?.makoWorkspaceId ??
+              session.makoWorkspaceId,
+          }));
         });
       } catch (error) {
         set(s => {
@@ -367,6 +395,57 @@ export const useAcpStore = create<AcpState>()(
       });
     },
 
+    applyPlanDecision: async input => {
+      await apiClient.request(
+        `/workspaces/${encodeURIComponent(input.workspaceId)}/acp-plan-grant`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            agentSessionId: input.agentSessionId,
+            decision: input.decision,
+            planMarkdown: input.planMarkdown,
+            grants: input.grants,
+          }),
+        },
+      );
+    },
+
+    revokeSessionGrant: async sessionId => {
+      const session = get().sessions.find(item => item.id === sessionId);
+      if (!session?.makoAgentSessionId || !session.makoWorkspaceId) return;
+      await get().applyPlanDecision({
+        workspaceId: session.makoWorkspaceId,
+        agentSessionId: session.makoAgentSessionId,
+        decision: "cancel",
+      });
+    },
+
+    fetchTurnGuidance: async input => {
+      const response = await apiClient.request<{
+        success: boolean;
+        skillsBlock?: string;
+        dbtRulesBlock?: string;
+      }>(
+        `/workspaces/${encodeURIComponent(input.workspaceId)}/custom-prompt/turn-guidance`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userText: input.userText,
+            includeDbtRules: input.includeDbtRules,
+            dbtProjectId: input.dbtProjectId,
+          }),
+        },
+      );
+      return [response.skillsBlock, response.dbtRulesBlock]
+        .filter(
+          (section): section is string =>
+            typeof section === "string" && section.trim().length > 0,
+        )
+        .join("\n\n");
+    },
+
     createSession: async options => {
       const { selectedProviderId, cwdDraft } = get();
       const requireMakoMcp = options?.requireMakoMcp !== false;
@@ -394,6 +473,8 @@ export const useAcpStore = create<AcpState>()(
           mcpUrl: creds.mcpUrl,
           mcpAuthorization: creds.mcpAuthorization,
           mcpServerName: creds.mcpServerName,
+          makoAgentSessionId: creds.agentSessionId,
+          makoWorkspaceId: workspaceId,
           systemPromptAppend,
           model: options?.model?.trim() || undefined,
         });
@@ -402,19 +483,25 @@ export const useAcpStore = create<AcpState>()(
             "Local session started without Mako data tools. Restart Local Agent from this branch and try again.",
           );
         }
+        const boundSession: AcpSessionInfo = {
+          ...session,
+          makoAgentSessionId:
+            session.makoAgentSessionId ?? creds.agentSessionId,
+          makoWorkspaceId: session.makoWorkspaceId ?? workspaceId,
+        };
         set(s => {
           s.sessions = [
-            session,
-            ...s.sessions.filter(x => x.id !== session.id),
+            boundSession,
+            ...s.sessions.filter(x => x.id !== boundSession.id),
           ];
-          s.activeSessionId = session.id;
-          s.messagesBySession[session.id] ??= [];
+          s.activeSessionId = boundSession.id;
+          s.messagesBySession[boundSession.id] ??= [];
           s.error = null;
         });
         // Refresh status so Chat's model picker picks up availableModels.
         void get().refreshStatus();
-        get().ensureEventSubscription(session.id);
-        return session;
+        get().ensureEventSubscription(boundSession.id);
+        return boundSession;
       } catch (error) {
         let message =
           error instanceof Error ? error.message : "Failed to create session";

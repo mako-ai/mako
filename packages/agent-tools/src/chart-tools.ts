@@ -53,11 +53,16 @@ export const clientChartTools = {
     description:
       "Get a best-practice chart template with full vegaLiteSpec, SQL pattern, and implementation notes. " +
       "Use for complex patterns (e.g. multi-series hover rule, stacked bar, donut) instead of inventing specs from scratch. " +
-      "Available IDs: multi-series-line-hover, time-series-area, grouped-bar, stacked-bar, horizontal-ranking, donut, kpi-sparkline.",
+      "Available IDs: multi-series-line-hover, time-series-area, grouped-bar, stacked-bar, horizontal-ranking, donut, kpi-sparkline. " +
+      "Omit templateId to list all templates with descriptions.",
     inputSchema: z.object({
       templateId: z
         .string()
-        .describe("Template ID (e.g. 'multi-series-line-hover', 'donut')"),
+        .optional()
+        .describe(
+          "Template ID (e.g. 'multi-series-line-hover', 'donut'). Omit to " +
+            "list all available templates.",
+        ),
     }),
   }),
 };

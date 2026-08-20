@@ -54,6 +54,12 @@ export interface AcpAuthMethodInfo {
   };
 }
 
+export interface AcpPromptCapabilities {
+  image?: boolean;
+  audio?: boolean;
+  embeddedContext?: boolean;
+}
+
 export interface AcpProviderConnection {
   providerId: AcpProviderId;
   child: ChildProcess;
@@ -63,9 +69,56 @@ export interface AcpProviderConnection {
   authMethods: AcpAuthMethodInfo[];
   authRequired: boolean;
   authenticated: boolean;
+  /** Prompt content types the adapter advertised on initialize. */
+  promptCapabilities: AcpPromptCapabilities;
   /** Rolling stderr from the adapter process (for UI diagnostics). */
   lastStderr: string;
-  close: () => void;
+  close: () => Promise<void>;
+}
+
+function isChildRunning(child: ChildProcess): boolean {
+  return child.exitCode === null && child.signalCode === null;
+}
+
+/**
+ * Ask an adapter to exit, then force it down if it ignores SIGTERM. Do not use
+ * `child.killed` here: Node sets that flag when a signal is sent, not when the
+ * process has actually exited.
+ */
+export function terminateAdapterProcess(
+  child: ChildProcess,
+  gracePeriodMs = 2000,
+): Promise<void> {
+  if (!isChildRunning(child)) return Promise.resolve();
+
+  return new Promise(resolve => {
+    let forceTimer: ReturnType<typeof setTimeout> | undefined;
+    child.once("exit", () => {
+      if (forceTimer) clearTimeout(forceTimer);
+      resolve();
+    });
+
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      resolve();
+      return;
+    }
+
+    forceTimer = setTimeout(() => {
+      if (!isChildRunning(child)) {
+        resolve();
+        return;
+      }
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // Process exited between the running check and the signal.
+        resolve();
+      }
+    }, gracePeriodMs);
+    forceTimer.unref?.();
+  });
 }
 
 function nodeToWebStreams(child: ChildProcess): {
@@ -251,7 +304,7 @@ export async function openProviderConnection(options: {
     } catch {
       // ignore
     }
-    if (!child.killed) child.kill("SIGTERM");
+    await terminateAdapterProcess(child);
     throw new Error(`${base}${detail ? `.${detail}` : ""}`.trim());
   }
 
@@ -285,6 +338,14 @@ export async function openProviderConnection(options: {
       })
     : [];
 
+  const promptCapabilities: AcpPromptCapabilities = {
+    image: initResult.agentCapabilities?.promptCapabilities?.image === true,
+    audio: initResult.agentCapabilities?.promptCapabilities?.audio === true,
+    embeddedContext:
+      initResult.agentCapabilities?.promptCapabilities?.embeddedContext ===
+      true,
+  };
+
   connectionHolder = {
     providerId,
     child,
@@ -292,21 +353,17 @@ export async function openProviderConnection(options: {
     agent,
     protocolVersion: Number(initResult.protocolVersion ?? acp.PROTOCOL_VERSION),
     authMethods,
+    promptCapabilities,
     authRequired: authMethods.length > 0,
     authenticated: authMethods.length === 0,
     lastStderr,
-    close: () => {
+    close: async () => {
       try {
         connection.close?.();
       } catch {
         // ignore
       }
-      if (!child.killed) {
-        child.kill("SIGTERM");
-        setTimeout(() => {
-          if (!child.killed) child.kill("SIGKILL");
-        }, 2000).unref?.();
-      }
+      await terminateAdapterProcess(child);
     },
   };
   return connectionHolder;

@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useMemo } from "react";
 import {
   Box,
   Button,
@@ -15,6 +15,8 @@ import {
   DECISION_COLOR,
   DECISION_LABEL,
   focusPlanTab,
+  normalizeSubmitPlanInput,
+  normalizeSubmitPlanOutput,
   usePlanStore,
 } from "../store/planStore";
 
@@ -84,19 +86,35 @@ export const PlanCard: React.FC<PlanCardProps> = ({
     if (output) store.markResolved(toolCallId, output);
   }, [toolCallId, chatId, streaming, input, output]);
 
+  // Props can carry unvalidated ACP payloads (raw agent MCP arguments where
+  // any field may be missing or mistyped) — normalize once, read declaratively.
+  const safeInput = useMemo(
+    () => (input ? normalizeSubmitPlanInput(input) : undefined),
+    [input],
+  );
+  const safeOutput = useMemo(
+    () => (output ? normalizeSubmitPlanOutput(output) : undefined),
+    [output],
+  );
+
   const isStreaming = streaming || plan?.status === "streaming";
   const title =
-    plan?.draft.title ?? output?.editedPlan?.title ?? input?.title ?? "Plan";
+    plan?.draft.title ??
+    safeOutput?.editedPlan?.title ??
+    safeInput?.title ??
+    "Plan";
   const stepCount =
     plan?.draft.todos.length ??
-    output?.editedPlan?.todos.length ??
-    input?.todos.length ??
+    safeOutput?.editedPlan?.todos.length ??
+    safeInput?.todos.length ??
     0;
   const decision =
     plan && plan.status !== "pending" && plan.status !== "streaming"
       ? plan.status
-      : output?.decision;
+      : safeOutput?.decision;
   const pending = !decision && !isStreaming;
+  const requiredCapabilities =
+    plan?.input.requiredCapabilities ?? safeInput?.requiredCapabilities ?? [];
 
   const openTab = () => {
     if (!toolCallId) return;
@@ -163,7 +181,9 @@ export const PlanCard: React.FC<PlanCardProps> = ({
                 : {}),
             }}
           >
-            {isStreaming && !title.trim() ? "Writing plan…" : title}
+            {isStreaming && !title.trim()
+              ? "Writing plan…"
+              : title.trim() || "Plan"}
           </Typography>
           <Typography variant="caption" sx={{ color: "var(--bui-ink-3)" }}>
             {isStreaming
@@ -173,6 +193,18 @@ export const PlanCard: React.FC<PlanCardProps> = ({
                 : `Plan · ${stepCount} step${stepCount === 1 ? "" : "s"}`}
           </Typography>
         </Box>
+        {requiredCapabilities.length > 0 && (
+          <Tooltip
+            title={`Approval grants this task: ${requiredCapabilities.join(", ")}`}
+            placement="top"
+          >
+            <Chip
+              size="small"
+              label={requiredCapabilities.join(" · ")}
+              variant="outlined"
+            />
+          </Tooltip>
+        )}
         {decision && (
           <Box
             component="span"

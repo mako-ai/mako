@@ -18,13 +18,21 @@ const msg = (role: "user" | "assistant", parts: Part[]): UIMessage =>
 
 const user = (text: string) => msg("user", [{ type: "text", text }]);
 
-const submitPlan = (decision?: "approve" | "request_changes" | "cancel") =>
+const submitPlan = (
+  decision?: "approve" | "request_changes" | "cancel",
+  requiredCapabilities?: string[],
+) =>
   msg("assistant", [
     {
       type: "tool-submit_plan",
       toolCallId: `c${idCounter}`,
       state: decision ? "output-available" : "input-available",
-      input: { title: "Plan", planMarkdown: "…", todos: [] },
+      input: {
+        title: "Plan",
+        planMarkdown: "…",
+        todos: [],
+        requiredCapabilities,
+      },
       ...(decision ? { output: { success: true, decision } } : {}),
     },
   ]);
@@ -44,6 +52,15 @@ const submitPlan = (decision?: "approve" | "request_changes" | "cancel") =>
   );
   assert.equal(state.planSubmitted, true);
   assert.equal(state.planApproved, true);
+}
+
+// --- approval carries only the requested task capabilities ------------------
+{
+  const state = deriveModeState(
+    [user("build it"), submitPlan("approve", ["warehouse-write"])],
+    "query",
+  );
+  assert.deepEqual([...state.approvedCapabilityGrants], ["warehouse-write"]);
 }
 
 // --- feedback user message after request_changes KEEPS the gate engaged ------

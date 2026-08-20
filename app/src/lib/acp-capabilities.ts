@@ -20,6 +20,15 @@ export function acpSupportsModelWarm(
   );
 }
 
+/** Prompt image attachments forwarded as ACP ContentBlocks (bridge ≥ 8). */
+export function acpSupportsPromptImages(
+  status: AcpStatus | null | undefined,
+): boolean {
+  const bridge = status?.acpBridge;
+  if (!bridge) return false;
+  return Boolean(bridge.promptImages || bridge.version >= 8);
+}
+
 /** MCP attach / reconnect baseline (bridge ≥ 2). */
 export function acpSupportsWorkspaceMcp(
   status: AcpStatus | null | undefined,

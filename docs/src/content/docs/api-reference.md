@@ -44,6 +44,8 @@ Create API keys in **Workspace settings → API Keys**. The same page surfaces y
 | `GET`  | `/api/workspaces`     | List user's workspaces |
 | `POST` | `/api/workspaces`     | Create a workspace     |
 | `GET`  | `/api/workspaces/:id` | Get workspace details  |
+| `GET`  | `/api/workspaces/:id/settings/limits` | Get refresh concurrency limits (`dashboardRefreshConcurrency`, `appBindingRefreshConcurrency`; defaults 2, clamped to the per-workspace max) |
+| `PUT`  | `/api/workspaces/:id/settings/limits` | Update refresh concurrency limits |
 
 ## Database Connections
 
@@ -112,6 +114,7 @@ The legacy unauthenticated `POST /api/execute` and `POST /api/run/:path` endpoin
 | `DELETE` | `/api/workspaces/:wid/consoles/:id/schedule` | Remove a saved console schedule (admin only) |
 | `POST` | `/api/workspaces/:wid/consoles/:id/schedule/run` | Trigger a scheduled console immediately (admin only) |
 | `GET` | `/api/workspaces/:wid/consoles/:id/schedule/runs` | List scheduled run history (admin only) |
+| `GET` | `/api/workspaces/:wid/consoles/:id/executions` | List recent query executions with trigger source (`?limit=`, ~90-day retention) |
 | `GET` | `/api/workspaces/:wid/scheduled-queries` | List scheduled consoles in the workspace (admin only) |
 | `GET`    | `/api/workspaces/:wid/consoles/:id/collaborators`           | List per-user collaborators                  |
 | `POST`   | `/api/workspaces/:wid/consoles/:id/collaborators`           | Add/update a collaborator (`{ userId, role }`; owner/admin only) |
