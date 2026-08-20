@@ -8,12 +8,15 @@
  */
 
 import { isApprovalPendingState } from "./tool-presentation";
+import type { ResponseCostMetadata } from "./response-cost";
 
 /** Loose UIMessage shape accepted by useChat's setMessages. */
 export interface ConvertedUiMessage {
   id: string;
   role: string;
   parts: Array<Record<string, unknown>>;
+  /** Per-response cost from the chat's persisted usage.history. */
+  metadata?: ResponseCostMetadata;
 }
 
 /** Exported for the Local ACP resume path's incomplete-turn heuristic. */
@@ -42,6 +45,13 @@ export interface ConvertStoredMessagesOptions {
    * genuinely stuck once the turn goes quiet.
    */
   turnActive?: boolean;
+  /**
+   * Per-response cost from the persisted chat's `usage.history`, keyed by the
+   * assistant message's ordinal within the thread (saveChat's messageIndex).
+   * When present, matching assistant messages get it as `metadata` — the same
+   * shape live turns receive from the stream's messageMetadata.
+   */
+  costByAssistantOrdinal?: Map<number, ResponseCostMetadata>;
 }
 
 function convertStoredPart(
@@ -156,6 +166,14 @@ export function convertStoredMessages(
   rawMessages: unknown[] | null | undefined,
   opts?: ConvertStoredMessagesOptions,
 ): ConvertedUiMessage[] {
+  let assistantOrdinal = -1;
+  const costMetadata = (msg: any): Pick<ConvertedUiMessage, "metadata"> => {
+    if (msg.role !== "assistant") return {};
+    assistantOrdinal += 1;
+    const meta = opts?.costByAssistantOrdinal?.get(assistantOrdinal);
+    return meta ? { metadata: meta } : {};
+  };
+
   return (
     (rawMessages as any[] | null | undefined)?.map((msg: any) => {
       // NEW: If parts are stored, use them directly (preserves chronological order)
@@ -164,6 +182,7 @@ export function convertStoredMessages(
           id: msg.id || msg._id?.toString() || `${Date.now()}-${Math.random()}`,
           role: msg.role,
           parts: msg.parts.map((p: any) => convertStoredPart(p, opts)),
+          ...costMetadata(msg),
         };
       }
 
@@ -211,6 +230,7 @@ export function convertStoredMessages(
         id: msg._id?.toString() || msg.id || `${Date.now()}-${Math.random()}`,
         role: msg.role,
         parts,
+        ...costMetadata(msg),
       };
     }) || []
   );
