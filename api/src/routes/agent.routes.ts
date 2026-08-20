@@ -48,7 +48,11 @@ import {
 import { saveChat } from "../services/agent-thread.service";
 import { buildMcpToolsForChat } from "../services/mcp-client.service";
 import { trackUsage } from "../services/llm-usage.service";
-import { computeInvocationCost } from "../services/cost-calculator";
+import {
+  computeCostFromTokens,
+  computeInvocationCost,
+} from "../services/cost-calculator";
+import { lookupPricing } from "../services/gateway-pricing.service";
 import { generateChatTitle } from "../services/title-generator";
 import {
   isDescriptionGenAvailable,
@@ -1001,6 +1005,14 @@ agentRoutes.openapi(
           // segment.
           let turnStreamId: string | null = null;
 
+          // Pricing rows for the live per-response cost metadata below. The
+          // messageMetadata callback is synchronous, so resolve the (cached)
+          // gateway pricing up front. Empty rows → costUsd omitted, tokens
+          // still sent. Never let a pricing hiccup block the turn.
+          const metadataPricingRows = await lookupPricing(
+            resolvedModelId,
+          ).catch(() => []);
+
           const result = streamText({
             model,
             system: systemPrompt,
@@ -1083,6 +1095,40 @@ agentRoutes.openapi(
           const streamResponse = result.toUIMessageStreamResponse({
             originalMessages: segmentUiMessages,
             generateMessageId: () => new ObjectId().toString(),
+            // Per-response cost for the chat UI: on the finish part, price the
+            // segment's total usage with the prefetched gateway pricing. This
+            // lands in `message.metadata` client-side and survives resumable-
+            // stream replay. (Authoritative billing still happens in onFinish
+            // via computeInvocationCost, which prices per-step models; this
+            // display value prices totals at the resolved model — the two only
+            // diverge on multi-model turns.)
+            messageMetadata: ({ part }) => {
+              if (part.type !== "finish") return undefined;
+              const usage = part.totalUsage;
+              const tokens = {
+                inputTokens: toNum(usage?.inputTokens),
+                outputTokens: toNum(usage?.outputTokens),
+                cacheReadTokens: toNum(
+                  usage?.inputTokenDetails?.cacheReadTokens,
+                ),
+                cacheWriteTokens: toNum(
+                  usage?.inputTokenDetails?.cacheWriteTokens,
+                ),
+                reasoningTokens: toNum(
+                  usage?.outputTokenDetails?.reasoningTokens,
+                ),
+              };
+              const costUsd =
+                metadataPricingRows.length > 0
+                  ? computeCostFromTokens(tokens, metadataPricingRows)
+                  : undefined;
+              return {
+                costUsd,
+                modelId: resolvedModelId,
+                inputTokens: tokens.inputTokens,
+                outputTokens: tokens.outputTokens,
+              };
+            },
             // Replace the SDK's raw error text (for gateway auth failures a
             // misleading "configure AI_GATEWAY_API_KEY" message) with the
             // structured `{ code, message, ... }` JSON envelope. The client

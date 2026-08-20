@@ -10,6 +10,10 @@ export interface ChatMessageRowProps {
     id: string;
     role: string;
     parts?: Array<Record<string, unknown>>;
+    /** Stream messageMetadata (live) or usage.history (reload) — see
+     * chat/response-cost.ts. Rides on the message object, so the comparator's
+     * reference check covers it. */
+    metadata?: unknown;
   };
   isLastMessage: boolean;
   isStreaming: boolean;
