@@ -4,7 +4,7 @@
  * Files are browsed/opened from the Apps v2 explorer (each file gets its own
  * `app-v2-file` tab, v1-style); this view owns everything app-level:
  *
- *   ┌ toolbar: Build & preview · History · Discard
+ *   ┌ toolbar: dev session · Preview build · Publish · History · Discard
  *   ├ preview: token-gated sandboxed iframe of the built app
  *   └ terminal: shell into the app's sandbox session (E2B microVM)
  *
@@ -221,6 +221,8 @@ export default function AppV2Workspace({
   const preview = useAppsV2Store(s => s.previewByApp[appId]);
   /** A live `vite dev` session is running for this app right now. */
   const devSessionLive = preview?.mode === "dev" && Boolean(preview?.url);
+  const publishedSha = app?.publishedSha;
+  const publishApp = useAppsV2Store(s => s.publishApp);
 
   const fetchApps = useAppsV2Store(s => s.fetchApps);
   const fetchFiles = useAppsV2Store(s => s.fetchFiles);
@@ -246,7 +248,7 @@ export default function AppV2Workspace({
 
   // Same "prefer the active chat's branch" logic as the sidebar's Version
   // control section: if the conversation you're currently chatting in has
-  // already committed work on this app, Build & preview should build THAT
+  // already committed work on this app, Preview build should build THAT
   // branch — your own separate worktree always starts on main, so building
   // it while a chat is actively working here silently renders stale content.
   const activeChatId = useRealtimeStore(s => s.activeChatId);
@@ -288,6 +290,24 @@ export default function AppV2Workspace({
             variant="outlined"
           />
         )}
+        <Tooltip
+          title={
+            publishedSha
+              ? `Deployed from commit ${publishedSha.slice(0, 7)} — this is what everyone else sees.`
+              : "Nobody can see this app yet. Publish deploys it from main."
+          }
+        >
+          <Chip
+            label={
+              publishedSha
+                ? `published · ${publishedSha.slice(0, 7)}`
+                : "not published"
+            }
+            size="small"
+            color={publishedSha ? "default" : "warning"}
+            variant="outlined"
+          />
+        </Tooltip>
         <Box sx={{ flex: 1 }} />
         <Tooltip
           title={
@@ -299,7 +319,7 @@ export default function AppV2Workspace({
           <span>
             <Button
               size="small"
-              variant={preview?.mode === "dev" ? "outlined" : "contained"}
+              variant="outlined"
               startIcon={
                 preview?.building ? (
                   <CircularProgress size={14} color="inherit" />
@@ -333,8 +353,8 @@ export default function AppV2Workspace({
         <Tooltip
           title={
             activeChatBranch
-              ? `One-shot npm install + npm run build in the sandbox — builds ${activeChatBranch.name} (your active chat's branch), then previews the static output`
-              : "One-shot npm install + npm run build in the sandbox, then preview the built app"
+              ? `Build ${activeChatBranch.name} exactly as Publish would, and preview the result — without deploying it`
+              : "Build the app exactly as Publish would and preview the result, without deploying it"
           }
         >
           <span>
@@ -350,7 +370,32 @@ export default function AppV2Workspace({
                 )
               }
             >
-              Build & preview
+              Preview build
+            </Button>
+          </span>
+        </Tooltip>
+        <Tooltip
+          title={
+            activeChatBranch
+              ? `Publish: merge ${activeChatBranch.name} into main, build from main, and deploy. Everyone sees the result; rolling back is instant.`
+              : "Publish: build from main and deploy. Everyone sees the result; rolling back is instant."
+          }
+        >
+          <span>
+            <Button
+              size="small"
+              variant="contained"
+              color="primary"
+              disabled={preview?.building}
+              onClick={() =>
+                void publishApp(
+                  workspaceId,
+                  appId,
+                  activeChatBranch ? (activeChatId ?? undefined) : undefined,
+                )
+              }
+            >
+              {preview?.building ? "Working..." : "Publish"}
             </Button>
           </span>
         </Tooltip>
@@ -436,8 +481,11 @@ export default function AppV2Workspace({
               and commits every turn), or use the terminal below.
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Click <strong>Build &amp; preview</strong> to compile the app in
-              its sandbox and render it here.
+              <strong>Start dev session</strong> runs the app live, so edits
+              show up as you make them. <strong>Preview build</strong> compiles
+              it exactly as a publish would, without deploying.{" "}
+              <strong>Publish</strong> merges to main, builds, and deploys —
+              that is the version everyone else sees.
             </Typography>
           </Box>
         )}

@@ -21,6 +21,9 @@ export interface AppV2Meta {
   description?: string;
   updatedAt?: string;
   createdAt?: string;
+  /** Commit sha currently deployed, if the app has ever been published. */
+  publishedSha?: string;
+  publishedAt?: string;
 }
 
 export interface AppV2FileEntry {
@@ -210,6 +213,12 @@ interface AppsV2Store {
   // caller's own worktree, which always starts on main — pass it whenever an
   // active chat has already committed work on this app (see AppV2Workspace),
   // otherwise Build & preview silently renders stale, unrelated content.
+  /** Merge to main, build, deploy, and repoint (§13.3). */
+  publishApp: (
+    workspaceId: string,
+    appId: string,
+    chatId?: string,
+  ) => Promise<void>;
   buildPreview: (
     workspaceId: string,
     appId: string,
@@ -775,6 +784,58 @@ export const useAppsV2Store = create<AppsV2Store>()(
       } catch (e) {
         set(s => {
           s.error = message(e, "Failed to discard changes");
+        });
+      }
+    },
+
+    publishApp: async (workspaceId, appId, chatId) => {
+      set(s => {
+        s.previewByApp[appId] = {
+          ...(s.previewByApp[appId] ?? { url: null }),
+          building: true,
+          error: null,
+        };
+      });
+      try {
+        const res = await api.POST(
+          "/api/workspaces/{workspaceId}/apps-v2/{id}/publish",
+          {
+            params: { path: { workspaceId, id: appId } },
+            body: chatId ? { chatId } : {},
+          },
+        );
+        const raw = (res.data ?? res.error) as
+          | { success?: boolean; sha?: string; error?: string }
+          | undefined;
+        if (res.response.ok && raw?.sha) {
+          set(s => {
+            const app = s.apps.find(a => a.id === appId);
+            if (app) {
+              app.publishedSha = raw.sha;
+              app.publishedAt = new Date().toISOString();
+            }
+            s.previewByApp[appId] = {
+              ...(s.previewByApp[appId] ?? { url: null }),
+              building: false,
+              error: null,
+            };
+          });
+        } else {
+          set(s => {
+            s.previewByApp[appId] = {
+              ...(s.previewByApp[appId] ?? { url: null }),
+              building: false,
+              error: raw?.error ?? "Publish failed",
+            };
+          });
+        }
+      } catch (e) {
+        set(s => {
+          s.previewByApp[appId] = {
+            ...(s.previewByApp[appId] ?? { url: null }),
+            building: false,
+            error: message(e, "Publish failed"),
+          };
         });
       }
     },

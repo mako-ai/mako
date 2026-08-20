@@ -188,6 +188,7 @@ function toProjectJson(p: IAppProjectV2) {
     owner_id: p.owner_id,
     defaultBranch: p.defaultBranch,
     publishedSha: p.publishedSha,
+    publishedAt: p.publishedAt,
     createdAt: p.createdAt,
     updatedAt: p.updatedAt,
   };
