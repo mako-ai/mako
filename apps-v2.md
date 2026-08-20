@@ -1165,6 +1165,34 @@ and every deployment keeps a stable URL that can be linked to.
    no runtime secrets. Whether that is the permanent boundary is a product
    decision, not an implementation detail.
 
+### 13.6 An app is a folder, not a row (decided 2026-08-21)
+
+Answers §10.1's open question — *"whether `AppProjectV2` dies entirely or stays
+as an id-stable cache"* — with: it dies. An app is `apps/<name>/` containing a
+`mako.json`. The folder name is the identity, the manifest is the metadata, and
+git history is the provenance. Listing apps means reading the repo, so a folder
+pushed from a local checkout appears with no registration step of any kind —
+which is what §12.2(3) requires of local development.
+
+Uniqueness needs no mechanism: two apps cannot occupy `apps/<name>` at once.
+
+Mongo keeps only what cannot live in a repo the customer can clone:
+
+- **who may see it** — authorization must not be editable by anyone who can
+  push, or a builder could grant themselves access by committing a file
+  (§11.5 keeps Mako's API as the ACL plane);
+- **the deployed sha**, which is server state about what is live, not
+  something the source declares about itself;
+- **the share token and its bcrypt password hash**, which must never be
+  committed.
+
+A row therefore appears only when someone restricts, publishes or shares an
+app — never merely to open one. An app with no row is workspace-visible, the
+same as any other file in the repo. Ids for such apps are derived from
+(workspace, folder) so that deployment prefixes, binding artifacts and sandbox
+affinity stay stable if a row is written later; apps predating this keep their
+original ids, which already key their artifacts.
+
 ### 13.5 Order
 
 Deliberately smallest-first, because each step is independently useful and the

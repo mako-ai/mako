@@ -18,6 +18,7 @@
  *    at an unreachable URL so in-sandbox `git push` cannot bypass CAS/ACLs.
  */
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { Types } from "mongoose";
 import {
@@ -711,26 +712,48 @@ export async function execInWorktree(
 // ---------------------------------------------------------------------------
 
 /** Ref an actor's file reads resolve to: their WIP snapshot, else branch. */
+/** Whether `path` exists at `ref` (a file or a directory). */
+async function pathExistsAtRef(
+  repoDir: string,
+  ref: string,
+  path: string,
+): Promise<boolean> {
+  try {
+    await runGit(["-C", repoDir, "cat-file", "-e", `${ref}:${path}`], {
+      timeoutMs: 15_000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function readRefFor(
   project: IAppProjectV2,
   userId: string | undefined,
   repoDir: string,
 ): Promise<string> {
+  const branchRef = `refs/heads/${project.defaultBranch || DEFAULT_BRANCH}`;
   if (userId) {
     const doc = await AppWorktreeV2.findOne({
       workspaceId: project.workspaceId,
       userId,
     });
     if (doc) {
-      const refOid = await resolveCommit(
-        repoDir,
-        wipRefFor(doc._id.toString()),
-      );
-      if (refOid) return refOid;
-      return doc.baseSha;
+      const refOid =
+        (await resolveCommit(repoDir, wipRefFor(doc._id.toString()))) ??
+        doc.baseSha;
+      // Show the actor their own work — but only for an app their ref
+      // actually contains. A worktree that predates the app (someone else
+      // pushed it, or it arrived from a local checkout) would otherwise make
+      // a listed app look empty, which reads as data loss rather than as
+      // "your session is behind".
+      if (await pathExistsAtRef(repoDir, refOid, appRootFor(project))) {
+        return refOid;
+      }
     }
   }
-  return `refs/heads/${project.defaultBranch || DEFAULT_BRANCH}`;
+  return branchRef;
 }
 
 export async function listFiles(
@@ -1425,4 +1448,111 @@ export async function promoteToMain(handle: WorktreeHandle): Promise<void> {
     ],
     { timeoutMs: 120_000 },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Apps are folders (§13): the repo is the list, not the database
+// ---------------------------------------------------------------------------
+
+export interface AppFolder {
+  /** Folder name under `apps/` — the app's identity. */
+  slug: string;
+  title: string;
+  description?: string;
+}
+
+/**
+ * Every app in a workspace, read from the repo.
+ *
+ * An app is `apps/<name>/` with a `mako.json`; that is the whole definition.
+ * It exists because the folder exists, not because a row does — so pushing a
+ * folder from a local checkout makes the app appear, and no registration step
+ * is needed anywhere.
+ *
+ * Mongo keeps only what genuinely cannot live in a repo the customer can
+ * clone: who may see the app, what sha is deployed, and a share token with its
+ * password hash. Those are server state ABOUT an app, not the app.
+ */
+export async function listAppFolders(
+  workspaceId: string,
+): Promise<AppFolder[]> {
+  const repoDir = await repoForWorkspace(workspaceId);
+  const entries = await listTree(repoDir, DEFAULT_BRANCH).catch(() => []);
+  const manifests = entries.filter(e =>
+    /^apps\/[^/]+\/mako\.json$/.test(e.path),
+  );
+
+  const folders: AppFolder[] = [];
+  for (const entry of manifests) {
+    const slug = entry.path.split("/")[1];
+    let title = slug;
+    let description: string | undefined;
+    try {
+      const blob = await readBlob(repoDir, DEFAULT_BRANCH, entry.path);
+      const manifest = JSON.parse(blob.contents) as {
+        title?: unknown;
+        description?: unknown;
+      };
+      if (typeof manifest.title === "string" && manifest.title.trim()) {
+        title = manifest.title;
+      }
+      if (typeof manifest.description === "string") {
+        description = manifest.description;
+      }
+    } catch {
+      // An unreadable or malformed manifest must not hide the app: the folder
+      // is the app, and a broken mako.json is something the user needs to SEE
+      // in order to fix.
+    }
+    folders.push({ slug, title, description });
+  }
+  return folders.sort((a, b) => a.slug.localeCompare(b.slug));
+}
+
+/**
+ * Stable id for an app that has no database row.
+ *
+ * Downstream keys — deployment prefixes, binding artifacts, sandbox session
+ * affinity — are all built from a project id, and they must not move when a
+ * row happens to appear later. Deriving the id from (workspace, folder) makes
+ * it a function of the app's identity rather than a second identity of its
+ * own, so a folder-only app keys the same artifacts before and after any state
+ * record is written for it.
+ *
+ * Apps that predate this keep their original random id: their existing
+ * artifacts are already keyed by it.
+ */
+export function derivedAppId(
+  workspaceId: string,
+  slug: string,
+): Types.ObjectId {
+  const digest = createHash("sha1")
+    .update(`apps-v2:${workspaceId}:${slug}`)
+    .digest("hex");
+  return new Types.ObjectId(digest.slice(0, 24));
+}
+
+/**
+ * An app that exists only as a folder, shaped like a project document so every
+ * read path works unchanged. Never persisted — writing a row is what happens
+ * when someone restricts, publishes, or shares the app, not when they open it.
+ */
+export async function synthesizeProjectFromFolder(
+  workspaceId: string,
+  slug: string,
+): Promise<IAppProjectV2 | null> {
+  const folder = (await listAppFolders(workspaceId)).find(f => f.slug === slug);
+  if (!folder) return null;
+  return {
+    _id: derivedAppId(workspaceId, slug),
+    workspaceId: new Types.ObjectId(workspaceId),
+    title: folder.title,
+    slug: folder.slug,
+    description: folder.description,
+    access: "workspace",
+    createdBy: "",
+    defaultBranch: DEFAULT_BRANCH,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  } as IAppProjectV2;
 }

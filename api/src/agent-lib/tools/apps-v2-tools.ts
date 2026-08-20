@@ -37,6 +37,8 @@ import {
   chatBranchFor,
   commitWorktree,
   createProject,
+  synthesizeProjectFromFolder,
+  listAppFolders,
   ensureWorktree,
   execInWorktree,
   globFiles,
@@ -104,13 +106,26 @@ export function createAppsV2Tools({
     appId: string,
     opts: { write: boolean },
   ): Promise<LoadResult> => {
-    if (!appId || !Types.ObjectId.isValid(appId)) {
-      return { error: `Invalid app id: ${appId}. Use app2_list_apps first.` };
+    if (!appId) {
+      return { error: `Invalid app: ${appId}. Use app2_list_apps first.` };
     }
-    const project = await AppProjectV2.findOne({
-      _id: new Types.ObjectId(appId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    // An app is a FOLDER (apps-v2.md §13.6), so `apps/<name>` is its identity
+    // and that is what an agent working in a checkout actually has. Accept the
+    // folder name, tolerate an `apps/` prefix, and still resolve legacy ids.
+    const ref = appId.replace(/^apps\//, "");
+    const project =
+      (Types.ObjectId.isValid(ref)
+        ? await AppProjectV2.findOne({
+            _id: new Types.ObjectId(ref),
+            workspaceId: new Types.ObjectId(workspaceId),
+          })
+        : await AppProjectV2.findOne({
+            slug: ref,
+            workspaceId: new Types.ObjectId(workspaceId),
+          })) ??
+      // No row: the app may exist only as a folder in the repo, which is the
+      // normal case for anything created from a local checkout.
+      (await synthesizeProjectFromFolder(workspaceId, ref));
     if (!project) {
       return { error: `App ${appId} not found. Use app2_list_apps.` };
     }
@@ -137,28 +152,38 @@ export function createAppsV2Tools({
         "List Apps v2 (git-backed) projects in the workspace. Distinct from v1 list_open_apps.",
       inputSchema: z.object({}),
       execute: async () => {
+        // The repo is the list: an app is a folder under apps/ (§13.6), so
+        // one written straight into a checkout and pushed shows up here with
+        // no registration step.
+        const folders = await listAppFolders(workspaceId);
         const docs = await AppProjectV2.find({
           workspaceId: new Types.ObjectId(workspaceId),
-        }).sort({ updatedAt: -1 });
-        const role = await memberRole();
-        const visible = docs.filter(
-          d => !userId || canReadResource(d, userId, role),
+        });
+        const stateBySlug = new Map(
+          docs.filter(d => d.slug).map(d => [d.slug as string, d]),
         );
+        const role = await memberRole();
         return {
           success: true,
-          apps: visible.map(d => ({
-            id: d._id.toString(),
-            title: d.title,
-            description: d.description,
-            updatedAt: d.updatedAt,
-          })),
+          apps: folders
+            .filter(f => {
+              const state = stateBySlug.get(f.slug);
+              if (!state) return true;
+              return !userId || canReadResource(state, userId, role);
+            })
+            .map(f => ({
+              app: f.slug,
+              path: `apps/${f.slug}`,
+              title: f.title,
+              description: f.description,
+            })),
         };
       },
     }),
 
     app2_create_app: tool({
       description:
-        "Create a new Apps v2 project: a real Vite + React + TypeScript app in a Mako-managed git repository (package.json, scripts, lockfile-ready). Returns the app id used by every other app2_* tool.",
+        "Create a new app: a real Vite + React + TypeScript project scaffolded into apps/<name>/ in the workspace repo. The FOLDER is the app — creating one is just committing that directory, and you can equally create it yourself with app2_bash + app2_write_file. Returns the folder name that every other app2_* tool takes.",
       inputSchema: z.object({
         title: z.string().min(1).describe("Human-readable app title"),
         description: z.string().optional(),
@@ -174,7 +199,8 @@ export function createAppsV2Tools({
           const { entries } = await listFiles(project, actorId);
           return {
             success: true,
-            appId: project._id.toString(),
+            app: project.slug ?? project._id.toString(),
+            path: `apps/${project.slug ?? project._id.toString()}`,
             title: project.title,
             files: entries.map(e => e.path),
             note: "Real project: use app2_bash for shell commands (ls, grep, npm install, npm run build, ...), app2_write_file/app2_edit_file for edits, app2_commit to commit.",
@@ -190,7 +216,11 @@ export function createAppsV2Tools({
       description:
         "Run a bash command in the app's sandbox session. cwd is the APP's folder (apps/<slug>) inside the workspace repo, not the repo root, so package.json and src/ are right here and `cwd` is interpreted relative to it. Use for anything a developer would do in a terminal: ls, grep, sed, cat, node, npm/pnpm install, npm run build, git status/log/diff. File changes are flushed to the app's durable WIP snapshot after the command. Each call is a one-shot command: backgrounding a long-running process (`vite &`) does NOT leave a server running the user can reach — use the app's preview controls for that. Not for committing (use app2_commit) and not for pushing (the session has no remote credentials).",
       inputSchema: z.object({
-        appId: z.string().describe("Apps v2 project id"),
+        appId: z
+          .string()
+          .describe(
+            'The app\'s folder name under apps/ — e.g. "hello-world" for apps/hello-world. That folder IS the app. A legacy id also resolves.',
+          ),
         command: z.string().min(1).describe("Bash command line to execute"),
         cwd: z
           .string()

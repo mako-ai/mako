@@ -57,6 +57,8 @@ import {
   listFiles,
   mergeBranchToMain,
   PUBLISH_ACTOR,
+  listAppFolders,
+  synthesizeProjectFromFolder,
   trialMerge,
   promoteToMain,
   projectHistory,
@@ -162,15 +164,20 @@ async function loadProject(
   // directory rather than a document — and the filesystem already guarantees
   // it is unique, since two apps cannot occupy `apps/<slug>` at once. Ids
   // still resolve so existing links keep working.
-  const project = Types.ObjectId.isValid(id)
-    ? await AppProjectV2.findOne({
-        _id: new Types.ObjectId(id),
-        workspaceId: new Types.ObjectId(workspaceId),
-      })
-    : await AppProjectV2.findOne({
-        slug: id,
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+  const project =
+    (Types.ObjectId.isValid(id)
+      ? await AppProjectV2.findOne({
+          _id: new Types.ObjectId(id),
+          workspaceId: new Types.ObjectId(workspaceId),
+        })
+      : await AppProjectV2.findOne({
+          slug: id,
+          workspaceId: new Types.ObjectId(workspaceId),
+        })) ??
+    // No row: the app may still exist as a folder in the repo. Opening one
+    // must not require a database write, so it is synthesized instead —
+    // a row appears only when someone restricts, publishes, or shares it.
+    (await synthesizeProjectFromFolder(workspaceId, id));
   if (!project) {
     return {
       errorResponse: c.json({ success: false, error: "App not found" }, 404),
@@ -551,16 +558,43 @@ appsV2Routes.openapi(
       const { workspaceId } = c.req.valid("param");
       const userId = actingUserId(c);
       const role = await memberRoleFor(workspaceId, userId);
+
+      // The REPO is the list. An app exists because `apps/<name>/mako.json`
+      // exists, so a folder pushed from a local checkout shows up with no
+      // registration step (§13). Mongo is consulted only for what cannot live
+      // in a repo the customer can clone: visibility, the deployed sha, and
+      // the share token.
+      const folders = await listAppFolders(workspaceId);
       const docs = await AppProjectV2.find({
         workspaceId: new Types.ObjectId(workspaceId),
-      }).sort({ updatedAt: -1 });
-      const visible = docs.filter(
-        d => !userId || canReadResource(d, userId, role),
+      });
+      const stateBySlug = new Map(
+        docs.filter(d => d.slug).map(d => [d.slug as string, d]),
       );
-      return c.json(
-        { success: true as const, apps: visible.map(toProjectJson) },
-        200,
-      );
+
+      const apps = folders
+        .filter(folder => {
+          const state = stateBySlug.get(folder.slug);
+          // No record yet means nothing has restricted it — a folder someone
+          // pushed is workspace content, visible like any other file in the
+          // repo.
+          if (!state) return true;
+          return !userId || canReadResource(state, userId, role);
+        })
+        .map(folder => {
+          const state = stateBySlug.get(folder.slug);
+          return {
+            id: state?._id.toString() ?? folder.slug,
+            slug: folder.slug,
+            title: folder.title,
+            description: folder.description,
+            access: state?.access ?? "workspace",
+            publishedSha: state?.publishedSha,
+            publishedAt: state?.publishedAt,
+          };
+        });
+
+      return c.json({ success: true as const, apps }, 200);
     } catch (error) {
       return handleError(c, error);
     }
