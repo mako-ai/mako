@@ -1,21 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import {
-  Box,
-  Button,
-  Chip,
-  InputBase,
-  TextField,
-  Typography,
-} from "@mui/material";
+import { Box, ButtonBase, InputBase, Typography } from "@mui/material";
 import { keyframes } from "@mui/material/styles";
 import {
+  ArrowUp,
+  Check,
   ChevronLeft,
+  ChevronRight,
   Circle,
-  CircleDot,
   HelpCircle,
   PenLine,
-  Square,
-  SquareCheck,
 } from "lucide-react";
 import type {
   AskClarifyingQuestionsInput,
@@ -89,23 +82,64 @@ const cardSlideUp = keyframes`
   to { opacity: 1; transform: translateY(0); }
 `;
 
-// Per-question screen change: quick fade + slide-in from the right.
-const stepFadeIn = keyframes`
-  from { opacity: 0; transform: translateX(8px); }
-  to { opacity: 1; transform: translateX(0); }
-`;
-
 const OPTION_ROW_SX = {
   display: "flex",
   alignItems: "center",
-  gap: 1,
+  gap: 1.25,
   px: 1,
   py: 0.5,
   minHeight: 32,
-  borderRadius: 1,
+  width: "100%",
+  borderRadius: "8px",
   cursor: "pointer",
   userSelect: "none",
+  textAlign: "left",
+  transition: "background-color 0.1s",
+  "&:hover": { backgroundColor: "var(--bui-hover)" },
 } as const;
+
+/**
+ * Beautiful UI selection indicator: a filled ink circle/rounded-square with a
+ * surface-colored dot/check when selected, a hairline inset ring otherwise.
+ */
+const SelectIndicator: React.FC<{ selected: boolean; multiple: boolean }> = ({
+  selected,
+  multiple,
+}) => (
+  <Box
+    sx={{
+      width: 16,
+      height: 16,
+      flexShrink: 0,
+      borderRadius: multiple ? "5px" : "50%",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      transition: "background-color 0.2s, box-shadow 0.2s",
+      ...(selected
+        ? { backgroundColor: "var(--bui-ink)", color: "var(--bui-surface)" }
+        : {
+            boxShadow: "inset 0 0 0 1.5px var(--bui-line-strong)",
+            color: "transparent",
+          }),
+    }}
+  >
+    {multiple ? (
+      <Check size={11} strokeWidth={3} />
+    ) : (
+      <Box
+        sx={{
+          width: 6,
+          height: 6,
+          borderRadius: "50%",
+          backgroundColor: "var(--bui-surface)",
+          transition: "transform 0.2s",
+          transform: selected ? "scale(1)" : "scale(0)",
+        }}
+      />
+    )}
+  </Box>
+);
 
 interface OptionRowProps {
   label: string;
@@ -127,78 +161,120 @@ const OptionRow: React.FC<OptionRowProps> = ({
   role,
   recommended,
   onToggle,
-}) => {
-  const indicator =
-    icon ??
-    (multiple ? (
-      selected ? (
-        <SquareCheck size={14} />
-      ) : (
-        <Square size={14} />
-      )
-    ) : selected ? (
-      <CircleDot size={14} />
-    ) : (
-      <Circle size={14} />
-    ));
-
-  return (
-    <Box
-      role={role ?? (multiple ? "checkbox" : "radio")}
-      aria-checked={selected}
-      tabIndex={0}
-      onClick={onToggle}
-      onKeyDown={e => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onToggle();
-        }
-      }}
-      sx={{
-        ...OPTION_ROW_SX,
-        backgroundColor: selected ? "action.selected" : "transparent",
-        "&:hover": {
-          backgroundColor: selected ? "action.selected" : "action.hover",
-        },
-      }}
-    >
+}) => (
+  <Box
+    role={role ?? (multiple ? "checkbox" : "radio")}
+    aria-checked={selected}
+    tabIndex={0}
+    onClick={onToggle}
+    onKeyDown={e => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onToggle();
+      }
+    }}
+    sx={OPTION_ROW_SX}
+  >
+    {icon ? (
       <Box
         sx={{
           display: "flex",
           alignItems: "center",
+          justifyContent: "center",
+          width: 16,
           flexShrink: 0,
-          color: selected ? "primary.main" : "text.secondary",
+          color: "var(--bui-ink-3)",
         }}
       >
-        {indicator}
+        {icon}
       </Box>
-      <Typography sx={{ fontSize: 13, flex: 1, minWidth: 0 }}>
-        {label}
-      </Typography>
-      {recommended && (
-        <Chip
-          size="small"
-          label="Recommended"
-          color="primary"
-          variant="outlined"
-          sx={{
-            flexShrink: 0,
-            height: 18,
-            fontSize: 10,
-            "& .MuiChip-label": { px: 0.75 },
-          }}
-        />
-      )}
-    </Box>
-  );
-};
+    ) : (
+      <SelectIndicator selected={selected} multiple={multiple} />
+    )}
+    <Typography
+      sx={{
+        fontSize: 13,
+        flex: 1,
+        minWidth: 0,
+        transition: "color 0.2s",
+        color: selected ? "var(--bui-ink)" : "var(--bui-ink-2)",
+      }}
+    >
+      {label}
+    </Typography>
+    {recommended && (
+      <Box
+        component="span"
+        sx={{
+          flexShrink: 0,
+          px: 0.75,
+          py: 0.125,
+          borderRadius: "999px",
+          backgroundColor: "var(--bui-accent-tint)",
+          color: "var(--bui-accent-ink)",
+          fontSize: 10,
+          fontWeight: 600,
+        }}
+      >
+        Recommended
+      </Box>
+    )}
+  </Box>
+);
+
+/** Ring-dot pager (BUI Approval Card): current = thick ring, done = filled. */
+const PagerDots: React.FC<{
+  count: number;
+  step: number;
+  onGo: (i: number) => void;
+}> = ({ count, step, onGo }) => (
+  <Box
+    component="span"
+    sx={{ display: "flex", alignItems: "center", gap: 0.5 }}
+  >
+    {Array.from({ length: count }, (_, i) => (
+      <ButtonBase
+        key={i}
+        aria-label={`Go to question ${i + 1}`}
+        aria-current={i === step ? "step" : undefined}
+        onClick={() => onGo(i)}
+        sx={{
+          borderRadius: "50%",
+          p: 0,
+          transition:
+            "width 0.3s, height 0.3s, background-color 0.3s, border-color 0.3s",
+          ...(i === step
+            ? { width: 9, height: 9, border: "2.5px solid var(--bui-ink)" }
+            : i < step
+              ? { width: 7, height: 7, backgroundColor: "var(--bui-ink-3)" }
+              : {
+                  width: 7,
+                  height: 7,
+                  border: "1.5px solid var(--bui-ink-3)",
+                }),
+        }}
+      />
+    ))}
+  </Box>
+);
+
+const PAGER_CHEVRON_SX = {
+  width: 24,
+  height: 24,
+  borderRadius: "5px",
+  color: "var(--bui-ink-3)",
+  transition: "background-color 0.1s, color 0.1s",
+  "&:hover": { backgroundColor: "var(--bui-hover)", color: "var(--bui-ink-2)" },
+  "&.Mui-disabled": { opacity: 0.35 },
+} as const;
 
 /**
- * Cursor-style wizard for the deferred `ask_clarifying_questions` tool: one
- * question per screen, single-line option rows (radio/checkbox), an optional
- * "Other" free-text row, and Back / Skip / Next navigation. Resolves via
- * `onResolve` on submit or skip. With `output` present it renders a compact
- * read-only summary instead.
+ * Beautiful UI "Approval Card" wizard for the deferred
+ * `ask_clarifying_questions` tool: one question per screen, ink-filled
+ * radio/checkbox rows, an optional "Other" free-text row, a ring-dot pager
+ * with chevrons, and an arrow button that advances (sends on the last step).
+ * Resolves via `onResolve` on submit or skip. With `output` present it
+ * renders a compact read-only summary instead.
  */
 export const ClarifyingQuestionsCard: React.FC<
   ClarifyingQuestionsCardProps
@@ -263,7 +339,7 @@ export const ClarifyingQuestionsCard: React.FC<
     advanceTimerRef.current = window.setTimeout(() => {
       advanceTimerRef.current = null;
       setStep(prev => Math.min(prev + 1, lastStep));
-    }, 150);
+    }, 250);
   };
 
   const toggleOption = (q: ClarifyingQuestion, option: string) => {
@@ -315,9 +391,9 @@ export const ClarifyingQuestionsCard: React.FC<
     }
   };
 
-  const handleBack = () => {
+  const goToStep = (i: number) => {
     cancelScheduledAdvance();
-    setStep(prev => Math.max(prev - 1, 0));
+    setStep(Math.min(Math.max(i, 0), lastStep));
   };
 
   const handleSkip = () => {
@@ -336,17 +412,23 @@ export const ClarifyingQuestionsCard: React.FC<
   const answer = question ? getAnswer(question.id) : emptyAnswer();
   const isLast = step >= lastStep;
 
+  // Drives the send-arrow affordance only — advancing stays always possible
+  // (unanswered questions submit as empty, same as before the redesign).
+  const hasCurrentAnswer =
+    question?.type === "text"
+      ? answer.text.trim().length > 0
+      : answer.selected.length > 0 ||
+        (answer.otherSelected && answer.otherText.trim().length > 0);
+
   return (
     <Box
       sx={{
-        border: 1,
-        borderColor: "divider",
-        borderRadius: 2.5,
-        bgcolor: "background.paper",
+        borderRadius: "14px",
+        backgroundColor: "var(--bui-surface)",
+        boxShadow: "var(--bui-shadow-card)",
         p: 0.5,
         ...(docked
           ? {
-              borderBottom: 0,
               borderBottomLeftRadius: 0,
               borderBottomRightRadius: 0,
               transformOrigin: "bottom",
@@ -355,41 +437,51 @@ export const ClarifyingQuestionsCard: React.FC<
           : { my: 0.5 }),
       }}
     >
-      {/* Header — mirrors the queued-prompts "N Queued" header typography */}
+      {/* Header */}
       <Box
         sx={{
           display: "flex",
           alignItems: "center",
-          gap: 0.5,
+          gap: 0.75,
           px: 1,
           py: 0.5,
-          color: "text.secondary",
+          color: "var(--bui-ink-3)",
         }}
       >
-        <HelpCircle size={14} />
+        <HelpCircle size={13} />
         <Typography
           variant="caption"
-          sx={{ fontWeight: 600, letterSpacing: 0.2 }}
+          sx={{ fontWeight: 600, letterSpacing: 0.2, fontSize: 11.5 }}
         >
           Clarifying questions
         </Typography>
-        {resolved ? (
-          <Chip
-            size="small"
-            label={output?.skipped ? "Skipped" : "Answered"}
-            color={output?.skipped ? "default" : "success"}
-            variant="outlined"
-            sx={{ ml: "auto" }}
-          />
-        ) : (
-          questions.length > 1 && (
-            <Typography
-              variant="caption"
-              sx={{ ml: "auto", color: "text.secondary" }}
-            >
-              {step + 1} of {questions.length}
-            </Typography>
-          )
+        {resolved && (
+          <Box
+            component="span"
+            sx={{
+              ml: "auto",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 0.5,
+              px: 1,
+              py: 0.25,
+              borderRadius: "999px",
+              fontSize: 11,
+              fontWeight: 600,
+              ...(output?.skipped
+                ? {
+                    backgroundColor: "var(--bui-field)",
+                    color: "var(--bui-ink-2)",
+                  }
+                : {
+                    backgroundColor: "var(--bui-green-tint)",
+                    color: "var(--bui-green)",
+                  }),
+            }}
+          >
+            {!output?.skipped && <Check size={11} strokeWidth={3} />}
+            {output?.skipped ? "Skipped" : "Answered"}
+          </Box>
         )}
       </Box>
 
@@ -420,20 +512,20 @@ export const ClarifyingQuestionsCard: React.FC<
                   sx={{
                     display: "flex",
                     alignItems: "center",
-                    color: "text.secondary",
+                    color: "var(--bui-ink-3)",
                     flexShrink: 0,
                   }}
                 >
                   <Circle size={10} />
                 </Box>
                 <Typography sx={{ fontSize: 13, minWidth: 0 }}>
-                  <Box component="span" sx={{ color: "text.secondary" }}>
+                  <Box component="span" sx={{ color: "var(--bui-ink-2)" }}>
                     {q.prompt}
                   </Box>
-                  <Box component="span" sx={{ color: "text.secondary" }}>
+                  <Box component="span" sx={{ color: "var(--bui-ink-3)" }}>
                     {" — "}
                   </Box>
-                  <Box component="span" sx={{ color: "text.primary" }}>
+                  <Box component="span" sx={{ color: "var(--bui-ink)" }}>
                     {display}
                   </Box>
                 </Typography>
@@ -447,10 +539,20 @@ export const ClarifyingQuestionsCard: React.FC<
             {/* One question per screen, animated on step change */}
             <Box
               key={question.id}
-              sx={{ animation: `${stepFadeIn} 150ms ease` }}
+              sx={{
+                px: 0.5,
+                animation: "bui-fade-up 350ms cubic-bezier(0.23,1,0.32,1) both",
+              }}
             >
               <Typography
-                sx={{ fontSize: 13, fontWeight: 600, px: 1, pt: 0.5, pb: 0.75 }}
+                sx={{
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: "var(--bui-ink)",
+                  px: 1,
+                  pt: 0.5,
+                  pb: 0.75,
+                }}
               >
                 {question.prompt}
               </Typography>
@@ -468,7 +570,7 @@ export const ClarifyingQuestionsCard: React.FC<
                         px: 1,
                         pb: 0.5,
                         mt: -0.5,
-                        color: "text.secondary",
+                        color: "var(--bui-ink-3)",
                       }}
                     >
                       Select all that apply
@@ -494,7 +596,7 @@ export const ClarifyingQuestionsCard: React.FC<
                         sx={{
                           ...OPTION_ROW_SX,
                           cursor: "text",
-                          backgroundColor: "action.selected",
+                          backgroundColor: "var(--bui-hover)",
                         }}
                       >
                         <Box
@@ -505,7 +607,7 @@ export const ClarifyingQuestionsCard: React.FC<
                             display: "flex",
                             alignItems: "center",
                             flexShrink: 0,
-                            color: "primary.main",
+                            color: "var(--bui-ink)",
                             cursor: "pointer",
                           }}
                         >
@@ -516,7 +618,7 @@ export const ClarifyingQuestionsCard: React.FC<
                           fullWidth
                           multiline
                           maxRows={3}
-                          placeholder="Type your answer…"
+                          placeholder="Type something…"
                           value={answer.otherText}
                           onChange={e =>
                             updateAnswer(question.id, {
@@ -537,6 +639,11 @@ export const ClarifyingQuestionsCard: React.FC<
                             p: 0,
                             fontSize: 13,
                             lineHeight: 1.5,
+                            color: "var(--bui-ink)",
+                            "& .MuiInputBase-input::placeholder": {
+                              color: "var(--bui-ink-3)",
+                              opacity: 1,
+                            },
                           }}
                         />
                       </Box>
@@ -551,9 +658,18 @@ export const ClarifyingQuestionsCard: React.FC<
                     ))}
                 </Box>
               ) : (
-                <Box sx={{ px: 1 }}>
-                  <TextField
-                    size="small"
+                <Box
+                  sx={{
+                    mx: 1,
+                    mb: 0.5,
+                    px: 1,
+                    py: 0.5,
+                    borderRadius: "8px",
+                    backgroundColor: "var(--bui-field)",
+                    boxShadow: "var(--bui-shadow-hairline)",
+                  }}
+                >
+                  <InputBase
                     fullWidth
                     autoFocus
                     multiline
@@ -565,12 +681,21 @@ export const ClarifyingQuestionsCard: React.FC<
                       updateAnswer(question.id, { text: e.target.value })
                     }
                     onKeyDown={handleTextKeyDown}
+                    sx={{
+                      p: 0,
+                      fontSize: 13,
+                      color: "var(--bui-ink)",
+                      "& .MuiInputBase-input::placeholder": {
+                        color: "var(--bui-ink-3)",
+                        opacity: 1,
+                      },
+                    }}
                   />
                 </Box>
               )}
             </Box>
 
-            {/* Footer: Back / Skip on the left, Next or Send answers on the right */}
+            {/* Footer: chevron + ring-dot pager left, Skip + arrow right */}
             <Box
               sx={{
                 display: "flex",
@@ -581,32 +706,72 @@ export const ClarifyingQuestionsCard: React.FC<
                 pb: 0.5,
               }}
             >
-              {step > 0 && (
-                <Button
-                  size="small"
-                  color="inherit"
-                  startIcon={<ChevronLeft size={14} />}
-                  onClick={handleBack}
-                >
-                  Back
-                </Button>
+              {questions.length > 1 && (
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                  <ButtonBase
+                    aria-label="Previous question"
+                    disabled={step === 0}
+                    onClick={() => goToStep(step - 1)}
+                    sx={PAGER_CHEVRON_SX}
+                  >
+                    <ChevronLeft size={14} />
+                  </ButtonBase>
+                  <PagerDots
+                    count={questions.length}
+                    step={step}
+                    onGo={goToStep}
+                  />
+                  <ButtonBase
+                    aria-label="Next question"
+                    disabled={isLast}
+                    onClick={() => goToStep(step + 1)}
+                    sx={PAGER_CHEVRON_SX}
+                  >
+                    <ChevronRight size={14} />
+                  </ButtonBase>
+                </Box>
               )}
-              <Button
-                size="small"
-                color="inherit"
+              <ButtonBase
                 onClick={handleSkip}
-                sx={{ color: "text.secondary" }}
+                sx={{
+                  ml: "auto",
+                  px: 0.75,
+                  py: 0.25,
+                  borderRadius: "6px",
+                  fontSize: 12,
+                  fontWeight: 500,
+                  color: "var(--bui-ink-3)",
+                  transition: "color 0.15s",
+                  "&:hover": { color: "var(--bui-ink)" },
+                }}
               >
                 Skip
-              </Button>
-              <Button
-                size="small"
-                variant="contained"
+              </ButtonBase>
+              <ButtonBase
+                aria-label={isLast ? "Send answers" : "Next question"}
                 onClick={handleNext}
-                sx={{ ml: "auto" }}
+                sx={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: "8px",
+                  transition:
+                    "background-color 0.2s, color 0.2s, transform 0.1s",
+                  "&:active": { transform: "scale(0.96)" },
+                  ...(hasCurrentAnswer
+                    ? {
+                        backgroundColor: "var(--bui-ink)",
+                        color: "var(--bui-surface)",
+                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.14)",
+                      }
+                    : {
+                        backgroundColor: "var(--bui-field)",
+                        color: "var(--bui-ink-3)",
+                        boxShadow: "var(--bui-shadow-btn)",
+                      }),
+                }}
               >
-                {isLast ? "Send answers" : "Next"}
-              </Button>
+                <ArrowUp size={14} strokeWidth={2.5} />
+              </ButtonBase>
             </Box>
           </>
         )

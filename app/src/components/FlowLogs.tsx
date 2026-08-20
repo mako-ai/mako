@@ -21,6 +21,7 @@ import {
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore, type FlowExecutionHistory } from "../store/flowStore";
+import { ResultBadge, SpinnerRingBadge, StatusPill } from "./bui-status";
 
 interface FlowDetails {
   _id: string;
@@ -414,44 +415,55 @@ export function FlowLogs({ flowId, onRunNow, onEdit }: FlowLogsProps) {
               </Typography>
             ) : (
               <List dense>
+                {/* BUI task rows: badge + timestamp + status pill */}
                 {history.map((h, idx) => (
                   <ListItemButton
                     key={idx}
                     selected={idx === selectedIndex}
                     onClick={() => setSelectedIndex(idx)}
+                    sx={{ borderRadius: "8px", gap: 1.25 }}
                   >
+                    {h.status === "running" ? (
+                      <SpinnerRingBadge size={18} />
+                    ) : (
+                      <ResultBadge
+                        size={18}
+                        tone={
+                          h.status === "completed"
+                            ? "green"
+                            : h.status === "failed"
+                              ? "red"
+                              : "neutral"
+                        }
+                      />
+                    )}
                     <ListItemText
                       primary={formatDate(h.executedAt)}
-                      secondary={
-                        <Typography
-                          variant="caption"
-                          color={
-                            h.status === "running"
-                              ? "primary"
-                              : h.status === "completed"
-                                ? "success.main"
-                                : h.status === "failed"
-                                  ? "error.main"
-                                  : h.status === "cancelled"
-                                    ? "warning.main"
-                                    : h.status === "abandoned"
-                                      ? "text.secondary"
-                                      : "text.secondary"
-                          }
-                        >
-                          {h.status.charAt(0).toUpperCase() + h.status.slice(1)}
-                          {h.status === "running" && " 🔄"}
-                          {h.status === "abandoned" && " ⚠️"}
-                        </Typography>
-                      }
                       sx={{
                         "& .MuiListItemText-primary": {
                           whiteSpace: "nowrap",
                           overflow: "hidden",
                           textOverflow: "ellipsis",
+                          fontSize: "12.5px",
+                          fontWeight: 500,
                         },
                       }}
                     />
+                    <StatusPill
+                      tone={
+                        h.status === "running"
+                          ? "accent"
+                          : h.status === "completed"
+                            ? "green"
+                            : h.status === "failed"
+                              ? "red"
+                              : h.status === "cancelled"
+                                ? "orange"
+                                : "neutral"
+                      }
+                    >
+                      {h.status.charAt(0).toUpperCase() + h.status.slice(1)}
+                    </StatusPill>
                   </ListItemButton>
                 ))}
               </List>

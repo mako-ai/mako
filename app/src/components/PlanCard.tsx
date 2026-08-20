@@ -2,7 +2,6 @@ import React, { useEffect, useMemo } from "react";
 import {
   Box,
   Button,
-  Chip,
   CircularProgress,
   IconButton,
   Stack,
@@ -11,6 +10,7 @@ import {
 } from "@mui/material";
 import { ClipboardList, X } from "lucide-react";
 import type { SubmitPlanInput, SubmitPlanOutput } from "@mako/agent-tools";
+import { BUI_META_CHIP_SX } from "./bui-status";
 import {
   closePlanTab,
   DECISION_COLOR,
@@ -20,6 +20,25 @@ import {
   normalizeSubmitPlanOutput,
   usePlanStore,
 } from "../store/planStore";
+
+/** BUI tint pill colors for each plan decision (chip replacement). */
+const DECISION_PILL_SX: Record<
+  (typeof DECISION_COLOR)[keyof typeof DECISION_COLOR],
+  { backgroundColor: string; color: string }
+> = {
+  success: {
+    backgroundColor: "var(--bui-green-tint)",
+    color: "var(--bui-green)",
+  },
+  warning: {
+    backgroundColor: "var(--bui-orange-tint)",
+    color: "var(--bui-orange)",
+  },
+  default: {
+    backgroundColor: "var(--bui-field)",
+    color: "var(--bui-ink-2)",
+  },
+};
 
 interface PlanCardProps {
   toolCallId: string;
@@ -125,29 +144,34 @@ export const PlanCard: React.FC<PlanCardProps> = ({
         }
       }}
       sx={{
-        border: 1,
-        borderColor: pending || isStreaming ? "primary.main" : "divider",
-        borderRadius: 2,
+        borderRadius: "14px",
         p: 1.5,
         my: 0.5,
-        bgcolor: "background.paper",
+        backgroundColor: "var(--bui-surface)",
+        boxShadow:
+          pending || isStreaming
+            ? "0 0 0 1px var(--bui-accent), 0 1px 2px oklch(0% 0 0 / 0.05), 0 2px 6px oklch(0% 0 0 / 0.04)"
+            : "var(--bui-shadow-card)",
         cursor: "pointer",
-        "&:hover": { bgcolor: "action.hover" },
+        transition: "background-color 0.1s",
+        "&:hover": { backgroundColor: "var(--bui-hover)" },
       }}
     >
       <Stack direction="row" spacing={1} alignItems="center">
         {isStreaming ? (
           <CircularProgress size={15} thickness={5} />
         ) : (
-          <ClipboardList size={15} />
+          <ClipboardList size={15} style={{ color: "var(--bui-ink-2)" }} />
         )}
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography
             variant="subtitle2"
-            fontWeight={600}
             noWrap
-            sx={
-              isStreaming && !title.trim()
+            sx={{
+              fontSize: 13,
+              fontWeight: 500,
+              color: "var(--bui-ink)",
+              ...(isStreaming && !title.trim()
                 ? {
                     animation: "planCardPulse 1.4s ease-in-out infinite",
                     "@keyframes planCardPulse": {
@@ -155,14 +179,14 @@ export const PlanCard: React.FC<PlanCardProps> = ({
                       "50%": { opacity: 0.45 },
                     },
                   }
-                : undefined
-            }
+                : {}),
+            }}
           >
             {isStreaming && !title.trim()
               ? "Writing plan…"
               : title.trim() || "Plan"}
           </Typography>
-          <Typography variant="caption" color="text.secondary">
+          <Typography variant="caption" sx={{ color: "var(--bui-ink-3)" }}>
             {isStreaming
               ? `Writing plan… · ${stepCount} step${stepCount === 1 ? "" : "s"}`
               : pending
@@ -175,20 +199,28 @@ export const PlanCard: React.FC<PlanCardProps> = ({
             title={`Approval grants this task: ${requiredCapabilities.join(", ")}`}
             placement="top"
           >
-            <Chip
-              size="small"
-              label={requiredCapabilities.join(" · ")}
-              variant="outlined"
-            />
+            <Box component="span" sx={BUI_META_CHIP_SX}>
+              {requiredCapabilities.join(" · ")}
+            </Box>
           </Tooltip>
         )}
         {decision && (
-          <Chip
-            size="small"
-            label={DECISION_LABEL[decision]}
-            color={DECISION_COLOR[decision]}
-            variant="outlined"
-          />
+          <Box
+            component="span"
+            sx={{
+              display: "inline-flex",
+              alignItems: "center",
+              px: 1,
+              py: 0.25,
+              borderRadius: "999px",
+              fontSize: 11.5,
+              fontWeight: 600,
+              flexShrink: 0,
+              ...DECISION_PILL_SX[DECISION_COLOR[decision]],
+            }}
+          >
+            {DECISION_LABEL[decision]}
+          </Box>
         )}
         {pending && (
           <>
@@ -207,9 +239,23 @@ export const PlanCard: React.FC<PlanCardProps> = ({
             <Button
               size="small"
               variant="contained"
+              disableElevation
               onClick={e => {
                 e.stopPropagation();
                 resolvePlan(toolCallId, "approve");
+              }}
+              sx={{
+                textTransform: "none",
+                fontSize: 12.5,
+                fontWeight: 500,
+                borderRadius: "8px",
+                backgroundColor: "var(--bui-ink)",
+                color: "var(--bui-surface)",
+                boxShadow: "inset 0 1px 0 rgba(255,255,255,0.14)",
+                "&:hover": {
+                  backgroundColor: "var(--bui-ink)",
+                  opacity: 0.85,
+                },
               }}
             >
               Approve &amp; run

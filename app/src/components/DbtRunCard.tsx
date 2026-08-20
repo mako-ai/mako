@@ -1,6 +1,8 @@
 /**
  * DbtRunCard — live dbt run widget rendered inline in chat for the agent's
- * `dbt_run_model` tool result.
+ * `dbt_run_model` tool result, styled as a Beautiful UI "Task Row": a
+ * spinner-ring badge while the run is live, a green/red badge + tint pill
+ * once it resolves, and expandable step/log details.
  *
  * The build runs asynchronously in the runner (Inngest), so this card is
  * fully decoupled from the agent turn / chat SSE: it self-polls
@@ -11,23 +13,25 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  Box,
-  Chip,
-  CircularProgress,
-  IconButton,
-  Tooltip,
-} from "@mui/material";
+import { Box, IconButton, Tooltip } from "@mui/material";
 import {
   Square as StopIcon,
-  ChevronRight as ChevronRightIcon,
-  ChevronDown as ChevronDownIcon,
+  ChevronDown,
   ExternalLink as OpenIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useDbtStore, type DbtRunItem } from "../store/dbtStore";
 import { focusDbtRunsTab } from "../dbt-runtime/shell";
 import { formatRowsAffected, formatStepDuration } from "../lib/dbt-step-format";
+import { BUI_MONO_FONT_FAMILY } from "./chat/bui-styles";
+import {
+  BUI_GHOST_ICON_BTN_SX,
+  BUI_META_CHIP_SX,
+  ResultBadge,
+  SpinnerRingBadge,
+  StatusPill,
+  type BuiPillTone,
+} from "./bui-status";
 
 interface DbtRunCardProps {
   runId: string;
@@ -42,22 +46,6 @@ const ACTIVE_POLL_INTERVAL_MS = 2_000;
 const MAX_POLL_ERRORS = 10;
 const MAX_VISIBLE_LOGS = 200;
 
-function statusColor(status: DbtRunItem["status"] | undefined): string {
-  switch (status) {
-    case "running":
-    case "queued":
-      return "primary.main";
-    case "success":
-      return "success.main";
-    case "error":
-      return "error.main";
-    case "cancelled":
-      return "text.secondary";
-    default:
-      return "text.secondary";
-  }
-}
-
 function formatDuration(ms: number | undefined): string {
   if (ms === undefined) return "";
   if (ms < 1000) return `${ms}ms`;
@@ -67,6 +55,19 @@ function formatDuration(ms: number | undefined): string {
   const rest = Math.round(seconds % 60);
   return `${minutes}m ${rest}s`;
 }
+
+const STATUS_PILL: Partial<
+  Record<
+    DbtRunItem["status"] | "cancelling",
+    { label: string; tone: BuiPillTone }
+  >
+> = {
+  queued: { label: "Queued", tone: "neutral" },
+  cancelling: { label: "Cancelling…", tone: "neutral" },
+  success: { label: "Completed", tone: "green" },
+  error: { label: "Failed", tone: "red" },
+  cancelled: { label: "Cancelled", tone: "neutral" },
+};
 
 export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
   const { currentWorkspace } = useWorkspace();
@@ -151,8 +152,12 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
       ? `dbt ${command}`
       : "dbt build";
 
-  const statusLabel =
-    cancelling && isActive ? "Cancelling…" : (status ?? "queued");
+  const pill =
+    cancelling && isActive
+      ? STATUS_PILL.cancelling
+      : status === "running"
+        ? undefined // the spinner ring already reads as "running"
+        : STATUS_PILL[status ?? "queued"];
 
   // Git provenance: which source tree the build ran (working tree = the
   // caller's checkout + uncommitted drafts; otherwise a committed branch).
@@ -172,49 +177,48 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
       sx={{
         my: 0.75,
         maxWidth: 560,
-        borderRadius: 1.5,
-        border: 1,
-        borderColor: isActive ? "primary.main" : "divider",
-        // Status accent: a slim colored edge reads at a glance without a
-        // heavy full border.
-        borderLeft: 3,
-        borderLeftColor: statusColor(status),
+        borderRadius: "14px",
+        backgroundColor: "var(--bui-surface)",
+        boxShadow: "var(--bui-shadow-card)",
         overflow: "hidden",
-        transition: "border-color 0.3s",
-        backgroundColor: theme =>
-          theme.palette.mode === "dark"
-            ? "rgba(255,255,255,0.02)"
-            : "rgba(0,0,0,0.015)",
       }}
     >
-      {/* Header: title + status, then a meta row (env / branch / duration /
-          actions) — two lines so the command stays readable in a narrow
-          chat panel instead of being squeezed out by the chips. */}
+      {/* Header: badge + title + status pill, then a meta row (env / branch /
+          duration / actions) — two lines so the command stays readable in a
+          narrow chat panel instead of being squeezed out by the chips. */}
       <Box
         onClick={() => hasBody && setExpanded(prev => !prev)}
         sx={{
           px: 1.25,
-          py: 0.75,
+          py: 1,
           cursor: hasBody ? "pointer" : "default",
-          "&:hover": hasBody ? { backgroundColor: "action.hover" } : undefined,
+          transition: "background-color 0.1s",
+          "&:hover": hasBody
+            ? { backgroundColor: "var(--bui-hover)" }
+            : undefined,
         }}
       >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-          {hasBody ? (
-            expanded ? (
-              <ChevronDownIcon size={14} style={{ flexShrink: 0 }} />
-            ) : (
-              <ChevronRightIcon size={14} style={{ flexShrink: 0 }} />
-            )
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1.25 }}>
+          {isActive ? (
+            <SpinnerRingBadge />
           ) : (
-            <Box sx={{ width: 14, flexShrink: 0 }} />
+            <ResultBadge
+              tone={
+                status === "success"
+                  ? "green"
+                  : status === "error"
+                    ? "red"
+                    : "neutral"
+              }
+            />
           )}
           <Box
             component="span"
             sx={{
-              fontFamily: "monospace",
-              fontSize: "0.8rem",
+              fontFamily: BUI_MONO_FONT_FAMILY,
+              fontSize: "12.5px",
               fontWeight: 600,
+              color: "var(--bui-ink)",
               flex: 1,
               minWidth: 0,
               whiteSpace: "nowrap",
@@ -225,20 +229,22 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
           >
             {title}
           </Box>
-          <Chip
-            size="small"
-            variant="outlined"
-            icon={isActive ? <CircularProgress size={10} /> : undefined}
-            label={statusLabel}
-            sx={{
-              height: 20,
-              flexShrink: 0,
-              textTransform: "capitalize",
-              fontWeight: 600,
-              color: statusColor(status),
-              borderColor: statusColor(status),
-            }}
-          />
+          {pill && (
+            <StatusPill tone={pill.tone} animateIn>
+              {pill.label}
+            </StatusPill>
+          )}
+          {hasBody && (
+            <ChevronDown
+              size={14}
+              style={{
+                flexShrink: 0,
+                color: "var(--bui-ink-3)",
+                transition: "transform 0.2s",
+                transform: expanded ? "rotate(0deg)" : "rotate(-90deg)",
+              }}
+            />
+          )}
         </Box>
         <Box
           sx={{
@@ -246,42 +252,31 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
             alignItems: "center",
             gap: 0.75,
             mt: 0.5,
-            ml: "22px",
+            ml: "34px",
             flexWrap: "wrap",
           }}
         >
           {run?.environment && (
-            <Chip
-              size="small"
-              variant="outlined"
-              label={run.environment}
-              sx={{
-                height: 18,
-                fontSize: "0.64rem",
-                "& .MuiChip-label": { px: 0.75 },
-              }}
-            />
+            <Box component="span" sx={BUI_META_CHIP_SX}>
+              {run.environment}
+            </Box>
           )}
           {treeChip && (
             <Tooltip title={treeChip.tooltip}>
-              <Chip
-                size="small"
-                variant="outlined"
-                color={run?.workingTreeUserId ? "info" : "default"}
-                label={treeChip.label}
-                sx={{
-                  height: 18,
-                  fontSize: "0.64rem",
-                  fontFamily: "monospace",
-                  "& .MuiChip-label": { px: 0.75 },
-                }}
-              />
+              <Box component="span" sx={BUI_META_CHIP_SX}>
+                {treeChip.label}
+              </Box>
             </Tooltip>
           )}
           {run?.durationMs !== undefined && (
             <Box
               component="span"
-              sx={{ fontSize: "0.7rem", color: "text.secondary" }}
+              sx={{
+                fontSize: "0.7rem",
+                color: "var(--bui-ink-3)",
+                fontFamily: BUI_MONO_FONT_FAMILY,
+                fontVariantNumeric: "tabular-nums",
+              }}
             >
               {formatDuration(run.durationMs)}
             </Box>
@@ -292,7 +287,7 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
               <span>
                 <IconButton
                   size="small"
-                  sx={{ p: 0.25 }}
+                  sx={BUI_GHOST_ICON_BTN_SX}
                   onClick={handleCancel}
                   disabled={cancelling}
                 >
@@ -304,7 +299,7 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
           <Tooltip title="Open in Transforms → Runs">
             <IconButton
               size="small"
-              sx={{ p: 0.25 }}
+              sx={BUI_GHOST_ICON_BTN_SX}
               onClick={event => {
                 event.stopPropagation();
                 focusDbtRunsTab(projectId, "Runs", runId);
@@ -320,12 +315,14 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
       {status === "error" && run?.error && (
         <Box
           sx={{
-            px: 1.25,
+            mx: 1,
+            mb: 1,
+            px: 1,
             py: 0.5,
             fontSize: "0.72rem",
-            color: "error.main",
-            borderTop: "1px solid",
-            borderColor: "divider",
+            color: "var(--bui-red)",
+            backgroundColor: "var(--bui-red-tint)",
+            borderRadius: "8px",
           }}
         >
           {run.error}
@@ -334,7 +331,16 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
 
       {/* Expandable body: step results + logs */}
       {expanded && hasBody && (
-        <Box sx={{ borderTop: "1px solid", borderColor: "divider" }}>
+        <Box
+          sx={{
+            mx: 1,
+            mb: 1,
+            borderRadius: "8px",
+            backgroundColor: "var(--bui-inset)",
+            boxShadow: "var(--bui-shadow-hairline)",
+            overflow: "hidden",
+          }}
+        >
           {steps.length > 0 && (
             <Box
               component="table"
@@ -343,11 +349,15 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
                 fontSize: "0.72rem",
                 borderCollapse: "collapse",
                 "& td, & th": {
-                  borderBottom: "1px solid",
-                  borderColor: "divider",
+                  borderBottom: "1px solid var(--bui-line)",
                   p: 0.5,
                   textAlign: "left",
                 },
+                "& th": {
+                  color: "var(--bui-ink-3)",
+                  fontWeight: 500,
+                },
+                "& td": { color: "var(--bui-ink-2)" },
               }}
             >
               <thead>
@@ -365,12 +375,11 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
                     component="tr"
                     key={step.uniqueId}
                     sx={{
-                      color:
-                        step.status === "error" || step.status === "fail"
-                          ? "error.main"
-                          : step.status === "warn"
-                            ? "warning.main"
-                            : "inherit",
+                      ...(step.status === "error" || step.status === "fail"
+                        ? { "& td": { color: "var(--bui-red)" } }
+                        : step.status === "warn"
+                          ? { "& td": { color: "var(--bui-orange)" } }
+                          : {}),
                     }}
                   >
                     <td>{step.name}</td>
@@ -398,8 +407,9 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
               sx={{
                 maxHeight: 220,
                 overflow: "auto",
-                fontFamily: "monospace",
+                fontFamily: BUI_MONO_FONT_FAMILY,
                 fontSize: "0.7rem",
+                lineHeight: 1.7,
                 p: 1,
                 whiteSpace: "pre-wrap",
               }}
@@ -411,13 +421,16 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
                   sx={{
                     color:
                       log.level === "error"
-                        ? "error.main"
+                        ? "var(--bui-red)"
                         : log.level === "warn"
-                          ? "warning.main"
-                          : "text.primary",
+                          ? "var(--bui-orange)"
+                          : "var(--bui-ink-2)",
                   }}
                 >
-                  <Box component="span" sx={{ color: "text.secondary", mr: 1 }}>
+                  <Box
+                    component="span"
+                    sx={{ color: "var(--bui-ink-3)", mr: 1 }}
+                  >
                     {new Date(log.ts).toLocaleTimeString()}
                   </Box>
                   {log.line}
