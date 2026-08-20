@@ -5,7 +5,11 @@
  */
 import { useConsoleStore } from "../store/consoleStore";
 
-export function focusAppsV2Tab(appId: string, title: string): string {
+export function focusAppsV2Tab(
+  appId: string,
+  title: string,
+  slug?: string,
+): string {
   const consoleStore = useConsoleStore.getState();
   const existingTab = Object.values(consoleStore.tabs).find(
     (tab: { kind?: string; metadata?: { appV2Id?: string } }) =>
@@ -27,14 +31,18 @@ export function focusAppsV2Tab(appId: string, title: string): string {
     title: title || "App",
     content: "",
     kind: "app-v2",
-    metadata: { appV2Id: appId },
+    metadata: { appV2Id: appId, appV2Slug: slug },
   });
   consoleStore.setActiveTab(tabId);
   return tabId;
 }
 
 /** Open (or focus) a file of an Apps v2 project in its own editor tab. */
-export function focusAppsV2FileTab(appId: string, path: string): string {
+export function focusAppsV2FileTab(
+  appId: string,
+  path: string,
+  slug?: string,
+): string {
   const consoleStore = useConsoleStore.getState();
   const existingTab = Object.values(consoleStore.tabs).find(
     (tab: { kind?: string; metadata?: { appV2Id?: string; path?: string } }) =>
@@ -51,7 +59,7 @@ export function focusAppsV2FileTab(appId: string, path: string): string {
     title: fileName,
     content: "",
     kind: "app-v2-file",
-    metadata: { appV2Id: appId, path },
+    metadata: { appV2Id: appId, appV2Slug: slug, path },
   });
   consoleStore.setActiveTab(tabId);
   return tabId;

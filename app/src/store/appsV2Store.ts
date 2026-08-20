@@ -18,6 +18,9 @@ import { reconcileAppsV2Tabs } from "../apps-v2-runtime/shell";
 
 export interface AppV2Meta {
   id: string;
+  /** Folder name under `apps/` in the workspace repo — the app's real
+   *  identity, and what its URL uses. */
+  slug?: string;
   title: string;
   description?: string;
   updatedAt?: string;

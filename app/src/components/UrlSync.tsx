@@ -288,13 +288,15 @@ export function UrlSync() {
         .getState()
         .fetchApps(currentWorkspace.id)
         .then(() => {
-          const app = useAppsV2Store.getState().apps.find(a => a.id === appId);
+          const app = useAppsV2Store
+            .getState()
+            .apps.find(a => a.id === appId || a.slug === appId);
           if (!app) {
             closeAppsV2TabsFor(appId);
             window.history.replaceState(null, "", "/");
             return;
           }
-          focusAppsV2FileTab(appId, filePath);
+          focusAppsV2FileTab(app.id, filePath, app.slug);
         });
     } else if (appV2Match) {
       // /a2/:appId — Apps v2 (git-backed, experimental)
@@ -302,7 +304,12 @@ export function UrlSync() {
       setLeftPane("apps-v2");
       const store = useAppsV2Store.getState();
       void store.fetchApps(currentWorkspace.id).then(() => {
-        const app = useAppsV2Store.getState().apps.find(a => a.id === appId);
+        // The path segment may be a slug (the app's folder in the repo) or a
+        // legacy Mongo id. Resolve either; the outgoing sync then rewrites the
+        // URL to the slug form, so old links upgrade themselves.
+        const app = useAppsV2Store
+          .getState()
+          .apps.find(a => a.id === appId || a.slug === appId);
         if (!app) {
           // The link points at an app that is gone, or lives in another
           // workspace. Opening a tab anyway rendered the whole workspace view
@@ -313,7 +320,7 @@ export function UrlSync() {
           window.history.replaceState(null, "", "/");
           return;
         }
-        focusAppsV2Tab(appId, app.title);
+        focusAppsV2Tab(app.id, app.title, app.slug);
       });
     } else if (dbtFileMatch) {
       // /x/:projectId/file/:path

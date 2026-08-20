@@ -152,15 +152,25 @@ async function loadProject(
 > {
   const workspaceId = c.req.param("workspaceId");
   const id = c.req.param("id");
-  if (!id || !Types.ObjectId.isValid(id)) {
+  if (!id) {
     return {
       errorResponse: c.json({ success: false, error: "Invalid app id" }, 400),
     };
   }
-  const project = await AppProjectV2.findOne({
-    _id: new Types.ObjectId(id),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  // Apps are addressable by SLUG as well as by id. The slug is the folder name
+  // in the workspace repo (§10) — the real identity now that an app is a
+  // directory rather than a document — and the filesystem already guarantees
+  // it is unique, since two apps cannot occupy `apps/<slug>` at once. Ids
+  // still resolve so existing links keep working.
+  const project = Types.ObjectId.isValid(id)
+    ? await AppProjectV2.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      })
+    : await AppProjectV2.findOne({
+        slug: id,
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
   if (!project) {
     return {
       errorResponse: c.json({ success: false, error: "App not found" }, 404),
@@ -184,6 +194,7 @@ async function loadProject(
 function toProjectJson(p: IAppProjectV2) {
   return {
     id: p._id.toString(),
+    slug: p.slug,
     title: p.title,
     description: p.description,
     access: p.access,

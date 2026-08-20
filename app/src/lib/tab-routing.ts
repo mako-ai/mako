@@ -122,15 +122,20 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
       return appId && bindingId ? `/a/${appId}/data/${bindingId}` : null;
     }
     case "app-v2": {
+      // Prefer the slug: it is the app's folder name in the workspace repo,
+      // which is what an app IS now. The id stays as the fallback for tabs
+      // opened before slugs were carried in metadata.
       const appId = tab.metadata?.appV2Id as string | undefined;
-      return appId ? `/a2/${appId}` : null;
+      const slug = tab.metadata?.appV2Slug as string | undefined;
+      const ref = slug || appId;
+      return ref ? `/a2/${ref}` : null;
     }
     case "app-v2-file": {
       const appId = tab.metadata?.appV2Id as string | undefined;
+      const slug = tab.metadata?.appV2Slug as string | undefined;
+      const ref = slug || appId;
       const path = tab.metadata?.path as string | undefined;
-      return appId && path
-        ? `/a2/${appId}/file/${encodePathSegments(path)}`
-        : null;
+      return ref && path ? `/a2/${ref}/file/${encodePathSegments(path)}` : null;
     }
     case "plan": {
       const chatId = tab.metadata?.chatId as string | undefined;
