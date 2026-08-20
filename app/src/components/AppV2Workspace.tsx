@@ -14,7 +14,7 @@
  * Every read resolves from git through the durable worktree API, so the view
  * renders identically whether the sandbox is hot, paused, or dead.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -37,6 +37,7 @@ import {
   RotateCcw as DiscardIcon,
   TerminalSquare as TerminalIcon,
 } from "lucide-react";
+import Anser from "anser";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useRealtimeStore } from "../store/realtimeStore";
 import { useAppsV2Store, type AppV2TerminalEntry } from "../store/appsV2Store";
@@ -46,6 +47,55 @@ import { useAppsV2Store, type AppV2TerminalEntry } from "../store/appsV2Store";
 // ---------------------------------------------------------------------------
 
 const EMPTY_TERMINAL: AppV2TerminalEntry[] = [];
+
+/**
+ * Render command output with its ANSI colours intact.
+ *
+ * Real tools colour their output — vite, npm, tsc, git — and rendering the
+ * escape sequences as text turned that into noise like `[36m[1mVITE`. Anser
+ * parses the sequences into spans; there is no terminal emulator here, because
+ * the commands are one-shot and there is nothing to emulate.
+ */
+function AnsiText({
+  text,
+  dim,
+}: {
+  text: string;
+  dim?: boolean;
+}): React.ReactElement {
+  const chunks = useMemo(
+    () => Anser.ansiToJson(text, { use_classes: false, json: true }),
+    [text],
+  );
+  return (
+    <Typography
+      variant="caption"
+      component="pre"
+      sx={{
+        m: 0,
+        fontFamily: "monospace",
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
+        ...(dim ? { color: "text.secondary" } : {}),
+      }}
+    >
+      {chunks.map((chunk, i) => (
+        <span
+          key={i}
+          style={{
+            color: chunk.fg ? `rgb(${chunk.fg})` : undefined,
+            backgroundColor: chunk.bg ? `rgb(${chunk.bg})` : undefined,
+            fontWeight: chunk.decoration === "bold" ? 600 : undefined,
+            textDecoration:
+              chunk.decoration === "underline" ? "underline" : undefined,
+          }}
+        >
+          {chunk.content}
+        </span>
+      ))}
+    </Typography>
+  );
+}
 
 function TerminalEntryView({ entry }: { entry: AppV2TerminalEntry }) {
   return (
@@ -62,25 +112,8 @@ function TerminalEntryView({ entry }: { entry: AppV2TerminalEntry }) {
         </Typography>
       ) : (
         <>
-          {entry.stdout && (
-            <Typography
-              variant="caption"
-              component="pre"
-              sx={{ m: 0, fontFamily: "monospace", whiteSpace: "pre-wrap" }}
-            >
-              {entry.stdout}
-            </Typography>
-          )}
-          {entry.stderr && (
-            <Typography
-              variant="caption"
-              component="pre"
-              color="warning.main"
-              sx={{ m: 0, fontFamily: "monospace", whiteSpace: "pre-wrap" }}
-            >
-              {entry.stderr}
-            </Typography>
-          )}
+          {entry.stdout && <AnsiText text={entry.stdout} />}
+          {entry.stderr && <AnsiText text={entry.stderr} dim />}
           {entry.exitCode !== 0 && (
             <Typography variant="caption" color="error.main" display="block">
               exit {entry.exitCode}
@@ -223,6 +256,49 @@ export default function AppV2Workspace({
   const devSessionLive = preview?.mode === "dev" && Boolean(preview?.url);
   const publishedSha = app?.publishedSha;
   const publishApp = useAppsV2Store(s => s.publishApp);
+
+  // Resizable terminal. Persisted per browser so the pane you sized stays
+  // sized — a terminal you have to re-drag every visit is one you stop using.
+  const [terminalHeight, setTerminalHeight] = useState(() => {
+    const saved = Number(localStorage.getItem("apps-v2:terminal-height"));
+    return Number.isFinite(saved) && saved >= 80 ? saved : 200;
+  });
+  const [resizing, setResizing] = useState(false);
+  const resizeRef = useRef<{ y: number; h: number } | null>(null);
+
+  const startResize = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      resizeRef.current = { y: e.clientY, h: terminalHeight };
+      setResizing(true);
+    },
+    [terminalHeight],
+  );
+
+  useEffect(() => {
+    if (!resizing) return;
+    const onMove = (e: MouseEvent) => {
+      const start = resizeRef.current;
+      if (!start) return;
+      // Dragging up grows the terminal, so the delta is inverted. Clamped so
+      // it can never swallow the preview or vanish entirely.
+      const next = Math.min(
+        Math.max(start.h + (start.y - e.clientY), 80),
+        Math.max(160, window.innerHeight - 260),
+      );
+      setTerminalHeight(next);
+    };
+    const onUp = () => {
+      setResizing(false);
+      localStorage.setItem("apps-v2:terminal-height", String(terminalHeight));
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [resizing, terminalHeight]);
 
   const fetchApps = useAppsV2Store(s => s.fetchApps);
   const fetchFiles = useAppsV2Store(s => s.fetchFiles);
@@ -468,7 +544,18 @@ export default function AppV2Workspace({
       <Divider />
 
       {/* Terminal */}
-      <Box sx={{ height: 200, flexShrink: 0 }}>
+      <Box
+        onMouseDown={startResize}
+        sx={{
+          height: 5,
+          flexShrink: 0,
+          cursor: "row-resize",
+          bgcolor: resizing ? "primary.main" : "divider",
+          transition: resizing ? "none" : "background-color 0.15s",
+          "&:hover": { bgcolor: "primary.light" },
+        }}
+      />
+      <Box sx={{ height: terminalHeight, flexShrink: 0, minHeight: 0 }}>
         <TerminalPanel appId={appId} workspaceId={workspaceId} />
       </Box>
 
