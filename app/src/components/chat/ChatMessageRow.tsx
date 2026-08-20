@@ -35,6 +35,7 @@ import {
 } from "./response-cost";
 import { BUI_MONO_FONT_FAMILY } from "./bui-styles";
 import { CollapsibleUserText } from "./CollapsibleUserText";
+import { WebSearchCard } from "./WebSearchCard";
 import { ImagePreviewDialog } from "./ImagePreviewDialog";
 import { isRawMcpToolLabel } from "../../lib/local-acp-parts";
 
@@ -338,6 +339,28 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
               if (rawState !== "output-error") {
                 return null;
               }
+            }
+
+            // Web search: BUI "Search" trace (query chip + source links)
+            // instead of the generic JSON card. Errors and denied states fall
+            // through to the generic card so failures stay visible.
+            if (
+              toolName === "web_search" &&
+              cardState !== "error" &&
+              !(
+                cardState === "output-available" &&
+                (cardOutput as { success?: boolean } | undefined)?.success ===
+                  false
+              )
+            ) {
+              return (
+                <WebSearchCard
+                  key={key}
+                  state={cardState}
+                  input={part.input}
+                  output={cardOutput}
+                />
+              );
             }
 
             // Async dbt builds: once dbt_run_model has dispatched a run (output
