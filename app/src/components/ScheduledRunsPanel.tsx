@@ -10,6 +10,26 @@ import {
   Typography,
 } from "@mui/material";
 import type { ScheduledQueryRunItem } from "../lib/api-types";
+import {
+  ResultBadge,
+  SpinnerRingBadge,
+  StatusPill,
+  type BuiPillTone,
+} from "./bui-status";
+
+const STATUS_TONE: Record<ScheduledQueryRunItem["status"], BuiPillTone> = {
+  queued: "neutral",
+  running: "accent",
+  success: "green",
+  error: "red",
+};
+
+const STATUS_LABEL: Record<ScheduledQueryRunItem["status"], string> = {
+  queued: "Queued",
+  running: "Running",
+  success: "Completed",
+  error: "Failed",
+};
 
 interface ScheduledRunsPanelProps {
   loading: boolean;
@@ -63,7 +83,27 @@ export default function ScheduledRunsPanel({
               <TableCell>
                 {new Date(run.triggeredAt).toLocaleString()}
               </TableCell>
-              <TableCell>{run.status}</TableCell>
+              <TableCell>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                  {run.status === "running" ? (
+                    <SpinnerRingBadge size={16} />
+                  ) : (
+                    <ResultBadge
+                      size={16}
+                      tone={
+                        run.status === "success"
+                          ? "green"
+                          : run.status === "error"
+                            ? "red"
+                            : "neutral"
+                      }
+                    />
+                  )}
+                  <StatusPill tone={STATUS_TONE[run.status]}>
+                    {STATUS_LABEL[run.status]}
+                  </StatusPill>
+                </Box>
+              </TableCell>
               <TableCell>
                 {typeof run.durationMs === "number"
                   ? `${(run.durationMs / 1000).toFixed(1)}s`

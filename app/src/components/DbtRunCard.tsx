@@ -16,16 +16,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Box, IconButton, Tooltip } from "@mui/material";
 import {
   Square as StopIcon,
-  Check,
   ChevronDown,
   ExternalLink as OpenIcon,
-  X,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useDbtStore, type DbtRunItem } from "../store/dbtStore";
 import { focusDbtRunsTab } from "../dbt-runtime/shell";
 import { formatRowsAffected, formatStepDuration } from "../lib/dbt-step-format";
 import { BUI_MONO_FONT_FAMILY } from "./chat/bui-styles";
+import {
+  BUI_GHOST_ICON_BTN_SX,
+  BUI_META_CHIP_SX,
+  ResultBadge,
+  SpinnerRingBadge,
+  StatusPill,
+  type BuiPillTone,
+} from "./bui-status";
 
 interface DbtRunCardProps {
   runId: string;
@@ -50,147 +56,18 @@ function formatDuration(ms: number | undefined): string {
   return `${minutes}m ${rest}s`;
 }
 
-/** BUI Task Rows badge: track ring with a rotating arc while active. */
-function SpinnerRingBadge() {
-  const size = 22;
-  const stroke = 2;
-  const r = (size - stroke) / 2;
-  const c = 2 * Math.PI * r;
-  return (
-    <Box
-      component="span"
-      sx={{
-        position: "relative",
-        display: "inline-flex",
-        width: size,
-        height: size,
-        flexShrink: 0,
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <Box
-        component="svg"
-        width={size}
-        height={size}
-        sx={{
-          position: "absolute",
-          inset: 0,
-          animation: "spin 1.1s linear infinite",
-          "@keyframes spin": { to: { transform: "rotate(1turn)" } },
-        }}
-      >
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={r}
-          fill="none"
-          stroke="var(--bui-line)"
-          strokeWidth={stroke}
-        />
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={r}
-          fill="none"
-          stroke="var(--bui-ink-3)"
-          strokeWidth={stroke}
-          strokeLinecap="round"
-          strokeDasharray={`${c * 0.28} ${c * 0.72}`}
-        />
-      </Box>
-    </Box>
-  );
-}
-
-/** Filled circular badge (green check / red cross / neutral square). */
-function ResultBadge({ tone }: { tone: "green" | "red" | "neutral" }) {
-  return (
-    <Box
-      component="span"
-      sx={{
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        width: 22,
-        height: 22,
-        borderRadius: "50%",
-        flexShrink: 0,
-        color: "#fff",
-        backgroundColor:
-          tone === "green"
-            ? "var(--bui-green)"
-            : tone === "red"
-              ? "var(--bui-red)"
-              : "var(--bui-ink-3)",
-        animation: "bui-pop-in 300ms cubic-bezier(0.23,1,0.32,1) both",
-      }}
-    >
-      {tone === "green" ? (
-        <Check size={13} strokeWidth={3.5} />
-      ) : tone === "red" ? (
-        <X size={12} strokeWidth={3.5} />
-      ) : (
-        <StopIcon size={9} strokeWidth={3} fill="currentColor" />
-      )}
-    </Box>
-  );
-}
-
 const STATUS_PILL: Partial<
   Record<
     DbtRunItem["status"] | "cancelling",
-    { label: string; bg: string; fg: string }
+    { label: string; tone: BuiPillTone }
   >
 > = {
-  queued: {
-    label: "Queued",
-    bg: "var(--bui-field)",
-    fg: "var(--bui-ink-2)",
-  },
-  cancelling: {
-    label: "Cancelling…",
-    bg: "var(--bui-field)",
-    fg: "var(--bui-ink-2)",
-  },
-  success: {
-    label: "Completed",
-    bg: "var(--bui-green-tint)",
-    fg: "var(--bui-green)",
-  },
-  error: { label: "Failed", bg: "var(--bui-red-tint)", fg: "var(--bui-red)" },
-  cancelled: {
-    label: "Cancelled",
-    bg: "var(--bui-field)",
-    fg: "var(--bui-ink-2)",
-  },
+  queued: { label: "Queued", tone: "neutral" },
+  cancelling: { label: "Cancelling…", tone: "neutral" },
+  success: { label: "Completed", tone: "green" },
+  error: { label: "Failed", tone: "red" },
+  cancelled: { label: "Cancelled", tone: "neutral" },
 };
-
-const META_CHIP_SX = {
-  display: "inline-flex",
-  alignItems: "center",
-  height: 18,
-  px: 0.75,
-  borderRadius: "5px",
-  backgroundColor: "var(--bui-field)",
-  boxShadow: "var(--bui-shadow-hairline)",
-  fontFamily: BUI_MONO_FONT_FAMILY,
-  fontSize: "0.64rem",
-  color: "var(--bui-ink-2)",
-  maxWidth: 160,
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-} as const;
-
-const GHOST_ICON_BTN_SX = {
-  p: 0.25,
-  color: "var(--bui-ink-3)",
-  "&:hover": {
-    color: "var(--bui-ink)",
-    backgroundColor: "var(--bui-hover-2)",
-  },
-} as const;
 
 export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
   const { currentWorkspace } = useWorkspace();
@@ -353,24 +230,9 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
             {title}
           </Box>
           {pill && (
-            <Box
-              component="span"
-              sx={{
-                display: "inline-flex",
-                alignItems: "center",
-                height: 22,
-                px: 1,
-                borderRadius: "999px",
-                fontSize: "11.5px",
-                fontWeight: 500,
-                flexShrink: 0,
-                backgroundColor: pill.bg,
-                color: pill.fg,
-                animation: "bui-fade-in 200ms ease-out both",
-              }}
-            >
+            <StatusPill tone={pill.tone} animateIn>
               {pill.label}
-            </Box>
+            </StatusPill>
           )}
           {hasBody && (
             <ChevronDown
@@ -395,13 +257,13 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
           }}
         >
           {run?.environment && (
-            <Box component="span" sx={META_CHIP_SX}>
+            <Box component="span" sx={BUI_META_CHIP_SX}>
               {run.environment}
             </Box>
           )}
           {treeChip && (
             <Tooltip title={treeChip.tooltip}>
-              <Box component="span" sx={META_CHIP_SX}>
+              <Box component="span" sx={BUI_META_CHIP_SX}>
                 {treeChip.label}
               </Box>
             </Tooltip>
@@ -425,7 +287,7 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
               <span>
                 <IconButton
                   size="small"
-                  sx={GHOST_ICON_BTN_SX}
+                  sx={BUI_GHOST_ICON_BTN_SX}
                   onClick={handleCancel}
                   disabled={cancelling}
                 >
@@ -437,7 +299,7 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
           <Tooltip title="Open in Transforms → Runs">
             <IconButton
               size="small"
-              sx={GHOST_ICON_BTN_SX}
+              sx={BUI_GHOST_ICON_BTN_SX}
               onClick={event => {
                 event.stopPropagation();
                 focusDbtRunsTab(projectId, "Runs", runId);
