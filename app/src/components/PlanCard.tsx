@@ -10,6 +10,7 @@ import {
 } from "@mui/material";
 import { ClipboardList, X } from "lucide-react";
 import type { SubmitPlanInput, SubmitPlanOutput } from "@mako/agent-tools";
+import { BUI_META_CHIP_SX } from "./bui-status";
 import {
   closePlanTab,
   DECISION_COLOR,
@@ -198,11 +199,9 @@ export const PlanCard: React.FC<PlanCardProps> = ({
             title={`Approval grants this task: ${requiredCapabilities.join(", ")}`}
             placement="top"
           >
-            <Chip
-              size="small"
-              label={requiredCapabilities.join(" · ")}
-              variant="outlined"
-            />
+            <Box component="span" sx={BUI_META_CHIP_SX}>
+              {requiredCapabilities.join(" · ")}
+            </Box>
           </Tooltip>
         )}
         {decision && (
