@@ -170,7 +170,15 @@ function hostTar(args: string[], cwd: string, input?: Buffer): Promise<Buffer> {
     const child = execFile(
       "tar",
       args,
-      { cwd, encoding: "buffer", maxBuffer: 512 * 1024 * 1024 },
+      {
+        cwd,
+        encoding: "buffer",
+        maxBuffer: 512 * 1024 * 1024,
+        // macOS bsdtar otherwise writes an AppleDouble `._<name>` companion
+        // entry for every file, which lands in the sandbox as visible junk
+        // (`._package.json`, `._.git`, ...) and confuses tooling there.
+        env: { ...process.env, COPYFILE_DISABLE: "1" },
+      },
       (error, stdout) => {
         if (error) reject(error);
         else resolve(stdout as unknown as Buffer);
@@ -235,18 +243,25 @@ async function syncOut(sandbox: Sandbox, hostDir: string): Promise<void> {
   });
   await sandbox.commands.run(`rm -f ${remoteTmp}`, { user: SANDBOX_USER });
 
-  // Replace host tree (except .git and sandbox-local dirs) with the result.
-  const entries = await fs.readdir(hostDir);
-  for (const entry of entries) {
-    if (entry === ".git" || SANDBOX_LOCAL.includes(entry)) continue;
-    await fs.rm(path.join(hostDir, entry), { recursive: true, force: true });
-  }
   const tmpFile = path.join(
     os.tmpdir(),
     `mako-sync-out-${process.pid}-${Date.now()}.tgz`,
   );
+  const staging = await fs.mkdtemp(
+    path.join(os.tmpdir(), `mako-sync-stage-${process.pid}-`),
+  );
   await fs.writeFile(tmpFile, Buffer.from(data));
   try {
+    // Unpack and sanitise into a STAGING directory first, and only touch the
+    // real session tree once that has fully succeeded.
+    //
+    // This used to delete the host tree and then extract into it. Any failure
+    // between the two — a tar that rejects a flag, a corrupt download, a full
+    // disk — left the working tree destroyed, and because the next sync-in
+    // uploads the host tree, the loss propagated straight back into the
+    // sandbox and wiped the app there too. Recovering meant `git checkout`,
+    // and only because every change is committed.
+    //
     // Hardening (adopted from the parallel branch's session-file policy):
     // tenant code controls this archive, so refuse anything that is not a
     // plain file/directory. GNU tar already refuses absolute paths and `..`
@@ -257,16 +272,36 @@ async function syncOut(sandbox: Sandbox, hostDir: string): Promise<void> {
       [
         "--no-same-owner",
         "--no-same-permissions",
-        "--exclude-backups",
+        // GNU tar's --exclude-backups spelled out: it is GNU-only, and bsdtar
+        // (the default `tar` on macOS) hard-fails on the unknown flag, which
+        // made the E2B provider unusable on a Mac dev machine. These patterns
+        // are exactly what it covers and both implementations accept them.
+        "--exclude=*~",
+        "--exclude=.#*",
+        "--exclude=#*#",
+        "--exclude=,*",
         "-xzf",
         tmpFile,
         "--exclude=./.git",
       ],
-      hostDir,
+      staging,
     );
-    await stripLinks(hostDir);
+    await stripLinks(staging);
+
+    // Staging is good: now swap it over the session tree. `.git` and the
+    // sandbox-local dirs are ours, not the archive's, and stay put.
+    const stale = await fs.readdir(hostDir);
+    for (const entry of stale) {
+      if (entry === ".git" || SANDBOX_LOCAL.includes(entry)) continue;
+      await fs.rm(path.join(hostDir, entry), { recursive: true, force: true });
+    }
+    for (const entry of await fs.readdir(staging)) {
+      if (entry === ".git" || SANDBOX_LOCAL.includes(entry)) continue;
+      await fs.rename(path.join(staging, entry), path.join(hostDir, entry));
+    }
   } finally {
     await fs.rm(tmpFile, { force: true });
+    await fs.rm(staging, { recursive: true, force: true });
   }
 }
 
