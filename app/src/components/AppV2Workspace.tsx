@@ -297,8 +297,8 @@ export default function AppV2Workspace({
         <Tooltip
           title={
             devPreviewUnavailable
-              ? "Unavailable in this environment: the live dev preview spawns a `vite dev` process on the API host, so it only runs under the local sandbox provider. This workspace runs sandboxes in E2B microVMs, where apps-v2.md §4.7's per-sandbox public URL is not built yet — use Build & preview."
-              : "Prototype of apps-v2.md §4.7's dev-preview tier: starts a persistent `vite dev` process and iframes it directly — edits picked up live via HMR, no rebuild step. Local-provider only."
+              ? "Live preview isn't available here yet. It only works when Mako runs on your own machine; this workspace runs apps in cloud sandboxes. Use Build & preview instead — it compiles the app and shows the result."
+              : "Live preview: keeps the app running so your edits show up instantly, with no rebuild step."
           }
         >
           <span>
