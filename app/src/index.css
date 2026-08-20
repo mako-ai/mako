@@ -213,6 +213,32 @@
   border-bottom: 1px solid var(--bui-line) !important;
 }
 
+/* Copy button in the code block header — BUI ghost icon button */
+[data-streamdown="code-block-actions"] {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+[data-streamdown="code-block-copy-button"] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--bui-ink-3);
+  cursor: pointer;
+  transition:
+    background-color 0.1s,
+    color 0.1s;
+}
+
+[data-streamdown="code-block-copy-button"]:hover {
+  background-color: var(--bui-hover);
+  color: var(--bui-ink);
+}
+
 [data-streamdown="code-block-body"] {
   padding: 0.5rem 0.625rem !important;
   font-size: 0.71875rem !important;
