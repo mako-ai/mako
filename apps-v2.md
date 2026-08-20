@@ -3,7 +3,7 @@
 > Git-backed filesystem, real shell, real builds, and open editing for Mako apps.
 
 - **Status:** Merged proposal (synthesis of this RFC and the parallel draft on `cursor/apps-v2-rfc-9359`); git substrate and workspace monorepo built (§10.1), local-first developer surface not started (§11.7)
-- **Read this first:** §11 states the current vision — why we are doing this (unit economics, not just ergonomics), the `main`-is-production monorepo model, the decided access model, the remaining open decision, and the sequencing. §§1–9 remain accurate as design history; where §11 disagrees with §4.8's framing or §6's ordering, §11 wins.
+- **Read this first:** §13 is the app lifecycle (view / edit / publish) and the nearest work; §12 settles the substrate (E2B everywhere); §11 states the current vision — why we are doing this (unit economics, not just ergonomics), the `main`-is-production monorepo model, the decided access model, the remaining open decision, and the sequencing. §§1–9 remain accurate as design history; where §11 disagrees with §4.8's framing or §6's ordering, §11 wins.
 - **Scope:** Apps module rework (storage, agent runtime, hosting, external editing). Touches: git infrastructure, sandbox execution, agent tools, app runtime/hosting, auth, desktop/local agent, MCP. **Apps v1 is not modified; v2 runs in parallel.**
 
 ## 0. Decision log (merged from both drafts)
@@ -41,6 +41,7 @@ Two RFCs were written independently against the same brief and then merged. Wher
 | **Repo layout stays owner-first; signal/noise is a checkout-scope problem** | Reconsidered and re-affirmed §10's layout: `apps/<slug>/`, `consoles/`, `skills/`, `dbt/` at the root, personal content under `users/<userId>/apps/…` and `users/<userId>/consoles/…`. Type-first (`apps/workspace/`, `apps/users/joan/`) rejected again — for a reason §10 did not state: **both access and noise are "exclude one subtree" operations**, so owner-first needs ONE rule where type-first needs one per content type, a list that grows with every new type and fails silently in the unsafe direction when someone forgets. Type-first wins only on uniform globbing — a cost paid once in code against a risk paid forever. **Layout alone does not fix noise: checkout scope does.** Sparse-checkout (nonexistent today) should default BOTH the builder's clone and the agent's sandbox to workspace content + the caller's own `users/<id>/`, with `CLAUDE.md` stating the scope. Converges with §11.5: if the per-user-repo trigger fires, the workspace repo becomes type-first by construction and the question dissolves — and owner-first `git subtree split`s cleanly into that end state where type-first would have to scatter-gather. Free to settle now: `users/<id>/` is unimplemented and nothing needs migrating. Detail: §11.10. | User (2026-08-19) |
 | **Prior art (verified 2026-08-19): the differentiator is source-vs-serialized-state, not git-vs-no-git** | Netlify/Vercel are a deploy layer on a repo GitHub already governs — never owning the store, they never answer "who may clone", never bridge platform↔git identity, and have no personal-content-in-a-shared-repo concept; our cloud tier inherits all three as the price of instant-start. They validate §11.4 wholesale (many projects per repo with base directories + build-skip, production branch → prod deploy, **PR previews as table stakes** — evidence against deferring them), and their template flow is the origin of §11.5 option (iii). **Correction to an earlier draft:** Retool/Hex/Appsmith are NOT simply "a mirror". Retool Source Control has real git feature branching and PR-gated main-is-prod, serializing apps to **ToolScript** (`.rsx`, JSX-style, replaced YAML for readability) — but *"Retool recommends you not modify Toolscript files directly"*, no linting or type-checking: **reviewable by design, not authorable**. Hex Git export is **one-way only** (Hex is source of truth; manual YAML re-import exists but is not a sync) and is **incompatible with branch protection**. Appsmith (open source) keeps the **database authoritative** with one server-side mirror clone. So the real differentiator is **what the repo contains**: their serialized GUI state vs. our actual source (a real Vite/React app, real `.sql`), which is exactly why Claude Code works on a Mako repo and cannot work on a `.rsx`. Also corrected: multiplayer and git are NOT inherently in tension (Retool/Appsmith have both) — the trade is resolved by **whoever holds truth**, and git-authoritative costs us real-time co-editing, which must be stated rather than discovered. Lessons stolen: Appsmith's git-ops-too-slow→timeout→corruption and metadata-churn warnings; Hex's branch-protection incompatibility (our publish must go THROUGH a PR, never around it); secrets in the DB not the repo (consensus, settles §7). Detail: §11.11. | Verified research 2026-08-19 |
 | **One substrate: E2B everywhere; the local provider is deleted (DECIDED)** | Three unrelated activities were all called "development", and the substrate was chosen for the wrong one. **(1) Developing Mako runs on E2B** — exercising a substrate no user runs ships untested code paths and carries a second implementation forever; every developer has an E2B key, like a database URL. Proven, not theoretical: the nested-node_modules bug (app could not build; 13-27s per command) survived from Block B until 2026-08-20 **because the local provider has no host↔sandbox sync at all** — structurally invisible there, immediate on E2B. **(2) Customer app dev on app.mako.ai runs on E2B** — N1, plus an unsandboxed shell lets a tenant exhaust the API host. **(3) Local customer dev uses NO Mako sandbox**: the user has the WORKSPACE repo checked out, a `mako` executable supplies data proxies + auth, and the user (or Claude Code) runs `vite dev` directly as themselves — Mako is not in the execution path, and **the user never checks out Mako**. This corrects §4.8(d)'s "local executor behind the provider seam". Deleted: local-provider.ts, dev-server.service.ts, dev-preview-ws-proxy.ts, the devPreviewAvailable probe + toolbar gating, and the APPS_V2_SANDBOX_PROVIDER knob; provider.ts stays as the seam for a Fly/Modal fallback. **Live preview moves INTO the sandbox** (vite on 0.0.0.0 + `sandbox.getHost(port)` + iframe), which is why it can finally exist in deployed environments at all. Detail: §12. | User (2026-08-21) |
+| **App lifecycle: view / edit / publish (§13)** | Found by this RFC's own author: *"even though I built this, I don't understand the UX"*. The cause is not labelling — **there is no publish, no deploy and no viewer**: `publishedSha` is never written by anything, there is no public-share route, the built bundle is served behind a 30-MINUTE in-memory token, and even browsing an app calls `ensureWorktree`. Apps v2 is an IDE with two developer preview modes. **Correction to an earlier claim in this session:** data is much further along — bindings already materialize into the shared artifact store (GCS when deployed) at `apps-v2/<projectId>/<name>.parquet`, so warehouse→parquet→bucket is DONE and durable; only the serving path is tied to the ephemeral preview token. Target: three states, one primary action each — Published (no sandbox at all; primary = Edit), Editing (branch + dev session; primary = Publish), Never published. Publish = merge → build from main → IMMUTABLE addressable artifact → repoint, which makes rollback a repoint. Open: an ACL'd data path for published apps (§4.7 capability tokens — the genuinely hard part), scheduled refresh, failed-build-on-main, rollback UX, concurrent editors, static-only boundary. Detail: §13. | User + analysis (2026-08-21) |
 | **What `mako` runs locally (OPEN)** | Two readings of "the full Mako app at localhost:6969": a **thin local shell** (serves the UI, owns the local checkout, runs `vite dev`, proxies control plane + data execution to the cloud — materially `packages/desktop` + `packages/local-agent` minus Electron; ships in weeks, no new deployment target) versus a **full local stack** (API + database + Inngest + kernel on the laptop; true self-host, permanent second deployment target and support surface). **Proposed default: thin shell**, full stack only if self-hosting proves to be a sales requirement. Detail: §11.6. | Raised 2026-08-19 |
 | **Sequencing: cheap half first; `mako agent` deferred indefinitely** | Order: (1) scaffold `CLAUDE.md`/`.mcp.json` + §10 Block D1 `skills/` so `git clone && claude` is Mako-capable with no CLI at all — generated from the same source as `buildMakoSystemPromptAppend` to avoid drift; (2) **deploy on merge** (`publishedSha` is currently read but never written — no pipeline exists, so §11.4 is not yet true); (3) minimal `@mako/cli` (`login` + `dev` only); then Block D2 consoles + Block C branch state; then revisit §11.6. The **`mako agent` terminal harness (§4.8c) is deferred indefinitely** — building a competing harness with our tokens contradicts the reason for the work. Detail: §11.7–11.9. | User (2026-08-19) |
 
@@ -1074,3 +1075,105 @@ the `*.e2b.app` host; and the public URL is unguessable but unauthenticated,
 which is the same exposure the existing token-gated static preview already
 accepts. §4.7's end state (separate PSL-registered domain, capability tokens)
 still stands for *published* apps — this is the dev-preview tier only.
+
+---
+
+## 13. The app lifecycle: view, edit, publish (2026-08-21)
+
+> The gap this closes was found by its own author: *"even though I built this,
+> I don't understand the UX and I don't know how this works."* That is not a
+> labelling problem. Apps v2 today is an IDE with two developer preview modes,
+> and an app has no existence outside it.
+
+### 13.1 What actually exists today
+
+Stated plainly, because the confusion comes from looking for a product half
+that was never built:
+
+- **There is no publish and no deploy.** `publishedSha` is a schema field,
+  returned by one endpoint, and **never written by anything**.
+- **There is no viewer.** No public-share route, no read-only mode. Opening an
+  app means opening the IDE.
+- **The built bundle is throwaway.** `Build & preview` runs `npm run build` in
+  the sandbox and serves the resulting `dist/` behind a token that expires in
+  **30 minutes**, held in process memory. Restart the API and it is gone.
+- **Even browsing calls `ensureWorktree`**, so merely looking at an app engages
+  the sandbox machinery.
+- **Data is the exception, and is further along than the rest.** Bindings
+  already materialize through v1's read-only-enforced pipeline into the shared
+  artifact store — GCS in deployed environments — keyed
+  `apps-v2/<projectId>/<name>.parquet`. That half is durable and works. It is
+  only *served* through the same ephemeral preview token, at
+  `__data/<name>.parquet`.
+
+So the missing piece is narrower than "publishing": the warehouse→parquet→
+bucket path exists. What does not exist is a durable, authorized way to serve
+an app **and** its data to someone who is not editing it.
+
+### 13.2 Three states, one primary action each
+
+| State | What the user sees | Primary action |
+|---|---|---|
+| **Published** (default for everyone) | the live app built from `main` — **no sandbox involved** | **Edit** |
+| **Editing** (on a branch, dev session live) | live `vite dev` with HMR | **Publish** (+ *Stop session*) |
+| **Never published** | empty state explaining what an app is | **Publish** |
+
+Consequences worth stating:
+
+- **Opening an app must never start a sandbox.** A hundred viewers must not
+  mean a hundred microVMs. This is simultaneously the cost story, the latency
+  story, and what makes "first click shows the app instantly" possible.
+- **Edit is a state transition, not a mode toggle**: branch off `main`, start a
+  dev session, and say which branch you are on. The agent does this on the
+  user's behalf most of the time.
+- **`Build & preview` largely stops being user-facing.** It is what Publish
+  does internally, plus a "does this still build" check for the agent. Keeping
+  it in the toolbar as a peer of the dev session is what made two developer
+  preview modes look like a product decision.
+- **The dev-session button must render its state.** It currently changes only
+  its variant while still reading "Start dev session" with a session already
+  running.
+
+### 13.3 Publish
+
+Merge the branch into `main`, build from `main`, store the output as an
+**immutable, addressable** deployment, and repoint the app's URL at it. This is
+§11.4's `main`-is-production made concrete, and it is the orthodox shape
+(§11.11: it is what Netlify and Vercel do).
+
+Immutability is what buys rollback: reverting is repointing, not rebuilding,
+and every deployment keeps a stable URL that can be linked to.
+
+### 13.4 Open questions this raises
+
+1. **Serving data to a published app.** The artifacts are already durable; the
+   serving path is not. A published app needs `__data/<name>.parquet` behind
+   Mako's ACLs rather than a 30-minute token — and the current handler sets
+   `Access-Control-Allow-Origin: *`, which is safe only *because* the token is
+   the credential. This is §4.7's capability-token design and it is the hard
+   part of publishing, harder than the build.
+2. **Freshness.** A published bundle is static; its data is not. Something must
+   refresh bindings on a schedule (§9's Block 4) and publish must therefore
+   deploy *bundle + binding schedule*, not just a bundle.
+3. **A failed build on `main`.** Production must keep serving the last good
+   deployment and someone must be told. This argues for building the PR before
+   the merge — the per-PR previews §11.11 found to be table stakes elsewhere.
+4. **Rollback UX.** One click, not a git operation.
+5. **Concurrent editors.** Two people clicking Edit get two branches, which is
+   correct; the UI has to show "you are on `chat/abc`, 2 others are editing".
+6. **Static-only.** `vite build` → `dist` means no server code, no API routes,
+   no runtime secrets. Whether that is the permanent boundary is a product
+   decision, not an implementation detail.
+
+### 13.5 Order
+
+Deliberately smallest-first, because each step is independently useful and the
+early ones stop the current UI from actively misleading:
+
+1. Fix the dev-session button to render its state (stopgap; it lies today).
+2. Publish: merge → build from `main` → immutable artifact → write
+   `publishedSha` → repoint. Bundle only.
+3. Viewer: opening an app serves the published bundle, **sandbox-free**, with
+   Edit as the way in.
+4. Authorized data path for published apps (13.4.1) — the hard one.
+5. Scheduled binding refresh (13.4.2), then rollback (13.4.4).
