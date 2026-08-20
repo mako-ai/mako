@@ -47,7 +47,7 @@ const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
  * Sandbox-local build state: never synced in either direction (recreated by
  * installs inside the sandbox; excluded from WIP snapshots by .gitignore).
  */
-const SANDBOX_LOCAL = ["node_modules", ".npm", ".cache", ".vite"];
+export const SANDBOX_LOCAL = ["node_modules", ".npm", ".cache", ".vite"];
 /**
  * `.git` DOES sync INTO the sandbox (fresh on every command) so in-session
  * `git status/log/diff` work like on the local substrate — the clone's origin
@@ -55,7 +55,7 @@ const SANDBOX_LOCAL = ["node_modules", ".npm", ".cache", ".vite"];
  * no credential or push path rides along. It never syncs OUT: the host copy
  * is the broker's staging area and stays authoritative.
  */
-const SYNC_OUT_IGNORES = [...SANDBOX_LOCAL, ".git"];
+export const SYNC_OUT_IGNORES = [...SANDBOX_LOCAL, ".git"];
 
 function apiKey(): string {
   const key = process.env.E2B_API_KEY;
@@ -133,9 +133,36 @@ async function connectSession(sessionKey: string): Promise<Sandbox> {
 // Host <-> sandbox sync (tar streams over the E2B filesystem API)
 // ---------------------------------------------------------------------------
 
+/**
+ * tar excludes for the sandbox-local dirs, matching at ANY depth.
+ *
+ * These MUST stay unanchored. §10 Block B moved apps from "the app is the repo
+ * root" to `apps/<slug>/`, and `app2_bash` runs with cwd = the app root, so
+ * every install now writes a NESTED `apps/<slug>/node_modules`. GNU tar treats
+ * `--exclude ./node_modules` as rooted at the archive top, so the nested copy
+ * was silently round-tripped: out to the host (where `stripLinks` deleted every
+ * symlink in it, emptying `.bin/` and breaking `tsc`/`vite`), then back in on
+ * the next command — tens of MB per exec, which is where the multi-second
+ * per-command latency came from too.
+ */
+export function excludeArgs(): string[] {
+  return SANDBOX_LOCAL.flatMap(name => ["--exclude", name]);
+}
+
 function packArgs(): string[] {
-  const ignores = SANDBOX_LOCAL.flatMap(name => ["--exclude", `./${name}`]);
-  return ["-czf", "-", ...ignores, "."];
+  return ["-czf", "-", ...excludeArgs(), "."];
+}
+
+/**
+ * `find` predicates matching anything inside a sandbox-local dir at any depth,
+ * so the sync-in wipe can preserve nested `node_modules` instead of deleting
+ * it along with the `apps/` tree that contains it.
+ */
+export function sandboxLocalFindFilter(): string {
+  return SANDBOX_LOCAL.flatMap(name => [
+    `! -path ${JSON.stringify(`*/${name}`)}`,
+    `! -path ${JSON.stringify(`*/${name}/*`)}`,
+  ]).join(" ");
 }
 
 function hostTar(args: string[], cwd: string, input?: Buffer): Promise<Buffer> {
@@ -164,14 +191,22 @@ async function syncIn(sandbox: Sandbox, hostDir: string): Promise<void> {
   await sandbox.files.write(remoteTmp, bytes.buffer as ArrayBuffer, {
     user: SANDBOX_USER,
   });
+  const keep = sandboxLocalFindFilter();
   const result = await sandbox.commands.run(
     // Remove everything the sync owns (incl. stale .git), keep sandbox-local
-    // dirs (node_modules, ...), then extract the fresh tree over the top.
-    `cd ${REMOTE_ROOT} && find . -mindepth 1 -maxdepth 1 ${SANDBOX_LOCAL.map(
-      n => `! -name ${JSON.stringify(n)}`,
-    ).join(
-      " ",
-    )} -exec rm -rf {} + && tar -xzf ${remoteTmp} && rm -f ${remoteTmp}`,
+    // dirs (node_modules, ...) AT ANY DEPTH, then extract the fresh tree over
+    // the top. Two passes because a blanket `rm -rf` on a parent would take a
+    // preserved `apps/<slug>/node_modules` down with it: delete non-directories
+    // first, then remove the directories that are left empty (depth-first, and
+    // `rmdir` refuses non-empty ones, so any directory still holding a
+    // preserved node_modules survives).
+    [
+      `cd ${REMOTE_ROOT}`,
+      `find . -mindepth 1 ! -type d ${keep} -print0 | xargs -0 -r rm -f --`,
+      `find . -mindepth 1 -depth -type d ${keep} -print0 | xargs -0 -r rmdir --ignore-fail-on-non-empty --`,
+      `tar -xzf ${remoteTmp}`,
+      `rm -f ${remoteTmp}`,
+    ].join(" && "),
     { user: SANDBOX_USER, timeoutMs: 120_000 },
   );
   if (result.exitCode !== 0) {
@@ -182,10 +217,11 @@ async function syncIn(sandbox: Sandbox, hostDir: string): Promise<void> {
 /** Download the sandbox working root back over the host session dir. */
 async function syncOut(sandbox: Sandbox, hostDir: string): Promise<void> {
   const remoteTmp = `/tmp/mako-sync-out-${Date.now()}.tgz`;
-  const ignores = SYNC_OUT_IGNORES.flatMap(name => [
-    "--exclude",
-    `./${name}`,
-  ]).join(" ");
+  // Unanchored, for the same reason as excludeArgs(): nested
+  // `apps/<slug>/node_modules` must never leave the sandbox.
+  const ignores = SYNC_OUT_IGNORES.flatMap(name => ["--exclude", name]).join(
+    " ",
+  );
   const pack = await sandbox.commands.run(
     `cd ${REMOTE_ROOT} && tar -czf ${remoteTmp} ${ignores} . && stat -c %s ${remoteTmp}`,
     { user: SANDBOX_USER, timeoutMs: 120_000 },
@@ -244,6 +280,10 @@ async function stripLinks(root: string): Promise<void> {
         await fs.rm(abs, { force: true });
       } else if (entry.isDirectory()) {
         if (entry.name === ".git") continue;
+        // Belt and braces: with the excludes above these should never reach
+        // the host, but if one ever does, do NOT walk it — stripping symlinks
+        // inside node_modules is what emptied `.bin/` and broke every build.
+        if (SANDBOX_LOCAL.includes(entry.name)) continue;
         await walk(abs);
       } else if (!entry.isFile()) {
         await fs.rm(abs, { force: true });
