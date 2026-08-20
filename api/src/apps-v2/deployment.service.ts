@@ -231,3 +231,40 @@ export async function publishFromWorktree(
   await setPublishedSha(handle.project, sha);
   return result;
 }
+
+/**
+ * Build the current `main` for one app and deploy it.
+ *
+ * The publish route merges first and then calls this shape of work; a push to
+ * `main` has already moved the branch, so there is nothing to merge — just
+ * build what is there and point at it.
+ *
+ * A failed build leaves the previous deployment serving, exactly as a failed
+ * publish does. `main` is not reverted: it already moved, and rewriting a
+ * branch someone pushed to would be far worse than briefly serving an older
+ * deployment.
+ */
+export async function deployFromMain(
+  project: IAppProjectV2,
+  runBuild: () => Promise<{ ok: boolean; output: string }>,
+  sha: string,
+  sessionDir: string,
+  appRoot: string,
+): Promise<PublishResult> {
+  const projectId = project._id.toString();
+  if (await deploymentExists(projectId, sha)) {
+    await setPublishedSha(project, sha);
+    return { sha, fileCount: 0, reused: true };
+  }
+  const build = await runBuild();
+  if (!build.ok) {
+    throw new Error(`Build failed:\n${build.output}`);
+  }
+  const result = await uploadDeployment(
+    project,
+    sha,
+    path.join(sessionDir, appRoot, "dist"),
+  );
+  await setPublishedSha(project, sha);
+  return result;
+}

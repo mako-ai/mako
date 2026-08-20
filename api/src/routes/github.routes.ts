@@ -35,6 +35,12 @@ import {
 import { handlePullRequestEvent, handlePushEvent } from "../dbt/dbt-ci.service";
 import { workspaceService } from "../services/workspace.service";
 import { loggers } from "../logging";
+import {
+  deployAppsForPush,
+  workspaceIdFromCloudRepo,
+} from "../apps-v2/deploy-on-push";
+import { fetchFromCloud } from "../apps-v2/cloud-repo.service";
+import { repoDirFor } from "../apps-v2/repository.service";
 
 const logger = loggers.api("github");
 
@@ -99,8 +105,13 @@ function verifySignature(
 
 interface PushPayload {
   ref?: string;
+  before?: string;
   after?: string;
-  repository?: { name?: string; owner?: { login?: string } };
+  repository?: {
+    name?: string;
+    owner?: { login?: string };
+    default_branch?: string;
+  };
   installation?: { id?: number };
 }
 
@@ -125,6 +136,40 @@ interface InstallationPayload {
  * pull_request (Slim CI), and installation (cleanup) events. Work is detached
  * so we ack within GitHub's delivery timeout.
  */
+/**
+ * Deploy any Apps v2 apps touched by a push to the workspace repo's default
+ * branch. No-op for repos that are not workspace repos.
+ */
+async function handleAppsV2Push(input: {
+  repo: string;
+  branch: string;
+  before?: string;
+  after?: string;
+  defaultBranch?: string;
+}): Promise<void> {
+  const { repo, branch, before, after, defaultBranch } = input;
+  if (!after) return;
+  const workspaceId = workspaceIdFromCloudRepo(repo);
+  if (!workspaceId) return;
+  if (branch !== (defaultBranch || "main")) return;
+
+  // The bare repo is a cache; the commit arrived at GitHub, so pull it in
+  // before trying to build it.
+  await fetchFromCloud(workspaceId, branch);
+  const deployed = await deployAppsForPush({
+    workspaceId,
+    repoDir: repoDirFor(workspaceId),
+    before,
+    after,
+  });
+  if (deployed.length > 0) {
+    logger.info("Deployed apps from a push to main", {
+      workspaceId,
+      apps: deployed,
+    });
+  }
+}
+
 githubRoutes.post("/webhook", async (c: Context) => {
   const secret = getGitHubAppWebhookSecret();
   if (!secret) {
@@ -157,11 +202,25 @@ githubRoutes.post("/webhook", async (c: Context) => {
         const name = p.repository?.name;
         const ref = p.ref ?? "";
         if (owner && name && ref.startsWith("refs/heads/")) {
+          const branch = ref.slice("refs/heads/".length);
           await handlePushEvent({
             owner,
             repo: name,
-            branch: ref.slice("refs/heads/".length),
+            branch,
             installationId: p.installation?.id,
+          });
+          // Apps v2: `main` is production, so putting a commit on it IS the
+          // act of deploying — whether that came from a local `git push`, a
+          // merge on GitHub, or the Publish button. Handled here because
+          // GitHub is the one point all of those converge on.
+          await handleAppsV2Push({
+            repo: name,
+            branch,
+            before: p.before,
+            after: p.after,
+            defaultBranch: p.repository?.default_branch,
+          }).catch(error => {
+            logger.error("Apps v2 deploy-on-push failed", { error });
           });
         }
       } else if (event === "pull_request") {

@@ -1216,6 +1216,30 @@ default. Publishing with no edits at all is not an error — it deploys what
 Combined with §13.3's build-before-merge, `main` is now protected from both
 directions: bad edits cannot reach it, and a bad build cannot land on it.
 
+### 13.8 Pushing to `main` is what deploys (2026-08-21)
+
+If `main` is production, then putting a commit on `main` should be the act that
+makes something live — whether that came from `git push` in a checkout, a merge
+on GitHub, or the Publish button. A button that is the *only* way to ship
+breaks §11.3 outright: someone working from a local folder would have to open a
+browser to release.
+
+**GitHub is where every path converges.** A local clone pushes straight there,
+and Mako mirror-pushes its own commits there too, so one `push` webhook covers
+all of them. The webhook plumbing already existed for dbt (HMAC verification,
+event routing, detached work); this adds an Apps v2 branch to it.
+
+On a push to the default branch of a workspace repo: fetch the commit into the
+local bare cache (it landed on GitHub, not here), diff the range for touched
+`apps/<slug>/` folders, and build and deploy each one. A failed build leaves
+the previous deployment serving; `main` is NOT reverted, because it already
+moved and rewriting a branch someone pushed to would be far worse than briefly
+serving an older build. One app failing does not stop the others.
+
+So `publishedSha` stops being a pointer somebody sets and becomes what it
+always meant: **the last commit of `main` that built**. Publish becomes a
+convenience for people already in the browser, not the mechanism.
+
 ### 13.5 Order
 
 Deliberately smallest-first, because each step is independently useful and the

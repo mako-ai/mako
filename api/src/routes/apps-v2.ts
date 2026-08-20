@@ -1542,7 +1542,14 @@ async function serveLive(c: AuthenticatedContext): Promise<Response> {
     );
   }
   const projectId = project._id.toString();
-  const rest = c.req.path.split(`/apps-v2/${projectId}/live`)[1] ?? "";
+  // Split on the id EXACTLY AS THE CALLER WROTE IT. Splitting on the project's
+  // Mongo id broke the moment apps became addressable by folder name: the
+  // marker never matched, so every asset request fell through to the SPA
+  // fallback and the page silently served index.html as its own JavaScript.
+  const ref = c.req.param("id") ?? projectId;
+  const marker = `/apps-v2/${ref}/live`;
+  const at = c.req.path.indexOf(marker);
+  const rest = at === -1 ? "" : c.req.path.slice(at + marker.length);
   const assetPath = rest.replace(/^\/+/, "");
 
   const dataMatch = assetPath.match(

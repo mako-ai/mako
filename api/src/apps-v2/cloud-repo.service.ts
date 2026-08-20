@@ -222,3 +222,33 @@ export async function mirrorPushNow(workspaceId: string): Promise<void> {
   if (!cloudRepo) return;
   await pushMirror(workspaceId, cloudRepo);
 }
+
+/**
+ * Pull the cloud repo's default branch into the local bare repo.
+ *
+ * A push from someone's checkout lands on GitHub, not here — the bare repo is
+ * a cache. Before anything can be built from that commit it has to arrive, so
+ * a deploy triggered by a webhook fetches first.
+ */
+export async function fetchFromCloud(
+  workspaceId: string,
+  branch: string,
+): Promise<void> {
+  const cloudRepo = await findCloudRepoPointer(workspaceId);
+  if (!cloudRepo) return;
+  const repoDir = repoDirFor(workspaceId);
+  const token = await getMakoCloudToken();
+  const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+  await runGit([
+    "-C",
+    repoDir,
+    "-c",
+    `http.extraheader=Authorization: Basic ${basic}`,
+    "fetch",
+    "--quiet",
+    `https://github.com/${cloudRepo.owner}/${cloudRepo.repo}.git`,
+    // Update the local branch to match the remote. Forced because the remote
+    // is authoritative for what was pushed there.
+    `+refs/heads/${branch}:refs/heads/${branch}`,
+  ]);
+}
