@@ -57,6 +57,7 @@ import {
   listFiles,
   mergeBranchToMain,
   PUBLISH_ACTOR,
+  defaultBranchForActor,
   listAppFolders,
   synthesizeProjectFromFolder,
   trialMerge,
@@ -1362,8 +1363,14 @@ appsV2Routes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const body = c.req.valid("json") ?? {};
       const user = c.get("user");
+      // Publishing means "ship MY work". With edits living on the caller's own
+      // branch, defaulting to main would build the deployed commit and change
+      // nothing — the one thing publish must never quietly do.
       const branch =
-        body.branch ?? (body.chatId ? chatBranchFor(body.chatId) : undefined);
+        body.branch ??
+        (body.chatId
+          ? chatBranchFor(body.chatId)
+          : defaultBranchForActor(loaded.userId ?? "api-key"));
 
       // Build the MERGE RESULT before main ever moves. Merging first and
       // building second left main carrying a broken merge whenever the build

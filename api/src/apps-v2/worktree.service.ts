@@ -395,6 +395,32 @@ export function chatActorFor(chatId: string): string {
 export const PUBLISH_ACTOR = "publish";
 
 /**
+ * A person's own editing branch.
+ *
+ * You do not edit production. In a checkout this is so automatic it is
+ * invisible — you branch, you work, you merge — and Mako has to behave the
+ * same way or `main` is not production, it is wherever the last keystroke
+ * landed. Saves auto-commit (§10 Block A), so without this every keystroke
+ * lands on the deployed branch: a single bad save breaks `main` for everyone,
+ * with no publish involved.
+ */
+export function actorBranchFor(actorId: string): string {
+  return `user/${actorId}`;
+}
+
+/**
+ * Which branch an actor works on when the caller does not name one.
+ *
+ * Publishing is the one thing that reads `main` directly — it builds what is
+ * deployed. Everyone else edits their own branch.
+ */
+export function defaultBranchForActor(actorId: string): string {
+  if (actorId === PUBLISH_ACTOR) return DEFAULT_BRANCH;
+  if (actorId.startsWith("chat:")) return `chat/${actorId.slice(5)}`;
+  return actorBranchFor(actorId);
+}
+
+/**
  * Find-or-create the actor's worktree doc and make sure its session working
  * tree exists on disk, restoring base + WIP state when rebuilding.
  *
@@ -420,7 +446,7 @@ export async function ensureWorktree(
   const mainHead = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
   if (!mainHead) throw new Error("Project branch is missing");
 
-  const branch = options.branch ?? DEFAULT_BRANCH;
+  const branch = options.branch ?? defaultBranchForActor(actorId);
   let branchHead = await resolveCommit(repoDir, `refs/heads/${branch}`);
   if (!branchHead) {
     // First touch of an actor branch: fork it off the default branch head.
@@ -450,6 +476,25 @@ export async function ensureWorktree(
     },
     { new: true, upsert: true },
   );
+
+  // Existing sessions were created before edits had their own branch and are
+  // sitting on `main`. Move them across rather than leaving those people
+  // editing production forever; their work rides along, because the WIP ref is
+  // keyed by worktree, not by branch.
+  if (doc.branch === DEFAULT_BRANCH && branch !== DEFAULT_BRANCH) {
+    await updateRefCas(
+      repoDir,
+      `refs/heads/${branch}`,
+      doc.baseSha,
+      ZERO_OID,
+    ).catch(() => undefined);
+    doc.branch = branch;
+    await doc.save();
+    logger.info("Apps v2 worktree moved off main onto its own branch", {
+      worktreeId: doc._id.toString(),
+      branch,
+    });
+  }
 
   const worktreeId = doc._id.toString();
   return withWorktreeLock(worktreeId, async () => {
@@ -1390,6 +1435,15 @@ export async function trialMerge(
   });
 
   if (branch !== mainBranch) {
+    // No such branch means the caller has made no edits yet. Publishing then
+    // is not an error — it deploys what `main` already holds. Distinguishing
+    // this from a conflict matters: telling someone who has not changed
+    // anything that their work "could not be merged" is simply a lie.
+    const branchExists = await resolveCommit(repoDir, `refs/heads/${branch}`);
+    if (!branchExists) {
+      const head = await runGit(["-C", dir, "rev-parse", "HEAD"], { cwd: dir });
+      return { sha: head.stdout.trim(), ok: true };
+    }
     try {
       await runGit(["-C", dir, "fetch", repoDir, branch], {
         timeoutMs: 60_000,

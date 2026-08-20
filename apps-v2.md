@@ -1193,6 +1193,29 @@ same as any other file in the repo. Ids for such apps are derived from
 affinity stay stable if a row is written later; apps predating this keep their
 original ids, which already key their artifacts.
 
+### 13.7 You do not edit production (decided 2026-08-21)
+
+Every save auto-commits (§10 Block A), and every actor's worktree defaulted to
+`main` — so a single bad keystroke broke the deployed branch for everyone, with
+no publish involved. This was demonstrated by accident while testing: saving
+one file with a type error put it straight on `main`, and the next publish by
+anyone would have failed on it.
+
+In a checkout this is so automatic it is invisible: you branch, you work, you
+merge. Mako now does the same. Each person edits `user/<userId>`, forked from
+`main`; conversations keep `chat/<chatId>`; only publishing reads `main`, and
+only merging writes it. Sessions created before this are moved off `main`
+automatically, carrying their work, because the WIP ref is keyed by worktree
+rather than by branch.
+
+Publish therefore means *ship my work*: it merges the caller's own branch by
+default. Publishing with no edits at all is not an error — it deploys what
+`main` already holds; telling someone who has changed nothing that their work
+"could not be merged" would simply be false.
+
+Combined with §13.3's build-before-merge, `main` is now protected from both
+directions: bad edits cannot reach it, and a bad build cannot land on it.
+
 ### 13.5 Order
 
 Deliberately smallest-first, because each step is independently useful and the
