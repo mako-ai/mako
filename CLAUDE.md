@@ -88,6 +88,35 @@ pnpm cf:deploy             # Deploy to Cloudflare Workers
 pnpm preview-db:*          # Manage preview databases (create, destroy, list, seed)
 ```
 
+## Secrets (Google Secret Manager)
+
+`.env` is gitignored, so a value only exists on whichever laptop created it —
+that is how an E2B API key was already lost once. Secrets now live in Secret
+Manager (`mako-ai-dev` for local development, `mako-ai-prod` for production),
+one secret per variable so a single value can be rotated or granted.
+
+Onboarding a new developer is two commands:
+
+```bash
+gcloud auth login
+pnpm secrets:pull            # writes .env from mako-ai-dev
+```
+
+```bash
+pnpm secrets:push            # share local values (uploads as new versions)
+pnpm secrets:diff            # which names differ, local vs stored
+pnpm secrets:list            # what is stored (names only)
+pnpm secrets:pull --env prod # production values
+pnpm secrets:salvage-prod    # capture prod Cloud Run env into prod secrets
+```
+
+Any mutation takes `--dry-run`. No command ever prints a secret value — output
+is names and status only — so a run is safe to paste into a ticket. `pull`
+edits `.env` in place (keeping its comments) and backs up the previous file to
+`.env.bak`; with no `.env` at all it builds one from `.env.example`.
+Machine-specific variables (`APPS_V2_SANDBOX_PROVIDER`, `APPS_V2_GIT_ROOT`,
+`APPS_V2_SESSIONS_ROOT`, `NODE_ENV`) are deliberately never synced.
+
 ## Configuration
 
 ### Environment Variables (.env)

@@ -7,7 +7,7 @@
     "dev": "concurrently \"pnpm --filter app run dev\" \"pnpm --filter api run dev\" \"pnpm dlx inngest-cli@latest dev\"",
     "dev:tunnel": "concurrently \"pnpm dev\" \"cloudflared tunnel --url http://localhost:5173 --no-tls-verify\"",
     "build": "pnpm run lint:fix:all && pnpm run build:ci",
-  "build:ci": "pnpm --filter @mako/schemas run build && pnpm --filter @mako/agent-tools run build && pnpm run app:build && pnpm run api:build && node scripts/check-connector-agnosticism.js",
+    "build:ci": "pnpm --filter @mako/schemas run build && pnpm --filter @mako/agent-tools run build && pnpm run app:build && pnpm run api:build && node scripts/check-connector-agnosticism.js",
     "start": "node dist/index.js",
     "format": "prettier --write \"api/**/*.ts\"",
     "sync": "ts-node api/src/sync/cli.ts",
@@ -56,7 +56,13 @@
     "preview-db:list": "./scripts/manage-preview-db.sh list",
     "preview-db:create": "./scripts/manage-preview-db.sh create",
     "preview-db:delete": "./scripts/manage-preview-db.sh delete",
-    "prepare": "husky"
+    "prepare": "husky",
+    "secrets": "tsx scripts/secrets.ts",
+    "secrets:pull": "tsx scripts/secrets.ts pull",
+    "secrets:push": "tsx scripts/secrets.ts push",
+    "secrets:list": "tsx scripts/secrets.ts list",
+    "secrets:diff": "tsx scripts/secrets.ts diff",
+    "secrets:salvage-prod": "tsx scripts/secrets.ts salvage-prod"
   },
   "keywords": [
     "analytics",
@@ -109,6 +115,7 @@
     "nodemon": "^3.0.2",
     "prettier": "^3.1.0",
     "ts-node": "^10.9.1",
+    "tsx": "^4.19.4",
     "typescript": "^5.3.3",
     "wrangler": "^3.99.0",
     "yaml": "^2.8.0"
