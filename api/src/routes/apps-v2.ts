@@ -61,7 +61,10 @@ import {
   worktreeStatus,
   writeFile,
 } from "../apps-v2/worktree.service";
-import { APPS_V2_EXEC_MAX_TIMEOUT_MS } from "../apps-v2/config";
+import {
+  APPS_V2_EXEC_MAX_TIMEOUT_MS,
+  appsV2SandboxProviderId,
+} from "../apps-v2/config";
 import {
   mintDevPreviewGrant,
   mintPreviewGrant,
@@ -229,6 +232,11 @@ appsV2Routes.openapi(
         // Creation works without a connected repo when Mako-hosted cloud
         // storage is configured (per-app repos under MAKO_CLOUD_GITHUB_ORG).
         canCreate: repos.length > 0 || isMakoCloudConfigured(),
+        // The live `vite dev` preview spawns a subprocess of the API host and
+        // is refused under the E2B provider (dev-server.service.ts): §4.7's
+        // per-sandbox public URL is unbuilt. Tell the client, so it stops
+        // offering an action that cannot succeed in this environment.
+        devPreviewAvailable: appsV2SandboxProviderId() === "local",
         repos: repos.map(r => ({
           owner: r.owner,
           repo: r.repo,

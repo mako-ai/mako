@@ -219,6 +219,13 @@ export default function AppV2Workspace({
   const history = useAppsV2Store(s => s.historyByApp[appId]);
   const branches = useAppsV2Store(s => s.branchesByApp[appId]);
   const preview = useAppsV2Store(s => s.previewByApp[appId]);
+  // Deployed environments run E2B, where the live `vite dev` preview cannot
+  // work at all (§4.7's per-sandbox public URL is unbuilt). Treat only an
+  // explicit `false` as unavailable, so the button stays enabled while the
+  // status probe is still in flight rather than flickering disabled.
+  const devPreviewUnavailable = useAppsV2Store(
+    s => s.devPreviewAvailable === false,
+  );
 
   const fetchApps = useAppsV2Store(s => s.fetchApps);
   const fetchFiles = useAppsV2Store(s => s.fetchFiles);
@@ -287,11 +294,21 @@ export default function AppV2Workspace({
           />
         )}
         <Box sx={{ flex: 1 }} />
-        <Tooltip title="Prototype of apps-v2.md §4.7's dev-preview tier: starts a persistent `vite dev` process and iframes it directly — edits picked up live via HMR, no rebuild step. Local-provider only.">
+        <Tooltip
+          title={
+            devPreviewUnavailable
+              ? "Unavailable in this environment: the live dev preview spawns a `vite dev` process on the API host, so it only runs under the local sandbox provider. This workspace runs sandboxes in E2B microVMs, where apps-v2.md §4.7's per-sandbox public URL is not built yet — use Build & preview."
+              : "Prototype of apps-v2.md §4.7's dev-preview tier: starts a persistent `vite dev` process and iframes it directly — edits picked up live via HMR, no rebuild step. Local-provider only."
+          }
+        >
           <span>
             <Button
               size="small"
-              variant={preview?.mode === "dev" ? "outlined" : "contained"}
+              variant={
+                devPreviewUnavailable || preview?.mode === "dev"
+                  ? "outlined"
+                  : "contained"
+              }
               startIcon={
                 preview?.building ? (
                   <CircularProgress size={14} color="inherit" />
@@ -299,7 +316,7 @@ export default function AppV2Workspace({
                   <PlayIcon size={14} />
                 )
               }
-              disabled={preview?.building}
+              disabled={preview?.building || devPreviewUnavailable}
               onClick={() =>
                 void startDevPreview(
                   workspaceId,
@@ -326,7 +343,13 @@ export default function AppV2Workspace({
           <span>
             <Button
               size="small"
-              variant={preview?.mode === "dev" ? "text" : "outlined"}
+              variant={
+                devPreviewUnavailable
+                  ? "contained"
+                  : preview?.mode === "dev"
+                    ? "text"
+                    : "outlined"
+              }
               disabled={preview?.building}
               onClick={() =>
                 void buildPreview(

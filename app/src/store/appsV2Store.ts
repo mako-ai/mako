@@ -111,6 +111,13 @@ interface AppsV2Store {
    * Mako-hosted cloud storage configured (instant start, no GitHub setup).
    */
   canCreate: boolean | undefined;
+  /**
+   * Whether the live `vite dev` preview can run at all. It spawns a subprocess
+   * of the API host, so it exists only under the "local" sandbox provider —
+   * every deployed environment runs E2B, where §4.7's per-sandbox public URL
+   * is still unbuilt. Undefined until the status probe answers.
+   */
+  devPreviewAvailable: boolean | undefined;
   /** Connected workspace repos (0..N; the product default is one). */
   repos: AppV2RepoBinding[];
   apps: AppV2Meta[];
@@ -238,6 +245,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
   immer((set, get) => ({
     enabled: undefined,
     canCreate: undefined,
+    devPreviewAvailable: undefined,
     repos: [],
     apps: [],
     appsLoading: false,
@@ -262,11 +270,13 @@ export const useAppsV2Store = create<AppsV2Store>()(
         ) as {
           enabled?: boolean;
           canCreate?: boolean;
+          devPreviewAvailable?: boolean;
           repos?: AppV2RepoBinding[];
         };
         set(s => {
           s.enabled = Boolean(body?.enabled);
           s.canCreate = Boolean(body?.canCreate);
+          s.devPreviewAvailable = Boolean(body?.devPreviewAvailable);
           s.repos = body?.repos ?? [];
         });
       } catch {
