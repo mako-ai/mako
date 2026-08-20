@@ -21,6 +21,8 @@ import {
   type IMakoApp,
 } from "../database/workspace-schema";
 import { loggers, enrichContextWithWorkspace } from "../logging";
+import { queryExecutionService } from "../services/query-execution.service";
+import { estimateWarehouseCostUsd } from "../services/warehouse-pricing";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
@@ -508,6 +510,70 @@ app.openapi(
     } catch (error) {
       logger.error("Error fetching app", { error });
       return c.json({ success: false, error: "Failed to fetch app" }, 500);
+    }
+  },
+);
+
+// GET /:id/cost — per-app warehouse usage/cost ("guilt meter").
+// Windows: 24h / 7d / 90d (the query_executions TTL bounds history at 90d).
+// Cost is estimated from bytes scanned; only per-query-metered engines get a
+// dollar figure (BigQuery on-demand); others report runs/duration only.
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/cost",
+    tags: ["Apps"],
+    summary: "Get an app's warehouse usage and estimated cost",
+    security: AUTH_SECURITY,
+    request: { params: AppIdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const userId = c.get("user")?.id;
+
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid app ID" }, 400);
+      }
+
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      }).select("_id workspaceId createdBy sharedWith visibility");
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      const memberRole = c.get("memberRole");
+      if (!canRead(doc, userId, memberRole)) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      const summary = await queryExecutionService.getAppUsageSummary(
+        workspaceId,
+        id,
+      );
+
+      const priceWindow = (w: (typeof summary)["last24h"]) => ({
+        byEngine: w.byEngine.map(e => ({
+          ...e,
+          estimatedCostUsd: estimateWarehouseCostUsd(
+            e.databaseType,
+            e.bytesScanned,
+          ),
+        })),
+      });
+
+      return c.json({
+        success: true,
+        cost: {
+          last24h: priceWindow(summary.last24h),
+          last7d: priceWindow(summary.last7d),
+          last90d: priceWindow(summary.last90d),
+        },
+      });
+    } catch (error) {
+      logger.error("Error fetching app cost", { error });
+      return c.json({ success: false, error: "Failed to fetch app cost" }, 500);
     }
   },
 );

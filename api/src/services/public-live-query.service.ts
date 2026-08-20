@@ -28,6 +28,7 @@ import {
 import { buildAppSnapshot, type AppSnapshot } from "./app-version.service";
 import { resolveDbtBoundCode } from "../dbt/dbt-environments.service";
 import { databaseConnectionService } from "./database-connection.service";
+import { queryExecutionService } from "./query-execution.service";
 import {
   applySqlRowLimit,
   checkPreviewQuerySafety,
@@ -308,6 +309,7 @@ async function executeAppBindingCore(input: {
     controller.abort();
     void databaseConnectionService.cancelQuery(executionId).catch(() => {});
   }, timeoutMs);
+  const startedAt = Date.now();
   let result;
   try {
     result = await databaseConnectionService.executeQuery(
@@ -324,6 +326,27 @@ async function executeAppBindingCore(input: {
   } finally {
     clearTimeout(timer);
   }
+
+  // Per-app cost attribution. Public viewers are anonymous, so the row is
+  // attributed to the app owner. Cache hits above never reach this point —
+  // they cost nothing and are not recorded.
+  queryExecutionService.track({
+    userId: app.createdBy,
+    workspaceId: app.workspaceId,
+    connectionId: connection._id,
+    databaseName: binding.databaseName ?? undefined,
+    appId: app._id,
+    bindingId,
+    source: "app_public",
+    databaseType: connection.type,
+    queryLanguage: "sql",
+    status: result.success ? "success" : timedOut ? "timeout" : "error",
+    executionTimeMs: Date.now() - startedAt,
+    rowCount: result.success ? result.rowCount : undefined,
+    errorType: result.success ? undefined : timedOut ? "timeout" : "unknown",
+    bytesScanned: result.bytesProcessed,
+    cacheHit: result.cacheHit,
+  });
 
   if (!result.success) {
     logger.warn("Public live query failed", {

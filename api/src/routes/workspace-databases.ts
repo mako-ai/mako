@@ -1992,6 +1992,8 @@ workspaceExecuteRoutes.openapi(
         executionId,
         consoleId,
         source,
+        appId,
+        bindingId,
         mode,
         pageSize,
         cursor,
@@ -2172,13 +2174,32 @@ workspaceExecuteRoutes.openapi(
       // Track query execution (fire-and-forget)
       const userId = user?.id || apiKey?.createdBy;
       if (userId && database) {
-        // Determine source: API key auth = "api", otherwise check body or default to "console_ui"
+        // Determine source: API key auth = "api", otherwise check body or
+        // default to "console_ui". Client-sent values are validated against
+        // the known sources — an unknown string used to make the Mongoose
+        // save throw (and be swallowed), silently dropping the row.
+        const clientSources: ReadonlySet<QuerySource> = new Set([
+          "console_ui",
+          "app_runtime",
+        ]);
         let executionSource: QuerySource = apiKey
           ? "api"
-          : source || "console_ui";
+          : clientSources.has(source as QuerySource)
+            ? (source as QuerySource)
+            : "console_ui";
         if (usedAdminPreviewOverride && !apiKey) {
           executionSource = "console_ui_admin_override";
         }
+
+        // App attribution (app-editor binding runs send these)
+        const validAppId =
+          typeof appId === "string" && Types.ObjectId.isValid(appId)
+            ? new Types.ObjectId(appId)
+            : undefined;
+        const validBindingId =
+          typeof bindingId === "string" && bindingId.length > 0
+            ? bindingId.slice(0, 200)
+            : undefined;
 
         // Validate consoleId before converting to ObjectId
         let validConsoleId: Types.ObjectId | undefined;
@@ -2196,6 +2217,12 @@ workspaceExecuteRoutes.openapi(
           }
         }
 
+        // Bytes-scanned / cache stats when the engine reports them (BigQuery)
+        const resultStats = result as {
+          bytesProcessed?: number;
+          cacheHit?: boolean;
+        };
+
         queryExecutionService.track({
           userId,
           apiKeyId: apiKey?._id,
@@ -2203,6 +2230,8 @@ workspaceExecuteRoutes.openapi(
           connectionId: database._id,
           databaseName: databaseName || database.connection.database,
           consoleId: validConsoleId,
+          appId: validAppId,
+          bindingId: validBindingId,
           source: executionSource,
           databaseType: database.type,
           queryLanguage: getQueryLanguage(database.type),
@@ -2210,6 +2239,8 @@ workspaceExecuteRoutes.openapi(
           executionTimeMs: Date.now() - startTime,
           rowCount,
           errorType,
+          bytesScanned: resultStats.bytesProcessed,
+          cacheHit: resultStats.cacheHit,
         });
 
         // When a saved console id is provided, keep console execution stats

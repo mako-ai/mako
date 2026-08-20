@@ -14,7 +14,9 @@
  */
 
 import { promises as fsPromises } from "fs";
+import type { Types } from "mongoose";
 import type { IDatabaseConnection } from "../database/workspace-schema";
+import { queryExecutionService } from "./query-execution.service";
 import {
   buildParquetFromBatches,
   type FieldMeta,
@@ -82,6 +84,15 @@ export interface BuildQueryParquetFileInput {
   schemaProbe?: "strict" | "lenient";
   /** Progress callback per inserted batch (heartbeats, run events). */
   onBatchInserted?: (totalRows: number) => Promise<void>;
+  /** When set, the streaming execution is recorded in query_executions for
+   * warehouse cost attribution (materialization builds are the largest
+   * BigQuery consumers and were previously invisible). */
+  tracking?: {
+    workspaceId: Types.ObjectId | string;
+    userId: string;
+    appId?: Types.ObjectId | string;
+    bindingId?: string;
+  };
 }
 
 export interface BuiltParquetFile {
@@ -150,6 +161,7 @@ export async function buildQueryParquetFile(
     fields,
     onBatchInserted,
     streamBatches: async insertBatch => {
+      const startedAt = Date.now();
       const streamResult =
         await databaseConnectionService.executeStreamingQuery(
           connection,
@@ -162,6 +174,26 @@ export async function buildQueryParquetFile(
             readOnly: enforceReadOnly,
           },
         );
+      if (input.tracking) {
+        queryExecutionService.track({
+          userId: input.tracking.userId,
+          workspaceId: input.tracking.workspaceId,
+          connectionId: connection._id,
+          databaseName: databaseName ?? undefined,
+          appId: input.tracking.appId,
+          bindingId: input.tracking.bindingId,
+          source: "materialization",
+          databaseType: connection.type,
+          queryLanguage: "sql",
+          status: streamResult.success ? "success" : "error",
+          executionTimeMs: Date.now() - startedAt,
+          rowCount: streamResult.success ? streamResult.totalRows : undefined,
+          errorType: streamResult.success ? undefined : "unknown",
+          bytesScanned: (streamResult as { bytesProcessed?: number })
+            .bytesProcessed,
+          cacheHit: (streamResult as { cacheHit?: boolean }).cacheHit,
+        });
+      }
       // A mid-stream failure must fail the build — otherwise a silently
       // truncated (or empty) artifact would be reported as "ready".
       if (!streamResult.success) {

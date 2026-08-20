@@ -1159,6 +1159,11 @@ export interface IQueryExecution extends Document {
   // Optional console tracking
   consoleId?: Types.ObjectId; // If executed from a saved console
 
+  // Optional app attribution (app-editor previews, published-app viewers,
+  // binding materialization builds) — group-by keys for per-app cost.
+  appId?: Types.ObjectId;
+  bindingId?: string; // Stable IMakoAppDataBinding.id
+
   // Execution context
   source:
     | "console_ui"
@@ -1167,7 +1172,10 @@ export interface IQueryExecution extends Document {
     | "mcp"
     | "agent"
     | "flow"
-    | "scheduled_query";
+    | "scheduled_query"
+    | "app_runtime"
+    | "app_public"
+    | "materialization";
   databaseType: string; // postgresql, mongodb, bigquery, etc.
   queryLanguage: "sql" | "mongodb" | "javascript";
 
@@ -1179,6 +1187,7 @@ export interface IQueryExecution extends Document {
 
   // Optional resource tracking (some DBs provide this)
   bytesScanned?: number; // BigQuery, ClickHouse report this
+  cacheHit?: boolean; // Engine served from cache (no scan billed)
 }
 
 export interface IConnectionVerification extends Document {
@@ -2938,6 +2947,14 @@ const QueryExecutionSchema = new Schema<IQueryExecution>(
       required: false,
     },
 
+    // Optional app attribution (per-app cost)
+    appId: {
+      type: Schema.Types.ObjectId,
+      ref: "MakoApp",
+      required: false,
+    },
+    bindingId: { type: String, required: false },
+
     // Execution context
     source: {
       type: String,
@@ -2949,6 +2966,9 @@ const QueryExecutionSchema = new Schema<IQueryExecution>(
         "agent",
         "flow",
         "scheduled_query",
+        "app_runtime",
+        "app_public",
+        "materialization",
       ],
       required: true,
     },
@@ -2971,6 +2991,7 @@ const QueryExecutionSchema = new Schema<IQueryExecution>(
 
     // Optional resource tracking
     bytesScanned: { type: Number, required: false },
+    cacheHit: { type: Boolean, required: false },
   },
   {
     collection: "query_executions",
@@ -2987,6 +3008,10 @@ QueryExecutionSchema.index(
   { workspaceId: 1, consoleId: 1, executedAt: -1 },
   { sparse: true, name: "query_executions_workspace_console_executed" },
 ); // Per-console recent runs
+QueryExecutionSchema.index(
+  { workspaceId: 1, appId: 1, executedAt: -1 },
+  { sparse: true, name: "query_executions_workspace_app_executed" },
+); // Per-app cost aggregation
 QueryExecutionSchema.index({ executedAt: 1 }, { expireAfterSeconds: 7776000 }); // TTL: 90 days
 
 const ScheduledQueryRunSchema = new Schema<IScheduledQueryRun>(

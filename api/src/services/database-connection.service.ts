@@ -41,6 +41,12 @@ export interface QueryResult {
   error?: string;
   rowCount?: number;
   fields?: any[];
+  /** Bytes the engine reports scanning (BigQuery totalBytesProcessed).
+   * Basis for warehouse cost attribution; engines without per-query
+   * metering leave it undefined. */
+  bytesProcessed?: number;
+  /** True when the engine served the result from its own cache (no scan). */
+  cacheHit?: boolean;
 }
 
 export interface QueryPreviewResult {
@@ -51,6 +57,10 @@ export interface QueryPreviewResult {
   fields?: Array<{ name: string; type?: string }>;
   pageInfo?: PreviewPageInfo;
   warnings?: string[];
+  /** See QueryResult.bytesProcessed — BigQuery bills the full scan even for
+   * LIMITed previews, so preview runs carry cost too. */
+  bytesProcessed?: number;
+  cacheHit?: boolean;
 }
 
 // Types for different connection contexts
@@ -1550,6 +1560,19 @@ export class DatabaseConnectionService {
       let schema: any = data.schema;
       let pageToken: string | undefined = data.pageToken;
       const rowsAccum: any[] = [];
+      // Job statistics for cost attribution — present on the query/getQueryResults
+      // responses; capture whenever reported (pagination pages may omit them).
+      let bytesProcessed: number | undefined;
+      let cacheHit: boolean | undefined;
+      const captureJobStats = (d: any) => {
+        const raw = d?.totalBytesProcessed;
+        const parsed = typeof raw === "string" ? Number(raw) : raw;
+        if (typeof parsed === "number" && Number.isFinite(parsed)) {
+          bytesProcessed = parsed;
+        }
+        if (typeof d?.cacheHit === "boolean") cacheHit = d.cacheHit;
+      };
+      captureJobStats(data);
 
       // Track running job for cancellation
       if (executionId && jobId) {
@@ -1590,6 +1613,7 @@ export class DatabaseConnectionService {
           { params },
         );
         data = response.data || {};
+        captureJobStats(data);
         schema = data.schema || schema;
       }
 
@@ -1635,6 +1659,7 @@ export class DatabaseConnectionService {
           { params },
         );
         data = response.data || {};
+        captureJobStats(data);
         schema = data.schema || schema;
         if (Array.isArray(data.rows) && schema) {
           rowsAccum.push(...this.bqMapRowsToObjects(data.rows, schema));
@@ -1642,7 +1667,13 @@ export class DatabaseConnectionService {
         pageToken = data.pageToken;
       }
 
-      return { success: true, data: rowsAccum, rowCount: rowsAccum.length };
+      return {
+        success: true,
+        data: rowsAccum,
+        rowCount: rowsAccum.length,
+        bytesProcessed,
+        cacheHit,
+      };
     } catch (error: any) {
       if (error?.message === "Query cancelled") {
         return { success: false, error: "Query cancelled" };
@@ -1668,6 +1699,16 @@ export class DatabaseConnectionService {
     }
 
     const decodedCursor = decodePreviewCursor(options?.cursor);
+    let previewBytesProcessed: number | undefined;
+    let previewCacheHit: boolean | undefined;
+    const capturePreviewStats = (d: any) => {
+      const raw = d?.totalBytesProcessed;
+      const parsed = typeof raw === "string" ? Number(raw) : raw;
+      if (typeof parsed === "number" && Number.isFinite(parsed)) {
+        previewBytesProcessed = parsed;
+      }
+      if (typeof d?.cacheHit === "boolean") previewCacheHit = d.cacheHit;
+    };
     const queryHash = hashPreviewQuery(baseQuery);
     if (decodedCursor && decodedCursor.queryHash !== queryHash) {
       return {
@@ -1736,6 +1777,7 @@ export class DatabaseConnectionService {
           },
         );
         data = response.data || {};
+        capturePreviewStats(data);
       } else {
         const startBody: any = {
           query: baseQuery,
@@ -1751,6 +1793,7 @@ export class DatabaseConnectionService {
           startBody,
         );
         data = response.data || {};
+        capturePreviewStats(data);
         jobId = data.jobReference?.jobId;
         jobLocation = data.jobReference?.location || configuredLocation;
       }
@@ -1789,6 +1832,7 @@ export class DatabaseConnectionService {
           },
         );
         data = response.data || {};
+        capturePreviewStats(data);
       }
 
       checkAborted();
@@ -1818,6 +1862,8 @@ export class DatabaseConnectionService {
         rowCount: rows.length,
         fields,
         warnings: safety.warnings,
+        bytesProcessed: previewBytesProcessed,
+        cacheHit: previewCacheHit,
         pageInfo: {
           pageSize,
           hasMore: Boolean(nextPageToken),
@@ -1853,9 +1899,25 @@ export class DatabaseConnectionService {
     database: IDatabaseConnection,
     query: string,
     options: StreamingQueryOptions & QueryExecuteOptions,
-  ): Promise<{ success: boolean; totalRows: number; error?: string }> {
+  ): Promise<{
+    success: boolean;
+    totalRows: number;
+    error?: string;
+    bytesProcessed?: number;
+    cacheHit?: boolean;
+  }> {
     const executionId = options.executionId;
     const signal = options.signal;
+    let streamBytesProcessed: number | undefined;
+    let streamCacheHit: boolean | undefined;
+    const captureStreamStats = (d: any) => {
+      const raw = d?.totalBytesProcessed;
+      const parsed = typeof raw === "string" ? Number(raw) : raw;
+      if (typeof parsed === "number" && Number.isFinite(parsed)) {
+        streamBytesProcessed = parsed;
+      }
+      if (typeof d?.cacheHit === "boolean") streamCacheHit = d.cacheHit;
+    };
 
     const checkAborted = () => {
       if (signal?.aborted) throw new Error("Query cancelled");
@@ -1910,6 +1972,7 @@ export class DatabaseConnectionService {
         startBody,
       );
       let data = response.data || {};
+      captureStreamStats(data);
       const jobId: string | undefined = data.jobReference?.jobId;
       const jobLocation: string | undefined =
         data.jobReference?.location || configuredLocation;
@@ -1946,6 +2009,7 @@ export class DatabaseConnectionService {
           },
         );
         data = response.data || {};
+        captureStreamStats(data);
         schema = data.schema || schema;
       }
 
@@ -1983,6 +2047,7 @@ export class DatabaseConnectionService {
           },
         );
         data = response.data || {};
+        captureStreamStats(data);
         schema = data.schema || schema;
 
         const rows =
@@ -1999,7 +2064,12 @@ export class DatabaseConnectionService {
         pageToken = data.pageToken;
       }
 
-      return { success: true, totalRows };
+      return {
+        success: true,
+        totalRows,
+        bytesProcessed: streamBytesProcessed,
+        cacheHit: streamCacheHit,
+      };
     } catch (error: any) {
       if (error?.message === "Query cancelled") {
         return { success: false, totalRows, error: "Query cancelled" };

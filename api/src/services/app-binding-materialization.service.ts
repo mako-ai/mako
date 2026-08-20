@@ -575,6 +575,12 @@ export async function materializeAppBinding(input: {
         rowLimit: PARQUET_ROW_LIMIT,
         filenameBase: `app-${appId}-${bindingId}`,
         schemaProbe: schemaProbeMode(binding),
+        tracking: {
+          workspaceId: appDoc.workspaceId,
+          userId: appDoc.createdBy,
+          appId: appDoc._id,
+          bindingId,
+        },
       });
       await storeParquetArtifactFile({
         filePath: parquet.filePath,

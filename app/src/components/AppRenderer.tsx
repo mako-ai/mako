@@ -40,6 +40,7 @@ import { useAppStore } from "../store/appStore";
 import { useVersionStore } from "../store/versionStore";
 import { useConsoleStore } from "../store/consoleStore";
 import ShareDialog from "./ShareDialog";
+import { AppCostChip } from "./AppCostChip";
 import { SaveCommentDialog } from "./SaveCommentDialog";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
 import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
@@ -815,6 +816,7 @@ export default function AppRenderer({
           </Tooltip>
         )}
         <Box sx={{ flex: 1 }} />
+        {workspaceId && <AppCostChip workspaceId={workspaceId} appId={appId} />}
         <Tooltip
           title={
             previewViewport == null

@@ -964,6 +964,9 @@ export const useAppStore = create<AppStore>()(
             databaseName: binding.databaseName,
             mode: "preview",
             source: "app_runtime",
+            // Per-app cost attribution (query_executions.appId/bindingId)
+            appId,
+            bindingId: binding.id,
           },
         });
         const status = result.response.status;

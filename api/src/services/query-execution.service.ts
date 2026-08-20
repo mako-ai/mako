@@ -14,7 +14,10 @@ export type QuerySource =
   | "mcp"
   | "agent"
   | "flow"
-  | "scheduled_query";
+  | "scheduled_query"
+  | "app_runtime"
+  | "app_public"
+  | "materialization";
 
 /**
  * Query execution status types
@@ -42,6 +45,10 @@ export interface TrackQueryExecutionInput {
   // Optional console tracking
   consoleId?: Types.ObjectId | string;
 
+  // Optional app attribution (per-app cost)
+  appId?: Types.ObjectId | string;
+  bindingId?: string;
+
   // Execution context
   source: QuerySource;
   databaseType: string;
@@ -55,6 +62,23 @@ export interface TrackQueryExecutionInput {
 
   // Optional resource tracking
   bytesScanned?: number;
+  cacheHit?: boolean;
+}
+
+export interface AppUsageWindow {
+  byEngine: Array<{
+    databaseType: string;
+    runs: number;
+    bytesScanned: number;
+    executionTimeMs: number;
+    errors: number;
+  }>;
+}
+
+export interface AppUsageSummary {
+  last24h: AppUsageWindow;
+  last7d: AppUsageWindow;
+  last90d: AppUsageWindow;
 }
 
 /**
@@ -93,6 +117,10 @@ export class QueryExecutionService {
         consoleId: input.consoleId
           ? new Types.ObjectId(input.consoleId.toString())
           : undefined,
+        appId: input.appId
+          ? new Types.ObjectId(input.appId.toString())
+          : undefined,
+        bindingId: input.bindingId,
         source: input.source,
         databaseType: input.databaseType,
         queryLanguage: input.queryLanguage,
@@ -101,6 +129,7 @@ export class QueryExecutionService {
         rowCount: input.rowCount,
         errorType: input.errorType,
         bytesScanned: input.bytesScanned,
+        cacheHit: input.cacheHit,
       });
 
       await execution.save();
@@ -200,6 +229,72 @@ export class QueryExecutionService {
       .lean();
 
     return executions as IQueryExecution[];
+  }
+
+  /**
+   * Per-app warehouse usage over the standard guilt-meter windows.
+   * "Total" is bounded by the collection's 90-day TTL — label it as such.
+   * Costs are computed by the caller (pricing is engine-specific).
+   */
+  async getAppUsageSummary(
+    workspaceId: Types.ObjectId | string,
+    appId: Types.ObjectId | string,
+  ): Promise<AppUsageSummary> {
+    const now = Date.now();
+    const match = {
+      workspaceId: new Types.ObjectId(workspaceId.toString()),
+      appId: new Types.ObjectId(appId.toString()),
+    };
+
+    const windowPipeline = (since: Date | null) => [
+      ...(since ? [{ $match: { executedAt: { $gte: since } } }] : []),
+      {
+        $group: {
+          _id: "$databaseType",
+          runs: { $sum: 1 },
+          bytesScanned: { $sum: { $ifNull: ["$bytesScanned", 0] } },
+          executionTimeMs: { $sum: { $ifNull: ["$executionTimeMs", 0] } },
+          errors: {
+            $sum: { $cond: [{ $eq: ["$status", "error"] }, 1, 0] },
+          },
+        },
+      },
+    ];
+
+    const [facets] = await QueryExecution.aggregate([
+      { $match: match },
+      {
+        $facet: {
+          last24h: windowPipeline(new Date(now - 24 * 3600 * 1000)),
+          last7d: windowPipeline(new Date(now - 7 * 24 * 3600 * 1000)),
+          last90d: windowPipeline(null),
+        },
+      },
+    ]);
+
+    const toWindow = (
+      rows: Array<{
+        _id: string;
+        runs: number;
+        bytesScanned: number;
+        executionTimeMs: number;
+        errors: number;
+      }>,
+    ): AppUsageWindow => ({
+      byEngine: rows.map(r => ({
+        databaseType: r._id,
+        runs: r.runs,
+        bytesScanned: r.bytesScanned,
+        executionTimeMs: r.executionTimeMs,
+        errors: r.errors,
+      })),
+    });
+
+    return {
+      last24h: toWindow(facets?.last24h ?? []),
+      last7d: toWindow(facets?.last7d ?? []),
+      last90d: toWindow(facets?.last90d ?? []),
+    };
   }
 
   async getWorkspaceUsageSummary(
