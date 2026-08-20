@@ -2,6 +2,13 @@
 /* Include streamdown styles */
 @source "../node_modules/streamdown/dist/*.js";
 
+/* Tie Tailwind's `dark:` variant to the `.dark` class ThemeContext syncs on
+   <html>, instead of the OS-level prefers-color-scheme default. Without this,
+   Streamdown's shiki token spans (dark:text-[var(--shiki-dark)]) follow the
+   OS theme while the app follows the toggle — e.g. light GitHub token colors
+   on a dark code-block background whenever the two disagree. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 .app-truncate {
   min-width: 0;
   overflow: hidden;
