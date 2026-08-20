@@ -55,9 +55,18 @@ const userMessagePaperSx = {
 } as const;
 const assistantMessageSx = {
   flex: 1,
+  // The row must clip runaway-wide content (tables, code) — but a plain
+  // overflow:hidden box also clips the BUI card shadows (1px ring + 6px
+  // blur) of full-width children at its left/right edges. Same clip-box
+  // trick as Beautiful UI: pad the box 8px so shadows have room inside the
+  // clip, and pull it back with matching negative margins so alignment is
+  // unchanged (top: the 8px padding replaces the old mt: 1).
   overflow: "hidden",
+  p: "8px",
+  mx: "-8px",
+  mt: 0,
+  mb: "-8px",
   fontSize: "0.875rem",
-  mt: 1,
   "& pre": { margin: 0, overflow: "hidden" },
 } as const;
 const listItemSx = { p: 0 } as const;
