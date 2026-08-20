@@ -56,3 +56,48 @@ export function focusAppsV2FileTab(appId: string, path: string): string {
   consoleStore.setActiveTab(tabId);
   return tabId;
 }
+
+/**
+ * Close any `app-v2` / `app-v2-file` tab pointing at an app that no longer
+ * exists, and report whether anything was closed.
+ *
+ * Tabs outlive the apps they point at: they are persisted, so deleting an app
+ * (or opening a link to one in another workspace) leaves a tab whose id
+ * resolves to nothing. Without this the workspace view still renders — chrome,
+ * breadcrumb and a live Publish button for an app that is not there — and
+ * reloading does not help, because the same dead id is restored every time.
+ */
+export function closeAppsV2TabsFor(appId: string): boolean {
+  const store = useConsoleStore.getState();
+  const doomed = Object.values(store.tabs).filter(
+    (tab: { id: string; kind?: string; metadata?: { appV2Id?: string } }) =>
+      (tab.kind === "app-v2" || tab.kind === "app-v2-file") &&
+      tab.metadata?.appV2Id === appId,
+  );
+  for (const tab of doomed) store.closeTab(tab.id);
+  return doomed.length > 0;
+}
+
+/**
+ * Close every Apps v2 tab whose app is not in `validIds`.
+ *
+ * Tabs are persisted per workspace but outlive the apps they point at: an app
+ * gets deleted, or a link is opened against a workspace that never had it. The
+ * leftover tab still rendered the full workspace view — breadcrumb, terminal,
+ * and a live Publish button — wrapped around nothing.
+ *
+ * Call this only after a SUCCESSFUL listing. On a failed request the set is
+ * empty, and closing every tab because the network blipped would be worse than
+ * the bug.
+ */
+export function reconcileAppsV2Tabs(validIds: Set<string>): void {
+  const store = useConsoleStore.getState();
+  const stale = Object.values(store.tabs).filter(
+    (tab: { id: string; kind?: string; metadata?: { appV2Id?: string } }) => {
+      if (tab.kind !== "app-v2" && tab.kind !== "app-v2-file") return false;
+      const id = tab.metadata?.appV2Id;
+      return Boolean(id) && !validIds.has(id!);
+    },
+  );
+  for (const tab of stale) store.closeTab(tab.id);
+}

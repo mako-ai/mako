@@ -7,7 +7,11 @@ import {
 import { useDashboardStore } from "../store/dashboardStore";
 import { useAppStore } from "../store/appStore";
 import { useAppsV2Store } from "../store/appsV2Store";
-import { focusAppsV2FileTab, focusAppsV2Tab } from "../apps-v2-runtime/shell";
+import {
+  closeAppsV2TabsFor,
+  focusAppsV2FileTab,
+  focusAppsV2Tab,
+} from "../apps-v2-runtime/shell";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { SECTION_LABELS, isSettingsSection } from "../pages/settings/sections";
@@ -280,8 +284,18 @@ export function UrlSync() {
       const appId = appV2FileMatch[1];
       const filePath = decodePathSegments(appV2FileMatch[2]);
       setLeftPane("apps-v2");
-      void useAppsV2Store.getState().fetchApps(currentWorkspace.id);
-      focusAppsV2FileTab(appId, filePath);
+      void useAppsV2Store
+        .getState()
+        .fetchApps(currentWorkspace.id)
+        .then(() => {
+          const app = useAppsV2Store.getState().apps.find(a => a.id === appId);
+          if (!app) {
+            closeAppsV2TabsFor(appId);
+            window.history.replaceState(null, "", "/");
+            return;
+          }
+          focusAppsV2FileTab(appId, filePath);
+        });
     } else if (appV2Match) {
       // /a2/:appId — Apps v2 (git-backed, experimental)
       const appId = appV2Match[1];
@@ -289,7 +303,17 @@ export function UrlSync() {
       const store = useAppsV2Store.getState();
       void store.fetchApps(currentWorkspace.id).then(() => {
         const app = useAppsV2Store.getState().apps.find(a => a.id === appId);
-        focusAppsV2Tab(appId, app?.title || "App");
+        if (!app) {
+          // The link points at an app that is gone, or lives in another
+          // workspace. Opening a tab anyway rendered the whole workspace view
+          // — breadcrumb, terminal, a live Publish button — around nothing,
+          // and reloading restored the same dead id, so the page looked
+          // permanently stuck. Clear it and fall back to the list instead.
+          closeAppsV2TabsFor(appId);
+          window.history.replaceState(null, "", "/");
+          return;
+        }
+        focusAppsV2Tab(appId, app.title);
       });
     } else if (dbtFileMatch) {
       // /x/:projectId/file/:path

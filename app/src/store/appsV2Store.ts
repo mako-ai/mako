@@ -14,6 +14,7 @@ import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { api, unwrapBody, ApiError } from "../api";
 import { apiClient } from "../lib/api-client";
+import { reconcileAppsV2Tabs } from "../apps-v2-runtime/shell";
 
 export interface AppV2Meta {
   id: string;
@@ -461,10 +462,14 @@ export const useAppsV2Store = create<AppsV2Store>()(
             params: { path: { workspaceId } },
           }),
         ) as { apps?: AppV2Meta[] };
+        const apps = body.apps ?? [];
         set(s => {
-          s.apps = body.apps ?? [];
+          s.apps = apps;
           s.appsLoading = false;
         });
+        // Drop tabs pointing at apps this workspace does not have, so a
+        // deleted app cannot leave a working-looking workspace view behind.
+        reconcileAppsV2Tabs(new Set(apps.map(a => a.id)));
       } catch (e) {
         set(s => {
           s.appsLoading = false;
