@@ -16,7 +16,6 @@ import {
   Box,
   Button,
   ButtonGroup,
-  Chip,
   CircularProgress,
   Menu,
   MenuItem,
@@ -32,6 +31,43 @@ import {
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useMcpStore } from "../store/mcpStore";
+import { BUI_MONO_FONT_FAMILY } from "./chat/bui-styles";
+
+/** Beautiful UI tint pill (green/red/neutral status badge). */
+const Pill: React.FC<{
+  tone: "green" | "red" | "neutral";
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+}> = ({ tone, icon, children }) => (
+  <Box
+    component="span"
+    sx={{
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 0.5,
+      px: 1,
+      py: 0.25,
+      borderRadius: "999px",
+      fontSize: 11,
+      fontWeight: 600,
+      flexShrink: 0,
+      ...(tone === "green"
+        ? {
+            backgroundColor: "var(--bui-green-tint)",
+            color: "var(--bui-green)",
+          }
+        : tone === "red"
+          ? { backgroundColor: "var(--bui-red-tint)", color: "var(--bui-red)" }
+          : {
+              backgroundColor: "var(--bui-field)",
+              color: "var(--bui-ink-2)",
+            }),
+    }}
+  >
+    {icon}
+    {children}
+  </Box>
+);
 
 export interface McpApprovalResponseArgs {
   approvalId: string;
@@ -73,13 +109,13 @@ function ServerIcon({ src }: { src?: string | null }) {
       sx={{
         width: 30,
         height: 30,
-        borderRadius: 1.5,
-        border: 1,
-        borderColor: "divider",
+        borderRadius: "8px",
+        boxShadow: "var(--bui-shadow-hairline)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        bgcolor: "background.default",
+        backgroundColor: "var(--bui-field)",
+        color: "var(--bui-ink-2)",
         overflow: "hidden",
         flexShrink: 0,
       }}
@@ -192,37 +228,22 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
   }, [pending, primaryIsAlways, approvalId]);
 
   const statusChip = isDestructive ? (
-    <Chip
-      label="Destructive"
-      size="small"
-      color="error"
-      variant="outlined"
-      sx={{ height: 18, fontSize: 10 }}
-    />
+    <Pill tone="red">Destructive</Pill>
   ) : resolution === "approved" ? (
-    <Chip
-      icon={<ShieldCheck size={11} />}
-      label="Approved"
-      size="small"
-      color="success"
-      variant="outlined"
-      sx={{ height: 18, fontSize: 10 }}
-    />
+    <Pill tone="green" icon={<ShieldCheck size={11} />}>
+      Approved
+    </Pill>
   ) : resolution === "denied" ? (
-    <Chip
-      icon={<ShieldX size={11} />}
-      label="Denied"
-      size="small"
-      color="error"
-      variant="outlined"
-      sx={{ height: 18, fontSize: 10 }}
-    />
+    <Pill tone="red" icon={<ShieldX size={11} />}>
+      Denied
+    </Pill>
   ) : null;
 
   // Destructive cards show the resolution chip too (both can apply).
   const secondChip =
     isDestructive && resolution !== "pending" ? (
-      <Chip
+      <Pill
+        tone={resolution === "approved" ? "green" : "red"}
         icon={
           resolution === "approved" ? (
             <ShieldCheck size={11} />
@@ -230,28 +251,22 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
             <ShieldX size={11} />
           )
         }
-        label={resolution === "approved" ? "Approved" : "Denied"}
-        size="small"
-        color={resolution === "approved" ? "success" : "error"}
-        variant="outlined"
-        sx={{ height: 18, fontSize: 10 }}
-      />
+      >
+        {resolution === "approved" ? "Approved" : "Denied"}
+      </Pill>
     ) : null;
 
   return (
     <Box
       sx={{
-        border: 1,
-        borderColor: pending
-          ? isDestructive
-            ? "error.light"
-            : "divider"
-          : "divider",
-        borderRadius: 2,
+        borderRadius: "14px",
         p: 1.25,
         my: 0.5,
-        bgcolor: "background.paper",
-        boxShadow: pending ? "0 1px 6px rgba(0,0,0,0.06)" : "none",
+        backgroundColor: "var(--bui-surface)",
+        boxShadow:
+          pending && isDestructive
+            ? "0 0 0 1px var(--bui-red), 0 1px 2px oklch(0% 0 0 / 0.05), 0 2px 6px oklch(0% 0 0 / 0.04)"
+            : "var(--bui-shadow-card)",
       }}
       data-testid="mcp-approval-card"
     >
@@ -265,9 +280,15 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
             flexWrap="wrap"
             useFlexGap
           >
-            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+            <Typography
+              variant="body2"
+              sx={{ fontWeight: 500, fontSize: 13, color: "var(--bui-ink)" }}
+            >
               Mako wants to use{" "}
-              <Box component="span" sx={{ fontFamily: "monospace" }}>
+              <Box
+                component="span"
+                sx={{ fontFamily: BUI_MONO_FONT_FAMILY, fontSize: 12.5 }}
+              >
                 {displayName}
               </Box>
               {serverName ? ` from ${serverName}` : ""}
@@ -284,10 +305,12 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
                 mt: 0.75,
                 px: 1,
                 py: 0.5,
-                borderRadius: 1,
-                bgcolor: "action.hover",
+                borderRadius: "8px",
+                backgroundColor: "var(--bui-inset)",
+                boxShadow: "var(--bui-shadow-hairline)",
+                color: "var(--bui-ink-2)",
                 fontSize: 11.5,
-                fontFamily: "monospace",
+                fontFamily: BUI_MONO_FONT_FAMILY,
                 whiteSpace: "pre-wrap",
                 wordBreak: "break-word",
                 maxHeight: 96,
@@ -311,10 +334,21 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
                 disableElevation
                 sx={{
                   "& .MuiButton-root": {
-                    bgcolor: "text.primary",
-                    color: "background.paper",
+                    backgroundColor: "var(--bui-ink)",
+                    color: "var(--bui-surface)",
                     textTransform: "none",
-                    "&:hover": { bgcolor: "text.secondary" },
+                    fontSize: 12.5,
+                    fontWeight: 500,
+                    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.14)",
+                    "&:hover": { opacity: 0.85 },
+                  },
+                  "& .MuiButton-root:first-of-type": {
+                    borderTopLeftRadius: 8,
+                    borderBottomLeftRadius: 8,
+                  },
+                  "& .MuiButton-root:last-of-type": {
+                    borderTopRightRadius: 8,
+                    borderBottomRightRadius: 8,
                   },
                 }}
               >
@@ -363,21 +397,31 @@ export const McpApprovalCard: React.FC<McpApprovalCardProps> = ({
                 </MenuItem>
               </Menu>
               <Button
-                variant="outlined"
                 size="small"
-                color="inherit"
                 disabled={busy !== null}
                 onClick={() => void respond(false, false)}
                 startIcon={
                   busy === "deny" ? <CircularProgress size={12} /> : undefined
                 }
-                sx={{ textTransform: "none" }}
+                sx={{
+                  textTransform: "none",
+                  fontSize: 12.5,
+                  fontWeight: 500,
+                  borderRadius: "8px",
+                  color: "var(--bui-ink-2)",
+                  backgroundColor: "var(--bui-surface)",
+                  boxShadow: "var(--bui-shadow-btn)",
+                  "&:hover": {
+                    backgroundColor: "var(--bui-hover)",
+                    color: "var(--bui-ink)",
+                  },
+                }}
                 data-testid="mcp-approval-deny"
               >
                 Deny
                 <Box
                   component="span"
-                  sx={{ ml: 0.75, fontSize: 10, color: "text.disabled" }}
+                  sx={{ ml: 0.75, fontSize: 10, color: "var(--bui-ink-3)" }}
                 >
                   Esc
                 </Box>

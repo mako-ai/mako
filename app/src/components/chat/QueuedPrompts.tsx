@@ -1,14 +1,7 @@
 import React, { useState } from "react";
 import { Box, IconButton, Tooltip, Typography } from "@mui/material";
 import { keyframes } from "@mui/material/styles";
-import {
-  ArrowUp,
-  ChevronDown,
-  ChevronRight,
-  Circle,
-  Pencil,
-  Trash2,
-} from "lucide-react";
+import { ArrowUp, ChevronDown, Circle, Pencil, Trash2 } from "lucide-react";
 import type { FileUIPart } from "ai";
 
 // Queue card slides up from behind the chat input as it reveals
@@ -45,8 +38,11 @@ const QUEUED_ROW_ACTION_BTN_SX = {
   width: 22,
   height: 22,
   flexShrink: 0,
-  color: "text.secondary",
-  "&:hover": { color: "text.primary" },
+  color: "var(--bui-ink-3)",
+  "&:hover": {
+    color: "var(--bui-ink)",
+    backgroundColor: "var(--bui-hover-2)",
+  },
 } as const;
 
 // One queued prompt. Editing happens in the main composer (Cursor-style), so
@@ -70,11 +66,14 @@ const QueuedPromptRow = React.memo(
           gap: 1,
           px: 1,
           py: 0.5,
-          borderRadius: 1,
+          borderRadius: "8px",
           minHeight: 32,
-          backgroundColor: isEditing ? "action.selected" : "transparent",
+          transition: "background-color 0.1s",
+          backgroundColor: isEditing ? "var(--bui-hover-2)" : "transparent",
           "&:hover": {
-            backgroundColor: isEditing ? "action.selected" : "action.hover",
+            backgroundColor: isEditing
+              ? "var(--bui-hover-2)"
+              : "var(--bui-hover)",
           },
           "&:hover .queued-prompt-actions": { opacity: 1 },
         }}
@@ -83,7 +82,7 @@ const QueuedPromptRow = React.memo(
           sx={{
             display: "flex",
             alignItems: "center",
-            color: "text.secondary",
+            color: "var(--bui-ink-3)",
             flexShrink: 0,
           }}
         >
@@ -99,7 +98,7 @@ const QueuedPromptRow = React.memo(
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
             fontSize: 13,
-            color: "text.primary",
+            color: "var(--bui-ink)",
           }}
         >
           {display}
@@ -108,7 +107,7 @@ const QueuedPromptRow = React.memo(
         {imageCount > 0 && (
           <Typography
             variant="caption"
-            sx={{ color: "text.secondary", flexShrink: 0 }}
+            sx={{ color: "var(--bui-ink-3)", flexShrink: 0 }}
           >
             {imageCount} {imageCount === 1 ? "image" : "images"}
           </Typography>
@@ -178,12 +177,11 @@ export const QueuedPromptList = React.memo(
         sx={{
           mx: 2.25,
           mb: 0,
-          border: 1,
-          borderBottom: 0,
-          borderColor: "divider",
-          borderRadius: 2.5,
+          borderRadius: "14px",
           borderBottomLeftRadius: 0,
           borderBottomRightRadius: 0,
+          backgroundColor: "var(--bui-surface)",
+          boxShadow: "var(--bui-shadow-card)",
           p: 0.5,
           transformOrigin: "bottom",
           animation: `${queueSlideUp} 220ms cubic-bezier(0.4, 0, 0.2, 1)`,
@@ -207,12 +205,19 @@ export const QueuedPromptList = React.memo(
             px: 1,
             py: 0.5,
             cursor: "pointer",
-            color: "text.secondary",
-            borderRadius: 1,
-            "&:hover": { color: "text.primary" },
+            color: "var(--bui-ink-2)",
+            borderRadius: "8px",
+            transition: "background-color 0.1s",
+            "&:hover": { backgroundColor: "var(--bui-hover-2)" },
           }}
         >
-          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <ChevronDown
+            size={14}
+            style={{
+              transition: "transform 0.2s",
+              transform: expanded ? "rotate(0deg)" : "rotate(-90deg)",
+            }}
+          />
           <Typography
             variant="caption"
             sx={{ fontWeight: 600, letterSpacing: 0.2 }}

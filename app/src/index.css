@@ -123,16 +123,15 @@
   border-left-color: hsl(var(--border));
 }
 
-/* 3. Inline code - add visible background color, match text size */
+/* 3. Inline code — BUI field chip: inset background with a hairline ring */
 [data-streamdown="inline-code"] {
-  background-color: hsl(var(--muted) / 0.6);
-  border: 1px solid hsl(var(--border));
+  background-color: var(--bui-field);
+  border: none;
+  box-shadow: var(--bui-shadow-hairline);
+  border-radius: 5px;
+  color: var(--bui-ink);
   font-size: 0.8125rem;
   padding: 0.1rem 0.35rem;
-}
-
-.dark [data-streamdown="inline-code"] {
-  background-color: hsl(var(--muted) / 0.8);
 }
 
 /* 4. Table styling - consistent borders, compact, subtle backgrounds. */
@@ -193,36 +192,38 @@
   border-right: none;
 }
 
-/* 5. Code block styling - consistent with tables */
+/* 5. Code block styling — Beautiful UI "Code Block": hairline-ring card,
+   surface header bar with the language label, inset body. */
 [data-streamdown="code-block"] {
-  border: 1px solid hsl(var(--border)) !important;
-  border-radius: 0.5rem;
+  border: none !important;
+  border-radius: 10px;
+  box-shadow: var(--bui-shadow-hairline);
+  overflow: hidden;
   margin-top: 0.5rem;
   margin-bottom: 0.5rem;
 }
 
 [data-streamdown="code-block-header"] {
-  background-color: hsl(var(--muted) / 0.5) !important;
+  background-color: var(--bui-surface) !important;
+  color: var(--bui-ink-3);
   padding: 0.375rem 0.625rem;
-  font-size: 0.75rem;
+  font-size: 0.71875rem;
+  font-weight: 500;
   border: none !important;
-  border-bottom: 1px solid hsl(var(--border) / 0.4) !important;
+  border-bottom: 1px solid var(--bui-line) !important;
 }
 
 [data-streamdown="code-block-body"] {
   padding: 0.5rem 0.625rem !important;
-  font-size: 0.8125rem !important;
-  background-color: hsl(0 0% 100% / 0.5) !important;
-  border-top-color: hsl(var(--border) / 0.4) !important;
+  font-size: 0.71875rem !important;
+  line-height: 1.7;
+  background-color: var(--bui-inset) !important;
+  border-top-color: var(--bui-line) !important;
 }
 
 /* Override Tailwind border-t class on code block body */
 [data-streamdown="code-block-body"].border-t {
-  border-top-color: hsl(var(--border) / 0.4) !important;
-}
-
-.dark [data-streamdown="code-block-body"] {
-  background-color: hsl(0 0% 100% / 0.02) !important;
+  border-top-color: var(--bui-line) !important;
 }
 
 /* Line numbers in code block */
@@ -257,6 +258,7 @@
   --bui-green: oklch(60.3% 0.155 150.883);
   --bui-green-tint: oklch(95.8% 0.017 159.118);
   --bui-orange: oklch(68.9% 0.179 49.902);
+  --bui-orange-tint: oklch(96.4% 0.021 67.581);
   --bui-red: oklch(62.1% 0.192 23.042);
   --bui-red-tint: oklch(95.6% 0.017 17.462);
   --bui-shadow-hairline: 0 0 0 1px var(--bui-line);
@@ -283,6 +285,7 @@
   --bui-green: oklch(70.5% 0.154 153.814);
   --bui-green-tint: oklch(70.5% 0.154 153.814 / 0.14);
   --bui-orange: oklch(74.6% 0.156 55.642);
+  --bui-orange-tint: oklch(74.6% 0.156 55.642 / 0.14);
   --bui-red: oklch(66.6% 0.18 21.433);
   --bui-red-tint: oklch(66.6% 0.18 21.433 / 0.14);
   --bui-shadow-hairline: 0 0 0 1px var(--bui-line);
