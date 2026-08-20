@@ -88,6 +88,33 @@ pnpm cf:deploy             # Deploy to Cloudflare Workers
 pnpm preview-db:*          # Manage preview databases (create, destroy, list, seed)
 ```
 
+## Driving the app in a browser
+
+```bash
+./scripts/dev-browser.sh          # isolated, visible, logged-in browser
+```
+
+Two things this exists to prevent, both of which have actually bitten:
+
+- **Invisible runs.** `agent-browser` defaults to *headless*, and passing
+  `--headed` once is not enough — a later `open` can start a fresh session that
+  silently comes up headless. Verify with
+  `ps aux | grep agent-browser-chrome | grep -c headless` (0 = visible), never
+  by assuming the flag took.
+- **Agents fighting over one browser.** The daemon is machine-wide and every
+  caller defaults to the session named `default`, so two Claude sessions drive
+  the same Chrome: one navigates while the other screenshots, and tabs move
+  under you. The script keys a session name and a Chrome profile off the Claude
+  session id — stable within a session, unique between them.
+
+Export the three variables it prints in any shell issuing further
+`agent-browser` commands. Passing `--profile` to some commands and not others
+puts them in *different* sessions, which looks exactly like the browser
+ignoring your navigation.
+
+**Never run `agent-browser close --all`** — it is global and kills other
+agents' browsers. `agent-browser close` closes only your own.
+
 ## Secrets (Google Secret Manager)
 
 `.env` is gitignored, so a value only exists on whichever laptop created it —
