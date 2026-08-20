@@ -219,9 +219,7 @@ async function commitFilesOnBranch(
     const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
     if (!head) throw new Error(`Branch ${branch} is missing`);
     await fs.mkdir(appsV2SessionsRoot(), { recursive: true });
-    const tmp = await fs.mkdtemp(
-      path.join(appsV2SessionsRoot(), "lifecycle-"),
-    );
+    const tmp = await fs.mkdtemp(path.join(appsV2SessionsRoot(), "lifecycle-"));
     try {
       await runGit(["clone", "--branch", branch, repoDir, tmp], {
         timeoutMs: 120_000,
@@ -289,8 +287,7 @@ export async function createProject(input: {
   // §10 monorepo: ensure the ONE workspace repo, then commit the scaffold
   // under apps/<slug>/ onto main.
   const repoDir = await repoForWorkspace(input.workspaceId);
-  let scaffoldCommit: { commitOid: string; previousHead: string } | null =
-    null;
+  let scaffoldCommit: { commitOid: string; previousHead: string } | null = null;
   try {
     if (!(await repoExists(repoDir))) {
       await initRepo(
@@ -382,6 +379,19 @@ export function chatBranchFor(chatId: string): string {
 export function chatActorFor(chatId: string): string {
   return `chat:${chatId}`;
 }
+
+/**
+ * Dedicated actor for publishing (§13.3).
+ *
+ * Publishing must build from `main` and nothing else, so it gets its own
+ * worktree instead of borrowing whoever happened to trigger it. Two reasons:
+ * a human's session sits on their own branch with uncommitted WIP, and
+ * `ensureWorktree` only fast-forwards a CLEAN worktree — so a session with WIP
+ * would build a stale tree that can predate the app being published. Keeping
+ * this worktree write-free means it fast-forwards to the branch head every
+ * time.
+ */
+export const PUBLISH_ACTOR = "publish";
 
 /**
  * Find-or-create the actor's worktree doc and make sure its session working
@@ -699,9 +709,7 @@ export async function grepFiles(
   const root = appRootFor(project);
   const scoped = await grepTree(repoDir, ref, pattern, {
     ...options,
-    pathspec: options?.pathspec
-      ? `${root}/${options.pathspec}`
-      : root,
+    pathspec: options?.pathspec ? `${root}/${options.pathspec}` : root,
   });
   return scoped.map(m =>
     m.path.startsWith(`${root}/`)
@@ -802,6 +810,27 @@ export async function worktreeStatus(
     behindBranch: branchHead !== null && branchHead !== doc.baseSha,
     changes,
   };
+}
+
+/**
+ * Commit sha at the tip of the project's default branch — what a publish
+ * deploys, and the identity an immutable deployment is keyed by (§13.3).
+ */
+export async function defaultBranchSha(
+  project: IAppProjectV2,
+): Promise<string> {
+  const repoDir = await repoFor(project);
+  const branch = project.defaultBranch || DEFAULT_BRANCH;
+  const { stdout } = await runGit(["rev-parse", `refs/heads/${branch}`], {
+    cwd: repoDir,
+  });
+  const sha = stdout.trim();
+  if (!/^[0-9a-f]{40}$/.test(sha)) {
+    throw new Error(
+      `Could not resolve ${branch} to a commit (got ${JSON.stringify(sha)})`,
+    );
+  }
+  return sha;
 }
 
 export async function projectHistory(project: IAppProjectV2, limit = 20) {

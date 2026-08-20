@@ -56,12 +56,21 @@ import {
   listBranches,
   listFiles,
   mergeBranchToMain,
+  defaultBranchSha,
+  PUBLISH_ACTOR,
   projectHistory,
   readFile,
   worktreeStatus,
   writeFile,
 } from "../apps-v2/worktree.service";
 import { APPS_V2_EXEC_MAX_TIMEOUT_MS } from "../apps-v2/config";
+import { registerPublicShareRoutes } from "./lib/public-share-routes";
+import {
+  publishFromWorktree,
+  setPublishedSha,
+  deploymentExists,
+  readDeploymentAsset,
+} from "../apps-v2/deployment.service";
 import { mintPreviewGrant } from "../apps-v2/preview.service";
 import { ensureDevServer } from "../apps-v2/dev-server.service";
 import { Readable } from "node:stream";
@@ -1269,3 +1278,248 @@ appsV2Routes.openapi(
     }
   },
 );
+
+// ---------------------------------------------------------------------------
+// Publishing (§13.3): merge → build from main → immutable artifact → repoint
+// ---------------------------------------------------------------------------
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/publish",
+    tags: ["Apps v2"],
+    summary: "Publish the app: merge to main, build, and deploy",
+    description:
+      "Merges `branch` (or the caller's chat branch) into main, builds from main in the sandbox, uploads the output as an immutable deployment keyed by commit sha, and points the app at it. A failed build leaves the previous deployment serving. Re-publishing an unchanged sha reuses the existing deployment instead of rebuilding.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: z.object({
+              branch: z.string().optional(),
+              chatId: z.string().optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const body = c.req.valid("json") ?? {};
+      const user = c.get("user");
+      const branch =
+        body.branch ?? (body.chatId ? chatBranchFor(body.chatId) : undefined);
+
+      // 1. Land the work on main. Publishing from main itself is a no-op merge.
+      if (branch && branch !== (loaded.project.defaultBranch || "main")) {
+        const merge = await mergeBranchToMain(
+          loaded.project,
+          branch,
+          user?.email ? { name: user.email, email: user.email } : undefined,
+        );
+        if (!merge.merged) {
+          return c.json(
+            { success: false, error: merge.reason ?? "Merge failed" },
+            409,
+          );
+        }
+      }
+
+      // 2. Build from main — never from the caller's branch, so what ships is
+      //    exactly what main holds.
+      // A dedicated, write-free worktree pinned to main — never the caller's
+      // session, which sits on their branch and may hold WIP that would make
+      // ensureWorktree skip the fast-forward and build a stale tree.
+      const handle = await ensureWorktree(loaded.project, PUBLISH_ACTOR, {
+        branch: loaded.project.defaultBranch || "main",
+      });
+      const sha = await defaultBranchSha(loaded.project);
+
+      const result = await publishFromWorktree(handle, sha, async () => {
+        const install = await execInWorktree(
+          handle,
+          "[ -d node_modules ] || npm install --no-audit --no-fund",
+          { timeoutMs: 300_000 },
+        );
+        if (install.exitCode !== 0) {
+          return {
+            ok: false,
+            output: `npm install failed\n${install.stdout.slice(-2000)}${install.stderr.slice(-2000)}`,
+          };
+        }
+        // Relative asset URLs: a deployment is served under a path prefix
+        // (/live/, /api/share/<token>/), not at a domain root.
+        const build = await execInWorktree(
+          handle,
+          "npm run build -- --base=./",
+          { timeoutMs: 300_000 },
+        );
+        return {
+          ok: build.exitCode === 0,
+          output: `${build.stdout.slice(-3000)}${build.stderr.slice(-3000)}`,
+        };
+      });
+
+      return c.json(
+        {
+          success: true as const,
+          sha: result.sha,
+          fileCount: result.fileCount,
+          reused: result.reused,
+        },
+        200,
+      );
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/rollback",
+    tags: ["Apps v2"],
+    summary: "Point the app at a previously published deployment",
+    description:
+      "Deployments are immutable and addressed by commit sha, so rolling back is a repoint — no rebuild and no sandbox. The target sha must still have a stored deployment.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({ sha: z.string().min(7) }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { sha } = c.req.valid("json");
+      const projectId = loaded.project._id.toString();
+      if (!(await deploymentExists(projectId, sha))) {
+        return c.json(
+          {
+            success: false,
+            error: `No stored deployment for ${sha.slice(0, 7)}`,
+          },
+          404,
+        );
+      }
+      await setPublishedSha(loaded.project, sha);
+      return c.json({ success: true as const, sha }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Viewing a published app (§13.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Serve the published deployment to a workspace user.
+ *
+ * Deliberately does NOT call ensureWorktree: viewing must never start a
+ * sandbox, or a hundred readers become a hundred microVMs. Everything here
+ * comes from the artifact store.
+ *
+ * `__data/<name>.parquet` resolves to the app's materialized binding for the
+ * same project, authorized by the caller's normal workspace access — the
+ * published counterpart to the preview's token-gated data path.
+ */
+async function serveLive(c: AuthenticatedContext): Promise<Response> {
+  const loaded = await loadProject(c, { write: false });
+  if ("errorResponse" in loaded) return loaded.errorResponse;
+  const project = loaded.project;
+  const sha = project.publishedSha;
+  if (!sha) {
+    return c.json(
+      { success: false, error: "This app has not been published yet" },
+      404,
+    );
+  }
+  const projectId = project._id.toString();
+  const rest = c.req.path.split(`/apps-v2/${projectId}/live`)[1] ?? "";
+  const assetPath = rest.replace(/^\/+/, "");
+
+  const dataMatch = assetPath.match(
+    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.parquet$/,
+  );
+  if (dataMatch) {
+    const store = getDashboardArtifactStore();
+    const key = bindingArtifactKey(projectId, dataMatch[1]);
+    const stream = await store.openReadStream(key);
+    if (!stream) {
+      return c.json(
+        { success: false, error: `Binding "${dataMatch[1]}" not materialized` },
+        404,
+      );
+    }
+    const size = await store.getSize(key);
+    return new Response(Readable.toWeb(stream as Readable) as ReadableStream, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/vnd.apache.parquet",
+        ...(size !== null ? { "Content-Length": String(size) } : {}),
+        "Cache-Control": "no-store",
+      },
+    });
+  }
+
+  const asset = await readDeploymentAsset(projectId, sha, assetPath);
+  if (!asset) {
+    return c.json({ success: false, error: "Not found" }, 404);
+  }
+  return new Response(
+    Readable.toWeb(asset.stream as Readable) as ReadableStream,
+    {
+      status: 200,
+      headers: {
+        "Content-Type": asset.contentType,
+        ...(asset.size !== null
+          ? { "Content-Length": String(asset.size) }
+          : {}),
+        // Deployments are immutable per sha, so the bytes for a given URL can
+        // never change — but the URL itself is stable across publishes, so
+        // revalidate rather than cache hard.
+        "Cache-Control": "no-cache",
+        "X-Content-Type-Options": "nosniff",
+      },
+    },
+  );
+}
+
+appsV2Routes.get("/:id/live", serveLive);
+appsV2Routes.get("/:id/live/*", serveLive);
+
+// Public-link sharing, reusing the exact primitive dashboards and v1 apps use
+// (bcrypt password + AES copy for reveal, token rotation, owner/admin gate).
+// The anonymous consumption side lives in routes/public-share.ts.
+registerPublicShareRoutes(appsV2Routes, {
+  resourceName: "App",
+  load: async c => {
+    const id = c.req.param("id");
+    const workspaceId = c.req.param("workspaceId");
+    if (!id || !Types.ObjectId.isValid(id)) return null;
+    return AppProjectV2.findOne({
+      _id: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+  },
+  getTitle: doc => (doc as unknown as IAppProjectV2).title,
+});

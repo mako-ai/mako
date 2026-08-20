@@ -5721,8 +5721,16 @@ export interface IAppProjectV2 extends Document {
    * the per-workspace BYO installation.
    */
   cloudRepo?: { owner: string; repo: string };
-  /** Commit SHA of the last published deployment (Phase 3). */
+  /** Commit SHA of the last published deployment (§13.3). */
   publishedSha?: string;
+  /** When publishedSha was last repointed (publish or rollback). */
+  publishedAt?: Date;
+  /**
+   * Anonymous read-only link to the PUBLISHED deployment, optionally password
+   * protected. Same primitive dashboards and v1 apps use, so the management
+   * routes and the /api/share/:token consumption side are shared verbatim.
+   */
+  publicShare?: IPublicShare;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -5758,11 +5766,19 @@ const AppProjectV2Schema = new Schema<IAppProjectV2>(
       default: undefined,
     },
     publishedSha: { type: String },
+    publishedAt: { type: Date },
+    publicShare: { type: PublicShareSchema, default: undefined },
   },
   { collection: "app_projects_v2", timestamps: true },
 );
 
 AppProjectV2Schema.index({ workspaceId: 1, updatedAt: -1 });
+// Anonymous share lookup is by token alone, so it must be indexed and unique
+// across the collection — same shape as v1 apps and dashboards.
+AppProjectV2Schema.index(
+  { "publicShare.token": 1 },
+  { unique: true, sparse: true },
+);
 // §10 monorepo: one folder per app in the workspace repo. Sparse until the
 // workspace-monorepo migration backfills slugs on legacy docs.
 AppProjectV2Schema.index(

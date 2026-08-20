@@ -219,6 +219,8 @@ export default function AppV2Workspace({
   const history = useAppsV2Store(s => s.historyByApp[appId]);
   const branches = useAppsV2Store(s => s.branchesByApp[appId]);
   const preview = useAppsV2Store(s => s.previewByApp[appId]);
+  /** A live `vite dev` session is running for this app right now. */
+  const devSessionLive = preview?.mode === "dev" && Boolean(preview?.url);
 
   const fetchApps = useAppsV2Store(s => s.fetchApps);
   const fetchFiles = useAppsV2Store(s => s.fetchFiles);
@@ -287,7 +289,13 @@ export default function AppV2Workspace({
           />
         )}
         <Box sx={{ flex: 1 }} />
-        <Tooltip title="Live preview: keeps the app running in its sandbox so your edits show up instantly, with no rebuild step.">
+        <Tooltip
+          title={
+            devSessionLive
+              ? "A dev session is already running — restart it if the sandbox got into a bad state."
+              : "Live preview: keeps the app running in its sandbox so your edits show up instantly, with no rebuild step."
+          }
+        >
           <span>
             <Button
               size="small"
@@ -308,11 +316,17 @@ export default function AppV2Workspace({
                 )
               }
             >
+              {/* The label has to render STATE, not a fixed verb. It
+                  previously read "Start dev session" while a session was
+                  already running, changing only its variant — which is how a
+                  running session looked identical to a stopped one. */}
               {preview?.building
                 ? "Starting..."
-                : activeChatBranch
-                  ? "Start dev session (active chat)"
-                  : "Start dev session"}
+                : devSessionLive
+                  ? "Restart dev session"
+                  : activeChatBranch
+                    ? "Start dev session (active chat)"
+                    : "Start dev session"}
             </Button>
           </span>
         </Tooltip>

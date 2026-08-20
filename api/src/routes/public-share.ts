@@ -23,8 +23,10 @@ import { OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
   Dashboard,
   MakoApp,
+  AppProjectV2,
   type IDashboard,
   type IMakoApp,
+  type IAppProjectV2,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import {
@@ -39,6 +41,8 @@ import {
   queueAppBindingMaterialization,
 } from "../services/app-binding-materialization.service";
 import { executePublicAppLiveBinding } from "../services/public-live-query.service";
+import { bindingArtifactKey } from "../apps-v2/bindings.service";
+import { readDeploymentAsset } from "../apps-v2/deployment.service";
 
 const logger = loggers.api("public-share");
 
@@ -67,7 +71,8 @@ const UNLOCK_WINDOW_MS = 15 * 60 * 1000;
 
 type SharedResource =
   | { type: "dashboard"; doc: IDashboard }
-  | { type: "app"; doc: IMakoApp };
+  | { type: "app"; doc: IMakoApp }
+  | { type: "app-v2"; doc: IAppProjectV2 };
 
 async function findByToken(token: string): Promise<SharedResource | null> {
   // Tokens are readable slugs (possibly short) or legacy random strings.
@@ -83,6 +88,13 @@ async function findByToken(token: string): Promise<SharedResource | null> {
     "publicShare.enabled": true,
   });
   if (makoApp) return { type: "app", doc: makoApp };
+  // Apps v2 shares the same publicShare primitive; what differs is what gets
+  // served — a built deployment rather than a JSON definition (§13).
+  const appV2 = await AppProjectV2.findOne({
+    "publicShare.token": token,
+    "publicShare.enabled": true,
+  });
+  if (appV2) return { type: "app-v2", doc: appV2 };
   return null;
 }
 
@@ -256,8 +268,8 @@ function buildAppContent(token: string, makoApp: IMakoApp) {
   // Render the PUBLISHED definition (draft/published split) so a public viewer
   // never sees half-edited or agent-in-progress work. Fall back to the live
   // draft for apps that were never published (back-compat).
-  const def = (makoApp.published as AppSnapshot | undefined) ??
-    buildAppSnapshot(makoApp);
+  const def =
+    (makoApp.published as AppSnapshot | undefined) ?? buildAppSnapshot(makoApp);
   // Materialization artifacts are server-owned and keyed by binding id, so we
   // hydrate artifact URLs from the LIVE binding caches (the published snapshot
   // intentionally excludes `cache`).
@@ -417,6 +429,23 @@ app.openapi(
       const gate = requireUnlock(c, token, resource);
       if (gate) return gate;
 
+      if (resource.type === "app-v2") {
+        // A v2 app is a built bundle, not a definition the client renders:
+        // its content is served as files from /api/share/:token/app/*.
+        return c.json(
+          {
+            success: true,
+            data: {
+              kind: "app-v2" as const,
+              title: resource.doc.title,
+              published: Boolean(resource.doc.publishedSha),
+              entry: `/api/share/${token}/app/`,
+            },
+          },
+          200,
+          { "Cache-Control": "private, no-store" },
+        );
+      }
       const data =
         resource.type === "dashboard"
           ? await buildDashboardContent(token, resource.doc)
@@ -486,6 +515,11 @@ app.openapi(
         artifactKey = status.artifactKey;
         revision = status.artifactRevision;
         rowCount = status.rowCount;
+      } else if (resource.type === "app-v2") {
+        artifactKey = bindingArtifactKey(
+          resource.doc._id.toString(),
+          artifactId,
+        );
       } else {
         const info = getBindingArtifactInfo(resource.doc, artifactId);
         if (info) {
@@ -726,6 +760,15 @@ app.openapi(
         queued = queueResult.queued;
         alreadyRunning = !queueResult.queued;
         dataSourceIds = queueResult.dataSourceIds;
+      } else if (resource.type === "app-v2") {
+        // §13.4.2: scheduled/anonymous refresh of v2 bindings is not built.
+        return c.json(
+          {
+            success: false,
+            error: "Refresh is not available for this app yet",
+          },
+          501,
+        );
       } else {
         const appDoc = resource.doc;
         const materializedBindings = appDoc.dataBindings.filter(
@@ -759,5 +802,80 @@ app.openapi(
     }
   },
 );
+
+/**
+ * Serve a shared Apps v2 deployment's files (§13).
+ *
+ * Anonymous and token-gated, behind the same password unlock as every other
+ * share route. Only ever reads the app's PUBLISHED deployment out of the
+ * artifact store — no sandbox, no branch, no access to unpublished work.
+ *
+ * `__data/<name>.parquet` resolves to the app's materialized binding, so a
+ * shared app keeps its data without the viewer touching a warehouse.
+ */
+async function serveSharedAppV2(c: Context): Promise<Response> {
+  const token = c.req.param("token");
+  const resource = await findByToken(token);
+  if (!resource || resource.type !== "app-v2") {
+    return c.json({ success: false, error: "Share link not found" }, 404);
+  }
+  const gate = requireUnlock(c, token, resource);
+  if (gate) return gate;
+
+  const project = resource.doc;
+  const sha = project.publishedSha;
+  if (!sha) {
+    return c.json(
+      { success: false, error: "This app has not been published yet" },
+      404,
+    );
+  }
+  const projectId = project._id.toString();
+  const assetPath = (c.req.path.split(`/share/${token}/app`)[1] ?? "").replace(
+    /^\/+/,
+    "",
+  );
+
+  const dataMatch = assetPath.match(
+    /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.parquet$/,
+  );
+  if (dataMatch) {
+    const store = getDashboardArtifactStore();
+    const key = bindingArtifactKey(projectId, dataMatch[1]);
+    const stream = await store.openReadStream(key);
+    if (!stream) {
+      return c.json({ success: false, error: "Data not available" }, 404);
+    }
+    const size = await store.getSize(key);
+    return new Response(Readable.toWeb(stream as Readable) as ReadableStream, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/vnd.apache.parquet",
+        ...(size !== null ? { "Content-Length": String(size) } : {}),
+        "Cache-Control": "private, no-store",
+      },
+    });
+  }
+
+  const asset = await readDeploymentAsset(projectId, sha, assetPath);
+  if (!asset) return c.json({ success: false, error: "Not found" }, 404);
+  return new Response(
+    Readable.toWeb(asset.stream as Readable) as ReadableStream,
+    {
+      status: 200,
+      headers: {
+        "Content-Type": asset.contentType,
+        ...(asset.size !== null
+          ? { "Content-Length": String(asset.size) }
+          : {}),
+        "Cache-Control": "private, no-cache",
+        "X-Content-Type-Options": "nosniff",
+      },
+    },
+  );
+}
+
+app.get("/:token/app", serveSharedAppV2);
+app.get("/:token/app/*", serveSharedAppV2);
 
 export const publicShareRoutes = app;
