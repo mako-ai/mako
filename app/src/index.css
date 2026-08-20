@@ -237,6 +237,117 @@
   display: none;
 }
 
+/* Beautiful UI chat tokens (beautifului.dev) — referenced from the chat
+   components via var(--bui-*) so MUI sx styles stay theme-reactive without
+   prop threading. `.dark` overrides below mirror ThemeContext's palette sync. */
+:root {
+  --bui-surface: oklch(100% 0 0);
+  --bui-inset: oklch(97.9% 0.002 247.839);
+  --bui-hover: oklch(97% 0.002 247.839);
+  --bui-hover-2: oklch(93.3% 0.003 247.86);
+  --bui-ink: oklch(24.7% 0.006 258.361);
+  --bui-ink-2: oklch(50.6% 0.01 264.477);
+  --bui-ink-3: oklch(69.5% 0.009 264.505);
+  --bui-line: oklch(94.6% 0.003 264.542);
+  --bui-line-strong: oklch(91.2% 0.005 258.326);
+  --bui-field: oklch(96.1% 0.001 286.375);
+  --bui-accent: oklch(62.6% 0.205 254.947);
+  --bui-accent-ink: oklch(55.6% 0.187 255.617);
+  --bui-accent-tint: oklch(96% 0.019 252.878);
+  --bui-green: oklch(60.3% 0.155 150.883);
+  --bui-green-tint: oklch(95.8% 0.017 159.118);
+  --bui-orange: oklch(68.9% 0.179 49.902);
+  --bui-red: oklch(62.1% 0.192 23.042);
+  --bui-red-tint: oklch(95.6% 0.017 17.462);
+  --bui-shadow-hairline: 0 0 0 1px var(--bui-line);
+  --bui-shadow-btn: 0 0 0 1px var(--bui-line-strong), 0 1px 2px oklch(0% 0 0 / 0.05);
+  --bui-shadow-card:
+    0 0 0 1px var(--bui-line), 0 1px 2px oklch(0% 0 0 / 0.05),
+    0 2px 6px oklch(0% 0 0 / 0.04);
+}
+
+.dark {
+  --bui-surface: oklch(26% 0.006 271.191);
+  --bui-inset: oklch(24.3% 0.004 264.492);
+  --bui-hover: oklch(28.9% 0.006 271.22);
+  --bui-hover-2: oklch(31.8% 0.007 274.747);
+  --bui-ink: oklch(96.4% 0.002 247.839);
+  --bui-ink-2: oklch(73.1% 0.008 260.731);
+  --bui-ink-3: oklch(54.1% 0.01 264.484);
+  --bui-line: oklch(30.8% 0.006 258.354);
+  --bui-line-strong: oklch(35.6% 0.007 264.474);
+  --bui-field: oklch(29.3% 0.006 271.223);
+  --bui-accent: oklch(68% 0.173 253.301);
+  --bui-accent-ink: oklch(78.8% 0.113 248.33);
+  --bui-accent-tint: oklch(68% 0.173 253.301 / 0.16);
+  --bui-green: oklch(70.5% 0.154 153.814);
+  --bui-green-tint: oklch(70.5% 0.154 153.814 / 0.14);
+  --bui-orange: oklch(74.6% 0.156 55.642);
+  --bui-red: oklch(66.6% 0.18 21.433);
+  --bui-red-tint: oklch(66.6% 0.18 21.433 / 0.14);
+  --bui-shadow-hairline: 0 0 0 1px var(--bui-line);
+  --bui-shadow-btn: 0 0 0 1px oklch(100% 0 0 / 0.1), 0 1px 2px oklch(0% 0 0 / 0.3);
+  --bui-shadow-card:
+    0 0 0 1px oklch(100% 0 0 / 0.11), 0 1px 2px oklch(0% 0 0 / 0.2),
+    0 2px 6px oklch(0% 0 0 / 0.2);
+}
+
+/* Beautiful UI keyframes (global, so stable sx objects can reference them
+   by name without emotion's keyframes() helper). */
+@keyframes bui-shimmer-text {
+  0% {
+    background-position: 150%;
+  }
+  to {
+    background-position: -50%;
+  }
+}
+
+@keyframes bui-pixel-on {
+  0%,
+  to {
+    opacity: 0.15;
+  }
+  18%,
+  42% {
+    opacity: 1;
+  }
+  62% {
+    opacity: 0.15;
+  }
+}
+
+@keyframes bui-fade-up {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes bui-fade-in {
+  0% {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes bui-pop-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 /* shadcn/ui HSL primitives — light and dark palettes.
    The @theme inline block above references these via hsl(var(--xxx)). */
 :root {

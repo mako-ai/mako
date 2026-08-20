@@ -41,6 +41,12 @@ export default defineConfig(({ mode }) => {
       emitVersionJson(buildId),
     ],
     envDir: "..",
+    // Tailwind v4 runs through the @tailwindcss/vite plugin above, so no
+    // PostCSS plugins are needed. Pinning an empty config stops Vite's
+    // upward search from picking up a stray postcss.config.js in an
+    // ancestor directory (e.g. a developer's home dir), which would load a
+    // mismatched Tailwind and fail every stylesheet.
+    css: { postcss: { plugins: [] } },
     server: {
       port: 5173,
       allowedHosts: true,

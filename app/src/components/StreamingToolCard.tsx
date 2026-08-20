@@ -44,6 +44,7 @@ import {
   type ToolUiConfig,
 } from "../agent-runtime/client-tool-manifest";
 import { getOutputSummary } from "./streaming-tool-card-summary";
+import { buiChipSx, buiShimmerLabelSx } from "./chat/bui-styles";
 
 export type ToolPartState =
   | "input-streaming"
@@ -275,11 +276,6 @@ const pulseKf = keyframes`
   50% { opacity: 1; transform: scale(1.35); }
 `;
 
-const titleShimmerKf = keyframes`
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-`;
-
 // ── Component ────────────────────────────────────────────────
 
 // Terminal states: once the tool call reaches one of these, `input` and
@@ -463,25 +459,9 @@ export const StreamingToolCard = React.memo(
             : "";
 
     return (
-      <Box
-        sx={{
-          my: 0.75,
-          borderRadius: 1.5,
-          border: 1,
-          borderColor: isActive
-            ? "primary.main"
-            : isError
-              ? "error.main"
-              : "divider",
-          overflow: "hidden",
-          transition: "border-color 0.3s, opacity 0.3s",
-          opacity: isDone || isError ? 0.85 : 1,
-          backgroundColor: isDark
-            ? "rgba(255,255,255,0.02)"
-            : "rgba(0,0,0,0.015)",
-        }}
-      >
-        {/* Header */}
+      <Box sx={{ my: 0.25 }}>
+        {/* Header — Beautiful UI "Tool Chips" row: icon that cross-fades to a
+            chevron, medium label, mono status chip, state affordance. */}
         <Box
           className="tool-card-header"
           onClick={() => {
@@ -495,14 +475,15 @@ export const StreamingToolCard = React.memo(
             display: "flex",
             alignItems: "center",
             gap: 1,
-            px: 1.5,
-            py: 0.75,
+            minHeight: 28,
+            px: 0.75,
+            mx: -0.75,
+            borderRadius: "8px",
             cursor: "pointer",
             userSelect: "none",
+            transition: "background-color 0.1s",
             "&:hover": {
-              backgroundColor: isDark
-                ? "rgba(255,255,255,0.04)"
-                : "rgba(0,0,0,0.03)",
+              backgroundColor: "var(--bui-hover-2)",
             },
           }}
         >
@@ -515,7 +496,7 @@ export const StreamingToolCard = React.memo(
               width: ICON_SIZE + 3,
               height: ICON_SIZE + 3,
               flexShrink: 0,
-              color: isActive ? "primary.main" : "text.secondary",
+              color: isActive ? "var(--bui-accent)" : "var(--bui-ink-3)",
               "& .tool-card-leading-icon, & .tool-card-chevron-icon": {
                 position: "absolute",
                 inset: 0,
@@ -580,23 +561,14 @@ export const StreamingToolCard = React.memo(
             variant="caption"
             sx={{
               fontWeight: 500,
-              flex: 1,
-              color: "text.primary",
+              flexShrink: 1,
+              minWidth: 0,
+              color: "var(--bui-ink)",
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
-              fontSize: "0.75rem",
-              ...(isStreaming && {
-                background: theme =>
-                  theme.palette.mode === "dark"
-                    ? "linear-gradient(90deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.95) 45%, rgba(255,255,255,0.55) 90%)"
-                    : "linear-gradient(90deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.9) 45%, rgba(0,0,0,0.45) 90%)",
-                backgroundSize: "200% 100%",
-                backgroundClip: "text",
-                WebkitBackgroundClip: "text",
-                WebkitTextFillColor: "transparent",
-                animation: `${titleShimmerKf} 1.6s linear infinite`,
-              }),
+              fontSize: "12.5px",
+              ...(isStreaming && buiShimmerLabelSx),
               ...(onTitleClick && {
                 p: 0,
                 border: 0,
@@ -614,42 +586,48 @@ export const StreamingToolCard = React.memo(
             {label}
           </Typography>
 
-          <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-            <Typography
-              variant="caption"
+          {statusText && (
+            <Box
+              component="span"
               sx={{
-                color: isError ? "error.main" : "text.secondary",
-                fontSize: "0.7rem",
-                maxWidth: 180,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
+                ...buiChipSx,
+                flexShrink: 1,
+                maxWidth: 260,
+                ...(isError && {
+                  backgroundColor: "var(--bui-red-tint)",
+                  color: "var(--bui-red)",
+                }),
               }}
             >
               {statusText}
-            </Typography>
+            </Box>
+          )}
+
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              ml: "auto",
+              pl: 0.5,
+              flexShrink: 0,
+            }}
+          >
             {isStreaming ? (
               <Box
                 sx={{
                   width: 7,
                   height: 7,
                   borderRadius: "50%",
-                  backgroundColor: "primary.main",
+                  backgroundColor: "var(--bui-accent)",
                   animation: `${pulseKf} 1s infinite ease-in-out`,
                 }}
               />
             ) : isExecuting ? (
               <CircularProgress size={12} thickness={5} />
             ) : isDone ? (
-              <Check
-                size={14}
-                style={{ color: "var(--mui-palette-success-main, #4caf50)" }}
-              />
+              <Check size={13} style={{ color: "var(--bui-green)" }} />
             ) : isError ? (
-              <X
-                size={14}
-                style={{ color: "var(--mui-palette-error-main, #f44336)" }}
-              />
+              <X size={13} style={{ color: "var(--bui-red)" }} />
             ) : null}
           </Box>
         </Box>
@@ -659,50 +637,63 @@ export const StreamingToolCard = React.memo(
             nodes) entirely when collapsed — critical for keeping the DOM small
             in long chats on mobile Safari. */}
         <Collapse in={expanded && hasVisibleBody} timeout={0} unmountOnExit>
-          {/* Code preview */}
-          {code.length > 0 && (
-            <Box
-              ref={codeContainerRef}
-              onScroll={handleScroll}
-              sx={{
-                maxHeight: 220,
-                overflow: "auto",
-                borderTop: 1,
-                borderColor: "divider",
-              }}
-            >
-              <ToolCardCode
-                text={code || " "}
-                language={codeLanguage}
-                syntaxTheme={syntaxTheme}
-                fontSize="0.78rem"
-              />
-            </Box>
-          )}
+          {/* Detail rail (BUI expanded row): content hangs off a hairline
+              left rail aligned under the row icon. */}
+          <Box
+            sx={{
+              ml: "7px",
+              pl: 1.5,
+              py: 0.5,
+              borderLeft: "1px solid var(--bui-line-strong)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 0.75,
+            }}
+          >
+            {/* Code preview */}
+            {code.length > 0 && (
+              <Box
+                ref={codeContainerRef}
+                onScroll={handleScroll}
+                sx={{
+                  maxHeight: 220,
+                  overflow: "auto",
+                  borderRadius: "8px",
+                  backgroundColor: "var(--bui-inset)",
+                  boxShadow: "var(--bui-shadow-hairline)",
+                }}
+              >
+                <ToolCardCode
+                  text={code || " "}
+                  language={codeLanguage}
+                  syntaxTheme={syntaxTheme}
+                  fontSize="0.78rem"
+                />
+              </Box>
+            )}
 
-          {/* Output */}
-          {(isDone || isError) && formattedOutput.length > 0 && (
-            <Box
-              sx={{
-                maxHeight: 200,
-                overflow: "auto",
-                borderTop: 1,
-                borderColor: isError ? "error.main" : "divider",
-                ...(isError && {
-                  backgroundColor: isDark
-                    ? "rgba(244,67,54,0.06)"
-                    : "rgba(244,67,54,0.04)",
-                }),
-              }}
-            >
-              <ToolCardCode
-                text={formattedOutput}
-                language={outputLang}
-                syntaxTheme={syntaxTheme}
-                fontSize="0.75rem"
-              />
-            </Box>
-          )}
+            {/* Output */}
+            {(isDone || isError) && formattedOutput.length > 0 && (
+              <Box
+                sx={{
+                  maxHeight: 200,
+                  overflow: "auto",
+                  borderRadius: "8px",
+                  backgroundColor: isError
+                    ? "var(--bui-red-tint)"
+                    : "var(--bui-inset)",
+                  boxShadow: "var(--bui-shadow-hairline)",
+                }}
+              >
+                <ToolCardCode
+                  text={formattedOutput}
+                  language={outputLang}
+                  syntaxTheme={syntaxTheme}
+                  fontSize="0.75rem"
+                />
+              </Box>
+            )}
+          </Box>
         </Collapse>
       </Box>
     );

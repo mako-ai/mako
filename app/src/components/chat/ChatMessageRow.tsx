@@ -34,12 +34,24 @@ import { isRawMcpToolLabel } from "../../lib/local-acp-parts";
 // ── Memoized message row ─────────────────────────────────────────
 // Prevents completed messages from re-rendering on every streaming chunk.
 
-const userMessageSx = { flex: 1, mt: 2, minWidth: 0 } as const;
+// User message — Beautiful UI chat style: right-aligned rounded bubble.
+const userMessageSx = {
+  flex: 1,
+  mt: 2,
+  minWidth: 0,
+  display: "flex",
+  justifyContent: "flex-end",
+} as const;
 const userMessagePaperSx = {
   p: 1,
-  borderRadius: 1,
-  backgroundColor: "background.paper",
+  px: 1.5,
+  border: "none",
+  borderRadius: "14px",
+  backgroundColor: "var(--bui-inset)",
+  boxShadow: "var(--bui-shadow-hairline)",
   overflow: "hidden",
+  width: "fit-content",
+  maxWidth: "88%",
 } as const;
 const assistantMessageSx = {
   flex: 1,
