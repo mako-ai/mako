@@ -40,6 +40,7 @@ Two RFCs were written independently against the same brief and then merged. Wher
 | **Repo access is a builder tier, not a member right (DECIDED)** | Git is not a member interface. **Normal users never touch the repo** — they reach content only through Mako's API, which enforces per-app ACLs exactly as today, so their ACL plane is unchanged and airtight. Repo access is a distinct **builder tier**: an explicit per-workspace capability carrying workspace-wide read as an accepted, documented property (the trust model every company runs on its monorepo). **Read and write are separate boundaries**: clone = confidentiality, push-to-`main` = integrity — builders push branches freely, `main` is branch-protected, and GitHub branch protection becomes the deploy gate for free. Consequence: `users/<id>/` means "not cluttering the workspace view", NOT "confidential from builders" — product copy must stop promising privacy the substrate does not deliver; splitting personal content into per-user repos is the trigger-based later fix. Open sub-decision: how builders get access — GitHub collaborators via the Cloud Storage App (proposed for pilot) vs. a Mako git proxy (`api.mako.ai/git/<workspace>`, a partial return of §4.3). Today no human has ANY access to cloud repos, so this is net-new work either way. Detail: §11.5. | User (2026-08-19) |
 | **Repo layout stays owner-first; signal/noise is a checkout-scope problem** | Reconsidered and re-affirmed §10's layout: `apps/<slug>/`, `consoles/`, `skills/`, `dbt/` at the root, personal content under `users/<userId>/apps/…` and `users/<userId>/consoles/…`. Type-first (`apps/workspace/`, `apps/users/joan/`) rejected again — for a reason §10 did not state: **both access and noise are "exclude one subtree" operations**, so owner-first needs ONE rule where type-first needs one per content type, a list that grows with every new type and fails silently in the unsafe direction when someone forgets. Type-first wins only on uniform globbing — a cost paid once in code against a risk paid forever. **Layout alone does not fix noise: checkout scope does.** Sparse-checkout (nonexistent today) should default BOTH the builder's clone and the agent's sandbox to workspace content + the caller's own `users/<id>/`, with `CLAUDE.md` stating the scope. Converges with §11.5: if the per-user-repo trigger fires, the workspace repo becomes type-first by construction and the question dissolves — and owner-first `git subtree split`s cleanly into that end state where type-first would have to scatter-gather. Free to settle now: `users/<id>/` is unimplemented and nothing needs migrating. Detail: §11.10. | User (2026-08-19) |
 | **Prior art (verified 2026-08-19): the differentiator is source-vs-serialized-state, not git-vs-no-git** | Netlify/Vercel are a deploy layer on a repo GitHub already governs — never owning the store, they never answer "who may clone", never bridge platform↔git identity, and have no personal-content-in-a-shared-repo concept; our cloud tier inherits all three as the price of instant-start. They validate §11.4 wholesale (many projects per repo with base directories + build-skip, production branch → prod deploy, **PR previews as table stakes** — evidence against deferring them), and their template flow is the origin of §11.5 option (iii). **Correction to an earlier draft:** Retool/Hex/Appsmith are NOT simply "a mirror". Retool Source Control has real git feature branching and PR-gated main-is-prod, serializing apps to **ToolScript** (`.rsx`, JSX-style, replaced YAML for readability) — but *"Retool recommends you not modify Toolscript files directly"*, no linting or type-checking: **reviewable by design, not authorable**. Hex Git export is **one-way only** (Hex is source of truth; manual YAML re-import exists but is not a sync) and is **incompatible with branch protection**. Appsmith (open source) keeps the **database authoritative** with one server-side mirror clone. So the real differentiator is **what the repo contains**: their serialized GUI state vs. our actual source (a real Vite/React app, real `.sql`), which is exactly why Claude Code works on a Mako repo and cannot work on a `.rsx`. Also corrected: multiplayer and git are NOT inherently in tension (Retool/Appsmith have both) — the trade is resolved by **whoever holds truth**, and git-authoritative costs us real-time co-editing, which must be stated rather than discovered. Lessons stolen: Appsmith's git-ops-too-slow→timeout→corruption and metadata-churn warnings; Hex's branch-protection incompatibility (our publish must go THROUGH a PR, never around it); secrets in the DB not the repo (consensus, settles §7). Detail: §11.11. | Verified research 2026-08-19 |
+| **One substrate: E2B everywhere; the local provider is deleted (DECIDED)** | Three unrelated activities were all called "development", and the substrate was chosen for the wrong one. **(1) Developing Mako runs on E2B** — exercising a substrate no user runs ships untested code paths and carries a second implementation forever; every developer has an E2B key, like a database URL. Proven, not theoretical: the nested-node_modules bug (app could not build; 13-27s per command) survived from Block B until 2026-08-20 **because the local provider has no host↔sandbox sync at all** — structurally invisible there, immediate on E2B. **(2) Customer app dev on app.mako.ai runs on E2B** — N1, plus an unsandboxed shell lets a tenant exhaust the API host. **(3) Local customer dev uses NO Mako sandbox**: the user has the WORKSPACE repo checked out, a `mako` executable supplies data proxies + auth, and the user (or Claude Code) runs `vite dev` directly as themselves — Mako is not in the execution path, and **the user never checks out Mako**. This corrects §4.8(d)'s "local executor behind the provider seam". Deleted: local-provider.ts, dev-server.service.ts, dev-preview-ws-proxy.ts, the devPreviewAvailable probe + toolbar gating, and the APPS_V2_SANDBOX_PROVIDER knob; provider.ts stays as the seam for a Fly/Modal fallback. **Live preview moves INTO the sandbox** (vite on 0.0.0.0 + `sandbox.getHost(port)` + iframe), which is why it can finally exist in deployed environments at all. Detail: §12. | User (2026-08-21) |
 | **What `mako` runs locally (OPEN)** | Two readings of "the full Mako app at localhost:6969": a **thin local shell** (serves the UI, owns the local checkout, runs `vite dev`, proxies control plane + data execution to the cloud — materially `packages/desktop` + `packages/local-agent` minus Electron; ships in weeks, no new deployment target) versus a **full local stack** (API + database + Inngest + kernel on the laptop; true self-host, permanent second deployment target and support surface). **Proposed default: thin shell**, full stack only if self-hosting proves to be a sales requirement. Detail: §11.6. | Raised 2026-08-19 |
 | **Sequencing: cheap half first; `mako agent` deferred indefinitely** | Order: (1) scaffold `CLAUDE.md`/`.mcp.json` + §10 Block D1 `skills/` so `git clone && claude` is Mako-capable with no CLI at all — generated from the same source as `buildMakoSystemPromptAppend` to avoid drift; (2) **deploy on merge** (`publishedSha` is currently read but never written — no pipeline exists, so §11.4 is not yet true); (3) minimal `@mako/cli` (`login` + `dev` only); then Block D2 consoles + Block C branch state; then revisit §11.6. The **`mako agent` terminal harness (§4.8c) is deferred indefinitely** — building a competing harness with our tokens contradicts the reason for the work. Detail: §11.7–11.9. | User (2026-08-19) |
 
@@ -213,6 +214,10 @@ Deferred from the stricter draft (explicitly, not silently): serializing the git
 
 ### 4.5 Sandbox layer: E2B
 
+> **§12 removes the local provider.** The "flag-gated local subprocess provider
+> for dev VMs" described here is deleted: Mako development runs on E2B too, so
+> we exercise the substrate we ship. The seam stays for a Fly/Modal fallback.
+
 **Decision: E2B** for session sandboxes and job execution.
 
 - Firecracker microVM isolation — appropriate for "agent runs arbitrary shell commands" (N1).
@@ -254,6 +259,11 @@ The unified agent (`api/src/agents/unified/index.ts`, `app` mode in `modes/regis
 
 ### 4.7 Preview & hosting
 
+> **§12.4 supersedes the dev-preview tier.** Live preview now runs `vite dev`
+> INSIDE the sandbox and iframes E2B's per-sandbox public URL, rather than
+> spawning vite on the API host. The published-app end state below (separate
+> PSL-registered domain, capability tokens) is unchanged.
+
 Two tiers replace the single CDN iframe:
 
 **Dev preview (editing).** The sandbox runs `vite dev`; E2B exposes it at a public per-sandbox URL; `AppRenderer` iframes that URL. HMR works natively. The `@mako/app-sdk` becomes a real npm package (dep of the scaffold) that keeps the same API (`useQuery`, `useDuckDB`, `useTheme`, `useLocation`) and the same postMessage bridge to the authenticated parent window — so live queries, parquet/DuckDB, theming, and virtual routing carry over with minimal renderer changes, and the iframe still never holds credentials. When no sandbox is running, the preview shows the last published build with a "start dev session" affordance.
@@ -292,7 +302,7 @@ mako agent          # ...or vibe with the Mako agent itself, right in the termin
 
 **(d) Desktop: local-first sessions + extension slot.** The desktop app (`packages/desktop`) gets two things.
 
-*Local-first sessions.* On desktop, even the regular Mako chat doesn't need a cloud sandbox: the desktop app keeps a managed local checkout of the workspace repo (e.g. `~/Mako/<workspace>/`), and the agent's `bash`/file tools dispatch to the **local executor** (4.5) via the local agent instead of E2B. `vite dev` runs on the laptop and the preview iframes `localhost` — the same routing trick the app already uses for `local_` database connections. Draft-ref flushes still push to the workspace repo on the same cadence, so the web explorer, collaborators, and durability guarantees are unaffected by where the shell happens to run. Result: faster (no clone/boot), free (no sandbox billing), and offline-tolerant for everything except data queries — with cloud sandboxes remaining the default for browser users and the only option for headless jobs.
+*Local-first sessions.* **Corrected by §12.2(3): there is no "local executor" and no Mako sandbox on the user's machine — the user has the workspace repo, `mako` supplies data proxies and auth, and they run `vite dev` themselves. The paragraph below is kept as design history.** On desktop, even the regular Mako chat doesn't need a cloud sandbox: the desktop app keeps a managed local checkout of the workspace repo (e.g. `~/Mako/<workspace>/`), and the agent's `bash`/file tools dispatch to the **local executor** (4.5) via the local agent instead of E2B. `vite dev` runs on the laptop and the preview iframes `localhost` — the same routing trick the app already uses for `local_` database connections. Draft-ref flushes still push to the workspace repo on the same cadence, so the web explorer, collaborators, and durability guarantees are unaffected by where the shell happens to run. Result: faster (no clone/boot), free (no sandbox billing), and offline-tolerant for everything except data queries — with cloud sandboxes remaining the default for browser users and the only option for headless jobs.
 
 *Extension slot.* A right-panel "coding agent" slot that can host Claude Code / Codex (their CLIs speak a well-documented stdio/ACP protocol) against either the managed local checkout or a cloud sandbox terminal. `mako agent` speaks the same protocol and becomes the slot's first-party occupant, which also makes it the reference implementation to test the slot against.
 
@@ -976,3 +986,91 @@ a clone non-reproducible without a kernel run). Needs its own decision under
 [Retool ToolScript](https://docs.retool.com/source-control/concepts/toolscript) ·
 [Retool git branching (blog)](https://retool.com/blog/git-branching-with-source-control) ·
 [Appsmith git internals](https://www.appsmith.com/blog/appsmith-git-internal-tools-2)
+
+---
+
+## 12. One substrate: E2B everywhere (decided 2026-08-21)
+
+> Supersedes §4.5's "E2B for production; a flag-gated local subprocess provider
+> for dev VMs", the local half of §4.8(d), and §11.6's open question. §11.3's
+> local-first workflow is unchanged in intent but corrected in mechanism below.
+
+### 12.1 Three different things get called "development"
+
+The confusion this section removes is that one word covered three unrelated
+activities, and a substrate choice was made for the wrong one:
+
+1. **Developing Mako** — us, working on this codebase.
+2. **Developing workspace applications on app.mako.ai** — what customers do
+   today.
+3. **Developing workspace applications locally** — what technical customers
+   will do once §11 lands.
+
+### 12.2 All three point at the same answer
+
+**(1) Developing Mako runs on E2B.** There is no value in a Mako developer
+exercising a substrate that no user will ever run, and there is real cost: you
+ship code paths you never executed, and you carry a second implementation
+forever. Every developer has an E2B key; that is a normal cost of working here,
+like having a database URL.
+
+This is not a theoretical concern. The nested-`node_modules` sync bug — an app
+that could not build at all, and 13-27 seconds of latency on every shell
+command — survived from §10 Block B until 2026-08-20 **because the local
+provider has no host↔sandbox sync at all.** The bug was structurally invisible
+on the substrate Mako developers used and immediate on the one users run. The
+local provider did not merely fail to catch it; it is the reason nobody did.
+
+**(2) Customer app development on app.mako.ai runs on E2B.** Non-negotiable and
+already settled by N1: user code never executes in the API process. Beyond
+isolation, an unsandboxed shell lets a tenant exhaust the API host — CPU, disk,
+memory — for everyone.
+
+**(3) Local customer development does not use a Mako sandbox at all.** This is
+the correction to §4.8(d), which imagined the desktop app holding a managed
+checkout and dispatching the agent's file/bash tools to a "local executor"
+behind the provider seam — Mako still executing on the user's behalf, just
+pointed at their laptop.
+
+The real shape is simpler. The user has **the workspace repo** checked out. A
+`mako` executable supplies what only Mako can: data-source proxies,
+authentication, and the API surface. The user — or Claude Code — then runs
+`vite dev`, `npm test`, anything, **directly, as themselves**. Mako is not in
+the execution path, there is no sandbox abstraction, and **the user never has
+Mako itself checked out and never needs to.**
+
+So the "local executor" has no third case to serve either.
+
+### 12.3 Consequence: the local sandbox provider is deleted
+
+It serves none of the three. It was the bootstrap substrate from the first
+apps-v2 commit, written before the E2B provider existed and never removed —
+its own test was never even registered in the test script, so it has never run
+in CI.
+
+Removed: `sandbox/local-provider.ts`, `dev-server.service.ts`,
+`dev-preview-ws-proxy.ts`, the `devPreviewAvailable` capability probe and the
+toolbar gating built on it, and the `APPS_V2_SANDBOX_PROVIDER` knob.
+`sandbox/provider.ts` stays as the seam — §7 wants Fly/Modal reachable as a
+vendor fallback — with one implementation behind it.
+
+### 12.4 Live preview moves into the sandbox, where it always belonged
+
+The live `vite dev` preview existed **only** on the local provider, because it
+spawned vite as a child process of the API host. That is exactly what N1
+forbids, so it could never ship; the throwaway substrate had the better
+experience and the real one had none. That inversion is what produced a
+primary-styled toolbar button that could not work in any deployed environment.
+
+The correct implementation, which works everywhere and needs no capability
+flag: **vite runs inside the sandbox**, bound to `0.0.0.0`; E2B's
+`sandbox.getHost(port)` yields the per-sandbox public URL; Mako iframes that
+URL directly. No proxy, no WebSocket relay of our own (HMR rides the same
+origin), and no tenant process on the API host.
+
+Notes carried into implementation: the sandbox's idle timeout must be held open
+while a dev server is running; vite needs its allowed-hosts check satisfied for
+the `*.e2b.app` host; and the public URL is unguessable but unauthenticated,
+which is the same exposure the existing token-gated static preview already
+accepts. §4.7's end state (separate PSL-registered domain, capability tokens)
+still stands for *published* apps — this is the dev-preview tier only.
