@@ -1318,3 +1318,111 @@ export async function discardWorktree(
     return { baseSha: head };
   });
 }
+
+// ---------------------------------------------------------------------------
+// Publish: trial merge, then promote (§13.3)
+// ---------------------------------------------------------------------------
+
+export interface TrialMergeResult {
+  /** Commit that was built and would become the new `main`. */
+  sha: string;
+  /** False when the merge itself could not be performed. */
+  ok: boolean;
+  reason?: string;
+}
+
+/**
+ * Merge `branch` into the publish worktree WITHOUT touching the real `main`.
+ *
+ * Publishing used to merge into `main` first and build afterwards, so a build
+ * failure left `main` carrying the broken merge: production kept serving the
+ * previous deployment, but the branch everyone publishes from was poisoned and
+ * the next publish failed too. Building the merge result before `main` ever
+ * moves means a failed publish changes nothing at all.
+ *
+ * Building the *merge result* rather than the branch also matters: if `main`
+ * advanced since the branch forked, what lands is the merge, not the branch.
+ */
+export async function trialMerge(
+  handle: WorktreeHandle,
+  branch: string,
+  author?: GitAuthor,
+): Promise<TrialMergeResult> {
+  const repoDir = handle.repoDir;
+  const dir = handle.sessionDir;
+  const mainBranch = handle.project.defaultBranch || DEFAULT_BRANCH;
+
+  // A previous publish leaves build output behind. Reset tracked files and
+  // drop untracked ones, but NOT ignored ones — node_modules is expensive and
+  // reinstalling it on every publish would dominate the wall clock.
+  await runGit(["-C", dir, "reset", "--hard"], { timeoutMs: 60_000 });
+  await runGit(["-C", dir, "clean", "-fd"], { timeoutMs: 60_000 });
+
+  // Catch up with main first, so the trial merge is against current main.
+  await runGit(["-C", dir, "fetch", repoDir, mainBranch], {
+    timeoutMs: 60_000,
+  });
+  await runGit(["-C", dir, "reset", "--hard", "FETCH_HEAD"], {
+    timeoutMs: 60_000,
+  });
+
+  if (branch !== mainBranch) {
+    try {
+      await runGit(["-C", dir, "fetch", repoDir, branch], {
+        timeoutMs: 60_000,
+      });
+      // Attribute the merge to whoever published it, not to the broker.
+      const authorEnv = author
+        ? {
+            GIT_AUTHOR_NAME: author.name,
+            GIT_AUTHOR_EMAIL: author.email,
+            GIT_COMMITTER_NAME: author.name,
+            GIT_COMMITTER_EMAIL: author.email,
+          }
+        : undefined;
+      await runGit(["-C", dir, "merge", "--no-edit", "FETCH_HEAD"], {
+        timeoutMs: 60_000,
+        env: authorEnv,
+      });
+    } catch (error) {
+      // Leave nothing half-merged behind for the next publish.
+      await runGit(["-C", dir, "merge", "--abort"], {
+        timeoutMs: 30_000,
+      }).catch(() => undefined);
+      return {
+        sha: "",
+        ok: false,
+        reason:
+          error instanceof Error && /conflict/i.test(error.message)
+            ? `Cannot publish: ${branch} conflicts with ${mainBranch}. Merge ${mainBranch} into it and resolve the conflicts first.`
+            : `Could not merge ${branch} into ${mainBranch}`,
+      };
+    }
+  }
+
+  const { stdout } = await runGit(["-C", dir, "rev-parse", "HEAD"], {
+    cwd: dir,
+  });
+  return { sha: stdout.trim(), ok: true };
+}
+
+/**
+ * Advance the real `main` to the commit that was just built.
+ *
+ * Only called after a successful build. A non-fast-forward push means `main`
+ * moved while we were building, so the built artifact no longer corresponds to
+ * what `main` holds — refusing is correct, and the caller retries.
+ */
+export async function promoteToMain(handle: WorktreeHandle): Promise<void> {
+  const mainBranch = handle.project.defaultBranch || DEFAULT_BRANCH;
+  await runGit(
+    [
+      "-C",
+      handle.sessionDir,
+      "push",
+      handle.repoDir,
+      `HEAD:refs/heads/${mainBranch}`,
+    ],
+    { timeoutMs: 120_000 },
+  );
+}

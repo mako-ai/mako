@@ -4,7 +4,7 @@
  * Files are browsed/opened from the Apps v2 explorer (each file gets its own
  * `app-v2-file` tab, v1-style); this view owns everything app-level:
  *
- *   ┌ toolbar: dev session · Preview build · Publish · History · Discard
+ *   ┌ toolbar: dev session · Publish · History · Discard
  *   ├ preview: token-gated sandboxed iframe of the built app
  *   └ terminal: shell into the app's sandbox session (E2B microVM)
  *
@@ -230,7 +230,6 @@ export default function AppV2Workspace({
   const fetchHistory = useAppsV2Store(s => s.fetchHistory);
   const fetchBranches = useAppsV2Store(s => s.fetchBranches);
   const discard = useAppsV2Store(s => s.discard);
-  const buildPreview = useAppsV2Store(s => s.buildPreview);
   const startDevPreview = useAppsV2Store(s => s.startDevPreview);
 
   const [historyAnchor, setHistoryAnchor] = useState<null | HTMLElement>(null);
@@ -353,30 +352,6 @@ export default function AppV2Workspace({
         <Tooltip
           title={
             activeChatBranch
-              ? `Build ${activeChatBranch.name} exactly as Publish would, and preview the result — without deploying it`
-              : "Build the app exactly as Publish would and preview the result, without deploying it"
-          }
-        >
-          <span>
-            <Button
-              size="small"
-              variant={preview?.mode === "dev" ? "text" : "outlined"}
-              disabled={preview?.building}
-              onClick={() =>
-                void buildPreview(
-                  workspaceId,
-                  appId,
-                  activeChatBranch ? (activeChatId ?? undefined) : undefined,
-                )
-              }
-            >
-              Preview build
-            </Button>
-          </span>
-        </Tooltip>
-        <Tooltip
-          title={
-            activeChatBranch
               ? `Publish: merge ${activeChatBranch.name} into main, build from main, and deploy. Everyone sees the result; rolling back is instant.`
               : "Publish: build from main and deploy. Everyone sees the result; rolling back is instant."
           }
@@ -482,10 +457,9 @@ export default function AppV2Workspace({
             </Typography>
             <Typography variant="body2" color="text.secondary">
               <strong>Start dev session</strong> runs the app live, so edits
-              show up as you make them. <strong>Preview build</strong> compiles
-              it exactly as a publish would, without deploying.{" "}
-              <strong>Publish</strong> merges to main, builds, and deploys —
-              that is the version everyone else sees.
+              show up as you make them. <strong>Publish</strong> builds it and
+              deploys — that is the version everyone else sees. A failed build
+              publishes nothing and leaves the current version untouched.
             </Typography>
           </Box>
         )}

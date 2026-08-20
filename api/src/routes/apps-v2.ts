@@ -56,8 +56,9 @@ import {
   listBranches,
   listFiles,
   mergeBranchToMain,
-  defaultBranchSha,
   PUBLISH_ACTOR,
+  trialMerge,
+  promoteToMain,
   projectHistory,
   readFile,
   worktreeStatus,
@@ -66,7 +67,7 @@ import {
 import { APPS_V2_EXEC_MAX_TIMEOUT_MS } from "../apps-v2/config";
 import { registerPublicShareRoutes } from "./lib/public-share-routes";
 import {
-  publishFromWorktree,
+  uploadDeployment,
   setPublishedSha,
   deploymentExists,
   readDeploymentAsset,
@@ -74,6 +75,7 @@ import {
 import { mintPreviewGrant } from "../apps-v2/preview.service";
 import { ensureDevServer } from "../apps-v2/dev-server.service";
 import { Readable } from "node:stream";
+import path from "node:path";
 import {
   bindingArtifactKey,
   getBindingState,
@@ -1318,55 +1320,88 @@ appsV2Routes.openapi(
       const branch =
         body.branch ?? (body.chatId ? chatBranchFor(body.chatId) : undefined);
 
-      // 1. Land the work on main. Publishing from main itself is a no-op merge.
-      if (branch && branch !== (loaded.project.defaultBranch || "main")) {
-        const merge = await mergeBranchToMain(
-          loaded.project,
-          branch,
-          user?.email ? { name: user.email, email: user.email } : undefined,
-        );
-        if (!merge.merged) {
-          return c.json(
-            { success: false, error: merge.reason ?? "Merge failed" },
-            409,
-          );
-        }
-      }
-
-      // 2. Build from main — never from the caller's branch, so what ships is
-      //    exactly what main holds.
-      // A dedicated, write-free worktree pinned to main — never the caller's
-      // session, which sits on their branch and may hold WIP that would make
-      // ensureWorktree skip the fast-forward and build a stale tree.
+      // Build the MERGE RESULT before main ever moves. Merging first and
+      // building second left main carrying a broken merge whenever the build
+      // failed — production kept serving the old deployment, but the branch
+      // everyone publishes from was poisoned. Now a failed publish changes
+      // nothing at all.
       const handle = await ensureWorktree(loaded.project, PUBLISH_ACTOR, {
         branch: loaded.project.defaultBranch || "main",
       });
-      const sha = await defaultBranchSha(loaded.project);
 
-      const result = await publishFromWorktree(handle, sha, async () => {
-        const install = await execInWorktree(
-          handle,
-          "[ -d node_modules ] || npm install --no-audit --no-fund",
-          { timeoutMs: 300_000 },
+      const trial = await trialMerge(
+        handle,
+        branch ?? (loaded.project.defaultBranch || "main"),
+        user?.email ? { name: user.email, email: user.email } : undefined,
+      );
+      if (!trial.ok) {
+        return c.json({ success: false, error: trial.reason }, 409);
+      }
+      const sha = trial.sha;
+
+      if (await deploymentExists(loaded.project._id.toString(), sha)) {
+        await promoteToMain(handle);
+        await setPublishedSha(loaded.project, sha);
+        return c.json(
+          { success: true as const, sha, fileCount: 0, reused: true },
+          200,
         );
-        if (install.exitCode !== 0) {
-          return {
-            ok: false,
-            output: `npm install failed\n${install.stdout.slice(-2000)}${install.stderr.slice(-2000)}`,
-          };
-        }
-        // Relative asset URLs: a deployment is served under a path prefix
-        // (/live/, /api/share/<token>/), not at a domain root.
-        const build = await execInWorktree(
-          handle,
-          "npm run build -- --base=./",
-          { timeoutMs: 300_000 },
+      }
+
+      const install = await execInWorktree(
+        handle,
+        "[ -d node_modules ] || npm install --no-audit --no-fund",
+        { timeoutMs: 300_000 },
+      );
+      if (install.exitCode !== 0) {
+        return c.json(
+          {
+            success: false,
+            error: "npm install failed",
+            stdout: install.stdout.slice(-4000),
+            stderr: install.stderr.slice(-4000),
+          },
+          422,
         );
-        return {
-          ok: build.exitCode === 0,
-          output: `${build.stdout.slice(-3000)}${build.stderr.slice(-3000)}`,
-        };
+      }
+      // Relative asset URLs: a deployment is served under a path prefix
+      // (/live/, /api/share/<token>/), not at a domain root.
+      const build = await execInWorktree(handle, "npm run build -- --base=./", {
+        timeoutMs: 300_000,
       });
+      if (build.exitCode !== 0) {
+        // main never moved, so there is nothing to roll back.
+        return c.json(
+          {
+            success: false,
+            error: "Build failed — nothing was published and main is unchanged",
+            stdout: build.stdout.slice(-4000),
+            stderr: build.stderr.slice(-4000),
+          },
+          422,
+        );
+      }
+
+      // The build succeeded: only now does main advance.
+      try {
+        await promoteToMain(handle);
+      } catch {
+        return c.json(
+          {
+            success: false,
+            error:
+              "main moved while this build was running — nothing was published. Try again.",
+          },
+          409,
+        );
+      }
+
+      const result = await uploadDeployment(
+        loaded.project,
+        sha,
+        path.join(handle.sessionDir, handle.appRoot, "dist"),
+      );
+      await setPublishedSha(loaded.project, sha);
 
       return c.json(
         {
