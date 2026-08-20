@@ -466,16 +466,32 @@ export async function ensureWorktree(
       `refs/heads/${doc.branch}`,
     );
     let needsRematerialize = false;
-    if (currentHead && currentHead !== doc.baseSha && !doc.wipOid) {
-      doc.baseSha = currentHead;
-      doc.revision += 1;
-      await doc.save();
-      needsRematerialize = true;
-      logger.info("Apps v2 worktree fast-forwarded", {
-        worktreeId,
-        branch: doc.branch,
-        head: currentHead,
-      });
+    let needsCatchUp = false;
+    if (currentHead && currentHead !== doc.baseSha) {
+      if (!doc.wipOid) {
+        doc.baseSha = currentHead;
+        doc.revision += 1;
+        await doc.save();
+        needsRematerialize = true;
+        logger.info("Apps v2 worktree fast-forwarded", {
+          worktreeId,
+          branch: doc.branch,
+          head: currentHead,
+        });
+      } else {
+        // The branch moved while this session has uncommitted work.
+        //
+        // This used to be skipped entirely, which silently stranded the
+        // session on an old commit: creating an app (a commit on the branch)
+        // and then previewing it failed with "cwd does not exist", because
+        // the new apps/<slug>/ folder was never checked out. Anyone with a
+        // dirty worktree — i.e. anyone mid-edit — hit it.
+        //
+        // Catch the session up with a merge instead. Git refuses to merge
+        // over uncommitted changes, so this brings in new commits and leaves
+        // the user's edits alone, rather than choosing between the two.
+        needsCatchUp = true;
+      }
     }
 
     const sessionDir = sessionDirFor(worktreeId);
@@ -495,8 +511,58 @@ export async function ensureWorktree(
       });
     }
 
+    if (needsCatchUp && !needsRematerialize) {
+      await catchUpSession(repoDir, sessionDir, doc, currentHead!, worktreeId);
+    }
+
     return { doc, project, repoDir, sessionDir, appRoot: appRootFor(project) };
   });
+}
+
+/**
+ * Merge new commits on the branch into a session that has uncommitted work.
+ *
+ * The session clone's origin is deliberately unreachable (tenant code must not
+ * be able to reach the bare repo), so the fetch names the repo path explicitly
+ * — this runs broker-side, not in the sandbox.
+ *
+ * A merge that would clobber local edits fails, and that is the right outcome:
+ * the session stays where it was and the caller continues with what they had,
+ * rather than losing work to an automatic update.
+ */
+async function catchUpSession(
+  repoDir: string,
+  sessionDir: string,
+  doc: IAppWorktreeV2,
+  head: string,
+  worktreeId: string,
+): Promise<void> {
+  try {
+    await runGit(["-C", sessionDir, "fetch", repoDir, doc.branch], {
+      timeoutMs: 60_000,
+    });
+    await runGit(["-C", sessionDir, "merge", "--no-edit", "FETCH_HEAD"], {
+      timeoutMs: 60_000,
+    });
+    doc.baseSha = head;
+    doc.revision += 1;
+    await doc.save();
+    logger.info("Apps v2 session caught up with branch head", {
+      worktreeId,
+      branch: doc.branch,
+      head,
+    });
+  } catch (error) {
+    logger.warn(
+      "Apps v2 session could not catch up (local changes would be overwritten); staying put",
+      {
+        worktreeId,
+        branch: doc.branch,
+        head,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
 }
 
 /** Build (or rebuild) the session working tree: clone at base, apply WIP. */

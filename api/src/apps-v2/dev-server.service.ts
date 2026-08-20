@@ -26,6 +26,8 @@
 import { getSandboxProvider } from "./sandbox/provider";
 import type { WorktreeHandle } from "./worktree.service";
 import { loggers } from "../logging";
+import { readBindings, bindingArtifactKey } from "./bindings.service";
+import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 
 const logger = loggers.api("apps-v2-dev-server");
 
@@ -39,6 +41,14 @@ const DEV_SESSION_KEEPALIVE_MS = 30 * 60 * 1000;
 const LAUNCHER_PATH = "/tmp/mako-dev-server.mjs";
 
 /**
+ * Where materialized binding parquet is staged inside the sandbox.
+ *
+ * Deliberately outside the app's directory: this data is derived, sometimes
+ * large, and must never end up in the user's git tree or their `public/`.
+ */
+const DATA_DIR = "/tmp/mako-data";
+
+/**
  * Node launcher, run inside the sandbox. Uses Vite's JS API because inline
  * `server` options there beat the app's config file; the CLI has no flag for
  * `allowedHosts`, and editing the app's `vite.config.ts` to add one would be
@@ -50,9 +60,46 @@ const LAUNCHER_PATH = "/tmp/mako-dev-server.mjs";
 function launcherSource(appDir: string): string {
   return `
 import { createServer } from "${appDir}/node_modules/vite/dist/node/index.js";
+import { createReadStream, existsSync, statSync } from "node:fs";
+import path from "node:path";
+
+// Serve materialized data bindings at __data/<name>.parquet.
+//
+// The app fetches this path relatively, and it used to be answered by Mako's
+// preview route, which sat in front of the dev server as a proxy. Now the
+// browser talks to the sandbox directly (apps-v2.md §12.4), so nothing was
+// answering it: Vite fell through to its SPA fallback and returned index.html,
+// and the parquet reader failed with "footer != PAR1" on the HTML.
+const makoData = {
+  name: "mako-data",
+  configureServer(server) {
+    server.middlewares.use((req, res, next) => {
+      const url = (req.url || "").split("?")[0];
+      const match = /^\\/__data\\/([A-Za-z0-9_][A-Za-z0-9_-]*)\\.parquet$/.exec(url);
+      if (!match) return next();
+      const file = path.join(${JSON.stringify(DATA_DIR)}, match[1] + ".parquet");
+      if (!existsSync(file)) {
+        res.statusCode = 404;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({
+          error: "Binding not materialized",
+          binding: match[1],
+        }));
+        return;
+      }
+      // Parquet readers need the length to locate the footer.
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/vnd.apache.parquet");
+      res.setHeader("content-length", String(statSync(file).size));
+      res.setHeader("cache-control", "no-store");
+      createReadStream(file).pipe(res);
+    });
+  },
+};
 
 const server = await createServer({
   root: ${JSON.stringify(appDir)},
+  plugins: [makoData],
   server: {
     host: "0.0.0.0",
     port: ${DEV_PORT},
@@ -70,6 +117,62 @@ console.log("mako dev server listening on ${DEV_PORT}");
 export interface DevPreview {
   /** Public origin the browser should iframe. */
   url: string;
+  /** Binding names whose data was staged into the session. */
+  stagedBindings: string[];
+}
+
+/**
+ * Copy each materialized binding's parquet into the sandbox so the dev server
+ * can answer `__data/<name>.parquet` locally.
+ *
+ * Pushing the bytes in (rather than having the sandbox call back to Mako)
+ * keeps this working identically in local development and in deployed
+ * environments: a sandbox can always reach the public internet, but it can
+ * never reach a developer's localhost API.
+ *
+ * Bindings that have never been materialized are skipped, and the dev server
+ * answers 404 with a readable reason rather than serving HTML as parquet.
+ */
+async function stageBindingData(
+  handle: WorktreeHandle,
+  provider: ReturnType<typeof getSandboxProvider>,
+  ctx: { hostDir: string; sessionKey: string },
+): Promise<string[]> {
+  const projectId = handle.project._id.toString();
+  let bindings: Awaited<ReturnType<typeof readBindings>>;
+  try {
+    bindings = await readBindings(handle.project, handle.doc.userId);
+  } catch {
+    return [];
+  }
+  if (bindings.length === 0) return [];
+
+  await provider.exec(ctx, `mkdir -p ${DATA_DIR}`, { timeoutMs: 30_000 });
+
+  const store = getDashboardArtifactStore();
+  const staged: string[] = [];
+  for (const binding of bindings) {
+    const key = bindingArtifactKey(projectId, binding.name);
+    const stream = await store.openReadStream(key);
+    if (!stream) continue;
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(Buffer.from(chunk as Buffer));
+    }
+    await provider.writeFile(
+      ctx,
+      `${DATA_DIR}/${binding.name}.parquet`,
+      new Uint8Array(Buffer.concat(chunks)),
+    );
+    staged.push(binding.name);
+  }
+  if (staged.length > 0) {
+    logger.info("Apps v2 staged binding data into the sandbox", {
+      projectId,
+      bindings: staged,
+    });
+  }
+  return staged;
 }
 
 async function isListening(
@@ -138,10 +241,15 @@ export async function ensureDevServer(
     }
   }
 
+  // Refresh staged data on every call, so re-materializing a binding and
+  // hitting preview again picks up the new rows without a restart.
+  const stagedBindings = await stageBindingData(handle, provider, ctx);
+
   const url = await provider.publicUrlForPort(ctx, DEV_PORT);
   logger.info("Apps v2 dev preview ready", {
     projectId: handle.project._id.toString(),
     appRoot: handle.appRoot,
+    stagedBindings,
   });
-  return { url };
+  return { url, stagedBindings };
 }

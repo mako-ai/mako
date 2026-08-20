@@ -468,6 +468,17 @@ async function execDetachedE2b(
   }
 }
 
+async function writeFileE2b(
+  ctx: SandboxExecContext,
+  remotePath: string,
+  bytes: Uint8Array,
+): Promise<void> {
+  const sandbox = await connectSession(ctx.sessionKey);
+  await sandbox.files.write(remotePath, bytes.buffer as ArrayBuffer, {
+    user: SANDBOX_USER,
+  });
+}
+
 async function publicUrlForPortE2b(
   ctx: SandboxExecContext,
   port: number,
@@ -488,6 +499,7 @@ export const e2bSandboxProvider: SandboxProvider = {
   id: "e2b",
   exec: execE2b,
   execDetached: execDetachedE2b,
+  writeFile: writeFileE2b,
   publicUrlForPort: publicUrlForPortE2b,
   keepAlive: keepAliveE2b,
   destroySession: async sessionKey => {

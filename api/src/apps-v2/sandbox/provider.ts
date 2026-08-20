@@ -76,6 +76,16 @@ export interface SandboxProvider {
    */
   publicUrlForPort(ctx: SandboxExecContext, port: number): Promise<string>;
   /**
+   * Write raw bytes to an absolute path inside the sandbox, outside the synced
+   * working tree. Used to stage data the app must be able to fetch but that
+   * must never enter its git tree (§13: materialized binding parquet).
+   */
+  writeFile(
+    ctx: SandboxExecContext,
+    remotePath: string,
+    bytes: Uint8Array,
+  ): Promise<void>;
+  /**
    * Keep the session alive for at least this long. Dev servers outlive the
    * command that started them, so the idle timeout has to be pushed out
    * explicitly or E2B pauses the sandbox out from under the preview.
