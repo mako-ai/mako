@@ -175,7 +175,7 @@ export const QueuedPromptList = React.memo(
     return (
       <Box
         sx={{
-          mx: 2.25,
+          mx: 3.25,
           mb: 0,
           borderRadius: "14px",
           borderBottomLeftRadius: 0,

@@ -419,7 +419,7 @@ export const MessageVirtuosoList = React.memo(
   React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
     function MessageVirtuosoList({ style, children }, ref) {
       return (
-        <List dense component="div" ref={ref} style={style} sx={{ px: 1 }}>
+        <List dense component="div" ref={ref} style={style} sx={{ px: 2 }}>
           {children}
         </List>
       );
