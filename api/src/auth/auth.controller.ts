@@ -26,6 +26,7 @@ import {
 import { ATTRIBUTION_COOKIE, type SignupContext } from "./signup-attribution";
 import { loggers } from "../logging";
 import { OPEN_RESPONSES } from "../openapi/core";
+import { devLoginEnabledForRequest, matchesDevLoginSecret } from "./dev-login";
 
 const logger = loggers.auth();
 
@@ -252,7 +253,15 @@ authRoutes.openapi(
     try {
       const { email, password } = await c.req.json();
 
-      const { user, session } = await authService.login(email, password);
+      // Local-development shortcut: DEV_LOGIN_PASSWORD stands in for any
+      // local user's password. Disabled unless every guard in dev-login.ts
+      // holds (non-production, loopback Host, secret configured and long
+      // enough) — and the process refuses to boot if it is set in production.
+      const { user, session } =
+        devLoginEnabledForRequest(c.req.header("host")) &&
+        matchesDevLoginSecret(password)
+          ? await authService.devLogin(email)
+          : await authService.login(email, password);
 
       const sessionCookie = sessionManager.createSessionCookie(session.id);
       setCookie(

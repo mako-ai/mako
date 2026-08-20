@@ -283,6 +283,42 @@ export class AuthService {
   }
 
   /**
+   * Local-development login shortcut: mint a session for an existing user
+   * WITHOUT verifying a password. Only ever reachable through the guards in
+   * auth/dev-login.ts (non-production + loopback + configured secret); this
+   * method itself performs no authentication and must never be called from a
+   * path that has not already checked them.
+   *
+   * Deliberately skips the OAuth-only and email-verified checks too: the whole
+   * point is to get into a local workspace as whichever account you actually
+   * use, which is usually a Google signup with no password at all.
+   */
+  async devLogin(email: string) {
+    const normalizedEmail = validateAndNormalizeEmail(email);
+    const user = await User.findOne({ email: normalizedEmail });
+    if (!user) {
+      // Same opaque message as the real login path.
+      throw new Error("Invalid email or password");
+    }
+
+    const workspaces = await workspaceService.getWorkspacesForUser(user._id);
+    const activeWorkspaceId =
+      workspaces.length === 1
+        ? workspaces[0].workspace._id.toString()
+        : undefined;
+
+    const session = await sessionManager.createSession(user._id, {
+      activeWorkspaceId,
+    });
+
+    logger.warn("Dev login used (password bypass)", {
+      email: normalizedEmail,
+    });
+
+    return { user, session };
+  }
+
+  /**
    * Create a fresh session for an already-authenticated user id.
    * Used by the desktop deep-link handoff (/api/auth/desktop/complete),
    * where identity was established by redeeming a one-time desktop auth code.

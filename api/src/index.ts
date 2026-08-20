@@ -39,6 +39,7 @@ import {
   initLangfuseTracing,
   shutdownLangfuse,
 } from "./observability/langfuse";
+import { assertDevLoginSafeAtBoot } from "./auth/dev-login";
 
 // Resolve the root‐level .env file regardless of the runtime working directory
 const envPath = path.resolve(__dirname, "../../.env");
@@ -306,6 +307,11 @@ async function main(): Promise<void> {
       { path: envPath },
     );
   }
+
+  // Refuse to start if the local-development login bypass is configured in a
+  // production environment. A misconfiguration here must be a loud crash, not
+  // a silently weakened login path.
+  assertDevLoginSafeAtBoot();
 
   const systemSkillRegistry = discoverSystemSkills();
   const missingSystemSkills = REQUIRED_SYSTEM_SKILLS.filter(
