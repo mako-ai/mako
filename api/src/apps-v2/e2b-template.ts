@@ -48,6 +48,14 @@ export function createAppsV2E2BTemplate() {
         "git --version",
         `npm install -g --force pnpm@${PNPM_VERSION}`,
         `test "$(pnpm --version)" = "${PNPM_VERSION}"`,
+        // zsh for the interactive terminal. The PTY starts the user's login
+        // shell, so this is what a person actually gets when they open one.
+        "if ! command -v zsh >/dev/null; then " +
+          "(apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends zsh ca-certificates && rm -rf /var/lib/apt/lists/*) " +
+          "|| (apk add --no-cache zsh ca-certificates) " +
+          "|| (yum install -y zsh ca-certificates); fi",
+        "zsh --version",
+        'chsh -s "$(command -v zsh)" user',
         "mkdir -p /home/user/app",
         "chown -R user:user /home/user/app",
       ].join(" && "),
@@ -65,6 +73,37 @@ export function createAppsV2E2BTemplate() {
         "git config --global credential.helper ''",
         "git config --global advice.detachedHead false",
         "git config --global init.defaultBranch main",
+      ].join(" && "),
+      { user: "user" },
+    )
+    .runCmd(
+      [
+        "set -eux",
+        // Oh My Zsh, unattended. Kept deliberately small: the default
+        // robbyrussell theme already shows the git branch and whether the
+        // tree is dirty, which is the thing you actually want to see while
+        // working, and every plugin is startup cost paid on every shell.
+        'sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended',
+        // The two external plugins worth their weight: suggestions from
+        // history as you type, and syntax highlighting that shows a typo'd
+        // command in red BEFORE you run it.
+        "git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions " +
+          "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/zsh-autosuggestions",
+        "git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting " +
+          "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/zsh-syntax-highlighting",
+        // `z` ships with Oh My Zsh and is the one navigation plugin people
+        // genuinely miss. Syntax highlighting must be last — it wraps the
+        // widgets the others install.
+        "sed -i 's/^plugins=(.*)$/plugins=(git z zsh-autosuggestions zsh-syntax-highlighting)/' /home/user/.zshrc",
+        // Deliberately NOT setting DISABLE_UNTRACKED_FILES_DIRTY: skipping
+        // untracked files makes the prompt faster, but it also means creating
+        // a new file leaves the prompt saying "clean", and creating files is
+        // most of what happens here. A workspace repo is a handful of app
+        // folders, not a monorepo, so the scan is cheap.
+        "echo 'cd /home/user/app 2>/dev/null || true' >> /home/user/.zshrc",
+        // Fail the build if the config did not take, rather than shipping a
+        // template whose shell silently falls back to defaults.
+        "grep -q 'zsh-syntax-highlighting' /home/user/.zshrc",
       ].join(" && "),
       { user: "user" },
     )

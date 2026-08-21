@@ -542,6 +542,17 @@ async function openTerminalE2b(
     },
   });
 
+  // E2B's PTY always starts bash and ignores both SHELL and the account's
+  // login shell, so hand off explicitly. `exec` REPLACES bash rather than
+  // nesting, so ctrl-D and `exit` end the session once, as expected. Guarded,
+  // so a template without zsh simply stays in bash instead of breaking.
+  await sandbox.pty.sendInput(
+    handle.pid,
+    new TextEncoder().encode(
+      "command -v zsh >/dev/null && { clear; exec zsh -l; }\n",
+    ),
+  );
+
   return {
     write: data => sandbox.pty.sendInput(handle.pid, data),
     resize: (cols, rows) => sandbox.pty.resize(handle.pid, { cols, rows }),
