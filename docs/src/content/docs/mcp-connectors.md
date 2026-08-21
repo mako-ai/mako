@@ -54,6 +54,10 @@ GitHub's remote MCP server does not support Dynamic Client Registration, so OAut
 2. Set the **Authorization callback URL** to what the API sends: `${PUBLIC_URL || CLIENT_URL}/api/mcp/oauth/callback` (shown in the connection dialog). Local default: `http://localhost:5173/api/mcp/oauth/callback`.
 3. Either set `GITHUB_MCP_CLIENT_ID` / `GITHUB_MCP_CLIENT_SECRET` in Mako's environment (deployment-wide, one-click for every workspace), or paste the app's Client ID and Client Secret in **Settings → MCP Servers → GitHub**. Each member then clicks **Connect GitHub account**.
 
+:::tip[Reusing the sign-in OAuth app]
+If your deployment already has a GitHub OAuth App for login (`GH_CLIENT_ID` / `GH_CLIENT_SECRET`), you can point `GITHUB_MCP_CLIENT_ID` / `GITHUB_MCP_CLIENT_SECRET` at the same app — with one caveat: GitHub OAuth Apps accept a **single** Authorization callback URL, and every `redirect_uri` must be that URL or a subdirectory of it. The MCP flow redirects to `/api/mcp/oauth/callback`, which is a different path than the login callback. Reuse only works if the app's registered callback is a common parent of both (e.g. the deployment root, `https://app.example.com/`) — both flows pass their own explicit `redirect_uri`, so login keeps working after loosening the registration. If the registered callback is the exact login path, register a dedicated MCP app instead.
+:::
+
 No OAuth app? Members can instead authenticate with a **personal access token** (API-key mode): generate a token on GitHub and paste just the token — Mako sends it as `Authorization: Bearer <token>`. Read-only connections are enforced server-side by GitHub regardless of the token's own permissions (via the `X-MCP-Readonly` header).
 
 ## Write scope and risk tiers
