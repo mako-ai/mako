@@ -13,6 +13,7 @@ Go to **Settings → MCP Servers** (workspace admins only) and choose a preset:
 
 - **Close CRM** — the official `mcp.close.com` server. Lets the agent search leads, manage opportunities, create contacts, and log activities in your Close organization. Defaults to OAuth login; API-key auth is also supported.
 - **Slack** — the official `mcp.slack.com` server. Lets the agent search messages, read channel and thread history, look up users, and (with write access) send messages and reactions. OAuth only; requires a pre-registered Slack app (see below).
+- **GitHub** — the official `api.githubcopilot.com/mcp/` server. Lets the agent browse repositories, read code and issues, search across GitHub, and (with write access) create issues, branches, and pull requests. OAuth (pre-registered GitHub OAuth App, see below) or a personal access token.
 - **Custom MCP server** — connect any MCP server reachable over Streamable HTTP. Provide the server URL and choose OAuth, API-key, or no authentication.
 
 After adding a server, use **Test connection** to verify credentials and discover the server's tool list. Discovered tools are cached in the workspace so chat startup never blocks on an MCP round-trip.
@@ -22,7 +23,7 @@ After adding a server, use **Test connection** to verify credentials and discove
 Two credential modes, both encrypted at rest (AES-256-CBC):
 
 - **OAuth 2.0 personal login** — each user signs in with their own account. Mako uses Dynamic Client Registration + PKCE against the server's OAuth metadata, then persists per-user refresh tokens and auto-refreshes them. This is the recommended mode for Close.
-- **API key / headers** — for preset servers, fill in the provider's credential fields (e.g. Close's `Close-API-Key`). For custom servers, supply free-form HTTP headers. Credentials can be **shared** across the workspace or **per-user**.
+- **API key / headers** — for preset servers, fill in the provider's credential fields (e.g. Close's `Close-API-Key`, or a GitHub personal access token — paste just the token, the `Bearer` prefix is added automatically). For custom servers, supply free-form HTTP headers. Credentials can be **shared** across the workspace or **per-user**.
 
 :::note[Mandatory individual sign-in]
 For OAuth servers, every user must complete their own sign-in before the agent can use that server's tools on their behalf. Credentials are never shared across accounts for OAuth connections.
@@ -33,8 +34,8 @@ For OAuth servers, every user must complete their own sign-in before the agent c
 Providers register Mako as an OAuth client in one of two ways:
 
 - **Dynamic Client Registration (DCR)** — the MCP-spec default (Close). Mako registers itself automatically on the first connect; no admin setup beyond adding the server.
-- **Pre-registered app** (Slack) — the provider only accepts confidential OAuth apps registered in advance. There are two ways to supply one:
-  - **Deployment-wide app (recommended, one-click)** — the Mako operator registers a single provider app and sets `SLACK_MCP_CLIENT_ID` / `SLACK_MCP_CLIENT_SECRET` in the server environment. Every workspace then connects Claude-style: add Slack, click **Connect Slack**, approve on slack.com. No form, no per-workspace app.
+- **Pre-registered app** (Slack, GitHub) — the provider only accepts confidential OAuth apps registered in advance. There are two ways to supply one:
+  - **Deployment-wide app (recommended, one-click)** — the Mako operator registers a single provider app and sets its client in the server environment (`SLACK_MCP_CLIENT_ID` / `SLACK_MCP_CLIENT_SECRET`, `GITHUB_MCP_CLIENT_ID` / `GITHUB_MCP_CLIENT_SECRET`). Every workspace then connects Claude-style: add the connector, click **Connect**, approve on the provider's site. No form, no per-workspace app.
   - **Per-workspace app (self-host fallback)** — when no environment client is configured, a workspace admin creates the app with the provider and saves its **Client ID** and **Client Secret** on the connection before members can sign in. Rotating the app credentials invalidates previously issued member tokens; everyone reconnects.
 
 #### Slack app setup (operators / self-hosters)
@@ -45,9 +46,25 @@ Providers register Mako as an OAuth client in one of two ways:
 4. Add the user scopes matching the write scope you'll pick in Mako — the connection dialog requests them automatically: read-only connections request only `search:read.*`, history, and read scopes; `write_safe` adds `chat:write`, `reactions:write`, `canvases:write`; `write_destructive` adds channel/conversation management scopes.
 5. Either set `SLACK_MCP_CLIENT_ID` / `SLACK_MCP_CLIENT_SECRET` in Mako's environment (deployment-wide, one-click for every workspace), or paste the app's Client ID and Client Secret in **Settings → MCP Servers → Slack**. Each member then clicks **Connect Slack account**.
 
+#### GitHub app setup (operators / self-hosters)
+
+GitHub's remote MCP server does not support Dynamic Client Registration, so OAuth needs a pre-registered app:
+
+1. Create a GitHub OAuth App under [Settings → Developer settings → OAuth Apps](https://github.com/settings/developers) (a personal account or an organization can own it).
+2. Set the **Authorization callback URL** to what the API sends: `${PUBLIC_URL || CLIENT_URL}/api/mcp/oauth/callback` (shown in the connection dialog). Local default: `http://localhost:5173/api/mcp/oauth/callback`.
+3. Either set `GITHUB_MCP_CLIENT_ID` / `GITHUB_MCP_CLIENT_SECRET` in Mako's environment (deployment-wide, one-click for every workspace), or paste the app's Client ID and Client Secret in **Settings → MCP Servers → GitHub**. Each member then clicks **Connect GitHub account**.
+
+:::tip[Reusing the Mako GitHub App (dbt Git integration)]
+If your deployment already runs the Mako GitHub App for [dbt Git sync](/dbt/) (`GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET`), its OAuth client doubles as the MCP client: the App's user-to-server flow issues exactly the per-user tokens GitHub's MCP server expects, and GitHub **Apps** accept up to 10 callback URLs — so just add `…/api/mcp/oauth/callback` as an additional Callback URL on the App. The reference deploy workflows fall back to the App's client automatically when no dedicated `GITHUB_MCP_CLIENT_*` is set. Note the resulting access is the *intersection* of the member's own access and the App installation's repositories/permissions — widen the App's install scope if the agent should reach more than the dbt repos, or register a dedicated OAuth App to decouple the two.
+
+A plain GitHub **OAuth App** (like the `GH_CLIENT_ID` sign-in app) can also serve, but those accept a **single** Authorization callback URL (each `redirect_uri` must be it or a subdirectory), so reuse only works when the registered callback is a common parent of both the login and MCP paths.
+:::
+
+No OAuth app? Members can instead authenticate with a **personal access token** (API-key mode): generate a token on GitHub and paste just the token — Mako sends it as `Authorization: Bearer <token>`. Read-only connections are enforced server-side by GitHub regardless of the token's own permissions (via the `X-MCP-Readonly` header).
+
 ## Write scope and risk tiers
 
-Each connection carries a **write scope** that caps what its tools can do. For Close, this maps to the provider's `Close-Scope` header; for Slack, it selects the OAuth scope set requested at sign-in (a read-only connection never even holds a `chat:write` token):
+Each connection carries a **write scope** that caps what its tools can do. For Close, this maps to the provider's `Close-Scope` header; for GitHub, a read-only connection sends the provider-enforced `X-MCP-Readonly: true` header; for Slack, it selects the OAuth scope set requested at sign-in (a read-only connection never even holds a `chat:write` token):
 
 | Write scope | Meaning |
 | --- | --- |

@@ -162,9 +162,20 @@ async function buildConnectionHeaders(
 ): Promise<Record<string, string>> {
   const headers = decryptRecord(encryptedHeaders ?? {});
   const preset = getMcpPreset(server.connectorType);
+  // Preset credential fields may declare a value prefix (e.g. GitHub's
+  // Authorization header wants "Bearer <PAT>" but the form asks for just the
+  // token) — apply it unless the user already included it.
+  for (const field of preset.headerFields) {
+    const value = headers[field.name];
+    if (field.valuePrefix && value && !value.startsWith(field.valuePrefix)) {
+      headers[field.name] = `${field.valuePrefix}${value}`;
+    }
+  }
   if (preset.scopeHeader) {
-    headers[preset.scopeHeader.name] =
-      preset.scopeHeader.scopeValues[server.writeScope];
+    const scopeValue = preset.scopeHeader.scopeValues[server.writeScope];
+    // An empty value omits the header (e.g. GitHub's X-MCP-Readonly is only
+    // meaningful when set to "true").
+    if (scopeValue) headers[preset.scopeHeader.name] = scopeValue;
   }
   if (server.authType === "oauth") {
     const { getMcpOAuthAuthorization } = await import("./mcp-oauth.service");
