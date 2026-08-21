@@ -13,9 +13,11 @@ import {
   Typography,
 } from "@mui/material";
 import {
+  Check,
   Eraser,
   FastForward,
   History,
+  Link as LinkIcon,
   Notebook as NotebookIcon,
   Play,
   Plus,
@@ -38,6 +40,7 @@ import {
   type NotebookViewer,
 } from "../store/notebookPresenceStore";
 import { useConsoleStore } from "../store/consoleStore";
+import { notebookUrlPath } from "../lib/tab-routing";
 import { useSchemaStore } from "../store/schemaStore";
 import { useUIStore } from "../store/uiStore";
 
@@ -82,6 +85,7 @@ export default function NotebookRenderer({
   const [loading, setLoading] = useState(!doc);
   const [addAnchor, setAddAnchor] = useState<HTMLElement | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
   // Which cell the local user is focused on — heartbeated as their live cursor.
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
 
@@ -125,6 +129,14 @@ export default function NotebookRenderer({
 
   const restartKernel = async () => {
     if (workspaceId) await stopKernelSession(workspaceId, notebookId);
+  };
+
+  const copyLink = () => {
+    void navigator.clipboard.writeText(
+      `${window.location.origin}${notebookUrlPath(notebookId)}`,
+    );
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
   };
 
   const restartAndRunAll = async () => {
@@ -289,6 +301,13 @@ export default function NotebookRenderer({
           <span>
             <IconButton size="small" onClick={() => setHistoryOpen(true)}>
               <History size={16} />
+            </IconButton>
+          </span>
+        </Tooltip>
+        <Tooltip title={linkCopied ? "Link copied" : "Copy link"}>
+          <span>
+            <IconButton size="small" onClick={copyLink}>
+              {linkCopied ? <Check size={16} /> : <LinkIcon size={16} />}
             </IconButton>
           </span>
         </Tooltip>

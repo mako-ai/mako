@@ -29,6 +29,7 @@ import {
   FolderOpen,
   FolderPlus,
   Info,
+  Link as LinkIcon,
   Pencil,
   Trash2,
 } from "lucide-react";
@@ -159,6 +160,13 @@ export interface ResourceTreeProps {
     node: ResourceTreeNode,
     helpers: { closeMenu: () => void },
   ) => ReactNode[] | null;
+  /**
+   * When provided and returns a URL path (e.g. `/n/abc123`) for a node, the
+   * default context menu gains a "Copy link" entry that copies the absolute
+   * URL to the clipboard. Return `null` for nodes that have no address
+   * (e.g. folders). Ignored when `getContextMenuItems` replaces the menu.
+   */
+  getItemUrl?: (node: ResourceTreeNode) => string | null;
   showFiles?: boolean;
   /**
    * When true, folder rows render only a chevron + name (no folder icon), and
@@ -241,6 +249,7 @@ function ResourceTreeInner(
     onLoadChildren,
     isLoadingChildren,
     getContextMenuItems,
+    getItemUrl,
     showFiles = true,
     hideFolderIcon = false,
     enableDragDrop = true,
@@ -1615,6 +1624,8 @@ function ResourceTreeInner(
               return customItems;
             }
 
+            const itemUrl = getItemUrl?.(item) ?? null;
+
             return [
               enableRename && canManage && (
                 <MenuItem
@@ -1640,6 +1651,20 @@ function ResourceTreeInner(
                     Duplicate
                   </MenuItem>
                 ),
+              itemUrl && (
+                <MenuItem
+                  key="copy-link"
+                  onClick={() => {
+                    setContextMenu(null);
+                    void navigator.clipboard.writeText(
+                      `${window.location.origin}${itemUrl}`,
+                    );
+                  }}
+                >
+                  <LinkIcon size={14} style={{ marginRight: 8 }} />
+                  Copy link
+                </MenuItem>
+              ),
               enableNewFolder &&
                 item.isDirectory &&
                 item.entityType !== "dashboard" &&

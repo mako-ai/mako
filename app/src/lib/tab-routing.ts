@@ -28,6 +28,15 @@ export function decodePathSegments(encoded: string): string {
 }
 
 /**
+ * URL path of a notebook. Shared by tab routing and the "Copy link" actions
+ * in the notebook editor header and the notebooks explorer, so the link shape
+ * has a single owner.
+ */
+export function notebookUrlPath(notebookId: string): string {
+  return `/n/${notebookId}`;
+}
+
+/**
  * Deep-link URL patterns per tab kind, matched against
  * `window.location.pathname` during hydration (most specific first — see
  * UrlSync). `null` means the kind intentionally has no deep link (legacy
@@ -150,7 +159,7 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
     }
     case "notebook": {
       const notebookId = tab.metadata?.notebookId as string | undefined;
-      return notebookId ? `/n/${notebookId}` : null;
+      return notebookId ? notebookUrlPath(notebookId) : null;
     }
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.

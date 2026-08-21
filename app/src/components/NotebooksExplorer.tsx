@@ -38,6 +38,7 @@ import {
 import { useNotebookStore } from "../store/notebookStore";
 import { useNotebookTreeStore } from "../store/notebookTreeStore";
 import { focusNotebookTab } from "../notebook-runtime/shell";
+import { notebookUrlPath } from "../lib/tab-routing";
 import {
   blocksFromIpynb,
   nameFromIpynb,
@@ -351,6 +352,9 @@ export default function NotebooksExplorer() {
             revealNodeId={reveal?.nodeId}
             revealNonce={reveal?.nonce}
             getItemIcon={getItemIcon}
+            getItemUrl={node =>
+              node.isDirectory ? null : notebookUrlPath(node.id)
+            }
             enableDragDrop
             enableRename
             enableDuplicate
