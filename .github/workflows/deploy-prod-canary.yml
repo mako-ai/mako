@@ -43,8 +43,12 @@ jobs:
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       SLACK_MCP_CLIENT_ID: ${{ vars.SLACK_MCP_CLIENT_ID }}
       SLACK_MCP_CLIENT_SECRET: ${{ secrets.SLACK_MCP_CLIENT_SECRET }}
-      GITHUB_MCP_CLIENT_ID: ${{ vars.GITHUB_MCP_CLIENT_ID }}
-      GITHUB_MCP_CLIENT_SECRET: ${{ secrets.GITHUB_MCP_CLIENT_SECRET }}
+      # GitHub MCP one-click OAuth: a dedicated client if set, else the Mako
+      # GitHub App's OAuth client (its user-to-server flow issues the user
+      # tokens the GitHub MCP server expects — add /api/mcp/oauth/callback to
+      # the App's callback URLs).
+      GITHUB_MCP_CLIENT_ID: ${{ vars.GITHUB_MCP_CLIENT_ID || vars.MAKO_GITHUB_APP_CLIENT_ID }}
+      GITHUB_MCP_CLIENT_SECRET: ${{ secrets.GITHUB_MCP_CLIENT_SECRET || secrets.MAKO_GITHUB_APP_CLIENT_SECRET }}
       IMAGE_NAME: mako-canary
       SERVICE_NAME: mako-canary
       INNGEST_ENV: migration-canary

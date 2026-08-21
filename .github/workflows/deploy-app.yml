@@ -172,8 +172,12 @@ jobs:
       # Optional Slack/GitHub MCP one-click OAuth (unset → per-workspace app form).
       SLACK_MCP_CLIENT_ID: ${{ vars.SLACK_MCP_CLIENT_ID }}
       SLACK_MCP_CLIENT_SECRET: ${{ secrets.SLACK_MCP_CLIENT_SECRET }}
-      GITHUB_MCP_CLIENT_ID: ${{ vars.GITHUB_MCP_CLIENT_ID }}
-      GITHUB_MCP_CLIENT_SECRET: ${{ secrets.GITHUB_MCP_CLIENT_SECRET }}
+      # GitHub MCP one-click OAuth: a dedicated client if set, else the Mako
+      # GitHub App's OAuth client (its user-to-server flow issues the user
+      # tokens the GitHub MCP server expects — add /api/mcp/oauth/callback to
+      # the App's callback URLs).
+      GITHUB_MCP_CLIENT_ID: ${{ vars.GITHUB_MCP_CLIENT_ID || vars.MAKO_GITHUB_APP_CLIENT_ID }}
+      GITHUB_MCP_CLIENT_SECRET: ${{ secrets.GITHUB_MCP_CLIENT_SECRET || secrets.MAKO_GITHUB_APP_CLIENT_SECRET }}
       # Inngest routes a sent event to an environment by its EVENT KEY, not by
       # INNGEST_ENV / the x-inngest-env header. Branch environments share a single
       # "Branch Environments" event key; pairing it with INNGEST_ENV=pr-<n> routes
@@ -838,8 +842,12 @@ jobs:
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       SLACK_MCP_CLIENT_ID: ${{ vars.SLACK_MCP_CLIENT_ID }}
       SLACK_MCP_CLIENT_SECRET: ${{ secrets.SLACK_MCP_CLIENT_SECRET }}
-      GITHUB_MCP_CLIENT_ID: ${{ vars.GITHUB_MCP_CLIENT_ID }}
-      GITHUB_MCP_CLIENT_SECRET: ${{ secrets.GITHUB_MCP_CLIENT_SECRET }}
+      # GitHub MCP one-click OAuth: a dedicated client if set, else the Mako
+      # GitHub App's OAuth client (its user-to-server flow issues the user
+      # tokens the GitHub MCP server expects — add /api/mcp/oauth/callback to
+      # the App's callback URLs).
+      GITHUB_MCP_CLIENT_ID: ${{ vars.GITHUB_MCP_CLIENT_ID || vars.MAKO_GITHUB_APP_CLIENT_ID }}
+      GITHUB_MCP_CLIENT_SECRET: ${{ secrets.GITHUB_MCP_CLIENT_SECRET || secrets.MAKO_GITHUB_APP_CLIENT_SECRET }}
       IMAGE_NAME: mako
       INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
