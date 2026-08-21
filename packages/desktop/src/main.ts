@@ -543,11 +543,18 @@ if (!hasSingleInstanceLock) {
   ipcMain.handle(
     "mako:start-acp-cli-login",
     async (_event, providerId: unknown) => {
-      const id = providerId === "codex" ? "codex" : "claude";
+      const id =
+        providerId === "codex"
+          ? "codex"
+          : providerId === "cursor"
+            ? "cursor"
+            : "claude";
       const commandLine =
         id === "codex"
           ? "codex login"
-          : "npx --yes @agentclientprotocol/claude-agent-acp --cli auth login --claudeai";
+          : id === "cursor"
+            ? "cursor-agent login"
+            : "npx --yes @agentclientprotocol/claude-agent-acp --cli auth login --claudeai";
       return launchCliLoginInTerminal(commandLine);
     },
   );

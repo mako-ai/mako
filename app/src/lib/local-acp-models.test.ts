@@ -30,8 +30,9 @@ describe("local-acp-models", () => {
 
   it("expands Claude Code into Sonnet/Opus/Fable rows when adapter found", () => {
     const offline = localAcpModelsFromProviders(null);
-    expect(offline).toHaveLength(2);
+    expect(offline).toHaveLength(3);
     expect(offline.map(m => m.id)).toContain(LOCAL_ACP_CLAUDE_MODEL_ID);
+    expect(offline.map(m => m.id)).toContain("local-acp/cursor");
 
     const models = localAcpModelsFromProviders([
       {
@@ -109,6 +110,39 @@ describe("local-acp-models", () => {
     expect(ids).toContain("local-acp/codex/gpt-5.6-terra");
     expect(ids).toContain("local-acp/codex/gpt-5.6-luna"); // fallback
     expect(ids).toContain("local-acp/codex"); // Default
+  });
+
+  it("expands Cursor Agent into Grok rows (fallbacks + advertised)", () => {
+    expect(localAcpModelIdToProviderId("local-acp/cursor/grok-4.6")).toBe(
+      "cursor",
+    );
+    expect(localAcpModelPreference("local-acp/cursor/grok-4.6")).toBe(
+      "grok-4.6",
+    );
+
+    const models = localAcpModelsFromProviders([
+      {
+        id: "cursor",
+        label: "Cursor Agent",
+        description: "z",
+        authProduct: "Cursor subscription",
+        installHint: "curl https://cursor.com/install -fsS | bash",
+        adapterCommand: "cursor-agent acp",
+        adapterFound: true,
+        connected: true,
+        authRequired: false,
+        authMethods: [],
+        availableModels: [{ value: "grok-4.6", name: "Grok 4.6" }],
+      },
+    ]);
+    const ids = models.map(m => m.id);
+    expect(ids).toContain("local-acp/cursor"); // Default
+    expect(ids).toContain("local-acp/cursor/grok-4.6"); // advertised
+    expect(ids).toContain("local-acp/cursor/grok-4.5"); // fallback
+    expect(ids).toContain("local-acp/cursor/composer"); // fallback
+    expect(
+      models.find(m => m.id === "local-acp/cursor/grok-4.6")?.name,
+    ).toMatch(/Cursor · Grok 4\.6 \(local\)/);
   });
 
   it("resolves opus/sonnet aliases to canonical Claude ids", () => {

@@ -57,7 +57,7 @@ export function sanitizeAdapterStderrForUi(
  */
 export function userFacingAcpError(
   message: string,
-  options?: { providerId?: "claude" | "codex" },
+  options?: { providerId?: "claude" | "codex" | "cursor" },
 ): string {
   const raw = (message || "").trim();
   if (!raw) return "Something went wrong with the local agent.";
@@ -72,6 +72,13 @@ export function userFacingAcpError(
     return (
       "Codex could not apply that model setting. Pick Codex · GPT-5.6 Terra " +
       "(or Luna) in the Chat model dropdown, then Enable workspace tools again."
+    );
+  }
+  if (/Invalid params/i.test(text) && options?.providerId === "cursor") {
+    return (
+      "Cursor Agent could not apply that setting. Pick Cursor · Grok (local) " +
+      "again in the Chat model dropdown, or update Cursor CLI " +
+      "(`cursor-agent update`), then Enable workspace tools again."
     );
   }
   if (/Invalid params/i.test(text) && options?.providerId === "claude") {

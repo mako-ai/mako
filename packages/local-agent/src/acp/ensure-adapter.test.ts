@@ -17,6 +17,10 @@ describe("ensure-adapter", () => {
     ]);
   });
 
+  it("never runs npm for Cursor (CLI installs via curl, not npm)", () => {
+    assert.deepEqual(packagesForProvider("cursor"), []);
+  });
+
   it("classifies npm ensure failures", () => {
     assert.equal(
       classifyEnsureFailure({
