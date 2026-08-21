@@ -6,6 +6,7 @@
  * - `local-acp/claude` — Claude Code with adapter default model
  * - `local-acp/claude/fable` — Claude Code forced to Fable (alias or full id)
  * - `local-acp/codex` / `local-acp/codex/<model>` — same for Codex
+ * - `local-acp/cursor` / `local-acp/cursor/<model>` — Cursor Agent (Grok, …)
  */
 import type { AIModel } from "./api-types";
 import type {
@@ -18,6 +19,7 @@ export const LOCAL_ACP_MODEL_PREFIX = "local-acp/";
 
 export const LOCAL_ACP_CLAUDE_MODEL_ID = `${LOCAL_ACP_MODEL_PREFIX}claude`;
 export const LOCAL_ACP_CODEX_MODEL_ID = `${LOCAL_ACP_MODEL_PREFIX}codex`;
+export const LOCAL_ACP_CURSOR_MODEL_ID = `${LOCAL_ACP_MODEL_PREFIX}cursor`;
 
 /**
  * Shown in Chat before a session reports adapter model lists.
@@ -70,9 +72,28 @@ export const CODEX_MODEL_FALLBACKS: AcpModelChoice[] = [
   { value: "gpt-5.3-codex-spark", name: "GPT-5.3 Codex Spark" },
 ];
 
+/**
+ * Cursor model slugs when the adapter has not advertised a list yet.
+ * Grok first — Cursor's flagship models are the Grok family.
+ * @see https://cursor.com/help/models-and-usage/available-models
+ */
+export const CURSOR_MODEL_FALLBACKS: AcpModelChoice[] = [
+  {
+    value: "default",
+    name: "Default",
+    description: "Cursor’s current default (Auto router)",
+  },
+  { value: "grok-4.6", name: "Grok 4.6" },
+  { value: "grok-4.5", name: "Grok 4.5" },
+  { value: "composer", name: "Composer" },
+  { value: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
+  { value: "gemini-pro", name: "Gemini Pro" },
+];
+
 const PROVIDER_LABEL: Record<AcpProviderId, string> = {
   claude: "Claude Code",
   codex: "Codex",
+  cursor: "Cursor",
 };
 
 const PROVIDER_BASE: Record<
@@ -95,6 +116,15 @@ const PROVIDER_BASE: Record<
     tier: "free",
     supportsTools: true,
   },
+  cursor: {
+    id: LOCAL_ACP_CURSOR_MODEL_ID,
+    name: "Cursor Agent (local)",
+    provider: "local",
+    description:
+      "Your Cursor subscription (Grok, Composer, …) via ACP on this machine",
+    tier: "free",
+    supportsTools: true,
+  },
 };
 
 export function isLocalAcpModelId(modelId: string | null | undefined): boolean {
@@ -107,7 +137,9 @@ export function localAcpModelIdToProviderId(
   if (!isLocalAcpModelId(modelId)) return null;
   const rest = modelId.slice(LOCAL_ACP_MODEL_PREFIX.length);
   const provider = rest.split("/")[0];
-  if (provider === "claude" || provider === "codex") return provider;
+  if (provider === "claude" || provider === "codex" || provider === "cursor") {
+    return provider;
+  }
   return null;
 }
 
@@ -244,6 +276,16 @@ export function localAcpModelsFromProviders(
       continue;
     }
 
+    // Local Agent build predates this provider (e.g. cursor). Don't expand
+    // model rows — session/new on old agents coerces unknown ids to claude.
+    if (!status) {
+      out.push({
+        ...def,
+        description: `${def.description} — update Mako Desktop / Local Agent to use`,
+      });
+      continue;
+    }
+
     if (status && !status.adapterFound) {
       out.push({
         ...def,
@@ -255,7 +297,9 @@ export function localAcpModelsFromProviders(
     const fallbacks =
       providerId === "claude"
         ? CLAUDE_CODE_MODEL_FALLBACKS
-        : CODEX_MODEL_FALLBACKS;
+        : providerId === "cursor"
+          ? CURSOR_MODEL_FALLBACKS
+          : CODEX_MODEL_FALLBACKS;
     // Show every model the adapter advertises, plus current Codex fallbacks
     // so Sol/Terra/Luna appear even before the first session caches a list.
     const choices = mergeModelChoices(status?.availableModels, fallbacks);

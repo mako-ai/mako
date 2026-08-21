@@ -104,6 +104,8 @@ function writeState(state: EnsureStateFile): void {
 /** npm packages to keep current for each ACP provider. */
 export function packagesForProvider(providerId: AcpProviderId): string[] {
   const def = ACP_PROVIDERS[providerId];
+  // Not npm-distributed (Cursor CLI installs via curl) — nothing to ensure.
+  if (!def.npxPackage) return [];
   if (providerId === "codex") {
     return ["@openai/codex", def.npxPackage];
   }
@@ -219,6 +221,26 @@ export async function ensureAdapterPackages(
   const before = resolveAdapterCommand(def);
   const state = readState();
   const prior = state.providers[providerId];
+
+  // Nothing npm can install (Cursor CLI): report presence, never run npm.
+  if (packages.length === 0) {
+    const found = Boolean(before);
+    return {
+      ok: found,
+      providerId,
+      skipped: true,
+      updated: false,
+      packages,
+      message: found
+        ? `${def.label} CLI found — Mako keeps it as installed (${def.label} updates itself).`
+        : `${def.label} CLI is not installed. ${def.installHint}`,
+      adapterCommand: before
+        ? [before.command, ...before.args].join(" ")
+        : null,
+      adapterVia: before?.via ?? null,
+      errorCode: found ? undefined : "adapter_missing",
+    };
+  }
 
   if (
     shouldSkipEnsure({

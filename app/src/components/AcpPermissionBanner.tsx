@@ -49,7 +49,11 @@ export function AcpPermissionBanner() {
     sessions.find(x => x.id === sessionId)?.providerId || selectedProviderId;
   const providerLabel =
     providers?.find(p => p.id === providerId)?.label ||
-    (providerId === "codex" ? "Codex" : "Claude Code");
+    (providerId === "codex"
+      ? "Codex"
+      : providerId === "cursor"
+        ? "Cursor Agent"
+        : "Claude Code");
 
   return (
     <Alert

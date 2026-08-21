@@ -89,6 +89,13 @@ export function defaultTerminalLoginLaunch(
       label: "Codex / ChatGPT Login",
     };
   }
+  if (providerId === "cursor") {
+    return {
+      command: "cursor-agent",
+      args: ["login"],
+      label: "Cursor Login",
+    };
+  }
   return {
     command: "npx",
     args: [

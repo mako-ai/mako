@@ -117,7 +117,8 @@ export function shouldAutoAuthenticateOnSessionNew(args: {
   if (!args.authRequired || args.authenticated) return false;
   // Codex advertises api-key / chat-gpt (non-terminal) methods, but Sign in
   // must own the CLI login — never auto-run `codex login` on session/new.
-  if (args.providerId === "codex") return false;
+  // Cursor is the same shape (`cursor-agent login` CLI flow).
+  if (args.providerId === "codex" || args.providerId === "cursor") return false;
   const terminalOnly =
     args.authMethods.length > 0 &&
     args.authMethods.every(m => m.type === "terminal" || Boolean(m.terminalAuth));

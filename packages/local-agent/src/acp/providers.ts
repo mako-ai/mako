@@ -5,7 +5,7 @@
  * adapter binary to spawn" plus setup/auth hints for the UI.
  */
 
-export type AcpProviderId = "claude" | "codex";
+export type AcpProviderId = "claude" | "codex" | "cursor";
 
 export interface AcpProviderDefinition {
   id: AcpProviderId;
@@ -13,8 +13,18 @@ export interface AcpProviderDefinition {
   description: string;
   /** Prefer these commands in order when resolving the adapter binary. */
   commands: string[];
-  /** npm package useful for `npx <package>` fallback. */
-  npxPackage: string;
+  /**
+   * Args appended when a PATH command resolves (e.g. Cursor CLI speaks ACP
+   * via the `acp` subcommand: `cursor-agent acp`). Adapter-only binaries
+   * (claude-agent-acp, codex-acp) omit this.
+   */
+  commandArgs?: string[];
+  /**
+   * npm package useful for `npx <package>` fallback and `npm i -g` ensure.
+   * `null` for CLIs not distributed via npm (Cursor) — no npx fallback and
+   * ensure-adapter never runs npm for them.
+   */
+  npxPackage: string | null;
   /** Human-facing install hint shown when the adapter is missing. */
   installHint: string;
   /** Auth product the adapter typically uses. */
@@ -51,6 +61,21 @@ export const ACP_PROVIDERS: Record<AcpProviderId, AcpProviderDefinition> = {
     installHint:
       "Mako can install Codex CLI + ACP adapter automatically — use Install in Chat, or: npm i -g @openai/codex @agentclientprotocol/codex-acp",
     authProduct: "ChatGPT / OpenAI API",
+  },
+  cursor: {
+    id: "cursor",
+    label: "Cursor Agent",
+    description:
+      "Cursor CLI via native ACP (`cursor-agent acp`) — Grok, Composer and " +
+      "more on your Cursor subscription.",
+    // Cursor CLI ships ACP built in; newer builds install the binary as
+    // `agent`, older ones as `cursor-agent`. Not distributed via npm.
+    commands: ["cursor-agent", "agent"],
+    commandArgs: ["acp"],
+    npxPackage: null,
+    installHint:
+      "Install Cursor CLI in Terminal: curl https://cursor.com/install -fsS | bash — then run `cursor-agent login` (Cursor subscription).",
+    authProduct: "Cursor subscription",
   },
 };
 

@@ -158,11 +158,12 @@ export function CodingAgentsPanel() {
       ) : null}
 
       <Alert severity="info" sx={{ mb: 2 }}>
-        Chat with Claude Code or Codex from the <strong>main Chat</strong> model
-        dropdown under <strong>On this machine</strong>. Tokens bill to your
-        Claude Pro/Max or ChatGPT subscription. If workspace tools are not
-        active, Chat shows <strong>Enable workspace tools</strong> — one click,
-        no <code>claude mcp</code>. File and shell tools still run locally.
+        Chat with Claude Code, Codex, or Cursor Agent (Grok) from the{" "}
+        <strong>main Chat</strong> model dropdown under{" "}
+        <strong>On this machine</strong>. Tokens bill to your Claude Pro/Max,
+        ChatGPT, or Cursor subscription. If workspace tools are not active, Chat
+        shows <strong>Enable workspace tools</strong> — one click, no{" "}
+        <code>claude mcp</code>. File and shell tools still run locally.
       </Alert>
 
       <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
@@ -323,6 +324,13 @@ export function CodingAgentsPanel() {
                   npm i -g @openai/codex @agentclientprotocol/codex-acp
                 </code>
                 , then return here and use Chat → Enable workspace tools.
+              </>
+            ) : selectedProviderId === "cursor" ? (
+              <>
+                Prefer the CLI? Install Cursor CLI with{" "}
+                <code>curl https://cursor.com/install -fsS | bash</code>, run{" "}
+                <code>cursor-agent login</code> (Cursor subscription — includes
+                Grok), then return here and use Chat → Enable workspace tools.
               </>
             ) : (
               <>
