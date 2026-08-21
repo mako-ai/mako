@@ -55,7 +55,7 @@ function TerminalPanel({
   workspaceId: string;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const [status, setStatus] = useState<"connecting" | "open" | "closed">(
+  const [status, setStatus] = useState<"connecting" | "open" | "reconnecting">(
     "connecting",
   );
   const theme = useTheme();
@@ -82,55 +82,85 @@ function TerminalPanel({
     term.open(host);
     fit.fit();
 
-    const url = new URL(
-      `/api/workspaces/${workspaceId}/apps-v2/${appId}/terminal`,
-      window.location.origin,
-    );
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(url);
-    ws.binaryType = "arraybuffer";
+    let ws: WebSocket | null = null;
+    let attempt = 0;
+    let disposed = false;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+
+    const send = (data: string) => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
+    };
+
+    // macOS line editing. xterm sends a bare backspace for these, so
+    // ⌘⌫ and ⌥⌫ silently deleted one character — the shell already
+    // understands the readline codes, they just never reached it.
+    term.attachCustomKeyEventHandler(event => {
+      if (event.type !== "keydown") return true;
+      if (event.key === "Backspace" && (event.metaKey || event.altKey)) {
+        // ⌘⌫ kills the line, ⌥⌫ kills the previous word.
+        send(event.metaKey ? "\x15" : "\x17");
+        return false;
+      }
+      return true;
+    });
 
     const sendResize = () => {
       fit.fit();
-      if (ws.readyState === WebSocket.OPEN) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(
           JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }),
         );
       }
     };
 
-    ws.onopen = () => {
-      setStatus("open");
-      sendResize();
-    };
-    ws.onmessage = event => {
-      term.write(
-        typeof event.data === "string"
-          ? event.data
-          : new Uint8Array(event.data as ArrayBuffer),
+    const connect = () => {
+      if (disposed) return;
+      const url = new URL(
+        `/api/workspaces/${workspaceId}/apps-v2/${appId}/terminal`,
+        window.location.origin,
       );
-    };
-    ws.onclose = () => {
-      setStatus("closed");
-      term.writeln(
-        "\r\n\x1b[2m[session ended — reopen the tab to reconnect]\x1b[0m",
-      );
-    };
-    ws.onerror = () => setStatus("closed");
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      const socket = new WebSocket(url);
+      socket.binaryType = "arraybuffer";
+      ws = socket;
+      setStatus(attempt === 0 ? "connecting" : "reconnecting");
 
-    const typed = term.onData(data => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(data);
-    });
+      socket.onopen = () => {
+        attempt = 0;
+        setStatus("open");
+        sendResize();
+      };
+      socket.onmessage = event => {
+        term.write(
+          typeof event.data === "string"
+            ? event.data
+            : new Uint8Array(event.data as ArrayBuffer),
+        );
+      };
+      socket.onclose = () => {
+        if (disposed) return;
+        // The shell keeps running server-side, so reconnecting picks the
+        // session back up — including the output missed while away. Back off
+        // so a server that is down does not get hammered.
+        setStatus("reconnecting");
+        const delay = Math.min(1000 * 2 ** attempt, 15000);
+        attempt += 1;
+        retry = setTimeout(connect, delay);
+      };
+      socket.onerror = () => socket.close();
+    };
+    connect();
 
-    // The pane is resizable, and a shell that does not know its own width
-    // wraps its prompt in the wrong place.
+    const typed = term.onData(send);
     const observer = new ResizeObserver(() => sendResize());
     observer.observe(host);
 
     return () => {
+      disposed = true;
+      if (retry) clearTimeout(retry);
       observer.disconnect();
       typed.dispose();
-      ws.close();
+      ws?.close();
       term.dispose();
     };
   }, [appId, workspaceId, theme.palette.mode]);
@@ -167,7 +197,7 @@ function TerminalPanel({
               ? "success.main"
               : status === "connecting"
                 ? "text.secondary"
-                : "error.main"
+                : "warning.main"
           }
         >
           {status}

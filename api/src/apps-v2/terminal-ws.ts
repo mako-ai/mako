@@ -23,11 +23,15 @@ import type { ServerType } from "@hono/node-server";
 import { WebSocketServer, type WebSocket } from "ws";
 import { Types } from "mongoose";
 import { loggers } from "../logging";
-import { AppProjectV2, type IAppProjectV2 } from "../database/workspace-schema";
+import {
+  AppProjectV2,
+  AppWorktreeV2,
+  type IAppProjectV2,
+} from "../database/workspace-schema";
 import { sessionManager } from "../auth/session";
 import { workspaceService } from "../services/workspace.service";
 import { canWriteResource } from "../utils/resource-acl";
-import { getSandboxProvider } from "./sandbox/provider";
+import { getSandboxProvider, type SandboxTerminal } from "./sandbox/provider";
 import {
   ensureWorktree,
   synthesizeProjectFromFolder,
@@ -107,7 +111,21 @@ export function attachAppsV2TerminalWs(serverType: ServerType): void {
     const [, workspaceId, appRef] = match;
 
     void (async () => {
-      const auth = await authorize(req, workspaceId, appRef).catch(() => null);
+      // A failed lookup is not a failed login. Collapsing both into 401 told
+      // the client its session was bad when the truth was a transient error —
+      // a worktree being rebuilt after its sandbox expired, say — and 401 is
+      // the one status a client should NOT simply retry.
+      let auth: Awaited<ReturnType<typeof authorize>> = null;
+      try {
+        auth = await authorize(req, workspaceId, appRef);
+      } catch (error) {
+        logger.error("Terminal authorization failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        socket.write("HTTP/1.1 503 Service Unavailable\r\n\r\n");
+        socket.destroy();
+        return;
+      }
       if (!auth) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
@@ -125,57 +143,272 @@ export function attachAppsV2TerminalWs(serverType: ServerType): void {
   logger.info("Apps v2 terminal WebSocket attached");
 }
 
+/**
+ * A shell that outlives the socket watching it.
+ *
+ * Closing a tab, a flaky network, or a laptop lid should not kill a running
+ * build. The PTY therefore belongs to the WORKTREE, not to the WebSocket:
+ * sockets attach and detach, the shell keeps running. This is the same shape
+ * VS Code uses — a pty host that survives window reloads — including the part
+ * that makes it feel seamless: a ring buffer of recent output, replayed on
+ * reattach so a reconnecting client sees the screen it left rather than a
+ * blank one.
+ */
+interface LiveTerminal {
+  terminal: SandboxTerminal;
+  /** Recent output, replayed to a client that reconnects. */
+  scrollback: Buffer[];
+  scrollbackBytes: number;
+  sockets: Set<WebSocket>;
+  /** Force any pending output out, e.g. before a client detaches. */
+  flush: () => void;
+  /** Set when the last socket leaves; cancelled if someone comes back. */
+  reaper: NodeJS.Timeout | null;
+}
+
+const live = new Map<string, LiveTerminal>();
+
+/** Enough to redraw a screen and the tail of a build, not a whole session. */
+const SCROLLBACK_LIMIT = 256 * 1024;
+
+/** How long a shell keeps running with nobody attached. */
+const ORPHAN_GRACE_MS = 10 * 60 * 1000;
+
+function remember(session: LiveTerminal, chunk: Buffer): void {
+  session.scrollback.push(chunk);
+  session.scrollbackBytes += chunk.length;
+  while (
+    session.scrollbackBytes > SCROLLBACK_LIMIT &&
+    session.scrollback.length > 1
+  ) {
+    session.scrollbackBytes -= session.scrollback.shift()!.length;
+  }
+}
+
+const CTRL_C = 0x03;
+
+/**
+ * Forward client input to the shell, handling ctrl-C as a real tty would.
+ *
+ * Two problems, one cause — input is written to the sandbox in order, and a
+ * large paste is a lot of input:
+ *
+ *   - ctrl-C typed during a paste queued behind the rest of it, so
+ *     interrupting a megabyte took as long as the megabyte.
+ *   - Worse, the paste never finished, so the closing `\e[201~` never
+ *     arrived. readline stayed in bracketed-paste mode and silently swallowed
+ *     everything typed afterwards: no prompt, no error, and reconnecting did
+ *     not help, because it was the shell waiting rather than the socket.
+ *     Measured: the shell never came back on its own; sending the end marker
+ *     brought it back at once.
+ *
+ * So a ctrl-C jumps the queue, discarding input the shell has not seen yet and
+ * closing any paste that input might have left open.
+ */
+function forward(session: LiveTerminal, data: Buffer): void {
+  const lastCtrlC = data.lastIndexOf(CTRL_C);
+  if (lastCtrlC !== -1) {
+    void session.terminal.interrupt().catch(() => undefined);
+    // Anything typed after the ctrl-C is still meant for the shell.
+    const rest = data.subarray(lastCtrlC + 1);
+    if (rest.length === 0) return;
+    data = Buffer.from(rest);
+  }
+  void session.terminal.write(new Uint8Array(data)).catch(error =>
+    logger.warn("Terminal input dropped", {
+      error: error instanceof Error ? error.message : String(error),
+    }),
+  );
+}
+
+/**
+ * The worktree id for this actor, if one already exists — a single indexed
+ * read, and deliberately NOT `ensureWorktree`.
+ *
+ * Reattaching to a shell that is already running has no reason to redo
+ * worktree setup, and setup is not cheap: it resolves refs, can merge `main`
+ * into the actor's branch, takes the worktree lock and writes Mongo. Doing it
+ * per connection made reconnecting cost far more than it should — and since
+ * the client reconnects on every network blip, that is the common path, not a
+ * rare one. Thirty reconnects in a row queued thirty of those behind one lock
+ * and left the shell unresponsive for tens of seconds.
+ */
+async function existingWorktreeKey(
+  project: IAppProjectV2,
+  userId: string,
+): Promise<string | null> {
+  const doc = await AppWorktreeV2.findOne(
+    { workspaceId: project.workspaceId, userId },
+    { _id: 1 },
+  ).lean();
+  return doc ? String(doc._id) : null;
+}
+
 async function startSession(
   ws: WebSocket,
   project: IAppProjectV2,
   userId: string,
 ): Promise<void> {
-  const handle = await ensureWorktree(project, userId);
-  const provider = getSandboxProvider();
+  // Fast path first: if the shell is already running, attach to it and do no
+  // repository work at all.
+  const knownKey = await existingWorktreeKey(project, userId).catch(() => null);
+  const running = knownKey ? live.get(knownKey) : undefined;
 
-  const terminal = await provider.openTerminal(
-    { hostDir: handle.sessionDir, sessionKey: handle.doc._id.toString() },
-    {
-      cwd: handle.appRoot,
-      cols: 80,
-      rows: 24,
-      onData: data => {
-        if (ws.readyState === ws.OPEN) ws.send(data);
+  // Only the cold path pays for worktree setup.
+  const handle = running ? null : await ensureWorktree(project, userId);
+  const key = handle ? handle.doc._id.toString() : knownKey!;
+  let session = running ?? live.get(key);
+  if (session) {
+    // Someone is coming back to a shell that kept running.
+    if (session.reaper) {
+      clearTimeout(session.reaper);
+      session.reaper = null;
+    }
+    // Push any batched-but-unsent output into the scrollback first, or the
+    // replay below would end up to one flush-interval short of what the shell
+    // has actually printed.
+    session.flush();
+    for (const chunk of session.scrollback) {
+      if (ws.readyState === ws.OPEN) ws.send(chunk);
+    }
+  } else if (handle) {
+    const provider = getSandboxProvider();
+    const created: LiveTerminal = {
+      terminal: undefined as unknown as SandboxTerminal,
+      scrollback: [],
+      scrollbackBytes: 0,
+      sockets: new Set(),
+      reaper: null,
+      flush: () => undefined,
+    };
+    // Output is BATCHED before it leaves the process.
+    //
+    // E2B delivers pty output almost byte by byte: 125KB of echo arrived as
+    // 68,000 separate callbacks, which without this would be 68,000 WebSocket
+    // frames for a single paste. Coalescing on a short timer makes that a few
+    // hundred. VS Code batches terminal output for the same reason.
+    //
+    // Worth being precise about what this did NOT fix: the terminal freezing
+    // on a large paste looked like client backpressure reaching the pty, and
+    // it was not — it was the interactive shell (see BASHRC in
+    // e2b-template.ts). Batching is a real saving on a chatty stream, not the
+    // cure for that bug.
+    let outbox: Buffer[] = [];
+    let outboxBytes = 0;
+    let flushTimer: NodeJS.Timeout | null = null;
+
+    const flush = () => {
+      flushTimer = null;
+      if (outbox.length === 0) return;
+      const chunk = outbox.length === 1 ? outbox[0] : Buffer.concat(outbox);
+      outbox = [];
+      outboxBytes = 0;
+      remember(created, chunk);
+      for (const socket of created.sockets) {
+        // Skip a client that has stopped reading rather than buffering without
+        // limit: one wedged tab must not take the server with it.
+        if (
+          socket.readyState === socket.OPEN &&
+          socket.bufferedAmount < 8 * 1024 * 1024
+        ) {
+          socket.send(chunk);
+        }
+      }
+    };
+
+    created.terminal = await provider.openTerminal(
+      { hostDir: handle.sessionDir, sessionKey: key },
+      {
+        cwd: handle.appRoot,
+        cols: 80,
+        rows: 24,
+        onExit: () => {
+          // The shell is gone for good. Forget it, so the next connection
+          // builds a fresh one instead of attaching to a corpse, and tell
+          // whoever is watching — the client reconnects on close, and would
+          // otherwise sit in front of a terminal that silently ignores every
+          // keystroke. This is the difference between a sandbox expiring
+          // overnight being invisible and it bricking the terminal until the
+          // API restarts.
+          if (live.get(key) === created) live.delete(key);
+          if (created.reaper) clearTimeout(created.reaper);
+          // A sentence, not the provider's wording: `reason` is whatever E2B
+          // put on the wire ("...reached end of life while the request was in
+          // flight"), which is useful in a log and baffling in a terminal. The
+          // provider already logged it.
+          const notice =
+            "\r\n\x1b[2m[this shell ended — reconnecting]\x1b[0m\r\n";
+          for (const socket of created.sockets) {
+            if (socket.readyState === socket.OPEN) {
+              socket.send(Buffer.from(notice, "utf8"));
+              socket.close(1012, "terminal ended");
+            }
+          }
+          created.sockets.clear();
+        },
+        onData: data => {
+          outbox.push(Buffer.from(data));
+          outboxBytes += data.length;
+          // Flush early on volume so a burst is not held back by the timer,
+          // and otherwise coalesce a frame's worth of keystroke echo.
+          if (outboxBytes >= 64 * 1024) {
+            if (flushTimer) clearTimeout(flushTimer);
+            flush();
+          } else if (!flushTimer) {
+            flushTimer = setTimeout(flush, 8);
+          }
+        },
       },
-    },
-  );
+    );
+    created.flush = () => {
+      if (flushTimer) clearTimeout(flushTimer);
+      flush();
+    };
+    live.set(key, created);
+    session = created;
+    logger.info("Apps v2 terminal started", {
+      projectId: project._id.toString(),
+      appRoot: handle.appRoot,
+    });
+  }
+
+  const current = session;
+  current.sockets.add(ws);
 
   ws.on("message", (raw: Buffer, isBinary: boolean) => {
-    // Control messages arrive as text; everything else is keystrokes.
     if (!isBinary) {
       const text = raw.toString("utf8");
       if (text.startsWith("{")) {
         try {
           const msg = JSON.parse(text) as ResizeMessage;
           if (msg.type === "resize" && msg.cols > 0 && msg.rows > 0) {
-            void terminal.resize(msg.cols, msg.rows).catch(() => undefined);
+            void current.terminal
+              .resize(msg.cols, msg.rows)
+              .catch(() => undefined);
             return;
           }
         } catch {
-          // Not a control message after all — fall through and type it.
+          // Not a control message — fall through and type it.
         }
       }
-      void terminal
-        .write(new TextEncoder().encode(text))
-        .catch(() => undefined);
+      forward(current, Buffer.from(text, "utf8"));
       return;
     }
-    void terminal.write(new Uint8Array(raw)).catch(() => undefined);
+    forward(current, raw);
   });
 
-  const shutdown = () => {
-    void terminal.close().catch(() => undefined);
+  const detach = () => {
+    current.sockets.delete(ws);
+    if (current.sockets.size > 0 || current.reaper) return;
+    // Nobody watching. Keep the shell for a while — a reload or a dropped
+    // connection should not kill a running command — then reap it so an
+    // abandoned sandbox is not held open forever.
+    current.reaper = setTimeout(() => {
+      live.delete(key);
+      void current.terminal.close().catch(() => undefined);
+      logger.info("Apps v2 terminal reaped after no clients", { key });
+    }, ORPHAN_GRACE_MS);
   };
-  ws.on("close", shutdown);
-  ws.on("error", shutdown);
-
-  logger.info("Apps v2 terminal session opened", {
-    projectId: project._id.toString(),
-    appRoot: handle.appRoot,
-  });
+  ws.on("close", detach);
+  ws.on("error", detach);
 }

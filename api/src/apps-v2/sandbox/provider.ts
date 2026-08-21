@@ -48,8 +48,19 @@ export interface SandboxExecResult {
 
 /** A live pseudo-terminal in a sandbox. */
 export interface SandboxTerminal {
+  /** Process id, so a dropped client can reattach to the same shell. */
+  readonly pid: number;
   /** Forward a keystroke (or paste) to the shell. */
   write(data: Uint8Array): Promise<void>;
+  /**
+   * Interrupt: throw away input not yet handed to the shell, then send ctrl-C.
+   *
+   * This is what a real tty does — an interrupt flushes the input queue — and
+   * without it ctrl-C is useless exactly when it is needed most. Input is
+   * written in order, so a ctrl-C typed during a large paste would otherwise
+   * queue behind the rest of it and take as long as the paste to arrive.
+   */
+  interrupt(): Promise<void>;
   /** Tell the shell the window changed, so it can redraw at the right size. */
   resize(cols: number, rows: number): Promise<void>;
   /** End the session. */
@@ -117,6 +128,16 @@ export interface SandboxProvider {
       cols: number;
       rows: number;
       onData: (data: Uint8Array) => void;
+      /**
+       * The shell is gone and this terminal will never work again — the pty
+       * exited, or the sandbox behind it expired.
+       *
+       * Without this the caller keeps a handle to a dead shell: writes fail
+       * forever, and reconnecting attaches to the same corpse, so the terminal
+       * stays broken until the process restarts. Told about it, the caller can
+       * throw the session away and build a fresh one.
+       */
+      onExit?: (reason: string) => void;
     },
   ): Promise<SandboxTerminal>;
   /** Tear down any remote session for the given affinity key (best effort). */

@@ -504,6 +504,18 @@ async function keepAliveE2b(
  * moment that means "finished". Work leaves the sandbox the usual way, through
  * the syncs around ordinary commands.
  */
+/**
+ * Whether an error means the sandbox is gone rather than merely unhappy.
+ *
+ * E2B reports an expired or deleted sandbox as a plain "not found" on whatever
+ * call happens to touch it next, so this is matched on the message.
+ */
+function isSandboxGone(message: string): boolean {
+  return /sandbox was not found|sandbox is not running|not found: This error/i.test(
+    message,
+  );
+}
+
 async function openTerminalE2b(
   ctx: SandboxExecContext,
   opts: {
@@ -542,19 +554,148 @@ async function openTerminalE2b(
     },
   });
 
-  // E2B's PTY always starts bash and ignores both SHELL and the account's
-  // login shell, so hand off explicitly. `exec` REPLACES bash rather than
-  // nesting, so ctrl-D and `exit` end the session once, as expected. Guarded,
-  // so a template without zsh simply stays in bash instead of breaking.
-  await sandbox.pty.sendInput(
-    handle.pid,
-    new TextEncoder().encode(
-      "command -v zsh >/dev/null && { clear; exec zsh -l; }\n",
-    ),
-  );
+  // Announce the shell's death exactly once, however we learn of it.
+  let exited = false;
+  const reportExit = (reason: string): void => {
+    if (exited) return;
+    exited = true;
+    logger.info("Apps v2 terminal ended", { pid: handle.pid, reason });
+    opts.onExit?.(reason);
+  };
+  // The pty exiting on its own — `exit`, ctrl-D, a crash — is the ordinary
+  // case, and is not an error.
+  void handle
+    .wait()
+    .then(() => reportExit("the shell exited"))
+    .catch((error: unknown) =>
+      reportExit(error instanceof Error ? error.message : String(error)),
+    );
+
+  // No shell handoff here on purpose. E2B's PTY starts bash, which is the
+  // shell we want (see BASHRC in e2b-template.ts for the measurements behind
+  // that), so the terminal is usable the moment it opens instead of after a
+  // round trip that re-execs it.
+
+  // Input is COALESCED and SERIALISED, the way VS Code's terminal queues
+  // writes to its pty host.
+  //
+  // Each keystroke used to be its own RPC, fired without waiting for the last
+  // one. Typing at speed then raced a dozen calls against each other: they
+  // arrived out of order (so the line came out scrambled), and enough of them
+  // at once exhausted the connection and dropped the session. One in-flight
+  // write, with everything typed meanwhile merged into the next batch, fixes
+  // both — and typing faster now means *fewer, larger* writes rather than more.
+  let pending: Uint8Array[] = [];
+  let draining: Promise<void> | null = null;
+  // Bumped by interrupt(). The drain loop re-reads it between chunks and
+  // abandons what it is writing if it has changed, which is the only way to
+  // stop a paste already being written: by then the bytes have left `pending`
+  // and live in a local buffer the queue can no longer reach.
+  let epoch = 0;
+
+  // Chunk size chosen from measurement, not intuition: sendInput costs
+  // ~150-300ms REGARDLESS of payload size, because it is a round trip. Small
+  // chunks are therefore ruinous — at 2KB a 100KB paste is 49 round trips and
+  // takes ten seconds, which reads as a hung terminal. At 16KB it is seven.
+  //
+  // Not unbounded, because a pty's line discipline holds a limited buffer
+  // (MAX_CANON, usually 4KB) for a line with no newline in it; handing it an
+  // enormous single line in one write overflows and truncates. 16KB is the
+  // compromise: few round trips, and small enough that the tty keeps up with
+  // realistic multi-line content.
+  const PTY_CHUNK = 16 * 1024;
+
+  const drain = async (): Promise<void> => {
+    try {
+      while (pending.length > 0) {
+        const batch = pending;
+        pending = [];
+        const total = batch.reduce((n, c) => n + c.length, 0);
+        const merged = new Uint8Array(total);
+        let at = 0;
+        for (const chunk of batch) {
+          merged.set(chunk, at);
+          at += chunk.length;
+        }
+        const writingEpoch = epoch;
+        for (let off = 0; off < merged.length; off += PTY_CHUNK) {
+          // An interrupt while this was writing means the rest is input the
+          // user has explicitly abandoned; sending it anyway would replay the
+          // paste they just cancelled.
+          if (epoch !== writingEpoch) break;
+          const slice = merged.subarray(
+            off,
+            Math.min(off + PTY_CHUNK, merged.length),
+          );
+          try {
+            const t0 = Date.now();
+            // A bounded write. Without this, a pty whose input buffer has
+            // filled leaves sendInput pending forever, and because the queue
+            // is serial that one call silently stops every keystroke behind
+            // it — the terminal looks dead with nothing in the logs.
+            await sandbox.pty.sendInput(handle.pid, slice, {
+              requestTimeoutMs: 15_000,
+            });
+            if (Date.now() - t0 > 3000) {
+              // A slow write means the pty could not drain — worth knowing
+              // about, because it is the shape a stalled terminal takes.
+              logger.warn("Apps v2 pty write was slow", {
+                bytes: slice.length,
+                ms: Date.now() - t0,
+              });
+            }
+          } catch (error) {
+            // One failed chunk must not take the session with it. This is how
+            // a large paste used to wedge a terminal permanently: the throw
+            // escaped the drain loop, `draining` was never cleared, and every
+            // subsequent keystroke joined a queue that would never run again.
+            // Drop the chunk, keep the shell.
+            const message =
+              error instanceof Error ? error.message : String(error);
+            // Unless the shell is gone for good, in which case carrying on
+            // means logging one of these per keystroke forever while the user
+            // stares at a terminal that will never answer.
+            if (isSandboxGone(message)) {
+              pending = [];
+              reportExit("the sandbox this terminal was running in has gone");
+              return;
+            }
+            logger.warn("Apps v2 pty input chunk failed; continuing", {
+              bytes: slice.length,
+              error: message,
+            });
+          }
+        }
+      }
+    } finally {
+      // ALWAYS release the queue, however we leave. A stuck `draining` is
+      // indistinguishable from a dead terminal.
+      draining = null;
+      if (pending.length > 0) draining = drain();
+    }
+  };
 
   return {
-    write: data => sandbox.pty.sendInput(handle.pid, data),
+    pid: handle.pid,
+    write: async data => {
+      pending.push(data);
+      if (!draining) draining = drain();
+      return draining;
+    },
+    interrupt: async () => {
+      // Drop what has not reached the shell yet, both the queue and whatever
+      // the drain loop is midway through. A chunk already in flight still
+      // lands: that is one 16KB write, not a megabyte.
+      epoch += 1;
+      pending = [];
+      // `\e[201~` first, in case the discarded input was a paste the shell is
+      // still waiting to see the end of. Without it readline stays in paste
+      // mode and silently swallows everything typed afterwards, which looks
+      // exactly like a dead terminal and does not recover on reconnect.
+      pending.push(new TextEncoder().encode("\x1b[201~\x03"));
+      if (!draining) draining = drain();
+      return draining;
+    },
     resize: (cols, rows) => sandbox.pty.resize(handle.pid, { cols, rows }),
     close: async () => {
       await handle.kill().catch(() => undefined);
