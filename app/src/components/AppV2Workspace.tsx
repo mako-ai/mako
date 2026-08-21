@@ -21,13 +21,13 @@ import {
   Button,
   Chip,
   CircularProgress,
-  Divider,
   IconButton,
   ListItemText,
   Menu,
   MenuItem,
   Tooltip,
   Typography,
+  styled,
   useTheme,
 } from "@mui/material";
 import {
@@ -42,10 +42,34 @@ import "@xterm/xterm/css/xterm.css";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useRealtimeStore } from "../store/realtimeStore";
 import { useAppsV2Store } from "../store/appsV2Store";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { setIframeDragGuard } from "../lib/iframe-drag-guard";
 
 // ---------------------------------------------------------------------------
 // Terminal panel
 // ---------------------------------------------------------------------------
+
+/**
+ * The divider between the preview and the terminal.
+ *
+ * Same 4px as the side handles in App.tsx rather than a hand-picked height, so
+ * the three dividers on screen are actually the same thickness — they were not
+ * before, and it showed.
+ */
+const TerminalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
+  flex: "0 0 4px",
+  height: "4px",
+  alignSelf: "stretch",
+  background: theme.palette.divider,
+  touchAction: "none",
+  transition: "background-color 0.2s ease",
+  // The library reports hover/drag through this attribute; its hit area is
+  // larger than the visible strip, so the highlight has to key off it rather
+  // than off CSS :hover.
+  "&[data-resize-handle-state='hover'], &[data-resize-handle-state='drag']": {
+    backgroundColor: theme.palette.primary.main,
+  },
+}));
 
 function TerminalPanel({
   appId,
@@ -232,48 +256,22 @@ export default function AppV2Workspace({
   const publishedSha = app?.publishedSha;
   const publishApp = useAppsV2Store(s => s.publishApp);
 
-  // Resizable terminal. Persisted per browser so the pane you sized stays
-  // sized — a terminal you have to re-drag every visit is one you stop using.
-  const [terminalHeight, setTerminalHeight] = useState(() => {
-    const saved = Number(localStorage.getItem("apps-v2:terminal-height"));
-    return Number.isFinite(saved) && saved >= 80 ? saved : 200;
-  });
-  const [resizing, setResizing] = useState(false);
-  const resizeRef = useRef<{ y: number; h: number } | null>(null);
-
-  const startResize = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      resizeRef.current = { y: e.clientY, h: terminalHeight };
-      setResizing(true);
-    },
-    [terminalHeight],
-  );
-
+  // The terminal split is a PanelGroup, like every other pane in the app.
+  //
+  // It used to be a hand-rolled mousemove drag, which froze the moment the
+  // cursor crossed the preview iframe: a cross-origin frame swallows
+  // pointermove, so the parent window stops hearing about the drag. Drag
+  // slowly and you stay on the handle and it works; drag fast and it hangs.
+  // `setIframeDragGuard` is the fix the rest of the app already uses — it
+  // makes every iframe transparent to pointer events for the duration — and
+  // using the same library also means this handle is the same size as the
+  // others rather than a hand-picked 5px.
+  const [terminalDragging, setTerminalDragging] = useState(false);
   useEffect(() => {
-    if (!resizing) return;
-    const onMove = (e: MouseEvent) => {
-      const start = resizeRef.current;
-      if (!start) return;
-      // Dragging up grows the terminal, so the delta is inverted. Clamped so
-      // it can never swallow the preview or vanish entirely.
-      const next = Math.min(
-        Math.max(start.h + (start.y - e.clientY), 80),
-        Math.max(160, window.innerHeight - 260),
-      );
-      setTerminalHeight(next);
-    };
-    const onUp = () => {
-      setResizing(false);
-      localStorage.setItem("apps-v2:terminal-height", String(terminalHeight));
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-  }, [resizing, terminalHeight]);
+    if (!terminalDragging) return;
+    setIframeDragGuard(true);
+    return () => setIframeDragGuard(false);
+  }, [terminalDragging]);
 
   const fetchApps = useAppsV2Store(s => s.fetchApps);
   const fetchFiles = useAppsV2Store(s => s.fetchFiles);
@@ -469,70 +467,66 @@ export default function AppV2Workspace({
         </Alert>
       )}
 
-      {/* Preview / getting started */}
-      <Box sx={{ flex: 1, minHeight: 0 }}>
-        {preview?.url ? (
-          <iframe
-            title="App preview"
-            src={preview.url}
-            // The two preview tiers need DIFFERENT sandboxes.
-            //
-            // Static builds are served by Mako from Mako's own origin, so
-            // `allow-same-origin` would hand app code our origin and let it
-            // escape the sandbox entirely — it stays off, and the opaque
-            // origin is why those assets are served with `Access-Control-
-            // Allow-Origin: *`.
-            //
-            // The live dev server (§12.4) is a genuinely foreign origin
-            // (`<port>-<sandbox>.e2b.app`), so `allow-same-origin` grants it
-            // only ITS OWN origin, never ours. It is required there: with an
-            // opaque origin, Vite's HMR socket and its cross-origin module
-            // scripts do not work.
-            sandbox={
-              preview.mode === "dev"
-                ? "allow-scripts allow-forms allow-same-origin"
-                : "allow-scripts allow-forms"
-            }
-            style={{ border: 0, width: "100%", height: "100%" }}
-          />
-        ) : (
-          <Box sx={{ p: 3, maxWidth: 560 }}>
-            <Typography variant="subtitle1" gutterBottom>
-              {app?.title ?? "App"}
-            </Typography>
-            <Typography variant="body2" color="text.secondary" paragraph>
-              Browse and edit this app&apos;s files from the Apps v2 explorer on
-              the left — every file opens in its own tab. Ask the agent in chat
-              to build features (each conversation works on its own git branch
-              and commits every turn), or use the terminal below.
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              <strong>Start dev session</strong> runs the app live, so edits
-              show up as you make them. <strong>Publish</strong> builds it and
-              deploys — that is the version everyone else sees. A failed build
-              publishes nothing and leaves the current version untouched.
-            </Typography>
-          </Box>
-        )}
-      </Box>
+      {/* Preview / getting started, over the terminal */}
+      <PanelGroup
+        direction="vertical"
+        // Remembers the split per browser, so a terminal you sized stays
+        // sized — one you have to re-drag every visit is one you stop using.
+        autoSaveId="apps-v2:workspace-vertical"
+        style={{ flex: 1, minHeight: 0 }}
+      >
+        <Panel defaultSize={70} minSize={20}>
+          {preview?.url ? (
+            <iframe
+              title="App preview"
+              src={preview.url}
+              // The two preview tiers need DIFFERENT sandboxes.
+              //
+              // Static builds are served by Mako from Mako's own origin, so
+              // `allow-same-origin` would hand app code our origin and let it
+              // escape the sandbox entirely — it stays off, and the opaque
+              // origin is why those assets are served with `Access-Control-
+              // Allow-Origin: *`.
+              //
+              // The live dev server (§12.4) is a genuinely foreign origin
+              // (`<port>-<sandbox>.e2b.app`), so `allow-same-origin` grants it
+              // only ITS OWN origin, never ours. It is required there: with an
+              // opaque origin, Vite's HMR socket and its cross-origin module
+              // scripts do not work.
+              sandbox={
+                preview.mode === "dev"
+                  ? "allow-scripts allow-forms allow-same-origin"
+                  : "allow-scripts allow-forms"
+              }
+              style={{ border: 0, width: "100%", height: "100%" }}
+            />
+          ) : (
+            <Box sx={{ p: 3, maxWidth: 560 }}>
+              <Typography variant="subtitle1" gutterBottom>
+                {app?.title ?? "App"}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" paragraph>
+                Browse and edit this app&apos;s files from the Apps v2 explorer
+                on the left — every file opens in its own tab. Ask the agent in
+                chat to build features (each conversation works on its own git
+                branch and commits every turn), or use the terminal below.
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                <strong>Start dev session</strong> runs the app live, so edits
+                show up as you make them. <strong>Publish</strong> builds it and
+                deploys — that is the version everyone else sees. A failed build
+                publishes nothing and leaves the current version untouched.
+              </Typography>
+            </Box>
+          )}
+        </Panel>
 
-      <Divider />
+        <TerminalResizeHandle onDragging={setTerminalDragging} />
 
-      {/* Terminal */}
-      <Box
-        onMouseDown={startResize}
-        sx={{
-          height: 5,
-          flexShrink: 0,
-          cursor: "row-resize",
-          bgcolor: resizing ? "primary.main" : "divider",
-          transition: resizing ? "none" : "background-color 0.15s",
-          "&:hover": { bgcolor: "primary.light" },
-        }}
-      />
-      <Box sx={{ height: terminalHeight, flexShrink: 0, minHeight: 0 }}>
-        <TerminalPanel appId={appId} workspaceId={workspaceId} />
-      </Box>
+        <Panel defaultSize={30} minSize={8} collapsible collapsedSize={0}>
+          <TerminalPanel appId={appId} workspaceId={workspaceId} />
+        </Panel>
+      </PanelGroup>
 
       {/* History menu */}
       <Menu
