@@ -27,6 +27,7 @@ import {
 } from "../config";
 import { loggers } from "../../logging";
 import type {
+  SandboxTerminal,
   SandboxExecContext,
   SandboxExecOptions,
   SandboxExecResult,
@@ -495,11 +496,67 @@ async function keepAliveE2b(
   await sandbox.setTimeout(Math.max(IDLE_TIMEOUT_MS, ms));
 }
 
+/**
+ * Open a shell in the sandbox and stream it.
+ *
+ * The tree is synced IN first so the shell starts on current sources, but not
+ * back OUT: the session stays open and the user keeps typing, so there is no
+ * moment that means "finished". Work leaves the sandbox the usual way, through
+ * the syncs around ordinary commands.
+ */
+async function openTerminalE2b(
+  ctx: SandboxExecContext,
+  opts: {
+    cwd: string;
+    cols: number;
+    rows: number;
+    onData: (data: Uint8Array) => void;
+  },
+): Promise<SandboxTerminal> {
+  const sandbox = await connectSession(ctx.sessionKey);
+  await sandbox.setTimeout(IDLE_TIMEOUT_MS);
+  await syncIn(sandbox, ctx.hostDir);
+
+  const cwd = path.posix.join(REMOTE_ROOT, opts.cwd);
+  if (!cwd.startsWith(REMOTE_ROOT)) {
+    throw new Error(
+      `cwd escapes the session root: ${JSON.stringify(opts.cwd)}`,
+    );
+  }
+
+  const handle = await sandbox.pty.create({
+    cols: opts.cols,
+    rows: opts.rows,
+    cwd,
+    user: SANDBOX_USER,
+    onData: opts.onData,
+    // Long enough that a shell left open over lunch is still there.
+    timeoutMs: IDLE_TIMEOUT_MS,
+    envs: {
+      HOME: "/home/user",
+      LANG: "C.UTF-8",
+      // A real terminal, so colour and redrawing work — this is the whole
+      // reason for a PTY over one-shot commands.
+      TERM: "xterm-256color",
+      COLORTERM: "truecolor",
+    },
+  });
+
+  return {
+    write: data => sandbox.pty.sendInput(handle.pid, data),
+    resize: (cols, rows) => sandbox.pty.resize(handle.pid, { cols, rows }),
+    close: async () => {
+      await handle.kill().catch(() => undefined);
+    },
+  };
+}
+
 export const e2bSandboxProvider: SandboxProvider = {
   id: "e2b",
   exec: execE2b,
   execDetached: execDetachedE2b,
   writeFile: writeFileE2b,
+  openTerminal: openTerminalE2b,
   publicUrlForPort: publicUrlForPortE2b,
   keepAlive: keepAliveE2b,
   destroySession: async sessionKey => {

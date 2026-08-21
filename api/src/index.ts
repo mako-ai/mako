@@ -39,6 +39,7 @@ import {
   shutdownLangfuse,
 } from "./observability/langfuse";
 import { assertDevLoginSafeAtBoot } from "./auth/dev-login";
+import { attachAppsV2TerminalWs } from "./apps-v2/terminal-ws";
 
 // Resolve the root‐level .env file regardless of the runtime working directory
 const envPath = path.resolve(__dirname, "../../.env");
@@ -351,13 +352,15 @@ async function main(): Promise<void> {
     },
   });
 
-  // Start the server. Nothing needs the handle any more: the raw WebSocket
-  // upgrade hook existed only for the dev-preview proxy, which §12.4 removed —
-  // vite now runs in the sandbox and HMR rides E2B's public origin.
-  serve({
+  const server = serve({
     fetch: app.fetch,
     port,
   });
+  // Hono handles ordinary HTTP; a WebSocket upgrade has to be caught on the
+  // raw server. This one carries the Apps v2 interactive terminal — bytes
+  // between a browser and a PTY in the sandbox. Nothing of the tenant's runs
+  // here; the API only moves them.
+  attachAppsV2TerminalWs(server);
 
   if (!process.env.AI_GATEWAY_API_KEY) {
     logger.error(

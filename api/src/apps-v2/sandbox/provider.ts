@@ -46,6 +46,16 @@ export interface SandboxExecResult {
   truncated: boolean;
 }
 
+/** A live pseudo-terminal in a sandbox. */
+export interface SandboxTerminal {
+  /** Forward a keystroke (or paste) to the shell. */
+  write(data: Uint8Array): Promise<void>;
+  /** Tell the shell the window changed, so it can redraw at the right size. */
+  resize(cols: number, rows: number): Promise<void>;
+  /** End the session. */
+  close(): Promise<void>;
+}
+
 export interface SandboxProvider {
   readonly id: AppsV2SandboxProviderId;
   /**
@@ -91,6 +101,24 @@ export interface SandboxProvider {
    * explicitly or E2B pauses the sandbox out from under the preview.
    */
   keepAlive(ctx: SandboxExecContext, ms: number): Promise<void>;
+  /**
+   * Open an interactive pseudo-terminal in the session.
+   *
+   * Distinct from {@link exec}: that is one command in, one result out, with
+   * the working tree synced around it. A PTY is a live shell — a prompt, job
+   * control, programs that redraw — so it streams bytes until it is closed and
+   * does not sync anything. Anything committed from inside it reaches the host
+   * through the ordinary per-command syncs.
+   */
+  openTerminal(
+    ctx: SandboxExecContext,
+    opts: {
+      cwd: string;
+      cols: number;
+      rows: number;
+      onData: (data: Uint8Array) => void;
+    },
+  ): Promise<SandboxTerminal>;
   /** Tear down any remote session for the given affinity key (best effort). */
   destroySession?(sessionKey: string): Promise<void>;
 }

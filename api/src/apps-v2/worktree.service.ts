@@ -18,6 +18,7 @@
  *    at an unreachable URL so in-sandbox `git push` cannot bypass CAS/ACLs.
  */
 import fs from "node:fs/promises";
+import os from "node:os";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { Types } from "mongoose";
@@ -496,6 +497,24 @@ export async function ensureWorktree(
     });
   }
 
+  // Your branch tracks main. Apps are created on main (and colleagues add
+  // their own), so a personal branch that never learns about them is a
+  // checkout that silently lacks half the repo — which shows up as
+  // "directory does not exist" the moment anything tries to use one.
+  // Locally you would `git pull`; this is that.
+  if (branch !== DEFAULT_BRANCH && branchHead !== mainHead) {
+    const merged = await mergeRefInto(repoDir, branch, mainHead).catch(
+      () => null,
+    );
+    if (merged && merged !== branchHead) {
+      branchHead = merged;
+      logger.info("Apps v2 actor branch caught up with main", {
+        branch,
+        head: merged,
+      });
+    }
+  }
+
   const worktreeId = doc._id.toString();
   return withWorktreeLock(worktreeId, async () => {
     // Reconcile the doc's WIP projection with the authoritative ref.
@@ -608,6 +627,60 @@ async function catchUpSession(
         error: error instanceof Error ? error.message : String(error),
       },
     );
+  }
+}
+
+/**
+ * Merge `intoOid` into `branch` inside the bare repo, without a worktree.
+ *
+ * Fast-forwards when the branch has no commits of its own, which is the
+ * common case: someone else added an app and you simply need it. A branch
+ * that HAS diverged gets a real merge commit, and a conflict throws — the
+ * caller keeps the branch as it was rather than resolving on the user's
+ * behalf.
+ */
+async function mergeRefInto(
+  repoDir: string,
+  branch: string,
+  intoOid: string,
+): Promise<string | null> {
+  const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
+  if (!head) return null;
+  // Already contains it: nothing to do.
+  const isAncestor = await runGit(
+    ["-C", repoDir, "merge-base", "--is-ancestor", intoOid, head],
+    { timeoutMs: 30_000 },
+  )
+    .then(() => true)
+    .catch(() => false);
+  if (isAncestor) return head;
+
+  const canFastForward = await runGit(
+    ["-C", repoDir, "merge-base", "--is-ancestor", head, intoOid],
+    { timeoutMs: 30_000 },
+  )
+    .then(() => true)
+    .catch(() => false);
+  if (canFastForward) {
+    await updateRefCas(repoDir, `refs/heads/${branch}`, intoOid, head);
+    return intoOid;
+  }
+
+  // Diverged: a real merge needs a work tree, so do it in a throwaway one.
+  const tmp = path.join(os.tmpdir(), `mako-merge-${Date.now()}`);
+  try {
+    await runGit(["clone", "--quiet", "--branch", branch, repoDir, tmp], {
+      timeoutMs: 120_000,
+    });
+    await runGit(["-C", tmp, "merge", "--no-edit", intoOid], {
+      timeoutMs: 60_000,
+    });
+    await runGit(["-C", tmp, "push", repoDir, `HEAD:refs/heads/${branch}`], {
+      timeoutMs: 60_000,
+    });
+    return await resolveCommit(repoDir, `refs/heads/${branch}`);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
   }
 }
 

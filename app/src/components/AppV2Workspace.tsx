@@ -14,7 +14,7 @@
  * Every read resolves from git through the durable worktree API, so the view
  * renders identically whether the sandbox is hot, paused, or dead.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -23,108 +23,29 @@ import {
   CircularProgress,
   Divider,
   IconButton,
-  InputBase,
   ListItemText,
   Menu,
   MenuItem,
   Tooltip,
   Typography,
+  useTheme,
 } from "@mui/material";
 import {
-  Eraser as ClearIcon,
   History as HistoryIcon,
   Play as PlayIcon,
   RotateCcw as DiscardIcon,
   TerminalSquare as TerminalIcon,
 } from "lucide-react";
-import Anser from "anser";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useRealtimeStore } from "../store/realtimeStore";
-import { useAppsV2Store, type AppV2TerminalEntry } from "../store/appsV2Store";
+import { useAppsV2Store } from "../store/appsV2Store";
 
 // ---------------------------------------------------------------------------
 // Terminal panel
 // ---------------------------------------------------------------------------
-
-const EMPTY_TERMINAL: AppV2TerminalEntry[] = [];
-
-/**
- * Render command output with its ANSI colours intact.
- *
- * Real tools colour their output — vite, npm, tsc, git — and rendering the
- * escape sequences as text turned that into noise like `[36m[1mVITE`. Anser
- * parses the sequences into spans; there is no terminal emulator here, because
- * the commands are one-shot and there is nothing to emulate.
- */
-function AnsiText({
-  text,
-  dim,
-}: {
-  text: string;
-  dim?: boolean;
-}): React.ReactElement {
-  const chunks = useMemo(
-    () => Anser.ansiToJson(text, { use_classes: false, json: true }),
-    [text],
-  );
-  return (
-    <Typography
-      variant="caption"
-      component="pre"
-      sx={{
-        m: 0,
-        fontFamily: "monospace",
-        whiteSpace: "pre-wrap",
-        wordBreak: "break-word",
-        ...(dim ? { color: "text.secondary" } : {}),
-      }}
-    >
-      {chunks.map((chunk, i) => (
-        <span
-          key={i}
-          style={{
-            color: chunk.fg ? `rgb(${chunk.fg})` : undefined,
-            backgroundColor: chunk.bg ? `rgb(${chunk.bg})` : undefined,
-            fontWeight: chunk.decoration === "bold" ? 600 : undefined,
-            textDecoration:
-              chunk.decoration === "underline" ? "underline" : undefined,
-          }}
-        >
-          {chunk.content}
-        </span>
-      ))}
-    </Typography>
-  );
-}
-
-function TerminalEntryView({ entry }: { entry: AppV2TerminalEntry }) {
-  return (
-    <Box sx={{ mb: 0.75 }}>
-      <Typography
-        variant="caption"
-        sx={{ fontFamily: "monospace", fontWeight: 600 }}
-      >
-        $ {entry.command}
-      </Typography>
-      {entry.running ? (
-        <Typography variant="caption" display="block" color="text.secondary">
-          running...
-        </Typography>
-      ) : (
-        <>
-          {entry.stdout && <AnsiText text={entry.stdout} />}
-          {entry.stderr && <AnsiText text={entry.stderr} dim />}
-          {entry.exitCode !== 0 && (
-            <Typography variant="caption" color="error.main" display="block">
-              exit {entry.exitCode}
-              {entry.timedOut ? " (timed out)" : ""}
-            </Typography>
-          )}
-        </>
-      )}
-    </Box>
-  );
-}
 
 function TerminalPanel({
   appId,
@@ -133,23 +54,86 @@ function TerminalPanel({
   appId: string;
   workspaceId: string;
 }) {
-  const entries = useAppsV2Store(s => s.terminalByApp[appId] ?? EMPTY_TERMINAL);
-  const running = useAppsV2Store(s => Boolean(s.execRunning[appId]));
-  const runCommand = useAppsV2Store(s => s.runCommand);
-  const clearTerminal = useAppsV2Store(s => s.clearTerminal);
-  const [command, setCommand] = useState("");
-  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const [status, setStatus] = useState<"connecting" | "open" | "closed">(
+    "connecting",
+  );
+  const theme = useTheme();
 
   useEffect(() => {
-    scrollEl?.scrollTo({ top: scrollEl.scrollHeight });
-  }, [entries, scrollEl]);
+    const host = hostRef.current;
+    if (!host) return;
 
-  const submit = useCallback(() => {
-    const trimmed = command.trim();
-    if (!trimmed || running) return;
-    setCommand("");
-    void runCommand(workspaceId, appId, trimmed);
-  }, [command, running, runCommand, workspaceId, appId]);
+    const term = new Terminal({
+      fontFamily:
+        'ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Mono", monospace',
+      fontSize: 12,
+      cursorBlink: true,
+      // Match the app's theme so the terminal does not look bolted on.
+      theme:
+        theme.palette.mode === "dark"
+          ? { background: "#0b0b0d", foreground: "#e6e6e6" }
+          : { background: "#ffffff", foreground: "#1a1a1a", cursor: "#1a1a1a" },
+      // Enough history to scroll back through a build.
+      scrollback: 5000,
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(host);
+    fit.fit();
+
+    const url = new URL(
+      `/api/workspaces/${workspaceId}/apps-v2/${appId}/terminal`,
+      window.location.origin,
+    );
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(url);
+    ws.binaryType = "arraybuffer";
+
+    const sendResize = () => {
+      fit.fit();
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(
+          JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }),
+        );
+      }
+    };
+
+    ws.onopen = () => {
+      setStatus("open");
+      sendResize();
+    };
+    ws.onmessage = event => {
+      term.write(
+        typeof event.data === "string"
+          ? event.data
+          : new Uint8Array(event.data as ArrayBuffer),
+      );
+    };
+    ws.onclose = () => {
+      setStatus("closed");
+      term.writeln(
+        "\r\n\x1b[2m[session ended — reopen the tab to reconnect]\x1b[0m",
+      );
+    };
+    ws.onerror = () => setStatus("closed");
+
+    const typed = term.onData(data => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(data);
+    });
+
+    // The pane is resizable, and a shell that does not know its own width
+    // wraps its prompt in the wrong place.
+    const observer = new ResizeObserver(() => sendResize());
+    observer.observe(host);
+
+    return () => {
+      observer.disconnect();
+      typed.dispose();
+      ws.close();
+      term.dispose();
+    };
+  }, [appId, workspaceId, theme.palette.mode]);
 
   return (
     <Box
@@ -157,8 +141,7 @@ function TerminalPanel({
         height: "100%",
         display: "flex",
         flexDirection: "column",
-        fontFamily: "monospace",
-        bgcolor: "background.default",
+        bgcolor: theme.palette.mode === "dark" ? "#0b0b0d" : "#ffffff",
       }}
     >
       <Box
@@ -170,65 +153,27 @@ function TerminalPanel({
           py: 0.25,
           borderBottom: "1px solid",
           borderColor: "divider",
+          flexShrink: 0,
         }}
       >
         <TerminalIcon size={14} />
         <Typography variant="caption" sx={{ flex: 1 }}>
-          {
-            "Terminal — runs in the app's sandbox session (E2B microVM; resumes if paused, rebuilds if dead)"
-          }
+          Terminal — a real shell in the app&apos;s sandbox
         </Typography>
-        <Tooltip title="Clear">
-          <IconButton size="small" onClick={() => clearTerminal(appId)}>
-            <ClearIcon size={14} />
-          </IconButton>
-        </Tooltip>
-      </Box>
-      <Box ref={setScrollEl} sx={{ flex: 1, overflow: "auto", px: 1, py: 0.5 }}>
-        {entries.length === 0 && (
-          <Typography variant="caption" color="text.secondary">
-            Try: ls · git status · git log --oneline · npm install · npm run
-            build
-          </Typography>
-        )}
-        {entries.map(entry => (
-          <TerminalEntryView key={entry.id} entry={entry} />
-        ))}
-      </Box>
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1,
-          px: 1,
-          py: 0.5,
-          borderTop: "1px solid",
-          borderColor: "divider",
-        }}
-      >
         <Typography
           variant="caption"
-          color="success.main"
-          sx={{ fontFamily: "monospace" }}
-        >
-          $
-        </Typography>
-        <InputBase
-          fullWidth
-          placeholder={
-            running ? "Running..." : "Type a command and press Enter"
+          color={
+            status === "open"
+              ? "success.main"
+              : status === "connecting"
+                ? "text.secondary"
+                : "error.main"
           }
-          value={command}
-          disabled={running}
-          onChange={e => setCommand(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === "Enter") submit();
-          }}
-          sx={{ fontFamily: "monospace", fontSize: 13 }}
-          inputProps={{ "aria-label": "terminal command" }}
-        />
-        {running && <CircularProgress size={14} />}
+        >
+          {status}
+        </Typography>
       </Box>
+      <Box ref={hostRef} sx={{ flex: 1, minHeight: 0, p: 0.5 }} />
     </Box>
   );
 }
