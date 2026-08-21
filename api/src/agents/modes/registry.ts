@@ -55,6 +55,13 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   delete_skill: "skills",
   list_skills: "skills",
   search_skills: "skills",
+  // MCP connector management (Settings → MCP Servers as agent tools).
+  // Rare setup-time ops — loaded on demand when the user asks to connect a
+  // service (e.g. "add the GitHub MCP connector").
+  list_mcp_connectors: "mcp-connectors",
+  add_mcp_connector: "mcp-connectors",
+  test_mcp_connector: "mcp-connectors",
+  remove_mcp_connector: "mcp-connectors",
   // Legacy full-file app read. Keep executable for compatibility, but the app
   // mode uses app_search + app_read_resource for bounded context.
   app_read_file: "apps",

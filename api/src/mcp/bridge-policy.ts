@@ -308,6 +308,27 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   ),
   update_self_directive: bridge(),
 
+  // ── MCP connector management ──────────────────────────────────────────
+  // Workspace connector setup is in-product admin UX; the MCP surface is a
+  // curated toolset and must not let external clients rewire which servers
+  // the workspace trusts.
+  list_mcp_connectors: exclude(
+    "in-product-only",
+    "Connector setup is in-product admin UX; MCP exposes a fixed curated surface.",
+  ),
+  add_mcp_connector: exclude(
+    "security",
+    "External MCP clients must not register new tool servers for the workspace.",
+  ),
+  test_mcp_connector: exclude(
+    "in-product-only",
+    "Connector setup is in-product admin UX; MCP exposes a fixed curated surface.",
+  ),
+  remove_mcp_connector: exclude(
+    "security",
+    "External MCP clients must not remove the workspace's tool servers.",
+  ),
+
   // ── Version history ───────────────────────────────────────────────────
   browse_version_history: bridge(),
   get_version_snapshot: bridge(),

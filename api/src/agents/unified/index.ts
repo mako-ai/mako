@@ -10,6 +10,7 @@ import {
 import { createDbtServerTools } from "../../agent-lib/tools/dbt-tools";
 import { createServerAppTools } from "../../agent-lib/tools/server-app-tools";
 import { createNotebookServerTools } from "../../agent-lib/tools/server-notebook-tools";
+import { createMcpConnectorTools } from "../../agent-lib/tools/mcp-connector-tools";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import { createSkillTools } from "../../agent-lib/tools/skill-tools";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
@@ -40,6 +41,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
   );
   const flowTools = createFlowTools(workspaceId, context.toolExecutionContext);
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId, userId);
+  const mcpConnectorTools = createMcpConnectorTools({ workspaceId, userId });
   const skillTools = createSkillTools(workspaceId, userId);
   const consoleSearchTools = createConsoleSearchTools(
     workspaceId,
@@ -100,6 +102,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
       ...serverNotebookTools,
       ...flowUniqueTools,
       ...selfDirectiveTools,
+      ...mcpConnectorTools,
       ...skillTools,
       ...consoleSearchTools,
       ...dashboardSearchTools,

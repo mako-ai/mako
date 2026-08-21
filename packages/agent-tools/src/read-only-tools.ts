@@ -37,6 +37,7 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   // Search
   "search_dashboards",
   "search_skills",
+  "list_mcp_connectors",
   "search_tools",
   "list_skills",
   "get_relevant_skills",

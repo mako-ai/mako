@@ -18,6 +18,8 @@ Go to **Settings → MCP Servers** (workspace admins only) and choose a preset:
 
 After adding a server, use **Test connection** to verify credentials and discover the server's tool list. Discovered tools are cached in the workspace so chat startup never blocks on an MCP round-trip.
 
+The agent can also do this setup from chat: asking it to "connect the GitHub MCP server" uses the `list_mcp_connectors` / `add_mcp_connector` / `test_mcp_connector` / `remove_mcp_connector` tools, with the same admin gating as the UI. Credentials are never collected in chat — the agent directs the user to Settings → MCP Servers (or the OAuth consent flow) to authenticate, then verifies the connection and discovers the tools.
+
 ## Authentication
 
 Two credential modes, both encrypted at rest (AES-256-CBC):
