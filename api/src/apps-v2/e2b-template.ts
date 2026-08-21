@@ -100,7 +100,13 @@ export function createAppsV2E2BTemplate() {
         // a new file leaves the prompt saying "clean", and creating files is
         // most of what happens here. A workspace repo is a handful of app
         // folders, not a monorepo, so the scan is cheap.
-        "echo 'cd /home/user/app 2>/dev/null || true' >> /home/user/.zshrc",
+        // zsh prints a reverse-video "%" whenever output does not end in a
+        // newline, which is most command output in practice — it looks like
+        // corruption in a fresh terminal.
+        "echo \"PROMPT_EOL_MARK=''\" >> /home/user/.zshrc",
+        // Deliberately NOT cd-ing anywhere here: the PTY is opened in the
+        // app's own folder, and a cd in .zshrc silently overrides it, landing
+        // every terminal in the repo root instead of the app you opened.
         // Fail the build if the config did not take, rather than shipping a
         // template whose shell silently falls back to defaults.
         "grep -q 'zsh-syntax-highlighting' /home/user/.zshrc",
