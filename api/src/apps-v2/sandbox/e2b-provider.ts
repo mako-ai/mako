@@ -518,12 +518,9 @@ function isSandboxGone(message: string): boolean {
 
 async function openTerminalE2b(
   ctx: SandboxExecContext,
-  opts: {
-    cwd: string;
-    cols: number;
-    rows: number;
-    onData: (data: Uint8Array) => void;
-  },
+  // Take the options straight from the interface rather than restating them,
+  // so adding one there cannot leave this signature quietly behind.
+  opts: Parameters<SandboxProvider["openTerminal"]>[1],
 ): Promise<SandboxTerminal> {
   const sandbox = await connectSession(ctx.sessionKey);
   await sandbox.setTimeout(IDLE_TIMEOUT_MS);

@@ -244,6 +244,24 @@ async function existingWorktreeKey(
   return doc ? String(doc._id) : null;
 }
 
+/**
+ * Attach a returning client to a shell that kept running: cancel the reaper
+ * and replay what it missed.
+ */
+function reattach(session: LiveTerminal, ws: WebSocket): void {
+  if (session.reaper) {
+    clearTimeout(session.reaper);
+    session.reaper = null;
+  }
+  // Push any batched-but-unsent output into the scrollback first, or the
+  // replay would end up to one flush-interval short of what the shell has
+  // actually printed.
+  session.flush();
+  for (const chunk of session.scrollback) {
+    if (ws.readyState === ws.OPEN) ws.send(chunk);
+  }
+}
+
 async function startSession(
   ws: WebSocket,
   project: IAppProjectV2,
@@ -254,122 +272,135 @@ async function startSession(
   const knownKey = await existingWorktreeKey(project, userId).catch(() => null);
   const running = knownKey ? live.get(knownKey) : undefined;
 
-  // Only the cold path pays for worktree setup.
-  const handle = running ? null : await ensureWorktree(project, userId);
-  const key = handle ? handle.doc._id.toString() : knownKey!;
-  let session = running ?? live.get(key);
-  if (session) {
-    // Someone is coming back to a shell that kept running.
-    if (session.reaper) {
-      clearTimeout(session.reaper);
-      session.reaper = null;
-    }
-    // Push any batched-but-unsent output into the scrollback first, or the
-    // replay below would end up to one flush-interval short of what the shell
-    // has actually printed.
-    session.flush();
-    for (const chunk of session.scrollback) {
-      if (ws.readyState === ws.OPEN) ws.send(chunk);
-    }
-  } else if (handle) {
-    const provider = getSandboxProvider();
-    const created: LiveTerminal = {
-      terminal: undefined as unknown as SandboxTerminal,
-      scrollback: [],
-      scrollbackBytes: 0,
-      sockets: new Set(),
-      reaper: null,
-      flush: () => undefined,
-    };
-    // Output is BATCHED before it leaves the process.
-    //
-    // E2B delivers pty output almost byte by byte: 125KB of echo arrived as
-    // 68,000 separate callbacks, which without this would be 68,000 WebSocket
-    // frames for a single paste. Coalescing on a short timer makes that a few
-    // hundred. VS Code batches terminal output for the same reason.
-    //
-    // Worth being precise about what this did NOT fix: the terminal freezing
-    // on a large paste looked like client backpressure reaching the pty, and
-    // it was not — it was the interactive shell (see BASHRC in
-    // e2b-template.ts). Batching is a real saving on a chatty stream, not the
-    // cure for that bug.
-    let outbox: Buffer[] = [];
-    let outboxBytes = 0;
-    let flushTimer: NodeJS.Timeout | null = null;
-
-    const flush = () => {
-      flushTimer = null;
-      if (outbox.length === 0) return;
-      const chunk = outbox.length === 1 ? outbox[0] : Buffer.concat(outbox);
-      outbox = [];
-      outboxBytes = 0;
-      remember(created, chunk);
-      for (const socket of created.sockets) {
-        // Skip a client that has stopped reading rather than buffering without
-        // limit: one wedged tab must not take the server with it.
-        if (
-          socket.readyState === socket.OPEN &&
-          socket.bufferedAmount < 8 * 1024 * 1024
-        ) {
-          socket.send(chunk);
-        }
-      }
-    };
-
-    created.terminal = await provider.openTerminal(
-      { hostDir: handle.sessionDir, sessionKey: key },
-      {
-        cwd: handle.appRoot,
-        cols: 80,
-        rows: 24,
-        onExit: () => {
-          // The shell is gone for good. Forget it, so the next connection
-          // builds a fresh one instead of attaching to a corpse, and tell
-          // whoever is watching — the client reconnects on close, and would
-          // otherwise sit in front of a terminal that silently ignores every
-          // keystroke. This is the difference between a sandbox expiring
-          // overnight being invisible and it bricking the terminal until the
-          // API restarts.
-          if (live.get(key) === created) live.delete(key);
-          if (created.reaper) clearTimeout(created.reaper);
-          // A sentence, not the provider's wording: `reason` is whatever E2B
-          // put on the wire ("...reached end of life while the request was in
-          // flight"), which is useful in a log and baffling in a terminal. The
-          // provider already logged it.
-          const notice =
-            "\r\n\x1b[2m[this shell ended — reconnecting]\x1b[0m\r\n";
-          for (const socket of created.sockets) {
-            if (socket.readyState === socket.OPEN) {
-              socket.send(Buffer.from(notice, "utf8"));
-              socket.close(1012, "terminal ended");
-            }
-          }
-          created.sockets.clear();
-        },
-        onData: data => {
-          outbox.push(Buffer.from(data));
-          outboxBytes += data.length;
-          // Flush early on volume so a burst is not held back by the timer,
-          // and otherwise coalesce a frame's worth of keystroke echo.
-          if (outboxBytes >= 64 * 1024) {
-            if (flushTimer) clearTimeout(flushTimer);
-            flush();
-          } else if (!flushTimer) {
-            flushTimer = setTimeout(flush, 8);
-          }
-        },
-      },
+  // Say something before the slow part. The socket is already open by now, so
+  // the client shows "open" while the server may spend the best part of a
+  // minute creating a sandbox and syncing files into it — a blank pane that
+  // claims to be connected, which is precisely the "terminal looks dead"
+  // impression the rest of this file exists to avoid.
+  if (!running && ws.readyState === ws.OPEN) {
+    ws.send(
+      Buffer.from(
+        "\x1b[2m[starting a sandbox for this app…]\x1b[0m\r\n",
+        "utf8",
+      ),
     );
-    created.flush = () => {
-      if (flushTimer) clearTimeout(flushTimer);
-      flush();
-    };
-    live.set(key, created);
-    session = created;
-    logger.info("Apps v2 terminal started", {
-      projectId: project._id.toString(),
-      appRoot: handle.appRoot,
-    });
+  }
+
+  let key: string;
+  let session: LiveTerminal;
+
+  if (running) {
+    key = knownKey!;
+    session = running;
+    reattach(session, ws);
+  } else {
+    // Only the cold path pays for worktree setup.
+    const handle = await ensureWorktree(project, userId);
+    key = handle.doc._id.toString();
+    const existing = live.get(key);
+    if (existing) {
+      session = existing;
+      reattach(session, ws);
+    } else {
+      const provider = getSandboxProvider();
+      const created: LiveTerminal = {
+        terminal: undefined as unknown as SandboxTerminal,
+        scrollback: [],
+        scrollbackBytes: 0,
+        sockets: new Set(),
+        reaper: null,
+        flush: () => undefined,
+      };
+      // Output is BATCHED before it leaves the process.
+      //
+      // E2B delivers pty output almost byte by byte: 125KB of echo arrived as
+      // 68,000 separate callbacks, which without this would be 68,000 WebSocket
+      // frames for a single paste. Coalescing on a short timer makes that a few
+      // hundred. VS Code batches terminal output for the same reason.
+      //
+      // Worth being precise about what this did NOT fix: the terminal freezing
+      // on a large paste looked like client backpressure reaching the pty, and
+      // it was not — it was the interactive shell (see BASHRC in
+      // e2b-template.ts). Batching is a real saving on a chatty stream, not the
+      // cure for that bug.
+      let outbox: Buffer[] = [];
+      let outboxBytes = 0;
+      let flushTimer: NodeJS.Timeout | null = null;
+
+      const flush = () => {
+        flushTimer = null;
+        if (outbox.length === 0) return;
+        const chunk = outbox.length === 1 ? outbox[0] : Buffer.concat(outbox);
+        outbox = [];
+        outboxBytes = 0;
+        remember(created, chunk);
+        for (const socket of created.sockets) {
+          // Skip a client that has stopped reading rather than buffering without
+          // limit: one wedged tab must not take the server with it.
+          if (
+            socket.readyState === socket.OPEN &&
+            socket.bufferedAmount < 8 * 1024 * 1024
+          ) {
+            socket.send(chunk);
+          }
+        }
+      };
+
+      created.terminal = await provider.openTerminal(
+        { hostDir: handle.sessionDir, sessionKey: key },
+        {
+          cwd: handle.appRoot,
+          cols: 80,
+          rows: 24,
+          onExit: () => {
+            // The shell is gone for good. Forget it, so the next connection
+            // builds a fresh one instead of attaching to a corpse, and tell
+            // whoever is watching — the client reconnects on close, and would
+            // otherwise sit in front of a terminal that silently ignores every
+            // keystroke. This is the difference between a sandbox expiring
+            // overnight being invisible and it bricking the terminal until the
+            // API restarts.
+            if (live.get(key) === created) live.delete(key);
+            if (created.reaper) clearTimeout(created.reaper);
+            // A sentence, not the provider's wording: `reason` is whatever E2B
+            // put on the wire ("...reached end of life while the request was in
+            // flight"), which is useful in a log and baffling in a terminal. The
+            // provider already logged it.
+            const notice =
+              "\r\n\x1b[2m[this shell ended — reconnecting]\x1b[0m\r\n";
+            for (const socket of created.sockets) {
+              if (socket.readyState === socket.OPEN) {
+                socket.send(Buffer.from(notice, "utf8"));
+                socket.close(1012, "terminal ended");
+              }
+            }
+            created.sockets.clear();
+          },
+          onData: data => {
+            outbox.push(Buffer.from(data));
+            outboxBytes += data.length;
+            // Flush early on volume so a burst is not held back by the timer,
+            // and otherwise coalesce a frame's worth of keystroke echo.
+            if (outboxBytes >= 64 * 1024) {
+              if (flushTimer) clearTimeout(flushTimer);
+              flush();
+            } else if (!flushTimer) {
+              flushTimer = setTimeout(flush, 8);
+            }
+          },
+        },
+      );
+      created.flush = () => {
+        if (flushTimer) clearTimeout(flushTimer);
+        flush();
+      };
+      live.set(key, created);
+      session = created;
+      logger.info("Apps v2 terminal started", {
+        projectId: project._id.toString(),
+        appRoot: handle.appRoot,
+      });
+    }
   }
 
   const current = session;
