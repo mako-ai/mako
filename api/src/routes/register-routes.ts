@@ -42,6 +42,7 @@ import { mcpProtocolRoutes } from "./mcp-server.routes";
 import { mcpOAuthRoutes } from "./mcp-oauth.routes";
 import { appPreviewRoutes } from "./app-preview.routes";
 import { appsV2Routes } from "./apps-v2";
+import { appsV2GitRoutes } from "./apps-v2-git";
 import { appsV2PreviewRoutes } from "./apps-v2-preview";
 
 /**
@@ -103,6 +104,10 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   // Apps v2 (git-backed) — parallel to v1, always available (no feature flag).
   app.route("/api/workspaces/:workspaceId/apps-v2", appsV2Routes);
   app.route("/api/apps-v2-preview", appsV2PreviewRoutes);
+  // Intentionally public: the workspace repo over git's own HTTP protocol,
+  // authorized by a scoped `mgt_` token. This is what makes a sandbox a
+  // normal machine with a normal remote.
+  app.route("/api/apps-v2-git", appsV2GitRoutes);
   app.route(
     "/api/workspaces/:workspaceId/data-sources",
     resourceDataSourceRoutes,

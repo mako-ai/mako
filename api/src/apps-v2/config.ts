@@ -48,3 +48,30 @@ export const APPS_V2_MAX_FILE_BYTES = 5_000_000;
 export function previewStagingDir(projectId: string): string {
   return path.join(appsV2SessionsRoot(), "preview", projectId);
 }
+
+/**
+ * Base URL the SANDBOX uses to reach this API — specifically, its git remote.
+ *
+ * Separate from BASE_URL because they answer different questions. BASE_URL is
+ * where a browser reaches Mako; this is where a microVM does, and in local
+ * development those are not the same address: `http://localhost:8080` means
+ * the sandbox itself, and resolves to nothing.
+ *
+ * Deployed, BASE_URL is already public and this needs no setting. Developing
+ * against E2B, point it at a tunnel to your API. Developing against the local
+ * provider, BASE_URL is correct as-is, since "the sandbox" is this machine.
+ */
+export function appsV2GitOriginBase(): string {
+  const base = process.env.APPS_V2_GIT_ORIGIN_URL || process.env.BASE_URL;
+  if (!base) {
+    throw new Error(
+      "Set APPS_V2_GIT_ORIGIN_URL (or BASE_URL) so the sandbox has a git remote to push to.",
+    );
+  }
+  return base.replace(/\/+$/, "");
+}
+
+/** The workspace repository's URL, as the sandbox addresses it. */
+export function appsV2GitOriginUrl(workspaceId: string): string {
+  return `${appsV2GitOriginBase()}/api/apps-v2-git/${workspaceId}.git`;
+}
