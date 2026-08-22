@@ -68,13 +68,12 @@ suite("e2b sandbox provider (live)", () => {
     expect(who.stdout).toContain("/home/user/app");
     expect(who.stdout).toContain("package.json");
 
-    // 2. File mutations inside the sandbox reach the durable WIP ref.
+    // 2. File mutations inside the sandbox are what the next read sees.
     const write = await execInWorktree(
       handle,
       'printf "from-e2b\\n" > sandbox-note.txt && git status --short',
     );
     expect(write.exitCode).toBe(0);
-    expect(write.flush.flushed).toBe(true);
 
     const file = await readFile(project, "sandbox-note.txt", USER);
     expect(file.contents).toBe("from-e2b\n");

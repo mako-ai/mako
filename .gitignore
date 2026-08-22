@@ -154,3 +154,4 @@ __pycache__/
 
 # Local-only notebooks design doc (kept out of the repo intentionally)
 /NOTEBOOKS_ARCHITECTURE.md
+.env.tunnel

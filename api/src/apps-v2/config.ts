@@ -6,6 +6,7 @@
  * agent has a real shell. It runs in parallel with apps v1 and is always
  * available (no feature flag).
  */
+import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -61,8 +62,28 @@ export function previewStagingDir(projectId: string): string {
  * against E2B, point it at a tunnel to your API. Developing against the local
  * provider, BASE_URL is correct as-is, since "the sandbox" is this machine.
  */
+function tunnelUrl(): string | undefined {
+  // Read from disk on each call, deliberately. `pnpm dev` starts the tunnel
+  // alongside the API, so the URL does not exist yet when the API boots and
+  // an env var read at startup would be empty for the whole session. It is
+  // read when a sandbox actually needs a remote, which is late enough.
+  if (process.env.NODE_ENV === "production") return undefined;
+  try {
+    const file = fsSync.readFileSync(
+      path.join(process.cwd(), "..", ".env.tunnel"),
+      "utf8",
+    );
+    return (
+      /^APPS_V2_GIT_ORIGIN_URL=(.+)$/m.exec(file)?.[1]?.trim() || undefined
+    );
+  } catch {
+    return undefined;
+  }
+}
+
 export function appsV2GitOriginBase(): string {
-  const base = process.env.APPS_V2_GIT_ORIGIN_URL || process.env.BASE_URL;
+  const base =
+    process.env.APPS_V2_GIT_ORIGIN_URL || tunnelUrl() || process.env.BASE_URL;
   if (!base) {
     throw new Error(
       "Set APPS_V2_GIT_ORIGIN_URL (or BASE_URL) so the sandbox has a git remote to push to.",

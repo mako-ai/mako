@@ -54,7 +54,6 @@ import {
   checkoutInBox,
   defaultBranchSha,
   ensureWorktree,
-  refreshFromBox,
   execInWorktree,
   listBranches,
   listFiles,
@@ -84,7 +83,7 @@ import {
   serveDeploymentFile,
 } from "../apps-v2/deployment.service";
 import fs from "node:fs/promises";
-import { readBoxDir } from "../apps-v2/box-repo";
+import { readBoxDir } from "../apps-v2/box";
 import {
   mintPreviewGrant,
   mintPublishedGrant,
@@ -730,7 +729,7 @@ appsV2Routes.openapi(
     tags: ["Apps v2"],
     summary: "List files (committed + uncommitted)",
     description:
-      "Browsing reads git and never touches a sandbox, which is what makes it cheap and keeps it working while a sandbox is asleep. Pass `live=1` when the caller is EDITING: it snapshots the sandbox first, so work done in the shell — which nothing else flushes — is visible instead of appearing to have vanished.",
+      "Lists the sandbox's working copy when it is running — so a file created in the terminal is simply there — and the last commit on the branch when it is not. Asking which is deliberately a question that does not start a sandbox: browsing must not boot a microVM.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,
@@ -742,9 +741,6 @@ appsV2Routes.openapi(
     try {
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      if (c.req.query("live") === "1") {
-        await refreshFromBox(loaded.project, loaded.userId);
-      }
       const { ref, entries } = await listFiles(loaded.project, loaded.userId);
       return c.json({ success: true as const, ref, files: entries }, 200);
     } catch (error) {
@@ -888,7 +884,7 @@ appsV2Routes.openapi(
     tags: ["Apps v2"],
     summary: "Worktree status (base, WIP, changed files)",
     description:
-      "As with the file listing: `live=1` snapshots the sandbox first so shell edits are counted; without it this is the committed view and starts nothing.",
+      "Reads the sandbox's working copy when it is running — including uncommitted and shell-made changes — and the last commit on the branch when it is not (reported as `offline`). Never starts a sandbox.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,
@@ -901,9 +897,6 @@ appsV2Routes.openapi(
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const userId = loaded.userId ?? "api-key";
-      if (c.req.query("live") === "1") {
-        await refreshFromBox(loaded.project, userId);
-      }
       const status = await worktreeStatus(loaded.project, userId);
       return c.json({ success: true as const, status }, 200);
     } catch (error) {

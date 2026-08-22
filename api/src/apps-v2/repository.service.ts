@@ -29,8 +29,6 @@ import {
 } from "./git";
 
 export const DEFAULT_BRANCH = "main";
-export const WIP_REF_PREFIX = "refs/mako/worktrees/";
-export const CONFLICT_REF_PREFIX = "refs/mako/conflicts/";
 
 const MAKO_AUTHOR_NAME = "Mako";
 const MAKO_AUTHOR_EMAIL = "bot@mako.ai";
@@ -193,21 +191,6 @@ export async function updateRefCas(
 ): Promise<boolean> {
   try {
     await runGit(["-C", repoDir, "update-ref", ref, newOid, expectedOldOid]);
-    return true;
-  } catch (error) {
-    if (error instanceof GitError) return false;
-    throw error;
-  }
-}
-
-/** Delete a ref with CAS on its expected current value. */
-export async function deleteRefCas(
-  repoDir: string,
-  ref: string,
-  expectedOldOid: string,
-): Promise<boolean> {
-  try {
-    await runGit(["-C", repoDir, "update-ref", "-d", ref, expectedOldOid]);
     return true;
   } catch (error) {
     if (error instanceof GitError) return false;
@@ -439,42 +422,6 @@ export async function log(
       const [oid, author, at, subject] = line.split("\0");
       return { oid, author, timestamp: Number(at) * 1000, subject };
     });
-}
-
-export interface CommitMeta {
-  oid: string;
-  parents: string[];
-  subject: string;
-  authorEmail: string;
-  committerTimestamp: number;
-}
-
-/** Full metadata of one commit (for auto-commit squash decisions). */
-export async function commitMeta(
-  repoDir: string,
-  refOrOid: string,
-): Promise<CommitMeta | null> {
-  try {
-    const { stdout } = await runGit([
-      "-C",
-      repoDir,
-      "show",
-      "-s",
-      `--format=%H%x00%P%x00%ae%x00%ct%x00%s`,
-      refOrOid,
-    ]);
-    const [oid, parents, authorEmail, ct, subject] = stdout.trim().split("\0");
-    if (!oid) return null;
-    return {
-      oid,
-      parents: parents ? parents.split(" ").filter(Boolean) : [],
-      subject: subject ?? "",
-      authorEmail: authorEmail ?? "",
-      committerTimestamp: Number(ct) * 1000,
-    };
-  } catch {
-    return null;
-  }
 }
 
 export interface ChangedFile {

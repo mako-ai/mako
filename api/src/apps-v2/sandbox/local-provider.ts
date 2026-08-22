@@ -139,6 +139,9 @@ async function execLocal(
           HOME: SANDBOX_HOME,
           LANG: "C.UTF-8",
           TERM: "xterm-256color",
+          // There is no human at this end. Without it git blocks on a
+          // credential prompt until the timeout and reports nothing.
+          GIT_TERMINAL_PROMPT: "0",
         },
       },
       (error, stdout, stderr) => {
@@ -171,6 +174,18 @@ export const localSandboxProvider: SandboxProvider = {
   id: "local",
   root: rootFor,
   scratch: scratchFor,
+
+  async hasSession(ctx) {
+    // A directory does not need booting, so "is it there" is the whole
+    // question. It also keeps the local provider honest about the one thing
+    // this seam exists to hide: whether reads see a working copy or a commit.
+    try {
+      await fs.access(path.join(rootFor(ctx), ".git"));
+      return true;
+    } catch {
+      return false;
+    }
+  },
   exec: execLocal,
 
   async execDetached(ctx, command, options = {}) {

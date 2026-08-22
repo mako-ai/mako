@@ -12,11 +12,11 @@
  *                    — durable-worktree status and WIP→branch commit (CAS)
  *   app2_list_apps / app2_create_app
  *
- * Everything executes server-side (headless-safe). Reads resolve through the
- * durable worktree layer (bare repo + WIP refs), so results are identical
- * whether a sandbox session is warm or was rebuilt after eviction. Every
- * mutation ends with a flush to the private WIP ref — that flush IS the
- * durability watermark.
+ * Everything executes server-side (headless-safe). The agent works the way a
+ * developer does: it edits files in a checkout, runs commands in a shell, and
+ * commits. The checkout is the sandbox, which is an ordinary clone with an
+ * ordinary remote, so `git push` is what makes work durable — there is no
+ * separate snapshot step and nothing to reconcile.
  *
  * Apps v1 tools are untouched and the two suites coexist (tool-family
  * isolation keeps a turn on one system's tools; see modes/registry.ts).
@@ -218,7 +218,7 @@ export function createAppsV2Tools({
 
     app2_bash: tool({
       description:
-        "Run a bash command in the app's sandbox session. cwd is the APP's folder (apps/<slug>) inside the workspace repo, not the repo root, so package.json and src/ are right here and `cwd` is interpreted relative to it. Use for anything a developer would do in a terminal: ls, grep, sed, cat, node, npm/pnpm install, npm run build, git status/log/diff. File changes are flushed to the app's durable WIP snapshot after the command. Each call is a one-shot command: backgrounding a long-running process (`vite &`) does NOT leave a server running the user can reach — use the app's preview controls for that. Not for committing (use app2_commit) and not for pushing (the session has no remote credentials).",
+        "Run a bash command in the app's sandbox session. cwd is the APP's folder (apps/<slug>) inside the workspace repo, not the repo root, so package.json and src/ are right here and `cwd` is interpreted relative to it. Use for anything a developer would do in a terminal: ls, grep, sed, cat, node, npm/pnpm install, npm run build, git status/log/diff. Each call is a one-shot command: backgrounding a long-running process (`vite &`) does NOT leave a server running the user can reach — use the app's preview controls for that. Use app2_commit to commit and push, or run git yourself — the sandbox has a real remote.",
       inputSchema: z.object({
         appId: z
           .string()
@@ -255,7 +255,6 @@ export function createAppsV2Tools({
             timedOut: result.timedOut,
             truncated: result.truncated,
             durationMs: result.durationMs,
-            durableRevision: result.flush.revision,
           };
         } catch (error) {
           logger.error("app2_bash failed", { error, appId });
@@ -357,7 +356,7 @@ export function createAppsV2Tools({
 
     app2_write_file: tool({
       description:
-        "Create or fully overwrite a file in an Apps v2 project. The change is flushed to the durable WIP snapshot immediately. For surgical edits prefer app2_edit_file.",
+        "Create or fully overwrite a file in an Apps v2 project's working copy. Uncommitted until you commit, like any checkout. For surgical edits prefer app2_edit_file.",
       inputSchema: z.object({
         appId: z.string(),
         path: z.string().min(1),
@@ -387,13 +386,9 @@ export function createAppsV2Tools({
             }
           }
           const handle = await ensureActorWorktree(loaded.project);
-          const flush = await writeFile(handle, relPath, contents);
+          await writeFile(handle, relPath, contents);
           markRead(appId, relPath);
-          return {
-            success: true,
-            path: relPath,
-            durableRevision: flush.revision,
-          };
+          return { success: true, path: relPath };
         } catch (error) {
           logger.error("app2_write_file failed", { error, appId });
           return { success: false, error: errorMessage(error) };
@@ -435,7 +430,7 @@ export function createAppsV2Tools({
             replaceAll ?? false,
           );
           if (!result.ok) return { success: false, error: result.error };
-          const flush = await writeFile(handle, relPath, result.contents);
+          await writeFile(handle, relPath, result.contents);
           return {
             success: true,
             path: relPath,
@@ -446,7 +441,6 @@ export function createAppsV2Tools({
               newString,
               result.replacements,
             ),
-            durableRevision: flush.revision,
           };
         } catch (error) {
           logger.error("app2_edit_file failed", { error, appId });

@@ -1,10 +1,16 @@
 /**
- * Apps v2 worktree service — durability integration tests.
+ * Apps v2 worktree service — integration tests.
  *
- * Real git + real local sandbox provider + mongodb-memory-server. The core
- * scenario under test is the RFC's headline durability claim: kill the
- * session working tree ("sandbox death") and verify that reads, recovery, and
- * commits proceed from the private WIP ref with no loss of flushed work.
+ * Real git, a real local sandbox, a real git server on a real port, and
+ * mongodb-memory-server. The sandbox is an ordinary clone with an ordinary
+ * remote, so these exercise the same path a developer's machine would: clone,
+ * edit, commit, push, and read back from the server.
+ *
+ * The durability claim under test has changed shape. It used to be "flushed
+ * work survives the sandbox dying", where flushing meant a shadow commit on a
+ * private ref. It is now the ordinary one: COMMITTED-AND-PUSHED work survives,
+ * uncommitted work lives in the working copy, and losing the machine loses the
+ * latter — exactly as on a laptop.
  */
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
@@ -18,11 +24,8 @@ import {
   commitWorktree,
   createProject,
   deleteProject,
-  discardWorktree,
-  boxCtx,
   ensureWorktree,
   execInWorktree,
-  flushWorktree,
   listBranches,
   listFiles,
   mergeBranchToMain,
@@ -32,18 +35,13 @@ import {
   writeFile,
 } from "./worktree.service";
 import { AppWorktreeV2 } from "../database/workspace-schema";
-import { boxRoot } from "./box-repo";
 import { getSandboxProvider } from "./sandbox/provider";
-import {
-  repoDirFor,
-  resolveCommit,
-  updateRefCas,
-  commitTree,
-  treeOfCommit,
-} from "./repository.service";
+import { repoDirFor, resolveCommit } from "./repository.service";
+import { startTestGitServer, type TestGitServer } from "./test-git-server";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
+let gitServer: TestGitServer;
 
 // The apps-v2 config reads env lazily (at call time), so setting these in
 // beforeAll — after module import but before any service call — is safe.
@@ -52,6 +50,12 @@ beforeAll(async () => {
   process.env.APPS_V2_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_V2_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_V2_SANDBOX_PROVIDER = "local";
+  // The sandbox needs a remote to clone from and push to, so the git endpoint
+  // runs for real on a real port. `SESSION_SECRET` signs the token it uses.
+  process.env.SESSION_SECRET =
+    process.env.SESSION_SECRET || "test-secret-for-git-tokens";
+  gitServer = await startTestGitServer();
+  process.env.APPS_V2_GIT_ORIGIN_URL = gitServer.url;
   // Hermetic: never let a configured cloud org make createProject create
   // real GitHub repos from tests (e.g. when the shell exports .env).
   delete process.env.MAKO_CLOUD_GITHUB_ORG;
@@ -63,6 +67,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await gitServer?.close();
   await mongoose.disconnect();
   await mongo.stop();
   await fs.rm(tmpRoot, { recursive: true, force: true });
@@ -79,6 +84,15 @@ beforeEach(async () => {
   await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
   await fs.rm(path.join(tmpRoot, "sessions"), { recursive: true, force: true });
 });
+
+/** Lose the machine. Not every provider can, and a test must not pretend. */
+async function destroyBox(handle: { doc: { _id: { toString(): string } } }) {
+  const provider = getSandboxProvider();
+  if (!provider.destroySession) {
+    throw new Error(`${provider.id} cannot destroy a session`);
+  }
+  await provider.destroySession(handle.doc._id.toString());
+}
 
 async function makeProject(title = "Test App") {
   return createProject({ workspaceId: WS, title, userId: USER });
@@ -101,40 +115,63 @@ describe("project lifecycle", () => {
   });
 });
 
-describe("worktree writes + durability", () => {
-  it("write → flush → visible in reads; session death loses nothing flushed", async () => {
+describe("the working copy", () => {
+  it("a write is visible in reads, because reads come from the working copy", async () => {
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
 
     await writeFile(handle, "src/note.ts", "export const n = 1;\n");
 
-    // Uncommitted change is durable and visible through git-backed reads.
     const { entries } = await listFiles(project, USER);
     expect(entries.map(e => e.path)).toContain("src/note.ts");
 
-    // Reads never touch a working copy — they resolve through git — so they
-    // are unaffected by anything happening to the sandbox.
     const file = await readFile(project, "src/note.ts", USER);
     expect(file.contents).toBe("export const n = 1;\n");
 
-    // And the uncommitted state is durable in the repo as a WIP ref, which is
-    // what lets a rebuilt sandbox be hydrated back to mid-edit rather than to
-    // the last commit.
-    const recovered = await ensureWorktree(project, USER);
-    expect(recovered.doc.wipOid).toBeTruthy();
-
+    // Uncommitted, and reported as such — no shadow commit stands in for it.
     const status = await worktreeStatus(project, USER);
-    expect(status?.wipOid).toBeTruthy();
+    expect(status?.offline).toBe(false);
     expect(status?.changes.map(ch => ch.path)).toContain("src/note.ts");
-
-    // The WIP commit is a real object in the repo, reachable independently of
-    // any sandbox — which is what makes "the sandbox died" survivable at all.
-    expect(await resolveCommit(repoDirFor(WS), recovered.doc.wipOid!)).toBe(
-      recovered.doc.wipOid,
-    );
   });
 
-  it("shell commands mutate files and auto-flush", async () => {
+  it("committing pushes, so the work outlives the sandbox", async () => {
+    const project = await makeProject();
+    const handle = await ensureWorktree(project, USER);
+    await writeFile(handle, "src/keep.ts", "export const keep = true;\n");
+    const result = await commitWorktree(handle, "Keep this");
+    expect(result.committed).toBe(true);
+
+    // The push is the durability guarantee: the commit is in the bare repo,
+    // reachable with no sandbox involved at all.
+    expect(await resolveCommit(repoDirFor(WS), result.commitOid!)).toBe(
+      result.commitOid,
+    );
+
+    // Destroy the machine. A commit that reached the server survives it.
+    await destroyBox(handle);
+    const file = await readFile(project, "src/keep.ts", USER);
+    expect(file.contents).toBe("export const keep = true;\n");
+  });
+
+  it("uncommitted work does NOT outlive the sandbox, and says so", async () => {
+    const project = await makeProject();
+    const handle = await ensureWorktree(project, USER);
+    await writeFile(handle, "src/scratch.ts", "export const draft = 1;\n");
+
+    // This is the deliberate trade for being a normal machine: a working copy
+    // is a working copy. Asserting it keeps the promise honest rather than
+    // letting anyone believe an uncommitted edit is backed up somewhere.
+    await destroyBox(handle);
+
+    const { entries } = await listFiles(project, USER);
+    expect(entries.map(e => e.path)).not.toContain("src/scratch.ts");
+
+    // And with no machine running, status says so rather than claiming clean.
+    const status = await worktreeStatus(project, USER);
+    expect(status?.offline).toBe(true);
+  });
+
+  it("shell commands mutate files the next read sees", async () => {
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
 
@@ -144,7 +181,6 @@ describe("worktree writes + durability", () => {
     );
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("hello.txt");
-    expect(result.flush.flushed).toBe(true);
 
     const file = await readFile(project, "hello.txt", USER);
     expect(file.contents).toBe("hello from bash\n");
@@ -157,10 +193,9 @@ describe("worktree writes + durability", () => {
       const handle = await ensureWorktree(project, USER);
       const result = await execInWorktree(handle, "env");
       expect(result.stdout).not.toContain("leaky");
-      // HOME is a shared cache dir outside the session tree (not the session
-      // dir itself and not the API host's real home) — anything written to it
-      // by tools like npm/pnpm must never be swept into the durable WIP
-      // snapshot. See local-provider.ts's sandboxEnv.
+      // HOME is a shared cache dir outside the working copy (not the checkout
+      // itself and not the API host's real home) — anything npm or pnpm
+      // writes there must never end up in a commit.
       const expectedHome = path.join(os.tmpdir(), "mako-apps-v2-cache", "home");
       expect(result.stdout).toContain(`HOME=${expectedHome}`);
       expect(result.stdout).not.toContain("MONGODB");
@@ -170,36 +205,42 @@ describe("worktree writes + durability", () => {
     }
   });
 
-  it("in-session git push cannot reach the bare repo", async () => {
+  it("in-session git push REACHES the bare repo — that is the point", async () => {
+    // This case used to assert the opposite, and the assertion was the design:
+    // the sandbox had no remote, so commits travelled as bundles and a whole
+    // transfer-and-snapshot layer existed to move them. The sandbox is a
+    // normal machine now, and this is the test that says so.
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
+
     const result = await execInWorktree(
       handle,
-      "git remote -v; echo '---'; git push origin main 2>&1; true",
+      'git remote -v; echo "---"; ' +
+        'echo "from the shell" > shell.txt && git add -A && ' +
+        'git commit -qm "committed in the shell" && git push -q origin HEAD 2>&1; ' +
+        'echo "push=$?"',
     );
-    // There is no remote at all now. The sandbox is hydrated from a git
-    // bundle, so it has never been told where the repository lives — a
-    // stronger guarantee than the old decoy origin pointing at an
-    // unresolvable host, and one that cannot be misconfigured back.
-    const [remotes] = result.stdout.split("---");
-    expect(remotes.trim()).toBe("");
-    // And the push must not have advanced anything in the bare repo.
-    const history = await projectHistory(project);
-    expect(history).toHaveLength(1);
+    const [remotes, rest] = result.stdout.split("---");
+    expect(remotes).toContain("apps-v2-git");
+    expect(rest).toContain("push=0");
+
+    // The server has it, and no Mako-specific step was involved in getting it
+    // there. Reading it back needs no sandbox.
+    await destroyBox(handle);
+    const file = await readFile(project, "shell.txt", USER);
+    expect(file.contents).toBe("from the shell\n");
   });
 
-  it("no-op flush when tree is clean", async () => {
+  it("a credential never appears in the remote URL", async () => {
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
-    const flush = await flushWorktree(handle);
-    expect(flush.flushed).toBe(false);
-    const status = await worktreeStatus(project, USER);
-    expect(status?.wipOid).toBeUndefined();
+    const result = await execInWorktree(handle, "git remote -v");
+    expect(result.stdout).not.toContain("mgt_");
   });
 });
 
-describe("commit + conflicts", () => {
-  it("commits WIP onto the branch and clears the WIP ref", async () => {
+describe("commits", () => {
+  it("commits onto the actor's branch and leaves main alone", async () => {
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
     await writeFile(handle, "src/feature.ts", "export {};\n");
@@ -220,92 +261,54 @@ describe("commit + conflicts", () => {
     expect(branch?.aheadOfMain).toBe(1);
 
     const status = await worktreeStatus(project, USER);
-    expect(status?.wipOid).toBeUndefined();
+    expect(status?.changes).toEqual([]);
     expect(status?.baseSha).toBe(result.commitOid);
-    expect(status?.behindBranch).toBe(false);
+    // Committed AND pushed: nothing is waiting to reach the server.
+    expect(status?.ahead).toBe(0);
 
-    // Post-commit the session is clean: another commit is a no-op.
+    // Post-commit the working copy is clean, so another commit is a no-op.
     const again = await commitWorktree(handle, "empty");
     expect(again.committed).toBe(false);
   });
 
-  it("stale WIP CAS loses and preserves a conflict ref", async () => {
-    const project = await makeProject();
-    const handle = await ensureWorktree(project, USER);
-    await writeFile(handle, "one.txt", "1\n");
-
-    // Simulate a concurrent writer advancing the WIP ref behind our back:
-    // build a different snapshot and move the ref to it with the CORRECT
-    // expected old value, then make the doc stale again.
-    const repoDir = repoDirFor(WS);
-    const wipRef = `refs/mako/worktrees/${handle.doc._id.toString()}`;
-    const currentWip = await resolveCommit(repoDir, wipRef);
-    if (!currentWip) throw new Error("expected a WIP ref after writeFile");
-
-    const foreignTree = await treeOfCommit(repoDir, handle.doc.baseSha);
-    const foreign = await commitTree(repoDir, {
-      treeOid: foreignTree,
-      parents: [handle.doc.baseSha],
-      message: "foreign snapshot",
-    });
-    expect(await updateRefCas(repoDir, wipRef, foreign, currentWip)).toBe(true);
-
-    // Change the working copy WITHOUT flushing, so the flush below has real
-    // work to do and reaches the compare-and-swap. It has to go straight to
-    // the provider: every public write path flushes, and that flush would
-    // raise the conflict before the assertion could observe it.
-    const ctx = boxCtx(handle);
-    await getSandboxProvider().writeFile(
-      ctx,
-      `${boxRoot(ctx)}/${handle.appRoot}/one.txt`,
-      new TextEncoder().encode("2\n"),
-    );
-    // Make the in-memory doc stale (it still believes currentWip).
-    handle.doc.wipOid = currentWip;
-
-    await expect(flushWorktree(handle)).rejects.toThrow(
-      /advanced concurrently/,
-    );
-
-    // The losing snapshot was preserved for recovery.
-    const stdout = await new Promise<string>((resolve, reject) => {
-      execFile(
-        "git",
-        ["-C", repoDir, "for-each-ref", "refs/mako/conflicts/"],
-        (err, out) => (err ? reject(err) : resolve(String(out))),
-      );
-    });
-    expect(stdout.trim()).not.toBe("");
-  });
-
-  it("commit refuses when the branch moved under the worktree", async () => {
+  it("a commit racing someone else's does not lose either", async () => {
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
     await writeFile(handle, "mine.txt", "mine\n");
 
-    // Something else advances THIS actor's branch under them — another device,
-    // another tab, a push. Moving main instead would prove nothing: the actor
-    // is not on main, and their commit would succeed regardless.
+    // Someone else pushes to the same branch — another device, another tab.
+    // I expected this to be REFUSED as a non-fast-forward, and wrote the test
+    // that way. It is not: the sandbox pulls before it commits, so the two
+    // commits merge and both survive. That is the better outcome and it is
+    // ordinary git, so the assertion follows the behaviour rather than my
+    // guess about it.
     const repoDir = repoDirFor(WS);
-    const actorRef = `refs/heads/user/${USER}`;
-    const head = await resolveCommit(repoDir, actorRef);
-    if (!head) throw new Error("expected a branch head");
-    const tree = await treeOfCommit(repoDir, head);
-    const other = await commitTree(repoDir, {
-      treeOid: tree,
-      parents: [head],
-      message: "other actor",
+    const scratch = await fs.mkdtemp(path.join(tmpRoot, "other-"));
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        "bash",
+        [
+          "-lc",
+          `git clone -q --branch user/${USER} ${repoDir} ${scratch} && ` +
+            `cd ${scratch} && git config user.email o@x && git config user.name O && ` +
+            // Into the APP's folder: listFiles is app-scoped, so a file at
+            // the repo root would be invisible to it and prove nothing.
+            `echo theirs > apps/test-app/theirs.txt && git add -A && ` +
+            `git commit -qm "other actor" && ` +
+            `git push -q origin HEAD:refs/heads/user/${USER}`,
+        ],
+        err => (err ? reject(err) : resolve()),
+      );
     });
-    expect(await updateRefCas(repoDir, actorRef, other, head)).toBe(true);
 
-    await expect(commitWorktree(handle, "mine")).rejects.toThrow(/moved/);
+    const result = await commitWorktree(handle, "mine");
+    expect(result.committed).toBe(true);
 
-    // Discard re-bases on the new head and drops WIP.
-    const discarded = await discardWorktree(handle);
-    expect(discarded.baseSha).toBe(other);
-    const status = await worktreeStatus(project, USER);
-    expect(status?.wipOid).toBeUndefined();
-    expect(status?.baseSha).toBe(other);
+    // Both are on the branch, and the branch on the SERVER has both — which is
+    // the only version of "not lost" that means anything.
+    const listed = (await listFiles(project, USER)).entries.map(e => e.path);
+    expect(listed).toContain("mine.txt");
+    expect(listed).toContain("theirs.txt");
   });
 });
 
@@ -373,12 +376,12 @@ describe("per-actor branches", () => {
     );
   });
 
-  it("clean worktrees fast-forward to the new head on resume", async () => {
+  it("a clean checkout picks up what someone else merged to main", async () => {
     const project = await makeProject();
 
-    // User worktree on main, clean, materialized at the initial commit.
+    // A checkout on the user's own branch, clean.
     const userHandle = await ensureWorktree(project, USER);
-    const initialBase = userHandle.doc.baseSha;
+    await execInWorktree(userHandle, "true");
 
     // Someone else commits and merges to main.
     const h = await ensureWorktree(project, BOB);
@@ -386,12 +389,10 @@ describe("per-actor branches", () => {
     await commitAgentTurn(WS, BOB);
     await mergeBranchToMain(project, `user/${BOB}`);
 
-    // Resume the user worktree: it fast-forwards ("pulls latest").
+    // Their branch tracks main server-side; their sandbox pulls on next touch.
+    // Both halves are ordinary git — a fast-forward and a `git pull`.
     const resumed = await ensureWorktree(project, USER);
-    expect(resumed.doc.baseSha).not.toBe(initialBase);
-    // The content is verified through git rather than from a directory on this
-    // machine: the API keeps no working copy, so there is no local file to
-    // stat. The sandbox is hydrated from exactly this commit.
+    await execInWorktree(resumed, "true");
     const merged = await readFile(project, "merged.txt", USER);
     expect(merged.contents).toBe("hello\n");
   });
@@ -439,7 +440,7 @@ describe("per-actor branches", () => {
 });
 
 describe("multi-actor isolation", () => {
-  it("two users have independent WIP states over one repo", async () => {
+  it("two people have independent working copies over one repo", async () => {
     const project = await makeProject();
     const h1 = await ensureWorktree(project, "alice");
     const h2 = await ensureWorktree(project, "bob");
@@ -456,7 +457,7 @@ describe("multi-actor isolation", () => {
     expect(bobFiles).toContain("bob.txt");
     expect(bobFiles).not.toContain("alice.txt");
 
-    // A viewer with no worktree sees only the branch.
+    // A viewer with no checkout of their own sees the committed state.
     const viewerFiles = (await listFiles(project, "carol")).entries.map(
       e => e.path,
     );

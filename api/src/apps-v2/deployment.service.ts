@@ -25,7 +25,7 @@ import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.
 import { AppProjectV2, type IAppProjectV2 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { boxCtx, type WorktreeHandle } from "./worktree.service";
-import { readBoxDir } from "./box-repo";
+import { readBoxDir } from "./box";
 
 const logger = loggers.api("apps-v2-deployment");
 

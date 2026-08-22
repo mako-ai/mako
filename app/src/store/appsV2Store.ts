@@ -42,19 +42,24 @@ export interface AppV2Change {
 
 export interface AppV2Status {
   branch: string;
+  /** Commit the working copy is on. */
   baseSha: string;
-  wipOid?: string;
-  revision: number;
   branchHead: string | null;
-  behindBranch: boolean;
+  /** Commits this branch has that the server does not. */
+  ahead: number;
   /** Uncommitted changes inside this app's folder. */
   changes: AppV2Change[];
   /**
-   * Uncommitted changes anywhere in the repo. One worktree serves every app,
-   * so this — not `changes` — is what a branch switch has to get past and what
-   * Discard throws away.
+   * Uncommitted changes anywhere in the repo. One working copy serves every
+   * app, so this — not `changes` — is what a branch switch has to get past and
+   * what Discard throws away.
    */
   repoChanges: AppV2Change[];
+  /**
+   * No sandbox is running, so this is the last committed state rather than a
+   * working copy. Not the same as "clean": there is nothing to be dirty.
+   */
+  offline: boolean;
 }
 
 export interface AppV2Commit {
@@ -212,15 +217,13 @@ interface AppsV2Store {
   deleteApp: (workspaceId: string, appId: string) => Promise<boolean>;
 
   /**
-   * List an app's files. Pass `live` while EDITING: the server snapshots the
-   * sandbox first, so work done in the shell shows up instead of appearing to
-   * have vanished. Omit it for browsing — that path never starts a sandbox.
+   * List an app's files.
+   *
+   * There is no longer a "live" variant to ask for: the server reads the
+   * sandbox's working copy whenever one is running, so a file created in the
+   * terminal is simply there, and reads the last commit when it is not.
    */
-  fetchFiles: (
-    workspaceId: string,
-    appId: string,
-    live?: boolean,
-  ) => Promise<void>;
+  fetchFiles: (workspaceId: string, appId: string) => Promise<void>;
   openFile: (workspaceId: string, appId: string, path: string) => Promise<void>;
   updateFileLocal: (appId: string, path: string, contents: string) => void;
   saveFile: (workspaceId: string, appId: string, path: string) => Promise<void>;
@@ -232,11 +235,7 @@ interface AppsV2Store {
   ) => Promise<void>;
   clearTerminal: (appId: string) => void;
 
-  fetchStatus: (
-    workspaceId: string,
-    appId: string,
-    live?: boolean,
-  ) => Promise<void>;
+  fetchStatus: (workspaceId: string, appId: string) => Promise<void>;
   fetchHistory: (workspaceId: string, appId: string) => Promise<void>;
   fetchBranches: (workspaceId: string, appId: string) => Promise<void>;
   /** Fetch (or refresh) the cookie-free URL for an app's published build. */
@@ -573,16 +572,14 @@ export const useAppsV2Store = create<AppsV2Store>()(
       }
     },
 
-    // `live`: the caller is EDITING, so snapshot the sandbox before reading.
     // Browsing leaves it out and never touches a sandbox — that is what keeps
     // opening an app cheap, and working while its sandbox is asleep.
-    fetchFiles: async (workspaceId, appId, live) => {
+    fetchFiles: async (workspaceId, appId) => {
       try {
         const body = unwrapBody(
           await api.GET("/api/workspaces/{workspaceId}/apps-v2/{id}/files", {
             params: {
               path: { workspaceId, id: appId },
-              query: live ? { live: "1" } : {},
             },
           }),
         ) as { files?: AppV2FileEntry[] };
@@ -729,13 +726,12 @@ export const useAppsV2Store = create<AppsV2Store>()(
       });
     },
 
-    fetchStatus: async (workspaceId, appId, live) => {
+    fetchStatus: async (workspaceId, appId) => {
       try {
         const body = unwrapBody(
           await api.GET("/api/workspaces/{workspaceId}/apps-v2/{id}/status", {
             params: {
               path: { workspaceId, id: appId },
-              query: live ? { live: "1" } : {},
             },
           }),
         ) as { status?: AppV2Status | null };
@@ -788,12 +784,12 @@ export const useAppsV2Store = create<AppsV2Store>()(
       set(s => {
         s.editingByApp[appId] = editing;
       });
-      // Entering edit mode re-reads with the sandbox in the loop, so anything
-      // already done in a shell is on screen from the first frame rather than
-      // after the next change.
+      // Entering edit mode starts a sandbox, and the sandbox is what reads
+      // are served from — so re-read once it exists, or the tree stays on the
+      // committed view until something else changes.
       if (editing) {
-        void get().fetchFiles(workspaceId, appId, true);
-        void get().fetchStatus(workspaceId, appId, true);
+        void get().fetchFiles(workspaceId, appId);
+        void get().fetchStatus(workspaceId, appId);
       }
     },
 

@@ -1,24 +1,26 @@
 /**
- * Apps v2 worktree service — durable per-actor working state (apps-v2.md §4.4).
+ * Apps v2 worktree service.
  *
- * Invariants this module owns:
+ * What this module is, after the sandbox got a real git remote:
  *
- * 1. Git is the only durable store. Uncommitted work is a shadow commit on a
- *    private WIP ref (`refs/mako/worktrees/<worktreeId>`), advanced ONLY via
- *    compare-and-swap. The Mongo `AppWorktreeV2` doc mirrors the ref for
- *    indexing; on divergence the ref wins.
- * 2. Readers (file explorer, agent read tools, external clients) resolve
- *    through `listFiles`/`readFile`, which read the bare repo. That is what
- *    lets browsing cost nothing and keep working while the sandbox is asleep.
- *    `refreshFromBox` is the deliberate exception, for callers that are
- *    EDITING and need to see work done in the shell.
- * 3. The SANDBOX is the working copy — the only one. It is disposable:
- *    `ensureBox` rebuilds it from `baseSha` + the WIP ref, and a lost sandbox
- *    loses at most the work since the last flush.
- * 4. The sandbox never holds git credentials. This module does every ref read
- *    and write itself; commits cross between the two as git bundles, and the
- *    sandbox has no remote configured at all, so there is nothing for an
- *    in-sandbox `git push` to bypass CAS or ACLs with.
+ * 1. The SANDBOX is the working copy, and it is an ordinary clone. It fetches
+ *    and pushes to Mako's git-over-HTTP endpoint, which serves the same bare
+ *    repo this module reads. One repository, two ordinary git clients.
+ * 2. Uncommitted work lives in the working copy, the way it does on a laptop.
+ *    `git push` is what makes work durable — there is no shadow commit, no WIP
+ *    ref, and no database mirror of either.
+ * 3. Reads come from the working copy when the sandbox is up, and from the
+ *    last commit when it is not. That is not two implementations of one thing;
+ *    it is the difference between an editor and a code host, and the only
+ *    honest answer when the machine is off.
+ * 4. What remains server-side is what genuinely belongs there: creating and
+ *    deleting apps, listing branches and history, and the publish merge —
+ *    plain git against the bare repo, no sandbox involved.
+ *
+ * This file used to be more than twice this size. The difference was a
+ * transfer layer (bundles), a durability layer (WIP refs and snapshot
+ * commits), a mirror of both in Mongo, and the reconciliation between them.
+ * All of it existed because the sandbox could not push.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -33,27 +35,30 @@ import {
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import {
-  advanceBoxToCommit,
+  boxCheckout,
+  boxCommitAll,
+  boxDiscard,
+  boxGlob,
+  boxGrep,
   boxHasRepo,
-  boxWorkingTree,
-  exportTreeAsCommit,
-  sendCommitToBox,
-  importBoxBranch,
-  hydrateBox,
+  boxHead,
+  boxListFiles,
+  boxPull,
+  boxPushIfAhead,
+  boxReadFile,
   boxRoot,
+  boxStatus,
+  boxWriteFile,
+  cloneIntoBox,
+  configureBoxRemote,
   sh,
-} from "./box-repo";
+} from "./box";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { appsV2SessionsRoot, APPS_V2_MAX_FILE_BYTES } from "./config";
 import { assertSafeRelPath, runGit, ZERO_OID } from "./git";
 import {
-  CONFLICT_REF_PREFIX,
   DEFAULT_BRANCH,
-  WIP_REF_PREFIX,
-  commitMeta,
   commitTree,
-  deleteRefCas,
-  diffNameStatus,
   globTree,
   grepTree,
   initRepo,
@@ -64,7 +69,6 @@ import {
   repoExists,
   resolveCommit,
   snapshotDirToTree,
-  treeOfCommit,
   updateRefCas,
   type ChangedFile,
   type GitAuthor,
@@ -116,7 +120,7 @@ const logger = loggers.api("apps-v2");
 function pokeAppV2(
   workspaceId: { toString(): string },
   appId: { toString(): string } | null | undefined,
-  origin: "flush" | "commit" | "merge" | "discard" | "checkout" | "lifecycle",
+  origin: "commit" | "merge" | "discard" | "checkout" | "lifecycle",
   updatedBy?: string,
 ): void {
   publishRealtimeEvent(workspaceId.toString(), {
@@ -128,31 +132,16 @@ function pokeAppV2(
   });
 }
 
-// There is no BLOCKED_ORIGIN_URL any more. Host clones used to plant a
-// deliberately unreachable `origin` so tenant commands could not push to the
-// bare repo; the sandbox is now hydrated from a git bundle and has no remote
-// configured at all, which is the same guarantee without the decoy.
-
-// ---------------------------------------------------------------------------
-// Per-worktree async mutex: flush/exec/commit on one worktree are serialized
-// (same spirit as dbt's withProjectGitLock).
-// ---------------------------------------------------------------------------
-const locks = new Map<string, Promise<unknown>>();
-
-async function withWorktreeLock<T>(
-  worktreeId: string,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const previous = locks.get(worktreeId) ?? Promise.resolve();
-  const next = previous.then(fn, fn);
-  // Keep the chain alive (swallowing rejections) so later callers queue up;
-  // the map stays small: one entry per active worktree per process.
-  locks.set(
-    worktreeId,
-    next.catch(() => undefined),
-  );
-  return next;
-}
+// The sandbox HAS a remote, and a credential for it — see box.ts. Two things
+// used to stand in for that: a deliberately unreachable `origin` planted in
+// host clones, then a bundle-based transfer with no remote at all. Both were
+// ways of not giving a working copy the one thing that makes it a working
+// copy.
+//
+// There is also no per-worktree mutex here any more. It existed to serialize
+// compare-and-swap advances of the WIP ref; git takes its own index lock, and
+// concurrent writers to one checkout are now exactly as (un)safe as they are
+// on any developer's machine.
 
 export class WorktreeConflictError extends Error {
   constructor(
@@ -178,25 +167,73 @@ export function boxCtx(handle: WorktreeHandle): SandboxExecContext {
 }
 
 /**
- * Make sure the actor's sandbox holds the repository before touching files.
+ * Make sure the actor's sandbox holds a checkout before touching files.
  *
- * Separate from ensureWorktree on purpose: resolving which branch an actor is
- * on is cheap git work that must keep working while the sandbox is asleep
- * (the file tree depends on it). Only code that actually reads or writes the
- * working copy pays for a sandbox.
+ * Separate from ensureWorktree on purpose: knowing which branch someone is on
+ * is cheap git work against the bare repo and must keep working while the
+ * sandbox is asleep. Only code that actually reads or writes the working copy
+ * pays for a sandbox.
+ *
+ * On an existing box this refreshes the credential rather than doing nothing.
+ * That is what lets the token be short-lived without a session ever hitting
+ * its expiry mid-push.
  */
+/**
+ * When each sandbox last caught up with the server.
+ *
+ * A `git pull` on every single operation would be a network round trip per
+ * file write and an automatic merge each time — too eager to be honest about.
+ * Once in a while is what a person does, and it is enough to pick up an app a
+ * colleague added. Purely a throttle: forgetting it (a process restart) only
+ * means pulling again.
+ */
+const lastPull = new Map<string, number>();
+const PULL_INTERVAL_MS = 60_000;
+
+/**
+ * When each sandbox's credential was last refreshed.
+ *
+ * Rewriting the remote and the credential on every call was both wasteful and
+ * wrong: `git config` takes `.git/config.lock`, so eight parallel writes —
+ * which is what an agent firing parallel tool calls produces — became eight
+ * failed writes, each losing a lock race against the others for work that did
+ * not need doing at all. The token lasts twelve hours; refreshing it twice an
+ * hour is plenty, and it keeps ordinary file writes off git's config lock.
+ */
+const lastConfigured = new Map<string, number>();
+const RECONFIGURE_INTERVAL_MS = 30 * 60_000;
+
 export async function ensureBox(
   handle: WorktreeHandle,
 ): Promise<SandboxExecContext> {
   const ctx = boxCtx(handle);
-  if (await boxHasRepo(ctx)) return ctx;
-  await hydrateBox({
+  const workspaceId = handle.doc.workspaceId.toString();
+  const userId = handle.doc.userId;
+  if (await boxHasRepo(ctx)) {
+    const configuredAgo =
+      Date.now() - (lastConfigured.get(ctx.sessionKey) ?? 0);
+    if (configuredAgo > RECONFIGURE_INTERVAL_MS) {
+      lastConfigured.set(ctx.sessionKey, Date.now());
+      await configureBoxRemote({ ctx, workspaceId, userId });
+    }
+    // Catch up with the server. Someone else may have added an app on main,
+    // and your branch tracks main — this is the `git pull` you would type
+    // after opening a laptop that has been shut for a day.
+    const since = Date.now() - (lastPull.get(ctx.sessionKey) ?? 0);
+    if (since > PULL_INTERVAL_MS) {
+      lastPull.set(ctx.sessionKey, Date.now());
+      await boxPull(ctx).catch(() => undefined);
+    }
+    return ctx;
+  }
+  await cloneIntoBox({
     ctx,
-    repoDir: handle.repoDir,
+    workspaceId,
+    userId,
     branch: handle.doc.branch,
-    baseSha: handle.doc.baseSha,
-    wipOid: handle.doc.wipOid ?? undefined,
   });
+  lastPull.set(ctx.sessionKey, Date.now());
+  lastConfigured.set(ctx.sessionKey, Date.now());
   return ctx;
 }
 
@@ -242,10 +279,6 @@ async function updateRef(
   oid: string,
 ): Promise<void> {
   await runGit(["-C", repoDir, "update-ref", ref, oid]);
-}
-
-function wipRefFor(worktreeId: string): string {
-  return `${WIP_REF_PREFIX}${worktreeId}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -485,17 +518,15 @@ export function defaultBranchForActor(actorId: string): string {
 }
 
 /**
- * Find-or-create the actor's worktree doc and make sure its session working
- * tree exists on disk, restoring base + WIP state when rebuilding.
+ * Find-or-create the record of which branch this actor works on.
  *
- * `actorId` is a user id for UI/API actors, or `chat:<chatId>` for agent
- * conversations — each chat works on its own `chat/<chatId>` branch, created
- * off the default branch head on first touch (pass `options.branch`).
+ * `actorId` is a user id for UI/API actors. Everyone gets their own branch —
+ * you do not edit production — created off the default branch head the first
+ * time they touch the workspace.
  *
- * Resume semantics ("pull latest"): when the worktree is CLEAN and its branch
- * head moved (e.g. another actor merged), the worktree fast-forwards to the
- * new head before work continues. Dirty worktrees keep their base — the
- * commit path surfaces the divergence instead of silently rebasing.
+ * No sandbox is started here, and no working copy is materialized. This is a
+ * question about branches, and it has to keep answering while the sandbox is
+ * asleep, because the file tree depends on it.
  */
 export async function ensureWorktree(
   project: IAppProjectV2,
@@ -524,43 +555,19 @@ export async function ensureWorktree(
     });
   }
 
-  // Atomic find-or-create: the agent routinely fires tool calls in parallel
-  // right after app creation, so a findOne+create pair races itself into
-  // E11000 on the (workspaceId, userId) unique index. §10: ONE worktree per
-  // actor per workspace — a chat branch can span apps.
-  const doc = await AppWorktreeV2.findOneAndUpdate(
-    { workspaceId: project.workspaceId, userId: actorId },
-    {
-      $setOnInsert: {
-        branch,
-        baseSha: branchHead,
-        revision: 0,
-        leaseEpoch: 1,
-      },
-    },
-    { new: true, upsert: true },
-  );
-
-  // Being on `main` is no longer assumed to be an accident.
-  //
-  // This used to move any worktree found on main onto the actor's own branch —
-  // a one-time migration from before edits had their own branch. It fired on
-  // every call, so once switching branches became a real operation it made
-  // main the one branch you could not choose: check it out, and the next read
-  // moved you off it again. New worktrees still default to `user/<id>`, so
-  // nobody lands on main without asking for it; asking for it is allowed.
-
   // Your branch tracks main. Apps are created on main (and colleagues add
   // their own), so a personal branch that never learns about them is a
-  // checkout that silently lacks half the repo — which shows up as
-  // "directory does not exist" the moment anything tries to use one.
-  // Locally you would `git pull`; this is that.
+  // checkout that silently lacks half the repo — which shows up as "directory
+  // does not exist" the moment anything tries to use one. Locally you would
+  // `git pull`; this is the server half of that, and the sandbox picks it up
+  // with its own pull.
+  let branchMoved = false;
   if (branch !== DEFAULT_BRANCH && branchHead !== mainHead) {
     const merged = await mergeRefInto(repoDir, branch, mainHead).catch(
       () => null,
     );
     if (merged && merged !== branchHead) {
-      branchHead = merged;
+      branchMoved = true;
       logger.info("Apps v2 actor branch caught up with main", {
         branch,
         head: merged,
@@ -568,127 +575,27 @@ export async function ensureWorktree(
     }
   }
 
-  const worktreeId = doc._id.toString();
-  return withWorktreeLock(worktreeId, async () => {
-    // Reconcile the doc's WIP projection with the authoritative ref.
-    const refOid = await resolveCommit(repoDir, wipRefFor(worktreeId));
-    if ((refOid ?? undefined) !== (doc.wipOid ?? undefined)) {
-      doc.wipOid = refOid ?? undefined;
-      await doc.save();
-    }
-
-    // Fast-forward a clean worktree whose branch moved underneath it
-    // (resume-after-merge / another device committed).
-    const currentHead = await resolveCommit(
-      repoDir,
-      `refs/heads/${doc.branch}`,
-    );
-    let needsRematerialize = false;
-    let needsCatchUp = false;
-    if (currentHead && currentHead !== doc.baseSha) {
-      if (!doc.wipOid) {
-        doc.baseSha = currentHead;
-        doc.revision += 1;
-        await doc.save();
-        needsRematerialize = true;
-        logger.info("Apps v2 worktree fast-forwarded", {
-          worktreeId,
-          branch: doc.branch,
-          head: currentHead,
-        });
-      } else {
-        // The branch moved while this session has uncommitted work.
-        //
-        // This used to be skipped entirely, which silently stranded the
-        // session on an old commit: creating an app (a commit on the branch)
-        // and then previewing it failed with "cwd does not exist", because
-        // the new apps/<slug>/ folder was never checked out. Anyone with a
-        // dirty worktree — i.e. anyone mid-edit — hit it.
-        //
-        // Catch the session up with a merge instead. Git refuses to merge
-        // over uncommitted changes, so this brings in new commits and leaves
-        // the user's edits alone, rather than choosing between the two.
-        needsCatchUp = true;
-      }
-    }
-
-    // No working copy is materialized here. Resolving which branch an actor
-    // is on is cheap git work, and it has to keep working while the sandbox
-    // is asleep — the file tree depends on it. The sandbox is hydrated only
-    // when something actually reads or writes files (see ensureBox), which is
-    // also what stops a file listing from booting a microVM.
-    const handle: WorktreeHandle = {
-      doc,
-      project,
-      repoDir,
-      appRoot: appRootFor(project),
-    };
-
-    if (needsRematerialize || needsCatchUp) {
-      // The branch moved. Bring the sandbox along IF it is already running;
-      // if it is not, hydration will pick up the new head on its own, and
-      // waking a sandbox merely because a colleague committed would be a poor
-      // trade.
-      const ctx = boxCtx(handle);
-      const running = await boxHasRepo(ctx).catch(() => false);
-      if (running) {
-        await catchUpBox(handle, ctx, currentHead!, needsCatchUp).catch(error =>
-          logger.warn("Apps v2 sandbox catch-up failed", {
-            worktreeId,
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        );
-      }
-    }
-
-    return handle;
-  });
-}
-
-/**
- * Bring a running sandbox onto new commits on its branch.
- *
- * Two cases, and the difference matters. With no uncommitted work the sandbox
- * can simply be reset onto the new head. With uncommitted work it must MERGE:
- * choosing between "your edits" and "the new commits" is not ours to make, and
- * git already knows how to combine them. Skipping this entirely is what used
- * to strand a session on an old commit — create an app, then preview it, and
- * the build failed with "cwd does not exist" because the new folder had never
- * been checked out.
- */
-async function catchUpBox(
-  handle: WorktreeHandle,
-  ctx: SandboxExecContext,
-  head: string,
-  hasUncommittedWork: boolean,
-): Promise<void> {
-  await advanceBoxToCommit({
-    ctx,
-    repoDir: handle.repoDir,
-    branch: handle.doc.branch,
-    commitOid: head,
-  });
-  if (!hasUncommittedWork) {
-    await getSandboxProvider().exec(
-      ctx,
-      `git -C ${sh(boxRoot(ctx))} reset -q --hard ${sh(head)}`,
-      { timeoutMs: 60_000 },
-    );
-    return;
-  }
-  const merge = await getSandboxProvider().exec(
-    ctx,
-    `git -C ${sh(boxRoot(ctx))} -c user.name=Mako -c user.email=session@mako.ai merge --no-edit ${sh(head)}`,
-    { timeoutMs: 120_000 },
+  // Atomic find-or-create: the agent routinely fires tool calls in parallel
+  // right after app creation, so a findOne+create pair races itself into
+  // E11000 on the (workspaceId, userId) unique index.
+  const doc = await AppWorktreeV2.findOneAndUpdate(
+    { workspaceId: project.workspaceId, userId: actorId },
+    { $setOnInsert: { branch } },
+    { new: true, upsert: true },
   );
-  if (merge.exitCode !== 0) {
-    // Leave the conflict in the sandbox rather than pretending it resolved:
-    // it is a real git conflict in a real checkout, and it is fixable there.
-    logger.warn("Apps v2 sandbox catch-up hit a conflict", {
-      worktreeId: handle.doc._id.toString(),
-      output: merge.stderr.slice(-400),
-    });
-  }
+
+  // The branch just moved on the server, so the sandbox is behind by exactly
+  // this much. Pull on next touch rather than on a timer: this is the precise
+  // signal that there is something to pull, which is why ensureBox can
+  // otherwise leave the network alone.
+  if (branchMoved) lastPull.delete(doc._id.toString());
+
+  return {
+    doc,
+    project,
+    repoDir,
+    appRoot: appRootFor(project),
+  };
 }
 
 /**
@@ -707,7 +614,6 @@ async function mergeRefInto(
 ): Promise<string | null> {
   const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
   if (!head) return null;
-  // Already contains it: nothing to do.
   const isAncestor = await runGit(
     ["-C", repoDir, "merge-base", "--is-ancestor", intoOid, head],
     { timeoutMs: 30_000 },
@@ -745,165 +651,117 @@ async function mergeRefInto(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Flush: session working tree -> WIP ref (the durability watermark)
-// ---------------------------------------------------------------------------
-
-export interface FlushResult {
-  flushed: boolean;
-  wipOid?: string;
-  revision: number;
-}
-
-export async function flushWorktree(
-  handle: WorktreeHandle,
-): Promise<FlushResult> {
-  const { doc, repoDir } = handle;
-  const worktreeId = doc._id.toString();
-  const ctx = await ensureBox(handle);
-
-  return withWorktreeLock(worktreeId, async () => {
-    // Ask the sandbox what its tree is. Tree ids are content addresses, so
-    // this is comparable with the repo's own without transferring anything —
-    // and when nothing changed, which is the common case, nothing does.
-    const {
-      treeOid,
-      branch: boxBranch,
-      head: boxHead,
-    } = await boxWorkingTree(ctx);
-
-    // The sandbox is the authority on which branch it is on. `git checkout` in
-    // the terminal is a legitimate way to switch — it used to be silently
-    // reverted by the next sync — so follow it rather than overwrite it. The
-    // branch and any commits made in the shell may be unknown to the repo, so
-    // they are adopted before anything depends on them existing.
-    // Adopt when the sandbox is on a different branch OR when it is on one the
-    // repository has never heard of. The second case is not hypothetical: a
-    // branch created in the shell lives only in the sandbox until this runs,
-    // and anything that resolves it in between fails with "Branch head
-    // missing" — a message that describes the symptom and hides the cause.
-    const boxBranchIsNew =
-      boxBranch && boxBranch !== "HEAD"
-        ? (await resolveCommit(repoDir, `refs/heads/${boxBranch}`)) === null
-        : false;
-    if (
-      boxBranch &&
-      boxBranch !== "HEAD" &&
-      (boxBranch !== doc.branch || boxBranchIsNew)
-    ) {
-      await importBoxBranch({ ctx, repoDir, branch: boxBranch, head: boxHead });
+/**
+ * Follow a branch switch made in the terminal.
+ *
+ * `git checkout` in the shell is a legitimate way to change branches — it is
+ * the same command the button runs — so the cached branch follows the sandbox
+ * rather than the other way round. Cheap, and never fatal: a stale cache
+ * shows the wrong branch name for a moment; refusing to read would show
+ * nothing at all.
+ */
+async function syncBranchFromBox(handle: WorktreeHandle): Promise<void> {
+  try {
+    const ctx = boxCtx(handle);
+    if (!(await getSandboxProvider().hasSession(ctx))) return;
+    if (!(await boxHasRepo(ctx))) return;
+    const { branch } = await boxHead(ctx);
+    if (branch && branch !== "HEAD" && branch !== handle.doc.branch) {
       logger.info("Apps v2 following a branch switch made in the sandbox", {
-        worktreeId,
-        from: doc.branch,
-        to: boxBranch,
+        from: handle.doc.branch,
+        to: branch,
       });
-      doc.branch = boxBranch;
-      // The base moves with the branch, and any WIP was relative to the OLD
-      // base — keeping it would diff this branch's tree against another
-      // branch's commit and report every difference between them as an edit.
-      //
-      // The REF has to go with the field. Clearing one and not the other left
-      // the compare-and-swap below expecting no WIP while the ref still held
-      // one, which surfaced as "worktree state advanced concurrently" — a
-      // report of a race that had not happened.
-      if (doc.wipOid) {
-        await deleteRefCas(repoDir, wipRefFor(worktreeId), doc.wipOid);
-      }
-      doc.baseSha = boxHead;
-      doc.wipOid = undefined;
-      await doc.save();
+      handle.doc.branch = branch;
+      await handle.doc.save();
     }
-
-    const baseTree = await treeOfCommit(repoDir, doc.baseSha);
-
-    const expectedOld = doc.wipOid ?? ZERO_OID;
-
-    if (treeOid === baseTree) {
-      // Clean tree: drop any WIP ref and clear the projection.
-      if (doc.wipOid) {
-        await deleteRefCas(repoDir, wipRefFor(worktreeId), doc.wipOid);
-        doc.wipOid = undefined;
-        doc.revision += 1;
-        doc.lastFlushAt = new Date();
-        await doc.save();
-        pokeAppV2(doc.workspaceId, null, "flush", doc.userId);
-        return { flushed: true, revision: doc.revision };
-      }
-      return { flushed: false, revision: doc.revision };
-    }
-
-    if (doc.wipOid) {
-      const currentWipTree = await treeOfCommit(repoDir, doc.wipOid);
-      if (currentWipTree === treeOid) {
-        return { flushed: false, wipOid: doc.wipOid, revision: doc.revision };
-      }
-    }
-
-    // Built in the sandbox, because that is where the tree's objects live;
-    // the bundle carries them home.
-    const snapshot = await exportTreeAsCommit({
-      ctx,
-      repoDir,
-      treeOid,
-      parent: doc.baseSha,
-      message: `mako wip snapshot (worktree ${worktreeId}, epoch ${doc.leaseEpoch})`,
-    });
-
-    const swapped = await updateRefCas(
-      repoDir,
-      wipRefFor(worktreeId),
-      snapshot,
-      expectedOld,
-    );
-    if (!swapped) {
-      // Someone advanced the ref under us (stale lease / concurrent writer).
-      // Preserve this snapshot for recovery instead of overwriting.
-      const conflictRef = `${CONFLICT_REF_PREFIX}${worktreeId}-${Date.now()}`;
-      await updateRefCas(repoDir, conflictRef, snapshot, ZERO_OID);
-      logger.warn("Apps v2 WIP flush conflict", { worktreeId, conflictRef });
-      throw new WorktreeConflictError(
-        "Worktree state advanced concurrently; snapshot preserved on a conflict ref. Re-open the app to continue from the latest state.",
-        conflictRef,
-      );
-    }
-
-    doc.wipOid = snapshot;
-    doc.revision += 1;
-    doc.lastFlushAt = new Date();
-    await doc.save();
-    pokeAppV2(doc.workspaceId, null, "flush", doc.userId);
-    return { flushed: true, wipOid: snapshot, revision: doc.revision };
-  });
+  } catch {
+    // Not worth failing a read over.
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Shell execution (sandbox provider) + implicit flush
+// The client: a shell, a file system, and git — all of it in the sandbox
 // ---------------------------------------------------------------------------
 
-export interface ExecOutcome extends SandboxExecResult {
-  flush: FlushResult;
-}
+export type ExecOutcome = SandboxExecResult;
 
 export async function execInWorktree(
   handle: WorktreeHandle,
   command: string,
   options: SandboxExecOptions = {},
 ): Promise<ExecOutcome> {
-  const provider = getSandboxProvider();
   // §10: the session is the whole workspace repo; commands are app-scoped by
   // default (caller cwd is app-relative). posix.join keeps it session-rooted.
   const cwd = path.posix.join(handle.appRoot, options.cwd ?? "");
   const ctx = await ensureBox(handle);
-  const result = await provider.exec(ctx, command, { ...options, cwd });
-  const flush = await flushWorktree(handle);
-  return { ...result, flush };
+  const result = await getSandboxProvider().exec(ctx, command, {
+    ...options,
+    cwd,
+  });
+  // A command can `git checkout`, and it can commit. Nothing needs
+  // snapshotting — but the cached branch should follow, and a commit made in
+  // the shell should not be left sitting only on a disposable machine.
+  await syncBranchFromBox(handle);
+  await boxPushIfAhead(ctx).catch(error =>
+    logger.warn("Apps v2 could not push commits made in the shell", {
+      error: error instanceof Error ? error.message : String(error),
+    }),
+  );
+  return result;
 }
 
-// ---------------------------------------------------------------------------
-// Reads — from the bare repo, so they need no sandbox
-// ---------------------------------------------------------------------------
+/**
+ * Where a read comes from.
+ *
+ * If the sandbox is up, the working copy — that is what the person is
+ * looking at, including everything they have not committed. If it is not, the
+ * last commit on their branch, because that is the last thing anyone can
+ * still see. Asking is deliberately a question that does not start a sandbox;
+ * browsing a repository should not boot a microVM.
+ */
+async function readSource(
+  project: IAppProjectV2,
+  userId: string | undefined,
+): Promise<
+  | { kind: "box"; ctx: SandboxExecContext; handle: WorktreeHandle }
+  | { kind: "repo"; repoDir: string; ref: string }
+> {
+  const repoDir = await repoFor(project);
+  const branchRef = `refs/heads/${project.defaultBranch || DEFAULT_BRANCH}`;
+  if (!userId) return { kind: "repo", repoDir, ref: branchRef };
 
-/** Ref an actor's file reads resolve to: their WIP snapshot, else branch. */
+  const doc = await AppWorktreeV2.findOne({
+    workspaceId: project.workspaceId,
+    userId,
+  });
+  if (!doc) return { kind: "repo", repoDir, ref: branchRef };
+
+  const handle: WorktreeHandle = {
+    doc,
+    project,
+    repoDir,
+    appRoot: appRootFor(project),
+  };
+  const ctx = boxCtx(handle);
+  const live = await getSandboxProvider()
+    .hasSession(ctx)
+    .catch(() => false);
+  if (live && (await boxHasRepo(ctx).catch(() => false))) {
+    await syncBranchFromBox(handle);
+    return { kind: "box", ctx, handle };
+  }
+
+  const actorRef = (await resolveCommit(repoDir, `refs/heads/${doc.branch}`))
+    ? `refs/heads/${doc.branch}`
+    : branchRef;
+  // An actor branch that predates the app would make a listed app look empty,
+  // which reads as data loss rather than as "your branch is behind".
+  if (await pathExistsAtRef(repoDir, actorRef, appRootFor(project))) {
+    return { kind: "repo", repoDir, ref: actorRef };
+  }
+  return { kind: "repo", repoDir, ref: branchRef };
+}
+
 /** Whether `path` exists at `ref` (a file or a directory). */
 async function pathExistsAtRef(
   repoDir: string,
@@ -920,82 +778,27 @@ async function pathExistsAtRef(
   }
 }
 
-async function readRefFor(
-  project: IAppProjectV2,
-  userId: string | undefined,
-  repoDir: string,
-): Promise<string> {
-  const branchRef = `refs/heads/${project.defaultBranch || DEFAULT_BRANCH}`;
-  if (userId) {
-    const doc = await AppWorktreeV2.findOne({
-      workspaceId: project.workspaceId,
-      userId,
-    });
-    if (doc) {
-      const refOid =
-        (await resolveCommit(repoDir, wipRefFor(doc._id.toString()))) ??
-        doc.baseSha;
-      // Show the actor their own work — but only for an app their ref
-      // actually contains. A worktree that predates the app (someone else
-      // pushed it, or it arrived from a local checkout) would otherwise make
-      // a listed app look empty, which reads as data loss rather than as
-      // "your session is behind".
-      if (await pathExistsAtRef(repoDir, refOid, appRootFor(project))) {
-        return refOid;
-      }
-    }
-  }
-  return branchRef;
-}
-
-/**
- * Bring the repository's view of uncommitted work level with the sandbox.
- *
- * Reads resolve through git, which is what lets the file tree work with no
- * sandbox at all. The cost is that work done in the SHELL — where nothing
- * flushes — stays invisible until something else triggers one, and "I edited a
- * file and the tree does not show it" is the exact confusion this subsystem
- * has already produced once.
- *
- * So EDIT mode takes a snapshot before reading; browse mode does not, and
- * never touches a sandbox. It is cheap when nothing changed: the sandbox
- * reports its tree id, it matches, and nothing is transferred.
- *
- * Never throws. A tree that renders slightly stale beats a tree that fails to
- * render because a sandbox was busy.
- */
-export async function refreshFromBox(
-  project: IAppProjectV2,
-  userId: string | undefined,
-): Promise<void> {
-  if (!userId) return;
-  try {
-    const doc = await AppWorktreeV2.findOne({
-      workspaceId: project.workspaceId,
-      userId,
-    });
-    if (!doc) return;
-    const handle = await ensureWorktree(project, userId);
-    await flushWorktree(handle);
-  } catch (error) {
-    logger.warn("Apps v2 live refresh failed; serving the committed view", {
-      userId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
 export async function listFiles(
   project: IAppProjectV2,
   userId?: string,
 ): Promise<{ ref: string; entries: TreeEntry[] }> {
-  const repoDir = await repoFor(project);
-  const ref = await readRefFor(project, userId, repoDir);
-  const prefix = `${appRootFor(project)}/`;
-  const entries = (await listTree(repoDir, ref))
+  const source = await readSource(project, userId);
+  const root = appRootFor(project);
+  if (source.kind === "box") {
+    const entries = await boxListFiles(source.ctx, root);
+    return {
+      ref: source.handle.doc.branch,
+      entries: entries.map(e => ({
+        ...e,
+        path: e.path.slice(root.length + 1),
+      })),
+    };
+  }
+  const prefix = `${root}/`;
+  const entries = (await listTree(source.repoDir, source.ref))
     .filter(e => e.path.startsWith(prefix))
     .map(e => ({ ...e, path: e.path.slice(prefix.length) }));
-  return { ref, entries };
+  return { ref: source.ref, entries };
 }
 
 export async function readFile(
@@ -1008,99 +811,105 @@ export async function readFile(
   isBinary: boolean;
   size: number;
 }> {
-  const repoDir = await repoFor(project);
   const safe = assertSafeRelPath(relPath);
-  const ref = await readRefFor(project, userId, repoDir);
-  const blob = await readBlob(repoDir, ref, appPath(project, safe));
+  const source = await readSource(project, userId);
+  if (source.kind === "box") {
+    const blob = await boxReadFile(source.ctx, appPath(project, safe));
+    return { path: safe, ...blob };
+  }
+  const blob = await readBlob(
+    source.repoDir,
+    source.ref,
+    appPath(project, safe),
+  );
   return { path: safe, ...blob };
 }
 
-/** Search file contents at an actor's latest state (sandbox-free). */
+/** Search file contents at whatever the actor is actually looking at. */
 export async function grepFiles(
   project: IAppProjectV2,
   pattern: string,
   userId: string | undefined,
   options?: { ignoreCase?: boolean; pathspec?: string; maxMatches?: number },
 ): Promise<GrepMatch[]> {
-  const repoDir = await repoFor(project);
-  const ref = await readRefFor(project, userId, repoDir);
+  const source = await readSource(project, userId);
   const root = appRootFor(project);
-  const scoped = await grepTree(repoDir, ref, pattern, {
-    ...options,
-    pathspec: options?.pathspec ? `${root}/${options.pathspec}` : root,
-  });
-  return scoped.map(m =>
+  const pathspec = options?.pathspec ? `${root}/${options.pathspec}` : root;
+  const matches =
+    source.kind === "box"
+      ? await boxGrep(source.ctx, pattern, { ...options, pathspec })
+      : await grepTree(source.repoDir, source.ref, pattern, {
+          ...options,
+          pathspec,
+        });
+  return matches.map(m =>
     m.path.startsWith(`${root}/`)
       ? { ...m, path: m.path.slice(root.length + 1) }
       : m,
   );
 }
 
-/** List paths matching a glob at an actor's latest state (sandbox-free). */
+/** List paths matching a glob at whatever the actor is actually looking at. */
 export async function globFiles(
   project: IAppProjectV2,
   glob: string,
   userId?: string,
   limit?: number,
 ): Promise<string[]> {
-  const repoDir = await repoFor(project);
-  const ref = await readRefFor(project, userId, repoDir);
+  const source = await readSource(project, userId);
   const root = appRootFor(project);
-  const matched = await globTree(repoDir, ref, `${root}/${glob}`, limit);
+  const matched =
+    source.kind === "box"
+      ? await boxGlob(source.ctx, `${root}/${glob}`, limit)
+      : await globTree(source.repoDir, source.ref, `${root}/${glob}`, limit);
   return matched
     .filter(p => p.startsWith(`${root}/`))
     .map(p => p.slice(root.length + 1));
 }
 
-// ---------------------------------------------------------------------------
-// Writes through the worktree (explorer quick-edit / agent fast-path tools)
-// ---------------------------------------------------------------------------
-
+/**
+ * Write a file into the working copy.
+ *
+ * Just a write. It used to be a write plus a snapshot plus a verification that
+ * the snapshot contained it — because a write to an ignored path was accepted,
+ * reported as successful, and silently discarded. The check survives, because
+ * that failure mode does not go away: `git add -A` still skips ignored paths,
+ * so a file written to node_modules/ or dist/ would still vanish at commit
+ * time, and an agent told the write worked would build on a file that is not
+ * there.
+ */
 export async function writeFile(
   handle: WorktreeHandle,
   relPath: string,
   contents: string,
-): Promise<FlushResult> {
+): Promise<void> {
   const safe = appPath(handle.project, relPath);
   if (Buffer.byteLength(contents, "utf8") > APPS_V2_MAX_FILE_BYTES) {
     throw new Error("File exceeds the maximum size for a direct write");
   }
   const ctx = await ensureBox(handle);
-  await getSandboxProvider().writeFile(
-    ctx,
-    `${boxRoot(ctx)}/${safe}`,
-    new TextEncoder().encode(contents),
-  );
-  const flush = await flushWorktree(handle);
+  await boxWriteFile(ctx, safe, contents);
 
-  // Confirm the write actually persisted.
-  //
-  // The snapshot is `git add -A`, which skips ignored paths — so writing to
-  // `node_modules/` or `dist/` used to be accepted, reported as successful,
-  // and silently discarded. A caller told the write worked has no way to find
-  // out otherwise, and an agent will happily build on a file that does not
-  // exist. One cheap `cat-file` against the repo (no sandbox round trip) turns
-  // that into an error that says what happened.
-  const ref = flush.wipOid ?? handle.doc.wipOid ?? handle.doc.baseSha;
-  if (!(await pathExistsAtRef(handle.repoDir, ref, safe))) {
+  const ignored = await getSandboxProvider().exec(
+    ctx,
+    `git -C ${sh(boxRoot(ctx))} check-ignore -q ${sh(safe)}`,
+    { timeoutMs: 30_000 },
+  );
+  if (ignored.exitCode === 0) {
     throw new Error(
       `${relPath} is ignored by git (.gitignore or the sandbox's excludes), so it cannot be saved. Build output and installed dependencies live only in the sandbox by design — write somewhere tracked instead.`,
     );
   }
-  return flush;
 }
 
+/** Read a file straight from the working copy (agents editing in place). */
 export async function readSessionFile(
   handle: WorktreeHandle,
   relPath: string,
 ): Promise<string> {
-  const safe = appPath(handle.project, relPath);
   const ctx = await ensureBox(handle);
-  const bytes = await getSandboxProvider().readFile(
-    ctx,
-    `${boxRoot(ctx)}/${safe}`,
-  );
-  return Buffer.from(bytes).toString("utf8");
+  const blob = await boxReadFile(ctx, appPath(handle.project, relPath));
+  return blob.contents;
 }
 
 // ---------------------------------------------------------------------------
@@ -1109,25 +918,34 @@ export async function readSessionFile(
 
 export interface WorktreeStatus {
   branch: string;
+  /** Commit the working copy is on. */
   baseSha: string;
-  wipOid?: string;
-  revision: number;
   branchHead: string | null;
-  behindBranch: boolean;
+  /** Commits this branch has that the server does not. */
+  ahead: number;
   /** Uncommitted changes inside THIS app's folder. */
   changes: ChangedFile[];
   /**
-   * Uncommitted changes anywhere in the repo, app-prefixed paths and all.
+   * Uncommitted changes anywhere in the repo.
    *
-   * There is one worktree per user for the whole monorepo, so what blocks a
-   * branch switch or gets thrown away by Discard is the repo-wide set, not
-   * this app's slice of it. Reporting only the slice made an app look clean
-   * while a lock file another app's build had written kept checkout refusing,
+   * One working copy serves the whole monorepo, so what a branch switch has to
+   * get past — and what Discard throws away — is the repo-wide set, not this
+   * app's slice. Reporting only the slice once made an app look clean while a
+   * lock file another app's build had written kept `git checkout` refusing,
    * with nothing on screen naming it.
    */
   repoChanges: ChangedFile[];
+  /** True while the sandbox is asleep: this is the last committed state. */
+  offline: boolean;
 }
 
+/**
+ * What `git status` says.
+ *
+ * With no sandbox running there is nothing to have uncommitted work IN, so the
+ * answer is the branch head and an empty change set, flagged as such rather
+ * than presented as a clean tree.
+ */
 export async function worktreeStatus(
   project: IAppProjectV2,
   userId: string,
@@ -1138,23 +956,49 @@ export async function worktreeStatus(
     userId,
   });
   if (!doc) return null;
-  const branchHead = await resolveCommit(repoDir, `refs/heads/${doc.branch}`);
+
+  const handle: WorktreeHandle = {
+    doc,
+    project,
+    repoDir,
+    appRoot: appRootFor(project),
+  };
+  const ctx = boxCtx(handle);
+  const live =
+    (await getSandboxProvider()
+      .hasSession(ctx)
+      .catch(() => false)) && (await boxHasRepo(ctx).catch(() => false));
+
+  if (!live) {
+    const branchHead = await resolveCommit(repoDir, `refs/heads/${doc.branch}`);
+    return {
+      branch: doc.branch,
+      baseSha: branchHead ?? "",
+      branchHead,
+      ahead: 0,
+      changes: [],
+      repoChanges: [],
+      offline: true,
+    };
+  }
+
+  await syncBranchFromBox(handle);
+  const status = await boxStatus(ctx);
+  const branchHead = await resolveCommit(
+    repoDir,
+    `refs/heads/${status.branch}`,
+  );
   const prefix = `${appRootFor(project)}/`;
-  const repoChanges = doc.wipOid
-    ? await diffNameStatus(repoDir, doc.baseSha, doc.wipOid)
-    : [];
-  const changes = repoChanges
-    .filter(ch => ch.path.startsWith(prefix))
-    .map(ch => ({ ...ch, path: ch.path.slice(prefix.length) }));
   return {
-    branch: doc.branch,
-    baseSha: doc.baseSha,
-    wipOid: doc.wipOid ?? undefined,
-    revision: doc.revision,
+    branch: status.branch,
+    baseSha: status.head,
     branchHead,
-    behindBranch: branchHead !== null && branchHead !== doc.baseSha,
-    changes,
-    repoChanges,
+    ahead: status.ahead,
+    changes: status.changes
+      .filter(ch => ch.path.startsWith(prefix))
+      .map(ch => ({ ...ch, path: ch.path.slice(prefix.length) })),
+    repoChanges: status.changes,
+    offline: false,
   };
 }
 
@@ -1201,72 +1045,38 @@ export interface CommitResult {
 }
 
 /**
- * Commit a worktree's WIP snapshot onto its branch WITHOUT touching the
- * sandbox. Safe to call for worktrees whose sandbox is
- * gone (end-of-turn commits, cleanup jobs): the WIP ref already holds the
- * durable state, so no filesystem is needed.
+ * Commit the working copy and push it.
+ *
+ * `git commit && git push`, run in the sandbox, by the person or agent whose
+ * box it is. The push is the durability guarantee — the job the WIP ref used
+ * to do, done by the mechanism git already has for it.
  */
-async function commitFromWip(
-  doc: IAppWorktreeV2,
-  repoDir: string,
+export async function commitWorktree(
+  handle: WorktreeHandle,
   message: string,
   author?: GitAuthor,
 ): Promise<CommitResult> {
-  const worktreeId = doc._id.toString();
-  return withWorktreeLock(worktreeId, async () => {
-    if (!doc.wipOid) {
-      return { committed: false, reason: "No changes to commit" };
-    }
-
-    const branchRef = `refs/heads/${doc.branch}`;
-    const head = await resolveCommit(repoDir, branchRef);
-    if (!head) throw new Error("Branch head missing");
-    if (head !== doc.baseSha) {
-      throw new WorktreeConflictError(
-        `Branch ${doc.branch} moved since this worktree was based (base ${doc.baseSha.slice(0, 8)}, head ${head.slice(0, 8)}). Discard or rebase before committing.`,
-      );
-    }
-
-    const treeOid = await treeOfCommit(repoDir, doc.wipOid);
-    const commitOid = await commitTree(repoDir, {
-      treeOid,
-      parents: [head],
-      message,
-      author,
-    });
-
-    const swapped = await updateRefCas(repoDir, branchRef, commitOid, head);
-    if (!swapped) {
-      throw new WorktreeConflictError(
-        "Branch advanced concurrently during commit; retry.",
-      );
-    }
-
-    await deleteRefCas(repoDir, wipRefFor(worktreeId), doc.wipOid);
-    doc.baseSha = commitOid;
-    doc.wipOid = undefined;
-    doc.revision += 1;
-    await doc.save();
-
-    logger.info("Apps v2 worktree committed", { worktreeId, commitOid });
-    pokeAppV2(doc.workspaceId, null, "commit", doc.userId);
-    return { committed: true, commitOid, message };
+  const ctx = await ensureBox(handle);
+  const result = await boxCommitAll({ ctx, message, author });
+  if (!result.committed) return result;
+  await syncBranchFromBox(handle);
+  queueMirrorPush(handle.doc.workspaceId.toString());
+  pokeAppV2(handle.doc.workspaceId, null, "commit", handle.doc.userId);
+  logger.info("Apps v2 worktree committed", {
+    branch: handle.doc.branch,
+    commitOid: result.commitOid,
   });
+  return result;
 }
 
 /**
- * Auto-commit window: a manual save amends the branch head instead of adding
- * a commit when the head is a save of the SAME file by the SAME author within
- * this window (keeps "commit per save" from turning history into noise).
- */
-const AUTOCOMMIT_SQUASH_WINDOW_MS = 5 * 60_000;
-
-/**
- * Block A of the workspace-monorepo plan (apps-v2.md §10): every manual save
- * IS a commit — no staged/uncommitted state survives a save. Consecutive
- * saves of one file by one author squash by amending the branch head (the
- * cloud mirror is a forced `push --mirror`, so rewriting the just-created
- * head is safe; BYO remotes receive turn/publish pushes, not per-save ones).
+ * Saving a file is a commit (apps-v2.md §10 Block A).
+ *
+ * The squash-into-the-previous-save window that used to live here is gone. It
+ * amended the branch head, which is fine while the branch exists only on the
+ * server and is a force-push once the sandbox has the branch too — history
+ * rewriting to save a line in a log. Consecutive saves now make consecutive
+ * commits, which is what git does everywhere else.
  */
 export async function autoCommitFileEdit(
   handle: WorktreeHandle,
@@ -1274,161 +1084,64 @@ export async function autoCommitFileEdit(
   action: "edit" | "delete",
   author?: GitAuthor,
 ): Promise<CommitResult> {
-  const { doc, repoDir } = handle;
-  const message = `${action}: ${assertSafeRelPath(relPath)}`;
-
-  const squashed = await withWorktreeLock(doc._id.toString(), async () => {
-    if (!doc.wipOid) return null;
-    const branchRef = `refs/heads/${doc.branch}`;
-    const head = await commitMeta(repoDir, branchRef);
-    if (
-      !head ||
-      head.oid !== doc.baseSha ||
-      head.subject !== message ||
-      head.parents.length !== 1 ||
-      (author?.email && head.authorEmail !== author.email) ||
-      Date.now() - head.committerTimestamp > AUTOCOMMIT_SQUASH_WINDOW_MS
-    ) {
-      return null;
-    }
-
-    const treeOid = await treeOfCommit(repoDir, doc.wipOid);
-    const amended = await commitTree(repoDir, {
-      treeOid,
-      parents: head.parents,
-      message,
-      author,
-    });
-    const swapped = await updateRefCas(repoDir, branchRef, amended, head.oid);
-    if (!swapped) return null; // branch moved — fall through to a new commit
-
-    await deleteRefCas(repoDir, wipRefFor(doc._id.toString()), doc.wipOid);
-    doc.baseSha = amended;
-    doc.wipOid = undefined;
-    doc.revision += 1;
-    await doc.save();
-    pokeAppV2(doc.workspaceId, null, "commit", doc.userId);
-    return { committed: true, commitOid: amended, message } as CommitResult;
-  });
-
-  if (squashed?.commitOid) {
-    queueMirrorPush(doc.workspaceId.toString());
-    // Move the sandbox onto the amended commit so its tree reads clean.
-    // Non-fatal: a sandbox left behind is corrected by the next flush, and
-    // failing a successful commit over bookkeeping would be worse.
-    await advanceBoxToCommit({
-      ctx: boxCtx(handle),
-      repoDir,
-      branch: doc.branch,
-      commitOid: squashed.commitOid,
-    }).catch(error =>
-      logger.warn("Apps v2 sandbox fast-forward failed", {
-        error: error instanceof Error ? error.message : String(error),
-      }),
-    );
-    return squashed;
-  }
-
-  return commitWorktree(handle, message, author);
-}
-
-export async function commitWorktree(
-  handle: WorktreeHandle,
-  message: string,
-  author?: GitAuthor,
-): Promise<CommitResult> {
-  const { doc, repoDir } = handle;
-  const worktreeId = doc._id.toString();
-
-  await flushWorktree(handle);
-  const result = await commitFromWip(doc, repoDir, message, author);
-  if (!result.committed || !result.commitOid) return result;
-  queueMirrorPush(doc.workspaceId.toString());
-
-  // Fast-forward the sandbox so subsequent status is clean.
-  await advanceBoxToCommit({
-    ctx: boxCtx(handle),
-    repoDir,
-    branch: doc.branch,
-    commitOid: result.commitOid,
-  }).catch(error =>
-    // Non-fatal: the next flush re-derives the tree from the sandbox anyway.
-    logger.warn("Apps v2 sandbox fast-forward failed", {
-      worktreeId,
-      error: error instanceof Error ? error.message : String(error),
-    }),
+  return commitWorktree(
+    handle,
+    `${action}: ${assertSafeRelPath(relPath)}`,
+    author,
   );
-  return result;
 }
-
-// ---------------------------------------------------------------------------
-// Chat turn commits (Cursor-cloud model: one branch per conversation, one
-// commit per turn)
-// ---------------------------------------------------------------------------
 
 /**
- * Commit the actor's dirty worktree at the end of an agent turn.
+ * Commit whatever the agent left in the working copy at the end of a turn.
  *
- * Called from chat finalization — the app2_* tools flushed after every
- * mutation, so this only turns the accumulated WIP into a commit. One commit
- * per turn is what makes a turn reviewable and revertable.
+ * One commit per turn is what makes a turn reviewable and revertable. Keyed by
+ * ACTOR, not by chat: a conversation is not a line of work, so the agent
+ * commits to the branch the person is on rather than one of its own.
  *
- * Keyed by ACTOR, not by chat: a conversation is not a line of work, so the
- * agent commits to the branch the user is on rather than one of its own.
- * Never throws (finalization must not fail a turn); conflicts are logged and
- * left as WIP for the next turn.
+ * Never throws — finalization must not fail a turn. Nothing is lost by
+ * failing: the work is in the working copy, exactly where it would be if a
+ * person had written it and not committed yet.
  */
 export async function commitAgentTurn(
   workspaceId: string,
   actorId: string,
   turnSummary?: string,
 ): Promise<Array<{ commitOid?: string }>> {
-  const results: Array<{ commitOid?: string }> = [];
-  // §10: one workspace worktree per actor (a turn may span apps).
-  const worktrees = await AppWorktreeV2.find({
+  const doc = await AppWorktreeV2.findOne({
     workspaceId: new Types.ObjectId(workspaceId),
     userId: actorId,
-    wipOid: { $exists: true, $ne: null },
   });
-  if (worktrees.length === 0) return results;
+  if (!doc) return [];
 
-  const message = turnSummary?.trim()
-    ? `Agent turn: ${turnSummary.trim().slice(0, 120)}`
-    : `Agent turn (${new Date().toISOString()})`;
+  const ctx: SandboxExecContext = { sessionKey: doc._id.toString() };
+  try {
+    // No sandbox means no uncommitted work to commit.
+    if (!(await getSandboxProvider().hasSession(ctx))) return [];
+    if (!(await boxHasRepo(ctx))) return [];
 
-  for (const doc of worktrees) {
-    try {
-      const repoDir = await repoForWorkspace(workspaceId);
-      const result = await commitFromWip(doc, repoDir, message, {
-        name: "Mako Agent",
-        email: "agent@mako.ai",
-      });
-      results.push({ commitOid: result.commitOid });
-      if (result.commitOid) queueMirrorPush(workspaceId);
-      // Best-effort sandbox fast-forward so the next turn starts clean.
-      // Best-effort on purpose: the commit is already durable in the repo, and
-      // failing a finished turn over bookkeeping would be the worse outcome.
-      if (result.commitOid) {
-        await advanceBoxToCommit({
-          ctx: { sessionKey: doc._id.toString() },
-          repoDir,
-          branch: doc.branch,
-          commitOid: result.commitOid,
-        }).catch(() => undefined);
-      }
-    } catch (error) {
-      logger.warn("Apps v2 agent turn commit failed", {
-        actorId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      results.push({});
-    }
+    const message = turnSummary?.trim()
+      ? `Agent turn: ${turnSummary.trim().slice(0, 120)}`
+      : `Agent turn (${new Date().toISOString()})`;
+    const result = await boxCommitAll({
+      ctx,
+      message,
+      author: { name: "Mako Agent", email: "agent@mako.ai" },
+    });
+    if (!result.committed) return [];
+    queueMirrorPush(workspaceId);
+    pokeAppV2(doc.workspaceId, null, "commit", actorId);
+    logger.info("Apps v2 agent turn committed", {
+      actorId,
+      commitOid: result.commitOid,
+    });
+    return [{ commitOid: result.commitOid }];
+  } catch (error) {
+    logger.warn("Apps v2 agent turn commit failed", {
+      actorId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [{}];
   }
-  logger.info("Apps v2 agent turn committed", {
-    actorId,
-    worktrees: results.length,
-  });
-  return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -1582,7 +1295,7 @@ export async function mergeBranchToMain(
 /**
  * Point the actor's sandbox at a specific commit.
  *
- * Publishing uses this: the merge result is computed on the host, and the
+ * Publishing uses this: the merge result is computed on the server, and the
  * build has to run against exactly that commit so the artifact is what would
  * ship — not against whatever the sandbox happened to have.
  */
@@ -1591,16 +1304,14 @@ export async function checkoutInBox(
   commitOid: string,
 ): Promise<void> {
   const ctx = await ensureBox(handle);
-  await advanceBoxToCommit({
-    ctx,
-    repoDir: handle.repoDir,
-    branch: handle.doc.branch,
-    commitOid,
-  });
   const reset = await getSandboxProvider().exec(
     ctx,
-    `git -C ${sh(boxRoot(ctx))} reset -q --hard ${sh(commitOid)} && git -C ${sh(boxRoot(ctx))} clean -qfd`,
-    { timeoutMs: 60_000 },
+    [
+      `git -C ${sh(boxRoot(ctx))} fetch -q origin`,
+      `git -C ${sh(boxRoot(ctx))} reset -q --hard ${sh(commitOid)}`,
+      `git -C ${sh(boxRoot(ctx))} clean -qfd`,
+    ].join(" && "),
+    { timeoutMs: 180_000 },
   );
   if (reset.exitCode !== 0) {
     throw new Error(
@@ -1610,24 +1321,12 @@ export async function checkoutInBox(
 }
 
 /**
- * Switch the actor to another branch — the same thing `git checkout` in the
- * terminal does, offered as a button.
+ * Switch branches — the same `git checkout` the terminal runs, as a button.
  *
- * It IS `git checkout`: the sandbox runs it and git decides the outcome. That
- * distinction matters, because git's rule is not "refuse when dirty". Git
- * carries uncommitted work across whenever the two branches agree about the
- * files you have touched, which is the everyday case and what anyone who has
- * used git expects to happen.
- *
- * This used to refuse on ANY uncommitted change, which is stricter than git
- * for no reason, and turned out to be a trap rather than a safeguard: a
- * preview build runs `npm install` in the box, `npm install` writes
- * package-lock.json, and from then on the working tree is permanently dirty
- * through no act of the user's. Branch switching became impossible and the
- * message named neither the file nor a way out.
- *
- * When git does refuse, it names the files it would clobber. That is a better
- * message than anything invented here, so it is passed through.
+ * Git decides the outcome: it carries uncommitted work across when the two
+ * branches agree about the files you touched, and refuses, naming them, when
+ * it would clobber something. A rule stricter than git's is what once made
+ * branch switching impossible after a build wrote a lock file into the tree.
  */
 export async function checkoutBranch(
   handle: WorktreeHandle,
@@ -1637,88 +1336,26 @@ export async function checkoutBranch(
   const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
   if (!head) throw new Error(`No such branch: ${branch}`);
 
-  // Flush first — not to judge the result, but because the sandbox may already
-  // be on a different branch than the doc believes (someone typed `git
-  // checkout`), and moving a ref that is currently checked out would change
-  // HEAD without touching the index, reporting the whole tree as modified.
-  await flushWorktree(handle);
-  if (doc.branch === branch) return { branch, head: doc.baseSha };
-
   const ctx = await ensureBox(handle);
-  await sendCommitToBox({ ctx, repoDir, commitOid: head, have: doc.baseSha });
-  const git = `git -C ${sh(boxRoot(ctx))}`;
-  const result = await getSandboxProvider().exec(
-    ctx,
-    // The box's copy of the ref may be stale or missing, so point it at the
-    // repo's tip; then plain `checkout`, with none of git's safety removed.
-    `${git} update-ref ${sh(`refs/heads/${branch}`)} ${sh(head)} && ` +
-      `${git} checkout ${sh(branch)}`,
-    { timeoutMs: 60_000 },
-  );
-  if (result.exitCode !== 0) {
-    // git writes this class of refusal to stderr, but not exclusively — the
-    // same lesson as conflict reporting, where reading only stderr silently
-    // dropped the message that mattered.
-    const said = (result.stderr || result.stdout).trim();
-    throw new Error(
-      said
-        ? `Could not switch to ${branch}.\n${said.slice(-600)}`
-        : `Could not switch to ${branch}.`,
-    );
-  }
+  await boxCheckout(ctx, branch);
+  const after = await boxHead(ctx);
 
-  // The sandbox is the authority on which branch it is on, and flush is what
-  // reads it — including any edits git just carried across, which are still
-  // uncommitted and still yours.
-  await flushWorktree(handle);
+  doc.branch = after.branch;
+  await doc.save();
   pokeAppV2(doc.workspaceId, null, "checkout", doc.userId);
-  logger.info("Apps v2 branch switched", {
-    worktreeId: doc._id.toString(),
-    branch,
-    carriedChanges: Boolean(doc.wipOid),
-  });
-  return { branch, head: doc.baseSha };
+  logger.info("Apps v2 branch switched", { branch: after.branch });
+  return { branch: after.branch, head: after.head };
 }
 
-/** Throw away all uncommitted work and re-base the worktree on branch head. */
+/** Throw away uncommitted work — `git reset --hard && git clean -fd`. */
 export async function discardWorktree(
   handle: WorktreeHandle,
 ): Promise<{ baseSha: string }> {
-  const { doc, repoDir } = handle;
-  const worktreeId = doc._id.toString();
-
-  return withWorktreeLock(worktreeId, async () => {
-    if (doc.wipOid) {
-      await deleteRefCas(repoDir, wipRefFor(worktreeId), doc.wipOid);
-    }
-    const head = await resolveCommit(repoDir, `refs/heads/${doc.branch}`);
-    if (!head) throw new Error("Branch head missing");
-    doc.baseSha = head;
-    doc.wipOid = undefined;
-    doc.revision += 1;
-    doc.leaseEpoch += 1;
-    await doc.save();
-    // Discard means discard: reset the sandbox hard onto the branch head and
-    // remove untracked files, which is what "throw away my changes" means to
-    // anyone who has used git. Ignored files (node_modules) stay — reinstalling
-    // them is not what was asked for.
-    const ctx = boxCtx(handle);
-    await advanceBoxToCommit({
-      ctx,
-      repoDir,
-      branch: doc.branch,
-      commitOid: head,
-    }).catch(() => undefined);
-    await getSandboxProvider()
-      .exec(
-        ctx,
-        `git -C ${sh(boxRoot(ctx))} reset -q --hard ${sh(head)} && git -C ${sh(boxRoot(ctx))} clean -qfd`,
-        { timeoutMs: 60_000 },
-      )
-      .catch(() => undefined);
-    pokeAppV2(doc.workspaceId, null, "discard", doc.userId);
-    return { baseSha: head };
-  });
+  const ctx = await ensureBox(handle);
+  await boxDiscard(ctx);
+  const after = await boxHead(ctx);
+  pokeAppV2(handle.doc.workspaceId, null, "discard", handle.doc.userId);
+  return { baseSha: after.head };
 }
 
 // ---------------------------------------------------------------------------

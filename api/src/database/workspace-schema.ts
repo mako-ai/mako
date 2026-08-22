@@ -5792,14 +5792,19 @@ export const AppProjectV2 = mongoose.model<IAppProjectV2>(
 );
 
 /**
- * A per-actor durable worktree on an Apps v2 project (apps-v2.md §4.4).
+ * Which branch a person's sandbox is on. That is the whole record.
  *
- * Uncommitted work is snapshotted as a shadow commit on a private WIP ref
- * (`refs/mako/worktrees/<worktreeId>`) advanced only by compare-and-swap.
- * `wipOid` / `revision` here are repairable projections of that ref — the
- * ref itself is the transaction authority. `leaseEpoch` fences stale
- * sessions: it increments whenever the session working tree is
- * re-materialized, so a zombie sandbox flush cannot clobber newer state.
+ * It used to carry `baseSha`, `wipOid`, `revision` and `leaseEpoch` — a mirror
+ * of a shadow-commit ref that tracked uncommitted work, plus a fencing token
+ * to stop a stale sandbox clobbering it. All of that existed because the
+ * sandbox had no git remote, so the server had to model the working copy
+ * instead of letting the working copy be a working copy. The sandbox pushes
+ * now, so git holds the state and there is nothing left to mirror.
+ *
+ * Even the branch here is only a cache, for showing the right thing while the
+ * sandbox is asleep. When it is awake, the sandbox is authoritative: someone
+ * can type `git checkout` in the terminal, and that is a legitimate way to
+ * switch branches, not a state to correct.
  */
 export interface IAppWorktreeV2 extends Document {
   _id: Types.ObjectId;
@@ -5807,16 +5812,8 @@ export interface IAppWorktreeV2 extends Document {
   /** @deprecated §10: worktrees are per (workspace, actor); unset on new docs. */
   projectId?: Types.ObjectId;
   userId: string;
+  /** Last known branch. The sandbox wins whenever it is running. */
   branch: string;
-  /** Commit the worktree is based on (branch head at materialize time). */
-  baseSha: string;
-  /** Latest WIP snapshot commit, absent when the worktree is clean. */
-  wipOid?: string;
-  /** Monotonic flush counter (projection of WIP ref advances). */
-  revision: number;
-  /** Fencing token for the active session materialization. */
-  leaseEpoch: number;
-  lastFlushAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -5834,11 +5831,6 @@ const AppWorktreeV2Schema = new Schema<IAppWorktreeV2>(
     },
     userId: { type: String, required: true },
     branch: { type: String, required: true, default: "main" },
-    baseSha: { type: String, required: true },
-    wipOid: { type: String },
-    revision: { type: Number, default: 0 },
-    leaseEpoch: { type: Number, default: 1 },
-    lastFlushAt: { type: Date },
   },
   { collection: "app_worktrees_v2", timestamps: true },
 );

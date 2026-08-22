@@ -14,8 +14,11 @@ import path from "node:path";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
+import { startTestGitServer, type TestGitServer } from "./test-git-server";
+
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
+let gitServer: TestGitServer;
 const WS = new Types.ObjectId().toString();
 const USER = "attacker";
 
@@ -24,11 +27,17 @@ beforeAll(async () => {
   process.env.APPS_V2_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_V2_SESSIONS_ROOT = path.join(tmpRoot, "sessions");
   process.env.APPS_V2_SANDBOX_PROVIDER = "local";
+  // The sandbox is a clone, so it needs a real remote to clone from.
+  process.env.SESSION_SECRET =
+    process.env.SESSION_SECRET || "test-secret-for-git-tokens";
+  gitServer = await startTestGitServer();
+  process.env.APPS_V2_GIT_ORIGIN_URL = gitServer.url;
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 }, 120_000);
 
 afterAll(async () => {
+  await gitServer?.close();
   await mongoose.disconnect();
   await mongo?.stop();
   await fs.rm(tmpRoot, { recursive: true, force: true });
@@ -173,41 +182,60 @@ describe("concurrency", () => {
   }, 120_000);
 });
 
-describe("drift between the database and the working copy", () => {
-  it("a sandbox wiped underneath is rebuilt with uncommitted work intact", async () => {
-    const { ensureWorktree, writeFile, listFiles, execInWorktree } =
+describe("losing the machine", () => {
+  it("a wiped sandbox keeps what was committed and loses what was not", async () => {
+    const { ensureWorktree, writeFile, commitWorktree, listFiles, boxCtx } =
       await import("./worktree.service");
-    const { boxCtx } = await import("./worktree.service");
     const { getSandboxProvider } = await import("./sandbox/provider");
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
-    await writeFile(handle, "precious.txt", "do not lose me\n");
 
-    // Destroy the working copy, exactly as an expired sandbox would.
-    const provider = getSandboxProvider();
-    await provider.destroySession?.(boxCtx(handle).sessionKey);
-
-    // The next operation rebuilds it from the repo — including the WIP.
-    const revived = await ensureWorktree(project, USER);
-    const seen = await execInWorktree(revived, "cat precious.txt", {});
-    expect(seen.stdout).toContain("do not lose me");
-    expect((await listFiles(project, USER)).entries.map(e => e.path)).toContain(
-      "precious.txt",
+    // This case used to assert that UNCOMMITTED work survived a wiped
+    // sandbox, and it did — every write was snapshotted into a shadow commit
+    // first. That machinery is gone, and the promise went with it, so the
+    // honest test is the one that states both halves of the new deal.
+    await writeFile(handle, "committed.txt", "keep me\n");
+    await commitWorktree(handle, "commit the keeper");
+    await writeFile(
+      await ensureWorktree(project, USER),
+      "uncommitted.txt",
+      "at risk\n",
     );
+
+    await getSandboxProvider().destroySession?.(boxCtx(handle).sessionKey);
+
+    const listed = (await listFiles(project, USER)).entries.map(e => e.path);
+    expect(listed, "a commit was pushed, so it survives").toContain(
+      "committed.txt",
+    );
+    expect(
+      listed,
+      "an uncommitted edit lived only on that machine",
+    ).not.toContain("uncommitted.txt");
   }, 120_000);
 
-  it("a working copy reset behind the database's back is reconciled", async () => {
-    const { ensureWorktree, writeFile, execInWorktree, worktreeStatus } =
-      await import("./worktree.service");
+  it("`git reset --hard` in the shell is simply the truth afterwards", async () => {
+    const {
+      ensureWorktree,
+      writeFile,
+      commitWorktree,
+      execInWorktree,
+      worktreeStatus,
+    } = await import("./worktree.service");
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
     await writeFile(handle, "tracked.txt", "v1\n");
+    await commitWorktree(handle, "add tracked");
 
-    // Someone runs `git reset --hard` in the shell: the uncommitted work is
-    // gone from the working copy while the database still records a WIP ref.
+    // Modify it, then throw the modification away from the terminal. Nothing
+    // server-side gets to hold a different opinion about what is in the tree,
+    // because nothing server-side holds an opinion at all.
+    await writeFile(await ensureWorktree(project, USER), "tracked.txt", "v2\n");
+    const dirty = await worktreeStatus(project, USER);
+    expect(dirty?.changes.map(c => c.path)).toContain("tracked.txt");
+
     await execInWorktree(handle, "git reset -q --hard HEAD", {});
 
-    // The next status must reflect the WORKING COPY, not the stale belief.
     const status = await worktreeStatus(project, USER);
     expect(status?.changes.map(c => c.path) ?? []).not.toContain("tracked.txt");
   }, 120_000);
@@ -499,21 +527,25 @@ describe("publishing", () => {
 });
 
 describe("repeated operations are idempotent", () => {
-  it("flushing an unchanged tree repeatedly changes nothing", async () => {
-    const { ensureWorktree, writeFile, flushWorktree } = await import(
+  it("reading repeatedly does not change anything", async () => {
+    const { ensureWorktree, writeFile, worktreeStatus } = await import(
       "./worktree.service"
     );
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
     await writeFile(handle, "stable.txt", "same\n");
 
-    const first = await flushWorktree(handle);
-    const second = await flushWorktree(handle);
-    const third = await flushWorktree(handle);
-    // The WIP must not churn: a new snapshot commit per read would grow the
-    // repository without bound and make "has anything changed?" meaningless.
-    expect(second.wipOid ?? first.wipOid).toBe(first.wipOid);
-    expect(third.flushed, "a clean re-flush must be a no-op").toBe(false);
+    // Reading used to WRITE: every read snapshotted the working copy into a
+    // new commit, so asking what had changed changed something. A read is a
+    // read now, and this is the case that says so.
+    const first = await worktreeStatus(project, USER);
+    const second = await worktreeStatus(project, USER);
+    const third = await worktreeStatus(project, USER);
+    expect(second?.baseSha).toBe(first?.baseSha);
+    expect(third?.baseSha).toBe(first?.baseSha);
+    expect(third?.changes.map(c => c.path)).toEqual(
+      first?.changes.map(c => c.path),
+    );
   }, 120_000);
 
   it("committing twice with nothing in between is a no-op", async () => {
@@ -607,26 +639,27 @@ describe("two people, one branch", () => {
 });
 
 describe("failure mid-flight", () => {
-  it("a sandbox destroyed between write and commit loses only unflushed work", async () => {
+  it("a sandbox destroyed mid-session can be worked in again", async () => {
     const { ensureWorktree, writeFile, commitWorktree, boxCtx, listFiles } =
       await import("./worktree.service");
     const { getSandboxProvider } = await import("./sandbox/provider");
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
-    await writeFile(handle, "flushed.txt", "safe\n");
+    await writeFile(handle, "before.txt", "safe\n");
+    await commitWorktree(handle, "commit before the sandbox dies");
 
-    // Every write flushes, so this is already durable in the repo. Destroying
-    // the working copy now must not take it with it.
     await getSandboxProvider().destroySession?.(boxCtx(handle).sessionKey);
 
-    const commit = await commitWorktree(
-      await ensureWorktree(project, USER),
-      "after the sandbox died",
-    );
+    // A fresh machine, cloned from the server. Work continues on top of what
+    // was pushed — no special recovery path, just a clone.
+    const revived = await ensureWorktree(project, USER);
+    await writeFile(revived, "after.txt", "later\n");
+    const commit = await commitWorktree(revived, "after the sandbox died");
     expect(commit.committed).toBe(true);
-    expect((await listFiles(project, USER)).entries.map(e => e.path)).toContain(
-      "flushed.txt",
-    );
+
+    const listed = (await listFiles(project, USER)).entries.map(e => e.path);
+    expect(listed).toContain("before.txt");
+    expect(listed).toContain("after.txt");
   }, 180_000);
 
   it("concurrent checkouts do not leave the branch disagreeing with the sandbox", async () => {

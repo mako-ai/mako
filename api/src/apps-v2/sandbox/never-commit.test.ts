@@ -7,7 +7,7 @@
  * a form git actually honours.
  */
 import assert from "node:assert/strict";
-import { NEVER_COMMIT } from "../box-repo";
+import { NEVER_COMMIT } from "../box";
 
 assert.ok(
   NEVER_COMMIT.includes("node_modules"),

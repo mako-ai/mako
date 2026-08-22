@@ -170,6 +170,9 @@ async function execE2b(
         CI: "1",
         npm_config_yes: "true",
         NO_UPDATE_NOTIFIER: "1",
+        // There is no human at this end. Without it git blocks on a
+        // credential prompt until the timeout and reports nothing.
+        GIT_TERMINAL_PROMPT: "0",
         ...(options.env ?? {}),
       },
       onStdout: d => push("out", d),
@@ -491,12 +494,31 @@ async function openTerminalE2b(
   };
 }
 
+/** Is a sandbox already up for this session? Never creates one. */
+async function sessionExists(sessionKey: string): Promise<boolean> {
+  if (sessions.has(sessionKey)) return true;
+  try {
+    const paginator = Sandbox.list({
+      apiKey: apiKey(),
+      query: { metadata: { makoAppsV2SessionKey: sessionKey } },
+      limit: 1,
+    });
+    return paginator.hasNext && (await paginator.nextItems()).length > 0;
+  } catch {
+    // Unreachable E2B is not the same as "no sandbox", but for the one caller
+    // — should this read come from the working copy or the last commit? — the
+    // committed answer is the safe one.
+    return false;
+  }
+}
+
 export const e2bSandboxProvider: SandboxProvider = {
   id: "e2b",
   exec: execE2b,
   execDetached: execDetachedE2b,
   root: () => REMOTE_ROOT,
   scratch: () => "/tmp",
+  hasSession: ctx => sessionExists(ctx.sessionKey),
   writeFile: writeFileE2b,
   readFile: readFileE2b,
   openTerminal: openTerminalE2b,

@@ -8,9 +8,10 @@
  * in the terminal destroyed by the next sync, a `git checkout` silently
  * reverted because the sync replaced `.git` as well.
  *
- * Commits move between the two as git bundles (see box-repo.ts): git's own
- * offline transfer format, needing no network path and — the point — no
- * credential inside the sandbox, where tenant code runs.
+ * The sandbox is an ordinary clone with an ordinary remote (see box.ts): it
+ * fetches and pushes to Mako's own git-over-HTTP endpoint, which serves the
+ * same bare repo. So there is one repository and two ordinary git clients,
+ * and nothing in between to keep in step.
  *
  * "e2b" (Firecracker microVMs) is what ships. "local" is a directory on this
  * machine, for tests and for developing without E2B credentials; it runs
@@ -78,6 +79,15 @@ export interface SandboxProvider {
    * code that manipulates it disagree in the first place.
    */
   root(ctx: SandboxExecContext): string;
+  /**
+   * Is there a sandbox for this session already — WITHOUT creating one?
+   *
+   * Every other call here connects-or-creates, which is right for work and
+   * wrong for a question. Browsing a repository must not boot a microVM, and
+   * "read the working copy if the machine is on, otherwise read the last
+   * commit" needs a way to ask that is not itself an act of turning it on.
+   */
+  hasSession(ctx: SandboxExecContext): Promise<boolean>;
   /** Absolute path for scratch files that must NOT enter the working copy. */
   scratch(ctx: SandboxExecContext): string;
   /**
@@ -120,10 +130,8 @@ export interface SandboxProvider {
   /**
    * Read raw bytes back out of the sandbox.
    *
-   * The counterpart to writeFile, and the reason commits can leave the box
-   * without it holding a credential: the box writes a git bundle to a file and
-   * the API reads it, rather than the box pushing anywhere. Tenant code runs
-   * in that sandbox, so it must never hold a token for the workspace repo.
+   * The counterpart to writeFile: raw bytes out of the sandbox, used for
+   * reading a file the working copy holds.
    */
   readFile(ctx: SandboxExecContext, remotePath: string): Promise<Uint8Array>;
   /**

@@ -385,7 +385,7 @@ export default function AppsV2Explorer() {
       setLoadingApps(prev => ({ ...prev, [parsed.appId]: true }));
       // Live only while editing: the sandbox is already running then, and its
       // uncommitted work is exactly what the tree would otherwise be missing.
-      await fetchFiles(workspaceId, parsed.appId, editingByApp[parsed.appId]);
+      await fetchFiles(workspaceId, parsed.appId);
       setLoadingApps(prev => ({ ...prev, [parsed.appId]: false }));
     },
     [workspaceId, filesByApp, fetchFiles, editingByApp],
@@ -398,11 +398,7 @@ export default function AppsV2Explorer() {
         focusAppsV2Tab(parsed.appId, node.name);
         // Warm the file tree so expanding is instant.
         if (workspaceId && !filesByApp[parsed.appId]) {
-          void fetchFiles(
-            workspaceId,
-            parsed.appId,
-            editingByApp[parsed.appId],
-          );
+          void fetchFiles(workspaceId, parsed.appId);
         }
       } else if (parsed.kind === "file") {
         focusAppsV2FileTab(parsed.appId, parsed.path);
