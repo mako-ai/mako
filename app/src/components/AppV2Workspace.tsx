@@ -321,7 +321,11 @@ export default function AppV2Workspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, appId]);
 
-  const changeCount = status?.changes.length ?? 0;
+  // Repo-wide, deliberately: one worktree serves every app in the monorepo, so
+  // Discard throws away the repo-wide set and a branch switch has to get past
+  // it. Gating this on the app's own slice disabled the only escape hatch
+  // exactly when the blocking file belonged to a different app.
+  const changeCount = status?.repoChanges.length ?? 0;
 
   // Same "prefer the active chat's branch" logic as the sidebar's Version
   // control section: if the conversation you're currently chatting in has
@@ -335,9 +339,13 @@ export default function AppV2Workspace({
 
   const handleDiscard = useCallback(() => {
     if (!workspaceId) return;
-    if (!window.confirm("Discard ALL uncommitted changes in this app?")) return;
+    const names = (status?.repoChanges ?? []).map(c => c.path);
+    const confirmed = window.confirm(
+      `Discard ALL uncommitted changes in this repository?\n\n${names.join("\n")}`,
+    );
+    if (!confirmed) return;
     void discard(workspaceId, appId);
-  }, [workspaceId, appId, discard]);
+  }, [workspaceId, appId, discard, status]);
 
   if (!workspaceId) return null;
 
@@ -451,7 +459,7 @@ export default function AppV2Workspace({
             <HistoryIcon size={16} />
           </IconButton>
         </Tooltip>
-        <Tooltip title="Discard all uncommitted changes">
+        <Tooltip title="Discard all uncommitted changes in the repository">
           <span>
             <IconButton
               size="small"

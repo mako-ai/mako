@@ -250,6 +250,7 @@ export default function AppsV2Explorer() {
   const fetchBranches = useAppsV2Store(s => s.fetchBranches);
   const mergeBranch = useAppsV2Store(s => s.mergeBranch);
   const checkoutBranch = useAppsV2Store(s => s.checkoutBranch);
+  const commitWork = useAppsV2Store(s => s.commit);
   const editingByApp = useAppsV2Store(s => s.editingByApp);
 
   // Chat.tsx generates its own MongoDB-ObjectId-shaped chatId client-side and
@@ -318,6 +319,25 @@ export default function AppsV2Explorer() {
     },
     [workspaceId, activeAppId, checkoutBranch],
   );
+
+  // Committing your own uncommitted work. The agent commits at the end of its
+  // turn and Discard throws work away, which between them left no way to KEEP
+  // a change you made yourself — so "commit or discard them", the advice git
+  // gives and this UI repeated, named an action the UI did not offer.
+  const [commitOpen, setCommitOpen] = useState(false);
+  const [commitMsg, setCommitMsg] = useState("");
+  const [committing, setCommitting] = useState(false);
+  const handleCommit = useCallback(async () => {
+    if (!workspaceId || !activeAppId || !commitMsg.trim()) return;
+    setCommitting(true);
+    setMergeError(null);
+    const result = await commitWork(workspaceId, activeAppId, commitMsg.trim());
+    setCommitting(false);
+    if (result.ok) {
+      setCommitOpen(false);
+      setCommitMsg("");
+    } else setMergeError(result.error ?? "Commit failed");
+  }, [workspaceId, activeAppId, commitMsg, commitWork]);
 
   const handleMerge = useCallback(
     async (branch: string) => {
@@ -554,10 +574,95 @@ export default function AppsV2Explorer() {
                       <Alert
                         severity="error"
                         onClose={() => setMergeError(null)}
-                        sx={{ mb: 1, fontSize: 12 }}
+                        sx={{
+                          mb: 1,
+                          fontSize: 11,
+                          // git's refusals are multi-line and name the files
+                          // they are about; collapsing them loses the only
+                          // part the reader can act on. Paths have no spaces
+                          // to wrap at and this rail is narrow, so let them
+                          // break and cap the height rather than let one
+                          // message push the tree off screen.
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                          "& .MuiAlert-message": {
+                            maxHeight: 200,
+                            overflowY: "auto",
+                          },
+                        }}
                       >
                         {mergeError}
                       </Alert>
+                    )}
+                    {(status?.repoChanges?.length ?? 0) > 0 && (
+                      <Box sx={{ mb: 1 }}>
+                        <Box
+                          sx={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 0.5,
+                            mb: 0.25,
+                          }}
+                        >
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{ flex: 1 }}
+                          >
+                            {status!.repoChanges.length} uncommitted change
+                            {status!.repoChanges.length === 1 ? "" : "s"}
+                          </Typography>
+                          <Button
+                            size="small"
+                            sx={{ fontSize: 11, py: 0, minWidth: 0 }}
+                            onClick={() => setCommitOpen(true)}
+                          >
+                            Commit
+                          </Button>
+                        </Box>
+                        {/* Repo-wide and unabbreviated: the file that blocks a
+                            branch switch is often one another app's build
+                            wrote, and a path trimmed to this app's folder
+                            would hide exactly that one. */}
+                        {status!.repoChanges.map(change => (
+                          <Box
+                            key={change.path}
+                            title={`${change.status} ${change.path}`}
+                            sx={{
+                              display: "flex",
+                              gap: 0.75,
+                              fontFamily: "monospace",
+                              fontSize: 10.5,
+                              color: "text.secondary",
+                              minWidth: 0,
+                            }}
+                          >
+                            <Box component="span">
+                              {change.status[0].toUpperCase()}
+                            </Box>
+                            {/* The status letter sits OUTSIDE the truncating
+                                span: `direction: rtl` keeps the end of a long
+                                path visible, which is the informative half,
+                                but it also reorders anything sharing the
+                                element — the letter ended up at the far end
+                                and clipped away with the ellipsis. */}
+                            <Box
+                              component="span"
+                              sx={{
+                                flex: 1,
+                                minWidth: 0,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                                direction: "rtl",
+                                textAlign: "left",
+                              }}
+                            >
+                              {change.path}
+                            </Box>
+                          </Box>
+                        ))}
+                      </Box>
                     )}
                     {activeChatBranch && (
                       <Typography
@@ -741,6 +846,46 @@ export default function AppsV2Explorer() {
             disabled={creating || !newTitle.trim()}
           >
             {creating ? "Creating..." : "Create"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={commitOpen}
+        onClose={() => !committing && setCommitOpen(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Commit changes</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            margin="dense"
+            label="Message"
+            value={commitMsg}
+            onChange={e => setCommitMsg(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter") void handleCommit();
+            }}
+            disabled={committing}
+          />
+          <Typography variant="caption" color="text.secondary">
+            Commits all {status?.repoChanges?.length ?? 0} uncommitted change
+            {(status?.repoChanges?.length ?? 0) === 1 ? "" : "s"} onto{" "}
+            {status?.branch ?? "your branch"}.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCommitOpen(false)} disabled={committing}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => void handleCommit()}
+            disabled={committing || !commitMsg.trim()}
+          >
+            {committing ? "Committing..." : "Commit"}
           </Button>
         </DialogActions>
       </Dialog>

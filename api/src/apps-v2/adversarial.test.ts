@@ -308,25 +308,78 @@ describe("silent loss", () => {
 });
 
 describe("branch switching under pressure", () => {
-  it("refuses to switch with uncommitted work, and loses nothing by refusing", async () => {
+  // This case used to assert the OPPOSITE — that any uncommitted change was
+  // refused — and passed, which is exactly how a suite codifies a bug instead
+  // of catching it. Enforcing an invented rule consistently is not evidence
+  // the rule is right, and this one made branch switching impossible the
+  // moment a build wrote a lock file into the tree.
+  it("carries uncommitted work across, the way git does", async () => {
     const { ensureWorktree, writeFile, checkoutBranch, listFiles } =
       await import("./worktree.service");
     const project = await makeProject();
-    const handle = await ensureWorktree(project, USER);
-    await writeFile(handle, "wip.txt", "unsaved\n");
+    await writeFile(
+      await ensureWorktree(project, USER),
+      "wip.txt",
+      "unsaved\n",
+    );
 
-    await expect(
-      checkoutBranch(await ensureWorktree(project, USER), "main"),
-    ).rejects.toThrow(/uncommitted/i);
+    // main does not have wip.txt, so nothing would be clobbered — git carries
+    // it over without a word, and so must this.
+    await checkoutBranch(await ensureWorktree(project, USER), "main");
 
-    // Refusing must be inert: the work is still there afterwards.
+    const after = await ensureWorktree(project, USER);
+    expect(after.doc.branch).toBe("main");
     expect((await listFiles(project, USER)).entries.map(e => e.path)).toContain(
       "wip.txt",
     );
-    expect((await ensureWorktree(project, USER)).doc.branch).toBe(
-      `user/${USER}`,
+  }, 180_000);
+
+  it("refuses when the switch WOULD clobber, and names the file", async () => {
+    const {
+      ensureWorktree,
+      writeFile,
+      commitWorktree,
+      checkoutBranch,
+      listFiles,
+    } = await import("./worktree.service");
+    const project = await makeProject();
+
+    // Commit clash.txt on the actor's own branch. It has to be THIS branch:
+    // an actor branch tracks main (ensureWorktree merges main in), so
+    // anything committed on main arrives here too and the two never differ.
+    await writeFile(
+      await ensureWorktree(project, USER),
+      "clash.txt",
+      "branch version\n",
     );
-  }, 120_000);
+    await commitWorktree(await ensureWorktree(project, USER), "clash");
+
+    // main does not have it, so switching there removes it from the tree...
+    await checkoutBranch(await ensureWorktree(project, USER), "main");
+    expect(
+      (await listFiles(project, USER)).entries.map(e => e.path),
+    ).not.toContain("clash.txt");
+
+    // ...and writing a DIFFERENT clash.txt here is work git cannot carry back.
+    await writeFile(
+      await ensureWorktree(project, USER),
+      "clash.txt",
+      "my uncommitted version\n",
+    );
+
+    // The point of delegating to git is this message: it names the file.
+    // "You have uncommitted changes" never did, which is why the file that
+    // was actually blocking could sit in another app's folder, invisible.
+    await expect(
+      checkoutBranch(await ensureWorktree(project, USER), `user/${USER}`),
+    ).rejects.toThrow(/clash\.txt/);
+
+    // Refusing must be inert: still on main, still holding the edit.
+    expect((await ensureWorktree(project, USER)).doc.branch).toBe("main");
+    expect((await listFiles(project, USER)).entries.map(e => e.path)).toContain(
+      "clash.txt",
+    );
+  }, 180_000);
 
   it("refuses a branch that does not exist", async () => {
     const { ensureWorktree, checkoutBranch } = await import(
@@ -365,6 +418,32 @@ describe("branch switching under pressure", () => {
     await checkoutBranch(await ensureWorktree(project, USER), `user/${USER}`);
     expect((await listFiles(project, USER)).entries.map(e => e.path)).toContain(
       "mine.txt",
+    );
+  }, 180_000);
+});
+
+describe("uncommitted work you cannot see", () => {
+  it("reports repo-wide changes, not just this app's slice", async () => {
+    const { ensureWorktree, writeFile, worktreeStatus } = await import(
+      "./worktree.service"
+    );
+    // One worktree serves every app in the workspace monorepo, so a file
+    // another app's build wrote is uncommitted work for THIS app's checkout
+    // too. Reporting only this app's slice is what let a lock file written by
+    // a preview build block every branch switch while the UI showed a clean
+    // app, named nothing, and disabled Discard — the one way out.
+    const mine = await makeProject();
+    const theirs = await makeProject();
+    await writeFile(
+      await ensureWorktree(theirs, USER),
+      "generated.lock",
+      "written by a build\n",
+    );
+
+    const status = await worktreeStatus(mine, USER);
+    expect(status?.changes.map(c => c.path)).not.toContain("generated.lock");
+    expect(status?.repoChanges.map(c => c.path).join("\n")).toMatch(
+      /generated\.lock/,
     );
   }, 180_000);
 });

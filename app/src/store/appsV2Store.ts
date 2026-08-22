@@ -47,7 +47,14 @@ export interface AppV2Status {
   revision: number;
   branchHead: string | null;
   behindBranch: boolean;
+  /** Uncommitted changes inside this app's folder. */
   changes: AppV2Change[];
+  /**
+   * Uncommitted changes anywhere in the repo. One worktree serves every app,
+   * so this — not `changes` — is what a branch switch has to get past and what
+   * Discard throws away.
+   */
+  repoChanges: AppV2Change[];
 }
 
 export interface AppV2Commit {

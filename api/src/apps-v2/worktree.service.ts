@@ -1114,7 +1114,18 @@ export interface WorktreeStatus {
   revision: number;
   branchHead: string | null;
   behindBranch: boolean;
+  /** Uncommitted changes inside THIS app's folder. */
   changes: ChangedFile[];
+  /**
+   * Uncommitted changes anywhere in the repo, app-prefixed paths and all.
+   *
+   * There is one worktree per user for the whole monorepo, so what blocks a
+   * branch switch or gets thrown away by Discard is the repo-wide set, not
+   * this app's slice of it. Reporting only the slice made an app look clean
+   * while a lock file another app's build had written kept checkout refusing,
+   * with nothing on screen naming it.
+   */
+  repoChanges: ChangedFile[];
 }
 
 export async function worktreeStatus(
@@ -1129,9 +1140,10 @@ export async function worktreeStatus(
   if (!doc) return null;
   const branchHead = await resolveCommit(repoDir, `refs/heads/${doc.branch}`);
   const prefix = `${appRootFor(project)}/`;
-  const changes = (
-    doc.wipOid ? await diffNameStatus(repoDir, doc.baseSha, doc.wipOid) : []
-  )
+  const repoChanges = doc.wipOid
+    ? await diffNameStatus(repoDir, doc.baseSha, doc.wipOid)
+    : [];
+  const changes = repoChanges
     .filter(ch => ch.path.startsWith(prefix))
     .map(ch => ({ ...ch, path: ch.path.slice(prefix.length) }));
   return {
@@ -1142,6 +1154,7 @@ export async function worktreeStatus(
     branchHead,
     behindBranch: branchHead !== null && branchHead !== doc.baseSha,
     changes,
+    repoChanges,
   };
 }
 
@@ -1600,9 +1613,21 @@ export async function checkoutInBox(
  * Switch the actor to another branch — the same thing `git checkout` in the
  * terminal does, offered as a button.
  *
- * Refuses with uncommitted work rather than choosing for you. git refuses too,
- * and for the same reason: silently carrying edits across, or silently
- * discarding them, are both worse than saying so.
+ * It IS `git checkout`: the sandbox runs it and git decides the outcome. That
+ * distinction matters, because git's rule is not "refuse when dirty". Git
+ * carries uncommitted work across whenever the two branches agree about the
+ * files you have touched, which is the everyday case and what anyone who has
+ * used git expects to happen.
+ *
+ * This used to refuse on ANY uncommitted change, which is stricter than git
+ * for no reason, and turned out to be a trap rather than a safeguard: a
+ * preview build runs `npm install` in the box, `npm install` writes
+ * package-lock.json, and from then on the working tree is permanently dirty
+ * through no act of the user's. Branch switching became impossible and the
+ * message named neither the file nor a way out.
+ *
+ * When git does refuse, it names the files it would clobber. That is a better
+ * message than anything invented here, so it is passed through.
  */
 export async function checkoutBranch(
   handle: WorktreeHandle,
@@ -1612,40 +1637,47 @@ export async function checkoutBranch(
   const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
   if (!head) throw new Error(`No such branch: ${branch}`);
 
-  // Flush first so "uncommitted work" means what the sandbox actually holds,
-  // including anything typed into the shell since the last snapshot.
-  const flushed = await flushWorktree(handle);
-  if (flushed.wipOid ?? doc.wipOid) {
-    throw new Error(
-      `You have uncommitted changes on ${doc.branch}. Commit or discard them before switching to ${branch}.`,
-    );
-  }
+  // Flush first — not to judge the result, but because the sandbox may already
+  // be on a different branch than the doc believes (someone typed `git
+  // checkout`), and moving a ref that is currently checked out would change
+  // HEAD without touching the index, reporting the whole tree as modified.
+  await flushWorktree(handle);
   if (doc.branch === branch) return { branch, head: doc.baseSha };
 
   const ctx = await ensureBox(handle);
-  await sendCommitToBox({ ctx, repoDir, commitOid: head });
+  await sendCommitToBox({ ctx, repoDir, commitOid: head, have: doc.baseSha });
+  const git = `git -C ${sh(boxRoot(ctx))}`;
   const result = await getSandboxProvider().exec(
     ctx,
-    `git -C ${sh(boxRoot(ctx))} checkout -q -B ${sh(branch)} ${sh(head)} && git -C ${sh(boxRoot(ctx))} reset -q --hard ${sh(head)}`,
+    // The box's copy of the ref may be stale or missing, so point it at the
+    // repo's tip; then plain `checkout`, with none of git's safety removed.
+    `${git} update-ref ${sh(`refs/heads/${branch}`)} ${sh(head)} && ` +
+      `${git} checkout ${sh(branch)}`,
     { timeoutMs: 60_000 },
   );
   if (result.exitCode !== 0) {
+    // git writes this class of refusal to stderr, but not exclusively — the
+    // same lesson as conflict reporting, where reading only stderr silently
+    // dropped the message that mattered.
+    const said = (result.stderr || result.stdout).trim();
     throw new Error(
-      `Could not switch to ${branch}: ${(result.stderr || result.stdout).slice(-300)}`,
+      said
+        ? `Could not switch to ${branch}.\n${said.slice(-600)}`
+        : `Could not switch to ${branch}.`,
     );
   }
 
-  doc.branch = branch;
-  doc.baseSha = head;
-  doc.wipOid = undefined;
-  doc.revision += 1;
-  await doc.save();
+  // The sandbox is the authority on which branch it is on, and flush is what
+  // reads it — including any edits git just carried across, which are still
+  // uncommitted and still yours.
+  await flushWorktree(handle);
   pokeAppV2(doc.workspaceId, null, "checkout", doc.userId);
   logger.info("Apps v2 branch switched", {
     worktreeId: doc._id.toString(),
     branch,
+    carriedChanges: Boolean(doc.wipOid),
   });
-  return { branch, head };
+  return { branch, head: doc.baseSha };
 }
 
 /** Throw away all uncommitted work and re-base the worktree on branch head. */
