@@ -49,6 +49,9 @@ import {
   createProject,
   deleteProject,
   discardWorktree,
+  boxCtx,
+  checkoutInBox,
+  defaultBranchSha,
   ensureWorktree,
   execInWorktree,
   listBranches,
@@ -66,7 +69,10 @@ import {
   worktreeStatus,
   writeFile,
 } from "../apps-v2/worktree.service";
-import { APPS_V2_EXEC_MAX_TIMEOUT_MS } from "../apps-v2/config";
+import {
+  APPS_V2_EXEC_MAX_TIMEOUT_MS,
+  previewStagingDir,
+} from "../apps-v2/config";
 import { registerPublicShareRoutes } from "./lib/public-share-routes";
 import {
   buildApp,
@@ -75,6 +81,8 @@ import {
   deploymentExists,
   serveDeploymentFile,
 } from "../apps-v2/deployment.service";
+import fs from "node:fs/promises";
+import { readBoxDir } from "../apps-v2/box-repo";
 import { mintPreviewGrant } from "../apps-v2/preview.service";
 import { ensureDevServer } from "../apps-v2/dev-server.service";
 import { Readable } from "node:stream";
@@ -1179,10 +1187,18 @@ appsV2Routes.openapi(
         user?.email ? { name: user.email, email: user.email } : undefined,
       );
 
+      // The build output is in the sandbox; the static preview server reads
+      // from disk. Stage just `dist/` out to a deterministic directory, which
+      // the next build overwrites — the API keeps no working copy, only this
+      // narrow, disposable artifact.
+      const staging = previewStagingDir(loaded.project._id.toString());
+      await fs.rm(staging, { recursive: true, force: true });
+      await readBoxDir(boxCtx(handle), `${handle.appRoot}/dist`, staging);
+
       const grant = mintPreviewGrant({
         workspaceId: loaded.project.workspaceId.toString(),
         projectId: loaded.project._id.toString(),
-        rootDir: `${handle.sessionDir}/${handle.appRoot}/dist`,
+        rootDir: staging,
       });
       return c.json(
         {
@@ -1345,6 +1361,10 @@ appsV2Routes.openapi(
         branch: loaded.project.defaultBranch || "main",
       });
 
+      // Captured BEFORE the merge: promoting is a compare-and-swap against
+      // the main this build started from, so a publish that races another one
+      // fails instead of shipping a stale artifact.
+      const expectedMain = await defaultBranchSha(loaded.project);
       const trial = await trialMerge(
         handle,
         branch ?? (loaded.project.defaultBranch || "main"),
@@ -1356,7 +1376,7 @@ appsV2Routes.openapi(
       const sha = trial.sha;
 
       if (await deploymentExists(loaded.project._id.toString(), sha)) {
-        await promoteToMain(handle);
+        await promoteToMain(handle, { sha, expectedMain });
         await setPublishedSha(loaded.project, sha);
         return c.json(
           { success: true as const, sha, fileCount: 0, reused: true },
@@ -1364,6 +1384,8 @@ appsV2Routes.openapi(
         );
       }
 
+      // Build the MERGE RESULT, not whatever the sandbox happened to hold.
+      await checkoutInBox(handle, sha);
       const build = await buildApp(handle, execInWorktree);
       if (!build.ok) {
         // main never moved, so there is nothing to roll back.
@@ -1379,7 +1401,7 @@ appsV2Routes.openapi(
 
       // The build succeeded: only now does main advance.
       try {
-        await promoteToMain(handle);
+        await promoteToMain(handle, { sha, expectedMain });
       } catch {
         return c.json(
           {

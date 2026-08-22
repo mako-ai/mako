@@ -20,10 +20,12 @@
 import path from "node:path";
 import { Readable } from "node:stream";
 import fs from "node:fs/promises";
+import os from "node:os";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import { AppProjectV2, type IAppProjectV2 } from "../database/workspace-schema";
 import { loggers } from "../logging";
-import type { WorktreeHandle } from "./worktree.service";
+import { boxCtx, type WorktreeHandle } from "./worktree.service";
+import { readBoxDir } from "./box-repo";
 
 const logger = loggers.api("apps-v2-deployment");
 
@@ -249,13 +251,19 @@ export async function deployBuild(
   sha: string,
   handle: WorktreeHandle,
 ): Promise<PublishResult> {
-  const result = await uploadDeployment(
-    project,
-    sha,
-    path.join(handle.sessionDir, handle.appRoot, "dist"),
-  );
-  await setPublishedSha(project, sha);
-  return result;
+  // The build output lives in the sandbox — it is not in git, and the API
+  // host no longer keeps a copy of the working tree. Copy just `dist/` out,
+  // deliberately narrowly: this is the one thing publishing needs that the
+  // repository cannot provide.
+  const staging = await fs.mkdtemp(path.join(os.tmpdir(), "mako-dist-"));
+  try {
+    await readBoxDir(boxCtx(handle), `${handle.appRoot}/dist`, staging);
+    const result = await uploadDeployment(project, sha, staging);
+    await setPublishedSha(project, sha);
+    return result;
+  } finally {
+    await fs.rm(staging, { recursive: true, force: true });
+  }
 }
 
 /**

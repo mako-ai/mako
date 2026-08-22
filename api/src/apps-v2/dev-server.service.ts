@@ -24,7 +24,7 @@
  *   server that is running but momentarily idle, so it is pushed out explicitly.
  */
 import { getSandboxProvider } from "./sandbox/provider";
-import type { WorktreeHandle } from "./worktree.service";
+import { boxCtx, ensureBox, type WorktreeHandle } from "./worktree.service";
 import { loggers } from "../logging";
 import { readBindings, bindingArtifactKey } from "./bindings.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
@@ -180,7 +180,7 @@ async function isListening(
   provider: ReturnType<typeof getSandboxProvider>,
 ): Promise<boolean> {
   const probe = await provider.exec(
-    { hostDir: handle.sessionDir, sessionKey: handle.doc._id.toString() },
+    boxCtx(handle),
     `curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:${DEV_PORT}/ && echo up || echo down`,
     { timeoutMs: 15_000 },
   );
@@ -197,10 +197,7 @@ export async function ensureDevServer(
   handle: WorktreeHandle,
 ): Promise<DevPreview> {
   const provider = getSandboxProvider();
-  const ctx = {
-    hostDir: handle.sessionDir,
-    sessionKey: handle.doc._id.toString(),
-  };
+  const ctx = await ensureBox(handle);
   const appDir = `/home/user/app/${handle.appRoot}`;
 
   await provider.keepAlive(ctx, DEV_SESSION_KEEPALIVE_MS);

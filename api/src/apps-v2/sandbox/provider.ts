@@ -1,20 +1,26 @@
 /**
  * Apps v2 sandbox provider seam (apps-v2.md §4.5, §12).
  *
- * One implementation today: "e2b" — Firecracker microVMs. The host session
- * directory remains the git staging area; the provider syncs it into the
- * sandbox before a command and back out after (rsync-style, tar over the E2B
- * filesystem API), so everything above the seam — worktree durability, WIP
- * flushes, tools, routes — never learns where the shell actually ran.
+ * THE SANDBOX IS THE WORKING COPY. It holds a real git checkout; the bare repo
+ * holds the history; there is nothing in between. The API host used to keep a
+ * second working tree and tar it in and out around every command, and most of
+ * this subsystem's bugs came from those two copies disagreeing — a file edited
+ * in the terminal destroyed by the next sync, a `git checkout` silently
+ * reverted because the sync replaced `.git` as well.
  *
- * The seam is kept with a single implementation on purpose: §7 wants Fly
- * Machines / Modal reachable as a vendor fallback without touching callers.
- * It is NOT kept for a local-execution mode — §12 deleted that. Mako developers
- * run on E2B too, so we exercise the substrate we ship, and tenant code never
- * runs on the API host (N1).
+ * Commits move between the two as git bundles (see box-repo.ts): git's own
+ * offline transfer format, needing no network path and — the point — no
+ * credential inside the sandbox, where tenant code runs.
+ *
+ * "e2b" (Firecracker microVMs) is what ships. "local" is a directory on this
+ * machine, for tests and for developing without E2B credentials; it runs
+ * tenant commands in the API process, which N1 forbids, so it refuses to load
+ * in production. The seam also keeps §7's vendor fallback (Fly, Modal)
+ * reachable without touching callers.
  */
 import type { AppsV2SandboxProviderId } from "../config";
 import { e2bSandboxProvider } from "./e2b-provider";
+import { localSandboxProvider } from "./local-provider";
 
 export interface SandboxExecOptions {
   /** Working directory relative to the session root ("" = root). */
@@ -27,9 +33,10 @@ export interface SandboxExecOptions {
 /** Identity of the working tree a command runs against. */
 export interface SandboxExecContext {
   /**
-   * Host-side session directory (always present — it is the git staging
-   * area). The local provider executes directly in it; remote providers
-   * sync it in/out around the command.
+   * VESTIGIAL. Nothing reads it: there is no host-side working tree any more,
+   * so there is nothing to sync and nowhere to sync it from. Callers pass the
+   * repository path to satisfy the type. Kept for one release so every call
+   * site does not have to change in the same commit that removed the syncs.
    */
   hostDir: string;
   /** Stable affinity key for remote session reuse (the worktree id). */
@@ -63,24 +70,23 @@ export interface SandboxTerminal {
   interrupt(): Promise<void>;
   /** Tell the shell the window changed, so it can redraw at the right size. */
   resize(cols: number, rows: number): Promise<void>;
-  /**
-   * Copy what the shell has done back to the host working tree.
-   *
-   * A PTY, unlike `exec`, has no natural end to sync at — so until this
-   * existed, nothing typed into a terminal was ever persisted, and the next
-   * `syncIn` (which replaces the tree, `.git` included) deleted all of it. A
-   * shell that silently discards your work is worse than no shell.
-   *
-   * TEMPORARY. When the sandbox becomes the one working copy there is nothing
-   * to copy anywhere, and this goes away with the rest of the sync layer.
-   */
-  sync(): Promise<void>;
   /** End the session. */
   close(): Promise<void>;
 }
 
 export interface SandboxProvider {
   readonly id: AppsV2SandboxProviderId;
+  /**
+   * Absolute path of the working copy inside this sandbox.
+   *
+   * Asked rather than assumed, because the answer differs per provider: a
+   * microVM has a fixed path, a local sandbox is a directory on this machine.
+   * Hardcoding one provider's layout is what made the working copy and the
+   * code that manipulates it disagree in the first place.
+   */
+  root(ctx: SandboxExecContext): string;
+  /** Absolute path for scratch files that must NOT enter the working copy. */
+  scratch(ctx: SandboxExecContext): string;
   /**
    * Run a shell command against the context's working tree. The provider
    * guarantees: cwd containment, an allowlisted environment (no API-process
@@ -119,6 +125,15 @@ export interface SandboxProvider {
     bytes: Uint8Array,
   ): Promise<void>;
   /**
+   * Read raw bytes back out of the sandbox.
+   *
+   * The counterpart to writeFile, and the reason commits can leave the box
+   * without it holding a credential: the box writes a git bundle to a file and
+   * the API reads it, rather than the box pushing anywhere. Tenant code runs
+   * in that sandbox, so it must never hold a token for the workspace repo.
+   */
+  readFile(ctx: SandboxExecContext, remotePath: string): Promise<Uint8Array>;
+  /**
    * Keep the session alive for at least this long. Dev servers outlive the
    * command that started them, so the idle timeout has to be pushed out
    * explicitly or E2B pauses the sandbox out from under the preview.
@@ -156,6 +171,18 @@ export interface SandboxProvider {
   destroySession?(sessionKey: string): Promise<void>;
 }
 
+/**
+ * Which sandbox backs Apps v2.
+ *
+ * E2B by default. `APPS_V2_SANDBOX_PROVIDER=local` swaps in a plain directory
+ * on this machine, which is how the test suite and a developer without E2B
+ * credentials can work at all now that the sandbox IS the working copy — and
+ * which refuses to load in production, because it runs tenant commands in the
+ * API process (see local-provider.ts).
+ */
 export function getSandboxProvider(): SandboxProvider {
+  if (process.env.APPS_V2_SANDBOX_PROVIDER === "local") {
+    return localSandboxProvider;
+  }
   return e2bSandboxProvider;
 }

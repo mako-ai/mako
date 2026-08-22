@@ -19,6 +19,7 @@ import {
   createProject,
   deleteProject,
   discardWorktree,
+  boxCtx,
   ensureWorktree,
   execInWorktree,
   flushWorktree,
@@ -31,6 +32,8 @@ import {
   writeFile,
 } from "./worktree.service";
 import { AppWorktreeV2 } from "../database/workspace-schema";
+import { boxRoot } from "./box-repo";
+import { getSandboxProvider } from "./sandbox/provider";
 import {
   repoDirFor,
   resolveCommit,
@@ -109,30 +112,26 @@ describe("worktree writes + durability", () => {
     const { entries } = await listFiles(project, USER);
     expect(entries.map(e => e.path)).toContain("src/note.ts");
 
-    // --- sandbox death ---
-    await fs.rm(handle.sessionDir, { recursive: true, force: true });
-
-    // Reads are unaffected (they never touched the session).
+    // Reads never touch a working copy — they resolve through git — so they
+    // are unaffected by anything happening to the sandbox.
     const file = await readFile(project, "src/note.ts", USER);
     expect(file.contents).toBe("export const n = 1;\n");
 
-    // Recovery: re-materialize and confirm the working tree has the WIP
-    // change restored as UNCOMMITTED state on top of base.
+    // And the uncommitted state is durable in the repo as a WIP ref, which is
+    // what lets a rebuilt sandbox be hydrated back to mid-edit rather than to
+    // the last commit.
     const recovered = await ensureWorktree(project, USER);
-    const onDisk = await fs.readFile(
-      path.join(recovered.sessionDir, recovered.appRoot, "src/note.ts"),
-      "utf8",
-    );
-    expect(onDisk).toBe("export const n = 1;\n");
+    expect(recovered.doc.wipOid).toBeTruthy();
 
     const status = await worktreeStatus(project, USER);
     expect(status?.wipOid).toBeTruthy();
     expect(status?.changes.map(ch => ch.path)).toContain("src/note.ts");
 
-    // Lease epoch advanced — a zombie session from before the death could
-    // not CAS the ref forward anymore (its expected old oid still matches
-    // here, but epoch bookkeeping marks the re-materialization).
-    expect(recovered.doc.leaseEpoch).toBeGreaterThan(1);
+    // The WIP commit is a real object in the repo, reachable independently of
+    // any sandbox — which is what makes "the sandbox died" survivable at all.
+    expect(await resolveCommit(repoDirFor(WS), recovered.doc.wipOid!)).toBe(
+      recovered.doc.wipOid,
+    );
   });
 
   it("shell commands mutate files and auto-flush", async () => {
@@ -164,7 +163,7 @@ describe("worktree writes + durability", () => {
       // snapshot. See local-provider.ts's sandboxEnv.
       const expectedHome = path.join(os.tmpdir(), "mako-apps-v2-cache", "home");
       expect(result.stdout).toContain(`HOME=${expectedHome}`);
-      expect(result.stdout).not.toContain(`HOME=${handle.sessionDir}`);
+      expect(result.stdout).not.toContain("MONGODB");
       expect(result.stdout).not.toContain(`HOME=${os.homedir()}`);
     } finally {
       delete process.env.FAKE_SECRET_FOR_TEST;
@@ -176,10 +175,15 @@ describe("worktree writes + durability", () => {
     const handle = await ensureWorktree(project, USER);
     const result = await execInWorktree(
       handle,
-      "git remote get-url origin && git push origin main 2>&1; true",
+      "git remote -v; echo '---'; git push origin main 2>&1; true",
     );
-    expect(result.stdout).toContain("mako.invalid");
-    // The push must not have advanced anything in the bare repo.
+    // There is no remote at all now. The sandbox is hydrated from a git
+    // bundle, so it has never been told where the repository lives — a
+    // stronger guarantee than the old decoy origin pointing at an
+    // unresolvable host, and one that cannot be misconfigured back.
+    const [remotes] = result.stdout.split("---");
+    expect(remotes.trim()).toBe("");
+    // And the push must not have advanced anything in the bare repo.
     const history = await projectHistory(project);
     expect(history).toHaveLength(1);
   });
@@ -203,11 +207,17 @@ describe("commit + conflicts", () => {
     const result = await commitWorktree(handle, "Add feature module");
     expect(result.committed).toBe(true);
 
-    const history = await projectHistory(project);
-    expect(history.map(c => c.subject)).toEqual([
-      "Add feature module",
+    // The commit lands on the ACTOR's branch, not on main — that is the whole
+    // point of not editing production — so main's history is untouched until
+    // it is merged.
+    expect((await projectHistory(project)).map(c => c.subject)).toEqual([
       'Create app "Test App" (apps/test-app)',
     ]);
+    const branch = (await listBranches(project)).find(
+      b => b.name === `user/${USER}`,
+    );
+    expect(branch?.lastCommit?.subject).toBe("Add feature module");
+    expect(branch?.aheadOfMain).toBe(1);
 
     const status = await worktreeStatus(project, USER);
     expect(status?.wipOid).toBeUndefined();
@@ -239,10 +249,20 @@ describe("commit + conflicts", () => {
       message: "foreign snapshot",
     });
     expect(await updateRefCas(repoDir, wipRef, foreign, currentWip)).toBe(true);
-    // Make the in-memory doc stale (still believes currentWip).
+
+    // Change the working copy WITHOUT flushing, so the flush below has real
+    // work to do and reaches the compare-and-swap. It has to go straight to
+    // the provider: every public write path flushes, and that flush would
+    // raise the conflict before the assertion could observe it.
+    const ctx = boxCtx(handle);
+    await getSandboxProvider().writeFile(
+      ctx,
+      `${boxRoot(ctx)}/${handle.appRoot}/one.txt`,
+      new TextEncoder().encode("2\n"),
+    );
+    // Make the in-memory doc stale (it still believes currentWip).
     handle.doc.wipOid = currentWip;
 
-    await fs.writeFile(path.join(handle.sessionDir, "one.txt"), "2\n");
     await expect(flushWorktree(handle)).rejects.toThrow(
       /advanced concurrently/,
     );
@@ -263,9 +283,12 @@ describe("commit + conflicts", () => {
     const handle = await ensureWorktree(project, USER);
     await writeFile(handle, "mine.txt", "mine\n");
 
-    // Another actor commits directly to main.
+    // Something else advances THIS actor's branch under them — another device,
+    // another tab, a push. Moving main instead would prove nothing: the actor
+    // is not on main, and their commit would succeed regardless.
     const repoDir = repoDirFor(WS);
-    const head = await resolveCommit(repoDir, "refs/heads/main");
+    const actorRef = `refs/heads/user/${USER}`;
+    const head = await resolveCommit(repoDir, actorRef);
     if (!head) throw new Error("expected a branch head");
     const tree = await treeOfCommit(repoDir, head);
     const other = await commitTree(repoDir, {
@@ -273,9 +296,7 @@ describe("commit + conflicts", () => {
       parents: [head],
       message: "other actor",
     });
-    expect(await updateRefCas(repoDir, "refs/heads/main", other, head)).toBe(
-      true,
-    );
+    expect(await updateRefCas(repoDir, actorRef, other, head)).toBe(true);
 
     await expect(commitWorktree(handle, "mine")).rejects.toThrow(/moved/);
 
@@ -368,11 +389,11 @@ describe("per-actor branches", () => {
     // Resume the user worktree: it fast-forwards ("pulls latest").
     const resumed = await ensureWorktree(project, USER);
     expect(resumed.doc.baseSha).not.toBe(initialBase);
-    const onDisk = await fs.readFile(
-      path.join(resumed.sessionDir, resumed.appRoot, "merged.txt"),
-      "utf8",
-    );
-    expect(onDisk).toBe("hello\n");
+    // The content is verified through git rather than from a directory on this
+    // machine: the API keeps no working copy, so there is no local file to
+    // stat. The sandbox is hydrated from exactly this commit.
+    const merged = await readFile(project, "merged.txt", USER);
+    expect(merged.contents).toBe("hello\n");
   });
 
   it("merge builds a merge commit when main moved, and refuses conflicts", async () => {
@@ -383,10 +404,14 @@ describe("per-actor branches", () => {
     await writeFile(h, "a.txt", "from bob\n");
     await commitAgentTurn(WS, BOB);
 
-    // Meanwhile main gets an unrelated commit (file B) — no fast-forward.
+    // Meanwhile main gets an unrelated commit (file B), so Bob's branch is no
+    // longer a straight-line descendant of it and the merge cannot fast
+    // forward. Main has to actually MOVE for that: committing on another
+    // actor's branch would leave main where it was.
     const userHandle = await ensureWorktree(project, USER);
     await writeFile(userHandle, "b.txt", "from user\n");
     await commitWorktree(userHandle, "user change");
+    await mergeBranchToMain(project, `user/${USER}`);
 
     const merge = await mergeBranchToMain(project, `user/${BOB}`);
     expect(merge.merged).toBe(true);
@@ -403,6 +428,9 @@ describe("per-actor branches", () => {
     const user2 = await ensureWorktree(project, USER);
     await writeFile(user2, "a.txt", "conflicting user edit\n");
     await commitWorktree(user2, "user conflicting change");
+    // Onto main, or there is nothing for Alice's merge to conflict WITH — a
+    // commit sitting on someone's own branch cannot conflict with anything.
+    await mergeBranchToMain(project, `user/${USER}`);
 
     await expect(mergeBranchToMain(project, `user/${ALICE}`)).rejects.toThrow(
       /conflict/i,

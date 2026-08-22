@@ -1,25 +1,23 @@
 import { defineConfig } from "vitest/config";
 
 /**
- * Vitest config scoped to the Apps v2 suite (git substrate, durable
- * worktrees, sandbox provider). Run with `pnpm --filter api run test:apps-v2`.
+ * Apps v2's worktree suite, in its OWN vitest run.
  *
- * Kept separate from the dbt vitest config (vitest.config.ts) and the
- * destinations config for the same reason those are split: each suite owns
- * its include globs so the runners never trip over each other.
+ * Not folded into vitest.config.ts, and not by preference: these specs drive
+ * real git and a real (local) sandbox, and running them alongside the dbt
+ * suite made dbt's subprocess-cancellation specs fail on timing. A suite that
+ * is heavy enough to starve its neighbours belongs in its own process.
+ *
+ * The E2B integration spec next to it is deliberately excluded — it needs
+ * credentials and a network, so it must never join an offline run.
  */
 export default defineConfig({
   test: {
     environment: "node",
-    include: [
-      "src/apps-v2/**/*.test.ts",
-      // Workspace repos grew out of apps-v2's repo binding and shares its
-      // fixtures/infra (mongodb-memory-server), so it runs in this suite.
-      "src/services/workspace-repos.service.test.ts",
-    ],
+    include: ["src/apps-v2/worktree.service.test.ts"],
     exclude: ["**/node_modules/**"],
-    // mongodb-memory-server downloads a mongod binary on first run.
-    testTimeout: 60_000,
+    // Real git, real sandbox: slower than a unit test by design.
+    testTimeout: 120_000,
     hookTimeout: 120_000,
   },
 });

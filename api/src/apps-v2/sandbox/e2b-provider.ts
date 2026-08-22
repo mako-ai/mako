@@ -15,9 +15,6 @@
  * - Tenant commands run as the unprivileged template user with a minimal env;
  *   no Mako secrets, tokens, or git credentials ever enter the sandbox.
  */
-import { execFile } from "node:child_process";
-import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { Sandbox } from "e2b";
 import {
@@ -48,7 +45,6 @@ const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
  * Sandbox-local build state: never synced in either direction (recreated by
  * installs inside the sandbox; excluded from WIP snapshots by .gitignore).
  */
-export const SANDBOX_LOCAL = ["node_modules", ".npm", ".cache", ".vite"];
 /**
  * `.git` DOES sync INTO the sandbox (fresh on every command) so in-session
  * `git status/log/diff` work like on the local substrate — the clone's origin
@@ -56,7 +52,6 @@ export const SANDBOX_LOCAL = ["node_modules", ".npm", ".cache", ".vite"];
  * no credential or push path rides along. It never syncs OUT: the host copy
  * is the broker's staging area and stays authoritative.
  */
-export const SYNC_OUT_IGNORES = [...SANDBOX_LOCAL, ".git"];
 
 function apiKey(): string {
   const key = process.env.E2B_API_KEY;
@@ -134,201 +129,6 @@ async function connectSession(sessionKey: string): Promise<Sandbox> {
 // Host <-> sandbox sync (tar streams over the E2B filesystem API)
 // ---------------------------------------------------------------------------
 
-/**
- * tar excludes for the sandbox-local dirs, matching at ANY depth.
- *
- * These MUST stay unanchored. §10 Block B moved apps from "the app is the repo
- * root" to `apps/<slug>/`, and `app2_bash` runs with cwd = the app root, so
- * every install now writes a NESTED `apps/<slug>/node_modules`. GNU tar treats
- * `--exclude ./node_modules` as rooted at the archive top, so the nested copy
- * was silently round-tripped: out to the host (where `stripLinks` deleted every
- * symlink in it, emptying `.bin/` and breaking `tsc`/`vite`), then back in on
- * the next command — tens of MB per exec, which is where the multi-second
- * per-command latency came from too.
- */
-export function excludeArgs(): string[] {
-  return SANDBOX_LOCAL.flatMap(name => ["--exclude", name]);
-}
-
-function packArgs(): string[] {
-  return ["-czf", "-", ...excludeArgs(), "."];
-}
-
-/**
- * `find` predicates matching anything inside a sandbox-local dir at any depth,
- * so the sync-in wipe can preserve nested `node_modules` instead of deleting
- * it along with the `apps/` tree that contains it.
- */
-export function sandboxLocalFindFilter(): string {
-  return SANDBOX_LOCAL.flatMap(name => [
-    `! -path ${JSON.stringify(`*/${name}`)}`,
-    `! -path ${JSON.stringify(`*/${name}/*`)}`,
-  ]).join(" ");
-}
-
-function hostTar(args: string[], cwd: string, input?: Buffer): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const child = execFile(
-      "tar",
-      args,
-      {
-        cwd,
-        encoding: "buffer",
-        maxBuffer: 512 * 1024 * 1024,
-        // macOS bsdtar otherwise writes an AppleDouble `._<name>` companion
-        // entry for every file, which lands in the sandbox as visible junk
-        // (`._package.json`, `._.git`, ...) and confuses tooling there.
-        env: { ...process.env, COPYFILE_DISABLE: "1" },
-      },
-      (error, stdout) => {
-        if (error) reject(error);
-        else resolve(stdout as unknown as Buffer);
-      },
-    );
-    if (input) {
-      child.stdin?.write(input);
-    }
-    child.stdin?.end();
-  });
-}
-
-/** Upload the host session dir into the sandbox working root. */
-async function syncIn(sandbox: Sandbox, hostDir: string): Promise<void> {
-  const archive = await hostTar(packArgs(), hostDir);
-  const remoteTmp = `/tmp/mako-sync-in-${Date.now()}.tgz`;
-  const bytes = Uint8Array.from(archive);
-  await sandbox.files.write(remoteTmp, bytes.buffer as ArrayBuffer, {
-    user: SANDBOX_USER,
-  });
-  const keep = sandboxLocalFindFilter();
-  const result = await sandbox.commands.run(
-    // Remove everything the sync owns (incl. stale .git), keep sandbox-local
-    // dirs (node_modules, ...) AT ANY DEPTH, then extract the fresh tree over
-    // the top. Two passes because a blanket `rm -rf` on a parent would take a
-    // preserved `apps/<slug>/node_modules` down with it: delete non-directories
-    // first, then remove the directories that are left empty (depth-first, and
-    // `rmdir` refuses non-empty ones, so any directory still holding a
-    // preserved node_modules survives).
-    [
-      `cd ${REMOTE_ROOT}`,
-      `find . -mindepth 1 ! -type d ${keep} -print0 | xargs -0 -r rm -f --`,
-      `find . -mindepth 1 -depth -type d ${keep} -print0 | xargs -0 -r rmdir --ignore-fail-on-non-empty --`,
-      `tar -xzf ${remoteTmp}`,
-      `rm -f ${remoteTmp}`,
-    ].join(" && "),
-    { user: SANDBOX_USER, timeoutMs: 120_000 },
-  );
-  if (result.exitCode !== 0) {
-    throw new Error(`E2B sync-in failed: ${result.stderr.slice(0, 500)}`);
-  }
-}
-
-/** Download the sandbox working root back over the host session dir. */
-async function syncOut(sandbox: Sandbox, hostDir: string): Promise<void> {
-  const remoteTmp = `/tmp/mako-sync-out-${Date.now()}.tgz`;
-  // Unanchored, for the same reason as excludeArgs(): nested
-  // `apps/<slug>/node_modules` must never leave the sandbox.
-  const ignores = SYNC_OUT_IGNORES.flatMap(name => ["--exclude", name]).join(
-    " ",
-  );
-  const pack = await sandbox.commands.run(
-    `cd ${REMOTE_ROOT} && tar -czf ${remoteTmp} ${ignores} . && stat -c %s ${remoteTmp}`,
-    { user: SANDBOX_USER, timeoutMs: 120_000 },
-  );
-  if (pack.exitCode !== 0) {
-    throw new Error(`E2B sync-out pack failed: ${pack.stderr.slice(0, 500)}`);
-  }
-  const data = await sandbox.files.read(remoteTmp, {
-    format: "bytes",
-    user: SANDBOX_USER,
-  });
-  await sandbox.commands.run(`rm -f ${remoteTmp}`, { user: SANDBOX_USER });
-
-  const tmpFile = path.join(
-    os.tmpdir(),
-    `mako-sync-out-${process.pid}-${Date.now()}.tgz`,
-  );
-  const staging = await fs.mkdtemp(
-    path.join(os.tmpdir(), `mako-sync-stage-${process.pid}-`),
-  );
-  await fs.writeFile(tmpFile, Buffer.from(data));
-  try {
-    // Unpack and sanitise into a STAGING directory first, and only touch the
-    // real session tree once that has fully succeeded.
-    //
-    // This used to delete the host tree and then extract into it. Any failure
-    // between the two — a tar that rejects a flag, a corrupt download, a full
-    // disk — left the working tree destroyed, and because the next sync-in
-    // uploads the host tree, the loss propagated straight back into the
-    // sandbox and wiped the app there too. Recovering meant `git checkout`,
-    // and only because every change is committed.
-    //
-    // Hardening (adopted from the parallel branch's session-file policy):
-    // tenant code controls this archive, so refuse anything that is not a
-    // plain file/directory. GNU tar already refuses absolute paths and `..`
-    // members by default; on top of that we skip symlinks and hardlinks so a
-    // malicious link can't be smuggled onto the host and later followed by
-    // the git snapshot or the preview static server.
-    await hostTar(
-      [
-        "--no-same-owner",
-        "--no-same-permissions",
-        // GNU tar's --exclude-backups spelled out: it is GNU-only, and bsdtar
-        // (the default `tar` on macOS) hard-fails on the unknown flag, which
-        // made the E2B provider unusable on a Mac dev machine. These patterns
-        // are exactly what it covers and both implementations accept them.
-        "--exclude=*~",
-        "--exclude=.#*",
-        "--exclude=#*#",
-        "--exclude=,*",
-        "-xzf",
-        tmpFile,
-        "--exclude=./.git",
-      ],
-      staging,
-    );
-    await stripLinks(staging);
-
-    // Staging is good: now swap it over the session tree. `.git` and the
-    // sandbox-local dirs are ours, not the archive's, and stay put.
-    const stale = await fs.readdir(hostDir);
-    for (const entry of stale) {
-      if (entry === ".git" || SANDBOX_LOCAL.includes(entry)) continue;
-      await fs.rm(path.join(hostDir, entry), { recursive: true, force: true });
-    }
-    for (const entry of await fs.readdir(staging)) {
-      if (entry === ".git" || SANDBOX_LOCAL.includes(entry)) continue;
-      await fs.rename(path.join(staging, entry), path.join(hostDir, entry));
-    }
-  } finally {
-    await fs.rm(tmpFile, { force: true });
-    await fs.rm(staging, { recursive: true, force: true });
-  }
-}
-
-/** Remove symlinks/other non-regular files a tenant archive may contain. */
-async function stripLinks(root: string): Promise<void> {
-  const walk = async (dir: string): Promise<void> => {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const abs = path.join(dir, entry.name);
-      if (entry.isSymbolicLink()) {
-        await fs.rm(abs, { force: true });
-      } else if (entry.isDirectory()) {
-        if (entry.name === ".git") continue;
-        // Belt and braces: with the excludes above these should never reach
-        // the host, but if one ever does, do NOT walk it — stripping symlinks
-        // inside node_modules is what emptied `.bin/` and broke every build.
-        if (SANDBOX_LOCAL.includes(entry.name)) continue;
-        await walk(abs);
-      } else if (!entry.isFile()) {
-        await fs.rm(abs, { force: true });
-      }
-    }
-  };
-  await walk(root);
-}
-
 // ---------------------------------------------------------------------------
 // Exec
 // ---------------------------------------------------------------------------
@@ -346,8 +146,6 @@ async function execE2b(
   const sandbox = await connectSession(ctx.sessionKey);
   // Keep the sandbox alive long enough for this command + sync overhead.
   await sandbox.setTimeout(Math.max(IDLE_TIMEOUT_MS, timeoutMs + 60_000));
-
-  await syncIn(sandbox, ctx.hostDir);
 
   const cwd = options.cwd
     ? path.posix.join(REMOTE_ROOT, options.cwd)
@@ -414,8 +212,6 @@ async function execE2b(
     }
   }
 
-  await syncOut(sandbox, ctx.hostDir);
-
   return {
     exitCode,
     stdout,
@@ -441,7 +237,6 @@ async function execDetachedE2b(
 ): Promise<void> {
   const sandbox = await connectSession(ctx.sessionKey);
   await sandbox.setTimeout(IDLE_TIMEOUT_MS);
-  await syncIn(sandbox, ctx.hostDir);
   const cwd = options.cwd
     ? path.posix.join(REMOTE_ROOT, options.cwd)
     : REMOTE_ROOT;
@@ -467,6 +262,18 @@ async function execDetachedE2b(
       `Failed to start detached process: ${result.stderr.slice(0, 500)}`,
     );
   }
+}
+
+async function readFileE2b(
+  ctx: SandboxExecContext,
+  remotePath: string,
+): Promise<Uint8Array> {
+  const sandbox = await connectSession(ctx.sessionKey);
+  const data = await sandbox.files.read(remotePath, {
+    format: "bytes",
+    user: SANDBOX_USER,
+  });
+  return new Uint8Array(data as Uint8Array);
 }
 
 async function writeFileE2b(
@@ -524,8 +331,6 @@ async function openTerminalE2b(
 ): Promise<SandboxTerminal> {
   const sandbox = await connectSession(ctx.sessionKey);
   await sandbox.setTimeout(IDLE_TIMEOUT_MS);
-  await syncIn(sandbox, ctx.hostDir);
-
   const cwd = path.posix.join(REMOTE_ROOT, opts.cwd);
   if (!cwd.startsWith(REMOTE_ROOT)) {
     throw new Error(
@@ -550,8 +355,6 @@ async function openTerminalE2b(
       COLORTERM: "truecolor",
     },
   });
-
-  let syncing: Promise<void> | null = null;
 
   // Announce the shell's death exactly once, however we learn of it.
   let exited = false;
@@ -696,24 +499,6 @@ async function openTerminalE2b(
       return draining;
     },
     resize: (cols, rows) => sandbox.pty.resize(handle.pid, { cols, rows }),
-    // One at a time, and never overlapping: two tars of the same tree would
-    // race each other onto the host, and a sync is far slower than the
-    // keystroke that triggered it.
-    sync: async () => {
-      if (syncing) return syncing;
-      syncing = (async () => {
-        try {
-          await syncOut(sandbox, ctx.hostDir);
-        } catch (error) {
-          logger.warn("Apps v2 terminal sync-out failed", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        } finally {
-          syncing = null;
-        }
-      })();
-      return syncing;
-    },
     close: async () => {
       await handle.kill().catch(() => undefined);
     },
@@ -724,7 +509,10 @@ export const e2bSandboxProvider: SandboxProvider = {
   id: "e2b",
   exec: execE2b,
   execDetached: execDetachedE2b,
+  root: () => REMOTE_ROOT,
+  scratch: () => "/tmp",
   writeFile: writeFileE2b,
+  readFile: readFileE2b,
   openTerminal: openTerminalE2b,
   publicUrlForPort: publicUrlForPortE2b,
   keepAlive: keepAliveE2b,

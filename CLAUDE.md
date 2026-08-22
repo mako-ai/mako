@@ -144,6 +144,23 @@ edits `.env` in place (keeping its comments) and backs up the previous file to
 Machine-specific variables (`APPS_V2_SANDBOX_PROVIDER`, `APPS_V2_GIT_ROOT`,
 `APPS_V2_SESSIONS_ROOT`, `NODE_ENV`) are deliberately never synced.
 
+## Apps v2: the sandbox is the working copy
+
+There is one working copy (the sandbox) and one history (the bare repo per
+workspace). Reads — the file tree, reading a file, diffs — come from git and
+need no sandbox, which is what keeps browsing cheap and works while a sandbox
+is asleep. Writes, shell commands and commits all go through the sandbox.
+
+Commits move between the two as **git bundles**, git's own offline transfer
+format: no network path between them, and no credential inside the sandbox,
+where tenant code runs. `git checkout` in the terminal is therefore a real
+checkout — the server follows it rather than reverting it.
+
+`APPS_V2_SANDBOX_PROVIDER=local` swaps the microVM for a directory on this
+machine, which is how the tests run and how you can work without E2B
+credentials. It executes tenant commands in the API process, so it refuses to
+load when `NODE_ENV=production`.
+
 ## Configuration
 
 ### Environment Variables (.env)

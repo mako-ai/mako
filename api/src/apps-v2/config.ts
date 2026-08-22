@@ -36,3 +36,15 @@ export const APPS_V2_EXEC_MAX_OUTPUT_BYTES = 1_000_000;
 
 /** Cap on a single file written through the worktree API. */
 export const APPS_V2_MAX_FILE_BYTES = 5_000_000;
+
+/**
+ * Where a build's `dist/` is staged so the static preview server can read it.
+ *
+ * The API keeps no working copy of an app any more — the sandbox holds that.
+ * This is the one narrow exception: built bytes are not in git, and the
+ * preview server serves from disk. One directory per project, overwritten by
+ * the next build, owned by nothing else.
+ */
+export function previewStagingDir(projectId: string): string {
+  return path.join(appsV2SessionsRoot(), "preview", projectId);
+}

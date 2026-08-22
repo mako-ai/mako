@@ -29,6 +29,15 @@ import {
   type IAppWorktreeV2,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import {
+  advanceBoxToCommit,
+  boxHasRepo,
+  boxWorkingTree,
+  exportTreeAsCommit,
+  importBoxBranch,
+  hydrateBox,
+  boxRoot,
+} from "./box-repo";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { appsV2SessionsRoot, APPS_V2_MAX_FILE_BYTES } from "./config";
 import { assertSafeRelPath, runGit, ZERO_OID } from "./git";
@@ -91,6 +100,7 @@ function appPath(project: IAppProjectV2, relPath: string): string {
 }
 import {
   getSandboxProvider,
+  type SandboxExecContext,
   type SandboxExecOptions,
   type SandboxExecResult,
 } from "./sandbox/provider";
@@ -113,9 +123,10 @@ function pokeAppV2(
   });
 }
 
-/** Origin URL planted in session clones — deliberately unreachable so tenant
- * commands cannot push to the bare repo directly (the broker does refs). */
-const BLOCKED_ORIGIN_URL = "https://apps-v2.mako.invalid/blocked.git";
+// There is no BLOCKED_ORIGIN_URL any more. Host clones used to plant a
+// deliberately unreachable `origin` so tenant commands could not push to the
+// bare repo; the sandbox is now hydrated from a git bundle and has no remote
+// configured at all, which is the same guarantee without the decoy.
 
 // ---------------------------------------------------------------------------
 // Per-worktree async mutex: flush/exec/commit on one worktree are serialized
@@ -152,26 +163,93 @@ export interface WorktreeHandle {
   doc: IAppWorktreeV2;
   project: IAppProjectV2;
   repoDir: string;
-  sessionDir: string;
   /** Repo-relative root of the app this handle was opened for. */
   appRoot: string;
 }
 
+/**
+ * Addresses the actor's sandbox — the one working copy.
+ *
+ * `hostDir` is vestigial in the provider contract and is passed as the repo
+ * path purely to satisfy the type; nothing reads it any more, because nothing
+ * copies files between two trees.
+ */
+export function boxCtx(handle: WorktreeHandle): SandboxExecContext {
+  return {
+    hostDir: handle.repoDir,
+    sessionKey: handle.doc._id.toString(),
+  };
+}
+
+/**
+ * Make sure the actor's sandbox holds the repository before touching files.
+ *
+ * Separate from ensureWorktree on purpose: resolving which branch an actor is
+ * on is cheap git work that must keep working while the sandbox is asleep
+ * (the file tree depends on it). Only code that actually reads or writes the
+ * working copy pays for a sandbox.
+ */
+export async function ensureBox(
+  handle: WorktreeHandle,
+): Promise<SandboxExecContext> {
+  const ctx = boxCtx(handle);
+  if (await boxHasRepo(ctx)) return ctx;
+  await hydrateBox({
+    ctx,
+    repoDir: handle.repoDir,
+    branch: handle.doc.branch,
+    baseSha: handle.doc.baseSha,
+    wipOid: handle.doc.wipOid ?? undefined,
+  });
+  return ctx;
+}
+
+/**
+ * Where a publish parks the merge result while it is being built.
+ *
+ * It has to live in the repo rather than in a working directory: the scratch
+ * clone that produced it is deleted immediately, and the sandbox has to be
+ * moved onto exactly this commit so that what gets built is what would ship.
+ */
+const PUBLISH_CANDIDATE_REF = "refs/mako/publish-candidate";
+
+/**
+ * Run a git operation in a throwaway checkout of `ref`.
+ *
+ * Some server-side git genuinely needs a working directory — a merge does —
+ * but that is not a reason to keep a long-lived one around. This one exists
+ * for the length of the call and is deleted afterwards, so it can never drift,
+ * be edited, or become a second opinion about the state of the app.
+ */
+async function scratchCheckout<T>(
+  repoDir: string,
+  ref: string,
+  fn: (dir: string) => Promise<T>,
+): Promise<T> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mako-scratch-"));
+  try {
+    await runGit(["clone", "--quiet", "--branch", ref, repoDir, dir], {
+      timeoutMs: 120_000,
+    });
+    await runGit(["-C", dir, "config", "user.name", "Mako"]);
+    await runGit(["-C", dir, "config", "user.email", "publish@mako.ai"]);
+    return await fn(dir);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** Set a ref unconditionally (used for refs only this process writes). */
+async function updateRef(
+  repoDir: string,
+  ref: string,
+  oid: string,
+): Promise<void> {
+  await runGit(["-C", repoDir, "update-ref", ref, oid]);
+}
+
 function wipRefFor(worktreeId: string): string {
   return `${WIP_REF_PREFIX}${worktreeId}`;
-}
-
-function sessionDirFor(worktreeId: string): string {
-  return path.join(appsV2SessionsRoot(), worktreeId);
-}
-
-async function dirExists(p: string): Promise<boolean> {
-  try {
-    const stat = await fs.stat(p);
-    return stat.isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -548,74 +626,82 @@ export async function ensureWorktree(
       }
     }
 
-    const sessionDir = sessionDirFor(worktreeId);
-    const materialized =
-      !needsRematerialize &&
-      (await dirExists(path.join(sessionDir, ".git"))) &&
-      (await resolveCommit(sessionDir, "HEAD")) !== null;
+    // No working copy is materialized here. Resolving which branch an actor
+    // is on is cheap git work, and it has to keep working while the sandbox
+    // is asleep — the file tree depends on it. The sandbox is hydrated only
+    // when something actually reads or writes files (see ensureBox), which is
+    // also what stops a file listing from booting a microVM.
+    const handle: WorktreeHandle = {
+      doc,
+      project,
+      repoDir,
+      appRoot: appRootFor(project),
+    };
 
-    if (!materialized) {
-      await materializeSession(repoDir, sessionDir, doc);
-      doc.leaseEpoch += 1;
-      await doc.save();
-      logger.info("Apps v2 session materialized", {
-        worktreeId,
-        leaseEpoch: doc.leaseEpoch,
-        restoredWip: Boolean(doc.wipOid),
-      });
+    if (needsRematerialize || needsCatchUp) {
+      // The branch moved. Bring the sandbox along IF it is already running;
+      // if it is not, hydration will pick up the new head on its own, and
+      // waking a sandbox merely because a colleague committed would be a poor
+      // trade.
+      const ctx = boxCtx(handle);
+      const running = await boxHasRepo(ctx).catch(() => false);
+      if (running) {
+        await catchUpBox(handle, ctx, currentHead!, needsCatchUp).catch(error =>
+          logger.warn("Apps v2 sandbox catch-up failed", {
+            worktreeId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
     }
 
-    if (needsCatchUp && !needsRematerialize) {
-      await catchUpSession(repoDir, sessionDir, doc, currentHead!, worktreeId);
-    }
-
-    return { doc, project, repoDir, sessionDir, appRoot: appRootFor(project) };
+    return handle;
   });
 }
 
 /**
- * Merge new commits on the branch into a session that has uncommitted work.
+ * Bring a running sandbox onto new commits on its branch.
  *
- * The session clone's origin is deliberately unreachable (tenant code must not
- * be able to reach the bare repo), so the fetch names the repo path explicitly
- * — this runs broker-side, not in the sandbox.
- *
- * A merge that would clobber local edits fails, and that is the right outcome:
- * the session stays where it was and the caller continues with what they had,
- * rather than losing work to an automatic update.
+ * Two cases, and the difference matters. With no uncommitted work the sandbox
+ * can simply be reset onto the new head. With uncommitted work it must MERGE:
+ * choosing between "your edits" and "the new commits" is not ours to make, and
+ * git already knows how to combine them. Skipping this entirely is what used
+ * to strand a session on an old commit — create an app, then preview it, and
+ * the build failed with "cwd does not exist" because the new folder had never
+ * been checked out.
  */
-async function catchUpSession(
-  repoDir: string,
-  sessionDir: string,
-  doc: IAppWorktreeV2,
+async function catchUpBox(
+  handle: WorktreeHandle,
+  ctx: SandboxExecContext,
   head: string,
-  worktreeId: string,
+  hasUncommittedWork: boolean,
 ): Promise<void> {
-  try {
-    await runGit(["-C", sessionDir, "fetch", repoDir, doc.branch], {
-      timeoutMs: 60_000,
-    });
-    await runGit(["-C", sessionDir, "merge", "--no-edit", "FETCH_HEAD"], {
-      timeoutMs: 60_000,
-    });
-    doc.baseSha = head;
-    doc.revision += 1;
-    await doc.save();
-    logger.info("Apps v2 session caught up with branch head", {
-      worktreeId,
-      branch: doc.branch,
-      head,
-    });
-  } catch (error) {
-    logger.warn(
-      "Apps v2 session could not catch up (local changes would be overwritten); staying put",
-      {
-        worktreeId,
-        branch: doc.branch,
-        head,
-        error: error instanceof Error ? error.message : String(error),
-      },
+  await advanceBoxToCommit({
+    ctx,
+    repoDir: handle.repoDir,
+    branch: handle.doc.branch,
+    commitOid: head,
+  });
+  if (!hasUncommittedWork) {
+    await getSandboxProvider().exec(
+      ctx,
+      `git -C ${boxRoot(ctx)} reset -q --hard ${head}`,
+      { timeoutMs: 60_000 },
     );
+    return;
+  }
+  const merge = await getSandboxProvider().exec(
+    ctx,
+    `git -C ${boxRoot(ctx)} -c user.name=Mako -c user.email=session@mako.ai merge --no-edit ${head}`,
+    { timeoutMs: 120_000 },
+  );
+  if (merge.exitCode !== 0) {
+    // Leave the conflict in the sandbox rather than pretending it resolved:
+    // it is a real git conflict in a real checkout, and it is fixable there.
+    logger.warn("Apps v2 sandbox catch-up hit a conflict", {
+      worktreeId: handle.doc._id.toString(),
+      output: merge.stderr.slice(-400),
+    });
   }
 }
 
@@ -673,45 +759,6 @@ async function mergeRefInto(
   }
 }
 
-/** Build (or rebuild) the session working tree: clone at base, apply WIP. */
-async function materializeSession(
-  repoDir: string,
-  sessionDir: string,
-  doc: IAppWorktreeV2,
-): Promise<void> {
-  await fs.rm(sessionDir, { recursive: true, force: true });
-  await fs.mkdir(path.dirname(sessionDir), { recursive: true });
-
-  await runGit(["clone", "--branch", doc.branch, repoDir, sessionDir], {
-    timeoutMs: 120_000,
-  });
-  // The session must not be able to reach the bare repo on its own.
-  await runGit([
-    "-C",
-    sessionDir,
-    "remote",
-    "set-url",
-    "origin",
-    BLOCKED_ORIGIN_URL,
-  ]);
-  await runGit(["-C", sessionDir, "config", "user.name", "Mako Session"]);
-  await runGit(["-C", sessionDir, "config", "user.email", "session@mako.ai"]);
-
-  // Pin the working tree to the worktree's base (branch may have moved).
-  await runGit(["-C", sessionDir, "reset", "--hard", doc.baseSha]);
-
-  if (doc.wipOid) {
-    // Fetch the WIP snapshot by oid (allowed via allowAnySHA1InWant even
-    // though refs/mako/* are hidden), then restore it as UNCOMMITTED state:
-    // read-tree resets index+worktree to the WIP tree while HEAD stays at
-    // base, so `git status` shows exactly the in-progress diff.
-    await runGit(["-C", sessionDir, "fetch", repoDir, doc.wipOid], {
-      timeoutMs: 120_000,
-    });
-    await runGit(["-C", sessionDir, "read-tree", "--reset", "-u", doc.wipOid]);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Flush: session working tree -> WIP ref (the durability watermark)
 // ---------------------------------------------------------------------------
@@ -725,11 +772,62 @@ export interface FlushResult {
 export async function flushWorktree(
   handle: WorktreeHandle,
 ): Promise<FlushResult> {
-  const { doc, repoDir, sessionDir } = handle;
+  const { doc, repoDir } = handle;
   const worktreeId = doc._id.toString();
+  const ctx = await ensureBox(handle);
 
   return withWorktreeLock(worktreeId, async () => {
-    const treeOid = await snapshotDirToTree(repoDir, sessionDir);
+    // Ask the sandbox what its tree is. Tree ids are content addresses, so
+    // this is comparable with the repo's own without transferring anything —
+    // and when nothing changed, which is the common case, nothing does.
+    const {
+      treeOid,
+      branch: boxBranch,
+      head: boxHead,
+    } = await boxWorkingTree(ctx);
+
+    // The sandbox is the authority on which branch it is on. `git checkout` in
+    // the terminal is a legitimate way to switch — it used to be silently
+    // reverted by the next sync — so follow it rather than overwrite it. The
+    // branch and any commits made in the shell may be unknown to the repo, so
+    // they are adopted before anything depends on them existing.
+    // Adopt when the sandbox is on a different branch OR when it is on one the
+    // repository has never heard of. The second case is not hypothetical: a
+    // branch created in the shell lives only in the sandbox until this runs,
+    // and anything that resolves it in between fails with "Branch head
+    // missing" — a message that describes the symptom and hides the cause.
+    const boxBranchIsNew =
+      boxBranch && boxBranch !== "HEAD"
+        ? (await resolveCommit(repoDir, `refs/heads/${boxBranch}`)) === null
+        : false;
+    if (
+      boxBranch &&
+      boxBranch !== "HEAD" &&
+      (boxBranch !== doc.branch || boxBranchIsNew)
+    ) {
+      await importBoxBranch({ ctx, repoDir, branch: boxBranch, head: boxHead });
+      logger.info("Apps v2 following a branch switch made in the sandbox", {
+        worktreeId,
+        from: doc.branch,
+        to: boxBranch,
+      });
+      doc.branch = boxBranch;
+      // The base moves with the branch, and any WIP was relative to the OLD
+      // base — keeping it would diff this branch's tree against another
+      // branch's commit and report every difference between them as an edit.
+      //
+      // The REF has to go with the field. Clearing one and not the other left
+      // the compare-and-swap below expecting no WIP while the ref still held
+      // one, which surfaced as "worktree state advanced concurrently" — a
+      // report of a race that had not happened.
+      if (doc.wipOid) {
+        await deleteRefCas(repoDir, wipRefFor(worktreeId), doc.wipOid);
+      }
+      doc.baseSha = boxHead;
+      doc.wipOid = undefined;
+      await doc.save();
+    }
+
     const baseTree = await treeOfCommit(repoDir, doc.baseSha);
 
     const expectedOld = doc.wipOid ?? ZERO_OID;
@@ -755,9 +853,13 @@ export async function flushWorktree(
       }
     }
 
-    const snapshot = await commitTree(repoDir, {
+    // Built in the sandbox, because that is where the tree's objects live;
+    // the bundle carries them home.
+    const snapshot = await exportTreeAsCommit({
+      ctx,
+      repoDir,
       treeOid,
-      parents: [doc.baseSha],
+      parent: doc.baseSha,
       message: `mako wip snapshot (worktree ${worktreeId}, epoch ${doc.leaseEpoch})`,
     });
 
@@ -805,11 +907,8 @@ export async function execInWorktree(
   // §10: the session is the whole workspace repo; commands are app-scoped by
   // default (caller cwd is app-relative). posix.join keeps it session-rooted.
   const cwd = path.posix.join(handle.appRoot, options.cwd ?? "");
-  const result = await provider.exec(
-    { hostDir: handle.sessionDir, sessionKey: handle.doc._id.toString() },
-    command,
-    { ...options, cwd },
-  );
+  const ctx = await ensureBox(handle);
+  const result = await provider.exec(ctx, command, { ...options, cwd });
   const flush = await flushWorktree(handle);
   return { ...result, flush };
 }
@@ -943,9 +1042,12 @@ export async function writeFile(
   if (Buffer.byteLength(contents, "utf8") > APPS_V2_MAX_FILE_BYTES) {
     throw new Error("File exceeds the maximum size for a direct write");
   }
-  const abs = path.join(handle.sessionDir, safe);
-  await fs.mkdir(path.dirname(abs), { recursive: true });
-  await fs.writeFile(abs, contents, "utf8");
+  const ctx = await ensureBox(handle);
+  await getSandboxProvider().writeFile(
+    ctx,
+    `${boxRoot(ctx)}/${safe}`,
+    new TextEncoder().encode(contents),
+  );
   return flushWorktree(handle);
 }
 
@@ -954,7 +1056,10 @@ export async function deleteFile(
   relPath: string,
 ): Promise<FlushResult> {
   const safe = appPath(handle.project, relPath);
-  await fs.rm(path.join(handle.sessionDir, safe), { force: true });
+  const ctx = await ensureBox(handle);
+  await getSandboxProvider().exec(ctx, `rm -rf ${boxRoot(ctx)}/${safe}`, {
+    timeoutMs: 30_000,
+  });
   return flushWorktree(handle);
 }
 
@@ -963,7 +1068,12 @@ export async function readSessionFile(
   relPath: string,
 ): Promise<string> {
   const safe = appPath(handle.project, relPath);
-  return fs.readFile(path.join(handle.sessionDir, safe), "utf8");
+  const ctx = await ensureBox(handle);
+  const bytes = await getSandboxProvider().readFile(
+    ctx,
+    `${boxRoot(ctx)}/${safe}`,
+  );
+  return Buffer.from(bytes).toString("utf8");
 }
 
 // ---------------------------------------------------------------------------
@@ -1124,7 +1234,7 @@ export async function autoCommitFileEdit(
   action: "edit" | "delete",
   author?: GitAuthor,
 ): Promise<CommitResult> {
-  const { doc, repoDir, sessionDir } = handle;
+  const { doc, repoDir } = handle;
   const message = `${action}: ${assertSafeRelPath(relPath)}`;
 
   const squashed = await withWorktreeLock(doc._id.toString(), async () => {
@@ -1163,12 +1273,19 @@ export async function autoCommitFileEdit(
 
   if (squashed?.commitOid) {
     queueMirrorPush(doc.workspaceId.toString());
-    try {
-      await runGit(["-C", sessionDir, "fetch", repoDir, squashed.commitOid]);
-      await runGit(["-C", sessionDir, "reset", "--mixed", squashed.commitOid]);
-    } catch {
-      await fs.rm(sessionDir, { recursive: true, force: true });
-    }
+    // Move the sandbox onto the amended commit so its tree reads clean.
+    // Non-fatal: a sandbox left behind is corrected by the next flush, and
+    // failing a successful commit over bookkeeping would be worse.
+    await advanceBoxToCommit({
+      ctx: boxCtx(handle),
+      repoDir,
+      branch: doc.branch,
+      commitOid: squashed.commitOid,
+    }).catch(error =>
+      logger.warn("Apps v2 sandbox fast-forward failed", {
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
     return squashed;
   }
 
@@ -1180,7 +1297,7 @@ export async function commitWorktree(
   message: string,
   author?: GitAuthor,
 ): Promise<CommitResult> {
-  const { doc, repoDir, sessionDir } = handle;
+  const { doc, repoDir } = handle;
   const worktreeId = doc._id.toString();
 
   await flushWorktree(handle);
@@ -1188,20 +1305,19 @@ export async function commitWorktree(
   if (!result.committed || !result.commitOid) return result;
   queueMirrorPush(doc.workspaceId.toString());
 
-  // Fast-forward the session clone so subsequent status is clean.
-  try {
-    await runGit(["-C", sessionDir, "fetch", repoDir, result.commitOid], {
-      timeoutMs: 60_000,
-    });
-    await runGit(["-C", sessionDir, "reset", "--mixed", result.commitOid]);
-  } catch (error) {
-    // Non-fatal: the session will be re-materialized on next use.
-    logger.warn("Apps v2 session fast-forward failed", {
+  // Fast-forward the sandbox so subsequent status is clean.
+  await advanceBoxToCommit({
+    ctx: boxCtx(handle),
+    repoDir,
+    branch: doc.branch,
+    commitOid: result.commitOid,
+  }).catch(error =>
+    // Non-fatal: the next flush re-derives the tree from the sandbox anyway.
+    logger.warn("Apps v2 sandbox fast-forward failed", {
       worktreeId,
       error: error instanceof Error ? error.message : String(error),
-    });
-    await fs.rm(sessionDir, { recursive: true, force: true });
-  }
+    }),
+  );
   return result;
 }
 
@@ -1249,21 +1365,16 @@ export async function commitAgentTurn(
       });
       results.push({ commitOid: result.commitOid });
       if (result.commitOid) queueMirrorPush(workspaceId);
-      // Best-effort session fast-forward so the next turn starts clean.
+      // Best-effort sandbox fast-forward so the next turn starts clean.
+      // Best-effort on purpose: the commit is already durable in the repo, and
+      // failing a finished turn over bookkeeping would be the worse outcome.
       if (result.commitOid) {
-        const sessionDir = sessionDirFor(doc._id.toString());
-        try {
-          await runGit(["-C", sessionDir, "fetch", repoDir, result.commitOid]);
-          await runGit([
-            "-C",
-            sessionDir,
-            "reset",
-            "--mixed",
-            result.commitOid,
-          ]);
-        } catch {
-          await fs.rm(sessionDir, { recursive: true, force: true });
-        }
+        await advanceBoxToCommit({
+          ctx: { hostDir: repoDir, sessionKey: doc._id.toString() },
+          repoDir,
+          branch: doc.branch,
+          commitOid: result.commitOid,
+        }).catch(() => undefined);
       }
     } catch (error) {
       logger.warn("Apps v2 agent turn commit failed", {
@@ -1428,11 +1539,41 @@ export async function mergeBranchToMain(
   return { merged: true, commitOid, fastForward: false };
 }
 
+/**
+ * Point the actor's sandbox at a specific commit.
+ *
+ * Publishing uses this: the merge result is computed on the host, and the
+ * build has to run against exactly that commit so the artifact is what would
+ * ship — not against whatever the sandbox happened to have.
+ */
+export async function checkoutInBox(
+  handle: WorktreeHandle,
+  commitOid: string,
+): Promise<void> {
+  const ctx = await ensureBox(handle);
+  await advanceBoxToCommit({
+    ctx,
+    repoDir: handle.repoDir,
+    branch: handle.doc.branch,
+    commitOid,
+  });
+  const reset = await getSandboxProvider().exec(
+    ctx,
+    `git -C ${boxRoot(ctx)} reset -q --hard ${commitOid} && git -C ${boxRoot(ctx)} clean -qfd`,
+    { timeoutMs: 60_000 },
+  );
+  if (reset.exitCode !== 0) {
+    throw new Error(
+      `Could not check out ${commitOid.slice(0, 8)} in the sandbox: ${reset.stderr.slice(-300)}`,
+    );
+  }
+}
+
 /** Throw away all uncommitted work and re-base the worktree on branch head. */
 export async function discardWorktree(
   handle: WorktreeHandle,
 ): Promise<{ baseSha: string }> {
-  const { doc, repoDir, sessionDir } = handle;
+  const { doc, repoDir } = handle;
   const worktreeId = doc._id.toString();
 
   return withWorktreeLock(worktreeId, async () => {
@@ -1446,8 +1587,24 @@ export async function discardWorktree(
     doc.revision += 1;
     doc.leaseEpoch += 1;
     await doc.save();
-    await fs.rm(sessionDir, { recursive: true, force: true });
-    await materializeSession(repoDir, sessionDir, doc);
+    // Discard means discard: reset the sandbox hard onto the branch head and
+    // remove untracked files, which is what "throw away my changes" means to
+    // anyone who has used git. Ignored files (node_modules) stay — reinstalling
+    // them is not what was asked for.
+    const ctx = boxCtx(handle);
+    await advanceBoxToCommit({
+      ctx,
+      repoDir,
+      branch: doc.branch,
+      commitOid: head,
+    }).catch(() => undefined);
+    await getSandboxProvider()
+      .exec(
+        ctx,
+        `git -C ${boxRoot(ctx)} reset -q --hard ${head} && git -C ${boxRoot(ctx)} clean -qfd`,
+        { timeoutMs: 60_000 },
+      )
+      .catch(() => undefined);
     pokeAppV2(doc.workspaceId, null, "discard", doc.userId);
     return { baseSha: head };
   });
@@ -1483,91 +1640,86 @@ export async function trialMerge(
   author?: GitAuthor,
 ): Promise<TrialMergeResult> {
   const repoDir = handle.repoDir;
-  const dir = handle.sessionDir;
   const mainBranch = handle.project.defaultBranch || DEFAULT_BRANCH;
 
-  // A previous publish leaves build output behind. Reset tracked files and
-  // drop untracked ones, but NOT ignored ones — node_modules is expensive and
-  // reinstalling it on every publish would dominate the wall clock.
-  await runGit(["-C", dir, "reset", "--hard"], { timeoutMs: 60_000 });
-  await runGit(["-C", dir, "clean", "-fd"], { timeoutMs: 60_000 });
-
-  // Catch up with main first, so the trial merge is against current main.
-  await runGit(["-C", dir, "fetch", repoDir, mainBranch], {
-    timeoutMs: 60_000,
-  });
-  await runGit(["-C", dir, "reset", "--hard", "FETCH_HEAD"], {
-    timeoutMs: 60_000,
-  });
-
-  if (branch !== mainBranch) {
-    // No such branch means the caller has made no edits yet. Publishing then
-    // is not an error — it deploys what `main` already holds. Distinguishing
-    // this from a conflict matters: telling someone who has not changed
-    // anything that their work "could not be merged" is simply a lie.
-    const branchExists = await resolveCommit(repoDir, `refs/heads/${branch}`);
-    if (!branchExists) {
-      const head = await runGit(["-C", dir, "rev-parse", "HEAD"], { cwd: dir });
-      return { sha: head.stdout.trim(), ok: true };
+  // A DISPOSABLE checkout, not a session. A merge needs a working directory,
+  // but it does not need the actor's working copy and it certainly does not
+  // need a sandbox — this is server-side git, run on a scratch clone that is
+  // deleted when it is done. Nothing edits it, so it is not a second state.
+  return scratchCheckout(repoDir, mainBranch, async dir => {
+    if (branch !== mainBranch) {
+      // No such branch means the caller has made no edits yet. Publishing then
+      // is not an error — it deploys what `main` already holds. Distinguishing
+      // this from a conflict matters: telling someone who has not changed
+      // anything that their work "could not be merged" is simply a lie.
+      const branchExists = await resolveCommit(repoDir, `refs/heads/${branch}`);
+      if (!branchExists) {
+        const head = await runGit(["-C", dir, "rev-parse", "HEAD"]);
+        return { sha: head.stdout.trim(), ok: true };
+      }
+      try {
+        await runGit(["-C", dir, "fetch", repoDir, branch], {
+          timeoutMs: 60_000,
+        });
+        // Attribute the merge to whoever published it, not to the broker.
+        const authorEnv = author
+          ? {
+              GIT_AUTHOR_NAME: author.name,
+              GIT_AUTHOR_EMAIL: author.email,
+              GIT_COMMITTER_NAME: author.name,
+              GIT_COMMITTER_EMAIL: author.email,
+            }
+          : undefined;
+        await runGit(["-C", dir, "merge", "--no-edit", "FETCH_HEAD"], {
+          timeoutMs: 60_000,
+          env: authorEnv,
+        });
+      } catch (error) {
+        return {
+          sha: "",
+          ok: false,
+          reason:
+            error instanceof Error && /conflict/i.test(error.message)
+              ? `Cannot publish: ${branch} conflicts with ${mainBranch}. Merge ${mainBranch} into it and resolve the conflicts first.`
+              : `Could not merge ${branch} into ${mainBranch}`,
+        };
+      }
     }
-    try {
-      await runGit(["-C", dir, "fetch", repoDir, branch], {
-        timeoutMs: 60_000,
-      });
-      // Attribute the merge to whoever published it, not to the broker.
-      const authorEnv = author
-        ? {
-            GIT_AUTHOR_NAME: author.name,
-            GIT_AUTHOR_EMAIL: author.email,
-            GIT_COMMITTER_NAME: author.name,
-            GIT_COMMITTER_EMAIL: author.email,
-          }
-        : undefined;
-      await runGit(["-C", dir, "merge", "--no-edit", "FETCH_HEAD"], {
-        timeoutMs: 60_000,
-        env: authorEnv,
-      });
-    } catch (error) {
-      // Leave nothing half-merged behind for the next publish.
-      await runGit(["-C", dir, "merge", "--abort"], {
-        timeoutMs: 30_000,
-      }).catch(() => undefined);
-      return {
-        sha: "",
-        ok: false,
-        reason:
-          error instanceof Error && /conflict/i.test(error.message)
-            ? `Cannot publish: ${branch} conflicts with ${mainBranch}. Merge ${mainBranch} into it and resolve the conflicts first.`
-            : `Could not merge ${branch} into ${mainBranch}`,
-      };
-    }
-  }
 
-  const { stdout } = await runGit(["-C", dir, "rev-parse", "HEAD"], {
-    cwd: dir,
+    const { stdout } = await runGit(["-C", dir, "rev-parse", "HEAD"]);
+    const sha = stdout.trim();
+    // Park the merge result in the repo so it survives the scratch dir, and so
+    // the sandbox can be moved onto it to build exactly what would ship.
+    await updateRef(repoDir, PUBLISH_CANDIDATE_REF, sha);
+    return { sha, ok: true };
   });
-  return { sha: stdout.trim(), ok: true };
 }
 
 /**
- * Advance the real `main` to the commit that was just built.
+ * Make the built candidate the new `main`.
  *
- * Only called after a successful build. A non-fast-forward push means `main`
- * moved while we were building, so the built artifact no longer corresponds to
- * what `main` holds — refusing is correct, and the caller retries.
+ * A compare-and-swap against the `main` the build started from, not a push
+ * from a working copy: if someone else published while this build was running,
+ * the artifact no longer corresponds to what `main` holds, and refusing is
+ * correct. Doing it as a ref update also means the sandbox never needs
+ * credentials for the repository — it built the tree, it does not publish it.
  */
-export async function promoteToMain(handle: WorktreeHandle): Promise<void> {
+export async function promoteToMain(
+  handle: WorktreeHandle,
+  input: { sha: string; expectedMain: string },
+): Promise<void> {
   const mainBranch = handle.project.defaultBranch || DEFAULT_BRANCH;
-  await runGit(
-    [
-      "-C",
-      handle.sessionDir,
-      "push",
-      handle.repoDir,
-      `HEAD:refs/heads/${mainBranch}`,
-    ],
-    { timeoutMs: 120_000 },
+  const swapped = await updateRefCas(
+    handle.repoDir,
+    `refs/heads/${mainBranch}`,
+    input.sha,
+    input.expectedMain,
   );
+  if (!swapped) {
+    throw new Error(
+      `${mainBranch} moved while the build was running; nothing was published. Try again.`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
