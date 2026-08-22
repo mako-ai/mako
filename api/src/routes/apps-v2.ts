@@ -44,9 +44,7 @@ import {
 } from "../services/workspace-repos.service";
 import {
   WorktreeConflictError,
-  chatActorFor,
   autoCommitFileEdit,
-  chatBranchFor,
   commitWorktree,
   createProject,
   deleteProject,
@@ -1136,7 +1134,7 @@ appsV2Routes.openapi(
     tags: ["Apps v2"],
     summary: "Build the app in its session and mint a preview link",
     description:
-      "Runs `npm install` (when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe. Pass `chatId` to build the conversation's `chat/<chatId>` branch instead of the caller's own worktree — the caller's own worktree always starts on main, so building it while a chat is actively working on this app previews stale, unrelated content.",
+      "Runs `npm install` (when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,
@@ -1144,7 +1142,7 @@ appsV2Routes.openapi(
         required: false,
         content: {
           "application/json": {
-            schema: z.object({ chatId: z.string().optional() }),
+            schema: z.object({}),
           },
         },
       },
@@ -1155,12 +1153,10 @@ appsV2Routes.openapi(
     try {
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const chatId = c.req.valid("json")?.chatId;
-      const handle = chatId
-        ? await ensureWorktree(loaded.project, chatActorFor(chatId), {
-            branch: chatBranchFor(chatId),
-          })
-        : await ensureWorktree(loaded.project, loaded.userId ?? "api-key");
+      const handle = await ensureWorktree(
+        loaded.project,
+        loaded.userId ?? "api-key",
+      );
 
       // Same build as a publish would run: the whole point of previewing a
       // build is that it is the same artifact, produced the same way.
@@ -1211,7 +1207,7 @@ appsV2Routes.openapi(
     tags: ["Apps v2"],
     summary: "Start (or reuse) a live `vite dev` preview for this app",
     description:
-      "Prototype of apps-v2.md §4.7's 'dev preview' tier — LOCAL SANDBOX PROVIDER ONLY (returns 501 under the e2b provider, whose public-URL exposure isn't built yet). Runs `npm install` if needed, starts a persistent `vite dev` process bound to the worktree's session directory, and returns a token-gated URL that proxies to it — HMR works, no rebuild step required as files change. Pass `chatId` for the same reason as POST /preview: your own worktree always starts on main.",
+      "Prototype of apps-v2.md §4.7's 'dev preview' tier — LOCAL SANDBOX PROVIDER ONLY (returns 501 under the e2b provider, whose public-URL exposure isn't built yet). Runs `npm install` if needed, starts a persistent `vite dev` process bound to the worktree's session directory, and returns a token-gated URL that proxies to it — HMR works, no rebuild step required as files change.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,
@@ -1219,7 +1215,7 @@ appsV2Routes.openapi(
         required: false,
         content: {
           "application/json": {
-            schema: z.object({ chatId: z.string().optional() }),
+            schema: z.object({}),
           },
         },
       },
@@ -1230,12 +1226,10 @@ appsV2Routes.openapi(
     try {
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const chatId = c.req.valid("json")?.chatId;
-      const handle = chatId
-        ? await ensureWorktree(loaded.project, chatActorFor(chatId), {
-            branch: chatBranchFor(chatId),
-          })
-        : await ensureWorktree(loaded.project, loaded.userId ?? "api-key");
+      const handle = await ensureWorktree(
+        loaded.project,
+        loaded.userId ?? "api-key",
+      );
 
       const install = await execInWorktree(
         handle,
@@ -1313,7 +1307,7 @@ appsV2Routes.openapi(
     tags: ["Apps v2"],
     summary: "Publish the app: merge to main, build, and deploy",
     description:
-      "Merges `branch` (or the caller's chat branch) into main, builds from main in the sandbox, uploads the output as an immutable deployment keyed by commit sha, and points the app at it. A failed build leaves the previous deployment serving. Re-publishing an unchanged sha reuses the existing deployment instead of rebuilding.",
+      "Merges `branch` (defaulting to the caller's own branch) into main, builds from main in the sandbox, uploads the output as an immutable deployment keyed by commit sha, and points the app at it. A failed build leaves the previous deployment serving. Re-publishing an unchanged sha reuses the existing deployment instead of rebuilding.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,
@@ -1323,7 +1317,6 @@ appsV2Routes.openapi(
           "application/json": {
             schema: z.object({
               branch: z.string().optional(),
-              chatId: z.string().optional(),
             }),
           },
         },
@@ -1341,10 +1334,7 @@ appsV2Routes.openapi(
       // branch, defaulting to main would build the deployed commit and change
       // nothing — the one thing publish must never quietly do.
       const branch =
-        body.branch ??
-        (body.chatId
-          ? chatBranchFor(body.chatId)
-          : defaultBranchForActor(loaded.userId ?? "api-key"));
+        body.branch ?? defaultBranchForActor(loaded.userId ?? "api-key");
 
       // Build the MERGE RESULT before main ever moves. Merging first and
       // building second left main carrying a broken merge whenever the build

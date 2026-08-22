@@ -63,6 +63,18 @@ export interface SandboxTerminal {
   interrupt(): Promise<void>;
   /** Tell the shell the window changed, so it can redraw at the right size. */
   resize(cols: number, rows: number): Promise<void>;
+  /**
+   * Copy what the shell has done back to the host working tree.
+   *
+   * A PTY, unlike `exec`, has no natural end to sync at — so until this
+   * existed, nothing typed into a terminal was ever persisted, and the next
+   * `syncIn` (which replaces the tree, `.git` included) deleted all of it. A
+   * shell that silently discards your work is worse than no shell.
+   *
+   * TEMPORARY. When the sandbox becomes the one working copy there is nothing
+   * to copy anywhere, and this goes away with the rest of the sync layer.
+   */
+  sync(): Promise<void>;
   /** End the session. */
   close(): Promise<void>;
 }

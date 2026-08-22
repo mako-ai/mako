@@ -67,11 +67,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     defaultNotebookId: context.notebookId,
   });
   // Apps v2 (experimental, flag-gated) — empty object when disabled.
-  const appsV2Tools = createAppsV2Tools({
-    workspaceId,
-    userId,
-    chatId: context.chatId,
-  });
+  const appsV2Tools = createAppsV2Tools({ workspaceId, userId });
 
   const {
     list_connections: _flowListConnections,

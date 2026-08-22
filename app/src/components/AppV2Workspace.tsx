@@ -376,13 +376,7 @@ export default function AppV2Workspace({
                 )
               }
               disabled={preview?.building}
-              onClick={() =>
-                void startDevPreview(
-                  workspaceId,
-                  appId,
-                  activeChatBranch ? (activeChatId ?? undefined) : undefined,
-                )
-              }
+              onClick={() => void startDevPreview(workspaceId, appId)}
             >
               {/* The label has to render STATE, not a fixed verb. It
                   previously read "Start dev session" while a session was
@@ -411,13 +405,7 @@ export default function AppV2Workspace({
               variant="contained"
               color="primary"
               disabled={preview?.building}
-              onClick={() =>
-                void publishApp(
-                  workspaceId,
-                  appId,
-                  activeChatBranch ? (activeChatId ?? undefined) : undefined,
-                )
-              }
+              onClick={() => void publishApp(workspaceId, appId)}
             >
               {preview?.building ? "Working..." : "Publish"}
             </Button>

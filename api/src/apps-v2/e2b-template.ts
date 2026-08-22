@@ -198,6 +198,12 @@ export function createAppsV2E2BTemplate() {
         // injects a tokenized remote URL for private repos.
         "git config --global credential.helper ''",
         "git config --global advice.detachedHead false",
+        // No pager. git pipes into `less` by default, and this terminal
+        // outlives the socket watching it: one `git log` leaves the shell
+        // sitting in a pager, and the NEXT person to open the terminal lands
+        // inside it with no idea why — the scrollback replay faithfully
+        // redraws the pager screen for them.
+        "git config --global core.pager cat",
         "git config --global init.defaultBranch main",
       ].join(" && "),
       { user: "user" },

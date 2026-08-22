@@ -213,30 +213,17 @@ interface AppsV2Store {
   ) => Promise<{ ok: boolean; error?: string }>;
   discard: (workspaceId: string, appId: string) => Promise<void>;
 
-  // `chatId`: build the conversation's `chat/<chatId>` branch instead of the
-  // caller's own worktree, which always starts on main — pass it whenever an
-  // active chat has already committed work on this app (see AppV2Workspace),
-  // otherwise Build & preview silently renders stale, unrelated content.
+  // No branch parameter on any of these: chats no longer have their own
+  // branch, so there is exactly one answer to "which branch" — the caller's —
+  // and the server is the one that knows it.
   /** Merge to main, build, deploy, and repoint (§13.3). */
-  publishApp: (
-    workspaceId: string,
-    appId: string,
-    chatId?: string,
-  ) => Promise<void>;
-  buildPreview: (
-    workspaceId: string,
-    appId: string,
-    chatId?: string,
-  ) => Promise<void>;
+  publishApp: (workspaceId: string, appId: string) => Promise<void>;
+  buildPreview: (workspaceId: string, appId: string) => Promise<void>;
   // Prototype of apps-v2.md §4.7's "dev preview" tier (local-provider only —
   // see api/src/apps-v2/dev-server.service.ts). Starts (or reuses) a
   // persistent `vite dev` process and iframes it directly: HMR picks up
   // every subsequent file change with no rebuild step, unlike buildPreview.
-  startDevPreview: (
-    workspaceId: string,
-    appId: string,
-    chatId?: string,
-  ) => Promise<void>;
+  startDevPreview: (workspaceId: string, appId: string) => Promise<void>;
   setViewMode: (appId: string, mode: "code" | "preview") => void;
   clearError: () => void;
 }
@@ -796,7 +783,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
       }
     },
 
-    publishApp: async (workspaceId, appId, chatId) => {
+    publishApp: async (workspaceId, appId) => {
       set(s => {
         s.previewByApp[appId] = {
           ...(s.previewByApp[appId] ?? { url: null }),
@@ -809,7 +796,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
           "/api/workspaces/{workspaceId}/apps-v2/{id}/publish",
           {
             params: { path: { workspaceId, id: appId } },
-            body: chatId ? { chatId } : {},
+            body: {},
           },
         );
         const raw = (res.data ?? res.error) as
@@ -848,7 +835,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
       }
     },
 
-    buildPreview: async (workspaceId, appId, chatId) => {
+    buildPreview: async (workspaceId, appId) => {
       set(s => {
         s.previewByApp[appId] = {
           ...(s.previewByApp[appId] ?? { url: null }),
@@ -861,7 +848,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
           "/api/workspaces/{workspaceId}/apps-v2/{id}/preview",
           {
             params: { path: { workspaceId, id: appId } },
-            body: chatId ? { chatId } : undefined,
+            body: undefined,
           },
         );
         const raw = (res.data ?? res.error) as
@@ -910,7 +897,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
       }
     },
 
-    startDevPreview: async (workspaceId, appId, chatId) => {
+    startDevPreview: async (workspaceId, appId) => {
       set(s => {
         s.previewByApp[appId] = {
           ...(s.previewByApp[appId] ?? { url: null }),
@@ -923,7 +910,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
           "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview",
           {
             params: { path: { workspaceId, id: appId } },
-            body: chatId ? { chatId } : undefined,
+            body: undefined,
           },
         );
         const raw = (res.data ?? res.error) as

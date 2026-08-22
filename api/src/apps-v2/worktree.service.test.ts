@@ -14,9 +14,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {
-  chatActorFor,
-  chatBranchFor,
-  commitChatTurn,
+  commitAgentTurn,
   commitWorktree,
   createProject,
   deleteProject,
@@ -290,51 +288,68 @@ describe("commit + conflicts", () => {
   });
 });
 
-describe("chat branches (Cursor-cloud model)", () => {
-  const CHAT = "6a5300000000000000000abc";
+describe("per-actor branches", () => {
+  // A conversation is not a line of work: the agent commits to the branch the
+  // actor is already on. So these exercise two PEOPLE, which is also the case
+  // that actually produces conflicts in practice.
+  const ALICE = "alice";
+  const BOB = "bob";
 
-  it("chat actor works on its own branch; turn commit lands there; merge brings it to main", async () => {
+  it("a turn commit lands on the actor's branch, not main; merge brings it to main", async () => {
     const project = await makeProject();
 
-    // Chat actor: branch forked off main on first touch.
-    const chatHandle = await ensureWorktree(project, chatActorFor(CHAT), {
-      branch: chatBranchFor(CHAT),
-    });
-    expect(chatHandle.doc.branch).toBe(`chat/${CHAT}`);
+    const handle = await ensureWorktree(project, ALICE);
+    expect(handle.doc.branch).toBe(`user/${ALICE}`);
 
-    await writeFile(chatHandle, "src/feature.ts", "export const f = 1;\n");
+    await writeFile(handle, "src/feature.ts", "export const f = 1;\n");
 
     // End-of-turn commit (no session/sandbox required).
-    const results = await commitChatTurn(WS, CHAT, "add feature module");
+    const results = await commitAgentTurn(WS, ALICE, "add feature module");
     expect(results).toHaveLength(1);
     expect(results[0].commitOid).toBeTruthy();
 
-    // The commit is on the chat branch, NOT on main.
+    // The commit is on the actor's branch, NOT on main.
     const branches = await listBranches(project);
-    const chatBranch = branches.find(b => b.name === `chat/${CHAT}`);
-    expect(chatBranch?.aheadOfMain).toBe(1);
-    expect(chatBranch?.lastCommit?.subject).toContain("add feature module");
+    const branch = branches.find(b => b.name === `user/${ALICE}`);
+    expect(branch?.aheadOfMain).toBe(1);
+    expect(branch?.lastCommit?.subject).toContain("add feature module");
     const mainFiles = (await listFiles(project)).entries.map(e => e.path);
     expect(mainFiles).not.toContain("src/feature.ts");
 
     // A second turn commits again on the same branch.
-    const chatHandle2 = await ensureWorktree(project, chatActorFor(CHAT), {
-      branch: chatBranchFor(CHAT),
-    });
-    await writeFile(chatHandle2, "src/feature2.ts", "export const g = 2;\n");
-    await commitChatTurn(WS, CHAT, "second turn");
+    const handle2 = await ensureWorktree(project, ALICE);
+    await writeFile(handle2, "src/feature2.ts", "export const g = 2;\n");
+    await commitAgentTurn(WS, ALICE, "second turn");
     expect(
-      (await listBranches(project)).find(b => b.name === `chat/${CHAT}`)
+      (await listBranches(project)).find(b => b.name === `user/${ALICE}`)
         ?.aheadOfMain,
     ).toBe(2);
 
     // Merge to main (fast-forward — main did not move).
-    const merge = await mergeBranchToMain(project, `chat/${CHAT}`);
+    const merge = await mergeBranchToMain(project, `user/${ALICE}`);
     expect(merge.merged).toBe(true);
     expect(merge.fastForward).toBe(true);
     const mainAfter = (await listFiles(project)).entries.map(e => e.path);
     expect(mainAfter).toContain("src/feature.ts");
     expect(mainAfter).toContain("src/feature2.ts");
+  });
+
+  it("a chat and its user share one branch, so each sees the other's work", async () => {
+    // The regression this replaces: the agent worked on `chat/<id>` while the
+    // user's tree and terminal showed `user/<id>`, so the user opened the
+    // folder the agent had just filled and found it empty.
+    const project = await makeProject();
+
+    const agentTurn = await ensureWorktree(project, ALICE);
+    await writeFile(agentTurn, "bindings/users.sql", "SELECT 1;\n");
+    await commitAgentTurn(WS, ALICE, "add a binding");
+
+    // Whatever the user looks at next resolves the SAME branch.
+    const asUser = await listFiles(project, ALICE);
+    expect(asUser.entries.map(e => e.path)).toContain("bindings/users.sql");
+    expect((await ensureWorktree(project, ALICE)).doc.branch).toBe(
+      `user/${ALICE}`,
+    );
   });
 
   it("clean worktrees fast-forward to the new head on resume", async () => {
@@ -344,14 +359,11 @@ describe("chat branches (Cursor-cloud model)", () => {
     const userHandle = await ensureWorktree(project, USER);
     const initialBase = userHandle.doc.baseSha;
 
-    // A chat branch commits and merges to main.
-    const chat = "6a5300000000000000000def";
-    const h = await ensureWorktree(project, chatActorFor(chat), {
-      branch: chatBranchFor(chat),
-    });
+    // Someone else commits and merges to main.
+    const h = await ensureWorktree(project, BOB);
     await writeFile(h, "merged.txt", "hello\n");
-    await commitChatTurn(WS, chat);
-    await mergeBranchToMain(project, chatBranchFor(chat));
+    await commitAgentTurn(WS, BOB);
+    await mergeBranchToMain(project, `user/${BOB}`);
 
     // Resume the user worktree: it fast-forwards ("pulls latest").
     const resumed = await ensureWorktree(project, USER);
@@ -366,40 +378,35 @@ describe("chat branches (Cursor-cloud model)", () => {
   it("merge builds a merge commit when main moved, and refuses conflicts", async () => {
     const project = await makeProject();
 
-    // Chat branch edits file A.
-    const chat = "6a5300000000000000000aaa";
-    const h = await ensureWorktree(project, chatActorFor(chat), {
-      branch: chatBranchFor(chat),
-    });
-    await writeFile(h, "a.txt", "from chat\n");
-    await commitChatTurn(WS, chat);
+    // Bob edits file A.
+    const h = await ensureWorktree(project, BOB);
+    await writeFile(h, "a.txt", "from bob\n");
+    await commitAgentTurn(WS, BOB);
 
     // Meanwhile main gets an unrelated commit (file B) — no fast-forward.
     const userHandle = await ensureWorktree(project, USER);
     await writeFile(userHandle, "b.txt", "from user\n");
     await commitWorktree(userHandle, "user change");
 
-    const merge = await mergeBranchToMain(project, chatBranchFor(chat));
+    const merge = await mergeBranchToMain(project, `user/${BOB}`);
     expect(merge.merged).toBe(true);
     expect(merge.fastForward).toBe(false);
     const files = (await listFiles(project)).entries.map(e => e.path);
     expect(files).toContain("a.txt");
     expect(files).toContain("b.txt");
 
-    // Conflict: two branches editing the same line of the same file.
-    const chatB = "6a5300000000000000000bbb";
-    const hb = await ensureWorktree(project, chatActorFor(chatB), {
-      branch: chatBranchFor(chatB),
-    });
-    await writeFile(hb, "a.txt", "conflicting chat edit\n");
-    await commitChatTurn(WS, chatB);
+    // Conflict: two people editing the same line of the same file, which is
+    // an ordinary git conflict and is meant to be reported as one.
+    const hb = await ensureWorktree(project, ALICE);
+    await writeFile(hb, "a.txt", "conflicting alice edit\n");
+    await commitAgentTurn(WS, ALICE);
     const user2 = await ensureWorktree(project, USER);
     await writeFile(user2, "a.txt", "conflicting user edit\n");
     await commitWorktree(user2, "user conflicting change");
 
-    await expect(
-      mergeBranchToMain(project, chatBranchFor(chatB)),
-    ).rejects.toThrow(/conflict/i);
+    await expect(mergeBranchToMain(project, `user/${ALICE}`)).rejects.toThrow(
+      /conflict/i,
+    );
   });
 });
 

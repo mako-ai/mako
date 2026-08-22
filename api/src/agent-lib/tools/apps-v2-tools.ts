@@ -33,12 +33,11 @@ import { workspaceService } from "../../services/workspace.service";
 import { canReadResource, canWriteResource } from "../../utils/resource-acl";
 import {
   WorktreeConflictError,
-  chatActorFor,
-  chatBranchFor,
   commitWorktree,
   createProject,
   synthesizeProjectFromFolder,
   listAppFolders,
+  defaultBranchForActor,
   ensureWorktree,
   execInWorktree,
   globFiles,
@@ -59,7 +58,6 @@ const logger = loggers.agent();
 export interface AppsV2ToolsOptions {
   workspaceId: string;
   userId?: string;
-  chatId?: string;
 }
 
 type LoadResult = { project: IAppProjectV2 } | { error: string };
@@ -67,17 +65,23 @@ type LoadResult = { project: IAppProjectV2 } | { error: string };
 export function createAppsV2Tools({
   workspaceId,
   userId,
-  chatId,
 }: AppsV2ToolsOptions): ToolSet {
-  // Cursor-cloud model: each chat conversation is its own actor working on
-  // its own `chat/<chatId>` branch (forked off main on first touch). The
-  // chat-finalization hook commits the accumulated WIP at the end of every
-  // turn, so each turn becomes one commit on the conversation branch. Non-chat
-  // callers fall back to a per-user worktree on the default branch.
-  const actorId = chatId ? chatActorFor(chatId) : (userId ?? "api-key");
-  const actorBranch = chatId ? chatBranchFor(chatId) : undefined;
+  // A conversation is not a line of work.
+  //
+  // Chats used to get their own `chat/<chatId>` branch. That made opening a
+  // chat fork the code — including when you open one merely to clear context,
+  // which is most of the time — and split the agent's work from the user's
+  // own: they edited the same app from two branches and each saw an app the
+  // other had not touched. It also forked the WHOLE workspace monorepo, every
+  // app in it, for a conversation about one of them.
+  //
+  // So the agent works where the user works: their branch, their checkout,
+  // like any other pair of hands on a repository. The end-of-turn commit is
+  // unchanged, and still gives one commit per turn to review or revert.
+  const actorId = userId ?? "api-key";
+  const actorBranch = defaultBranchForActor(actorId);
   const ensureActorWorktree = (project: IAppProjectV2) =>
-    ensureWorktree(project, actorId, { branch: actorBranch });
+    ensureWorktree(project, actorId);
 
   // Read-before-edit freshness tracking (a Claude Code reliability hallmark):
   // the agent must read a file before a blind full-rewrite, so it never
@@ -479,7 +483,7 @@ export function createAppsV2Tools({
           return {
             success: true,
             branches,
-            currentBranch: actorBranch ?? "main",
+            currentBranch: actorBranch,
           };
         } catch (error) {
           return { success: false, error: errorMessage(error) };
@@ -489,13 +493,13 @@ export function createAppsV2Tools({
 
     app2_merge_to_main: tool({
       description:
-        "Merge a branch of an Apps v2 project into main (fast-forward when possible, real merge commit otherwise; refuses on conflicts). Use when the user is happy with this conversation's changes and wants them on main. Omit `branch` to merge THIS conversation's branch.",
+        "Merge a branch of an Apps v2 project into main (fast-forward when possible, real merge commit otherwise; refuses on conflicts). Use when the user is happy with the changes and wants them on main. Omit `branch` to merge the branch you are working on.",
       inputSchema: z.object({
         appId: z.string(),
         branch: z
           .string()
           .optional()
-          .describe("Branch to merge (defaults to this conversation's branch)"),
+          .describe("Branch to merge (defaults to the branch you are on)"),
       }),
       execute: async ({ appId, branch }) => {
         const loaded = await loadProject(appId, { write: true });
@@ -504,8 +508,7 @@ export function createAppsV2Tools({
         if (!target) {
           return {
             success: false,
-            error:
-              "No branch specified and this session has no conversation branch.",
+            error: "No branch specified and this session has no branch.",
           };
         }
         try {

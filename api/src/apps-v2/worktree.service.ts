@@ -372,16 +372,6 @@ export async function deleteProject(project: IAppProjectV2): Promise<void> {
 // Worktree + session materialization
 // ---------------------------------------------------------------------------
 
-/** Branch a chat conversation's worktree lives on (Cursor-cloud model). */
-export function chatBranchFor(chatId: string): string {
-  return `chat/${chatId}`;
-}
-
-/** Actor id for a chat conversation (worktree `userId` holds actor ids). */
-export function chatActorFor(chatId: string): string {
-  return `chat:${chatId}`;
-}
-
 /**
  * Dedicated actor for publishing (§13.3).
  *
@@ -417,7 +407,6 @@ export function actorBranchFor(actorId: string): string {
  */
 export function defaultBranchForActor(actorId: string): string {
   if (actorId === PUBLISH_ACTOR) return DEFAULT_BRANCH;
-  if (actorId.startsWith("chat:")) return `chat/${actorId.slice(5)}`;
   return actorBranchFor(actorId);
 }
 
@@ -1222,20 +1211,24 @@ export async function commitWorktree(
 // ---------------------------------------------------------------------------
 
 /**
- * Commit every dirty worktree owned by a chat conversation. Called from chat
- * finalization at the end of each agent turn — the app2_* tools flushed after
- * every mutation, so this only turns the accumulated WIP into a commit on the
- * conversation's `chat/<chatId>` branch. Never throws (finalization must not
- * fail a turn); conflicts are logged and left as WIP for the next turn.
+ * Commit the actor's dirty worktree at the end of an agent turn.
+ *
+ * Called from chat finalization — the app2_* tools flushed after every
+ * mutation, so this only turns the accumulated WIP into a commit. One commit
+ * per turn is what makes a turn reviewable and revertable.
+ *
+ * Keyed by ACTOR, not by chat: a conversation is not a line of work, so the
+ * agent commits to the branch the user is on rather than one of its own.
+ * Never throws (finalization must not fail a turn); conflicts are logged and
+ * left as WIP for the next turn.
  */
-export async function commitChatTurn(
+export async function commitAgentTurn(
   workspaceId: string,
-  chatId: string,
+  actorId: string,
   turnSummary?: string,
 ): Promise<Array<{ commitOid?: string }>> {
   const results: Array<{ commitOid?: string }> = [];
-  const actorId = chatActorFor(chatId);
-  // §10: one workspace worktree per chat actor (a turn may span apps).
+  // §10: one workspace worktree per actor (a turn may span apps).
   const worktrees = await AppWorktreeV2.find({
     workspaceId: new Types.ObjectId(workspaceId),
     userId: actorId,
@@ -1273,15 +1266,15 @@ export async function commitChatTurn(
         }
       }
     } catch (error) {
-      logger.warn("Apps v2 chat turn commit failed", {
-        chatId,
+      logger.warn("Apps v2 agent turn commit failed", {
+        actorId,
         error: error instanceof Error ? error.message : String(error),
       });
       results.push({});
     }
   }
-  logger.info("Apps v2 chat turn committed", {
-    chatId,
+  logger.info("Apps v2 agent turn committed", {
+    actorId,
     worktrees: results.length,
   });
   return results;

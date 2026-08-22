@@ -162,6 +162,8 @@ interface LiveTerminal {
   sockets: Set<WebSocket>;
   /** Force any pending output out, e.g. before a client detaches. */
   flush: () => void;
+  /** Persist what the shell has done. Debounced; see where it is assigned. */
+  persist: () => void;
   /** Set when the last socket leaves; cancelled if someone comes back. */
   reaper: NodeJS.Timeout | null;
 }
@@ -170,6 +172,12 @@ const live = new Map<string, LiveTerminal>();
 
 /** Enough to redraw a screen and the tail of a build, not a whole session. */
 const SCROLLBACK_LIMIT = 256 * 1024;
+
+/** Quiet time after activity before the shell's work is written back. */
+const PERSIST_IDLE_MS = 3_000;
+
+/** Longest a steadily-busy shell may go unpersisted. */
+const PERSIST_MAX_MS = 30_000;
 
 /** How long a shell keeps running with nobody attached. */
 const ORPHAN_GRACE_MS = 10 * 60 * 1000;
@@ -310,6 +318,7 @@ async function startSession(
         sockets: new Set(),
         reaper: null,
         flush: () => undefined,
+        persist: () => undefined,
       };
       // Output is BATCHED before it leaves the process.
       //
@@ -334,6 +343,9 @@ async function startSession(
         outbox = [];
         outboxBytes = 0;
         remember(created, chunk);
+        // Output means the shell is doing something, which is the only signal
+        // available that files may have changed.
+        created.persist();
         for (const socket of created.sockets) {
           // Skip a client that has stopped reading rather than buffering without
           // limit: one wedged tab must not take the server with it.
@@ -394,6 +406,30 @@ async function startSession(
         if (flushTimer) clearTimeout(flushTimer);
         flush();
       };
+
+      // Persist the shell's work back to the host tree.
+      //
+      // `exec` syncs around every command; a PTY has no such boundary, so this
+      // is debounced on activity instead — quiet for a moment means whatever
+      // was running has probably stopped writing. A sync tars the whole tree,
+      // so it must not run per keystroke; and a build that prints steadily for
+      // a minute must not defer it forever either, hence the ceiling.
+      let persistTimer: NodeJS.Timeout | null = null;
+      let persistDeadline: NodeJS.Timeout | null = null;
+      const runPersist = () => {
+        if (persistTimer) clearTimeout(persistTimer);
+        if (persistDeadline) clearTimeout(persistDeadline);
+        persistTimer = null;
+        persistDeadline = null;
+        void created.terminal.sync();
+      };
+      created.persist = () => {
+        if (persistTimer) clearTimeout(persistTimer);
+        persistTimer = setTimeout(runPersist, PERSIST_IDLE_MS);
+        if (!persistDeadline) {
+          persistDeadline = setTimeout(runPersist, PERSIST_MAX_MS);
+        }
+      };
       live.set(key, created);
       session = created;
       logger.info("Apps v2 terminal started", {
@@ -431,12 +467,21 @@ async function startSession(
   const detach = () => {
     current.sockets.delete(ws);
     if (current.sockets.size > 0 || current.reaper) return;
+    // Nobody is watching any more, so write the work back now rather than
+    // waiting on a debounce that a closed tab will never fire again.
+    void current.terminal.sync();
     // Nobody watching. Keep the shell for a while — a reload or a dropped
     // connection should not kill a running command — then reap it so an
     // abandoned sandbox is not held open forever.
     current.reaper = setTimeout(() => {
       live.delete(key);
-      void current.terminal.close().catch(() => undefined);
+      // Last chance: after close() the shell is gone, and so is anything it
+      // did that never reached the host.
+      void current.terminal
+        .sync()
+        .catch(() => undefined)
+        .then(() => current.terminal.close())
+        .catch(() => undefined);
       logger.info("Apps v2 terminal reaped after no clients", { key });
     }, ORPHAN_GRACE_MS);
   };

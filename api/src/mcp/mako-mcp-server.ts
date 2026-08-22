@@ -165,7 +165,7 @@ export function buildMakoMcpCandidateTools(
     queryAccess,
   });
 
-  const appsV2Tools = createAppsV2Tools({ workspaceId, userId, chatId });
+  const appsV2Tools = createAppsV2Tools({ workspaceId, userId });
 
   const consoleTools = createServerConsoleTools({
     workspaceId,

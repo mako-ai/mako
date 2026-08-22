@@ -551,6 +551,8 @@ async function openTerminalE2b(
     },
   });
 
+  let syncing: Promise<void> | null = null;
+
   // Announce the shell's death exactly once, however we learn of it.
   let exited = false;
   const reportExit = (reason: string): void => {
@@ -694,6 +696,24 @@ async function openTerminalE2b(
       return draining;
     },
     resize: (cols, rows) => sandbox.pty.resize(handle.pid, { cols, rows }),
+    // One at a time, and never overlapping: two tars of the same tree would
+    // race each other onto the host, and a sync is far slower than the
+    // keystroke that triggered it.
+    sync: async () => {
+      if (syncing) return syncing;
+      syncing = (async () => {
+        try {
+          await syncOut(sandbox, ctx.hostDir);
+        } catch (error) {
+          logger.warn("Apps v2 terminal sync-out failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          syncing = null;
+        }
+      })();
+      return syncing;
+    },
     close: async () => {
       await handle.kill().catch(() => undefined);
     },

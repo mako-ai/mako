@@ -84,7 +84,7 @@ import {
 } from "../services/resumable-stream.service";
 import { hasAttachedClients } from "../services/realtime-presence.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
-import { commitChatTurn } from "../apps-v2/worktree.service";
+import { commitAgentTurn } from "../apps-v2/worktree.service";
 import { reportPubSubFailure } from "../services/pubsub.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
@@ -1189,7 +1189,7 @@ agentRoutes.openapi(
                       )
                       .map(p => p.text)
                       .join(" ");
-                    await commitChatTurn(workspaceId, chatId, lastUserText);
+                    await commitAgentTurn(workspaceId, actorId, lastUserText);
                   } catch (err) {
                     logger.warn("Apps v2 turn commit failed", { error: err });
                   }
