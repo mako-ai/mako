@@ -155,9 +155,16 @@ export async function hydrateBox(input: {
         // .gitignore the app happens to ship.
         `printf '%s\\n' ${NEVER_COMMIT.map(n => `'${n}/'`).join(" ")} > ${excludesFile}`,
         boxGit(ctx, "config", "core.excludesFile", excludesFile),
-        // The bundle is the only "remote" the sandbox ever sees.
-        `${boxGit(ctx, "fetch", "-q", hydrateBundle, `+${branch}:refs/heads/${branch}`)}`,
-        boxGit(ctx, "checkout", "-q", "-f", branch),
+        // Fetch into a namespace, THEN create the branch from it.
+        //
+        // Fetching straight into `refs/heads/<branch>` fails when that branch
+        // is the one checked out — and `git init` leaves HEAD pointing at an
+        // unborn `refs/heads/main`, so hydrating a sandbox at `main` (which is
+        // what publishing does) hit exactly that: "refusing to fetch into
+        // branch 'refs/heads/main' checked out at ...". Every other branch
+        // worked, which is why it only ever broke publish.
+        `${boxGit(ctx, "fetch", "-q", hydrateBundle, "+refs/heads/*:refs/bundle/*")}`,
+        boxGit(ctx, "checkout", "-q", "-B", branch, `refs/bundle/${branch}`),
         `rm -f ${hydrateBundle}`,
       ].join(" && "),
       "repository hydration",
