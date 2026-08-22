@@ -13,6 +13,7 @@
 import { Readable } from "node:stream";
 import type { Context } from "hono";
 import { bindingArtifactKey } from "../apps-v2/bindings.service";
+import { serveDeploymentFile } from "../apps-v2/deployment.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import {
   readPreviewAsset,
@@ -42,6 +43,31 @@ async function serveAsset(c: Context): Promise<Response> {
       404,
     );
   }
+  // A published deployment is served from the artifact store, not a
+  // directory — but through the same token, because the reason for the token
+  // is the sandboxed iframe, which does not care where the bytes come from.
+  if (grant.publishedSha) {
+    const response = await serveDeploymentFile({
+      projectId: grant.projectId,
+      sha: grant.publishedSha,
+      assetPath: assetPathFor(c, token),
+      // The token is the only credential, so nothing in between should keep
+      // a copy of a private app's build.
+      private: true,
+    });
+    if (!response) {
+      return c.json({ success: false, error: "Not found" }, 404);
+    }
+    // The iframe has an OPAQUE origin (sandboxed without allow-same-origin)
+    // and ES modules are always fetched in CORS mode — so without this the
+    // browser blocks the app's own script and the page renders blank while
+    // every request in the network panel reads 200. The same header the
+    // static preview below sets, for the same reason.
+    const headers = new Headers(response.headers);
+    headers.set("Access-Control-Allow-Origin", "*");
+    return new Response(response.body, { status: response.status, headers });
+  }
+
   // Data bindings: `__data/<name>.parquet` (app-relative, so it works under
   // the token prefix in BOTH static and dev previews). Streams the
   // materialized artifact for this project — served BEFORE the dev proxy so

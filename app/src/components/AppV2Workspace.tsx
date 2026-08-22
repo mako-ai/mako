@@ -285,6 +285,16 @@ export default function AppV2Workspace({
   // others rather than a hand-picked 5px.
   const editing = useAppsV2Store(s => s.editingByApp[appId] ?? false);
   const setEditing = useAppsV2Store(s => s.setEditing);
+  const viewUrl = useAppsV2Store(s => s.viewUrlByApp[appId]);
+  const fetchViewUrl = useAppsV2Store(s => s.fetchViewUrl);
+
+  // The consumer view's token is short-lived, so it is fetched when this app
+  // is opened for viewing and again whenever a publish moves the app on.
+  useEffect(() => {
+    if (!editing && app?.publishedSha && workspaceId) {
+      void fetchViewUrl(workspaceId, appId);
+    }
+  }, [editing, app?.publishedSha, workspaceId, appId, fetchViewUrl]);
   const [terminalDragging, setTerminalDragging] = useState(false);
   useEffect(() => {
     if (!terminalDragging) return;
@@ -483,7 +493,23 @@ export default function AppV2Workspace({
         style={{ flex: 1, minHeight: 0 }}
       >
         <Panel defaultSize={70} minSize={20}>
-          {preview?.url ? (
+          {!editing && viewUrl ? (
+            // Consumer view: the PUBLISHED app, which is what everyone who is
+            // not working on it should see. It comes from the deployment
+            // store, so opening someone's app costs a static file read and
+            // starts no machine — the same reason a hundred viewers can open
+            // one app without a hundred microVMs.
+            //
+            // No allow-same-origin: this is served from Mako's own origin, so
+            // granting it would hand app code our origin and let it out of the
+            // sandbox entirely.
+            <iframe
+              title={`${app?.title ?? "App"} (published)`}
+              src={viewUrl}
+              sandbox="allow-scripts allow-forms"
+              style={{ border: 0, width: "100%", height: "100%" }}
+            />
+          ) : preview?.url ? (
             <iframe
               title="App preview"
               src={preview.url}
@@ -512,6 +538,13 @@ export default function AppV2Workspace({
               <Typography variant="subtitle1" gutterBottom>
                 {app?.title ?? "App"}
               </Typography>
+              {!app?.publishedSha && (
+                <Typography variant="body2" color="text.secondary" paragraph>
+                  Not published yet, so there is nothing for a viewer to see.
+                  Publish builds this app and deploys it; from then on opening
+                  it shows that version, with no sandbox involved.
+                </Typography>
+              )}
               <Typography variant="body2" color="text.secondary" paragraph>
                 Browse and edit this app&apos;s files from the Apps v2 explorer
                 on the left — every file opens in its own tab. Ask the agent in
@@ -549,7 +582,9 @@ export default function AppV2Workspace({
               }}
             >
               <Typography variant="body2" color="text.secondary">
-                Viewing — no sandbox is running.
+                {app?.publishedSha
+                  ? "Viewing the published version — no sandbox is running."
+                  : "Viewing — no sandbox is running."}
               </Typography>
               <Button
                 size="small"

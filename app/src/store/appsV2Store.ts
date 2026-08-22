@@ -137,6 +137,15 @@ interface AppsV2Store {
    * and a microVM only boots when someone actually means to work.
    */
   editingByApp: Record<string, boolean>;
+  /**
+   * Cookie-free URL for each app's PUBLISHED build, for the consumer view.
+   *
+   * It cannot just be the app's own `/live/` URL: that view runs in a
+   * sandboxed, opaque-origin iframe, and ES modules are always fetched in CORS
+   * mode without credentials — so a cookie-authorized URL 401s in there and
+   * the app renders as a blank page.
+   */
+  viewUrlByApp: Record<string, string | undefined>;
   historyByApp: Record<string, AppV2Commit[]>;
   branchesByApp: Record<string, AppV2Branch[]>;
   terminalByApp: Record<string, AppV2TerminalEntry[]>;
@@ -223,6 +232,8 @@ interface AppsV2Store {
   ) => Promise<void>;
   fetchHistory: (workspaceId: string, appId: string) => Promise<void>;
   fetchBranches: (workspaceId: string, appId: string) => Promise<void>;
+  /** Fetch (or refresh) the cookie-free URL for an app's published build. */
+  fetchViewUrl: (workspaceId: string, appId: string) => Promise<void>;
   /** Enter or leave edit mode for an app (see `editingByApp`). */
   setEditing: (workspaceId: string, appId: string, editing: boolean) => void;
   /**
@@ -282,6 +293,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
     selectedFile: {},
     statusByApp: {},
     editingByApp: {},
+    viewUrlByApp: {},
     historyByApp: {},
     branchesByApp: {},
     terminalByApp: {},
@@ -741,6 +753,26 @@ export const useAppsV2Store = create<AppsV2Store>()(
       } catch (e) {
         set(s => {
           s.error = message(e, "Failed to load history");
+        });
+      }
+    },
+
+    fetchViewUrl: async (workspaceId, appId) => {
+      try {
+        const body = unwrapBody(
+          await api.POST(
+            "/api/workspaces/{workspaceId}/apps-v2/{id}/view-token",
+            { params: { path: { workspaceId, id: appId } } },
+          ),
+        ) as { url?: string };
+        set(s => {
+          s.viewUrlByApp[appId] = body.url;
+        });
+      } catch {
+        // Not published, or the token could not be minted. The workspace
+        // shows its "nothing to view yet" state rather than a broken frame.
+        set(s => {
+          s.viewUrlByApp[appId] = undefined;
         });
       }
     },

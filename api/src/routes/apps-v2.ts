@@ -85,7 +85,10 @@ import {
 } from "../apps-v2/deployment.service";
 import fs from "node:fs/promises";
 import { readBoxDir } from "../apps-v2/box-repo";
-import { mintPreviewGrant } from "../apps-v2/preview.service";
+import {
+  mintPreviewGrant,
+  mintPublishedGrant,
+} from "../apps-v2/preview.service";
 import { ensureDevServer } from "../apps-v2/dev-server.service";
 import { Readable } from "node:stream";
 import {
@@ -1573,6 +1576,50 @@ async function serveLive(c: AuthenticatedContext): Promise<Response> {
   });
   return response ?? c.json({ success: false, error: "Not found" }, 404);
 }
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/view-token",
+    tags: ["Apps v2"],
+    summary: "Mint a cookie-free token for the published app",
+    description:
+      "Viewing a published app happens in a sandboxed, opaque-origin iframe, and ES modules are always fetched in CORS mode WITHOUT credentials — so a cookie-authorized URL 401s there however well it works in a normal tab, and the app renders nothing. This returns the same kind of short-lived token the build preview uses, authorized here by the caller's workspace access. It starts no sandbox: the bytes come from the deployment store.",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const sha = loaded.project.publishedSha;
+      if (!sha) {
+        return c.json(
+          { success: false, error: "This app has not been published yet" },
+          404,
+        );
+      }
+      const grant = mintPublishedGrant({
+        workspaceId: loaded.project.workspaceId.toString(),
+        projectId: loaded.project._id.toString(),
+        sha,
+      });
+      return c.json(
+        {
+          success: true as const,
+          token: grant.token,
+          url: `/api/apps-v2-preview/${grant.token}/`,
+          sha,
+          expiresAt: grant.expiresAt,
+        },
+        200,
+      );
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
 
 appsV2Routes.get("/:id/live", serveLive);
 appsV2Routes.get("/:id/live/*", serveLive);

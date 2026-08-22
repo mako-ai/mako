@@ -24,6 +24,18 @@ export interface PreviewGrant {
   projectId: string;
   /** Absolute directory a "static" grant serves (the session's dist/). */
   rootDir?: string;
+  /**
+   * Commit whose PUBLISHED deployment this grant serves, out of the artifact
+   * store rather than a directory.
+   *
+   * Viewing a published app needs the same cookie-free channel a preview does,
+   * and for the same reason: it runs in a sandboxed, opaque-origin iframe, and
+   * ES modules are always fetched in CORS mode WITHOUT credentials. A
+   * cookie-authorized URL therefore 401s inside that iframe however well it
+   * works in a normal tab — which looks exactly like an app that renders
+   * nothing.
+   */
+  publishedSha?: string;
   expiresAt: number;
 }
 
@@ -39,7 +51,7 @@ function sweep(): void {
 
 function mint(
   input: { workspaceId: string; projectId: string; token?: string },
-  scope: Pick<PreviewGrant, "rootDir">,
+  scope: Pick<PreviewGrant, "rootDir" | "publishedSha">,
   dedupe: (grant: PreviewGrant) => boolean,
 ): PreviewGrant {
   sweep();
@@ -72,6 +84,19 @@ export function mintPreviewGrant(input: {
     input,
     { rootDir: input.rootDir },
     grant => grant.rootDir === input.rootDir,
+  );
+}
+
+/** Published grant: serves an immutable deployment from the artifact store. */
+export function mintPublishedGrant(input: {
+  workspaceId: string;
+  projectId: string;
+  sha: string;
+}): PreviewGrant {
+  return mint(
+    { workspaceId: input.workspaceId, projectId: input.projectId },
+    { publishedSha: input.sha },
+    grant => grant.publishedSha === input.sha,
   );
 }
 
