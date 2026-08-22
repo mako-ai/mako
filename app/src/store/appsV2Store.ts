@@ -128,6 +128,15 @@ interface AppsV2Store {
   fileContents: Record<string, { contents: string; dirty: boolean }>;
   selectedFile: Record<string, string | null>;
   statusByApp: Record<string, AppV2Status | null>;
+  /**
+   * Which apps the user has opened for EDITING.
+   *
+   * Browsing an app costs nothing: its files come from git and no sandbox
+   * starts. Editing needs a real machine — a checkout, a shell, somewhere for
+   * npm to run — so it is entered deliberately rather than by opening a tab,
+   * and a microVM only boots when someone actually means to work.
+   */
+  editingByApp: Record<string, boolean>;
   historyByApp: Record<string, AppV2Commit[]>;
   branchesByApp: Record<string, AppV2Branch[]>;
   terminalByApp: Record<string, AppV2TerminalEntry[]>;
@@ -186,7 +195,16 @@ interface AppsV2Store {
   ) => Promise<AppV2Meta | null>;
   deleteApp: (workspaceId: string, appId: string) => Promise<boolean>;
 
-  fetchFiles: (workspaceId: string, appId: string) => Promise<void>;
+  /**
+   * List an app's files. Pass `live` while EDITING: the server snapshots the
+   * sandbox first, so work done in the shell shows up instead of appearing to
+   * have vanished. Omit it for browsing — that path never starts a sandbox.
+   */
+  fetchFiles: (
+    workspaceId: string,
+    appId: string,
+    live?: boolean,
+  ) => Promise<void>;
   openFile: (workspaceId: string, appId: string, path: string) => Promise<void>;
   updateFileLocal: (appId: string, path: string, contents: string) => void;
   saveFile: (workspaceId: string, appId: string, path: string) => Promise<void>;
@@ -198,9 +216,26 @@ interface AppsV2Store {
   ) => Promise<void>;
   clearTerminal: (appId: string) => void;
 
-  fetchStatus: (workspaceId: string, appId: string) => Promise<void>;
+  fetchStatus: (
+    workspaceId: string,
+    appId: string,
+    live?: boolean,
+  ) => Promise<void>;
   fetchHistory: (workspaceId: string, appId: string) => Promise<void>;
   fetchBranches: (workspaceId: string, appId: string) => Promise<void>;
+  /** Enter or leave edit mode for an app (see `editingByApp`). */
+  setEditing: (workspaceId: string, appId: string, editing: boolean) => void;
+  /**
+   * Switch which branch this app's worktree is on — a real `git checkout` in
+   * the sandbox, so the shell and the UI agree afterwards. Resolves to an
+   * error message when the server refuses (uncommitted work), rather than
+   * throwing, so the menu can say why.
+   */
+  checkoutBranch: (
+    workspaceId: string,
+    appId: string,
+    branch: string,
+  ) => Promise<string | null>;
   mergeBranch: (
     workspaceId: string,
     appId: string,
@@ -246,6 +281,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
     fileContents: {},
     selectedFile: {},
     statusByApp: {},
+    editingByApp: {},
     historyByApp: {},
     branchesByApp: {},
     terminalByApp: {},
@@ -518,11 +554,17 @@ export const useAppsV2Store = create<AppsV2Store>()(
       }
     },
 
-    fetchFiles: async (workspaceId, appId) => {
+    // `live`: the caller is EDITING, so snapshot the sandbox before reading.
+    // Browsing leaves it out and never touches a sandbox — that is what keeps
+    // opening an app cheap, and working while its sandbox is asleep.
+    fetchFiles: async (workspaceId, appId, live) => {
       try {
         const body = unwrapBody(
           await api.GET("/api/workspaces/{workspaceId}/apps-v2/{id}/files", {
-            params: { path: { workspaceId, id: appId } },
+            params: {
+              path: { workspaceId, id: appId },
+              query: live ? { live: "1" } : {},
+            },
           }),
         ) as { files?: AppV2FileEntry[] };
         set(s => {
@@ -668,11 +710,14 @@ export const useAppsV2Store = create<AppsV2Store>()(
       });
     },
 
-    fetchStatus: async (workspaceId, appId) => {
+    fetchStatus: async (workspaceId, appId, live) => {
       try {
         const body = unwrapBody(
           await api.GET("/api/workspaces/{workspaceId}/apps-v2/{id}/status", {
-            params: { path: { workspaceId, id: appId } },
+            params: {
+              path: { workspaceId, id: appId },
+              query: live ? { live: "1" } : {},
+            },
           }),
         ) as { status?: AppV2Status | null };
         set(s => {
@@ -700,6 +745,19 @@ export const useAppsV2Store = create<AppsV2Store>()(
       }
     },
 
+    setEditing: (workspaceId, appId, editing) => {
+      set(s => {
+        s.editingByApp[appId] = editing;
+      });
+      // Entering edit mode re-reads with the sandbox in the loop, so anything
+      // already done in a shell is on screen from the first frame rather than
+      // after the next change.
+      if (editing) {
+        void get().fetchFiles(workspaceId, appId, true);
+        void get().fetchStatus(workspaceId, appId, true);
+      }
+    },
+
     fetchBranches: async (workspaceId, appId) => {
       try {
         const body = unwrapBody(
@@ -714,6 +772,29 @@ export const useAppsV2Store = create<AppsV2Store>()(
         set(s => {
           s.error = message(e, "Failed to load branches");
         });
+      }
+    },
+
+    checkoutBranch: async (workspaceId, appId, branch) => {
+      try {
+        unwrapBody(
+          await api.POST(
+            "/api/workspaces/{workspaceId}/apps-v2/{id}/checkout",
+            {
+              params: { path: { workspaceId, id: appId } },
+              body: { branch },
+            },
+          ),
+        );
+        // Everything on screen was showing the OLD branch.
+        await Promise.all([
+          get().fetchFiles(workspaceId, appId),
+          get().fetchStatus(workspaceId, appId),
+          get().fetchBranches(workspaceId, appId),
+        ]);
+        return null;
+      } catch (e) {
+        return message(e, `Failed to switch to ${branch}`);
       }
     },
 

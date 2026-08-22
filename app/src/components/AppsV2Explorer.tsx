@@ -249,6 +249,8 @@ export default function AppsV2Explorer() {
   const fetchStatus = useAppsV2Store(s => s.fetchStatus);
   const fetchBranches = useAppsV2Store(s => s.fetchBranches);
   const mergeBranch = useAppsV2Store(s => s.mergeBranch);
+  const checkoutBranch = useAppsV2Store(s => s.checkoutBranch);
+  const editingByApp = useAppsV2Store(s => s.editingByApp);
 
   // Chat.tsx generates its own MongoDB-ObjectId-shaped chatId client-side and
   // pushes it to realtimeStore (NOT chatStore.currentChatId, which is an
@@ -300,6 +302,23 @@ export default function AppsV2Explorer() {
     void fetchBranches(workspaceId, activeAppId);
   }, [workspaceId, activeAppId, fetchStatus, fetchBranches]);
 
+  const [switching, setSwitching] = useState<string | null>(null);
+  const handleCheckout = useCallback(
+    async (branch: string) => {
+      if (!workspaceId || !activeAppId) return;
+      setSwitching(branch);
+      setMergeError(null);
+      const error = await checkoutBranch(workspaceId, activeAppId, branch);
+      setSwitching(null);
+      // Refusals are the interesting case — "you have uncommitted changes" is
+      // a decision the user has to make, so it stays on screen instead of the
+      // menu closing as though the switch happened.
+      if (error) setMergeError(error);
+      else setGitMenuAnchor(null);
+    },
+    [workspaceId, activeAppId, checkoutBranch],
+  );
+
   const handleMerge = useCallback(
     async (branch: string) => {
       if (!workspaceId || !activeAppId) return;
@@ -344,10 +363,12 @@ export default function AppsV2Explorer() {
         return;
       }
       setLoadingApps(prev => ({ ...prev, [parsed.appId]: true }));
-      await fetchFiles(workspaceId, parsed.appId);
+      // Live only while editing: the sandbox is already running then, and its
+      // uncommitted work is exactly what the tree would otherwise be missing.
+      await fetchFiles(workspaceId, parsed.appId, editingByApp[parsed.appId]);
       setLoadingApps(prev => ({ ...prev, [parsed.appId]: false }));
     },
-    [workspaceId, filesByApp, fetchFiles],
+    [workspaceId, filesByApp, fetchFiles, editingByApp],
   );
 
   const handleItemClick = useCallback(
@@ -357,13 +378,17 @@ export default function AppsV2Explorer() {
         focusAppsV2Tab(parsed.appId, node.name);
         // Warm the file tree so expanding is instant.
         if (workspaceId && !filesByApp[parsed.appId]) {
-          void fetchFiles(workspaceId, parsed.appId);
+          void fetchFiles(
+            workspaceId,
+            parsed.appId,
+            editingByApp[parsed.appId],
+          );
         }
       } else if (parsed.kind === "file") {
         focusAppsV2FileTab(parsed.appId, parsed.path);
       }
     },
-    [workspaceId, filesByApp, fetchFiles],
+    [workspaceId, filesByApp, fetchFiles, editingByApp],
   );
 
   const handleCreate = useCallback(async () => {
@@ -621,39 +646,60 @@ export default function AppsV2Explorer() {
         open={Boolean(gitMenuAnchor)}
         onClose={() => setGitMenuAnchor(null)}
       >
-        {(branches ?? []).map(branch => (
-          <MenuItem key={branch.name} disableRipple sx={{ cursor: "default" }}>
-            <ListItemText
-              primary={
-                branch.isDefault
-                  ? `${branch.name} (default)`
-                  : `${branch.name} — ${branch.aheadOfMain} ahead`
-              }
-              secondary={
-                branch.lastCommit
-                  ? `${branch.lastCommit.subject} · ${new Date(branch.lastCommit.timestamp).toLocaleString()}`
-                  : undefined
-              }
-            />
-            {!branch.isDefault && branch.aheadOfMain > 0 && (
-              <Button
-                size="small"
-                sx={{ ml: 2 }}
-                startIcon={
-                  merging === branch.name ? (
-                    <CircularProgress size={12} />
-                  ) : (
-                    <MergeIcon size={14} />
-                  )
+        {(branches ?? []).map(branch => {
+          const isCurrent = branch.name === status?.branch;
+          return (
+            <MenuItem
+              key={branch.name}
+              selected={isCurrent}
+              disabled={switching !== null}
+              // Selecting a branch checks it out. It used to be inert, which
+              // made the menu a list of branches you could look at and not
+              // reach — and switching is the whole reason to open it.
+              onClick={() => !isCurrent && void handleCheckout(branch.name)}
+            >
+              {switching === branch.name && (
+                <CircularProgress size={12} sx={{ mr: 1 }} />
+              )}
+              <ListItemText
+                primary={
+                  isCurrent
+                    ? `${branch.name} — current`
+                    : branch.isDefault
+                      ? `${branch.name} (default)`
+                      : `${branch.name} — ${branch.aheadOfMain} ahead`
                 }
-                disabled={merging !== null}
-                onClick={() => void handleMerge(branch.name)}
-              >
-                Merge into main
-              </Button>
-            )}
-          </MenuItem>
-        ))}
+                secondary={
+                  branch.lastCommit
+                    ? `${branch.lastCommit.subject} · ${new Date(branch.lastCommit.timestamp).toLocaleString()}`
+                    : undefined
+                }
+              />
+              {!branch.isDefault && branch.aheadOfMain > 0 && (
+                <Button
+                  size="small"
+                  sx={{ ml: 2 }}
+                  startIcon={
+                    merging === branch.name ? (
+                      <CircularProgress size={12} />
+                    ) : (
+                      <MergeIcon size={14} />
+                    )
+                  }
+                  disabled={merging !== null || switching !== null}
+                  onClick={event => {
+                    // Merging is not switching: without this the row's own
+                    // click handler would also fire and check the branch out.
+                    event.stopPropagation();
+                    void handleMerge(branch.name);
+                  }}
+                >
+                  Merge into main
+                </Button>
+              )}
+            </MenuItem>
+          );
+        })}
         {(branches ?? []).length === 0 && (
           <MenuItem disabled>No branches</MenuItem>
         )}

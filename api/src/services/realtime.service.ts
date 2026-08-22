@@ -92,7 +92,13 @@ export type RealtimeEvent =
       /** Worktree actor that made the change (user id or `chat:<chatId>`). */
       updatedBy?: string;
       /** Coarse reason, for client-side refetch scoping. */
-      origin: "flush" | "commit" | "merge" | "discard" | "lifecycle";
+      origin:
+        | "flush"
+        | "commit"
+        | "merge"
+        | "discard"
+        | "checkout"
+        | "lifecycle";
     }
   | {
       type: "dbt.file.updated";

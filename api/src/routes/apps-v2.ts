@@ -50,9 +50,11 @@ import {
   deleteProject,
   discardWorktree,
   boxCtx,
+  checkoutBranch,
   checkoutInBox,
   defaultBranchSha,
   ensureWorktree,
+  refreshFromBox,
   execInWorktree,
   listBranches,
   listFiles,
@@ -723,15 +725,23 @@ appsV2Routes.openapi(
     method: "get",
     path: "/{id}/files",
     tags: ["Apps v2"],
-    summary: "List files (committed + uncommitted, sandbox-independent)",
+    summary: "List files (committed + uncommitted)",
+    description:
+      "Browsing reads git and never touches a sandbox, which is what makes it cheap and keeps it working while a sandbox is asleep. Pass `live=1` when the caller is EDITING: it snapshots the sandbox first, so work done in the shell — which nothing else flushes — is visible instead of appearing to have vanished.",
     security: AUTH_SECURITY,
-    request: { params: ProjectParam },
+    request: {
+      params: ProjectParam,
+      query: z.object({ live: z.string().optional() }),
+    },
     responses: OPEN_RESPONSES,
   }),
   async c => {
     try {
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
+      if (c.req.query("live") === "1") {
+        await refreshFromBox(loaded.project, loaded.userId);
+      }
       const { ref, entries } = await listFiles(loaded.project, loaded.userId);
       return c.json({ success: true as const, ref, files: entries }, 200);
     } catch (error) {
@@ -874,8 +884,13 @@ appsV2Routes.openapi(
     path: "/{id}/status",
     tags: ["Apps v2"],
     summary: "Worktree status (base, WIP, changed files)",
+    description:
+      "As with the file listing: `live=1` snapshots the sandbox first so shell edits are counted; without it this is the committed view and starts nothing.",
     security: AUTH_SECURITY,
-    request: { params: ProjectParam },
+    request: {
+      params: ProjectParam,
+      query: z.object({ live: z.string().optional() }),
+    },
     responses: OPEN_RESPONSES,
   }),
   async c => {
@@ -883,6 +898,9 @@ appsV2Routes.openapi(
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const userId = loaded.userId ?? "api-key";
+      if (c.req.query("live") === "1") {
+        await refreshFromBox(loaded.project, userId);
+      }
       const status = await worktreeStatus(loaded.project, userId);
       return c.json({ success: true as const, status }, 200);
     } catch (error) {
@@ -1078,10 +1096,47 @@ appsV2Routes.openapi(
 
 appsV2Routes.openapi(
   createRoute({
+    method: "post",
+    path: "/{id}/checkout",
+    tags: ["Apps v2"],
+    summary: "Switch the caller's worktree to another branch",
+    description:
+      "The same thing `git checkout` in the terminal does, offered as a button — and it goes through the sandbox, so both agree afterwards. Refuses with uncommitted work rather than choosing between carrying it across and discarding it.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": { schema: z.object({ branch: z.string() }) },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { branch } = c.req.valid("json");
+      const handle = await ensureWorktree(
+        loaded.project,
+        loaded.userId ?? "api-key",
+      );
+      const result = await checkoutBranch(handle, branch);
+      return c.json({ success: true as const, ...result }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
     method: "get",
     path: "/{id}/branches",
     tags: ["Apps v2"],
-    summary: "List branches (main + one per chat conversation)",
+    summary: "List branches (main, plus one per actor)",
     security: AUTH_SECURITY,
     request: { params: ProjectParam },
     responses: OPEN_RESPONSES,

@@ -34,6 +34,7 @@ import {
   boxHasRepo,
   boxWorkingTree,
   exportTreeAsCommit,
+  sendCommitToBox,
   importBoxBranch,
   hydrateBox,
   boxRoot,
@@ -111,7 +112,7 @@ const logger = loggers.api("apps-v2");
 function pokeAppV2(
   workspaceId: { toString(): string },
   appId: { toString(): string } | null | undefined,
-  origin: "flush" | "commit" | "merge" | "discard" | "lifecycle",
+  origin: "flush" | "commit" | "merge" | "discard" | "checkout" | "lifecycle",
   updatedBy?: string,
 ): void {
   publishRealtimeEvent(workspaceId.toString(), {
@@ -545,24 +546,14 @@ export async function ensureWorktree(
     { new: true, upsert: true },
   );
 
-  // Existing sessions were created before edits had their own branch and are
-  // sitting on `main`. Move them across rather than leaving those people
-  // editing production forever; their work rides along, because the WIP ref is
-  // keyed by worktree, not by branch.
-  if (doc.branch === DEFAULT_BRANCH && branch !== DEFAULT_BRANCH) {
-    await updateRefCas(
-      repoDir,
-      `refs/heads/${branch}`,
-      doc.baseSha,
-      ZERO_OID,
-    ).catch(() => undefined);
-    doc.branch = branch;
-    await doc.save();
-    logger.info("Apps v2 worktree moved off main onto its own branch", {
-      worktreeId: doc._id.toString(),
-      branch,
-    });
-  }
+  // Being on `main` is no longer assumed to be an accident.
+  //
+  // This used to move any worktree found on main onto the actor's own branch —
+  // a one-time migration from before edits had their own branch. It fired on
+  // every call, so once switching branches became a real operation it made
+  // main the one branch you could not choose: check it out, and the next read
+  // moved you off it again. New worktrees still default to `user/<id>`, so
+  // nobody lands on main without asking for it; asking for it is allowed.
 
   // Your branch tracks main. Apps are created on main (and colleagues add
   // their own), so a personal branch that never learns about them is a
@@ -960,6 +951,43 @@ async function readRefFor(
     }
   }
   return branchRef;
+}
+
+/**
+ * Bring the repository's view of uncommitted work level with the sandbox.
+ *
+ * Reads resolve through git, which is what lets the file tree work with no
+ * sandbox at all. The cost is that work done in the SHELL — where nothing
+ * flushes — stays invisible until something else triggers one, and "I edited a
+ * file and the tree does not show it" is the exact confusion this subsystem
+ * has already produced once.
+ *
+ * So EDIT mode takes a snapshot before reading; browse mode does not, and
+ * never touches a sandbox. It is cheap when nothing changed: the sandbox
+ * reports its tree id, it matches, and nothing is transferred.
+ *
+ * Never throws. A tree that renders slightly stale beats a tree that fails to
+ * render because a sandbox was busy.
+ */
+export async function refreshFromBox(
+  project: IAppProjectV2,
+  userId: string | undefined,
+): Promise<void> {
+  if (!userId) return;
+  try {
+    const doc = await AppWorktreeV2.findOne({
+      workspaceId: project.workspaceId,
+      userId,
+    });
+    if (!doc) return;
+    const handle = await ensureWorktree(project, userId);
+    await flushWorktree(handle);
+  } catch (error) {
+    logger.warn("Apps v2 live refresh failed; serving the committed view", {
+      userId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 export async function listFiles(
@@ -1567,6 +1595,58 @@ export async function checkoutInBox(
       `Could not check out ${commitOid.slice(0, 8)} in the sandbox: ${reset.stderr.slice(-300)}`,
     );
   }
+}
+
+/**
+ * Switch the actor to another branch — the same thing `git checkout` in the
+ * terminal does, offered as a button.
+ *
+ * Refuses with uncommitted work rather than choosing for you. git refuses too,
+ * and for the same reason: silently carrying edits across, or silently
+ * discarding them, are both worse than saying so.
+ */
+export async function checkoutBranch(
+  handle: WorktreeHandle,
+  branch: string,
+): Promise<{ branch: string; head: string }> {
+  const { doc, repoDir } = handle;
+  const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
+  if (!head) throw new Error(`No such branch: ${branch}`);
+
+  // Flush first so "uncommitted work" means what the sandbox actually holds,
+  // including anything typed into the shell since the last snapshot.
+  const flushed = await flushWorktree(handle);
+  if (flushed.wipOid ?? doc.wipOid) {
+    throw new Error(
+      `You have uncommitted changes on ${doc.branch}. Commit or discard them before switching to ${branch}.`,
+    );
+  }
+  if (doc.branch === branch) return { branch, head: doc.baseSha };
+
+  const ctx = await ensureBox(handle);
+  await sendCommitToBox({ ctx, repoDir, commitOid: head });
+  const result = await getSandboxProvider().exec(
+    ctx,
+    `git -C ${boxRoot(ctx)} checkout -q -B ${branch} ${head} && git -C ${boxRoot(ctx)} reset -q --hard ${head}`,
+    { timeoutMs: 60_000 },
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `Could not switch to ${branch}: ${(result.stderr || result.stdout).slice(-300)}`,
+    );
+  }
+
+  doc.branch = branch;
+  doc.baseSha = head;
+  doc.wipOid = undefined;
+  doc.revision += 1;
+  await doc.save();
+  pokeAppV2(doc.workspaceId, null, "checkout", doc.userId);
+  logger.info("Apps v2 branch switched", {
+    worktreeId: doc._id.toString(),
+    branch,
+  });
+  return { branch, head };
 }
 
 /** Throw away all uncommitted work and re-base the worktree on branch head. */

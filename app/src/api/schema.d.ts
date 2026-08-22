@@ -3864,7 +3864,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List files (committed + uncommitted, sandbox-independent) */
+        /**
+         * List files (committed + uncommitted)
+         * @description Browsing reads git and never touches a sandbox, which is what makes it cheap and keeps it working while a sandbox is asleep. Pass `live=1` when the caller is EDITING: it snapshots the sandbox first, so work done in the shell — which nothing else flushes — is visible instead of appearing to have vanished.
+         */
         get: operations["get_api_workspaces_workspaceId_apps_v2_id_files"];
         put?: never;
         post?: never;
@@ -3919,7 +3922,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Worktree status (base, WIP, changed files) */
+        /**
+         * Worktree status (base, WIP, changed files)
+         * @description As with the file listing: `live=1` snapshots the sandbox first so shell edits are counted; without it this is the committed view and starts nothing.
+         */
         get: operations["get_api_workspaces_workspaceId_apps_v2_id_status"];
         put?: never;
         post?: never;
@@ -4014,6 +4020,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/checkout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Switch the caller's worktree to another branch
+         * @description The same thing `git checkout` in the terminal does, offered as a button — and it goes through the sandbox, so both agree afterwards. Refuses with uncommitted work rather than choosing between carrying it across and discarding it.
+         */
+        post: operations["post_api_workspaces_workspaceId_apps_v2_id_checkout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/apps-v2/{id}/branches": {
         parameters: {
             query?: never;
@@ -4021,7 +4047,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List branches (main + one per chat conversation) */
+        /** List branches (main, plus one per actor) */
         get: operations["get_api_workspaces_workspaceId_apps_v2_id_branches"];
         put?: never;
         post?: never;
@@ -4059,7 +4085,7 @@ export interface paths {
         put?: never;
         /**
          * Build the app in its session and mint a preview link
-         * @description Runs `npm install` (when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe. Pass `chatId` to build the conversation's `chat/<chatId>` branch instead of the caller's own worktree — the caller's own worktree always starts on main, so building it while a chat is actively working on this app previews stale, unrelated content.
+         * @description Runs `npm install` (when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe.
          */
         post: operations["post_api_workspaces_workspaceId_apps_v2_id_preview"];
         delete?: never;
@@ -4079,7 +4105,7 @@ export interface paths {
         put?: never;
         /**
          * Start (or reuse) a live `vite dev` preview for this app
-         * @description Prototype of apps-v2.md §4.7's 'dev preview' tier — LOCAL SANDBOX PROVIDER ONLY (returns 501 under the e2b provider, whose public-URL exposure isn't built yet). Runs `npm install` if needed, starts a persistent `vite dev` process bound to the worktree's session directory, and returns a token-gated URL that proxies to it — HMR works, no rebuild step required as files change. Pass `chatId` for the same reason as POST /preview: your own worktree always starts on main.
+         * @description Prototype of apps-v2.md §4.7's 'dev preview' tier — LOCAL SANDBOX PROVIDER ONLY (returns 501 under the e2b provider, whose public-URL exposure isn't built yet). Runs `npm install` if needed, starts a persistent `vite dev` process bound to the worktree's session directory, and returns a token-gated URL that proxies to it — HMR works, no rebuild step required as files change.
          */
         post: operations["post_api_workspaces_workspaceId_apps_v2_id_dev_preview"];
         delete?: never;
@@ -4116,7 +4142,7 @@ export interface paths {
         put?: never;
         /**
          * Publish the app: merge to main, build, and deploy
-         * @description Merges `branch` (or the caller's chat branch) into main, builds from main in the sandbox, uploads the output as an immutable deployment keyed by commit sha, and points the app at it. A failed build leaves the previous deployment serving. Re-publishing an unchanged sha reuses the existing deployment instead of rebuilding.
+         * @description Merges `branch` (defaulting to the caller's own branch) into main, builds from main in the sandbox, uploads the output as an immutable deployment keyed by commit sha, and points the app at it. A failed build leaves the previous deployment serving. Re-publishing an unchanged sha reuses the existing deployment instead of rebuilding.
          */
         post: operations["post_api_workspaces_workspaceId_apps_v2_id_publish"];
         delete?: never;
@@ -18217,7 +18243,9 @@ export interface operations {
     };
     get_api_workspaces_workspaceId_apps_v2_id_files: {
         parameters: {
-            query?: never;
+            query?: {
+                live?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;
@@ -18398,7 +18426,9 @@ export interface operations {
     };
     get_api_workspaces_workspaceId_apps_v2_id_status: {
         parameters: {
-            query?: never;
+            query?: {
+                live?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;
@@ -18652,6 +18682,53 @@ export interface operations {
             };
         };
     };
+    post_api_workspaces_workspaceId_apps_v2_id_checkout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    branch: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     get_api_workspaces_workspaceId_apps_v2_id_branches: {
         parameters: {
             query?: never;
@@ -18752,9 +18829,7 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": {
-                    chatId?: string;
-                };
+                "application/json": Record<string, never>;
             };
         };
         responses: {
@@ -18799,9 +18874,7 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": {
-                    chatId?: string;
-                };
+                "application/json": Record<string, never>;
             };
         };
         responses: {
@@ -18889,7 +18962,6 @@ export interface operations {
             content: {
                 "application/json": {
                     branch?: string;
-                    chatId?: string;
                 };
             };
         };

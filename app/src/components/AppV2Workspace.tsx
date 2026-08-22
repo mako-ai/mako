@@ -283,6 +283,8 @@ export default function AppV2Workspace({
   // makes every iframe transparent to pointer events for the duration — and
   // using the same library also means this handle is the same size as the
   // others rather than a hand-picked 5px.
+  const editing = useAppsV2Store(s => s.editingByApp[appId] ?? false);
+  const setEditing = useAppsV2Store(s => s.setEditing);
   const [terminalDragging, setTerminalDragging] = useState(false);
   useEffect(() => {
     if (!terminalDragging) return;
@@ -529,7 +531,36 @@ export default function AppV2Workspace({
         <TerminalResizeHandle onDragging={setTerminalDragging} />
 
         <Panel defaultSize={30} minSize={8} collapsible collapsedSize={0}>
-          <TerminalPanel appId={appId} workspaceId={workspaceId} />
+          {editing ? (
+            <TerminalPanel appId={appId} workspaceId={workspaceId} />
+          ) : (
+            // Mounting the terminal opens a shell, and opening a shell boots a
+            // microVM. Doing that just because a tab was opened is what made
+            // looking at an app cost as much as working on it — so the machine
+            // starts when someone asks for it.
+            <Box
+              sx={{
+                height: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 1.5,
+                bgcolor: "background.default",
+              }}
+            >
+              <Typography variant="body2" color="text.secondary">
+                Viewing — no sandbox is running.
+              </Typography>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<TerminalIcon size={14} />}
+                onClick={() => setEditing(workspaceId, appId, true)}
+              >
+                Start editing
+              </Button>
+            </Box>
+          )}
         </Panel>
       </PanelGroup>
 

@@ -24821,7 +24821,8 @@
         "tags": [
           "Apps v2"
         ],
-        "summary": "List files (committed + uncommitted, sandbox-independent)",
+        "summary": "List files (committed + uncommitted)",
+        "description": "Browsing reads git and never touches a sandbox, which is what makes it cheap and keeps it working while a sandbox is asleep. Pass `live=1` when the caller is EDITING: it snapshots the sandbox first, so work done in the shell — which nothing else flushes — is visible instead of appearing to have vanished.",
         "security": [
           {
             "cookieAuth": []
@@ -24846,6 +24847,14 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "live",
+            "in": "query"
           }
         ],
         "responses": {
@@ -25186,6 +25195,7 @@
           "Apps v2"
         ],
         "summary": "Worktree status (base, WIP, changed files)",
+        "description": "As with the file listing: `live=1` snapshots the sandbox first so shell edits are counted; without it this is the committed view and starts nothing.",
         "security": [
           {
             "cookieAuth": []
@@ -25210,6 +25220,14 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "live",
+            "in": "query"
           }
         ],
         "responses": {
@@ -25686,12 +25704,108 @@
         "operationId": "post_api_workspaces_workspaceId_apps_v2_id_bindings_name_materialize"
       }
     },
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/checkout": {
+      "post": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Switch the caller's worktree to another branch",
+        "description": "The same thing `git checkout` in the terminal does, offered as a button — and it goes through the sandbox, so both agree afterwards. Refuses with uncommitted work rather than choosing between carrying it across and discarding it.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "branch": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "branch"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_checkout"
+      }
+    },
     "/api/workspaces/{workspaceId}/apps-v2/{id}/branches": {
       "get": {
         "tags": [
           "Apps v2"
         ],
-        "summary": "List branches (main + one per chat conversation)",
+        "summary": "List branches (main, plus one per actor)",
         "security": [
           {
             "cookieAuth": []
@@ -25864,7 +25978,7 @@
           "Apps v2"
         ],
         "summary": "Build the app in its session and mint a preview link",
-        "description": "Runs `npm install` (when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe. Pass `chatId` to build the conversation's `chat/<chatId>` branch instead of the caller's own worktree — the caller's own worktree always starts on main, so building it while a chat is actively working on this app previews stale, unrelated content.",
+        "description": "Runs `npm install` (when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe.",
         "security": [
           {
             "cookieAuth": []
@@ -25897,11 +26011,7 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "properties": {
-                  "chatId": {
-                    "type": "string"
-                  }
-                }
+                "properties": {}
               }
             }
           }
@@ -25957,7 +26067,7 @@
           "Apps v2"
         ],
         "summary": "Start (or reuse) a live `vite dev` preview for this app",
-        "description": "Prototype of apps-v2.md §4.7's 'dev preview' tier — LOCAL SANDBOX PROVIDER ONLY (returns 501 under the e2b provider, whose public-URL exposure isn't built yet). Runs `npm install` if needed, starts a persistent `vite dev` process bound to the worktree's session directory, and returns a token-gated URL that proxies to it — HMR works, no rebuild step required as files change. Pass `chatId` for the same reason as POST /preview: your own worktree always starts on main.",
+        "description": "Prototype of apps-v2.md §4.7's 'dev preview' tier — LOCAL SANDBOX PROVIDER ONLY (returns 501 under the e2b provider, whose public-URL exposure isn't built yet). Runs `npm install` if needed, starts a persistent `vite dev` process bound to the worktree's session directory, and returns a token-gated URL that proxies to it — HMR works, no rebuild step required as files change.",
         "security": [
           {
             "cookieAuth": []
@@ -25990,11 +26100,7 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "properties": {
-                  "chatId": {
-                    "type": "string"
-                  }
-                }
+                "properties": {}
               }
             }
           }
@@ -26127,7 +26233,7 @@
           "Apps v2"
         ],
         "summary": "Publish the app: merge to main, build, and deploy",
-        "description": "Merges `branch` (or the caller's chat branch) into main, builds from main in the sandbox, uploads the output as an immutable deployment keyed by commit sha, and points the app at it. A failed build leaves the previous deployment serving. Re-publishing an unchanged sha reuses the existing deployment instead of rebuilding.",
+        "description": "Merges `branch` (defaulting to the caller's own branch) into main, builds from main in the sandbox, uploads the output as an immutable deployment keyed by commit sha, and points the app at it. A failed build leaves the previous deployment serving. Re-publishing an unchanged sha reuses the existing deployment instead of rebuilding.",
         "security": [
           {
             "cookieAuth": []
@@ -26162,9 +26268,6 @@
                 "type": "object",
                 "properties": {
                   "branch": {
-                    "type": "string"
-                  },
-                  "chatId": {
                     "type": "string"
                   }
                 }
