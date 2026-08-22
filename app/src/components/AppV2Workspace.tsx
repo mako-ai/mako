@@ -120,6 +120,23 @@ function TerminalPanel({
     // understands the readline codes, they just never reached it.
     term.attachCustomKeyEventHandler(event => {
       if (event.type !== "keydown") return true;
+
+      // Copy. xterm paints its own selection rather than making a DOM one, so
+      // the browser sees nothing selected and ⌘C copies an empty string —
+      // you can highlight text and still come away with nothing. The
+      // selection has to be handed to the clipboard explicitly.
+      //
+      // ⌘C on macOS, ctrl-shift-C elsewhere. Plain ctrl-C is deliberately not
+      // caught: in a terminal that is SIGINT, and taking it away to mean copy
+      // would break the one keystroke people rely on most.
+      const copyChord =
+        event.key.toLowerCase() === "c" &&
+        (event.metaKey || (event.ctrlKey && event.shiftKey));
+      if (copyChord && term.hasSelection()) {
+        void navigator.clipboard.writeText(term.getSelection());
+        return false;
+      }
+
       if (event.key === "Backspace" && (event.metaKey || event.altKey)) {
         // ⌘⌫ kills the line, ⌥⌫ kills the previous word.
         send(event.metaKey ? "\x15" : "\x17");
