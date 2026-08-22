@@ -1,7 +1,7 @@
 import { defineConfig } from "vitest/config";
 
 /**
- * Apps v2's worktree suite, in its OWN vitest run.
+ * Apps v2's worktree and adversarial suites, in their OWN vitest run.
  *
  * Not folded into vitest.config.ts, and not by preference: these specs drive
  * real git and a real (local) sandbox, and running them alongside the dbt
@@ -14,7 +14,10 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/apps-v2/worktree.service.test.ts"],
+    include: [
+      "src/apps-v2/worktree.service.test.ts",
+      "src/apps-v2/adversarial.test.ts",
+    ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.
     testTimeout: 120_000,

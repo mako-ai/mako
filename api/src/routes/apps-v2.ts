@@ -1278,7 +1278,7 @@ appsV2Routes.openapi(
     tags: ["Apps v2"],
     summary: "Start (or reuse) a live `vite dev` preview for this app",
     description:
-      "Prototype of apps-v2.md §4.7's 'dev preview' tier — LOCAL SANDBOX PROVIDER ONLY (returns 501 under the e2b provider, whose public-URL exposure isn't built yet). Runs `npm install` if needed, starts a persistent `vite dev` process bound to the worktree's session directory, and returns a token-gated URL that proxies to it — HMR works, no rebuild step required as files change.",
+      "Live dev preview (apps-v2.md §12.4). Runs `npm install` if needed, starts a persistent `vite dev` inside the app's sandbox, and returns the sandbox's own public origin for the browser to iframe — HMR rides that origin, so edits show up with no rebuild step and nothing of the tenant's runs on the API host.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,

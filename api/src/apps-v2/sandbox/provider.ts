@@ -30,15 +30,8 @@ export interface SandboxExecOptions {
   env?: Record<string, string>;
 }
 
-/** Identity of the working tree a command runs against. */
+/** Identity of the sandbox a command runs against. */
 export interface SandboxExecContext {
-  /**
-   * VESTIGIAL. Nothing reads it: there is no host-side working tree any more,
-   * so there is nothing to sync and nowhere to sync it from. Callers pass the
-   * repository path to satisfy the type. Kept for one release so every call
-   * site does not have to change in the same commit that removed the syncs.
-   */
-  hostDir: string;
   /** Stable affinity key for remote session reuse (the worktree id). */
   sessionKey: string;
 }

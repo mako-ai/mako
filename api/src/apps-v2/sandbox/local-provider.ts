@@ -219,7 +219,7 @@ export const localSandboxProvider: SandboxProvider = {
   },
 
   async destroySession(sessionKey) {
-    const ctx = { hostDir: "", sessionKey };
+    const ctx = { sessionKey };
     await fs.rm(rootFor(ctx), { recursive: true, force: true });
     await fs.rm(scratchFor(ctx), { recursive: true, force: true });
     logger.info("Local Apps v2 sandbox destroyed", { sessionKey });

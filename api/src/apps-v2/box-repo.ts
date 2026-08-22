@@ -79,8 +79,21 @@ const BOX_WIP_REF = "refs/mako/wip";
 /** Enough for a big install; a bundle of an app repo is far smaller. */
 const GIT_TIMEOUT_MS = 120_000;
 
+/**
+ * POSIX-quote a value for interpolation into a shell command.
+ *
+ * git allows `;`, `$`, backticks, `&` and `|` in branch names, and this module
+ * builds shell strings — so an entirely legal branch created in the terminal
+ * would otherwise be pasted straight into one. Everything interpolated goes
+ * through here, so any name git accepts works and none of them mean anything
+ * to the shell.
+ */
+export function sh(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 function boxGit(ctx: SandboxExecContext, ...args: string[]): string {
-  return ["git", "-C", boxRoot(ctx), ...args].join(" ");
+  return ["git", "-C", sh(boxRoot(ctx)), ...args.map(sh)].join(" ");
 }
 
 async function run(
@@ -147,13 +160,13 @@ export async function hydrateBox(input: {
     await run(
       ctx,
       [
-        `mkdir -p ${boxRoot(ctx)}`,
+        `mkdir -p ${sh(boxRoot(ctx))}`,
         boxGit(ctx, "init", "-q"),
         boxGit(ctx, "config", "user.name", "Mako Session"),
         boxGit(ctx, "config", "user.email", "session@mako.ai"),
         // A repo-level backstop for the ignores above, independent of any
         // .gitignore the app happens to ship.
-        `printf '%s\\n' ${NEVER_COMMIT.map(n => `'${n}/'`).join(" ")} > ${excludesFile}`,
+        `printf '%s\\n' ${NEVER_COMMIT.map(n => sh(`${n}/`)).join(" ")} > ${sh(excludesFile)}`,
         boxGit(ctx, "config", "core.excludesFile", excludesFile),
         // Fetch into a namespace, THEN create the branch from it.
         //
@@ -165,7 +178,7 @@ export async function hydrateBox(input: {
         // worked, which is why it only ever broke publish.
         `${boxGit(ctx, "fetch", "-q", hydrateBundle, "+refs/heads/*:refs/bundle/*")}`,
         boxGit(ctx, "checkout", "-q", "-B", branch, `refs/bundle/${branch}`),
-        `rm -f ${hydrateBundle}`,
+        `rm -f ${sh(hydrateBundle)}`,
       ].join(" && "),
       "repository hydration",
     );
@@ -255,13 +268,34 @@ export async function exportTreeAsCommit(input: {
   // present rather than failing with git's "not a valid object", which names
   // neither the cause nor the cure.
   await sendCommitToBox({ ctx, repoDir, commitOid: parent });
-  const commitOid = await run(
+  // Two calls rather than one with a shell variable holding the new oid.
+  // Everything interpolated into a command is quoted, so a `"$COMMIT"` would
+  // be quoted too and arrive as a literal — and the fix is not to carve out an
+  // exception to the quoting, it is not to need the variable.
+  const commitOid = (
+    await run(
+      ctx,
+      boxGit(ctx, "commit-tree", treeOid, "-p", parent, "-m", message),
+      "writing the snapshot commit",
+    )
+  )
+    .split("\n")
+    .pop()!
+    .trim();
+  await run(
     ctx,
     [
-      `COMMIT=$(${boxGit(ctx, "commit-tree", treeOid, "-p", parent, "-m", JSON.stringify(message))})`,
-      `${boxGit(ctx, "update-ref", BOX_WIP_REF, '"$COMMIT"')}`,
-      `${boxGit(ctx, "bundle", "create", "-q", exportBundle, BOX_WIP_REF, "--not", parent)}`,
-      `echo "$COMMIT"`,
+      boxGit(ctx, "update-ref", BOX_WIP_REF, commitOid),
+      boxGit(
+        ctx,
+        "bundle",
+        "create",
+        "-q",
+        exportBundle,
+        BOX_WIP_REF,
+        "--not",
+        parent,
+      ),
     ].join(" && "),
     "packaging the snapshot",
   );
@@ -287,7 +321,7 @@ export async function exportTreeAsCommit(input: {
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
-  return commitOid.split("\n").pop()!.trim();
+  return commitOid;
 }
 
 /**
@@ -307,7 +341,7 @@ export async function readBoxDir(
   // needs no guessing about how many leading components to strip.
   await run(
     ctx,
-    `tar -czf ${archive} -C ${boxRoot(ctx)}/${boxRelDir} .`,
+    `tar -czf ${sh(archive)} -C ${sh(`${boxRoot(ctx)}/${boxRelDir}`)} .`,
     `reading ${boxRelDir}`,
   );
   const bytes = await getSandboxProvider().readFile(ctx, archive);
@@ -320,7 +354,7 @@ export async function readBoxDir(
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
     await getSandboxProvider()
-      .exec(ctx, `rm -f ${archive}`, { timeoutMs: 15_000 })
+      .exec(ctx, `rm -f ${sh(archive)}`, { timeoutMs: 15_000 })
       .catch(() => undefined);
   }
 }
@@ -382,7 +416,7 @@ export async function sendCommitToBox(input: {
       ctx,
       [
         boxGit(ctx, "fetch", "-q", remote, `+${outRef}:refs/mako/incoming`),
-        `rm -f ${remote}`,
+        `rm -f ${sh(remote)}`,
       ].join(" && "),
       "sending commits to the sandbox",
     );
@@ -464,7 +498,7 @@ export async function importBoxBranch(input: {
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
     await getSandboxProvider()
-      .exec(ctx, `rm -f ${remote}`, { timeoutMs: 15_000 })
+      .exec(ctx, `rm -f ${sh(remote)}`, { timeoutMs: 15_000 })
       .catch(() => undefined);
   }
 }

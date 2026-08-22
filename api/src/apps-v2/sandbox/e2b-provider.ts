@@ -5,13 +5,10 @@
  * - One E2B sandbox per worktree (`sessionKey`), reused across commands and
  *   auto-paused by E2B on idle timeout (filesystem-only snapshot) so idle
  *   sessions cost nothing but keep node_modules warm; `connect` resumes.
- * - The HOST session directory stays the source of truth for the git layer
- *   (the broker snapshots it to WIP refs). Before each command the provider
- *   syncs host → sandbox with a tar upload (mtime+size manifest diff keeps
- *   repeat syncs incremental); after the command it syncs sandbox → host the
- *   same way. `node_modules`, `dist` and friends stay sandbox-local: they are
- *   ignored by the sync (like .gitignore ignores them for WIP snapshots) —
- *   EXCEPT `dist`, which is synced back so the preview pipeline can serve it.
+ - The sandbox holds the working copy; nothing is copied in or out around a
+ *   command. Commits travel as git bundles instead (see box-repo.ts), which is
+ *   why a `git checkout` typed in the terminal survives — there is no sync to
+ *   overwrite it, because there is no second working tree to sync with.
  * - Tenant commands run as the unprivileged template user with a minimal env;
  *   no Mako secrets, tokens, or git credentials ever enter the sandbox.
  */
@@ -41,17 +38,6 @@ const SANDBOX_USER = "user";
 const REMOTE_ROOT = "/home/user/app";
 /** Idle window before E2B auto-pauses the sandbox (resets on activity). */
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
-/**
- * Sandbox-local build state: never synced in either direction (recreated by
- * installs inside the sandbox; excluded from WIP snapshots by .gitignore).
- */
-/**
- * `.git` DOES sync INTO the sandbox (fresh on every command) so in-session
- * `git status/log/diff` work like on the local substrate — the clone's origin
- * is an unreachable URL and the bare repo isn't network-visible from E2B, so
- * no credential or push path rides along. It never syncs OUT: the host copy
- * is the broker's staging area and stays authoritative.
- */
 
 function apiKey(): string {
   const key = process.env.E2B_API_KEY;
@@ -111,7 +97,7 @@ async function connectSession(sessionKey: string): Promise<Sandbox> {
     // fs-only snapshots cold-boot, which is fine because commands are
     // one-shot (no long-lived processes to preserve). If the sandbox is
     // instead fully dead (deleted/expired), connectSession falls through to
-    // creating a fresh one and the host session dir re-seeds it via syncIn.
+    // creating a fresh one, which ensureBox then hydrates from the repo.
     lifecycle: { onTimeout: { action: "pause", keepMemory: false } },
   });
   await sandbox.commands.run(`mkdir -p ${REMOTE_ROOT}`, {

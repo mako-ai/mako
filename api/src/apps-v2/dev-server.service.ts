@@ -23,7 +23,10 @@
  * - The sandbox's idle timeout would pause the microVM out from under a dev
  *   server that is running but momentarily idle, so it is pushed out explicitly.
  */
-import { getSandboxProvider } from "./sandbox/provider";
+import {
+  getSandboxProvider,
+  type SandboxExecContext,
+} from "./sandbox/provider";
 import { boxCtx, ensureBox, type WorktreeHandle } from "./worktree.service";
 import { loggers } from "../logging";
 import { readBindings, bindingArtifactKey } from "./bindings.service";
@@ -136,7 +139,7 @@ export interface DevPreview {
 async function stageBindingData(
   handle: WorktreeHandle,
   provider: ReturnType<typeof getSandboxProvider>,
-  ctx: { hostDir: string; sessionKey: string },
+  ctx: SandboxExecContext,
 ): Promise<string[]> {
   const projectId = handle.project._id.toString();
   let bindings: Awaited<ReturnType<typeof readBindings>>;

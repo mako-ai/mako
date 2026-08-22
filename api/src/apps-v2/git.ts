@@ -14,6 +14,13 @@ export class GitError extends Error {
     public readonly args: string[],
     public readonly exitCode: number | null,
     public readonly stderr: string,
+    /**
+     * git's stdout, which is where it puts several things you would look for
+     * in stderr — "CONFLICT (content): Merge conflict in ..." among them. An
+     * error carrying only stderr makes a merge conflict indistinguishable
+     * from any other merge failure.
+     */
+    public readonly stdout: string = "",
   ) {
     super(message);
     this.name = "GitError";
@@ -40,6 +47,15 @@ const BASE_ENV: Record<string, string> = {
 
 export const ZERO_OID = "0".repeat(40);
 
+/**
+ * The subcommand, for error messages — `args[0]` is usually `-C`, so naming it
+ * produced "git -C failed", which says nothing about what was attempted.
+ */
+function gitSubcommand(args: string[]): string {
+  const i = args.indexOf("-C");
+  return (i === 0 ? args[2] : args[0]) ?? "command";
+}
+
 export function runGit(
   args: string[],
   options: RunGitOptions = {},
@@ -64,10 +80,13 @@ export function runGit(
               : null;
           reject(
             new GitError(
-              `git ${args[0]} failed: ${String(stderr || error.message).slice(0, 2000)}`,
+              `git ${gitSubcommand(args)} failed: ${String(
+                stderr || stdout || error.message,
+              ).slice(0, 2000)}`,
               args,
               code,
               String(stderr ?? ""),
+              String(stdout ?? ""),
             ),
           );
           return;

@@ -8,14 +8,17 @@
  *    compare-and-swap. The Mongo `AppWorktreeV2` doc mirrors the ref for
  *    indexing; on divergence the ref wins.
  * 2. Readers (file explorer, agent read tools, external clients) resolve
- *    through `listFiles`/`readFile`, which read the bare repo — never a
- *    session directory. A dead session changes nothing for readers.
- * 3. Session working trees are disposable caches. `ensureWorktree` can always
- *    rebuild one from `baseSha` + the WIP ref; a lost session loses at most
- *    the work since the last flush.
- * 4. The sandbox never holds git credentials: this module (the "broker") does
- *    all ref reads/writes itself, and the session clone's origin is pointed
- *    at an unreachable URL so in-sandbox `git push` cannot bypass CAS/ACLs.
+ *    through `listFiles`/`readFile`, which read the bare repo. That is what
+ *    lets browsing cost nothing and keep working while the sandbox is asleep.
+ *    `refreshFromBox` is the deliberate exception, for callers that are
+ *    EDITING and need to see work done in the shell.
+ * 3. The SANDBOX is the working copy — the only one. It is disposable:
+ *    `ensureBox` rebuilds it from `baseSha` + the WIP ref, and a lost sandbox
+ *    loses at most the work since the last flush.
+ * 4. The sandbox never holds git credentials. This module does every ref read
+ *    and write itself; commits cross between the two as git bundles, and the
+ *    sandbox has no remote configured at all, so there is nothing for an
+ *    in-sandbox `git push` to bypass CAS or ACLs with.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -38,6 +41,7 @@ import {
   importBoxBranch,
   hydrateBox,
   boxRoot,
+  sh,
 } from "./box-repo";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { appsV2SessionsRoot, APPS_V2_MAX_FILE_BYTES } from "./config";
@@ -168,18 +172,9 @@ export interface WorktreeHandle {
   appRoot: string;
 }
 
-/**
- * Addresses the actor's sandbox — the one working copy.
- *
- * `hostDir` is vestigial in the provider contract and is passed as the repo
- * path purely to satisfy the type; nothing reads it any more, because nothing
- * copies files between two trees.
- */
+/** Addresses the actor's sandbox — the one working copy. */
 export function boxCtx(handle: WorktreeHandle): SandboxExecContext {
-  return {
-    hostDir: handle.repoDir,
-    sessionKey: handle.doc._id.toString(),
-  };
+  return { sessionKey: handle.doc._id.toString() };
 }
 
 /**
@@ -676,14 +671,14 @@ async function catchUpBox(
   if (!hasUncommittedWork) {
     await getSandboxProvider().exec(
       ctx,
-      `git -C ${boxRoot(ctx)} reset -q --hard ${head}`,
+      `git -C ${sh(boxRoot(ctx))} reset -q --hard ${sh(head)}`,
       { timeoutMs: 60_000 },
     );
     return;
   }
   const merge = await getSandboxProvider().exec(
     ctx,
-    `git -C ${boxRoot(ctx)} -c user.name=Mako -c user.email=session@mako.ai merge --no-edit ${head}`,
+    `git -C ${sh(boxRoot(ctx))} -c user.name=Mako -c user.email=session@mako.ai merge --no-edit ${sh(head)}`,
     { timeoutMs: 120_000 },
   );
   if (merge.exitCode !== 0) {
@@ -905,7 +900,7 @@ export async function execInWorktree(
 }
 
 // ---------------------------------------------------------------------------
-// Reads — ALWAYS from the bare repo, never the session directory
+// Reads — from the bare repo, so they need no sandbox
 // ---------------------------------------------------------------------------
 
 /** Ref an actor's file reads resolve to: their WIP snapshot, else branch. */
@@ -1076,19 +1071,23 @@ export async function writeFile(
     `${boxRoot(ctx)}/${safe}`,
     new TextEncoder().encode(contents),
   );
-  return flushWorktree(handle);
-}
+  const flush = await flushWorktree(handle);
 
-export async function deleteFile(
-  handle: WorktreeHandle,
-  relPath: string,
-): Promise<FlushResult> {
-  const safe = appPath(handle.project, relPath);
-  const ctx = await ensureBox(handle);
-  await getSandboxProvider().exec(ctx, `rm -rf ${boxRoot(ctx)}/${safe}`, {
-    timeoutMs: 30_000,
-  });
-  return flushWorktree(handle);
+  // Confirm the write actually persisted.
+  //
+  // The snapshot is `git add -A`, which skips ignored paths — so writing to
+  // `node_modules/` or `dist/` used to be accepted, reported as successful,
+  // and silently discarded. A caller told the write worked has no way to find
+  // out otherwise, and an agent will happily build on a file that does not
+  // exist. One cheap `cat-file` against the repo (no sandbox round trip) turns
+  // that into an error that says what happened.
+  const ref = flush.wipOid ?? handle.doc.wipOid ?? handle.doc.baseSha;
+  if (!(await pathExistsAtRef(handle.repoDir, ref, safe))) {
+    throw new Error(
+      `${relPath} is ignored by git (.gitignore or the sandbox's excludes), so it cannot be saved. Build output and installed dependencies live only in the sandbox by design — write somewhere tracked instead.`,
+    );
+  }
+  return flush;
 }
 
 export async function readSessionFile(
@@ -1190,7 +1189,7 @@ export interface CommitResult {
 
 /**
  * Commit a worktree's WIP snapshot onto its branch WITHOUT touching the
- * session directory. Safe to call for worktrees whose sandbox/session is
+ * sandbox. Safe to call for worktrees whose sandbox is
  * gone (end-of-turn commits, cleanup jobs): the WIP ref already holds the
  * durable state, so no filesystem is needed.
  */
@@ -1398,7 +1397,7 @@ export async function commitAgentTurn(
       // failing a finished turn over bookkeeping would be the worse outcome.
       if (result.commitOid) {
         await advanceBoxToCommit({
-          ctx: { hostDir: repoDir, sessionKey: doc._id.toString() },
+          ctx: { sessionKey: doc._id.toString() },
           repoDir,
           branch: doc.branch,
           commitOid: result.commitOid,
@@ -1587,7 +1586,7 @@ export async function checkoutInBox(
   });
   const reset = await getSandboxProvider().exec(
     ctx,
-    `git -C ${boxRoot(ctx)} reset -q --hard ${commitOid} && git -C ${boxRoot(ctx)} clean -qfd`,
+    `git -C ${sh(boxRoot(ctx))} reset -q --hard ${sh(commitOid)} && git -C ${sh(boxRoot(ctx))} clean -qfd`,
     { timeoutMs: 60_000 },
   );
   if (reset.exitCode !== 0) {
@@ -1627,7 +1626,7 @@ export async function checkoutBranch(
   await sendCommitToBox({ ctx, repoDir, commitOid: head });
   const result = await getSandboxProvider().exec(
     ctx,
-    `git -C ${boxRoot(ctx)} checkout -q -B ${branch} ${head} && git -C ${boxRoot(ctx)} reset -q --hard ${head}`,
+    `git -C ${sh(boxRoot(ctx))} checkout -q -B ${sh(branch)} ${sh(head)} && git -C ${sh(boxRoot(ctx))} reset -q --hard ${sh(head)}`,
     { timeoutMs: 60_000 },
   );
   if (result.exitCode !== 0) {
@@ -1681,7 +1680,7 @@ export async function discardWorktree(
     await getSandboxProvider()
       .exec(
         ctx,
-        `git -C ${boxRoot(ctx)} reset -q --hard ${head} && git -C ${boxRoot(ctx)} clean -qfd`,
+        `git -C ${sh(boxRoot(ctx))} reset -q --hard ${sh(head)} && git -C ${sh(boxRoot(ctx))} clean -qfd`,
         { timeoutMs: 60_000 },
       )
       .catch(() => undefined);
@@ -1755,13 +1754,23 @@ export async function trialMerge(
           env: authorEnv,
         });
       } catch (error) {
+        // Ask git whether this is a CONFLICT rather than pattern-matching a
+        // message: it reports conflicts on stdout, so an error built from
+        // stderr alone looks like any other failure — which is why the
+        // actionable message below never fired. Unmerged index entries are
+        // the authoritative signal.
+        const unmerged = await runGit(["-C", dir, "ls-files", "-u"], {
+          timeoutMs: 30_000,
+        }).catch(() => ({ stdout: "" }));
+        const conflicted = unmerged.stdout.trim().length > 0;
         return {
           sha: "",
           ok: false,
-          reason:
-            error instanceof Error && /conflict/i.test(error.message)
-              ? `Cannot publish: ${branch} conflicts with ${mainBranch}. Merge ${mainBranch} into it and resolve the conflicts first.`
-              : `Could not merge ${branch} into ${mainBranch}`,
+          reason: conflicted
+            ? `Cannot publish: ${branch} conflicts with ${mainBranch}. Merge ${mainBranch} into it and resolve the conflicts first.`
+            : `Could not merge ${branch} into ${mainBranch}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
         };
       }
     }
