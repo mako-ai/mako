@@ -250,7 +250,7 @@ function runHttpBackend(input: BackendInput): Promise<Response> {
       // it applies to exactly this serving path (updateRefCas and the mirror
       // push never see it), and there is no migration to run over existing
       // repos when it changes.
-      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_COUNT: "3",
       GIT_CONFIG_KEY_0: "core.hooksPath",
       GIT_CONFIG_VALUE_0: input.hooksDir,
       // Internal bookkeeping refs are invisible to fetch AND unpushable —
@@ -259,6 +259,13 @@ function runHttpBackend(input: BackendInput): Promise<Response> {
       // and the promote.
       GIT_CONFIG_KEY_1: "transfer.hideRefs",
       GIT_CONFIG_VALUE_1: "refs/mako",
+      // ...but a box may still fetch a commit BY SHA. The publish build runs
+      // against the trial-merge result, which by design no branch reaches
+      // (main has not moved yet), so the box asks for the sha directly. The
+      // token already grants every object in this workspace's repo; naming
+      // one by sha reveals nothing that a clone does not.
+      GIT_CONFIG_KEY_2: "uploadpack.allowAnySHA1InWant",
+      GIT_CONFIG_VALUE_2: "true",
       ...(input.contentLength ? { CONTENT_LENGTH: input.contentLength } : {}),
       ...(input.contentEncoding
         ? { HTTP_CONTENT_ENCODING: input.contentEncoding }

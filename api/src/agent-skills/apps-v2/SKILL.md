@@ -14,19 +14,22 @@ Apps v2 is independent from Apps v1. For an `app-v2` or `app-v2-file` tab, use
 only `app2_*` tools. Never read or mutate the project with v1 `app_*`,
 `create_app`, or `list_open_apps` tools.
 
-## Working model (Cursor-cloud style)
+## Working model
 
 - Every app is a real Vite + React + TypeScript project in a Mako-managed git
-  repository. There is a real filesystem and a real shell.
-- THIS conversation works on its own git branch (`chat/<chatId>`), forked off
-  `main` on first touch. Your accumulated changes are committed automatically
-  at the end of every turn — you do not need to commit for durability.
-- The user reviews your branch and merges it into `main` from the app's branch
-  menu, or you can merge with `app2_merge_to_main` when they ask you to ship.
-- Resuming a conversation resumes its branch: the sandbox may be hot, paused
-  (E2B resumes it), or dead (it is rebuilt from git with the branch checked
-  out at its latest commit). Never assume in-memory state from earlier turns;
-  the durable truth is git.
+  repository. There is a real filesystem, a real shell, and a real git remote:
+  the sandbox is an ordinary clone that fetches and pushes.
+- You work on THE USER'S branch (`user/<id>`), the same one they edit from the
+  UI and the terminal — a conversation is not a line of work, so it does not
+  get a branch of its own. Your accumulated changes are committed and pushed
+  automatically at the end of every turn; committed-and-pushed work survives
+  the sandbox dying, uncommitted work lives only in the working copy, exactly
+  as on a laptop.
+- The user merges their branch into `main` from the branch menu, or you can
+  merge with `app2_merge_to_main` when they ask you to ship.
+- The sandbox may be hot, paused (E2B resumes it), or dead (a fresh clone
+  replaces it). Never assume in-memory state from earlier turns; the durable
+  truth is what reached the server.
 
 ## Tool guidance
 
@@ -43,10 +46,11 @@ only `app2_*` tools. Never read or mutate the project with v1 `app_*`,
 4. `app2_bash` runs real bash in the app's sandbox (E2B microVM). **cwd is the
    app's own folder** (`apps/<slug>`), not the repo root — `package.json` and
    `src/` are right there. `npm install <pkg>`, `npm run build`, `node`,
-   `git log/diff/status`. File changes are flushed to the durable WIP snapshot
-   after every command. Do NOT `git commit` or `git push` in the shell —
-   commits go through `app2_commit` (checkpoints) or the automatic end-of-turn
-   commit, and the session has no push credentials by design.
+   `git log/diff/status`. The sandbox has a real remote with credentials, so
+   `git commit` and `git push` in the shell are legitimate — commits you make
+   there are auto-pushed after the command. Prefer `app2_commit` for
+   checkpoints (it commits AND pushes in one step) and rely on the automatic
+   end-of-turn commit for everything else.
 5. Verify with `npm run build` via `app2_bash` before telling the user the
    app works. Build errors come back on stdout/stderr.
 
@@ -77,9 +81,10 @@ is empty, there is no app yet: create one with `app2_create_app`.
 6. `app2_list_branches` / `app2_merge_to_main` manage the branch model; merge
    only when the user asks for the changes to land on main.
 
-On a WIP conflict error ("advanced concurrently"), re-run `app2_status`, then
-re-read affected files and retry — never overwrite blindly; the losing
-snapshot is preserved on a recovery ref.
+If a commit or push is refused (someone else pushed first, or git names files
+a checkout would clobber), re-run `app2_status`, re-read the affected files,
+and resolve the way a developer would — never overwrite blindly. git's own
+message says which files are involved.
 
 ## Data bindings (bindings-as-files)
 
@@ -95,8 +100,8 @@ SELECT ...
 
 Front matter is a leading block of `-- key: value` SQL comments; the first
 SQL line ends it. Keep queries read-only SELECTs. Build the artifact with
-`app2_materialize` (appId + binding name) — it reads THIS conversation's
-branch, so it works before merging to main; errors come back verbatim
+`app2_materialize` (appId + binding name) — it reads the working branch, so
+it works before merging to main; errors come back verbatim
 (fix the SQL and retry). At runtime the preview
 serves each artifact at the APP-RELATIVE URL `__data/<name>.parquet`
 (no leading slash — use `new URL("__data/x.parquet", document.baseURI)`).

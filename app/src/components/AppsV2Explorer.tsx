@@ -684,9 +684,9 @@ export default function AppsV2Explorer() {
               <Box sx={{ p: 2 }}>
                 <Typography variant="body2" color="text.secondary" gutterBottom>
                   Apps v2 apps live in a GitHub repository. Link one to get
-                  started — each app is a folder in the repo, each conversation
-                  works on its own branch, and publishing merges back to the
-                  default branch.
+                  started — each app is a folder in the repo, everyone works on
+                  their own branch, and publishing merges it back to the default
+                  branch.
                 </Typography>
                 <Button
                   variant="contained"

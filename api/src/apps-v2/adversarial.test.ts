@@ -477,6 +477,70 @@ describe("uncommitted work you cannot see", () => {
 });
 
 describe("publishing", () => {
+  it("builds a TRUE merge commit — one no branch head points at", async () => {
+    const {
+      ensureWorktree,
+      writeFile,
+      commitWorktree,
+      execInWorktree,
+      trialMerge,
+      checkoutInBox,
+      mergeBranchToMain,
+      PUBLISH_ACTOR,
+    } = await import("./worktree.service");
+    const project = await makeProject();
+
+    // Diverge main and the actor's branch on DIFFERENT files, so the merge
+    // succeeds but is a real merge commit: its sha exists only on the parked
+    // candidate ref, reachable from no branch. This is the commit the publish
+    // build must run against — and the case where "fetch the branches" is not
+    // enough, because no branch contains it.
+    //
+    // ORDER MATTERS, and the first version of this test got it wrong: the
+    // actor's commit has to land BEFORE main moves, because ensureWorktree
+    // catches a branch up with main — so "main moved, then the actor
+    // committed" quietly becomes a fast-forward whose sha IS a branch head,
+    // and the test passes without testing anything. Main moving between an
+    // actor's last touch and their publish is the race this exercises.
+    await writeFile(await ensureWorktree(project, USER), "right.txt", "R\n");
+    await commitWorktree(await ensureWorktree(project, USER), "right");
+
+    const other = "colleague";
+    await writeFile(await ensureWorktree(project, other), "left.txt", "L\n");
+    await commitWorktree(await ensureWorktree(project, other), "left");
+    await mergeBranchToMain(project, `user/${other}`);
+
+    const publishHandle = await ensureWorktree(project, PUBLISH_ACTOR, {
+      branch: project.defaultBranch || "main",
+    });
+    const trial = await trialMerge(publishHandle, `user/${USER}`);
+    expect(trial.ok, trial.reason).toBe(true);
+
+    // The point of the whole exercise: the publish box checks out EXACTLY the
+    // merge result, so what gets built is what would ship.
+    const { resolveCommit: rc } = await import("./repository.service");
+    const { repoDirFor: rd } = await import("./repository.service");
+    const mainBefore = await rc(rd(WS), "refs/heads/main");
+
+    await checkoutInBox(publishHandle, trial.sha);
+    const seen = await execInWorktree(
+      publishHandle,
+      "git rev-parse HEAD; ls left.txt right.txt",
+      { cwd: "." },
+    );
+    expect(seen.exitCode, seen.stderr).toBe(0);
+    expect(seen.stdout).toContain(trial.sha);
+    expect(seen.stdout).toContain("left.txt");
+    expect(seen.stdout).toContain("right.txt");
+
+    // And main has NOT moved. The publish box holds the candidate on `main`,
+    // and the auto-push after shell commands once shipped it right here — on
+    // the first build command, before any build had passed — leaving promote
+    // to fail its CAS against the merge it was itself promoting. The build
+    // machine must never publish; only promote's compare-and-swap does.
+    expect(await rc(rd(WS), "refs/heads/main")).toBe(mainBefore);
+  }, 180_000);
+
   it("a merge conflict is refused and main does not move", async () => {
     const {
       ensureWorktree,

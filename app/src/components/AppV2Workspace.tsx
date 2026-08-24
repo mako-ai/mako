@@ -556,8 +556,9 @@ export default function AppV2Workspace({
               <Typography variant="body2" color="text.secondary" paragraph>
                 Browse and edit this app&apos;s files from the Apps v2 explorer
                 on the left — every file opens in its own tab. Ask the agent in
-                chat to build features (each conversation works on its own git
-                branch and commits every turn), or use the terminal below.
+                chat to build features (it works on your branch and commits
+                every turn), or use the terminal below — it is a real machine
+                with a real git checkout.
               </Typography>
               <Typography variant="body2" color="text.secondary">
                 <strong>Start dev session</strong> runs the app live, so edits

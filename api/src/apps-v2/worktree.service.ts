@@ -219,7 +219,27 @@ const PULL_INTERVAL_MS = 60_000;
 const lastConfigured = new Map<string, number>();
 const RECONFIGURE_INTERVAL_MS = 30 * 60_000;
 
-export async function ensureBox(
+/**
+ * One hydration at a time per sandbox.
+ *
+ * An agent fires tool calls in parallel, and on a cold box every one of them
+ * reaches ensureBox at once — eight concurrent `git init` + config + fetch
+ * runs against one directory, each losing config.lock races the others
+ * created. Not a mutex over work (commands still run concurrently once the
+ * box exists); strictly "do not clone the same box twice at the same time".
+ */
+const ensureInFlight = new Map<string, Promise<SandboxExecContext>>();
+
+export function ensureBox(handle: WorktreeHandle): Promise<SandboxExecContext> {
+  const key = handle.doc._id.toString();
+  const existing = ensureInFlight.get(key);
+  if (existing) return existing;
+  const run = ensureBoxNow(handle).finally(() => ensureInFlight.delete(key));
+  ensureInFlight.set(key, run);
+  return run;
+}
+
+async function ensureBoxNow(
   handle: WorktreeHandle,
 ): Promise<SandboxExecContext> {
   const ctx = boxCtx(handle);
@@ -717,12 +737,22 @@ export async function execInWorktree(
   // A command can `git checkout`, and it can commit. Nothing needs
   // snapshotting — but the cached branch should follow, and a commit made in
   // the shell should not be left sitting only on a disposable machine.
+  //
+  // EXCEPT in the publish actor's box. That box sits on `main` holding the
+  // trial-merge candidate — a commit that must reach main only through
+  // promote's compare-and-swap, after the build has passed. Auto-pushing it
+  // here shipped the candidate on the FIRST build command (npm install),
+  // before anything had been built at all, and then promote failed its CAS
+  // against the very merge it was promoting. A build machine reports its
+  // result; it does not publish it.
   await syncBranchFromBox(handle);
-  await boxPushIfAhead(ctx).catch(error =>
-    logger.warn("Apps v2 could not push commits made in the shell", {
-      error: error instanceof Error ? error.message : String(error),
-    }),
-  );
+  if (handle.doc.userId !== PUBLISH_ACTOR) {
+    await boxPushIfAhead(ctx).catch(error =>
+      logger.warn("Apps v2 could not push commits made in the shell", {
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
   return result;
 }
 
@@ -1369,7 +1399,11 @@ export async function checkoutInBox(
   const reset = await getSandboxProvider().exec(
     ctx,
     [
-      `git -C ${sh(boxRoot(ctx))} fetch -q origin`,
+      // Fetch the COMMIT, by sha. A publish candidate is reachable from no
+      // branch (that is the point — main has not moved yet), so "fetch the
+      // branches" cannot bring it; the endpoint allows want-by-sha
+      // (uploadpack.allowAnySHA1InWant) for exactly this call.
+      `git -C ${sh(boxRoot(ctx))} fetch -q origin ${sh(commitOid)}`,
       `git -C ${sh(boxRoot(ctx))} reset -q --hard ${sh(commitOid)}`,
       `git -C ${sh(boxRoot(ctx))} clean -qfd`,
     ].join(" && "),
@@ -1510,6 +1544,22 @@ export async function trialMerge(
     const sha = stdout.trim();
     // Park the merge result in the repo so it survives the scratch dir, and so
     // the sandbox can be moved onto it to build exactly what would ship.
+    //
+    // FETCH the objects home first: the merge commit was born in this
+    // scratch clone and the bare repo has never seen it. Writing the ref
+    // directly failed with "nonexistent object" — but only for a TRUE merge,
+    // which is why it survived so long: with main unmoved the merge
+    // fast-forwards, the sha is a branch head the repo already has, and every
+    // test and every manual publish happened to be that case.
+    //
+    // A fetch and not a push, because every repo's own config hides
+    // refs/mako/* from transfer (initRepo) — receive-pack would refuse the
+    // ref that this mechanism exists to write. Fetch runs no receive-pack and
+    // no hooks; it just brings the objects, and the ref write stays the same
+    // plain update it always was.
+    await runGit(["-C", repoDir, "fetch", "-q", dir, "HEAD"], {
+      timeoutMs: 60_000,
+    });
     await updateRef(repoDir, PUBLISH_CANDIDATE_REF, sha);
     return { sha, ok: true };
   });
