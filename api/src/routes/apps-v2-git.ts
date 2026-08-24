@@ -11,20 +11,29 @@
  * The server is `git http-backend` — git's CGI, the same one every git host
  * runs. Implementing the pkt-line protocol by hand was the alternative and it
  * would have been a worse version of a program already installed here. This
- * file is the CGI bridge and the access check, and nothing else.
+ * file is the CGI bridge, the access check, and the reaction to a push — and
+ * nothing else.
  *
- * Why this exists at all: with a real remote, the sandbox is a normal machine.
- * `git push`, `git pull`, `git log`, a coding agent running inside the box —
- * all of it works because it is ordinary git, talking to an ordinary server.
- * What it replaces was a private bundle-transfer format and a shadow-commit
- * layer that existed only to move commits without a remote.
+ * The reaction to a push matters more than it looks. Every way commits reach
+ * the server converges HERE — the commit button, the agent's turn commit, and
+ * `git push` typed in a terminal — so this is the one place that has to queue
+ * the cloud mirror push (on serverless hosts the local bare repo is an
+ * ephemeral cache, so an unmirrored push is a durability hole, not a stale
+ * view) and poke open windows to refresh. Push-shaped side effects live here
+ * and nowhere else; the commit paths in worktree.service deliberately do not
+ * duplicate them.
  */
 import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import type { Context } from "hono";
 import { appsV2ReposRoot } from "../apps-v2/config";
-import { repoExists } from "../apps-v2/repository.service";
+import { ensureLocalRepo } from "../apps-v2/cloud-repo.service";
+import { DEFAULT_BRANCH, repoExists } from "../apps-v2/repository.service";
 import { GitTokenError, verifyGitToken } from "../apps-v2/git-token.service";
+import { notifyRepoPushed } from "../apps-v2/worktree.service";
 import { createRouter } from "../openapi/core";
 import { loggers } from "../logging";
 
@@ -33,6 +42,68 @@ const logger = loggers.api("apps-v2-git");
 export const appsV2GitRoutes = createRouter();
 
 const MOUNT = "/api/apps-v2-git";
+
+/** Nothing legitimate takes longer than this; a wedged CGI must not leak. */
+const BACKEND_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * The pre-receive hook guarding what a NETWORK caller may do to refs.
+ *
+ * The rules are GitHub's defaults, not stricter: the default branch cannot be
+ * force-pushed or deleted (it is production, and the cloud mirror is a forced
+ * `push --mirror`, so nothing downstream would preserve the history this
+ * deletes); every other branch is as free as it is on any code host, because
+ * rebasing your own branch in your own sandbox is normal work. `refs/mako/*`
+ * is internal bookkeeping and no network caller has business writing it.
+ *
+ * This guards the HTTP surface only — server-side code updates refs through
+ * updateRefCas, which does not run hooks, and needs none of these limits.
+ */
+function preReceiveScript(): string {
+  return `#!/bin/sh
+# Written by Mako (apps-v2-git). Guards network pushes; server-side ref
+# updates do not run hooks and are not subject to it.
+zero=0000000000000000000000000000000000000000
+while read old new ref; do
+  case "$ref" in
+    refs/mako/*)
+      echo "mako: $ref is internal and cannot be pushed to" >&2
+      exit 1 ;;
+    refs/heads/${DEFAULT_BRANCH})
+      if [ "$new" = "$zero" ]; then
+        echo "mako: refusing to delete ${DEFAULT_BRANCH} - it is the deployed branch" >&2
+        exit 1
+      fi
+      if [ "$old" != "$zero" ] && ! git merge-base --is-ancestor "$old" "$new"; then
+        echo "mako: refusing a force-push to ${DEFAULT_BRANCH} - its history is production. Merge instead." >&2
+        exit 1
+      fi ;;
+  esac
+done
+exit 0
+`;
+}
+
+/**
+ * Hooks directory, materialized once per process.
+ *
+ * The script cannot ship as a file next to this module — tsc compiles *.ts and
+ * carries nothing else to dist — so the module IS the source of truth and
+ * writes it out on first use. Idempotent by construction: same content, same
+ * path, every boot.
+ */
+let hooksDirPromise: Promise<string> | null = null;
+function hooksDir(): Promise<string> {
+  hooksDirPromise ??= (async () => {
+    const dir = path.join(os.tmpdir(), "mako-apps-v2-git-hooks");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "pre-receive"), preReceiveScript(), {
+      mode: 0o755,
+    });
+    return dir;
+  })();
+  return hooksDirPromise;
+}
 
 /**
  * Pull the token out of whatever git sends.
@@ -99,51 +170,70 @@ async function serveGit(c: Context): Promise<Response> {
   const expected = `${payload.wsId}.git`;
   if (parts.repo !== expected) return unauthorized();
 
+  // Restore the bare repo from the cloud mirror when the local cache is cold.
+  // On serverless hosts APPS_V2_GIT_ROOT starts empty after every instance
+  // recycle; without this, the first `git fetch` from a long-lived sandbox
+  // after a deploy would 404 on a repository that very much exists.
+  await ensureLocalRepo(payload.wsId).catch(error =>
+    logger.warn("Apps v2 git: cloud restore failed; serving local state", {
+      workspaceId: payload.wsId,
+      error: error instanceof Error ? error.message : String(error),
+    }),
+  );
   const repoDir = path.join(appsV2ReposRoot(), expected);
   if (!(await repoExists(repoDir))) {
     return new Response("No such repository\n", { status: 404 });
   }
 
-  const body =
-    c.req.method === "POST"
-      ? Buffer.from(await c.req.arrayBuffer())
-      : Buffer.alloc(0);
-
+  const isReceivePack = parts.rest === "/git-receive-pack";
   return runHttpBackend({
     repoRoot: appsV2ReposRoot(),
+    hooksDir: await hooksDir(),
     pathInfo: `/${expected}${parts.rest}`,
     method: c.req.method,
     query: new URL(c.req.url).search.replace(/^\?/, ""),
     contentType: c.req.header("content-type") ?? "",
+    // Pass through EXACTLY what the client claimed. git http-backend inflates
+    // gzip request bodies itself, and reads to EOF when no length was sent
+    // (which is what a chunked push becomes once Node has dechunked it).
+    contentLength: c.req.header("content-length"),
     contentEncoding: c.req.header("content-encoding") ?? "",
     gitProtocol: c.req.header("git-protocol") ?? "",
     // http-backend enables receive-pack (push) for an authenticated caller.
     // Setting this IS the authorization decision, and it is also what lands in
     // the reflog, so a push is attributable.
     remoteUser: payload.userId,
-    body,
+    body: c.req.method === "POST" ? c.req.raw.body : null,
+    onSuccess: isReceivePack
+      ? () => notifyRepoPushed(payload.wsId, payload.userId)
+      : undefined,
   });
 }
 
 interface BackendInput {
   repoRoot: string;
+  hooksDir: string;
   pathInfo: string;
   method: string;
   query: string;
   contentType: string;
+  contentLength: string | undefined;
   contentEncoding: string;
   gitProtocol: string;
   remoteUser: string;
-  body: Buffer;
+  /** Request body, streamed — a push can be arbitrarily large. */
+  body: ReadableStream<Uint8Array> | null;
+  /** Called once when a receive-pack completed cleanly (see module doc). */
+  onSuccess?: () => void;
 }
 
 /**
  * Run git's CGI and turn its output into an HTTP response.
  *
  * CGI writes headers, a blank line, then the body — so the headers are parsed
- * out of the stream and the rest is passed through as it arrives. Buffering
- * the whole thing would have been shorter and would have meant holding an
- * entire clone in memory.
+ * out of the stream and the rest is passed through as it arrives. Both bodies
+ * stream: buffering a clone would hold a whole repository in memory, and
+ * buffering a push would hold a whole pack.
  */
 function runHttpBackend(input: BackendInput): Promise<Response> {
   const child = spawn("git", ["http-backend"], {
@@ -155,8 +245,21 @@ function runHttpBackend(input: BackendInput): Promise<Response> {
       REQUEST_METHOD: input.method,
       QUERY_STRING: input.query,
       CONTENT_TYPE: input.contentType,
-      CONTENT_LENGTH: String(input.body.length),
       REMOTE_USER: input.remoteUser,
+      // Config injected per invocation instead of written into the repo:
+      // it applies to exactly this serving path (updateRefCas and the mirror
+      // push never see it), and there is no migration to run over existing
+      // repos when it changes.
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "core.hooksPath",
+      GIT_CONFIG_VALUE_0: input.hooksDir,
+      // Internal bookkeeping refs are invisible to fetch AND unpushable —
+      // transfer.hideRefs covers both directions. Without it, any sandbox
+      // could overwrite refs/mako/publish-candidate between the trial merge
+      // and the promote.
+      GIT_CONFIG_KEY_1: "transfer.hideRefs",
+      GIT_CONFIG_VALUE_1: "refs/mako",
+      ...(input.contentLength ? { CONTENT_LENGTH: input.contentLength } : {}),
       ...(input.contentEncoding
         ? { HTTP_CONTENT_ENCODING: input.contentEncoding }
         : {}),
@@ -164,13 +267,29 @@ function runHttpBackend(input: BackendInput): Promise<Response> {
     },
   });
 
-  child.stdin.end(input.body);
+  // stdin gets EPIPE whenever http-backend exits before consuming the body —
+  // every auth failure and hook rejection does this with a push mid-flight.
+  // Unhandled, that error event would take down the API process.
+  child.stdin.on("error", () => undefined);
+  if (input.body) {
+    Readable.fromWeb(input.body as never)
+      .on("error", () => child.kill())
+      .pipe(child.stdin);
+  } else {
+    child.stdin.end();
+  }
+
+  // A wedged backend (or a client that stops reading a clone and never
+  // disconnects) must not leak a process per request.
+  const deadline = setTimeout(() => child.kill("SIGKILL"), BACKEND_TIMEOUT_MS);
 
   let stderr = "";
   child.stderr.on("data", chunk => {
     stderr += String(chunk).slice(0, 4000);
   });
   child.on("close", code => {
+    clearTimeout(deadline);
+    if (code === 0) input.onSuccess?.();
     if (code !== 0 || stderr) {
       logger.warn("git http-backend reported a problem", {
         pathInfo: input.pathInfo,
@@ -180,7 +299,7 @@ function runHttpBackend(input: BackendInput): Promise<Response> {
     }
   });
 
-  return new Promise<Response>((resolve, reject) => {
+  return new Promise<Response>(resolve => {
     let head = Buffer.alloc(0);
     let settled = false;
 
@@ -234,13 +353,27 @@ function runHttpBackend(input: BackendInput): Promise<Response> {
           controller.error(err);
           if (!settled) {
             settled = true;
-            reject(err);
+            resolve(new Response(`git http-backend failed\n`, { status: 500 }));
           }
         });
       },
       cancel() {
         child.kill();
       },
+    });
+
+    // Spawn failure (git not on PATH) emits 'error' on the child itself, not
+    // on a stream. Unhandled it crashes the process; handled it is a 500.
+    child.on("error", err => {
+      clearTimeout(deadline);
+      if (!settled) {
+        settled = true;
+        resolve(
+          new Response(`could not run git http-backend: ${err.message}\n`, {
+            status: 500,
+          }),
+        );
+      }
     });
   });
 }

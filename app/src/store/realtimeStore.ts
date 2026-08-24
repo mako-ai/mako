@@ -82,7 +82,13 @@ export type RealtimeEvent =
       type: "app-v2.updated";
       appId: string;
       updatedBy?: string;
-      origin: "flush" | "commit" | "merge" | "discard" | "lifecycle";
+      origin:
+        | "commit"
+        | "merge"
+        | "discard"
+        | "checkout"
+        | "lifecycle"
+        | "push";
     }
   | {
       type: "dbt.file.updated";

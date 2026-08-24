@@ -144,22 +144,29 @@ edits `.env` in place (keeping its comments) and backs up the previous file to
 Machine-specific variables (`APPS_V2_SANDBOX_PROVIDER`, `APPS_V2_GIT_ROOT`,
 `APPS_V2_SESSIONS_ROOT`, `NODE_ENV`) are deliberately never synced.
 
-## Apps v2: the sandbox is the working copy
+## Apps v2: the sandbox is an ordinary clone
 
-There is one working copy (the sandbox) and one history (the bare repo per
-workspace). Reads — the file tree, reading a file, diffs — come from git and
-need no sandbox, which is what keeps browsing cheap and works while a sandbox
-is asleep. Writes, shell commands and commits all go through the sandbox.
+There is one history (the bare repo per workspace) and one working copy: the
+sandbox, which is a normal git clone whose `origin` is Mako's own git-over-HTTP
+endpoint (`/api/apps-v2-git/<workspaceId>.git`, served by `git http-backend`,
+authorized by a workspace-scoped `mgt_` token in a credential helper). `git
+push`, `git pull` and `git checkout` in the terminal are just git — commits
+made anywhere in the box are pushed automatically, and the endpoint reacts to
+every push (cloud mirror sync + realtime UI refresh), so all push paths
+converge there.
 
-Commits move between the two as **git bundles**, git's own offline transfer
-format: no network path between them, and no credential inside the sandbox,
-where tenant code runs. `git checkout` in the terminal is therefore a real
-checkout — the server follows it rather than reverting it.
+Reads come from the sandbox's working copy while it is running (uncommitted
+work included) and from the last commit when it is not (`status.offline`).
+Uncommitted work lives only in the box, like a laptop: pushed commits survive
+losing the machine, uncommitted edits do not.
 
-`APPS_V2_SANDBOX_PROVIDER=local` swaps the microVM for a directory on this
-machine, which is how the tests run and how you can work without E2B
-credentials. It executes tenant commands in the API process, so it refuses to
-load when `NODE_ENV=production`.
+Two dev facts that bite: (1) a microVM cannot reach `localhost:8080`, so
+`pnpm dev` starts a cloudflared tunnel and writes `.env.tunnel`
+(`APPS_V2_GIT_ORIGIN_URL`) — without it sandboxes cannot clone or push.
+(2) `APPS_V2_SANDBOX_PROVIDER=local` swaps the microVM for a directory on this
+machine (tests, or working without E2B credentials); it executes tenant
+commands in the API process, so it refuses to load when `NODE_ENV=production`,
+and it needs no tunnel.
 
 ## Configuration
 

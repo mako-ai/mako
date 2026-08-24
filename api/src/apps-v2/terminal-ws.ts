@@ -33,6 +33,7 @@ import { workspaceService } from "../services/workspace.service";
 import { canWriteResource } from "../utils/resource-acl";
 import { getSandboxProvider, type SandboxTerminal } from "./sandbox/provider";
 import {
+  afterTerminalSession,
   ensureBox,
   ensureWorktree,
   synthesizeProjectFromFolder,
@@ -434,9 +435,15 @@ async function startSession(
   const detach = () => {
     current.sockets.delete(ws);
     if (current.sockets.size > 0 || current.reaper) return;
-    // Nobody watching. Keep the shell for a while — a reload or a dropped
-    // connection should not kill a running command — then reap it so an
-    // abandoned sandbox is not held open forever.
+    // Nobody watching. Settle up first: a `git commit` typed in this shell is
+    // sitting unpushed on a disposable machine, and a `git checkout` typed
+    // here has moved the branch under the cached record. execInWorktree does
+    // this after every command; a PTY has no "after", so the closest thing to
+    // it is the last client leaving.
+    void afterTerminalSession(project.workspaceId.toString(), userId);
+    // Keep the shell for a while — a reload or a dropped connection should
+    // not kill a running command — then reap it so an abandoned sandbox is
+    // not held open forever.
     current.reaper = setTimeout(() => {
       live.delete(key);
       void current.terminal.close().catch(() => undefined);

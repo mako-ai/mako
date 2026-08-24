@@ -93,12 +93,12 @@ export type RealtimeEvent =
       updatedBy?: string;
       /** Coarse reason, for client-side refetch scoping. */
       origin:
-        | "flush"
         | "commit"
         | "merge"
         | "discard"
         | "checkout"
-        | "lifecycle";
+        | "lifecycle"
+        | "push";
     }
   | {
       type: "dbt.file.updated";

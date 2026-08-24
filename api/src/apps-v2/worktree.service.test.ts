@@ -124,6 +124,11 @@ describe("the working copy", () => {
 
     const { entries } = await listFiles(project, USER);
     expect(entries.map(e => e.path)).toContain("src/note.ts");
+    // Sizes must be real. The size probe once used GNU stat flags only, so on
+    // a Mac (BSD stat — i.e. every local dev machine) it silently reported
+    // every file as 0 bytes.
+    const note = entries.find(e => e.path === "src/note.ts");
+    expect(note?.size).toBe(Buffer.byteLength("export const n = 1;\n"));
 
     const file = await readFile(project, "src/note.ts", USER);
     expect(file.contents).toBe("export const n = 1;\n");

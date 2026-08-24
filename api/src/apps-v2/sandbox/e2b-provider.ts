@@ -5,12 +5,14 @@
  * - One E2B sandbox per worktree (`sessionKey`), reused across commands and
  *   auto-paused by E2B on idle timeout (filesystem-only snapshot) so idle
  *   sessions cost nothing but keep node_modules warm; `connect` resumes.
- - The sandbox holds the working copy; nothing is copied in or out around a
- *   command. Commits travel as git bundles instead (see box-repo.ts), which is
- *   why a `git checkout` typed in the terminal survives — there is no sync to
- *   overwrite it, because there is no second working tree to sync with.
- * - Tenant commands run as the unprivileged template user with a minimal env;
- *   no Mako secrets, tokens, or git credentials ever enter the sandbox.
+ - The sandbox holds the working copy — an ordinary git clone whose origin is
+ *   Mako's own git endpoint (see box.ts). Nothing is copied in or out around
+ *   a command, which is why a `git checkout` typed in the terminal survives:
+ *   there is no second working tree to sync with.
+ * - Tenant commands run as the unprivileged template user with a minimal env.
+ *   The one credential in the box is a workspace-scoped git token in a file
+ *   read by a credential helper; no Mako secret or database credential ever
+ *   enters the sandbox.
  */
 import path from "node:path";
 import { Sandbox } from "e2b";
@@ -494,16 +496,31 @@ async function openTerminalE2b(
   };
 }
 
+/**
+ * Positive answers to "does a sandbox exist?", briefly.
+ *
+ * `hasSession` backs every read's live-or-committed decision, and without a
+ * cache each file read in a fresh process is an E2B list API round trip. Only
+ * YES is cached, and only for seconds: a stale yes degrades into one failed
+ * exec, but a cached NO would freeze reads on the committed view after the
+ * sandbox comes up.
+ */
+const knownAlive = new Map<string, number>();
+const KNOWN_ALIVE_TTL_MS = 15_000;
+
 /** Is a sandbox already up for this session? Never creates one. */
 async function sessionExists(sessionKey: string): Promise<boolean> {
   if (sessions.has(sessionKey)) return true;
+  if ((knownAlive.get(sessionKey) ?? 0) > Date.now()) return true;
   try {
     const paginator = Sandbox.list({
       apiKey: apiKey(),
       query: { metadata: { makoAppsV2SessionKey: sessionKey } },
       limit: 1,
     });
-    return paginator.hasNext && (await paginator.nextItems()).length > 0;
+    const found = paginator.hasNext && (await paginator.nextItems()).length > 0;
+    if (found) knownAlive.set(sessionKey, Date.now() + KNOWN_ALIVE_TTL_MS);
+    return found;
   } catch {
     // Unreachable E2B is not the same as "no sandbox", but for the one caller
     // — should this read come from the working copy or the last commit? — the
@@ -527,6 +544,7 @@ export const e2bSandboxProvider: SandboxProvider = {
   destroySession: async sessionKey => {
     const sandboxId = sessions.get(sessionKey);
     sessions.delete(sessionKey);
+    knownAlive.delete(sessionKey);
     if (sandboxId) {
       await Sandbox.kill(sandboxId, { apiKey: apiKey() }).catch(
         () => undefined,

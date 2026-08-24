@@ -120,7 +120,7 @@ const logger = loggers.api("apps-v2");
 function pokeAppV2(
   workspaceId: { toString(): string },
   appId: { toString(): string } | null | undefined,
-  origin: "commit" | "merge" | "discard" | "checkout" | "lifecycle",
+  origin: "commit" | "merge" | "discard" | "checkout" | "lifecycle" | "push",
   updatedBy?: string,
 ): void {
   publishRealtimeEvent(workspaceId.toString(), {
@@ -130,6 +130,22 @@ function pokeAppV2(
     updatedBy,
     origin,
   });
+}
+
+/**
+ * React to commits reaching this server's bare repo over the git endpoint.
+ *
+ * Called by routes/apps-v2-git.ts after every completed receive-pack. This is
+ * the ONE place push-shaped side effects live, because every path commits take
+ * to the server — the commit button, the agent's end-of-turn commit, `git
+ * push` typed in a terminal — converges on that endpoint. The commit
+ * functions below deliberately do not queue the mirror or poke windows
+ * themselves; doing it both here and there meant every button-press push did
+ * its bookkeeping twice, and a terminal push did it zero times.
+ */
+export function notifyRepoPushed(workspaceId: string, userId: string): void {
+  queueMirrorPush(workspaceId);
+  pokeAppV2(workspaceId, null, "push", userId);
 }
 
 // The sandbox HAS a remote, and a credential for it — see box.ts. Two things
@@ -916,6 +932,52 @@ export async function readSessionFile(
 // Status / history
 // ---------------------------------------------------------------------------
 
+/**
+ * Settle up after a terminal session ends.
+ *
+ * The terminal is a live PTY, so unlike execInWorktree nothing runs "after the
+ * command" — a `git commit` typed there would otherwise sit on a disposable
+ * machine until some unrelated API call happened to touch the box, and a
+ * `git checkout` typed there would leave the cached branch pointing at the
+ * old one. Called when the last client detaches (terminal-ws.ts).
+ *
+ * Best-effort by design: the work is committed in a real repository either
+ * way, and failing a disconnect over bookkeeping helps nobody.
+ */
+export async function afterTerminalSession(
+  workspaceId: string,
+  userId: string,
+): Promise<void> {
+  try {
+    const doc = await AppWorktreeV2.findOne({
+      workspaceId: new Types.ObjectId(workspaceId),
+      userId,
+    });
+    if (!doc) return;
+    const ctx: SandboxExecContext = { sessionKey: doc._id.toString() };
+    if (!(await getSandboxProvider().hasSession(ctx))) return;
+    if (!(await boxHasRepo(ctx))) return;
+
+    const { branch } = await boxHead(ctx);
+    if (branch && branch !== "HEAD" && branch !== doc.branch) {
+      logger.info("Apps v2 following a branch switch made in the terminal", {
+        from: doc.branch,
+        to: branch,
+      });
+      doc.branch = branch;
+      await doc.save();
+    }
+    // Commits typed in the shell but never pushed: push them. The push runs
+    // through the git endpoint, whose reaction handles mirror + refresh.
+    await boxPushIfAhead(ctx);
+  } catch (error) {
+    logger.warn("Apps v2 terminal settle-up failed", {
+      userId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 export interface WorktreeStatus {
   branch: string;
   /** Commit the working copy is on. */
@@ -1060,8 +1122,8 @@ export async function commitWorktree(
   const result = await boxCommitAll({ ctx, message, author });
   if (!result.committed) return result;
   await syncBranchFromBox(handle);
-  queueMirrorPush(handle.doc.workspaceId.toString());
-  pokeAppV2(handle.doc.workspaceId, null, "commit", handle.doc.userId);
+  // No mirror queue and no poke here: boxCommitAll PUSHED, the push went
+  // through the git endpoint, and the endpoint reacts (notifyRepoPushed).
   logger.info("Apps v2 worktree committed", {
     branch: handle.doc.branch,
     commitOid: result.commitOid,
@@ -1128,8 +1190,8 @@ export async function commitAgentTurn(
       author: { name: "Mako Agent", email: "agent@mako.ai" },
     });
     if (!result.committed) return [];
-    queueMirrorPush(workspaceId);
-    pokeAppV2(doc.workspaceId, null, "commit", actorId);
+    // Mirror queue and window poke happen in the git endpoint's push
+    // reaction, which this commit's own push just triggered.
     logger.info("Apps v2 agent turn committed", {
       actorId,
       commitOid: result.commitOid,

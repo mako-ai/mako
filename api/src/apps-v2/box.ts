@@ -290,9 +290,16 @@ export async function boxListFiles(
 
   // Sizes in one call rather than one per file. A tree with a few hundred
   // files would otherwise be a few hundred round trips to a microVM.
+  // Probe stat's dialect first: `-c` is GNU (the microVM), `-f` is BSD (the
+  // local provider on a Mac). Falling back with `||` after the fact cannot
+  // work — xargs has already consumed the list — and the GNU-only version
+  // quietly reported every file as 0 bytes on exactly the machines this code
+  // is developed on.
   const sizes = await boxExec(
     ctx,
-    `cd ${sh(boxRoot(ctx))} && printf '%s\\0' ${paths.map(sh).join(" ")} | xargs -0 stat -c '%s %n' 2>/dev/null || true`,
+    `cd ${sh(boxRoot(ctx))} && ` +
+      `if stat -c %s . >/dev/null 2>&1; then fmt=-c; spec='%s %n'; else fmt=-f; spec='%z %N'; fi && ` +
+      `printf '%s\\0' ${paths.map(sh).join(" ")} | xargs -0 stat "$fmt" "$spec" 2>/dev/null || true`,
     { timeoutMs: 60_000 },
   );
   const sizeByPath = new Map<string, number>();
