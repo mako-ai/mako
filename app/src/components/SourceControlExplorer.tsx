@@ -183,7 +183,7 @@ export default function SourceControlExplorer() {
   const apps = useAppsV2Store(s => s.apps);
   const fetchApps = useAppsV2Store(s => s.fetchApps);
   const statusByApp = useAppsV2Store(s => s.statusByApp);
-  const historyByApp = useAppsV2Store(s => s.historyByApp);
+  const historyByApp = useAppsV2Store(s => s.repoHistoryByApp);
   const fetchStatus = useAppsV2Store(s => s.fetchStatus);
   const fetchHistory = useAppsV2Store(s => s.fetchHistory);
   const commit = useAppsV2Store(s => s.commit);
@@ -207,10 +207,19 @@ export default function SourceControlExplorer() {
   const refresh = useCallback(() => {
     if (!workspaceId || !appId) return;
     void fetchStatus(workspaceId, appId);
-    void fetchHistory(workspaceId, appId);
+    void fetchHistory(workspaceId, appId, "repo");
   }, [workspaceId, appId, fetchStatus, fetchHistory]);
 
   useEffect(refresh, [refresh]);
+
+  // History follows the current branch, but the mount-time fetch races the
+  // status call (branch unknown -> default branch). Refetch once it lands.
+  const currentBranch = status?.branch;
+  useEffect(() => {
+    if (workspaceId && appId && currentBranch) {
+      void fetchHistory(workspaceId, appId, "repo");
+    }
+  }, [workspaceId, appId, currentBranch, fetchHistory]);
 
   const handleCommit = useCallback(async () => {
     if (!workspaceId || !appId || !message.trim() || committing) return;
@@ -419,7 +428,7 @@ export default function SourceControlExplorer() {
                   {index === 0 && (
                     <Chip
                       icon={<BranchIcon size={11} />}
-                      label="main"
+                      label={branch}
                       size="small"
                       color="primary"
                       sx={{

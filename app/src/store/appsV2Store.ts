@@ -165,6 +165,8 @@ interface AppsV2Store {
    */
   viewUrlByApp: Record<string, string | undefined>;
   historyByApp: Record<string, AppV2Commit[]>;
+  /** Repo-wide graph (Source Control panel) — same repo, no app pathspec. */
+  repoHistoryByApp: Record<string, AppV2Commit[]>;
   branchesByApp: Record<string, AppV2Branch[]>;
   terminalByApp: Record<string, AppV2TerminalEntry[]>;
   execRunning: Record<string, boolean>;
@@ -242,7 +244,11 @@ interface AppsV2Store {
   clearTerminal: (appId: string) => void;
 
   fetchStatus: (workspaceId: string, appId: string) => Promise<void>;
-  fetchHistory: (workspaceId: string, appId: string) => Promise<void>;
+  fetchHistory: (
+    workspaceId: string,
+    appId: string,
+    scope?: "app" | "repo",
+  ) => Promise<void>;
   fetchBranches: (workspaceId: string, appId: string) => Promise<void>;
   /** Fetch (or refresh) the cookie-free URL for an app's published build. */
   fetchViewUrl: (workspaceId: string, appId: string) => Promise<void>;
@@ -317,6 +323,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
     editingByApp: {},
     viewUrlByApp: {},
     historyByApp: {},
+    repoHistoryByApp: {},
     branchesByApp: {},
     terminalByApp: {},
     execRunning: {},
@@ -589,6 +596,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
           delete s.filesByApp[appId];
           delete s.statusByApp[appId];
           delete s.historyByApp[appId];
+          delete s.repoHistoryByApp[appId];
           delete s.terminalByApp[appId];
           delete s.previewByApp[appId];
         });
@@ -784,15 +792,26 @@ export const useAppsV2Store = create<AppsV2Store>()(
       }
     },
 
-    fetchHistory: async (workspaceId, appId) => {
+    fetchHistory: async (workspaceId, appId, scope = "app") => {
       try {
+        // Show the branch the user's box is actually on (VS Code's graph
+        // follows HEAD); the server falls back to the default branch when
+        // the ref is unknown, so a stale value degrades gracefully. The
+        // Source Control panel asks for repo scope — its CHANGES list is
+        // repo-wide, and a graph that hides your own cross-app commit is
+        // worse than useless.
+        const ref = get().statusByApp[appId]?.branch;
         const body = unwrapBody(
           await api.GET("/api/workspaces/{workspaceId}/apps-v2/{id}/history", {
-            params: { path: { workspaceId, id: appId } },
+            params: {
+              path: { workspaceId, id: appId },
+              query: { ...(ref ? { ref } : {}), scope },
+            },
           }),
         ) as { commits?: AppV2Commit[] };
         set(s => {
-          s.historyByApp[appId] = body.commits ?? [];
+          if (scope === "repo") s.repoHistoryByApp[appId] = body.commits ?? [];
+          else s.historyByApp[appId] = body.commits ?? [];
         });
       } catch (e) {
         set(s => {
@@ -825,6 +844,16 @@ export const useAppsV2Store = create<AppsV2Store>()(
       set(s => {
         s.editingByApp[appId] = editing;
       });
+      // Dev mode is a client-side flag, but the sandbox and dev server it
+      // fronts outlive the page — persist it so a reload (HMR, F5) drops the
+      // user back into the workbench instead of the viewing pane.
+      try {
+        if (editing) localStorage.setItem(`apps-v2-editing:${appId}`, "1");
+        else localStorage.removeItem(`apps-v2-editing:${appId}`);
+      } catch {
+        // Storage unavailable (private mode) — dev mode just won't survive
+        // reloads, same as before.
+      }
       // Entering edit mode starts a sandbox, and the sandbox is what reads
       // are served from — so re-read once it exists, or the tree stays on the
       // committed view until something else changes.
@@ -909,6 +938,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
         ) as { result?: { committed: boolean; reason?: string } };
         void get().fetchStatus(workspaceId, appId);
         void get().fetchHistory(workspaceId, appId);
+        void get().fetchHistory(workspaceId, appId, "repo");
         if (body.result?.committed) return { ok: true };
         return { ok: false, error: body.result?.reason ?? "Nothing to commit" };
       } catch (e) {

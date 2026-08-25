@@ -1205,13 +1205,33 @@ export async function defaultBranchSha(
   return sha;
 }
 
-export async function projectHistory(project: IAppProjectV2, limit = 20) {
+export async function projectHistory(
+  project: IAppProjectV2,
+  limit = 20,
+  ref?: string,
+  scope: "app" | "repo" = "app",
+) {
   const repoDir = await repoFor(project);
+  // History follows the branch the caller is actually on (VS Code semantics),
+  // falling back to the default branch when the ref is absent or bogus. The
+  // shape check keeps user input out of argv option position; show-ref
+  // verifies existence without ever resolving arbitrary expressions.
+  let target = `refs/heads/${project.defaultBranch || DEFAULT_BRANCH}`;
+  if (ref && /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(ref) && !ref.includes("..")) {
+    const exists = await runGit(
+      ["show-ref", "--verify", "--quiet", `refs/heads/${ref}`],
+      { cwd: repoDir },
+    ).then(
+      () => true,
+      () => false,
+    );
+    if (exists) target = `refs/heads/${ref}`;
+  }
   return repoLog(
     repoDir,
-    `refs/heads/${project.defaultBranch || DEFAULT_BRANCH}`,
+    target,
     limit,
-    appRootFor(project),
+    scope === "repo" ? undefined : appRootFor(project),
   );
 }
 

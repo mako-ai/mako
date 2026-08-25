@@ -88,7 +88,11 @@ import {
   mintPreviewGrant,
   mintPublishedGrant,
 } from "../apps-v2/preview.service";
-import { DEV_SERVER_LOG, ensureDevServer } from "../apps-v2/dev-server.service";
+import {
+  DEV_SERVER_LOG,
+  ensureDevServer,
+  isServingApp,
+} from "../apps-v2/dev-server.service";
 import { getSandboxProvider } from "../apps-v2/sandbox/provider";
 import { Readable } from "node:stream";
 import {
@@ -922,12 +926,14 @@ appsV2Routes.openapi(
     method: "get",
     path: "/{id}/history",
     tags: ["Apps v2"],
-    summary: "Commit history of the default branch",
+    summary: "Commit history of a branch (defaults to the default branch)",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,
       query: z.object({
         limit: z.coerce.number().int().positive().max(200).optional(),
+        ref: z.string().max(200).optional(),
+        scope: z.enum(["app", "repo"]).optional(),
       }),
     },
     responses: OPEN_RESPONSES,
@@ -936,8 +942,13 @@ appsV2Routes.openapi(
     try {
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const { limit } = c.req.valid("query");
-      const commits = await projectHistory(loaded.project, limit ?? 20);
+      const { limit, ref, scope } = c.req.valid("query");
+      const commits = await projectHistory(
+        loaded.project,
+        limit ?? 20,
+        ref,
+        scope ?? "app",
+      );
       return c.json({ success: true as const, commits }, 200);
     } catch (error) {
       return handleError(c, error);
@@ -1310,25 +1321,31 @@ appsV2Routes.openapi(
         loaded.userId ?? "api-key",
       );
 
-      // Everything the boot does goes to ONE log the client tails live —
-      // starting with a truncate, so this boot's output is this boot's.
-      // The install pipes through tee rather than redirecting so its output
-      // still comes back in the exec result for the failure payload.
-      const install = await execInWorktree(
-        handle,
-        `: > ${DEV_SERVER_LOG}; set -o pipefail; ( [ -d node_modules ] || npm install --no-audit --no-fund ) 2>&1 | tee -a ${DEV_SERVER_LOG}`,
-        { timeoutMs: 300_000 },
-      );
-      if (install.exitCode !== 0) {
-        return c.json(
-          {
-            success: false,
-            error: "npm install failed",
-            stdout: install.stdout.slice(-4000),
-            stderr: install.stderr.slice(-4000),
-          },
-          422,
+      // Reattach (page reload, second tab): the server is already serving
+      // this app, so leave the boot log alone — it holds the real boot's
+      // output, and this call will not write a new one.
+      if (!(await isServingApp(handle))) {
+        // Everything the boot does goes to ONE log the client tails live —
+        // starting with a truncate, so this boot's output is this boot's.
+        // The install pipes through tee rather than redirecting so its
+        // output still comes back in the exec result for the failure
+        // payload.
+        const install = await execInWorktree(
+          handle,
+          `: > ${DEV_SERVER_LOG}; set -o pipefail; ( [ -d node_modules ] || npm install --no-audit --no-fund ) 2>&1 | tee -a ${DEV_SERVER_LOG}`,
+          { timeoutMs: 300_000 },
         );
+        if (install.exitCode !== 0) {
+          return c.json(
+            {
+              success: false,
+              error: "npm install failed",
+              stdout: install.stdout.slice(-4000),
+              stderr: install.stderr.slice(-4000),
+            },
+            422,
+          );
+        }
       }
 
       // §12.4: vite runs inside the sandbox and E2B publishes the port, so

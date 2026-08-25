@@ -3942,7 +3942,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Commit history of the default branch */
+        /** Commit history of a branch (defaults to the default branch) */
         get: operations["get_api_workspaces_workspaceId_apps_v2_id_history"];
         put?: never;
         post?: never;
@@ -18511,6 +18511,8 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: number;
+                ref?: string;
+                scope?: "app" | "repo";
             };
             header?: never;
             path: {

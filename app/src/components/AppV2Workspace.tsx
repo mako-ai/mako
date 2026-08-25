@@ -346,9 +346,37 @@ function TerminalTabs({
   appId: string;
   workspaceId: string;
 }) {
-  const [shells, setShells] = useState<string[]>(["1"]);
+  // Shell tabs survive reloads: each tab is a PTY keyed by its id on the
+  // server, and those sessions outlive the page — restoring the same ids
+  // reattaches to the same running shells (scrollback and all), VS Code
+  // style. Only the tab LIST is persisted; which tab is active is not worth
+  // remembering.
+  const [shells, setShells] = useState<string[]>(() => {
+    try {
+      const saved = JSON.parse(
+        localStorage.getItem(`apps-v2-shells:${appId}`) ?? "[]",
+      ) as unknown;
+      if (
+        Array.isArray(saved) &&
+        saved.length > 0 &&
+        saved.every(x => typeof x === "string" && /^[0-9]{1,6}$/.test(x))
+      ) {
+        return saved;
+      }
+    } catch {
+      // Corrupt or unavailable storage — fall through to the default.
+    }
+    return ["1"];
+  });
   const [active, setActive] = useState<string>("dev");
-  const nextId = useRef(2);
+  const nextId = useRef(Math.max(0, ...shells.map(Number)) + 1);
+  useEffect(() => {
+    try {
+      localStorage.setItem(`apps-v2-shells:${appId}`, JSON.stringify(shells));
+    } catch {
+      // Best effort.
+    }
+  }, [appId, shells]);
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -483,6 +511,26 @@ export default function AppV2Workspace({
   const setEditing = useAppsV2Store(s => s.setEditing);
   const viewUrl = useAppsV2Store(s => s.viewUrlByApp[appId]);
   const fetchViewUrl = useAppsV2Store(s => s.fetchViewUrl);
+
+  // Dev mode survives reloads: the flag is client-side but the sandbox and
+  // dev server outlive the page, so re-enter the workbench instead of
+  // dumping the user back to the viewing pane. startDevPreview reattaches
+  // to the running server (or restarts it) rather than double-starting.
+  useEffect(() => {
+    let persisted = false;
+    try {
+      persisted = localStorage.getItem(`apps-v2-editing:${appId}`) === "1";
+    } catch {
+      // Storage unavailable — nothing to restore.
+    }
+    if (persisted && !editing && workspaceId) {
+      setEditing(workspaceId, appId, true);
+      void useAppsV2Store.getState().startDevPreview(workspaceId, appId);
+    }
+    // Run once per app open; `editing` is deliberately not a dependency —
+    // exiting dev mode clears the flag, and re-entering here would fight it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appId, workspaceId]);
 
   // The consumer view's token is short-lived, so it is fetched when this app
   // is opened for viewing and again whenever a publish moves the app on.
@@ -660,7 +708,7 @@ export default function AppV2Workspace({
             </Button>
           </span>
         </Tooltip>
-        <Tooltip title="History (main)">
+        <Tooltip title={`History (${status?.branch ?? "main"})`}>
           <IconButton
             size="small"
             onClick={e => {

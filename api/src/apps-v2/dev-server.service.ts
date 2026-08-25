@@ -130,10 +130,23 @@ const server = await createServer({
     // The browser reaches us on the sandbox's public origin; without this
     // Vite answers 403 "Blocked request. This host is not allowed."
     allowedHosts: [".e2b.app"],
+    // inotify does not fire in the E2B microVM (verified: fs.watch gets no
+    // event even for a same-process append), so without polling the module
+    // graph never invalidates: edits commit and land on disk but the served
+    // transform — and HMR — stay frozen on the boot-time contents.
+    watch: { usePolling: true, interval: 300 },
   },
 });
 await server.listen();
+// The same banner \`vite dev\` prints from a terminal — version, ready
+// time, URLs — so the boot log reads like the real thing, because it is.
+server.printUrls();
 console.log("mako dev server listening on ${DEV_PORT}");
+// Watcher lifecycle in the boot log: "ready" proves the polling scan
+// finished (inotify is dead in this VM, so a silent watcher means frozen
+// transforms), and errors here are otherwise invisible.
+server.watcher.on("ready", () => console.log("file watcher ready (polling)"));
+server.watcher.on("error", (e) => console.log("file watcher error:", e.message));
 `.trimStart();
 }
 
@@ -234,6 +247,18 @@ async function listeningFor(
 }
 
 /**
+ * Is this app's dev server already up in an existing sandbox? Never creates
+ * a sandbox. The reattach path uses this to keep its hands off the boot log:
+ * truncating it and then skipping the launch (because the server was already
+ * running) left the Dev server tab permanently blank after a page reload.
+ */
+export async function isServingApp(handle: WorktreeHandle): Promise<boolean> {
+  const provider = getSandboxProvider();
+  if (!(await provider.hasSession(boxCtx(handle)))) return false;
+  return (await listeningFor(handle, provider)) === "this-app";
+}
+
+/**
  * Ensure a dev server is running for this app and return its public URL.
  *
  * Idempotent: a server that is already listening is reused, so repeated
@@ -277,11 +302,15 @@ export async function ensureDevServer(
       { cwd: handle.appRoot, timeoutMs: 60_000 },
     );
 
-    // Vite is usually listening in a few hundred ms; poll briefly rather than
-    // sleeping a fixed amount, and surface its own log if it never comes up.
+    // Vite is usually listening within seconds, but a cold boot on E2B can
+    // take over a minute (cold ESM import of vite off microVM disk, plus the
+    // polling watcher's initial scan) — and a window that gives up early
+    // 500s the request while the server comes up fine moments later. Poll
+    // with a real pause, generously, and surface the log if it truly dies.
     let up = false;
-    for (let attempt = 0; attempt < 15 && !up; attempt++) {
+    for (let attempt = 0; attempt < 45 && !up; attempt++) {
       up = (await listeningFor(handle, provider)) === "this-app";
+      if (!up) await new Promise(resolve => setTimeout(resolve, 2000));
     }
     if (!up) {
       const log = await provider.exec(ctx, `tail -20 ${DEV_SERVER_LOG}`, {
