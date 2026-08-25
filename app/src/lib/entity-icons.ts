@@ -49,6 +49,7 @@ import {
   Wallet,
   type LucideIcon,
 } from "lucide-react";
+import DbtIcon from "../components/icons/DbtIcon";
 import type {
   LeftPaneView,
   SettingsSection,
@@ -60,7 +61,11 @@ export const EXPLORER_ICONS = {
   databases: Database,
   consoles: SquareChevronRight,
   flows: ArrowLeftRight,
-  dbt: GitBranch,
+  // The dbt mark itself (the extension's activity-bar icon), not a generic
+  // git glyph — GitBranch now belongs to Source Control, where it means what
+  // it says.
+  dbt: DbtIcon,
+  "source-control": GitBranch,
   connectors: Plug,
   dashboards: ChartPie,
   apps: AppWindow,

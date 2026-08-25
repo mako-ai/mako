@@ -57,6 +57,7 @@ type NavigationView =
   | "notebooks"
   | "apps-v2"
   | "dbt"
+  | "source-control"
   | "settings"
   | "views";
 
@@ -76,6 +77,13 @@ const topNavigationItems: {
   // Apps v2 (git-backed, experimental) — shown only when the server flag is
   // on (useAppsV2Visible probes /apps-v2/status-probe per workspace).
   { view: "apps-v2", icon: EXPLORER_ICONS["apps-v2"], label: "Apps v2" },
+  // The workspace repository, VS Code style — visible alongside Apps v2,
+  // because it IS that repo's source control.
+  {
+    view: "source-control",
+    icon: EXPLORER_ICONS["source-control"],
+    label: "Source Control",
+  },
 ];
 
 /**
@@ -229,7 +237,9 @@ export function SidebarMobileExplorerNav() {
   const appsV2Visible = useAppsV2Visible();
 
   const items = [...topNavigationItems, ...bottomNavigationItems].filter(
-    item => item.view !== "apps-v2" || appsV2Visible,
+    item =>
+      (item.view !== "apps-v2" && item.view !== "source-control") ||
+      appsV2Visible,
   );
 
   return (
@@ -359,7 +369,11 @@ function Sidebar() {
           }}
         >
           {topNavigationItems
-            .filter(item => item.view !== "apps-v2" || appsV2Visible)
+            .filter(
+              item =>
+                (item.view !== "apps-v2" && item.view !== "source-control") ||
+                appsV2Visible,
+            )
             .map(item => {
               const Icon = item.icon;
               const isActive = activeExplorer === item.view;

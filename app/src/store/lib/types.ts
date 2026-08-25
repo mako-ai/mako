@@ -189,6 +189,7 @@ export type LeftPaneView =
   | "notebooks"
   | "apps-v2"
   | "dbt"
+  | "source-control"
   | "settings";
 
 /**
