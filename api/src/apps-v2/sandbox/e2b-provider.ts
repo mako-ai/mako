@@ -73,7 +73,25 @@ async function connectSession(sessionKey: string): Promise<Sandbox> {
     });
     if (paginator.hasNext) {
       const page = await paginator.nextItems();
-      const info = page[0];
+      // Deterministic choice when the key matches more than one sandbox.
+      // Duplicates happen: two API processes (a dev machine and a preview
+      // deployment share one E2B account and one database) can each create a
+      // box for the same worktree, and page order is not a contract — so
+      // without sorting, WHICH working copy answered depended on the whim of
+      // a list API, and files written through one process vanished when the
+      // next request read the other box. Newest wins, always, everywhere.
+      const [info, ...stale] = [...page].sort(
+        (a, b) =>
+          new Date(b.startedAt ?? 0).getTime() -
+          new Date(a.startedAt ?? 0).getTime(),
+      );
+      if (stale.length > 0) {
+        logger.warn("Multiple sandboxes share one session key; using newest", {
+          sessionKey,
+          using: info?.sandboxId,
+          ignoring: stale.map(x => x.sandboxId),
+        });
+      }
       if (info) {
         const sandbox = await Sandbox.connect(info.sandboxId, {
           apiKey: apiKey(),

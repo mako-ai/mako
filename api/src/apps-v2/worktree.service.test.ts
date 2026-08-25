@@ -236,12 +236,44 @@ describe("the working copy", () => {
     expect(file.contents).toBe("from the shell\n");
   });
 
-  it("a credential never appears in the remote URL", async () => {
+  it("a credential never appears in the remote URL, and lives inside .git", async () => {
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
     const result = await execInWorktree(handle, "git remote -v");
     expect(result.stdout).not.toContain("mgt_");
+
+    // Inside the clone's .git: per-clone by construction and part of the
+    // pause snapshot. It has lived in $HOME (shared across local sandboxes —
+    // cross-workspace credential clobbering) and in /tmp (tmpfs, wiped by
+    // E2B pause/resume — "cat: No such file" at push time). Pin the location
+    // so the third wrong home needs to argue with this test first.
+    const where = await execInWorktree(
+      handle,
+      'test -s "$(git rev-parse --absolute-git-dir)/mako-git-token" && echo in-git',
+    );
+    expect(where.stdout).toContain("in-git");
   });
+
+  it("a running box catches up right after a server-side app creation", async () => {
+    const { catchUpLiveBox } = await import("./worktree.service");
+    const first = await makeProject();
+    // A LIVE box for the actor, established on the current state.
+    await execInWorktree(await ensureWorktree(first, USER), "true");
+
+    // A second app is created server-side — no sandbox involved — exactly
+    // what app2_create_app does. Reads come from the running box, which has
+    // not heard: without the catch-up the new app lists as empty ("files:
+    // []"), and the agent rebuilds the scaffold by hand on top of it.
+    const second = await createProject({
+      workspaceId: WS,
+      title: "Second App",
+      userId: USER,
+    });
+    await catchUpLiveBox(second, USER);
+    const listed = (await listFiles(second, USER)).entries.map(e => e.path);
+    expect(listed).toContain("src/App.tsx");
+    expect(listed).toContain("package.json");
+  }, 180_000);
 });
 
 describe("commits", () => {

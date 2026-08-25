@@ -84,17 +84,21 @@ export async function boxHasRepo(ctx: SandboxExecContext): Promise<boolean> {
 }
 
 /**
- * Where a sandbox keeps its credential: its own scratch area, outside the
- * working tree so it can never be committed.
+ * Where a sandbox keeps its credential: inside the clone's own `.git`.
  *
- * Emphatically NOT under $HOME. The local provider shares one HOME across
- * every sandbox — deliberately, so tool caches are shared — so a token written
- * there is a token every other sandbox overwrites. Two workspaces open at once
- * and whichever wrote last owns the credential; the other gets 401s from a
- * perfectly valid token for the wrong repository.
+ * The two wrong answers have both been shipped and both bit. $HOME: the local
+ * provider shares one HOME across sandboxes (deliberately, for tool caches),
+ * so two workspaces overwrote each other's token and one got 401s from a
+ * valid credential for the wrong repository. Scratch (/tmp): tmpfs on the
+ * microVM, which E2B's pause snapshot does not preserve — a resumed sandbox
+ * woke with a configured helper pointing at a file that no longer existed and
+ * failed auth with "No such file" while nothing had been rotated.
+ *
+ * `.git` is per-clone by construction, inside the snapshot because the clone
+ * is, and nothing under it can ever be committed.
  */
 function tokenPath(ctx: SandboxExecContext): string {
-  return `${getSandboxProvider().scratch(ctx)}/mako-git-token`;
+  return `${boxRoot(ctx)}/.git/mako-git-token`;
 }
 
 /**
@@ -125,7 +129,6 @@ export async function configureBoxRemote(input: {
   await run(
     ctx,
     [
-      `mkdir -p ${sh(getSandboxProvider().scratch(ctx))}`,
       // umask first: the file must never exist world-readable, not even for
       // the instant between creation and a chmod.
       `(umask 077 && printf '%s' ${sh(token)} > ${sh(credential)})`,
@@ -169,17 +172,21 @@ export async function cloneIntoBox(input: {
   author?: { name?: string; email?: string };
 }): Promise<void> {
   const { ctx, workspaceId, userId, branch, author } = input;
-  const excludes = `${getSandboxProvider().scratch(ctx)}/mako-never-commit`;
+  // `.git/info/exclude` is git's own home for repo-local ignores — no config
+  // key needed, and (unlike the scratch file this used to be) inside the
+  // pause snapshot, so a resumed sandbox cannot wake with its excludes gone
+  // and quietly start committing node_modules.
+  const excludes = `${boxRoot(ctx)}/.git/info/exclude`;
 
   await run(
     ctx,
     [
-      `mkdir -p ${sh(boxRoot(ctx))} ${sh(getSandboxProvider().scratch(ctx))}`,
+      `mkdir -p ${sh(boxRoot(ctx))}`,
       boxGit(ctx, "init", "-q"),
-      // A repo-level backstop for the ignores below, independent of whatever
-      // .gitignore the app happens to ship.
+      `mkdir -p ${sh(`${boxRoot(ctx)}/.git/info`)}`,
+      // A repo-level backstop, independent of whatever .gitignore the app
+      // happens to ship.
       `printf '%s\\n' ${NEVER_COMMIT.map(n => sh(`${n}/`)).join(" ")} > ${sh(excludes)}`,
-      boxGit(ctx, "config", "core.excludesFile", excludes),
     ].join(" && "),
     "preparing the working copy",
     60_000,

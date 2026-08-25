@@ -964,6 +964,39 @@ export async function readSessionFile(
 // ---------------------------------------------------------------------------
 
 /**
+ * Bring an actor's RUNNING sandbox level with the server, now.
+ *
+ * For the moment right after a server-side commit (app creation is one: the
+ * scaffold lands on main with no sandbox involved). Reads are served from the
+ * working copy whenever a sandbox is running, so a running-but-behind box
+ * makes a just-created app read as empty — which is exactly how the agent saw
+ * `files: []` from create_app and rebuilt the scaffold by hand on top of it.
+ *
+ * Never boots a sandbox: a sleeping box hydrates fresh on next use and needs
+ * nothing from us.
+ */
+export async function catchUpLiveBox(
+  project: IAppProjectV2,
+  actorId: string,
+): Promise<void> {
+  try {
+    // ensureWorktree first: it is what merges main into the actor's branch
+    // server-side, so the pull below has the new commit to bring over.
+    const handle = await ensureWorktree(project, actorId);
+    const ctx = boxCtx(handle);
+    if (!(await getSandboxProvider().hasSession(ctx))) return;
+    if (!(await boxHasRepo(ctx))) return;
+    await boxPull(ctx);
+    lastPull.set(ctx.sessionKey, Date.now());
+  } catch (error) {
+    logger.warn("Apps v2 live-box catch-up failed", {
+      actorId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
  * Settle up after a terminal session ends.
  *
  * The terminal is a live PTY, so unlike execInWorktree nothing runs "after the

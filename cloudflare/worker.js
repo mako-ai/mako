@@ -67,6 +67,16 @@ export default {
       redirect: "manual",
     });
 
+    // WebSocket upgrades must pass through UNTOUCHED. A 101 response carries
+    // its socket on the Response object itself; re-wrapping the response
+    // below (new Response(response.body, ...)) silently drops it, which is
+    // why the Apps v2 terminal connected everywhere except previews — the
+    // client saw the connection close and looped on "reconnecting" forever.
+    const upgrade = request.headers.get("Upgrade") || "";
+    if (upgrade.toLowerCase() === "websocket") {
+      return fetch(proxyRequest);
+    }
+
     try {
       const response = await fetch(proxyRequest);
 

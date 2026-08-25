@@ -92,8 +92,9 @@ function renderBindingFile(binding: IMakoAppDataBinding): string {
     ? binding.materializationSchedule.cron
     : null;
   if (cron) lines.push(`-- schedule: ${cron}`);
-  if (binding.dbtProjectId)
+  if (binding.dbtProjectId) {
     lines.push(`-- dbt_project: ${binding.dbtProjectId}`);
+  }
   return `${lines.join("\n")}\n${binding.code.trim()}\n`;
 }
 

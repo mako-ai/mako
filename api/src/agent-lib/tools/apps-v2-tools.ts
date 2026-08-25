@@ -34,6 +34,7 @@ import { canReadResource, canWriteResource } from "../../utils/resource-acl";
 import {
   WorktreeConflictError,
   commitWorktree,
+  catchUpLiveBox,
   createProject,
   synthesizeProjectFromFolder,
   listAppFolders,
@@ -200,6 +201,11 @@ export function createAppsV2Tools({
             description,
             userId,
           });
+          // The scaffold just landed on main server-side. If this actor's
+          // sandbox is RUNNING, reads are served from it — and it has not
+          // heard yet, so without a catch-up the brand-new app lists as
+          // empty and the agent rebuilds the scaffold by hand over it.
+          await catchUpLiveBox(project, actorId);
           const { entries } = await listFiles(project, actorId);
           return {
             success: true,
