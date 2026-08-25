@@ -1083,13 +1083,28 @@ export const useAppsV2Store = create<AppsV2Store>()(
         };
       });
       try {
-        const res = await api.POST(
+        // One retry, for the takeover shape: when another app's dev server
+        // owns the port, the first request kills it, reinstalls and relaunches
+        // — which can outlive a transport deadline even though the server
+        // finishes the job. The second request finds the right server already
+        // listening and returns in milliseconds. Retrying anything else once
+        // is harmless; the second failure is the one reported.
+        let res = await api.POST(
           "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview",
           {
             params: { path: { workspaceId, id: appId } },
             body: undefined,
           },
         );
+        if (!res.response.ok) {
+          res = await api.POST(
+            "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview",
+            {
+              params: { path: { workspaceId, id: appId } },
+              body: undefined,
+            },
+          );
+        }
         const raw = (res.data ?? res.error) as
           | { success?: boolean; url?: string; error?: string }
           | undefined;

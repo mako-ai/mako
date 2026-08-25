@@ -110,7 +110,16 @@ export function attachAppsV2TerminalWs(serverType: ServerType): void {
   server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const match = PATH_RE.exec(req.url ?? "");
     if (!match) return; // Not ours — leave it for any other upgrade handler.
-    const [, workspaceId, appRef] = match;
+    const [, workspaceId, appRef, query] = match;
+    // VS Code-style multiple terminals: each tab is its own PTY, addressed by
+    // a client-chosen id. Absent (older clients) = the first tab.
+    const termId =
+      new URLSearchParams((query ?? "").replace(/^\?/, "")).get("term") ?? "1";
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(termId)) {
+      socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+      socket.destroy();
+      return;
+    }
 
     void (async () => {
       // A failed lookup is not a failed login. Collapsing both into 401 told
@@ -134,10 +143,12 @@ export function attachAppsV2TerminalWs(serverType: ServerType): void {
         return;
       }
       wss.handleUpgrade(req, socket, head, ws => {
-        void startSession(ws, auth.project, auth.userId).catch(error => {
-          logger.error("Terminal session failed to start", { error });
-          ws.close(1011, "terminal failed to start");
-        });
+        void startSession(ws, auth.project, auth.userId, termId).catch(
+          error => {
+            logger.error("Terminal session failed to start", { error });
+            ws.close(1011, "terminal failed to start");
+          },
+        );
       });
     })();
   });
@@ -268,11 +279,13 @@ async function startSession(
   ws: WebSocket,
   project: IAppProjectV2,
   userId: string,
+  termId: string,
 ): Promise<void> {
   // Fast path first: if the shell is already running, attach to it and do no
-  // repository work at all.
+  // repository work at all. Sessions are keyed per (worktree, terminal tab):
+  // one sandbox, as many shells in it as the person opens.
   const knownKey = await existingWorktreeKey(project, userId).catch(() => null);
-  const running = knownKey ? live.get(knownKey) : undefined;
+  const running = knownKey ? live.get(`${knownKey}:${termId}`) : undefined;
 
   // Say something before the slow part. The socket is already open by now, so
   // the client shows "open" while the server may spend the best part of a
@@ -292,13 +305,13 @@ async function startSession(
   let session: LiveTerminal;
 
   if (running) {
-    key = knownKey!;
+    key = `${knownKey!}:${termId}`;
     session = running;
     reattach(session, ws);
   } else {
     // Only the cold path pays for worktree setup.
     const handle = await ensureWorktree(project, userId);
-    key = handle.doc._id.toString();
+    key = `${handle.doc._id.toString()}:${termId}`;
     const existing = live.get(key);
     if (existing) {
       session = existing;

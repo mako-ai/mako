@@ -34,6 +34,7 @@ import {
   History as HistoryIcon,
   Play as PlayIcon,
   RotateCcw as DiscardIcon,
+  Plus as PlusIcon,
   TerminalSquare as TerminalIcon,
 } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
@@ -74,9 +75,12 @@ const TerminalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
 function TerminalPanel({
   appId,
   workspaceId,
+  termId,
 }: {
   appId: string;
   workspaceId: string;
+  /** Which shell tab this is — each id is its own PTY in the same sandbox. */
+  termId: string;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<"connecting" | "open" | "reconnecting">(
@@ -157,7 +161,7 @@ function TerminalPanel({
     const connect = () => {
       if (disposed) return;
       const url = new URL(
-        `/api/workspaces/${workspaceId}/apps-v2/${appId}/terminal`,
+        `/api/workspaces/${workspaceId}/apps-v2/${appId}/terminal?term=${encodeURIComponent(termId)}`,
         window.location.origin,
       );
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -204,7 +208,7 @@ function TerminalPanel({
       ws?.close();
       term.dispose();
     };
-  }, [appId, workspaceId, theme.palette.mode]);
+  }, [appId, workspaceId, termId, theme.palette.mode]);
 
   return (
     <Box
@@ -324,6 +328,123 @@ function DevBootLog({
       }}
     >
       {text || "Starting the dev sandbox — waiting for output…"}
+    </Box>
+  );
+}
+
+/**
+ * VS Code-shaped terminal area: a tab bar over N shells plus one read-only
+ * "Dev server" tab that owns the vite output for good — it does not vanish
+ * when the preview goes live, so "what did the dev server say" always has an
+ * answer. Every shell tab is a real PTY of its own in the same sandbox;
+ * closed tabs detach and the server reaps the idle shell.
+ */
+function TerminalTabs({
+  appId,
+  workspaceId,
+}: {
+  appId: string;
+  workspaceId: string;
+}) {
+  const [shells, setShells] = useState<string[]>(["1"]);
+  const [active, setActive] = useState<string>("dev");
+  const nextId = useRef(2);
+
+  return (
+    <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          gap: 0.25,
+          px: 0.5,
+          borderBottom: "1px solid",
+          borderColor: "divider",
+          flexShrink: 0,
+        }}
+      >
+        <Button
+          size="small"
+          onClick={() => setActive("dev")}
+          sx={{
+            fontSize: 11.5,
+            textTransform: "none",
+            fontWeight: active === "dev" ? 700 : 400,
+            color: active === "dev" ? "text.primary" : "text.secondary",
+          }}
+        >
+          Dev server
+        </Button>
+        {shells.map((id, index) => (
+          <Button
+            key={id}
+            size="small"
+            onClick={() => setActive(id)}
+            sx={{
+              fontSize: 11.5,
+              textTransform: "none",
+              fontWeight: active === id ? 700 : 400,
+              color: active === id ? "text.primary" : "text.secondary",
+            }}
+            endIcon={
+              shells.length > 1 ? (
+                <Box
+                  component="span"
+                  onClick={e => {
+                    e.stopPropagation();
+                    setShells(prev => {
+                      const next = prev.filter(x => x !== id);
+                      if (active === id) setActive(next[0] ?? "dev");
+                      return next;
+                    });
+                  }}
+                  sx={{ fontSize: 11, opacity: 0.6, "&:hover": { opacity: 1 } }}
+                >
+                  ×
+                </Box>
+              ) : undefined
+            }
+          >
+            shell {index + 1}
+          </Button>
+        ))}
+        <Tooltip title="New terminal — another real shell in the same sandbox">
+          <IconButton
+            size="small"
+            onClick={() => {
+              const id = String(nextId.current++);
+              setShells(prev => [...prev, id]);
+              setActive(id);
+            }}
+          >
+            <PlusIcon size={13} strokeWidth={2} />
+          </IconButton>
+        </Tooltip>
+      </Box>
+      {/* Every pane STAYS MOUNTED — an unmounted xterm is a dropped session
+          and a re-scroll; hiding keeps the socket, the scrollback and the
+          dev-log offset alive across tab switches. */}
+      <Box
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          display: active === "dev" ? "block" : "none",
+        }}
+      >
+        <DevBootLog workspaceId={workspaceId} appId={appId} />
+      </Box>
+      {shells.map(id => (
+        <Box
+          key={id}
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            display: active === id ? "block" : "none",
+          }}
+        >
+          <TerminalPanel appId={appId} workspaceId={workspaceId} termId={id} />
+        </Box>
+      ))}
     </Box>
   );
 }
@@ -659,7 +780,23 @@ export default function AppV2Workspace({
         >
           <Panel defaultSize={70} minSize={20}>
             {preview?.building ? (
-              <DevBootLog workspaceId={workspaceId} appId={appId} />
+              <Box
+                sx={{
+                  height: "100%",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 1.5,
+                  color: "text.secondary",
+                }}
+              >
+                <CircularProgress size={22} />
+                <Typography variant="body2">
+                  Dev server starting — its output is live in the{" "}
+                  <strong>Dev server</strong> terminal tab below.
+                </Typography>
+              </Box>
             ) : preview?.url ? (
               <iframe
                 title="App preview"
@@ -710,7 +847,7 @@ export default function AppV2Workspace({
           <TerminalResizeHandle onDragging={setTerminalDragging} />
 
           <Panel defaultSize={30} minSize={8} collapsible collapsedSize={0}>
-            <TerminalPanel appId={appId} workspaceId={workspaceId} />
+            <TerminalTabs appId={appId} workspaceId={workspaceId} />
           </Panel>
         </PanelGroup>
       )}

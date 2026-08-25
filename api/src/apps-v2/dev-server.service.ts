@@ -207,16 +207,30 @@ async function stageBindingData(
   return staged;
 }
 
-async function isListening(
+/** Which app the running dev server was launched for. */
+const APP_MARKER = "/tmp/mako-dev-server.app";
+
+/**
+ * Is a dev server up — and is it OURS?
+ *
+ * One sandbox serves one actor's whole workspace, and every app's dev server
+ * wants the same port. "Something is listening" therefore proves nothing
+ * about WHICH app is being served — reusing on that test alone is how
+ * opening Event Reconciliation Explorer showed binding-smoke: its vite was
+ * simply there first. The launcher's app marker is the identity check.
+ */
+async function listeningFor(
   handle: WorktreeHandle,
   provider: ReturnType<typeof getSandboxProvider>,
-): Promise<boolean> {
+): Promise<"this-app" | "other-app" | "down"> {
   const probe = await provider.exec(
     boxCtx(handle),
-    `curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:${DEV_PORT}/ && echo up || echo down`,
+    `curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:${DEV_PORT}/ && echo up || echo down; cat ${APP_MARKER} 2>/dev/null`,
     { timeoutMs: 15_000 },
   );
-  return probe.stdout.includes("up");
+  if (!probe.stdout.includes("up")) return "down";
+  const marker = probe.stdout.split("\n").slice(1).join("\n").trim();
+  return marker === handle.appRoot ? "this-app" : "other-app";
 }
 
 /**
@@ -234,7 +248,18 @@ export async function ensureDevServer(
 
   await provider.keepAlive(ctx, DEV_SESSION_KEEPALIVE_MS);
 
-  if (!(await isListening(handle, provider))) {
+  const serving = await listeningFor(handle, provider);
+  if (serving === "other-app") {
+    // Another app's dev server owns the port. Its module graph is worthless
+    // to this app; kill it and start ours. ([m] so the pattern cannot match
+    // this very command's own process entry.)
+    await provider.exec(
+      ctx,
+      `pkill -f "[m]ako-dev-server.mjs"; sleep 1; rm -f ${APP_MARKER}`,
+      { timeoutMs: 30_000 },
+    );
+  }
+  if (serving !== "this-app") {
     const write = await provider.exec(
       ctx,
       `cat > ${LAUNCHER_PATH} <<'MAKO_LAUNCHER_EOF'\n${launcherSource(appDir)}\nMAKO_LAUNCHER_EOF\necho written`,
@@ -248,7 +273,7 @@ export async function ensureDevServer(
 
     await provider.execDetached(
       ctx,
-      `nohup node ${LAUNCHER_PATH} >> ${DEV_SERVER_LOG} 2>&1 & echo started`,
+      `printf '%s' ${JSON.stringify(handle.appRoot)} > ${APP_MARKER} && nohup node ${LAUNCHER_PATH} >> ${DEV_SERVER_LOG} 2>&1 & echo started`,
       { cwd: handle.appRoot, timeoutMs: 60_000 },
     );
 
@@ -256,7 +281,7 @@ export async function ensureDevServer(
     // sleeping a fixed amount, and surface its own log if it never comes up.
     let up = false;
     for (let attempt = 0; attempt < 15 && !up; attempt++) {
-      up = await isListening(handle, provider);
+      up = (await listeningFor(handle, provider)) === "this-app";
     }
     if (!up) {
       const log = await provider.exec(ctx, `tail -20 ${DEV_SERVER_LOG}`, {
