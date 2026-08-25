@@ -327,6 +327,19 @@ export const useAppsV2Store = create<AppsV2Store>()(
         };
         set(s => {
           s.enabled = Boolean(body?.enabled);
+          // Remembered per workspace so the NEXT page load can paint the
+          // rail correctly before the probe returns — an async probe that
+          // gates nav items is otherwise a guaranteed layout shift on every
+          // single load (see appsV2VisibleHint in Sidebar).
+          try {
+            localStorage.setItem(
+              `apps-v2-enabled:${workspaceId}`,
+              body?.enabled ? "1" : "0",
+            );
+          } catch {
+            // Storage full/blocked: the probe still works, only the hint is
+            // lost.
+          }
           s.canCreate = Boolean(body?.canCreate);
           s.repos = body?.repos ?? [];
         });

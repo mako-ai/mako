@@ -14,7 +14,7 @@ import { CHAT_ICON as ChatIcon, EXPLORER_ICONS } from "../lib/entity-icons";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useAuth } from "../contexts/auth-context";
-import { startTransition, useEffect, useState } from "react";
+import { startTransition, useEffect, useMemo, useState } from "react";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useConnectorStore } from "../store/connectorStore";
@@ -100,7 +100,22 @@ function useAppsV2Visible(): boolean {
       void probeEnabled(currentWorkspace.id);
     }
   }, [currentWorkspace?.id, enabled, probeEnabled]);
-  return enabled === true;
+  // While the probe is in flight, paint from the last known answer for this
+  // workspace instead of hiding the items. Gating nav on an async probe made
+  // Apps v2 — and Source Control, which sits SECOND in the rail — pop in
+  // after first paint and shove every icon below them down, on every load.
+  // First-ever visit still has no hint; each one after paints right.
+  const hint = useMemo(() => {
+    if (!currentWorkspace?.id) return false;
+    try {
+      return (
+        localStorage.getItem(`apps-v2-enabled:${currentWorkspace.id}`) === "1"
+      );
+    } catch {
+      return false;
+    }
+  }, [currentWorkspace?.id]);
+  return enabled === undefined ? hint : enabled;
 }
 
 const bottomNavigationItems: {
