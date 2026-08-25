@@ -50,6 +50,15 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       allowedHosts: true,
+      // Opt-in polling watcher. fsevents does not deliver file changes to a
+      // Vite launched from certain detached shells (observed: agent-driven
+      // background sessions on macOS) — the server runs fine but never sees
+      // an edit, and every change needs a full restart. Polling is the
+      // reliable fallback there; it stays OFF by default because it costs
+      // CPU that a normally-launched dev server does not need to pay.
+      ...(process.env.VITE_WATCH_POLL
+        ? { watch: { usePolling: true, interval: 400 } }
+        : {}),
       proxy: {
         "/api": {
           target: process.env.VITE_API_PROXY_TARGET || "http://localhost:8080",

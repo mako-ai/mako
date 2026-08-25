@@ -253,6 +253,68 @@ function TerminalPanel({
 // Main view
 // ---------------------------------------------------------------------------
 
+/**
+ * Shown in the preview pane while a dev session boots. The pane used to keep
+ * showing the static how-it-works prose through the whole boot — precisely
+ * the moment a person is watching for signs of life. This is the BIOS
+ * moment: monospace, elapsed seconds, and the honest truth about the stages,
+ * with the REAL machine output one pane down in the terminal.
+ *
+ * No fabricated log lines: the build's actual output is not streamed to the
+ * client today, and a fake scroll of "Installing dependencies…" that nothing
+ * backs is worse than a clock that tells the truth.
+ */
+function DevBootScreen() {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setSeconds(v => v + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return (
+    <Box
+      sx={{
+        height: "100%",
+        bgcolor: "#0c0c0c",
+        color: "#7ce38b",
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+        fontSize: 13,
+        p: 3,
+        display: "flex",
+        flexDirection: "column",
+        gap: 1,
+        "@keyframes mako-boot-blink": {
+          "0%, 49%": { opacity: 1 },
+          "50%, 100%": { opacity: 0 },
+        },
+      }}
+    >
+      <Box>MAKO DEV SANDBOX</Box>
+      <Box sx={{ color: "#4d5a50" }}>
+        firecracker microVM · git clone · npm install · vite
+      </Box>
+      <Box sx={{ mt: 1 }}>
+        booting… {seconds}s
+        <Box
+          component="span"
+          sx={{
+            display: "inline-block",
+            width: "0.6em",
+            ml: 0.5,
+            bgcolor: "#7ce38b",
+            animation: "mako-boot-blink 1s step-end infinite",
+          }}
+        >
+          &nbsp;
+        </Box>
+      </Box>
+      <Box sx={{ color: "#4d5a50", mt: 1 }}>
+        first boot installs dependencies and can take a minute — the terminal
+        below is the live machine if you want to watch
+      </Box>
+    </Box>
+  );
+}
+
 export default function AppV2Workspace({
   tabId: _tabId,
   appId,
@@ -394,6 +456,17 @@ export default function AppV2Workspace({
           />
         </Tooltip>
         <Box sx={{ flex: 1 }} />
+        {editing && (
+          <Tooltip title="Back to viewing — the sandbox keeps running; the terminal and preview just leave the screen.">
+            <Button
+              size="small"
+              variant="text"
+              onClick={() => setEditing(workspaceId, appId, false)}
+            >
+              Exit dev mode
+            </Button>
+          </Tooltip>
+        )}
         <Tooltip
           title={
             devSessionLive
@@ -413,7 +486,12 @@ export default function AppV2Workspace({
                 )
               }
               disabled={preview?.building}
-              onClick={() => void startDevPreview(workspaceId, appId)}
+              onClick={() => {
+                // A dev session IS dev mode: without entering it, the live
+                // preview would run behind the published view, invisible.
+                setEditing(workspaceId, appId, true);
+                void startDevPreview(workspaceId, appId);
+              }}
             >
               {/* The label has to render STATE, not a fixed verb. It
                   previously read "Start dev session" while a session was
@@ -493,15 +571,15 @@ export default function AppV2Workspace({
       )}
 
       {/* Preview / getting started, over the terminal */}
-      <PanelGroup
-        direction="vertical"
-        // Remembers the split per browser, so a terminal you sized stays
-        // sized — one you have to re-drag every visit is one you stop using.
-        autoSaveId="apps-v2:workspace-vertical"
-        style={{ flex: 1, minHeight: 0 }}
-      >
-        <Panel defaultSize={70} minSize={20}>
-          {!editing && viewUrl ? (
+      {/* Two modes, two layouts. VIEWING is for consuming: the published
+          build (or an honest "never deployed" disclaimer) fills the pane and
+          there is NO terminal — a shell is a workbench tool, and mounting one
+          under an app you are merely looking at both wastes the space and
+          suggests the machine is part of viewing. DEV MODE is the workbench:
+          preview on top, terminal below. */}
+      {!editing ? (
+        <Box sx={{ flex: 1, minHeight: 0, display: "flex" }}>
+          {viewUrl ? (
             // Consumer view: the PUBLISHED app, which is what everyone who is
             // not working on it should see. It comes from the deployment
             // store, so opening someone's app costs a static file read and
@@ -509,104 +587,120 @@ export default function AppV2Workspace({
             // one app without a hundred microVMs.
             //
             // No allow-same-origin: this is served from Mako's own origin, so
-            // granting it would hand app code our origin and let it out of the
-            // sandbox entirely.
+            // granting it would hand app code our origin and let it out of
+            // the sandbox entirely.
             <iframe
               title={`${app?.title ?? "App"} (published)`}
               src={viewUrl}
               sandbox="allow-scripts allow-forms"
               style={{ border: 0, width: "100%", height: "100%" }}
             />
-          ) : preview?.url ? (
-            <iframe
-              title="App preview"
-              src={preview.url}
-              // The two preview tiers need DIFFERENT sandboxes.
-              //
-              // Static builds are served by Mako from Mako's own origin, so
-              // `allow-same-origin` would hand app code our origin and let it
-              // escape the sandbox entirely — it stays off, and the opaque
-              // origin is why those assets are served with `Access-Control-
-              // Allow-Origin: *`.
-              //
-              // The live dev server (§12.4) is a genuinely foreign origin
-              // (`<port>-<sandbox>.e2b.app`), so `allow-same-origin` grants it
-              // only ITS OWN origin, never ours. It is required there: with an
-              // opaque origin, Vite's HMR socket and its cross-origin module
-              // scripts do not work.
-              sandbox={
-                preview.mode === "dev"
-                  ? "allow-scripts allow-forms allow-same-origin"
-                  : "allow-scripts allow-forms"
-              }
-              style={{ border: 0, width: "100%", height: "100%" }}
-            />
           ) : (
-            <Box sx={{ p: 3, maxWidth: 560 }}>
-              <Typography variant="subtitle1" gutterBottom>
-                {app?.title ?? "App"}
-              </Typography>
-              {!app?.publishedSha && (
-                <Typography variant="body2" color="text.secondary" paragraph>
-                  Not published yet, so there is nothing for a viewer to see.
-                  Publish builds this app and deploys it; from then on opening
-                  it shows that version, with no sandbox involved.
-                </Typography>
-              )}
-              <Typography variant="body2" color="text.secondary" paragraph>
-                Browse and edit this app&apos;s files from the Apps v2 explorer
-                on the left — every file opens in its own tab. Ask the agent in
-                chat to build features (it works on your branch and commits
-                every turn), or use the terminal below — it is a real machine
-                with a real git checkout.
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                <strong>Start dev session</strong> runs the app live, so edits
-                show up as you make them. <strong>Publish</strong> builds it and
-                deploys — that is the version everyone else sees. A failed build
-                publishes nothing and leaves the current version untouched.
-              </Typography>
-            </Box>
-          )}
-        </Panel>
-
-        <TerminalResizeHandle onDragging={setTerminalDragging} />
-
-        <Panel defaultSize={30} minSize={8} collapsible collapsedSize={0}>
-          {editing ? (
-            <TerminalPanel appId={appId} workspaceId={workspaceId} />
-          ) : (
-            // Mounting the terminal opens a shell, and opening a shell boots a
-            // microVM. Doing that just because a tab was opened is what made
-            // looking at an app cost as much as working on it — so the machine
-            // starts when someone asks for it.
+            // Never deployed: say so plainly, and make the one meaningful
+            // next action the obvious thing on the page.
             <Box
               sx={{
-                height: "100%",
+                flex: 1,
                 display: "flex",
+                flexDirection: "column",
                 alignItems: "center",
                 justifyContent: "center",
-                gap: 1.5,
-                bgcolor: "background.default",
+                gap: 2,
+                p: 4,
+                textAlign: "center",
               }}
             >
-              <Typography variant="body2" color="text.secondary">
-                {app?.publishedSha
-                  ? "Viewing the published version — no sandbox is running."
-                  : "Viewing — no sandbox is running."}
+              <Typography variant="h6">{app?.title ?? "App"}</Typography>
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{ maxWidth: 440 }}
+              >
+                This app has never been built and deployed, so there is nothing
+                to view yet. Launch dev mode to work on it — a real sandbox with
+                a live preview and a terminal — then publish when it is ready
+                for everyone else.
               </Typography>
               <Button
-                size="small"
-                variant="outlined"
-                startIcon={<TerminalIcon size={14} />}
-                onClick={() => setEditing(workspaceId, appId, true)}
+                variant="contained"
+                size="large"
+                startIcon={<TerminalIcon size={18} />}
+                onClick={() => {
+                  setEditing(workspaceId, appId, true);
+                  void startDevPreview(workspaceId, appId);
+                }}
               >
-                Start editing
+                Launch dev mode
               </Button>
             </Box>
           )}
-        </Panel>
-      </PanelGroup>
+        </Box>
+      ) : (
+        <PanelGroup
+          direction="vertical"
+          // Remembers the split per browser, so a terminal you sized stays
+          // sized — one you have to re-drag every visit is one you stop
+          // using.
+          autoSaveId="apps-v2:workspace-vertical"
+          style={{ flex: 1, minHeight: 0 }}
+        >
+          <Panel defaultSize={70} minSize={20}>
+            {preview?.building ? (
+              <DevBootScreen />
+            ) : preview?.url ? (
+              <iframe
+                title="App preview"
+                src={preview.url}
+                // The two preview tiers need DIFFERENT sandboxes.
+                //
+                // Static builds are served by Mako from Mako's own origin, so
+                // `allow-same-origin` would hand app code our origin and let
+                // it escape the sandbox entirely — it stays off, and the
+                // opaque origin is why those assets are served with
+                // `Access-Control-Allow-Origin: *`.
+                //
+                // The live dev server (§12.4) is a genuinely foreign origin
+                // (`<port>-<sandbox>.e2b.app`), so `allow-same-origin` grants
+                // it only ITS OWN origin, never ours. It is required there:
+                // with an opaque origin, Vite's HMR socket and its
+                // cross-origin module scripts do not work.
+                sandbox={
+                  preview.mode === "dev"
+                    ? "allow-scripts allow-forms allow-same-origin"
+                    : "allow-scripts allow-forms"
+                }
+                style={{ border: 0, width: "100%", height: "100%" }}
+              />
+            ) : (
+              <Box sx={{ p: 3, maxWidth: 560 }}>
+                <Typography variant="subtitle1" gutterBottom>
+                  {app?.title ?? "App"}
+                </Typography>
+                <Typography variant="body2" color="text.secondary" paragraph>
+                  Browse and edit this app&apos;s files from the Apps v2
+                  explorer on the left — every file opens in its own tab. Ask
+                  the agent in chat to build features (it works on your branch
+                  and commits every turn), or use the terminal below — it is a
+                  real machine with a real git checkout.
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  <strong>Start dev session</strong> runs the app live, so edits
+                  show up as you make them. <strong>Publish</strong> builds it
+                  and deploys — that is the version everyone else sees. A failed
+                  build publishes nothing and leaves the current version
+                  untouched.
+                </Typography>
+              </Box>
+            )}
+          </Panel>
+
+          <TerminalResizeHandle onDragging={setTerminalDragging} />
+
+          <Panel defaultSize={30} minSize={8} collapsible collapsedSize={0}>
+            <TerminalPanel appId={appId} workspaceId={workspaceId} />
+          </Panel>
+        </PanelGroup>
+      )}
 
       {/* History menu */}
       <Menu
