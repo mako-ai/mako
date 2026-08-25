@@ -39,6 +39,7 @@ import {
   type IMakoAppDataBinding,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { APP_SDK_DEPENDENCY } from "./app-sdk-package";
 import { createAppsV2Scaffold } from "./scaffold";
 import {
   appRootFor,
@@ -138,8 +139,15 @@ function mergeDependencies(
   const pkg = JSON.parse(scaffoldPackageJson) as {
     dependencies?: Record<string, string>;
   };
-  // The v1 pin wins on collision: the app was written against it.
-  pkg.dependencies = { ...(pkg.dependencies ?? {}), ...deps };
+  // The v1 pin wins on collision: the app was written against it. The SDK
+  // dependency rides along unconditionally — v1 injected @mako/app-sdk at
+  // runtime, so any v1 app may import it, and in v2 the import resolves to
+  // the real package committed at packages/app-sdk.
+  pkg.dependencies = {
+    ...(pkg.dependencies ?? {}),
+    ...deps,
+    ...APP_SDK_DEPENDENCY,
+  };
   return `${JSON.stringify(pkg, null, 2)}\n`;
 }
 

@@ -36,6 +36,7 @@ export function createAppsV2Scaffold(
           preview: "vite preview",
         },
         dependencies: {
+          "@mako/app-sdk": "file:../../packages/app-sdk",
           react: "^18.2.0",
           "react-dom": "^18.2.0",
         },

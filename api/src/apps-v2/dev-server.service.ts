@@ -86,6 +86,18 @@ const makoData = {
   configureServer(server) {
     server.middlewares.use((req, res, next) => {
       const url = (req.url || "").split("?")[0];
+      if (url === "/__data/index.json") {
+        // The staged-binding list, for the SDK's useDuckDB. Missing file
+        // (no bindings staged yet) is an empty list, not an error.
+        const file = path.join(${JSON.stringify(DATA_DIR)}, "index.json");
+        res.setHeader("content-type", "application/json");
+        if (existsSync(file)) {
+          createReadStream(file).pipe(res);
+        } else {
+          res.end("[]");
+        }
+        return;
+      }
       const match = /^\\/__data\\/([A-Za-z0-9_][A-Za-z0-9_-]*)\\.parquet$/.exec(url);
       if (!match) return next();
       const file = path.join(${JSON.stringify(DATA_DIR)}, match[1] + ".parquet");
@@ -177,6 +189,15 @@ async function stageBindingData(
     );
     staged.push(binding.name);
   }
+
+  // The staged names as a file beside the data, so the app-side SDK's
+  // useDuckDB can register every binding without a Mako API in reach —
+  // the same relative fetch that gets it the parquet gets it the list.
+  await provider.writeFile(
+    ctx,
+    `${DATA_DIR}/index.json`,
+    new TextEncoder().encode(JSON.stringify(staged)),
+  );
   if (staged.length > 0) {
     logger.info("Apps v2 staged binding data into the sandbox", {
       projectId,

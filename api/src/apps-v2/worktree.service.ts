@@ -76,6 +76,7 @@ import {
   type GrepMatch,
   type TreeEntry,
 } from "./repository.service";
+import { appSdkFiles } from "./app-sdk-package";
 import { createAppsV2Scaffold } from "./scaffold";
 import {
   ensureCloudRepo,
@@ -441,6 +442,10 @@ export async function createProject(input: {
         repoDir,
         {
           "README.md": WORKSPACE_README,
+          // The @mako/app-sdk package, so `import { useQuery } from
+          // "@mako/app-sdk"` resolves in every app via a file: dependency —
+          // in vite dev, in npm run build, and in a laptop clone alike.
+          ...appSdkFiles(),
           // The root .gitignore is the guarantee that EVERY app — scaffolded,
           // hand-built by an agent, or pushed from a laptop — ignores what
           // must never be committed. Per-app .gitignores and the sandbox's
@@ -609,7 +614,16 @@ export async function ensureWorktree(
   let branchMoved = false;
   if (branch !== DEFAULT_BRANCH && branchHead !== mainHead) {
     const merged = await mergeRefInto(repoDir, branch, mainHead).catch(
-      () => null,
+      error => {
+        // Best-effort by design (a conflict is the user's to resolve), but
+        // never invisible: a silently failing catch-up cost half an hour of
+        // "why is this branch behind main" once already.
+        logger.warn("Apps v2 branch catch-up with main failed", {
+          branch,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      },
     );
     if (merged && merged !== branchHead) {
       branchMoved = true;
@@ -684,6 +698,13 @@ async function mergeRefInto(
     await runGit(["clone", "--quiet", "--branch", branch, repoDir, tmp], {
       timeoutMs: 120_000,
     });
+    // A merge COMMIT needs an author. Without this, every DIVERGED catch-up
+    // died on "please tell me who you are" — and because the caller treats a
+    // failed catch-up as best-effort, it died silently: fast-forwards (the
+    // common case) worked, so the branch only ever fell behind main when it
+    // had commits of its own, which is exactly when catching up matters.
+    await runGit(["-C", tmp, "config", "user.name", "Mako"]);
+    await runGit(["-C", tmp, "config", "user.email", "mako@mako.ai"]);
     await runGit(["-C", tmp, "merge", "--no-edit", intoOid], {
       timeoutMs: 60_000,
     });
