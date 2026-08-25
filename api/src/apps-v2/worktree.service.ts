@@ -148,6 +148,8 @@ function pokeAppV2(
 export function notifyRepoPushed(workspaceId: string, userId: string): void {
   queueMirrorPush(workspaceId);
   pokeAppV2(workspaceId, null, "push", userId);
+  // Another box on the same branch is now behind; let it pull on next touch.
+  invalidatePullThrottle();
 }
 
 // The sandbox HAS a remote, and a credential for it — see box.ts. Two things
@@ -206,6 +208,17 @@ export function boxCtx(handle: WorktreeHandle): SandboxExecContext {
  * means pulling again.
  */
 const lastPull = new Map<string, number>();
+
+/**
+ * Drop the pull throttle everywhere: a branch just moved WITHOUT a push from
+ * any box (server-side merge, or someone else's push), so "pulled recently"
+ * no longer implies "current". The next touch of every box pulls once. This
+ * replaced the old catch-up machinery: instead of merging main into personal
+ * branches server-side, boxes simply pull like any clone would.
+ */
+export function invalidatePullThrottle(): void {
+  lastPull.clear();
+}
 const PULL_INTERVAL_MS = 60_000;
 
 /**
@@ -543,28 +556,22 @@ export async function deleteProject(project: IAppProjectV2): Promise<void> {
 export const PUBLISH_ACTOR = "publish";
 
 /**
- * A person's own editing branch.
+ * Which branch an actor starts on when the caller does not name one: the
+ * default branch, like a fresh clone on a laptop.
  *
- * You do not edit production. In a checkout this is so automatic it is
- * invisible — you branch, you work, you merge — and Mako has to behave the
- * same way or `main` is not production, it is wherever the last keystroke
- * landed. Saves auto-commit (§10 Block A), so without this every keystroke
- * lands on the deployed branch: a single bad save breaks `main` for everyone,
- * with no publish involved.
+ * Actors used to be forced onto a personal `user/<id>` branch ("you do not
+ * edit production"). That guarded the wrong thing: publish deploys a PINNED
+ * sha, so a commit on `main` moves the branch but ships nothing — exactly
+ * like committing to main of a repo whose releases are tagged. Meanwhile the
+ * forced branch made the everyday experience alien: everyone lived on a
+ * branch named after their user id, and "just commit it" needed a merge
+ * ceremony. Now the working copy is unrestricted, git-native; whoever wants
+ * main protected does it at the remote (the git endpoint's pre-receive hook
+ * carries GitHub's defaults — no force-push, no delete — and a mirrored
+ * GitHub repo can layer its own rules).
  */
-export function actorBranchFor(actorId: string): string {
-  return `user/${actorId}`;
-}
-
-/**
- * Which branch an actor works on when the caller does not name one.
- *
- * Publishing is the one thing that reads `main` directly — it builds what is
- * deployed. Everyone else edits their own branch.
- */
-export function defaultBranchForActor(actorId: string): string {
-  if (actorId === PUBLISH_ACTOR) return DEFAULT_BRANCH;
-  return actorBranchFor(actorId);
+export function defaultBranchForActor(_actorId: string): string {
+  return DEFAULT_BRANCH;
 }
 
 /**
@@ -591,10 +598,19 @@ export async function ensureWorktree(
   const mainHead = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
   if (!mainHead) throw new Error("Project branch is missing");
 
-  const branch = options.branch ?? defaultBranchForActor(actorId);
+  // The doc remembers which branch this actor is on (checkoutBranch writes
+  // it); an actor with no doc yet starts on the default branch, like a fresh
+  // clone. options.branch overrides both (publish pins main explicitly).
+  const existing = await AppWorktreeV2.findOne({
+    workspaceId: project.workspaceId,
+    userId: actorId,
+  });
+  const branch =
+    options.branch ?? existing?.branch ?? defaultBranchForActor(actorId);
   let branchHead = await resolveCommit(repoDir, `refs/heads/${branch}`);
   if (!branchHead) {
-    // First touch of an actor branch: fork it off the default branch head.
+    // The remembered branch no longer exists (deleted from another checkout,
+    // say) — fork it back off the default branch head rather than failing.
     // CAS-create; a concurrent creator winning is fine (re-resolve).
     await updateRefCas(repoDir, `refs/heads/${branch}`, mainHead, ZERO_OID);
     branchHead = await resolveCommit(repoDir, `refs/heads/${branch}`);
@@ -605,34 +621,12 @@ export async function ensureWorktree(
     });
   }
 
-  // Your branch tracks main. Apps are created on main (and colleagues add
-  // their own), so a personal branch that never learns about them is a
-  // checkout that silently lacks half the repo — which shows up as "directory
-  // does not exist" the moment anything tries to use one. Locally you would
-  // `git pull`; this is the server half of that, and the sandbox picks it up
-  // with its own pull.
-  let branchMoved = false;
-  if (branch !== DEFAULT_BRANCH && branchHead !== mainHead) {
-    const merged = await mergeRefInto(repoDir, branch, mainHead).catch(
-      error => {
-        // Best-effort by design (a conflict is the user's to resolve), but
-        // never invisible: a silently failing catch-up cost half an hour of
-        // "why is this branch behind main" once already.
-        logger.warn("Apps v2 branch catch-up with main failed", {
-          branch,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return null;
-      },
-    );
-    if (merged && merged !== branchHead) {
-      branchMoved = true;
-      logger.info("Apps v2 actor branch caught up with main", {
-        branch,
-        head: merged,
-      });
-    }
-  }
+  // No automatic merging of main into the actor's branch. That existed for
+  // the forced-personal-branch era, when everyone lived forever on a branch
+  // that would otherwise never learn about new apps. Branches are explicit
+  // now — you make one when you want one — and no laptop merges main into
+  // your feature branch behind your back. `git merge main` (terminal) or
+  // switching to main (UI) is the git-native way to catch up.
 
   // Atomic find-or-create: the agent routinely fires tool calls in parallel
   // right after app creation, so a findOne+create pair races itself into
@@ -643,78 +637,12 @@ export async function ensureWorktree(
     { new: true, upsert: true },
   );
 
-  // The branch just moved on the server, so the sandbox is behind by exactly
-  // this much. Pull on next touch rather than on a timer: this is the precise
-  // signal that there is something to pull, which is why ensureBox can
-  // otherwise leave the network alone.
-  if (branchMoved) lastPull.delete(doc._id.toString());
-
   return {
     doc,
     project,
     repoDir,
     appRoot: appRootFor(project),
   };
-}
-
-/**
- * Merge `intoOid` into `branch` inside the bare repo, without a worktree.
- *
- * Fast-forwards when the branch has no commits of its own, which is the
- * common case: someone else added an app and you simply need it. A branch
- * that HAS diverged gets a real merge commit, and a conflict throws — the
- * caller keeps the branch as it was rather than resolving on the user's
- * behalf.
- */
-async function mergeRefInto(
-  repoDir: string,
-  branch: string,
-  intoOid: string,
-): Promise<string | null> {
-  const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
-  if (!head) return null;
-  const isAncestor = await runGit(
-    ["-C", repoDir, "merge-base", "--is-ancestor", intoOid, head],
-    { timeoutMs: 30_000 },
-  )
-    .then(() => true)
-    .catch(() => false);
-  if (isAncestor) return head;
-
-  const canFastForward = await runGit(
-    ["-C", repoDir, "merge-base", "--is-ancestor", head, intoOid],
-    { timeoutMs: 30_000 },
-  )
-    .then(() => true)
-    .catch(() => false);
-  if (canFastForward) {
-    await updateRefCas(repoDir, `refs/heads/${branch}`, intoOid, head);
-    return intoOid;
-  }
-
-  // Diverged: a real merge needs a work tree, so do it in a throwaway one.
-  const tmp = path.join(os.tmpdir(), `mako-merge-${Date.now()}`);
-  try {
-    await runGit(["clone", "--quiet", "--branch", branch, repoDir, tmp], {
-      timeoutMs: 120_000,
-    });
-    // A merge COMMIT needs an author. Without this, every DIVERGED catch-up
-    // died on "please tell me who you are" — and because the caller treats a
-    // failed catch-up as best-effort, it died silently: fast-forwards (the
-    // common case) worked, so the branch only ever fell behind main when it
-    // had commits of its own, which is exactly when catching up matters.
-    await runGit(["-C", tmp, "config", "user.name", "Mako"]);
-    await runGit(["-C", tmp, "config", "user.email", "mako@mako.ai"]);
-    await runGit(["-C", tmp, "merge", "--no-edit", intoOid], {
-      timeoutMs: 60_000,
-    });
-    await runGit(["-C", tmp, "push", repoDir, `HEAD:refs/heads/${branch}`], {
-      timeoutMs: 60_000,
-    });
-    return await resolveCommit(repoDir, `refs/heads/${branch}`);
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
-  }
 }
 
 /**
@@ -1459,6 +1387,7 @@ export async function mergeBranchToMain(
     }
     queueMirrorPush(project.workspaceId.toString());
     pokeAppV2(project.workspaceId, project._id, "merge");
+    invalidatePullThrottle();
     return { merged: true, commitOid: branchHead, fastForward: true };
   } catch (error) {
     if (error instanceof WorktreeConflictError) throw error;
@@ -1491,6 +1420,7 @@ export async function mergeBranchToMain(
   });
   queueMirrorPush(project.workspaceId.toString());
   pokeAppV2(project.workspaceId, project._id, "merge");
+  invalidatePullThrottle();
   return { merged: true, commitOid, fastForward: false };
 }
 
@@ -1537,13 +1467,20 @@ export async function checkoutInBox(
 export async function checkoutBranch(
   handle: WorktreeHandle,
   branch: string,
+  options: { create?: boolean } = {},
 ): Promise<{ branch: string; head: string }> {
   const { doc, repoDir } = handle;
   const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
-  if (!head) throw new Error(`No such branch: ${branch}`);
+  if (!head && !options.create) throw new Error(`No such branch: ${branch}`);
+  if (head && options.create) {
+    throw new Error(`Branch already exists: ${branch}`);
+  }
+  if (options.create && !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch)) {
+    throw new Error(`Not a valid branch name: ${branch}`);
+  }
 
   const ctx = await ensureBox(handle);
-  await boxCheckout(ctx, branch);
+  await boxCheckout(ctx, branch, { create: options.create });
   const after = await boxHead(ctx);
 
   doc.branch = after.branch;

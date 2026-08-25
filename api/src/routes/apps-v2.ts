@@ -59,7 +59,6 @@ import {
   listFiles,
   mergeBranchToMain,
   PUBLISH_ACTOR,
-  defaultBranchForActor,
   listAppFolders,
   synthesizeProjectFromFolder,
   derivedAppId,
@@ -89,7 +88,7 @@ import {
   mintPublishedGrant,
 } from "../apps-v2/preview.service";
 import {
-  DEV_SERVER_LOG,
+  devLogPath,
   ensureDevServer,
   isServingApp,
 } from "../apps-v2/dev-server.service";
@@ -1118,16 +1117,21 @@ appsV2Routes.openapi(
     method: "post",
     path: "/{id}/checkout",
     tags: ["Apps v2"],
-    summary: "Switch the caller's worktree to another branch",
+    summary: "Switch the caller's worktree to another branch (or create one)",
     description:
-      "The same thing `git checkout` in the terminal does, offered as a button — and it goes through the sandbox, so both agree afterwards. Refuses with uncommitted work rather than choosing between carrying it across and discarding it.",
+      "The same thing `git checkout` (or `git checkout -b` with create) in the terminal does, offered as a button — and it goes through the sandbox, so both agree afterwards. Refuses with uncommitted work rather than choosing between carrying it across and discarding it.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,
       body: {
         required: true,
         content: {
-          "application/json": { schema: z.object({ branch: z.string() }) },
+          "application/json": {
+            schema: z.object({
+              branch: z.string().min(1).max(200),
+              create: z.boolean().optional(),
+            }),
+          },
         },
       },
     },
@@ -1137,12 +1141,12 @@ appsV2Routes.openapi(
     try {
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const { branch } = c.req.valid("json");
+      const { branch, create } = c.req.valid("json");
       const handle = await ensureWorktree(
         loaded.project,
         loaded.userId ?? "api-key",
       );
-      const result = await checkoutBranch(handle, branch);
+      const result = await checkoutBranch(handle, branch, { create });
       return c.json({ success: true as const, ...result }, 200);
     } catch (error) {
       return handleError(c, error);
@@ -1155,7 +1159,7 @@ appsV2Routes.openapi(
     method: "get",
     path: "/{id}/branches",
     tags: ["Apps v2"],
-    summary: "List branches (main, plus one per actor)",
+    summary: "List branches",
     security: AUTH_SECURITY,
     request: { params: ProjectParam },
     responses: OPEN_RESPONSES,
@@ -1330,9 +1334,10 @@ appsV2Routes.openapi(
         // The install pipes through tee rather than redirecting so its
         // output still comes back in the exec result for the failure
         // payload.
+        const logPath = devLogPath(handle);
         const install = await execInWorktree(
           handle,
-          `: > ${DEV_SERVER_LOG}; set -o pipefail; ( [ -d node_modules ] || npm install --no-audit --no-fund ) 2>&1 | tee -a ${DEV_SERVER_LOG}`,
+          `: > ${logPath}; set -o pipefail; ( [ -d node_modules ] || npm install --no-audit --no-fund ) 2>&1 | tee -a ${logPath}`,
           { timeoutMs: 300_000 },
         );
         if (install.exitCode !== 0) {
@@ -1404,7 +1409,7 @@ appsV2Routes.openapi(
         ctx,
         // Size first, then the requested slice, capped so one poll can never
         // exceed the provider's output budget.
-        `wc -c < ${DEV_SERVER_LOG} 2>/dev/null || echo 0; tail -c +${offset + 1} ${DEV_SERVER_LOG} 2>/dev/null | head -c 65536`,
+        `wc -c < ${devLogPath(handle)} 2>/dev/null || echo 0; tail -c +${offset + 1} ${devLogPath(handle)} 2>/dev/null | head -c 65536`,
         { timeoutMs: 15_000 },
       );
       const newline = result.stdout.indexOf("\n");
@@ -1475,11 +1480,14 @@ appsV2Routes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const body = c.req.valid("json") ?? {};
       const user = c.get("user");
-      // Publishing means "ship MY work". With edits living on the caller's own
-      // branch, defaulting to main would build the deployed commit and change
-      // nothing — the one thing publish must never quietly do.
-      const branch =
-        body.branch ?? defaultBranchForActor(loaded.userId ?? "api-key");
+      // Publishing means "ship MY work" — the branch the caller is actually
+      // on (their worktree doc remembers it; checkout keeps it current),
+      // not a computed name. On main, publish simply builds main's head.
+      const callerWorktree = await ensureWorktree(
+        loaded.project,
+        loaded.userId ?? "api-key",
+      );
+      const branch = body.branch ?? callerWorktree.doc.branch;
 
       // Build the MERGE RESULT before main ever moves. Merging first and
       // building second left main carrying a broken merge whenever the build

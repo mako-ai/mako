@@ -20,6 +20,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {
+  checkoutBranch,
   commitAgentTurn,
   commitWorktree,
   createProject,
@@ -315,7 +316,7 @@ describe("the working copy", () => {
 });
 
 describe("commits", () => {
-  it("commits onto the actor's branch and leaves main alone", async () => {
+  it("commits land on the branch you are on — main by default", async () => {
     const project = await makeProject();
     const handle = await ensureWorktree(project, USER);
     await writeFile(handle, "src/feature.ts", "export {};\n");
@@ -323,17 +324,13 @@ describe("commits", () => {
     const result = await commitWorktree(handle, "Add feature module");
     expect(result.committed).toBe(true);
 
-    // The commit lands on the ACTOR's branch, not on main — that is the whole
-    // point of not editing production — so main's history is untouched until
-    // it is merged.
+    // A fresh actor starts on main, like a fresh clone — the commit is on
+    // main's history. Publish deploys a PINNED sha, so main moving ships
+    // nothing by itself.
     expect((await projectHistory(project)).map(c => c.subject)).toEqual([
+      "Add feature module",
       'Create app "Test App" (apps/test-app)',
     ]);
-    const branch = (await listBranches(project)).find(
-      b => b.name === `user/${USER}`,
-    );
-    expect(branch?.lastCommit?.subject).toBe("Add feature module");
-    expect(branch?.aheadOfMain).toBe(1);
 
     const status = await worktreeStatus(project, USER);
     expect(status?.changes).toEqual([]);
@@ -344,6 +341,24 @@ describe("commits", () => {
     // Post-commit the working copy is clean, so another commit is a no-op.
     const again = await commitWorktree(handle, "empty");
     expect(again.committed).toBe(false);
+
+    // On an explicitly created branch, work stays off main until merged —
+    // branching is a choice now, not an identity.
+    await checkoutBranch(handle, "feature", { create: true });
+    await writeFile(handle, "src/extra.ts", "export {};\n");
+    const onBranch = await commitWorktree(
+      await ensureWorktree(project, USER),
+      "On a branch",
+    );
+    expect(onBranch.committed).toBe(true);
+    expect((await projectHistory(project)).map(c => c.subject)[0]).toBe(
+      "Add feature module",
+    );
+    const branch = (await listBranches(project)).find(
+      b => b.name === "feature",
+    );
+    expect(branch?.aheadOfMain).toBe(1);
+    expect(branch?.lastCommit?.subject).toBe("On a branch");
   });
 
   it("a commit racing someone else's does not lose either", async () => {
@@ -364,13 +379,13 @@ describe("commits", () => {
         "bash",
         [
           "-lc",
-          `git clone -q --branch user/${USER} ${repoDir} ${scratch} && ` +
+          `git clone -q --branch main ${repoDir} ${scratch} && ` +
             `cd ${scratch} && git config user.email o@x && git config user.name O && ` +
             // Into the APP's folder: listFiles is app-scoped, so a file at
             // the repo root would be invisible to it and prove nothing.
             `echo theirs > apps/test-app/theirs.txt && git add -A && ` +
             `git commit -qm "other actor" && ` +
-            `git push -q origin HEAD:refs/heads/user/${USER}`,
+            `git push -q origin HEAD:refs/heads/main`,
         ],
         err => (err ? reject(err) : resolve()),
       );
@@ -387,18 +402,19 @@ describe("commits", () => {
   });
 });
 
-describe("per-actor branches", () => {
-  // A conversation is not a line of work: the agent commits to the branch the
-  // actor is already on. So these exercise two PEOPLE, which is also the case
-  // that actually produces conflicts in practice.
+describe("branches are explicit", () => {
+  // Branching is git-native now: everyone starts on main, and a branch
+  // exists because someone made one. These exercise two PEOPLE with explicit
+  // branches, which is also the case that actually produces conflicts.
   const ALICE = "alice";
   const BOB = "bob";
 
-  it("a turn commit lands on the actor's branch, not main; merge brings it to main", async () => {
+  it("a turn commit lands on the current branch; merge brings a branch to main", async () => {
     const project = await makeProject();
 
     const handle = await ensureWorktree(project, ALICE);
-    expect(handle.doc.branch).toBe(`user/${ALICE}`);
+    expect(handle.doc.branch).toBe("main");
+    await checkoutBranch(handle, "alice-feature", { create: true });
 
     await writeFile(handle, "src/feature.ts", "export const f = 1;\n");
 
@@ -407,9 +423,9 @@ describe("per-actor branches", () => {
     expect(results).toHaveLength(1);
     expect(results[0].commitOid).toBeTruthy();
 
-    // The commit is on the actor's branch, NOT on main.
+    // The commit is on the branch Alice created, NOT on main.
     const branches = await listBranches(project);
-    const branch = branches.find(b => b.name === `user/${ALICE}`);
+    const branch = branches.find(b => b.name === "alice-feature");
     expect(branch?.aheadOfMain).toBe(1);
     expect(branch?.lastCommit?.subject).toContain("add feature module");
     const mainFiles = (await listFiles(project)).entries.map(e => e.path);
@@ -417,15 +433,16 @@ describe("per-actor branches", () => {
 
     // A second turn commits again on the same branch.
     const handle2 = await ensureWorktree(project, ALICE);
+    expect(handle2.doc.branch).toBe("alice-feature");
     await writeFile(handle2, "src/feature2.ts", "export const g = 2;\n");
     await commitAgentTurn(WS, ALICE, "second turn");
     expect(
-      (await listBranches(project)).find(b => b.name === `user/${ALICE}`)
+      (await listBranches(project)).find(b => b.name === "alice-feature")
         ?.aheadOfMain,
     ).toBe(2);
 
     // Merge to main (fast-forward — main did not move).
-    const merge = await mergeBranchToMain(project, `user/${ALICE}`);
+    const merge = await mergeBranchToMain(project, "alice-feature");
     expect(merge.merged).toBe(true);
     expect(merge.fastForward).toBe(true);
     const mainAfter = (await listFiles(project)).entries.map(e => e.path);
@@ -433,9 +450,9 @@ describe("per-actor branches", () => {
     expect(mainAfter).toContain("src/feature2.ts");
   });
 
-  it("a chat and its user share one branch, so each sees the other's work", async () => {
+  it("a chat and its user share one checkout, so each sees the other's work", async () => {
     // The regression this replaces: the agent worked on `chat/<id>` while the
-    // user's tree and terminal showed `user/<id>`, so the user opened the
+    // user's tree and terminal showed another branch, so the user opened the
     // folder the agent had just filled and found it empty.
     const project = await makeProject();
 
@@ -446,26 +463,24 @@ describe("per-actor branches", () => {
     // Whatever the user looks at next resolves the SAME branch.
     const asUser = await listFiles(project, ALICE);
     expect(asUser.entries.map(e => e.path)).toContain("bindings/users.sql");
-    expect((await ensureWorktree(project, ALICE)).doc.branch).toBe(
-      `user/${ALICE}`,
-    );
+    expect((await ensureWorktree(project, ALICE)).doc.branch).toBe("main");
   });
 
-  it("a clean checkout picks up what someone else merged to main", async () => {
+  it("a checkout on main picks up what someone else merged to main", async () => {
     const project = await makeProject();
 
-    // A checkout on the user's own branch, clean.
+    // A checkout on main, clean.
     const userHandle = await ensureWorktree(project, USER);
     await execInWorktree(userHandle, "true");
 
-    // Someone else commits and merges to main.
+    // Someone else commits on a branch and merges it to main.
     const h = await ensureWorktree(project, BOB);
+    await checkoutBranch(h, "bob-work", { create: true });
     await writeFile(h, "merged.txt", "hello\n");
     await commitAgentTurn(WS, BOB);
-    await mergeBranchToMain(project, `user/${BOB}`);
+    await mergeBranchToMain(project, "bob-work");
 
-    // Their branch tracks main server-side; their sandbox pulls on next touch.
-    // Both halves are ordinary git — a fast-forward and a `git pull`.
+    // The sandbox pulls on next touch — ordinary `git pull` on main.
     const resumed = await ensureWorktree(project, USER);
     await execInWorktree(resumed, "true");
     const merged = await readFile(project, "merged.txt", USER);
@@ -475,40 +490,37 @@ describe("per-actor branches", () => {
   it("merge builds a merge commit when main moved, and refuses conflicts", async () => {
     const project = await makeProject();
 
-    // Bob edits file A.
+    // Bob edits file A on his own branch.
     const h = await ensureWorktree(project, BOB);
+    await checkoutBranch(h, "bob-a", { create: true });
     await writeFile(h, "a.txt", "from bob\n");
     await commitAgentTurn(WS, BOB);
 
-    // Meanwhile main gets an unrelated commit (file B), so Bob's branch is no
-    // longer a straight-line descendant of it and the merge cannot fast
-    // forward. Main has to actually MOVE for that: committing on another
-    // actor's branch would leave main where it was.
+    // Meanwhile main gets an unrelated commit (file B) directly — the user
+    // is ON main, so committing IS moving main — and Bob's branch is no
+    // longer a straight-line descendant: the merge cannot fast-forward.
     const userHandle = await ensureWorktree(project, USER);
     await writeFile(userHandle, "b.txt", "from user\n");
     await commitWorktree(userHandle, "user change");
-    await mergeBranchToMain(project, `user/${USER}`);
 
-    const merge = await mergeBranchToMain(project, `user/${BOB}`);
+    const merge = await mergeBranchToMain(project, "bob-a");
     expect(merge.merged).toBe(true);
     expect(merge.fastForward).toBe(false);
     const files = (await listFiles(project)).entries.map(e => e.path);
     expect(files).toContain("a.txt");
     expect(files).toContain("b.txt");
 
-    // Conflict: two people editing the same line of the same file, which is
-    // an ordinary git conflict and is meant to be reported as one.
+    // Conflict: Alice branches, edits a.txt; the user edits the same line of
+    // a.txt directly on main; Alice's merge must be refused as a conflict.
     const hb = await ensureWorktree(project, ALICE);
+    await checkoutBranch(hb, "alice-a", { create: true });
     await writeFile(hb, "a.txt", "conflicting alice edit\n");
     await commitAgentTurn(WS, ALICE);
     const user2 = await ensureWorktree(project, USER);
     await writeFile(user2, "a.txt", "conflicting user edit\n");
     await commitWorktree(user2, "user conflicting change");
-    // Onto main, or there is nothing for Alice's merge to conflict WITH — a
-    // commit sitting on someone's own branch cannot conflict with anything.
-    await mergeBranchToMain(project, `user/${USER}`);
 
-    await expect(mergeBranchToMain(project, `user/${ALICE}`)).rejects.toThrow(
+    await expect(mergeBranchToMain(project, "alice-a")).rejects.toThrow(
       /conflict/i,
     );
   });

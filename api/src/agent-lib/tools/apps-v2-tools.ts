@@ -38,7 +38,6 @@ import {
   createProject,
   synthesizeProjectFromFolder,
   listAppFolders,
-  defaultBranchForActor,
   ensureWorktree,
   execInWorktree,
   globFiles,
@@ -80,9 +79,14 @@ export function createAppsV2Tools({
   // like any other pair of hands on a repository. The end-of-turn commit is
   // unchanged, and still gives one commit per turn to review or revert.
   const actorId = userId ?? "api-key";
-  const actorBranch = defaultBranchForActor(actorId);
   const ensureActorWorktree = (project: IAppProjectV2) =>
     ensureWorktree(project, actorId);
+  // The branch is whatever the checkout is on — main by default, or wherever
+  // the user (or this agent, via `git checkout` in app2_bash) switched to.
+  // Read it fresh per call; a cached value goes stale the moment anyone
+  // switches branches mid-conversation.
+  const currentActorBranch = async (project: IAppProjectV2) =>
+    (await ensureActorWorktree(project)).doc.branch;
 
   // Read-before-edit freshness tracking (a Claude Code reliability hallmark):
   // the agent must read a file before a blind full-rewrite, so it never
@@ -224,7 +228,7 @@ export function createAppsV2Tools({
 
     app2_bash: tool({
       description:
-        "Run a bash command in the app's sandbox session. cwd is the APP's folder (apps/<slug>) inside the workspace repo, not the repo root, so package.json and src/ are right here and `cwd` is interpreted relative to it. Use for anything a developer would do in a terminal: ls, grep, sed, cat, node, npm/pnpm install, npm run build, git status/log/diff. Each call is a one-shot command: backgrounding a long-running process (`vite &`) does NOT leave a server running the user can reach — use the app's preview controls for that. Use app2_commit to commit and push, or run git yourself — the sandbox has a real remote.",
+        "Run a bash command in the app's sandbox session. cwd is the APP's folder (apps/<slug>) inside the workspace repo, not the repo root, so package.json and src/ are right here and `cwd` is interpreted relative to it. Use for anything a developer would do in a terminal: ls, grep, sed, cat, node, npm/pnpm install, npm run build, git status/log/diff. Each call is a one-shot command: backgrounding a long-running process (`vite &`) does NOT leave a server running the user can reach — use the app's preview controls for that. Git is fully yours: commit with app2_commit or run git yourself — branch, checkout, merge, push; the sandbox is a real clone with a real remote. Note the checkout is SHARED with the user, so a branch switch changes what they see too — do it when the task calls for it, and say so.",
       inputSchema: z.object({
         appId: z
           .string()
@@ -473,7 +477,7 @@ export function createAppsV2Tools({
 
     app2_list_branches: tool({
       description:
-        "List all branches of an Apps v2 project: the default branch (main) plus one `chat/<id>` branch per conversation that edited the app, with ahead-of-main counts. Use before merging.",
+        "List all branches of an Apps v2 project with ahead-of-main counts, plus the branch this session's checkout is on. Branching is git-native: create or switch branches with `git checkout` in app2_bash, exactly as on a laptop.",
       inputSchema: z.object({ appId: z.string() }),
       execute: async ({ appId }) => {
         const loaded = await loadProject(appId, { write: false });
@@ -483,7 +487,7 @@ export function createAppsV2Tools({
           return {
             success: true,
             branches,
-            currentBranch: actorBranch,
+            currentBranch: await currentActorBranch(loaded.project),
           };
         } catch (error) {
           return { success: false, error: errorMessage(error) };
@@ -504,11 +508,12 @@ export function createAppsV2Tools({
       execute: async ({ appId, branch }) => {
         const loaded = await loadProject(appId, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
-        const target = branch ?? actorBranch;
-        if (!target) {
+        const target = branch ?? (await currentActorBranch(loaded.project));
+        if (target === (loaded.project.defaultBranch || "main")) {
           return {
             success: false,
-            error: "No branch specified and this session has no branch.",
+            error:
+              "Already on the default branch - there is nothing to merge. Commit with app2_commit instead.",
           };
         }
         try {

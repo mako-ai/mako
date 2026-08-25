@@ -665,6 +665,7 @@ export async function boxPushIfAhead(ctx: SandboxExecContext): Promise<void> {
 export async function boxCheckout(
   ctx: SandboxExecContext,
   branch: string,
+  options: { create?: boolean } = {},
 ): Promise<void> {
   const fetched = await boxExec(ctx, boxGit(ctx, "fetch", "-q", "origin"), {
     timeoutMs: 120_000,
@@ -674,10 +675,14 @@ export async function boxCheckout(
       `Could not reach the remote: ${fetched.stderr.slice(-300)}`,
     );
   }
-  // Prefer the remote's version of the branch if the box has never seen it.
+  // Creating: `git checkout -b` from HEAD, then push -u so the branch exists
+  // at the remote immediately (auto-commit pushes assume an upstream).
+  // Switching: prefer the remote's version if the box has never seen it.
   const result = await boxExec(
     ctx,
-    `${boxGit(ctx, "checkout", branch)} || ${boxGit(ctx, "checkout", "-b", branch, `origin/${branch}`)}`,
+    options.create
+      ? `${boxGit(ctx, "checkout", "-b", branch)} && ${boxGit(ctx, "push", "-q", "-u", "origin", branch)}`
+      : `${boxGit(ctx, "checkout", branch)} || ${boxGit(ctx, "checkout", "-b", branch, `origin/${branch}`)}`,
     { timeoutMs: 120_000 },
   );
   if (result.exitCode !== 0) {
@@ -712,14 +717,25 @@ export async function boxDiscard(ctx: SandboxExecContext): Promise<void> {
  * behalf: it is a real conflict in a real checkout, and it is fixable there.
  */
 export async function boxPull(ctx: SandboxExecContext): Promise<void> {
-  await boxExec(
+  // The merge may legitimately refuse (uncommitted work in the way, or a
+  // real conflict) — that is the user's to resolve in their checkout, not
+  // ours to force. But refusing SILENTLY cost a debugging session when a
+  // stale box kept lacking an app that main had for days: log what git said
+  // so "the box is behind and won't catch up" has a trail.
+  const result = await boxExec(
     ctx,
     [
       boxGit(ctx, "fetch", "-q", "origin"),
-      `${boxGit(ctx, "merge", "--no-edit", "@{u}")} || true`,
+      `${boxGit(ctx, "merge", "--no-edit", "@{u}")}`,
     ].join(" && "),
     { timeoutMs: 180_000 },
   );
+  if (result.exitCode !== 0) {
+    logger.warn("Apps v2 box pull did not merge", {
+      sessionKey: ctx.sessionKey,
+      said: (result.stderr || result.stdout).slice(-400),
+    });
+  }
 }
 
 /**

@@ -23,16 +23,26 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
   IconButton,
+  ListItemIcon,
+  ListItemText,
+  Menu,
+  MenuItem,
   TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
 import {
+  Check as CheckIcon,
   ChevronDown as ChevronDownIcon,
   ChevronRight as ChevronRightIcon,
   GitBranch as BranchIcon,
+  Plus as PlusIcon,
   RefreshCw as RefreshIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -199,6 +209,10 @@ export default function SourceControlExplorer() {
   const [message, setMessage] = useState("");
   const [committing, setCommitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [branchAnchor, setBranchAnchor] = useState<null | HTMLElement>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [newBranchName, setNewBranchName] = useState("");
+  const [switching, setSwitching] = useState(false);
 
   useEffect(() => {
     if (workspaceId) void fetchApps(workspaceId);
@@ -232,6 +246,29 @@ export default function SourceControlExplorer() {
   }, [workspaceId, appId, message, committing, commit]);
 
   const branch = status?.branch ?? "…";
+  const branches = useAppsV2Store(s =>
+    appId ? s.branchesByApp[appId] : undefined,
+  );
+  const fetchBranches = useAppsV2Store(s => s.fetchBranches);
+  const checkoutBranch = useAppsV2Store(s => s.checkoutBranch);
+
+  const switchTo = useCallback(
+    async (target: string, options?: { create?: boolean }) => {
+      if (!workspaceId || !appId || switching) return;
+      setSwitching(true);
+      setError(null);
+      const failure = await checkoutBranch(workspaceId, appId, target, options);
+      setSwitching(false);
+      setBranchAnchor(null);
+      setCreateOpen(false);
+      if (failure) setError(failure);
+      else {
+        setNewBranchName("");
+        void fetchHistory(workspaceId, appId, "repo");
+      }
+    },
+    [workspaceId, appId, switching, checkoutBranch, fetchHistory],
+  );
 
   const commits = useMemo(() => history ?? [], [history]);
 
@@ -257,12 +294,133 @@ export default function SourceControlExplorer() {
           SOURCE CONTROL
         </Typography>
         <Box sx={{ flex: 1 }} />
+        {appId && (
+          <Tooltip title="Switch branch — the same `git checkout` the terminal runs">
+            <Button
+              size="small"
+              onClick={e => {
+                setBranchAnchor(e.currentTarget);
+                if (workspaceId) void fetchBranches(workspaceId, appId);
+              }}
+              startIcon={
+                switching ? (
+                  <CircularProgress size={12} />
+                ) : (
+                  <BranchIcon size={13} strokeWidth={1.75} />
+                )
+              }
+              sx={{
+                textTransform: "none",
+                fontSize: "0.72rem",
+                color: "text.secondary",
+                minWidth: 0,
+                maxWidth: 180,
+                "& .MuiButton-startIcon": { mr: 0.5 },
+              }}
+            >
+              <Box
+                component="span"
+                sx={{
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {branch}
+              </Box>
+            </Button>
+          </Tooltip>
+        )}
         <Tooltip title="Refresh">
           <IconButton size="small" onClick={refresh}>
             <RefreshIcon size={14} strokeWidth={1.75} />
           </IconButton>
         </Tooltip>
       </Box>
+
+      <Menu
+        anchorEl={branchAnchor}
+        open={!!branchAnchor}
+        onClose={() => setBranchAnchor(null)}
+      >
+        {(branches ?? []).map(b => (
+          <MenuItem
+            key={b.name}
+            dense
+            disabled={switching}
+            onClick={() => void switchTo(b.name)}
+          >
+            <ListItemIcon sx={{ minWidth: 28 }}>
+              {b.name === branch ? (
+                <CheckIcon size={14} />
+              ) : (
+                <BranchIcon size={14} strokeWidth={1.5} />
+              )}
+            </ListItemIcon>
+            <ListItemText
+              primary={b.name}
+              primaryTypographyProps={{ fontSize: 13 }}
+            />
+          </MenuItem>
+        ))}
+        <Divider />
+        <MenuItem
+          dense
+          disabled={switching}
+          onClick={() => {
+            setBranchAnchor(null);
+            setCreateOpen(true);
+          }}
+        >
+          <ListItemIcon sx={{ minWidth: 28 }}>
+            <PlusIcon size={14} strokeWidth={1.75} />
+          </ListItemIcon>
+          <ListItemText
+            primary="Create new branch…"
+            primaryTypographyProps={{ fontSize: 13 }}
+          />
+        </MenuItem>
+      </Menu>
+
+      <Dialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle sx={{ fontSize: 15 }}>Create branch</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            size="small"
+            placeholder={`New branch from "${branch}"`}
+            value={newBranchName}
+            onChange={e => setNewBranchName(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter" && newBranchName.trim()) {
+                void switchTo(newBranchName.trim(), { create: true });
+              }
+            }}
+            sx={{ mt: 0.5 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button size="small" onClick={() => setCreateOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            size="small"
+            variant="contained"
+            disabled={!newBranchName.trim() || switching}
+            onClick={() =>
+              void switchTo(newBranchName.trim(), { create: true })
+            }
+          >
+            {switching ? "Creating…" : "Create & switch"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {error && (
         <Alert

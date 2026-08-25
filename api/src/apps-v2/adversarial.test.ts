@@ -372,9 +372,11 @@ describe("branch switching under pressure", () => {
     } = await import("./worktree.service");
     const project = await makeProject();
 
-    // Commit clash.txt on the actor's own branch. It has to be THIS branch:
-    // an actor branch tracks main (ensureWorktree merges main in), so
-    // anything committed on main arrives here too and the two never differ.
+    // Commit clash.txt on an explicitly created branch, so main and the
+    // branch genuinely differ about it.
+    await checkoutBranch(await ensureWorktree(project, USER), "mine", {
+      create: true,
+    });
     await writeFile(
       await ensureWorktree(project, USER),
       "clash.txt",
@@ -399,7 +401,7 @@ describe("branch switching under pressure", () => {
     // "You have uncommitted changes" never did, which is why the file that
     // was actually blocking could sit in another app's folder, invisible.
     await expect(
-      checkoutBranch(await ensureWorktree(project, USER), `user/${USER}`),
+      checkoutBranch(await ensureWorktree(project, USER), "mine"),
     ).rejects.toThrow(/clash\.txt/);
 
     // Refusing must be inert: still on main, still holding the edit.
@@ -429,7 +431,12 @@ describe("branch switching under pressure", () => {
     } = await import("./worktree.service");
     const project = await makeProject();
 
-    // A file on the actor's branch, committed.
+    // A file committed on an explicitly created branch. (Named uniquely:
+    // the workspace repo is shared across this file's tests, so a branch
+    // created by an earlier test is still there.)
+    await checkoutBranch(await ensureWorktree(project, USER), "flip", {
+      create: true,
+    });
     await writeFile(await ensureWorktree(project, USER), "mine.txt", "mine\n");
     await commitWorktree(await ensureWorktree(project, USER), "mine");
     expect((await listFiles(project, USER)).entries.map(e => e.path)).toContain(
@@ -443,7 +450,7 @@ describe("branch switching under pressure", () => {
     ).not.toContain("mine.txt");
 
     // ...and coming back restores it.
-    await checkoutBranch(await ensureWorktree(project, USER), `user/${USER}`);
+    await checkoutBranch(await ensureWorktree(project, USER), "flip");
     expect((await listFiles(project, USER)).entries.map(e => e.path)).toContain(
       "mine.txt",
     );
@@ -525,7 +532,7 @@ describe("publishing", () => {
       execInWorktree,
       trialMerge,
       checkoutInBox,
-      mergeBranchToMain,
+      checkoutBranch,
       PUBLISH_ACTOR,
     } = await import("./worktree.service");
     const project = await makeProject();
@@ -536,24 +543,23 @@ describe("publishing", () => {
     // build must run against — and the case where "fetch the branches" is not
     // enough, because no branch contains it.
     //
-    // ORDER MATTERS, and the first version of this test got it wrong: the
-    // actor's commit has to land BEFORE main moves, because ensureWorktree
-    // catches a branch up with main — so "main moved, then the actor
-    // committed" quietly becomes a fast-forward whose sha IS a branch head,
-    // and the test passes without testing anything. Main moving between an
-    // actor's last touch and their publish is the race this exercises.
+    // The user's work sits on an explicitly created branch; a colleague then
+    // moves main directly (they are ON main — committing IS moving main).
+    // Main moving between the actor's last touch and their publish is the
+    // race this exercises.
+    const userHandle = await ensureWorktree(project, USER);
+    await checkoutBranch(userHandle, "user-right", { create: true });
     await writeFile(await ensureWorktree(project, USER), "right.txt", "R\n");
     await commitWorktree(await ensureWorktree(project, USER), "right");
 
     const other = "colleague";
     await writeFile(await ensureWorktree(project, other), "left.txt", "L\n");
     await commitWorktree(await ensureWorktree(project, other), "left");
-    await mergeBranchToMain(project, `user/${other}`);
 
     const publishHandle = await ensureWorktree(project, PUBLISH_ACTOR, {
       branch: project.defaultBranch || "main",
     });
-    const trial = await trialMerge(publishHandle, `user/${USER}`);
+    const trial = await trialMerge(publishHandle, "user-right");
     expect(trial.ok, trial.reason).toBe(true);
 
     // The point of the whole exercise: the publish box checks out EXACTLY the
@@ -588,41 +594,42 @@ describe("publishing", () => {
       commitWorktree,
       trialMerge,
       projectHistory,
+      checkoutBranch,
       PUBLISH_ACTOR,
     } = await import("./worktree.service");
     const project = await makeProject();
 
-    // Two branches change the same line.
+    // Two lines of work change the same line: the user commits straight on
+    // main (they are ON main), the other person on their own branch.
     await writeFile(
       await ensureWorktree(project, USER),
       "clash.txt",
       "theirs\n",
     );
     await commitWorktree(await ensureWorktree(project, USER), "theirs");
-    const { mergeBranchToMain } = await import("./worktree.service");
-    await mergeBranchToMain(project, `user/${USER}`);
 
     const other = "other-person";
+    const otherHandle = await ensureWorktree(project, other);
+    await checkoutBranch(otherHandle, "other-work", { create: true });
     await writeFile(
       await ensureWorktree(project, other),
       "clash.txt",
       "ours\n",
     );
     await commitWorktree(await ensureWorktree(project, other), "ours");
-    // Make main diverge again so the merge is not a fast-forward.
+    // Main moves on past the branch point, so the merge cannot fast-forward.
     await writeFile(
       await ensureWorktree(project, USER),
       "clash.txt",
       "theirs-2\n",
     );
     await commitWorktree(await ensureWorktree(project, USER), "theirs 2");
-    await mergeBranchToMain(project, `user/${USER}`);
 
     const before = (await projectHistory(project)).length;
     const publishHandle = await ensureWorktree(project, PUBLISH_ACTOR, {
       branch: project.defaultBranch || "main",
     });
-    const trial = await trialMerge(publishHandle, `user/${other}`);
+    const trial = await trialMerge(publishHandle, "other-work");
     expect(trial.ok, "a conflicting merge must be refused").toBe(false);
     expect(trial.reason).toMatch(/conflict/i);
     // Refusing must not have advanced main.
@@ -771,11 +778,13 @@ describe("failure mid-flight", () => {
       "./worktree.service"
     );
     const project = await makeProject();
-    await ensureWorktree(project, USER);
+    await checkoutBranch(await ensureWorktree(project, USER), "side", {
+      create: true,
+    });
 
     await Promise.allSettled([
       checkoutBranch(await ensureWorktree(project, USER), "main"),
-      checkoutBranch(await ensureWorktree(project, USER), `user/${USER}`),
+      checkoutBranch(await ensureWorktree(project, USER), "side"),
     ]);
 
     // Whichever won, the two views must agree — a database that believes one

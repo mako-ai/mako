@@ -34,30 +34,79 @@ import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.
 
 const logger = loggers.api("apps-v2-dev-server");
 
-/** Fixed inside the sandbox: one dev server per session, its own microVM. */
-const DEV_PORT = 5173;
+/**
+ * Every running app gets its own dev server on its own port — two apps can
+ * be live side by side, and opening app B no longer kills app A's server
+ * (the old single-port model needed an identity marker and a takeover;
+ * per-app ports delete that whole problem). Ports are handed out from this
+ * base by a registry file inside the sandbox, so the mapping lives with the
+ * servers it describes and survives API restarts.
+ */
+const DEV_PORT_BASE = 5173;
+const PORTS_REGISTRY = "/tmp/mako-dev-ports.json";
 
 /** How long to hold the sandbox open past the last preview request. */
 const DEV_SESSION_KEEPALIVE_MS = 30 * 60 * 1000;
 
-/** Absolute path of the launcher we write into the sandbox (never the repo). */
+/** One filesystem identity per app for launcher, log and staged data. */
+function appSlug(handle: WorktreeHandle): string {
+  const base = handle.appRoot.split("/").filter(Boolean).pop() ?? "app";
+  return base.replace(/[^A-Za-z0-9_-]+/g, "-").slice(0, 60);
+}
+
 /**
- * Where everything the boot does writes its output — npm install (the route
- * appends it here before starting the server) and vite itself. One file so
- * the client can tail one thing and show the person the ACTUAL boot, not a
- * stand-in.
+ * Where everything this APP's boot writes its output — npm install (the
+ * route appends it here before starting the server) and vite itself. One
+ * file per app so each workbench's Dev server tab tails its own boot.
  */
-export const DEV_SERVER_LOG = "/tmp/mako-dev-server.log";
+export function devLogPath(handle: WorktreeHandle): string {
+  return `/tmp/mako-dev-${appSlug(handle)}.log`;
+}
 
-const LAUNCHER_PATH = "/tmp/mako-dev-server.mjs";
+function launcherPath(handle: WorktreeHandle): string {
+  return `/tmp/mako-dev-${appSlug(handle)}.mjs`;
+}
 
 /**
- * Where materialized binding parquet is staged inside the sandbox.
+ * Where materialized binding parquet is staged inside the sandbox — per app,
+ * so two apps with a same-named binding cannot serve each other's data.
  *
  * Deliberately outside the app's directory: this data is derived, sometimes
  * large, and must never end up in the user's git tree or their `public/`.
  */
-const DATA_DIR = "/tmp/mako-data";
+function dataDir(handle: WorktreeHandle): string {
+  return `/tmp/mako-data-${appSlug(handle)}`;
+}
+
+/**
+ * The app's port, from the in-sandbox registry. `allocate` grants a new port
+ * to an app that has none; reads that must not disturb state (is the server
+ * up?) pass false and get null for an unregistered app. Allocation runs as
+ * one node one-liner in the sandbox, so concurrent allocations for the SAME
+ * sandbox serialize on the file rather than racing in two API processes.
+ */
+async function devPort(
+  handle: WorktreeHandle,
+  provider: ReturnType<typeof getSandboxProvider>,
+  ctx: SandboxExecContext,
+  options: { allocate: boolean },
+): Promise<number | null> {
+  const script =
+    `const fs=require("fs");const f=${JSON.stringify(PORTS_REGISTRY)};` +
+    `let m={};try{m=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}` +
+    `const app=process.argv[1];` +
+    (options.allocate
+      ? `if(!m[app]){const used=new Set(Object.values(m));let p=${DEV_PORT_BASE};while(used.has(p))p++;m[app]=p;fs.writeFileSync(f,JSON.stringify(m));}`
+      : ``) +
+    `console.log(m[app]??"");`;
+  const result = await provider.exec(
+    ctx,
+    `node -e '${script.replace(/'/g, String.raw`'\''`)}' ${JSON.stringify(handle.appRoot)}`,
+    { timeoutMs: 30_000 },
+  );
+  const port = Number(result.stdout.trim());
+  return Number.isInteger(port) && port >= DEV_PORT_BASE ? port : null;
+}
 
 /**
  * Node launcher, run inside the sandbox. Uses Vite's JS API because inline
@@ -68,7 +117,11 @@ const DATA_DIR = "/tmp/mako-data";
  * `.e2b.app` is matched as a suffix, so it covers the sandbox's own origin
  * without our having to know the sandbox id at write time.
  */
-function launcherSource(appDir: string): string {
+function launcherSource(
+  appDir: string,
+  port: number,
+  stagedDataDir: string,
+): string {
   return `
 import { createServer } from "${appDir}/node_modules/vite/dist/node/index.js";
 import { createReadStream, existsSync, statSync } from "node:fs";
@@ -89,7 +142,7 @@ const makoData = {
       if (url === "/__data/index.json") {
         // The staged-binding list, for the SDK's useDuckDB. Missing file
         // (no bindings staged yet) is an empty list, not an error.
-        const file = path.join(${JSON.stringify(DATA_DIR)}, "index.json");
+        const file = path.join(${JSON.stringify(stagedDataDir)}, "index.json");
         res.setHeader("content-type", "application/json");
         if (existsSync(file)) {
           createReadStream(file).pipe(res);
@@ -100,7 +153,7 @@ const makoData = {
       }
       const match = /^\\/__data\\/([A-Za-z0-9_][A-Za-z0-9_-]*)\\.parquet$/.exec(url);
       if (!match) return next();
-      const file = path.join(${JSON.stringify(DATA_DIR)}, match[1] + ".parquet");
+      const file = path.join(${JSON.stringify(stagedDataDir)}, match[1] + ".parquet");
       if (!existsSync(file)) {
         res.statusCode = 404;
         res.setHeader("content-type", "application/json");
@@ -125,7 +178,7 @@ const server = await createServer({
   plugins: [makoData],
   server: {
     host: "0.0.0.0",
-    port: ${DEV_PORT},
+    port: ${port},
     strictPort: true,
     // The browser reaches us on the sandbox's public origin; without this
     // Vite answers 403 "Blocked request. This host is not allowed."
@@ -141,7 +194,7 @@ await server.listen();
 // The same banner \`vite dev\` prints from a terminal — version, ready
 // time, URLs — so the boot log reads like the real thing, because it is.
 server.printUrls();
-console.log("mako dev server listening on ${DEV_PORT}");
+console.log("mako dev server listening on ${port}");
 // Watcher lifecycle in the boot log: "ready" proves the polling scan
 // finished (inotify is dead in this VM, so a silent watcher means frozen
 // transforms), and errors here are otherwise invisible.
@@ -183,7 +236,8 @@ async function stageBindingData(
   }
   if (bindings.length === 0) return [];
 
-  await provider.exec(ctx, `mkdir -p ${DATA_DIR}`, { timeoutMs: 30_000 });
+  const stageDir = dataDir(handle);
+  await provider.exec(ctx, `mkdir -p ${stageDir}`, { timeoutMs: 30_000 });
 
   const store = getDashboardArtifactStore();
   const staged: string[] = [];
@@ -197,7 +251,7 @@ async function stageBindingData(
     }
     await provider.writeFile(
       ctx,
-      `${DATA_DIR}/${binding.name}.parquet`,
+      `${stageDir}/${binding.name}.parquet`,
       new Uint8Array(Buffer.concat(chunks)),
     );
     staged.push(binding.name);
@@ -208,7 +262,7 @@ async function stageBindingData(
   // the same relative fetch that gets it the parquet gets it the list.
   await provider.writeFile(
     ctx,
-    `${DATA_DIR}/index.json`,
+    `${stageDir}/index.json`,
     new TextEncoder().encode(JSON.stringify(staged)),
   );
   if (staged.length > 0) {
@@ -220,49 +274,46 @@ async function stageBindingData(
   return staged;
 }
 
-/** Which app the running dev server was launched for. */
-const APP_MARKER = "/tmp/mako-dev-server.app";
-
 /**
- * Is a dev server up — and is it OURS?
- *
- * One sandbox serves one actor's whole workspace, and every app's dev server
- * wants the same port. "Something is listening" therefore proves nothing
- * about WHICH app is being served — reusing on that test alone is how
- * opening Event Reconciliation Explorer showed binding-smoke: its vite was
- * simply there first. The launcher's app marker is the identity check.
+ * Is THIS app's dev server up? Per-app ports make identity trivial: the port
+ * came from the registry keyed by app, so "the port answers" IS the check —
+ * the marker file and takeover of the single-port era are gone.
  */
-async function listeningFor(
-  handle: WorktreeHandle,
+async function listening(
   provider: ReturnType<typeof getSandboxProvider>,
-): Promise<"this-app" | "other-app" | "down"> {
+  ctx: SandboxExecContext,
+  port: number,
+): Promise<boolean> {
   const probe = await provider.exec(
-    boxCtx(handle),
-    `curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:${DEV_PORT}/ && echo up || echo down; cat ${APP_MARKER} 2>/dev/null`,
+    ctx,
+    `curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:${port}/ && echo up || echo down`,
     { timeoutMs: 15_000 },
   );
-  if (!probe.stdout.includes("up")) return "down";
-  const marker = probe.stdout.split("\n").slice(1).join("\n").trim();
-  return marker === handle.appRoot ? "this-app" : "other-app";
+  return probe.stdout.includes("up");
 }
 
 /**
  * Is this app's dev server already up in an existing sandbox? Never creates
- * a sandbox. The reattach path uses this to keep its hands off the boot log:
- * truncating it and then skipping the launch (because the server was already
- * running) left the Dev server tab permanently blank after a page reload.
+ * a sandbox and never allocates a port. The reattach path uses this to keep
+ * its hands off the boot log: truncating it and then skipping the launch
+ * (because the server was already running) left the Dev server tab
+ * permanently blank after a page reload.
  */
 export async function isServingApp(handle: WorktreeHandle): Promise<boolean> {
   const provider = getSandboxProvider();
-  if (!(await provider.hasSession(boxCtx(handle)))) return false;
-  return (await listeningFor(handle, provider)) === "this-app";
+  const ctx = boxCtx(handle);
+  if (!(await provider.hasSession(ctx))) return false;
+  const port = await devPort(handle, provider, ctx, { allocate: false });
+  if (!port) return false;
+  return listening(provider, ctx, port);
 }
 
 /**
  * Ensure a dev server is running for this app and return its public URL.
  *
  * Idempotent: a server that is already listening is reused, so repeated
- * previews do not restart vite and lose its module graph.
+ * previews do not restart vite and lose its module graph. Other apps' dev
+ * servers are left alone — each has its own port.
  */
 export async function ensureDevServer(
   handle: WorktreeHandle,
@@ -273,21 +324,15 @@ export async function ensureDevServer(
 
   await provider.keepAlive(ctx, DEV_SESSION_KEEPALIVE_MS);
 
-  const serving = await listeningFor(handle, provider);
-  if (serving === "other-app") {
-    // Another app's dev server owns the port. Its module graph is worthless
-    // to this app; kill it and start ours. ([m] so the pattern cannot match
-    // this very command's own process entry.)
-    await provider.exec(
-      ctx,
-      `pkill -f "[m]ako-dev-server.mjs"; sleep 1; rm -f ${APP_MARKER}`,
-      { timeoutMs: 30_000 },
-    );
-  }
-  if (serving !== "this-app") {
+  const port = await devPort(handle, provider, ctx, { allocate: true });
+  if (!port) throw new Error("Could not allocate a dev-server port");
+  const logPath = devLogPath(handle);
+  const launcher = launcherPath(handle);
+
+  if (!(await listening(provider, ctx, port))) {
     const write = await provider.exec(
       ctx,
-      `cat > ${LAUNCHER_PATH} <<'MAKO_LAUNCHER_EOF'\n${launcherSource(appDir)}\nMAKO_LAUNCHER_EOF\necho written`,
+      `cat > ${launcher} <<'MAKO_LAUNCHER_EOF'\n${launcherSource(appDir, port, dataDir(handle))}\nMAKO_LAUNCHER_EOF\necho written`,
       { timeoutMs: 30_000 },
     );
     if (write.exitCode !== 0) {
@@ -298,7 +343,7 @@ export async function ensureDevServer(
 
     await provider.execDetached(
       ctx,
-      `printf '%s' ${JSON.stringify(handle.appRoot)} > ${APP_MARKER} && nohup node ${LAUNCHER_PATH} >> ${DEV_SERVER_LOG} 2>&1 & echo started`,
+      `nohup node ${launcher} >> ${logPath} 2>&1 & echo started`,
       { cwd: handle.appRoot, timeoutMs: 60_000 },
     );
 
@@ -309,11 +354,11 @@ export async function ensureDevServer(
     // with a real pause, generously, and surface the log if it truly dies.
     let up = false;
     for (let attempt = 0; attempt < 45 && !up; attempt++) {
-      up = (await listeningFor(handle, provider)) === "this-app";
+      up = await listening(provider, ctx, port);
       if (!up) await new Promise(resolve => setTimeout(resolve, 2000));
     }
     if (!up) {
-      const log = await provider.exec(ctx, `tail -20 ${DEV_SERVER_LOG}`, {
+      const log = await provider.exec(ctx, `tail -20 ${logPath}`, {
         timeoutMs: 15_000,
       });
       throw new Error(
@@ -326,7 +371,7 @@ export async function ensureDevServer(
   // hitting preview again picks up the new rows without a restart.
   const stagedBindings = await stageBindingData(handle, provider, ctx);
 
-  const url = await provider.publicUrlForPort(ctx, DEV_PORT);
+  const url = await provider.publicUrlForPort(ctx, port);
   logger.info("Apps v2 dev preview ready", {
     projectId: handle.project._id.toString(),
     appRoot: handle.appRoot,

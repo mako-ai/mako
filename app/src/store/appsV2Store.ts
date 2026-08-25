@@ -264,6 +264,7 @@ interface AppsV2Store {
     workspaceId: string,
     appId: string,
     branch: string,
+    options?: { create?: boolean },
   ) => Promise<string | null>;
   mergeBranch: (
     workspaceId: string,
@@ -880,14 +881,14 @@ export const useAppsV2Store = create<AppsV2Store>()(
       }
     },
 
-    checkoutBranch: async (workspaceId, appId, branch) => {
+    checkoutBranch: async (workspaceId, appId, branch, options) => {
       try {
         unwrapBody(
           await api.POST(
             "/api/workspaces/{workspaceId}/apps-v2/{id}/checkout",
             {
               params: { path: { workspaceId, id: appId } },
-              body: { branch },
+              body: { branch, ...(options?.create ? { create: true } : {}) },
             },
           ),
         );

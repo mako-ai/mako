@@ -4030,8 +4030,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Switch the caller's worktree to another branch
-         * @description The same thing `git checkout` in the terminal does, offered as a button — and it goes through the sandbox, so both agree afterwards. Refuses with uncommitted work rather than choosing between carrying it across and discarding it.
+         * Switch the caller's worktree to another branch (or create one)
+         * @description The same thing `git checkout` (or `git checkout -b` with create) in the terminal does, offered as a button — and it goes through the sandbox, so both agree afterwards. Refuses with uncommitted work rather than choosing between carrying it across and discarding it.
          */
         post: operations["post_api_workspaces_workspaceId_apps_v2_id_checkout"];
         delete?: never;
@@ -4047,7 +4047,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List branches (main, plus one per actor) */
+        /** List branches */
         get: operations["get_api_workspaces_workspaceId_apps_v2_id_branches"];
         put?: never;
         post?: never;
@@ -18738,6 +18738,7 @@ export interface operations {
             content: {
                 "application/json": {
                     branch: string;
+                    create?: boolean;
                 };
             };
         };

@@ -365,8 +365,19 @@ async function startSession(
       // sandbox holds the repository, and nothing overwrites it afterwards —
       // so a `git checkout` typed in this shell survives.
       const ctx = await ensureBox(handle);
+      // The app's folder can legitimately be absent — a box on a branch from
+      // before the app existed, or a pull that refused to merge. A real
+      // computer still gives you a shell; refusing to open one here bricked
+      // the only tool that could fix the situation. Fall back to the repo
+      // root and say so.
+      const cwdProbe = await provider.exec(
+        ctx,
+        `test -d ${JSON.stringify(`/home/user/app/${handle.appRoot}`)} && echo yes || echo no`,
+        { timeoutMs: 15_000 },
+      );
+      const appDirExists = cwdProbe.stdout.includes("yes");
       created.terminal = await provider.openTerminal(ctx, {
-        cwd: handle.appRoot,
+        cwd: appDirExists ? handle.appRoot : ".",
         cols: 80,
         rows: 24,
         onExit: () => {
@@ -410,6 +421,33 @@ async function startSession(
         if (flushTimer) clearTimeout(flushTimer);
         flush();
       };
+
+      // Hand the shell to tmux when the sandbox has it. This is what makes
+      // sessions durable in the SANDBOX rather than in this process's `live`
+      // map: an API restart loses the map, but the next attach runs the same
+      // line and tmux `new -A` reattaches to the running session — scrollback,
+      // running processes and all. Guarded, not exec'd blind: a sandbox
+      // without tmux just keeps its plain bash, which is today's behavior.
+      // `clear` hides the handoff line itself so the terminal opens clean.
+      if (!appDirExists) {
+        // Into the replay buffer, not the socket list — the caller's socket
+        // attaches AFTER this block, and replay is what it reads first.
+        remember(
+          created,
+          Buffer.from(
+            `\r\n\x1b[33m[${handle.appRoot} is not in this checkout — opened at the repo root; try \x1b[1mgit pull\x1b[22m]\x1b[0m\r\n`,
+            "utf8",
+          ),
+        );
+      }
+      const tmuxSession = `mako-${termId}`;
+      await created.terminal
+        .write(
+          new TextEncoder().encode(
+            ` command -v tmux >/dev/null && exec tmux new -A -s ${tmuxSession}; clear\n`,
+          ),
+        )
+        .catch(() => undefined);
 
       live.set(key, created);
       session = created;
