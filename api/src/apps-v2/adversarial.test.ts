@@ -450,6 +450,38 @@ describe("branch switching under pressure", () => {
   }, 180_000);
 });
 
+describe("a tree too large for a command line", () => {
+  it("lists thousands of long paths without putting them in argv", async () => {
+    const { ensureWorktree, execInWorktree, listFiles } = await import(
+      "./worktree.service"
+    );
+    const project = await makeProject();
+    const handle = await ensureWorktree(project, USER);
+
+    // ~2500 files with long paths — comfortably past the ~1MB argv limit if
+    // any step interpolates the list into a command line, which is exactly
+    // what the size probe once did: the first app that committed
+    // node_modules produced a listing that could not list.
+    const made = await execInWorktree(
+      handle,
+      "mkdir -p vendor/deeply/nested/directory/structure/for/long/paths && " +
+        "for i in $(seq 1 2500); do " +
+        ': > "vendor/deeply/nested/directory/structure/for/long/paths/module-file-with-a-descriptive-name-$i.js"; ' +
+        "done && echo made",
+      { timeoutMs: 120_000 },
+    );
+    expect(made.exitCode, made.stderr).toBe(0);
+
+    const { entries } = await listFiles(project, USER);
+    const vendored = entries.filter(e => e.path.startsWith("vendor/"));
+    expect(vendored.length).toBe(2500);
+    // And the ordinary files are still there with real sizes.
+    const app = entries.find(e => e.path === "src/App.tsx");
+    expect(app).toBeTruthy();
+    expect(app!.size).toBeGreaterThan(0);
+  }, 180_000);
+});
+
 describe("uncommitted work you cannot see", () => {
   it("reports repo-wide changes, not just this app's slice", async () => {
     const { ensureWorktree, writeFile, worktreeStatus } = await import(

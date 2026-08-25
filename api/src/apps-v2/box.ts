@@ -295,18 +295,24 @@ export async function boxListFiles(
   paths = paths.filter(p => !gone.has(p));
   if (paths.length === 0) return [];
 
-  // Sizes in one call rather than one per file. A tree with a few hundred
-  // files would otherwise be a few hundred round trips to a microVM.
-  // Probe stat's dialect first: `-c` is GNU (the microVM), `-f` is BSD (the
-  // local provider on a Mac). Falling back with `||` after the fact cannot
-  // work — xargs has already consumed the list — and the GNU-only version
-  // quietly reported every file as 0 bytes on exactly the machines this code
-  // is developed on.
+  // Sizes in one PIPELINE, not one argv. The path list must never ride the
+  // command line: git re-lists it box-side and pipes straight into xargs, so
+  // the command is the same few hundred bytes whether the tree holds ten
+  // files or ten thousand. The first version interpolated every path into
+  // the command string, and the first app that committed node_modules took
+  // the whole file tree down with "error starting process" — the exec's
+  // argument limit, hit by a listing.
+  //
+  // Dialect probe: `-c` is GNU stat (the microVM), `-f` is BSD (the local
+  // provider on a Mac). Deleted-but-still-indexed paths simply fail stat and
+  // fall out of the size map, which is fine — they are filtered from the
+  // listing above.
   const sizes = await boxExec(
     ctx,
     `cd ${sh(boxRoot(ctx))} && ` +
       `if stat -c %s . >/dev/null 2>&1; then fmt=-c; spec='%s %n'; else fmt=-f; spec='%z %N'; fi && ` +
-      `printf '%s\\0' ${paths.map(sh).join(" ")} | xargs -0 stat "$fmt" "$spec" 2>/dev/null || true`,
+      `git ls-files -z --cached --others --exclude-standard${scope} | ` +
+      `xargs -0 stat "$fmt" "$spec" 2>/dev/null || true`,
     { timeoutMs: 60_000 },
   );
   const sizeByPath = new Map<string, number>();

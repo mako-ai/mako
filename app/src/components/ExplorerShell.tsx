@@ -172,7 +172,20 @@ export default function ExplorerShell({
       </Box>
 
       {error && (
-        <Alert severity="error" onClose={onErrorClose} sx={{ mx: 2, mt: 2 }}>
+        <Alert
+          severity="error"
+          onClose={onErrorClose}
+          sx={{
+            mx: 2,
+            mt: 2,
+            // An error can quote a whole failed command — one once carried a
+            // thousand file paths. It must scroll inside its own box, not
+            // push the tree off screen; and paths have no spaces to wrap at,
+            // so let them break anywhere rather than force the rail wide.
+            wordBreak: "break-word",
+            "& .MuiAlert-message": { maxHeight: 240, overflowY: "auto" },
+          }}
+        >
           {error}
         </Alert>
       )}
