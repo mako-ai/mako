@@ -341,9 +341,16 @@ export async function ensureDevServer(
       );
     }
 
+    // The dev server is a SESSION, not a daemon: inside tmux it is
+    // `tmux attach -t mako-dev-<slug>` away from any shell, survives API
+    // restarts like every other session, and shows up in `tmux ls` next to
+    // the user's own shells — the launcher still tees to the log so the
+    // boot tab can tail it. Sandboxes without tmux fall back to nohup,
+    // which is the same server minus the attachability.
+    const devSession = `mako-dev-${appSlug(handle)}`;
     await provider.execDetached(
       ctx,
-      `nohup node ${launcher} >> ${logPath} 2>&1 & echo started`,
+      `if command -v tmux >/dev/null; then tmux new-session -d -s ${devSession} 'node ${launcher} 2>&1 | tee -a ${logPath}' 2>/dev/null || true; else nohup node ${launcher} >> ${logPath} 2>&1 & fi; echo started`,
       { cwd: handle.appRoot, timeoutMs: 60_000 },
     );
 

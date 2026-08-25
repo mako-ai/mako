@@ -378,101 +378,185 @@ function TerminalTabs({
     }
   }, [appId, shells]);
 
+  const slug = useAppsV2Store(
+    st => st.apps.find(a => a.id === appId)?.slug ?? null,
+  );
+
   return (
-    <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+    // VS Code's panel anatomy: the active session fills the area, and the
+    // SESSION LIST is a slim vertical column on the right — the dev server
+    // is simply the first session in it (server-side it runs in a tmux
+    // session named mako-dev-<slug>, attachable from any shell), not a
+    // special surface.
+    <Box sx={{ height: "100%", display: "flex", minHeight: 0 }}>
       <Box
         sx={{
+          flex: 1,
+          minWidth: 0,
+          minHeight: 0,
           display: "flex",
-          alignItems: "center",
-          gap: 0.25,
-          px: 0.5,
-          borderBottom: "1px solid",
-          borderColor: "divider",
-          flexShrink: 0,
+          flexDirection: "column",
         }}
       >
-        <Button
-          size="small"
-          onClick={() => setActive("dev")}
+        {/* Every pane STAYS MOUNTED — an unmounted xterm is a dropped
+            session and a re-scroll; hiding keeps the socket, the scrollback
+            and the dev-log offset alive across switches. */}
+        <Box
           sx={{
-            fontSize: 11.5,
-            textTransform: "none",
-            fontWeight: active === "dev" ? 700 : 400,
-            color: active === "dev" ? "text.primary" : "text.secondary",
+            flex: 1,
+            minHeight: 0,
+            display: active === "dev" ? "block" : "none",
           }}
         >
-          Dev server
-        </Button>
-        {shells.map((id, index) => (
-          <Button
+          <DevBootLog workspaceId={workspaceId} appId={appId} />
+        </Box>
+        {shells.map(id => (
+          <Box
             key={id}
-            size="small"
-            onClick={() => setActive(id)}
             sx={{
-              fontSize: 11.5,
-              textTransform: "none",
-              fontWeight: active === id ? 700 : 400,
-              color: active === id ? "text.primary" : "text.secondary",
+              flex: 1,
+              minHeight: 0,
+              display: active === id ? "block" : "none",
             }}
-            endIcon={
-              shells.length > 1 ? (
-                <Box
-                  component="span"
-                  onClick={e => {
-                    e.stopPropagation();
+          >
+            <TerminalPanel
+              appId={appId}
+              workspaceId={workspaceId}
+              termId={id}
+            />
+          </Box>
+        ))}
+      </Box>
+      <Box
+        sx={{
+          width: 168,
+          flexShrink: 0,
+          borderLeft: "1px solid",
+          borderColor: "divider",
+          display: "flex",
+          flexDirection: "column",
+          overflowY: "auto",
+        }}
+      >
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            pl: 1.25,
+            pr: 0.25,
+            py: 0.25,
+          }}
+        >
+          <Typography
+            variant="caption"
+            sx={{
+              flex: 1,
+              fontSize: "0.66rem",
+              fontWeight: 700,
+              letterSpacing: 0.4,
+              color: "text.secondary",
+            }}
+          >
+            SESSIONS
+          </Typography>
+          <Tooltip title="New terminal — another real shell in the same sandbox">
+            <IconButton
+              size="small"
+              onClick={() => {
+                const id = String(nextId.current++);
+                setShells(prev => [...prev, id]);
+                setActive(id);
+              }}
+            >
+              <PlusIcon size={13} strokeWidth={2} />
+            </IconButton>
+          </Tooltip>
+        </Box>
+        <SessionRow
+          label={slug ? `dev: ${slug}` : "dev server"}
+          selected={active === "dev"}
+          onSelect={() => setActive("dev")}
+        />
+        {shells.map((id, index) => (
+          <SessionRow
+            key={id}
+            label={`bash ${index + 1}`}
+            selected={active === id}
+            onSelect={() => setActive(id)}
+            onClose={
+              shells.length > 1
+                ? () => {
                     setShells(prev => {
                       const next = prev.filter(x => x !== id);
                       if (active === id) setActive(next[0] ?? "dev");
                       return next;
                     });
-                  }}
-                  sx={{ fontSize: 11, opacity: 0.6, "&:hover": { opacity: 1 } }}
-                >
-                  ×
-                </Box>
-              ) : undefined
+                  }
+                : undefined
             }
-          >
-            shell {index + 1}
-          </Button>
+          />
         ))}
-        <Tooltip title="New terminal — another real shell in the same sandbox">
-          <IconButton
-            size="small"
-            onClick={() => {
-              const id = String(nextId.current++);
-              setShells(prev => [...prev, id]);
-              setActive(id);
-            }}
-          >
-            <PlusIcon size={13} strokeWidth={2} />
-          </IconButton>
-        </Tooltip>
       </Box>
-      {/* Every pane STAYS MOUNTED — an unmounted xterm is a dropped session
-          and a re-scroll; hiding keeps the socket, the scrollback and the
-          dev-log offset alive across tab switches. */}
-      <Box
+    </Box>
+  );
+}
+
+/** One row of the VS Code-style session list beside the terminal. */
+function SessionRow({
+  label,
+  selected,
+  onSelect,
+  onClose,
+}: {
+  label: string;
+  selected: boolean;
+  onSelect: () => void;
+  onClose?: () => void;
+}) {
+  return (
+    <Box
+      onClick={onSelect}
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        gap: 0.75,
+        pl: 1.25,
+        pr: 0.5,
+        py: 0.4,
+        cursor: "pointer",
+        bgcolor: selected ? "action.selected" : "transparent",
+        "&:hover": { bgcolor: selected ? "action.selected" : "action.hover" },
+        "&:hover .a2-session-close": { opacity: 0.7 },
+      }}
+    >
+      <TerminalIcon size={13} strokeWidth={1.75} />
+      <Typography
+        variant="caption"
         sx={{
           flex: 1,
-          minHeight: 0,
-          display: active === "dev" ? "block" : "none",
+          fontSize: 11.5,
+          fontWeight: selected ? 650 : 400,
+          color: selected ? "text.primary" : "text.secondary",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
         }}
       >
-        <DevBootLog workspaceId={workspaceId} appId={appId} />
-      </Box>
-      {shells.map(id => (
+        {label}
+      </Typography>
+      {onClose && (
         <Box
-          key={id}
-          sx={{
-            flex: 1,
-            minHeight: 0,
-            display: active === id ? "block" : "none",
+          component="span"
+          className="a2-session-close"
+          onClick={e => {
+            e.stopPropagation();
+            onClose();
           }}
+          sx={{ fontSize: 12, opacity: 0, "&:hover": { opacity: 1 } }}
         >
-          <TerminalPanel appId={appId} workspaceId={workspaceId} termId={id} />
+          ×
         </Box>
-      ))}
+      )}
     </Box>
   );
 }
