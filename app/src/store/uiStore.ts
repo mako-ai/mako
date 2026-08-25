@@ -262,11 +262,17 @@ export type ActiveExplorer =
   | "flows"
   | "dashboards"
   | "apps"
+  | "notebooks"
   | "apps-v2"
   | "dbt"
+  | "source-control"
   | "settings"
   | null;
 
+// Every LeftPaneView that renders an explorer — which today is every view.
+// This list has silently drifted from the union before (notebooks and
+// source-control were both missing, so their rail icons never highlighted);
+// keep it in lockstep with LeftPaneView when adding a view.
 const EXPLORER_VIEWS: ReadonlySet<LeftPaneView> = new Set([
   "databases",
   "consoles",
@@ -274,8 +280,10 @@ const EXPLORER_VIEWS: ReadonlySet<LeftPaneView> = new Set([
   "flows",
   "dashboards",
   "apps",
+  "notebooks",
   "apps-v2",
   "dbt",
+  "source-control",
   "settings",
 ]);
 

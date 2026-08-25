@@ -97,6 +97,21 @@ export function UrlSync() {
 
     const path = window.location.pathname;
 
+    // Reload vs deep link, and they deserve opposite answers. The URL follows
+    // the active TAB, so on a plain reload the handlers below would move the
+    // left pane to the tab's home view — silently overriding the persisted
+    // pane, which is how reloading with an app tab open bounced you off the
+    // Source Control panel (and, less visibly, off every other view). A
+    // reload keeps your workbench where it was; a link someone sent you still
+    // takes you to the thing.
+    const isReload =
+      (
+        performance.getEntriesByType(
+          "navigation",
+        )[0] as PerformanceNavigationTiming
+      )?.type === "reload";
+    const paneBeforeHydration = useUIStore.getState().leftPane;
+
     // Route patterns live in lib/tab-routing.ts next to the URL builders so
     // the two directions stay in sync (most specific matched first below).
     const consoleMatch = path.match(TAB_DEEP_LINK_PATTERNS.console);
@@ -409,6 +424,12 @@ export function UrlSync() {
       // /settings — just show the explorer panel. No tab is forced open;
       // the user picks a section from the panel.
       setLeftPane("settings");
+    }
+
+    if (isReload) {
+      // The tab handlers above still opened/focused the right tab; only the
+      // pane choice is restored.
+      setLeftPane(paneBeforeHydration);
     }
 
     isHydrated.current = true;
