@@ -32,8 +32,15 @@ import {
   Typography,
 } from "@mui/material";
 import {
+  Braces as JsonFileIcon,
   ChevronDown as ChevronDownIcon,
   ChevronRight as ChevronRightIcon,
+  Database as BindingIcon,
+  File as PlainFileIcon,
+  FileCode as CodeFileIcon,
+  FileText as TextFileIcon,
+  Folder as FolderIcon,
+  FolderOpen as FolderOpenIcon,
   GitBranch as BranchIcon,
   GitMerge as MergeIcon,
   MoreVertical as KebabIcon,
@@ -140,6 +147,36 @@ function parseNodeId(id: string): ParsedNode {
 }
 
 /** Build nested folder/file nodes for one app (mirrors v1 buildAppFileNodes). */
+// Per-extension file icons — the same mapping as v1's AppsExplorer, so the
+// two trees read identically. A binding (bindings/*.sql) gets the database
+// icon: it IS a data binding, the .sql is just its serialization.
+const CODE_FILE_EXTENSIONS = new Set([
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "css",
+  "scss",
+  "html",
+  "sql",
+]);
+function fileIcon(name: string, path: string) {
+  if (/^(apps\/[^/]+\/)?bindings\//.test(path) && name.endsWith(".sql")) {
+    return <BindingIcon size={16} strokeWidth={1.5} />;
+  }
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  if (CODE_FILE_EXTENSIONS.has(ext)) {
+    return <CodeFileIcon size={16} strokeWidth={1.5} />;
+  }
+  if (ext === "md" || ext === "mdx" || ext === "txt") {
+    return <TextFileIcon size={16} strokeWidth={1.5} />;
+  }
+  if (ext === "json") {
+    return <JsonFileIcon size={16} strokeWidth={1.5} />;
+  }
+  return <PlainFileIcon size={16} strokeWidth={1.5} />;
+}
+
 function buildFileNodes(
   appId: string,
   files: AppV2FileEntry[],
@@ -729,11 +766,20 @@ export default function AppsV2Explorer() {
                   activeItemId={activeItemId}
                   revealNodeId={reveal?.nodeId}
                   revealNonce={reveal?.nonce}
-                  getItemIcon={node =>
-                    parseNodeId(node.id).kind === "app" ? (
-                      <AppIcon size={16} strokeWidth={1.5} />
-                    ) : undefined
-                  }
+                  getItemIcon={(node, ctx) => {
+                    const kind = parseNodeId(node.id).kind;
+                    if (kind === "app") {
+                      return <AppIcon size={16} strokeWidth={1.5} />;
+                    }
+                    if (kind === "file") {
+                      return fileIcon(node.name, node.path ?? node.name);
+                    }
+                    return ctx?.isExpanded ? (
+                      <FolderOpenIcon size={16} strokeWidth={1.5} />
+                    ) : (
+                      <FolderIcon size={16} strokeWidth={1.5} />
+                    );
+                  }}
                   onItemClick={handleItemClick}
                   shouldFolderClickActivate={node =>
                     parseNodeId(node.id).kind === "app"
