@@ -67,6 +67,13 @@ const topNavigationItems: {
   label: string;
 }[] = [
   { view: "databases", icon: EXPLORER_ICONS.databases, label: "Databases" },
+  // The workspace repository, VS Code style — second in the rail, the same
+  // neighbourhood VS Code keeps its SCM icon in.
+  {
+    view: "source-control",
+    icon: EXPLORER_ICONS["source-control"],
+    label: "Source Control",
+  },
   { view: "consoles", icon: EXPLORER_ICONS.consoles, label: "Consoles" },
   { view: "flows", icon: EXPLORER_ICONS.flows, label: "Flows" },
   { view: "dbt", icon: EXPLORER_ICONS.dbt, label: "Transforms" },
@@ -77,13 +84,6 @@ const topNavigationItems: {
   // Apps v2 (git-backed, experimental) — shown only when the server flag is
   // on (useAppsV2Visible probes /apps-v2/status-probe per workspace).
   { view: "apps-v2", icon: EXPLORER_ICONS["apps-v2"], label: "Apps v2" },
-  // The workspace repository, VS Code style — visible alongside Apps v2,
-  // because it IS that repo's source control.
-  {
-    view: "source-control",
-    icon: EXPLORER_ICONS["source-control"],
-    label: "Source Control",
-  },
 ];
 
 /**
