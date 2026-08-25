@@ -741,8 +741,19 @@ appsV2Routes.openapi(
     try {
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const { ref, entries } = await listFiles(loaded.project, loaded.userId);
-      return c.json({ success: true as const, ref, files: entries }, 200);
+      const listing = await listFiles(loaded.project, loaded.userId);
+      return c.json(
+        {
+          success: true as const,
+          ref: listing.ref,
+          files: listing.entries,
+          // Honest ceilings: a 100k-file folder reports "first N of M"
+          // instead of shipping a response the client dies rendering.
+          truncated: listing.truncated,
+          total: listing.total,
+        },
+        200,
+      );
     } catch (error) {
       return handleError(c, error);
     }

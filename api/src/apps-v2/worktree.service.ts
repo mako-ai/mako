@@ -833,27 +833,54 @@ async function pathExistsAtRef(
   }
 }
 
+/**
+ * Entries the listing returns before saying "and N more". Not a page — the
+ * tree is not paginated — but the honest ceiling past which a UI stops being
+ * a tree and becomes a memory leak. A 100k-file folder (a committed
+ * node_modules, a data dump) lists its first files and reports the total,
+ * instead of shipping a multi-megabyte response to a client that dies
+ * building nodes for it.
+ */
+const LIST_ENTRY_LIMIT = 5000;
+
+export interface FileListing {
+  ref: string;
+  entries: TreeEntry[];
+  /** True when the tree holds more files than `entries` carries. */
+  truncated: boolean;
+  /** Total file count when known (always known unless counting failed). */
+  total?: number;
+}
+
 export async function listFiles(
   project: IAppProjectV2,
   userId?: string,
-): Promise<{ ref: string; entries: TreeEntry[] }> {
+): Promise<FileListing> {
   const source = await readSource(project, userId);
   const root = appRootFor(project);
   if (source.kind === "box") {
-    const entries = await boxListFiles(source.ctx, root);
+    const listing = await boxListFiles(source.ctx, root, LIST_ENTRY_LIMIT);
     return {
       ref: source.handle.doc.branch,
-      entries: entries.map(e => ({
+      entries: listing.entries.map(e => ({
         ...e,
         path: e.path.slice(root.length + 1),
       })),
+      truncated: listing.truncated,
+      total: listing.total,
     };
   }
   const prefix = `${root}/`;
-  const entries = (await listTree(source.repoDir, source.ref))
+  const all = (await listTree(source.repoDir, source.ref))
     .filter(e => e.path.startsWith(prefix))
     .map(e => ({ ...e, path: e.path.slice(prefix.length) }));
-  return { ref: source.ref, entries };
+  const truncated = all.length > LIST_ENTRY_LIMIT;
+  return {
+    ref: source.ref,
+    entries: truncated ? all.slice(0, LIST_ENTRY_LIMIT) : all,
+    truncated,
+    total: all.length,
+  };
 }
 
 export async function readFile(

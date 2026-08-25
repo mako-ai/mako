@@ -268,38 +268,71 @@ export async function boxExec(
 }
 
 /**
- * Files tracked in the working copy, including uncommitted ones.
+ * Files tracked in the working copy, including uncommitted ones — CAPPED.
  *
  * `ls-files` with `--others --exclude-standard` is git's own answer to "what
  * files are here that matter" — tracked plus untracked-but-not-ignored. It
- * gives the working copy, which is what an editor should show, rather than the
- * last commit, which is what a code host shows.
+ * gives the working copy, which is what an editor should show.
+ *
+ * The cap is not an optimization, it is correctness. The provider truncates
+ * command output at a fixed byte budget, and a 100k-file tree's NUL stream
+ * blows through it — truncated MID-RECORD, which parsed as a garbage path and
+ * silently missing files. Capping at the source (`head -c`, under every
+ * provider's budget, dropping the final partial record) makes truncation an
+ * explicit answer: here are the first N, there are M in total.
  */
+const LIST_BYTE_CAP = 400_000;
+
+export interface BoxFileListing {
+  entries: TreeEntry[];
+  /** True when the tree holds more files than were returned. */
+  truncated: boolean;
+  /** Total file count, fetched only when truncated. */
+  total?: number;
+}
+
 export async function boxListFiles(
   ctx: SandboxExecContext,
   subdir = "",
-): Promise<TreeEntry[]> {
+  limit = 5000,
+): Promise<BoxFileListing> {
   const scope = subdir ? ` -- ${sh(subdir)}` : "";
+  // TRACKED FIRST, then untracked — deliberately two calls. A single
+  // `ls-files --cached --others` emits all OTHERS first, each group sorted
+  // separately, so a byte-capped page of a tree with thousands of untracked
+  // files was thousands of untracked files and not one line of the app's
+  // actual source. When something must fall off the end, it is the overflow,
+  // never the code. (A path cannot be in both groups, so no dedup needed.)
+  const list =
+    `{ git ls-files -z --cached${scope}; ` +
+    `git ls-files -z --others --exclude-standard${scope}; }`;
   const listing = await boxExec(
     ctx,
-    `${boxGit(ctx, "ls-files", "-z", "--cached", "--others", "--exclude-standard")}${scope}`,
+    `cd ${sh(boxRoot(ctx))} && ${list} | head -c ${LIST_BYTE_CAP}`,
     { timeoutMs: 60_000 },
   );
   if (listing.exitCode !== 0) {
     throw new Error(`Could not list files: ${listing.stderr.slice(-300)}`);
   }
-  let paths = listing.stdout.split("\0").filter(Boolean);
-  if (paths.length === 0) return [];
+  let raw = listing.stdout;
+  const byteCapped = Buffer.byteLength(raw, "utf8") >= LIST_BYTE_CAP;
+  if (byteCapped) {
+    // The last record is almost certainly cut mid-path; a partial path is
+    // worse than a missing one, so it goes.
+    raw = raw.slice(0, raw.lastIndexOf("\0") + 1);
+  }
+  let paths = raw.split("\0").filter(Boolean);
+  const entryCapped = paths.length > limit;
+  if (entryCapped) paths = paths.slice(0, limit);
+  const truncated = byteCapped || entryCapped;
+  if (paths.length === 0) return { entries: [], truncated, total: 0 };
 
   // `--cached` is the INDEX, and a file deleted from the working tree is still
   // in the index until the deletion is staged. Listing it back is how `rm
   // doomed.txt` in the terminal left the file sitting in the tree afterwards.
-  // Asked separately rather than inferred from the stat call below, because
-  // inferring it would turn any failure of that call into an empty tree —
-  // silent loss, which is the failure mode this module keeps producing.
   const deleted = await boxExec(
     ctx,
-    `${boxGit(ctx, "ls-files", "-z", "--deleted")}${scope}`,
+    `cd ${sh(boxRoot(ctx))} && git ls-files -z --deleted${scope} | head -c ${LIST_BYTE_CAP}`,
     { timeoutMs: 60_000 },
   );
   if (deleted.exitCode !== 0) {
@@ -309,26 +342,16 @@ export async function boxListFiles(
   }
   const gone = new Set(deleted.stdout.split("\0").filter(Boolean));
   paths = paths.filter(p => !gone.has(p));
-  if (paths.length === 0) return [];
 
-  // Sizes in one PIPELINE, not one argv. The path list must never ride the
-  // command line: git re-lists it box-side and pipes straight into xargs, so
-  // the command is the same few hundred bytes whether the tree holds ten
-  // files or ten thousand. The first version interpolated every path into
-  // the command string, and the first app that committed node_modules took
-  // the whole file tree down with "error starting process" — the exec's
-  // argument limit, hit by a listing.
-  //
-  // Dialect probe: `-c` is GNU stat (the microVM), `-f` is BSD (the local
-  // provider on a Mac). Deleted-but-still-indexed paths simply fail stat and
-  // fall out of the size map, which is fine — they are filtered from the
-  // listing above.
+  // Sizes in one PIPELINE, not one argv — the path list must never ride the
+  // command line (an app that committed node_modules once took the whole
+  // tree down with the exec's argument limit). Same cap, so the subset
+  // matches the listing: git's ls-files order is deterministic.
   const sizes = await boxExec(
     ctx,
     `cd ${sh(boxRoot(ctx))} && ` +
       `if stat -c %s . >/dev/null 2>&1; then fmt=-c; spec='%s %n'; else fmt=-f; spec='%z %N'; fi && ` +
-      `git ls-files -z --cached --others --exclude-standard${scope} | ` +
-      `xargs -0 stat "$fmt" "$spec" 2>/dev/null || true`,
+      `${list} | head -c ${LIST_BYTE_CAP} | xargs -0 stat "$fmt" "$spec" 2>/dev/null || true`,
     { timeoutMs: 60_000 },
   );
   const sizeByPath = new Map<string, number>();
@@ -337,12 +360,30 @@ export async function boxListFiles(
     if (at === -1) continue;
     sizeByPath.set(line.slice(at + 1), Number(line.slice(0, at)) || 0);
   }
-  return paths.map(p => ({
-    path: p,
-    size: sizeByPath.get(p) ?? 0,
-    oid: "",
-    mode: "100644",
-  }));
+
+  let total: number | undefined = truncated ? undefined : paths.length;
+  if (truncated) {
+    // `tr -cd '\0' | wc -c` counts records without ever holding them — the
+    // one portable way to count a NUL stream that is too big to return.
+    const count = await boxExec(
+      ctx,
+      `cd ${sh(boxRoot(ctx))} && ${list} | tr -cd '\\0' | wc -c`,
+      { timeoutMs: 60_000 },
+    );
+    const parsed = Number(count.stdout.trim());
+    if (Number.isFinite(parsed)) total = parsed;
+  }
+
+  return {
+    entries: paths.map(p => ({
+      path: p,
+      size: sizeByPath.get(p) ?? 0,
+      oid: "",
+      mode: "100644",
+    })),
+    truncated,
+    total,
+  };
 }
 
 /** Read a file from the working copy. */

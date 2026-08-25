@@ -197,6 +197,7 @@ export default function AppsV2Explorer() {
   const repos = useAppsV2Store(s => s.repos);
   const probeEnabled = useAppsV2Store(s => s.probeEnabled);
   const filesByApp = useAppsV2Store(s => s.filesByApp);
+  const filesTruncatedByApp = useAppsV2Store(s => s.filesTruncatedByApp);
   const fetchApps = useAppsV2Store(s => s.fetchApps);
   const fetchFiles = useAppsV2Store(s => s.fetchFiles);
   const createApp = useAppsV2Store(s => s.createApp);
@@ -704,38 +705,56 @@ export default function AppsV2Explorer() {
                 tools).
               </Typography>
             ) : (
-              <ResourceTree
-                sections={sections}
-                mode="sidebar"
-                searchQuery={searchQuery}
-                activeItemId={activeItemId}
-                revealNodeId={reveal?.nodeId}
-                revealNonce={reveal?.nonce}
-                getItemIcon={node =>
-                  parseNodeId(node.id).kind === "app" ? (
-                    <AppIcon size={16} strokeWidth={1.5} />
-                  ) : undefined
-                }
-                onItemClick={handleItemClick}
-                shouldFolderClickActivate={node =>
-                  parseNodeId(node.id).kind === "app"
-                }
-                onLoadChildren={node => void handleLoadChildren(node)}
-                isLoadingChildren={node => {
-                  const parsed = parseNodeId(node.id);
-                  return parsed.kind === "app" && !!loadingApps[parsed.appId];
-                }}
-                getContextMenuItems={getContextMenuItems}
-                enableRename={false}
-                enableDelete={false}
-                isFolderExpanded={isFolderOpen}
-                onToggleFolder={key =>
-                  setExpandedFolders(prev => ({ ...prev, [key]: !prev[key] }))
-                }
-                onExpandFolder={key =>
-                  setExpandedFolders(prev => ({ ...prev, [key]: true }))
-                }
-              />
+              <>
+                {activeAppId && filesTruncatedByApp[activeAppId] && (
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ px: 2, py: 0.5, display: "block" }}
+                  >
+                    Showing the first{" "}
+                    {filesTruncatedByApp[activeAppId].shown.toLocaleString()}
+                    {filesTruncatedByApp[activeAppId].total
+                      ? ` of ${filesTruncatedByApp[activeAppId].total.toLocaleString()}`
+                      : ""}{" "}
+                    files — this app&apos;s tree is unusually large (a committed
+                    node_modules?). Use the terminal or search instead of
+                    browsing.
+                  </Typography>
+                )}
+                <ResourceTree
+                  sections={sections}
+                  mode="sidebar"
+                  searchQuery={searchQuery}
+                  activeItemId={activeItemId}
+                  revealNodeId={reveal?.nodeId}
+                  revealNonce={reveal?.nonce}
+                  getItemIcon={node =>
+                    parseNodeId(node.id).kind === "app" ? (
+                      <AppIcon size={16} strokeWidth={1.5} />
+                    ) : undefined
+                  }
+                  onItemClick={handleItemClick}
+                  shouldFolderClickActivate={node =>
+                    parseNodeId(node.id).kind === "app"
+                  }
+                  onLoadChildren={node => void handleLoadChildren(node)}
+                  isLoadingChildren={node => {
+                    const parsed = parseNodeId(node.id);
+                    return parsed.kind === "app" && !!loadingApps[parsed.appId];
+                  }}
+                  getContextMenuItems={getContextMenuItems}
+                  enableRename={false}
+                  enableDelete={false}
+                  isFolderExpanded={isFolderOpen}
+                  onToggleFolder={key =>
+                    setExpandedFolders(prev => ({ ...prev, [key]: !prev[key] }))
+                  }
+                  onExpandFolder={key =>
+                    setExpandedFolders(prev => ({ ...prev, [key]: true }))
+                  }
+                />
+              </>
             )}
           </Box>
         )}

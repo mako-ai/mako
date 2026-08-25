@@ -137,6 +137,12 @@ interface AppsV2Store {
   error: string | null;
 
   filesByApp: Record<string, AppV2FileEntry[]>;
+  /**
+   * Set when the server capped an app's listing — { shown, total }. A
+   * 100k-file folder (a committed node_modules, a data dump) renders its
+   * first files plus this notice instead of crashing the tree.
+   */
+  filesTruncatedByApp: Record<string, { shown: number; total?: number }>;
   fileContents: Record<string, { contents: string; dirty: boolean }>;
   selectedFile: Record<string, string | null>;
   statusByApp: Record<string, AppV2Status | null>;
@@ -295,6 +301,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
     appsLoading: false,
     error: null,
     filesByApp: {},
+    filesTruncatedByApp: {},
     fileContents: {},
     selectedFile: {},
     statusByApp: {},
@@ -582,9 +589,21 @@ export const useAppsV2Store = create<AppsV2Store>()(
               path: { workspaceId, id: appId },
             },
           }),
-        ) as { files?: AppV2FileEntry[] };
+        ) as {
+          files?: AppV2FileEntry[];
+          truncated?: boolean;
+          total?: number;
+        };
         set(s => {
           s.filesByApp[appId] = body.files ?? [];
+          if (body.truncated) {
+            s.filesTruncatedByApp[appId] = {
+              shown: body.files?.length ?? 0,
+              total: body.total,
+            };
+          } else {
+            delete s.filesTruncatedByApp[appId];
+          }
         });
       } catch (e) {
         set(s => {
