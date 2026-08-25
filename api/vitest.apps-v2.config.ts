@@ -18,6 +18,7 @@ export default defineConfig({
       "src/apps-v2/worktree.service.test.ts",
       "src/apps-v2/adversarial.test.ts",
       "src/apps-v2/git-endpoint.test.ts",
+      "src/apps-v2/migrate-v1-apps.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.

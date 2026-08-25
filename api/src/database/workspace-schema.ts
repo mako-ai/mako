@@ -4345,6 +4345,13 @@ export interface IMakoApp extends Document {
   publicShare?: IPublicShare;
   owner_id?: string;
   createdBy: string;
+  /**
+   * Set when this app has been migrated to Apps v2 (see
+   * apps-v2/migrate-v1-apps.ts). The migrator skips stamped apps, so the
+   * migration is re-runnable; clearing the stamp (and deleting the v2
+   * folder) un-migrates.
+   */
+  migratedToV2ProjectId?: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -4468,6 +4475,7 @@ const MakoAppSchema = new Schema<IMakoApp>(
     publicShare: { type: PublicShareSchema, default: undefined },
     owner_id: { type: String, index: true },
     createdBy: { type: String, required: true },
+    migratedToV2ProjectId: { type: Schema.Types.ObjectId },
   },
   { timestamps: true },
 );

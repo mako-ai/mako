@@ -352,9 +352,10 @@ async function uniqueSlug(workspaceId: string, title: string): Promise<string> {
 /**
  * Commit a mutation (writes and/or prefix deletions) directly onto a branch
  * of the bare repo via a throwaway clone. Used for app lifecycle commits
- * (scaffold, delete) — actor worktrees are not involved.
+ * (scaffold, delete) and by the v1→v2 migrator — actor worktrees are not
+ * involved.
  */
-async function commitFilesOnBranch(
+export async function commitFilesOnBranch(
   repoDir: string,
   branch: string,
   mutation: { writes?: Record<string, string>; deletePrefixes?: string[] },
