@@ -274,6 +274,15 @@ interface AppsV2Store {
   // No branch parameter on any of these: chats no longer have their own
   // branch, so there is exactly one answer to "which branch" — the caller's —
   // and the server is the one that knows it.
+  /**
+   * Tail the dev-session boot log — the sandbox's real npm install + vite
+   * output from `offset` on. What the boot screen shows.
+   */
+  fetchDevLog: (
+    workspaceId: string,
+    appId: string,
+    offset: number,
+  ) => Promise<{ size: number; chunk: string }>;
   /** Merge to main, build, deploy, and repoint (§13.3). */
   publishApp: (workspaceId: string, appId: string) => Promise<void>;
   buildPreview: (workspaceId: string, appId: string) => Promise<void>;
@@ -1042,6 +1051,26 @@ export const useAppsV2Store = create<AppsV2Store>()(
             error: message(e, "Build failed"),
           };
         });
+      }
+    },
+
+    fetchDevLog: async (workspaceId, appId, offset) => {
+      try {
+        const body = unwrapBody(
+          await api.GET(
+            "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview/log",
+            {
+              params: {
+                path: { workspaceId, id: appId },
+                query: { offset },
+              },
+            },
+          ),
+        ) as { size?: number; chunk?: string };
+        return { size: body.size ?? 0, chunk: body.chunk ?? "" };
+      } catch {
+        // Polling: one missed beat is fine; the next one catches up.
+        return { size: offset, chunk: "" };
       }
     },
 

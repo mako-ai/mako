@@ -24822,7 +24822,7 @@
           "Apps v2"
         ],
         "summary": "List files (committed + uncommitted)",
-        "description": "Browsing reads git and never touches a sandbox, which is what makes it cheap and keeps it working while a sandbox is asleep. Pass `live=1` when the caller is EDITING: it snapshots the sandbox first, so work done in the shell — which nothing else flushes — is visible instead of appearing to have vanished.",
+        "description": "Lists the sandbox's working copy when it is running — so a file created in the terminal is simply there — and the last commit on the branch when it is not. Asking which is deliberately a question that does not start a sandbox: browsing must not boot a microVM.",
         "security": [
           {
             "cookieAuth": []
@@ -25195,7 +25195,7 @@
           "Apps v2"
         ],
         "summary": "Worktree status (base, WIP, changed files)",
-        "description": "As with the file listing: `live=1` snapshots the sandbox first so shell edits are counted; without it this is the committed view and starts nothing.",
+        "description": "Reads the sandbox's working copy when it is running — including uncommitted and shell-made changes — and the last commit on the branch when it is not (reported as `offline`). Never starts a sandbox.",
         "security": [
           {
             "cookieAuth": []
@@ -26148,6 +26148,97 @@
           }
         },
         "operationId": "post_api_workspaces_workspaceId_apps_v2_id_dev_preview"
+      }
+    },
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview/log": {
+      "get": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Tail the dev-session boot log (npm install + vite output)",
+        "description": "Returns the sandbox's real boot output from `offset` onward, plus the log's current size for the next poll. This is what the boot screen shows — the actual output, not a stand-in. Never starts a sandbox; with none running it returns an empty chunk.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "default": 0
+            },
+            "required": false,
+            "name": "offset",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_dev_preview_log"
       }
     },
     "/api/workspaces/{workspaceId}/apps-v2/{id}/discard": {

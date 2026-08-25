@@ -88,7 +88,8 @@ import {
   mintPreviewGrant,
   mintPublishedGrant,
 } from "../apps-v2/preview.service";
-import { ensureDevServer } from "../apps-v2/dev-server.service";
+import { DEV_SERVER_LOG, ensureDevServer } from "../apps-v2/dev-server.service";
+import { getSandboxProvider } from "../apps-v2/sandbox/provider";
 import { Readable } from "node:stream";
 import {
   bindingArtifactKey,
@@ -1309,9 +1310,13 @@ appsV2Routes.openapi(
         loaded.userId ?? "api-key",
       );
 
+      // Everything the boot does goes to ONE log the client tails live —
+      // starting with a truncate, so this boot's output is this boot's.
+      // The install pipes through tee rather than redirecting so its output
+      // still comes back in the exec result for the failure payload.
       const install = await execInWorktree(
         handle,
-        "[ -d node_modules ] || npm install --no-audit --no-fund",
+        `: > ${DEV_SERVER_LOG}; set -o pipefail; ( [ -d node_modules ] || npm install --no-audit --no-fund ) 2>&1 | tee -a ${DEV_SERVER_LOG}`,
         { timeoutMs: 300_000 },
       );
       if (install.exitCode !== 0) {
@@ -1344,6 +1349,51 @@ appsV2Routes.openapi(
           500,
         );
       }
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/dev-preview/log",
+    tags: ["Apps v2"],
+    summary: "Tail the dev-session boot log (npm install + vite output)",
+    description:
+      "Returns the sandbox's real boot output from `offset` onward, plus the log's current size for the next poll. This is what the boot screen shows — the actual output, not a stand-in. Never starts a sandbox; with none running it returns an empty chunk.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      query: z.object({ offset: z.coerce.number().int().min(0).default(0) }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { offset } = c.req.valid("query");
+      const handle = await ensureWorktree(
+        loaded.project,
+        loaded.userId ?? "api-key",
+      );
+      const ctx = boxCtx(handle);
+      if (!(await getSandboxProvider().hasSession(ctx))) {
+        return c.json({ success: true as const, size: 0, chunk: "" }, 200);
+      }
+      const result = await getSandboxProvider().exec(
+        ctx,
+        // Size first, then the requested slice, capped so one poll can never
+        // exceed the provider's output budget.
+        `wc -c < ${DEV_SERVER_LOG} 2>/dev/null || echo 0; tail -c +${offset + 1} ${DEV_SERVER_LOG} 2>/dev/null | head -c 65536`,
+        { timeoutMs: 15_000 },
+      );
+      const newline = result.stdout.indexOf("\n");
+      const size = Number(result.stdout.slice(0, newline).trim()) || 0;
+      const chunk = result.stdout.slice(newline + 1);
+      return c.json({ success: true as const, size, chunk }, 200);
     } catch (error) {
       return handleError(c, error);
     }

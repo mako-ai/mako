@@ -254,63 +254,76 @@ function TerminalPanel({
 // ---------------------------------------------------------------------------
 
 /**
- * Shown in the preview pane while a dev session boots. The pane used to keep
- * showing the static how-it-works prose through the whole boot — precisely
- * the moment a person is watching for signs of life. This is the BIOS
- * moment: monospace, elapsed seconds, and the honest truth about the stages,
- * with the REAL machine output one pane down in the terminal.
- *
- * No fabricated log lines: the build's actual output is not streamed to the
- * client today, and a fake scroll of "Installing dependencies…" that nothing
- * backs is worse than a clock that tells the truth.
+ * The dev-session boot, shown as what it actually is: the sandbox's own
+ * output — npm install, then vite — tailed live from the machine. Nothing
+ * invented; if the log is quiet, the pane says only that it is waiting.
+ * Colors come from the theme, so it belongs to the app in light and dark
+ * alike; the monospace and the auto-follow are the only "terminal" about it.
  */
-function DevBootScreen() {
-  const [seconds, setSeconds] = useState(0);
+// Strip ANSI color codes: vite writes them for a real tty, and raw escape
+// bytes in a div are noise, not color. Built with fromCharCode so no control
+// character has to appear in a regex literal.
+const ANSI_ESCAPES = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, "g");
+function stripAnsi(text: string): string {
+  return text.replace(ANSI_ESCAPES, "");
+}
+
+function DevBootLog({
+  workspaceId,
+  appId,
+}: {
+  workspaceId: string;
+  appId: string;
+}) {
+  const fetchDevLog = useAppsV2Store(s => s.fetchDevLog);
+  const [text, setText] = useState("");
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
   useEffect(() => {
-    const timer = setInterval(() => setSeconds(v => v + 1), 1000);
-    return () => clearInterval(timer);
-  }, []);
+    let offset = 0;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      const { size, chunk } = await fetchDevLog(workspaceId, appId, offset);
+      if (stopped) return;
+      if (size < offset) {
+        // The log was truncated — a new boot started over it. Start over too.
+        offset = 0;
+        setText("");
+      } else if (chunk) {
+        offset += chunk.length;
+        setText(prev => (prev + stripAnsi(chunk)).slice(-40_000));
+      }
+      timer = setTimeout(poll, 1000);
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [workspaceId, appId, fetchDevLog]);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [text]);
+
   return (
     <Box
+      ref={scrollRef}
       sx={{
         height: "100%",
-        bgcolor: "#0c0c0c",
-        color: "#7ce38b",
+        overflowY: "auto",
+        bgcolor: "background.default",
+        color: "text.secondary",
         fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-        fontSize: 13,
-        p: 3,
-        display: "flex",
-        flexDirection: "column",
-        gap: 1,
-        "@keyframes mako-boot-blink": {
-          "0%, 49%": { opacity: 1 },
-          "50%, 100%": { opacity: 0 },
-        },
+        fontSize: 12.5,
+        lineHeight: 1.5,
+        p: 2,
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
       }}
     >
-      <Box>MAKO DEV SANDBOX</Box>
-      <Box sx={{ color: "#4d5a50" }}>
-        firecracker microVM · git clone · npm install · vite
-      </Box>
-      <Box sx={{ mt: 1 }}>
-        booting… {seconds}s
-        <Box
-          component="span"
-          sx={{
-            display: "inline-block",
-            width: "0.6em",
-            ml: 0.5,
-            bgcolor: "#7ce38b",
-            animation: "mako-boot-blink 1s step-end infinite",
-          }}
-        >
-          &nbsp;
-        </Box>
-      </Box>
-      <Box sx={{ color: "#4d5a50", mt: 1 }}>
-        first boot installs dependencies and can take a minute — the terminal
-        below is the live machine if you want to watch
-      </Box>
+      {text || "Starting the dev sandbox — waiting for output…"}
     </Box>
   );
 }
@@ -646,7 +659,7 @@ export default function AppV2Workspace({
         >
           <Panel defaultSize={70} minSize={20}>
             {preview?.building ? (
-              <DevBootScreen />
+              <DevBootLog workspaceId={workspaceId} appId={appId} />
             ) : preview?.url ? (
               <iframe
                 title="App preview"

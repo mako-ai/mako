@@ -41,6 +41,14 @@ const DEV_PORT = 5173;
 const DEV_SESSION_KEEPALIVE_MS = 30 * 60 * 1000;
 
 /** Absolute path of the launcher we write into the sandbox (never the repo). */
+/**
+ * Where everything the boot does writes its output — npm install (the route
+ * appends it here before starting the server) and vite itself. One file so
+ * the client can tail one thing and show the person the ACTUAL boot, not a
+ * stand-in.
+ */
+export const DEV_SERVER_LOG = "/tmp/mako-dev-server.log";
+
 const LAUNCHER_PATH = "/tmp/mako-dev-server.mjs";
 
 /**
@@ -219,7 +227,7 @@ export async function ensureDevServer(
 
     await provider.execDetached(
       ctx,
-      `nohup node ${LAUNCHER_PATH} > /tmp/mako-dev-server.log 2>&1 & echo started`,
+      `nohup node ${LAUNCHER_PATH} >> ${DEV_SERVER_LOG} 2>&1 & echo started`,
       { cwd: handle.appRoot, timeoutMs: 60_000 },
     );
 
@@ -230,11 +238,9 @@ export async function ensureDevServer(
       up = await isListening(handle, provider);
     }
     if (!up) {
-      const log = await provider.exec(
-        ctx,
-        `tail -20 /tmp/mako-dev-server.log`,
-        { timeoutMs: 15_000 },
-      );
+      const log = await provider.exec(ctx, `tail -20 ${DEV_SERVER_LOG}`, {
+        timeoutMs: 15_000,
+      });
       throw new Error(
         `Dev server did not start. Vite output:\n${log.stdout.slice(-1500)}`,
       );
