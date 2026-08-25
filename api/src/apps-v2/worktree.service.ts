@@ -52,6 +52,7 @@ import {
   cloneIntoBox,
   configureBoxRemote,
   sh,
+  workspaceRootGitignore,
 } from "./box";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { appsV2SessionsRoot, APPS_V2_MAX_FILE_BYTES } from "./config";
@@ -438,7 +439,14 @@ export async function createProject(input: {
     if (!(await repoExists(repoDir))) {
       await initRepo(
         repoDir,
-        { "README.md": WORKSPACE_README },
+        {
+          "README.md": WORKSPACE_README,
+          // The root .gitignore is the guarantee that EVERY app — scaffolded,
+          // hand-built by an agent, or pushed from a laptop — ignores what
+          // must never be committed. Per-app .gitignores and the sandbox's
+          // info/exclude are refinements; this is the one that is versioned.
+          ".gitignore": workspaceRootGitignore(),
+        },
         { message: "Initialize workspace repository", author: input.author },
       );
     }

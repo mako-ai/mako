@@ -254,6 +254,44 @@ describe("the working copy", () => {
     expect(where.stdout).toContain("in-git");
   });
 
+  it("a laptop clone ignores node_modules with no sandbox machinery at all", async () => {
+    // The failure this guards: an app built WITHOUT the scaffold (an agent
+    // with write_file + bash, or a person in a plain clone) has no per-app
+    // .gitignore, and .git/info/exclude does not travel — so one `git add -A`
+    // committed node_modules on the first preview deployment. The workspace
+    // repo's ROOT .gitignore is the layer that is versioned and therefore
+    // present in every clone; a bare file clone is the honest simulation.
+    const project = await makeProject();
+    const clone = await fs.mkdtemp(path.join(tmpRoot, "laptop-"));
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        "bash",
+        [
+          "-lc",
+          `git clone -q ${repoDirFor(WS)} ${clone} && cd ${clone} && ` +
+            `mkdir -p apps/hand-made/node_modules/some-lib && ` +
+            `echo x > apps/hand-made/node_modules/some-lib/index.js && ` +
+            `echo secret > apps/hand-made/.env && ` +
+            `echo '{}' > apps/hand-made/package.json`,
+        ],
+        err => (err ? reject(err) : resolve()),
+      );
+    });
+    const status = await new Promise<string>((resolve, reject) => {
+      execFile(
+        "git",
+        // -uall: porcelain collapses an untracked directory to one line,
+        // which would hide exactly the files the assertions are about.
+        ["-C", clone, "status", "--porcelain", "-uall"],
+        (err, out) => (err ? reject(err) : resolve(String(out))),
+      );
+    });
+    expect(status).toContain("package.json");
+    expect(status).not.toContain("node_modules");
+    expect(status).not.toContain(".env");
+    void project;
+  }, 120_000);
+
   it("a running box catches up right after a server-side app creation", async () => {
     const { catchUpLiveBox } = await import("./worktree.service");
     const first = await makeProject();

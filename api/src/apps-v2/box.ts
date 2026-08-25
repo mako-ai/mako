@@ -45,6 +45,22 @@ export const NEVER_COMMIT = [
   "dist",
 ];
 
+/**
+ * The workspace repo's root .gitignore, derived from NEVER_COMMIT.
+ *
+ * This is the layer that travels. The scaffold writes a per-app .gitignore,
+ * but not every app comes from the scaffold: an agent can hand-build one with
+ * write_file and bash, and a person can push a folder from a laptop clone —
+ * and the sandbox's .git/info/exclude backstop protects neither, because
+ * info/exclude is per-clone and unversioned. A root .gitignore is committed
+ * state: it applies recursively to every app folder that will ever exist, in
+ * every clone, however the app was created. (`.env` rides along because a
+ * secret in git is a leak with history.)
+ */
+export function workspaceRootGitignore(): string {
+  return `${NEVER_COMMIT.map(n => `${n}/`).join("\n")}\n.env\n`;
+}
+
 /** Single-quote for a POSIX shell, closing and reopening around any quote. */
 export function sh(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
