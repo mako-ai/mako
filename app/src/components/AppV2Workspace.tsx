@@ -90,11 +90,14 @@ function TerminalPanel({
   appId,
   workspaceId,
   termId,
+  fresh = false,
 }: {
   appId: string;
   workspaceId: string;
   /** Which shell tab this is — each id is its own PTY in the same sandbox. */
   termId: string;
+  /** Tab created this pageview — no history exists, skip the replay probe. */
+  fresh?: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<"connecting" | "open" | "reconnecting">(
@@ -205,6 +208,11 @@ function TerminalPanel({
         `/api/workspaces/${workspaceId}/apps-v2/${appId}/terminal?term=${encodeURIComponent(termId)}`,
         window.location.origin,
       );
+      // The pty is born at this size instead of 80x24, so the first paint
+      // (prompt, replayed history) is already at the real width.
+      url.searchParams.set("cols", String(term.cols));
+      url.searchParams.set("rows", String(term.rows));
+      if (fresh) url.searchParams.set("fresh", "1");
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const socket = new WebSocket(url);
       socket.binaryType = "arraybuffer";
@@ -384,6 +392,9 @@ function TerminalTabs({
     if (active !== "dev" && !shells.includes(active)) setActiveState("dev");
   }, [active, shells]);
   const nextId = useRef(Math.max(0, ...shells.map(Number)) + 1);
+  // Ids born in this pageview — their sessions have no history to replay,
+  // and telling the server so skips a probe round-trip on open.
+  const freshIds = useRef<Set<string>>(new Set());
   useEffect(() => {
     try {
       localStorage.setItem(`apps-v2-shells:${appId}`, JSON.stringify(shells));
@@ -454,6 +465,7 @@ function TerminalTabs({
                 appId={appId}
                 workspaceId={workspaceId}
                 termId={id}
+                fresh={freshIds.current.has(id)}
               />
             </Box>
           ))}
@@ -495,6 +507,7 @@ function TerminalTabs({
                 size="small"
                 onClick={() => {
                   const id = String(nextId.current++);
+                  freshIds.current.add(id);
                   setShells(prev => [...prev, id]);
                   setActive(id);
                 }}

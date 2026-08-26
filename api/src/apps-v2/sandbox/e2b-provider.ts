@@ -89,8 +89,18 @@ async function connectSession(sessionKey: string): Promise<Sandbox> {
         logger.warn("Multiple sandboxes share one session key; using newest", {
           sessionKey,
           using: info?.sandboxId,
-          ignoring: stale.map(x => x.sandboxId),
+          killing: stale.map(x => x.sandboxId),
         });
+        // Reap the losers, don't just ignore them: "newest wins" without a
+        // reaper is how the account quietly accumulated a hundred boxes —
+        // every duplicate (two API processes, a create racing a pause, an
+        // API restart mid-create) stayed alive forever, billed and
+        // confusing every list-based lookup after it.
+        for (const dupe of stale) {
+          void Sandbox.kill(dupe.sandboxId, { apiKey: apiKey() }).catch(
+            () => undefined,
+          );
+        }
       }
       if (info) {
         const sandbox = await Sandbox.connect(info.sandboxId, {

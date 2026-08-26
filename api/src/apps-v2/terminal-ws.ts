@@ -117,13 +117,25 @@ export function attachAppsV2TerminalWs(serverType: ServerType): void {
     const [, workspaceId, appRef, query] = match;
     // VS Code-style multiple terminals: each tab is its own PTY, addressed by
     // a client-chosen id. Absent (older clients) = the first tab.
-    const termId =
-      new URLSearchParams((query ?? "").replace(/^\?/, "")).get("term") ?? "1";
+    const params = new URLSearchParams((query ?? "").replace(/^\?/, ""));
+    const termId = params.get("term") ?? "1";
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(termId)) {
       socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
       socket.destroy();
       return;
     }
+    // The client knows its size before it connects; creating the pty at
+    // that size (instead of a 2s-lived 80x24) keeps the very first output —
+    // the prompt, a replayed recording — from painting at the wrong width.
+    const clamp = (v: string | null, lo: number, hi: number, dflt: number) => {
+      const n = Number(v);
+      return Number.isInteger(n) && n >= lo && n <= hi ? n : dflt;
+    };
+    const initialCols = clamp(params.get("cols"), 20, 500, 80);
+    const initialRows = clamp(params.get("rows"), 5, 300, 24);
+    // A tab the client just created has no history to replay; saying so
+    // saves the prefill exec round-trip on the open of every new terminal.
+    const fresh = params.get("fresh") === "1";
 
     void (async () => {
       // A failed lookup is not a failed login. Collapsing both into 401 told
@@ -147,12 +159,14 @@ export function attachAppsV2TerminalWs(serverType: ServerType): void {
         return;
       }
       wss.handleUpgrade(req, socket, head, ws => {
-        void startSession(ws, auth.project, auth.userId, termId).catch(
-          error => {
-            logger.error("Terminal session failed to start", { error });
-            ws.close(1011, "terminal failed to start");
-          },
-        );
+        void startSession(ws, auth.project, auth.userId, termId, {
+          initialCols,
+          initialRows,
+          fresh,
+        }).catch(error => {
+          logger.error("Terminal session failed to start", { error });
+          ws.close(1011, "terminal failed to start");
+        });
       });
     })();
   });
@@ -350,7 +364,13 @@ async function sessionHistory(
     );
     const raw = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
     if (raw.length === 0) return null;
-    const text = raw.toString("binary").replace(QUERY_SEQUENCES, "");
+    const text = raw
+      .toString("binary")
+      .replace(QUERY_SEQUENCES, "")
+      // script(1) writes its banner and sign-off INTO the recording even
+      // with -q; they are bookkeeping, not session output.
+      .replace(/^Script started on [^\n]*\n/gm, "")
+      .replace(/^Script done on [^\n]*\n?/gm, "");
     return Buffer.from(text, "binary");
   } catch {
     return null;
@@ -445,6 +465,7 @@ async function startSession(
   project: IAppProjectV2,
   userId: string,
   termId: string,
+  options: { initialCols: number; initialRows: number; fresh: boolean },
 ): Promise<void> {
   // Fast path first: if the shell is already running, attach to it and do no
   // repository work at all. Sessions are keyed per (worktree, terminal tab):
@@ -460,7 +481,7 @@ async function startSession(
   if (!running && ws.readyState === ws.OPEN) {
     ws.send(
       Buffer.from(
-        "\x1b[2m[starting a sandbox for this app…]\x1b[0m\r\n",
+        "\x1b[2m[connecting to the app's machine…]\x1b[0m\r\n",
         "utf8",
       ),
     );
@@ -566,9 +587,10 @@ async function startSession(
         // sandbox connection): prefill history now, before any live output,
         // so the client gets [history][live] in that order. A session that
         // does not exist yet has nothing to replay.
-        const priorHistory =
-          (await sessionHistory(ctx, `/tmp/mako-hist-${termId}.raw`)) ??
-          (await tmuxHistory(ctx, `mako-${termId}`));
+        const priorHistory = options.fresh
+          ? null
+          : ((await sessionHistory(ctx, `/tmp/mako-hist-${termId}.raw`)) ??
+            (await tmuxHistory(ctx, `mako-${termId}`)));
         if (priorHistory) {
           if (termId.startsWith("dev-")) {
             // Dev windows are ring-replay sessions: put the history IN the
@@ -593,8 +615,8 @@ async function startSession(
         const appDirExists = cwdProbe.stdout.includes("yes");
         created.terminal = await provider.openTerminal(ctx, {
           cwd: appDirExists ? handle.appRoot : ".",
-          cols: 80,
-          rows: 24,
+          cols: options.initialCols,
+          rows: options.initialRows,
           onExit: () => {
             // The shell is gone for good. Forget it, so the next connection
             // builds a fresh one instead of attaching to a corpse, and tell
