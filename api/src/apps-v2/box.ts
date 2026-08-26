@@ -758,28 +758,12 @@ export async function boxFileVersions(
   return { head, index, working, binary };
 }
 
-/** Raw porcelain lines + branch, for pushing a fresh snapshot after a mutation. */
+/** Branch + shaped changes, for pushing a fresh snapshot after a mutation. */
 export async function boxPorcelain(
   ctx: SandboxExecContext,
-): Promise<{ branch: string | null; lines: string[] }> {
-  const result = await boxExec(
-    ctx,
-    `git --no-optional-locks -C ${sh(boxRoot(ctx))} status --porcelain=v1 --branch --untracked-files=all`,
-    { timeoutMs: 60_000 },
-  );
-  if (result.exitCode !== 0) {
-    throw new Error(`Could not read status: ${result.stderr.slice(-300)}`);
-  }
-  let branch: string | null = null;
-  const lines: string[] = [];
-  for (const line of result.stdout.split("\n")) {
-    if (!line) continue;
-    if (line.startsWith("## ")) {
-      const fresh = /^## No commits yet on (\S+)/.exec(line);
-      branch = fresh ? fresh[1] : (/^## ([^. ]+)/.exec(line)?.[1] ?? null);
-    } else lines.push(line);
-  }
-  return { branch, lines };
+): Promise<{ branch: string | null; changes: ChangedFile[] }> {
+  const status = await boxStatus(ctx);
+  return { branch: status.branch, changes: status.changes };
 }
 
 /**

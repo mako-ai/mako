@@ -1347,11 +1347,11 @@ export async function gitPathsAction(
   const ctx = await ensureBox(handle);
   await boxGitPaths(ctx, action, paths);
   try {
-    const { branch, lines } = await boxPorcelain(ctx);
+    const { branch, changes } = await boxPorcelain(ctx);
     await patchBoxState({
       workspaceId: handle.doc.workspaceId.toString(),
       userId: handle.doc.userId,
-      patch: { ...(branch ? { branch } : {}), changes: lines },
+      patch: { ...(branch ? { branch } : {}), changes },
       source: "api",
     });
   } catch (error) {

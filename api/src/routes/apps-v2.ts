@@ -1077,7 +1077,16 @@ appsV2Routes.openapi(
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,
-      query: z.object({ path: z.string().min(1).max(4096) }),
+      query: z.object({
+        path: z
+          .string()
+          .min(1)
+          .max(4096)
+          .refine(
+            p => !p.startsWith("/") && !p.split("/").includes(".."),
+            "path must stay inside the repository",
+          ),
+      }),
     },
     responses: OPEN_RESPONSES,
   }),

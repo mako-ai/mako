@@ -82,6 +82,42 @@ function parseHeader(line) {
   return m ? m[1] : null;
 }
 
+// Porcelain v1 with -z: NUL-separated, paths UNQUOTED. Without -z git
+// C-quotes any path holding a quote, backslash or non-ASCII, and the quoted
+// literal is not a path the API can stage or discard. A rename is two
+// fields (new, then old); the second is skipped.
+function parsePorcelainZ(stdout) {
+  const records = stdout.split("\\0");
+  let branch = null;
+  let ahead = 0;
+  const changes = [];
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i];
+    if (!record) continue;
+    if (record.startsWith("## ")) {
+      branch = parseHeader(record);
+      ahead = Number(/\\[ahead (\\d+)/.exec(record)?.[1] ?? 0);
+      continue;
+    }
+    const xy = record.slice(0, 2);
+    const path = record.slice(3);
+    let status = "modified";
+    if (xy === "??" || xy.includes("A")) status = "added";
+    else if (xy.includes("D")) status = "deleted";
+    else if (xy.includes("R") || xy.includes("C")) {
+      status = "renamed";
+      i++;
+    }
+    changes.push({
+      path,
+      status,
+      staged: xy[0] !== " " && xy[0] !== "?",
+      unstaged: xy === "??" || xy[1] !== " ",
+    });
+  }
+  return { branch, ahead, changes };
+}
+
 async function gitState() {
   try {
     const { stdout } = await run(
@@ -89,19 +125,10 @@ async function gitState() {
       // --no-optional-locks: a background observer must never take the
       // index lock (status refreshes the index by default) — it raced a
       // git commit typed in the terminal into "index.lock: File exists".
-      ["--no-optional-locks", "-C", ROOT, "status", "--porcelain=v1", "--branch", "--untracked-files=all"],
+      ["--no-optional-locks", "-C", ROOT, "status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all"],
       { maxBuffer: 16 * 1024 * 1024 },
     );
-    let branch = null;
-    let ahead = 0;
-    const changes = [];
-    for (const line of stdout.split("\\n")) {
-      if (!line) continue;
-      if (line.startsWith("## ")) {
-        branch = parseHeader(line);
-        ahead = Number(/\\[ahead (\\d+)/.exec(line)?.[1] ?? 0);
-      } else changes.push(line);
-    }
+    const { branch, ahead, changes } = parsePorcelainZ(stdout);
     let head = null;
     try {
       head = (await run("git", ["-C", ROOT, "rev-parse", "HEAD"])).stdout.trim() || null;
