@@ -498,6 +498,9 @@ async function startSession(
       ranCreation = true;
       try {
         const provider = getSandboxProvider();
+        // Armed for dev windows: the first dtach attach emits a screen clear
+        // we do not want (see onData). Declared here so onData can see it.
+        let attachClearPending = termId.startsWith("dev-");
         const created: LiveTerminal = {
           terminal: undefined as unknown as SandboxTerminal,
           scrollback: [],
@@ -536,6 +539,12 @@ async function startSession(
           outbox = [];
           outboxBytes = 0;
           remember(created, chunk);
+          if (created.sockets.size === 0) {
+            logger.info("Apps v2 terminal output with no sockets", {
+              termId,
+              bytes: chunk.length,
+            });
+          }
           for (const socket of created.sockets) {
             // Skip a client that has stopped reading rather than buffering without
             // limit: one wedged tab must not take the server with it.
@@ -611,8 +620,22 @@ async function startSession(
             created.sockets.clear();
           },
           onData: data => {
-            outbox.push(Buffer.from(data));
-            outboxBytes += data.length;
+            let payload: Uint8Array | string = data;
+            if (attachClearPending) {
+              // dtach clears the client's screen when it attaches — which,
+              // in a dev window, wipes the just-replayed session history.
+              // Swallow that one clear (and only it); vite's own later
+              // clears pass through untouched.
+              const text = Buffer.from(data).toString("binary");
+              // eslint-disable-next-line no-control-regex -- matching the terminal's own ESC bytes is the whole point
+              const cleared = text.replace(/\x1b\[H\x1b\[[02]?J/, "\r\n");
+              if (cleared !== text) {
+                attachClearPending = false;
+                payload = Buffer.from(cleared, "binary");
+              }
+            }
+            outbox.push(Buffer.from(payload as Uint8Array));
+            outboxBytes += payload.length;
             // Flush early on volume so a burst is not held back by the timer,
             // and otherwise coalesce a frame's worth of keystroke echo.
             if (outboxBytes >= 64 * 1024) {
