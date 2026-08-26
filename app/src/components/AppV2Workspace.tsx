@@ -340,7 +340,7 @@ function TerminalPanel({
           flex: 1,
           minHeight: 0,
           overflow: "hidden",
-          "& .xterm": { padding: "4px 4px 12px 6px" },
+          "& .xterm": { padding: "4px 4px 4px 6px" },
           // Stock xterm.css paints the (xterm 6: vestigial) viewport BLACK
           // and stretches it across the whole .xterm box — padding included —
           // while the themed screen sits inset by that padding. The result
