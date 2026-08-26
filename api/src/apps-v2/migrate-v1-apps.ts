@@ -106,28 +106,27 @@ function scheduleForLiveBinding(binding: IMakoAppDataBinding): string {
   return "0 6 * * *";
 }
 
-/** Render one v1 binding as a v2 binding file (front matter + code). */
+/** Render one v1 SQL binding as a v2 binding file (front matter + query). */
 function renderBindingFile(
   binding: IMakoAppDataBinding,
   options: { cron: string | null; wasLive: boolean },
 ): string {
-  const c = binding.language === "mongodb" ? "//" : "--";
-  const lines = [`${c} connection: ${binding.connectionId}`];
-  if (binding.databaseId) lines.push(`${c} database: ${binding.databaseId}`);
+  const lines = [`-- connection: ${binding.connectionId}`];
+  if (binding.databaseId) lines.push(`-- database: ${binding.databaseId}`);
   if (binding.databaseName) {
-    lines.push(`${c} database_name: ${binding.databaseName}`);
+    lines.push(`-- database_name: ${binding.databaseName}`);
   }
-  lines.push(`${c} materialization: parquet`);
-  if (options.cron) lines.push(`${c} schedule: ${options.cron}`);
+  lines.push("-- materialization: parquet");
+  if (options.cron) lines.push(`-- schedule: ${options.cron}`);
   if (binding.materializationSchedule?.timezone) {
-    lines.push(`${c} timezone: ${binding.materializationSchedule.timezone}`);
+    lines.push(`-- timezone: ${binding.materializationSchedule.timezone}`);
   }
   if (binding.dbtProjectId) {
-    lines.push(`${c} dbt_project: ${binding.dbtProjectId}`);
+    lines.push(`-- dbt_project: ${binding.dbtProjectId}`);
   }
   if (options.wasLive) {
     lines.push(
-      `${c} migrated_from: live (v1 queried on every load; v2 refreshes on the schedule above)`,
+      "-- migrated_from: live (v1 queried on every load; v2 refreshes on the schedule above)",
     );
   }
   return `${lines.join("\n")}\n${binding.code.trim()}\n`;
@@ -136,7 +135,7 @@ function renderBindingFile(
 function classifyBindings(app: IMakoApp): {
   files: Record<string, string>;
   migrated: string[];
-  skipped: Array<{ name: string; reason: string }>;
+  skipped: Array<{ name: string; reason: string; code?: string }>;
   carried: string[];
   liveAsScheduled: Array<{ name: string; cron: string }>;
   /** v1 binding id → v2 file name, for artifact adoption after the commit. */
@@ -144,18 +143,25 @@ function classifyBindings(app: IMakoApp): {
 } {
   const files: Record<string, string> = {};
   const migrated: string[] = [];
-  const skipped: Array<{ name: string; reason: string }> = [];
+  const skipped: Array<{ name: string; reason: string; code?: string }> = [];
   const carried: string[] = [];
   const liveAsScheduled: Array<{ name: string; cron: string }> = [];
   const fileNames = new Map<string, string>();
   const taken = new Set<string>();
   for (const binding of app.dataBindings ?? []) {
-    if (binding.language !== "sql" && binding.language !== "mongodb") {
-      // v1 never materialized these either (buildExecutableQuery rejects
-      // them); there is no data path to carry.
+    if (binding.language !== "sql") {
+      // v2 has one binding language: SQL, because the consumption stack is
+      // DuckDB over parquet. A MongoDB binding's original query is kept in
+      // MIGRATION.md so the owner can rewrite it as SQL (its source data is
+      // reachable from the warehouse); a JavaScript binding v1 never
+      // materialized at all.
       skipped.push({
         name: binding.name,
-        reason: `v2 bindings are SQL or MongoDB executables; this one is ${binding.language}`,
+        reason:
+          binding.language === "mongodb"
+            ? "MongoDB bindings are not supported in v2 (SQL only) — rewrite the query as SQL; the original is in MIGRATION.md"
+            : `v2 bindings are SQL; this one is ${binding.language}`,
+        code: binding.language === "mongodb" ? binding.code : undefined,
       });
       continue;
     }
@@ -166,8 +172,7 @@ function classifyBindings(app: IMakoApp): {
       : binding.materializationSchedule?.enabled
         ? (binding.materializationSchedule.cron ?? null)
         : null;
-    const ext = binding.language === "mongodb" ? "mongodb.js" : "sql";
-    files[`bindings/${file}.${ext}`] = renderBindingFile(binding, {
+    files[`bindings/${file}.sql`] = renderBindingFile(binding, {
       cron,
       wasLive,
     });
@@ -209,7 +214,7 @@ function mergeDependencies(
 
 function migrationNotes(
   app: IMakoApp,
-  skipped: Array<{ name: string; reason: string }>,
+  skipped: Array<{ name: string; reason: string; code?: string }>,
 ): string {
   const lines = [
     "# Migrated from Apps v1",
@@ -225,7 +230,23 @@ function migrationNotes(
   ];
   if (skipped.length > 0) {
     lines.push("## Bindings that could not be migrated", "");
-    for (const s of skipped) lines.push(`- \`${s.name}\`: ${s.reason}`);
+    for (const b of skipped) {
+      lines.push(`- \`${b.name}\`: ${b.reason}`);
+      if (b.code) {
+        lines.push(
+          "",
+          "  Original query (rewrite as SQL):",
+          "",
+          "  ```",
+          ...b.code
+            .trim()
+            .split("\n")
+            .map(l => `  ${l}`),
+          "  ```",
+          "",
+        );
+      }
+    }
     lines.push("");
   }
   return `${lines.join("\n")}`;

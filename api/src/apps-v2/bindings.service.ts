@@ -122,12 +122,6 @@ const NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
 export interface AppV2Binding {
   name: string;
   connectionId: string;
-  /**
-   * `bindings/<name>.sql` is SQL; `bindings/<name>.mongodb.js` is a MongoDB
-   * executable (a shell-style string such as `db.users.aggregate([...])`).
-   * Both materialize through the same parquet builder v1 uses.
-   */
-  language: "sql" | "mongodb";
   /** Only "parquet" exists in v2 — live bindings are a later phase. */
   materialization: "parquet";
   /** Cron expression from `-- schedule:` front matter (Block 4 consumes it). */
@@ -221,19 +215,10 @@ export async function readBindings(
     // No manifest — fine; front matter is the source of truth anyway.
   }
 
-  const paths = [
-    ...(await globFiles(project, "bindings/*.sql", actorId)),
-    ...(await globFiles(project, "bindings/*.mongodb.js", actorId)),
-  ];
+  const paths = await globFiles(project, "bindings/*.sql", actorId);
   const out: AppV2Binding[] = [];
   for (const path of paths) {
-    const language: AppV2Binding["language"] = path.endsWith(".mongodb.js")
-      ? "mongodb"
-      : "sql";
-    const name = path
-      .replace(/^bindings\//, "")
-      .replace(/\.mongodb\.js$/, "")
-      .replace(/\.sql$/, "");
+    const name = path.replace(/^bindings\//, "").replace(/\.sql$/, "");
     if (!NAME_RE.test(name)) {
       throw new Error(`Invalid binding filename: ${path}`);
     }
@@ -242,13 +227,12 @@ export async function readBindings(
     const connectionId = meta.connection ?? legacyByName.get(name);
     if (!connectionId) {
       throw new Error(
-        `Binding "${name}" has no connection — add "${language === "sql" ? "--" : "//"} connection: <id>" front matter to ${path}`,
+        `Binding "${name}" has no connection — add "-- connection: <id>" front matter to ${path}`,
       );
     }
     out.push({
       name,
       connectionId,
-      language,
       materialization: "parquet",
       schedule: meta.schedule,
       timezone: meta.timezone,
@@ -290,20 +274,15 @@ export async function materializeAppV2Binding(
   const startedAt = Date.now();
   let built;
   try {
-    // Same builder and same read-only gate as v1: a Mongo executable is a
-    // shell string the driver runs; its schema cannot be probed, so it
-    // infers columns at runtime (lenient), exactly as v1 did.
-    assertReadOnlyMaterializationQuery(
-      binding.code,
-      binding.language === "mongodb" ? "mongodb" : undefined,
-    );
+    // Same read-only gate v1 used for SQL.
+    assertReadOnlyMaterializationQuery(binding.code);
     built = await buildQueryParquetFile({
       connection,
       executableQuery: binding.code,
       databaseId: binding.databaseId,
       databaseName: binding.databaseName,
       filenameBase: `appv2-${projectId}-${binding.name}`,
-      schemaProbe: binding.language === "mongodb" ? "lenient" : "strict",
+      schemaProbe: "strict",
     });
   } catch (error) {
     await recordBindingRun(projectId, binding.name, {

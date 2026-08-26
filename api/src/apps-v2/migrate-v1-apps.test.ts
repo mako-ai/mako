@@ -131,40 +131,35 @@ describe("v1 → v2 migration", () => {
     expect(pkg.dependencies["date-fns"]).toBe("^3.0.0");
     expect(pkg.dependencies.react).toBe("^18.2.0");
 
-    // Three bindings migrate now: the scheduled SQL one, the MongoDB one
-    // (as bindings/<name>.mongodb.js), and the live one (as a scheduled
-    // refresh). Only the JavaScript binding — which v1 could not
-    // materialize either — is skipped.
+    // Two SQL bindings migrate: the scheduled one and the live one (now a
+    // scheduled refresh). v2 is SQL-only, so the MongoDB and JavaScript
+    // bindings are skipped — the MongoDB query is preserved in MIGRATION.md
+    // for a manual rewrite.
     const bindingFiles = listed.filter(p => p.startsWith("bindings/")).sort();
-    expect(bindingFiles).toHaveLength(3);
-    expect(bindingFiles.some(p => p.endsWith(".mongodb.js"))).toBe(true);
+    expect(bindingFiles).toHaveLength(2);
+    expect(bindingFiles.every(p => p.endsWith(".sql"))).toBe(true);
 
-    const sqlFile = bindingFiles.find(
-      p => p.endsWith(".sql") && !p.includes("live"),
-    )!;
+    const sqlFile = bindingFiles.find(p => !p.includes("live"))!;
     const sql = await readFile(project!, sqlFile);
     const meta = parseBindingFrontMatter(sql.contents);
     expect(meta.connection).toBe("conn-1");
     expect(meta.schedule).toBe("0 6 * * *");
     expect(sql.contents).toContain("GROUP BY 1");
 
-    // The MongoDB binding uses // front matter and the parser reads it.
-    const mongoFile = bindingFiles.find(p => p.endsWith(".mongodb.js"))!;
-    const mongo = await readFile(project!, mongoFile);
-    const mongoMeta = parseBindingFrontMatter(mongo.contents);
-    expect(mongoMeta.connection).toBe("conn-1");
-    expect(mongo.contents).toContain("aggregate");
-
     // The live binding became a scheduled refresh (its TTL → hourly cron).
     const live = result.bindings.liveAsScheduled;
     expect(live.map(l => l.cron)).toContain("0 * * * *");
 
-    // Only the JavaScript binding could not migrate; it is REPORTED.
+    // MongoDB and JavaScript are skipped and REPORTED; the Mongo query is
+    // preserved in the notes so it can be rewritten as SQL.
     expect(result.bindings.skipped.map(s => s.name).sort()).toEqual([
       "computed",
+      "mongo agg",
     ]);
     const notes = await readFile(project!, "MIGRATION.md");
     expect(notes.contents).toContain("computed");
+    expect(notes.contents).toContain("mongo agg");
+    expect(notes.contents).toContain("aggregate");
   }, 180_000);
 
   it("is idempotent: a second run skips the stamped app", async () => {
