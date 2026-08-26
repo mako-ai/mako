@@ -46,6 +46,7 @@ export type SettingsSection =
   | "api-keys"
   | "appearance"
   | "github"
+  | "sandbox"
   | "admin";
 
 /**

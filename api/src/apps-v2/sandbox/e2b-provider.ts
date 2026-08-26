@@ -566,6 +566,29 @@ export const e2bSandboxProvider: SandboxProvider = {
   root: () => REMOTE_ROOT,
   scratch: () => "/tmp",
   hasSession: ctx => sessionExists(ctx.sessionKey),
+  describe: async ctx => {
+    try {
+      const paginator = Sandbox.list({
+        apiKey: apiKey(),
+        query: { metadata: { makoAppsV2SessionKey: ctx.sessionKey } },
+        limit: 5,
+      });
+      if (!paginator.hasNext) return null;
+      const page = await paginator.nextItems();
+      const [info] = [...page].sort(
+        (a, b) =>
+          new Date(b.startedAt ?? 0).getTime() -
+          new Date(a.startedAt ?? 0).getTime(),
+      );
+      if (!info) return null;
+      return {
+        sandboxId: info.sandboxId,
+        startedAt: info.startedAt ? String(info.startedAt) : null,
+      };
+    } catch {
+      return null;
+    }
+  },
   writeFile: writeFileE2b,
   readFile: readFileE2b,
   openTerminal: openTerminalE2b,

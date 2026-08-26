@@ -30,6 +30,7 @@ import {
   FileCode,
   GitBranch,
   Github,
+  Server,
   History,
   KeySquare,
   MessageCircleMore,
@@ -122,5 +123,6 @@ export const SETTINGS_SECTION_ICONS = {
   "api-keys": KeySquare,
   appearance: Palette,
   github: Github,
+  sandbox: Server,
   admin: ShieldCheck,
 } as const satisfies Record<SettingsSection, LucideIcon>;

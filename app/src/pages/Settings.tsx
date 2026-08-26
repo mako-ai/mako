@@ -11,6 +11,7 @@ import SettingsMembers from "./settings/SettingsMembers";
 import SettingsApiKeys from "./settings/SettingsApiKeys";
 import SettingsAppearance from "./settings/SettingsAppearance";
 import SettingsGitHub from "./settings/SettingsGitHub";
+import SettingsSandbox from "./settings/SettingsSandbox";
 import SettingsAdmin from "./settings/SettingsAdmin";
 
 interface Props {
@@ -51,6 +52,8 @@ function Settings({ section = "prompt" }: Props) {
       return <SettingsAppearance />;
     case "github":
       return <SettingsGitHub />;
+    case "sandbox":
+      return <SettingsSandbox />;
     case "admin":
       return <SettingsAdmin />;
     default:

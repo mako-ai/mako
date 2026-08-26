@@ -170,6 +170,14 @@ export interface SandboxProvider {
   ): Promise<SandboxTerminal>;
   /** Tear down any remote session for the given affinity key (best effort). */
   destroySession?(sessionKey: string): Promise<void>;
+  /**
+   * Identify the live sandbox behind a session, without creating one.
+   * Null when no sandbox exists (or the provider has no such notion).
+   */
+  describe?(ctx: SandboxExecContext): Promise<{
+    sandboxId: string;
+    startedAt: string | null;
+  } | null>;
 }
 
 /**

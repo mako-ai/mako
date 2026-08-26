@@ -1380,6 +1380,104 @@ appsV2Routes.openapi(
 
 appsV2Routes.openapi(
   createRoute({
+    method: "get",
+    path: "/{id}/sandbox",
+    tags: ["Apps v2"],
+    summary: "The workspace sandbox: identity, uptime, sessions, resources",
+    description:
+      "One (workspace, user) has one sandbox; any app id reaches it. Stats come from one exec inside the box (with a 1s CPU sample). Never creates a sandbox: running=false when there is none.",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const handle = await ensureWorktree(
+        loaded.project,
+        loaded.userId ?? "api-key",
+      );
+      const provider = getSandboxProvider();
+      const ctx = boxCtx(handle);
+      const info = (await provider.describe?.(ctx)) ?? null;
+      if (!info) {
+        return c.json({ success: true as const, running: false }, 200);
+      }
+      const stats = await provider.exec(
+        ctx,
+        `echo "UPTIME=$(cut -d' ' -f1 /proc/uptime)"; ` +
+          `echo "CORES=$(nproc)"; ` +
+          `echo "LOAD=$(cut -d' ' -f1-3 /proc/loadavg)"; ` +
+          `free -b | awk '/^Mem:/{print "MEM_TOTAL="$2; print "MEM_USED="$3}'; ` +
+          `df -B1 / | awk 'NR==2{print "DISK_TOTAL="$2; print "DISK_USED="$3}'; ` +
+          `echo "SESSIONS=$(ls /tmp/mako-term-*.sock 2>/dev/null | wc -l)"; ` +
+          `A=$(awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8" "$5}' /proc/stat); sleep 1; ` +
+          `B=$(awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8" "$5}' /proc/stat); ` +
+          `echo "$A $B" | awk '{t=$3-$1; i=$4-$2; if (t>0) printf "CPU_PCT=%.1f\n", 100*(t-i)/t; else print "CPU_PCT=0"}'`,
+        { timeoutMs: 30_000 },
+      );
+      const fields: Record<string, string> = {};
+      for (const line of stats.stdout.split("\n")) {
+        const eq = line.indexOf("=");
+        if (eq > 0) fields[line.slice(0, eq)] = line.slice(eq + 1).trim();
+      }
+      return c.json(
+        {
+          success: true as const,
+          running: true,
+          sandboxId: info.sandboxId,
+          startedAt: info.startedAt,
+          uptimeSec: Number(fields.UPTIME) || 0,
+          cores: Number(fields.CORES) || 0,
+          load: fields.LOAD ?? "",
+          cpuPct: Number(fields.CPU_PCT) || 0,
+          memTotal: Number(fields.MEM_TOTAL) || 0,
+          memUsed: Number(fields.MEM_USED) || 0,
+          diskTotal: Number(fields.DISK_TOTAL) || 0,
+          diskUsed: Number(fields.DISK_USED) || 0,
+          sessions: Number(fields.SESSIONS) || 0,
+          connectCommand: `e2b sandbox connect ${info.sandboxId}`,
+        },
+        200,
+      );
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/sandbox/recycle",
+    tags: ["Apps v2"],
+    summary: "Kill the workspace sandbox; the next touch builds a fresh one",
+    description:
+      "Committed work is safe by design (it lives in the repo); uncommitted working-copy changes and running processes die with the machine — the same contract as losing a laptop.",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const handle = await ensureWorktree(
+        loaded.project,
+        loaded.userId ?? "api-key",
+      );
+      const ctx = boxCtx(handle);
+      await getSandboxProvider().destroySession?.(ctx.sessionKey);
+      return c.json({ success: true as const }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
     method: "delete",
     path: "/{id}/terminal-sessions/{termId}",
     tags: ["Apps v2"],
