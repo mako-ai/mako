@@ -63,11 +63,28 @@ describe("box-state (memory store)", () => {
       },
       source: "t",
     });
+    // X = index, Y = working tree: untracked is unstaged only; " M" is
+    // unstaged only; "D " and "R " are staged only.
     expect(state.changes).toEqual([
-      { path: "apps/a/new.txt", status: "added" },
-      { path: "apps/a/src/App.tsx", status: "modified" },
-      { path: "apps/b/gone.ts", status: "deleted" },
-      { path: "new.ts", status: "renamed" },
+      {
+        path: "apps/a/new.txt",
+        status: "added",
+        staged: false,
+        unstaged: true,
+      },
+      {
+        path: "apps/a/src/App.tsx",
+        status: "modified",
+        staged: false,
+        unstaged: true,
+      },
+      {
+        path: "apps/b/gone.ts",
+        status: "deleted",
+        staged: true,
+        unstaged: false,
+      },
+      { path: "new.ts", status: "renamed", staged: true, unstaged: false },
     ]);
   });
 
