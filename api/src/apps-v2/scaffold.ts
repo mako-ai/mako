@@ -32,7 +32,13 @@ export function createAppsV2Scaffold(
         type: "module",
         scripts: {
           dev: "vite",
-          build: "tsc -b && vite build",
+          // Publish builds with vite (esbuild) only — the same transform dev
+          // uses. Type-checking is a SEPARATE `typecheck` script, not a
+          // publish gate: a migrated v1 app renders fine but is rarely
+          // tsc-clean, and blocking publish on `tsc -b` made every such app
+          // unpublishable with no way to opt out.
+          build: "vite build",
+          typecheck: "tsc -b",
           preview: "vite preview",
         },
         dependencies: {

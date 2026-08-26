@@ -1086,7 +1086,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
           },
         );
         const raw = (res.data ?? res.error) as
-          | { success?: boolean; sha?: string; error?: string }
+          | { success?: boolean; sha?: string; error?: string; output?: string }
           | undefined;
         if (res.response.ok && raw?.sha) {
           set(s => {
@@ -1102,11 +1102,14 @@ export const useAppsV2Store = create<AppsV2Store>()(
             };
           });
         } else {
+          // Surface the build output (tsc/vite errors) — without it a failed
+          // publish is just "Build failed" with nothing to act on.
+          const detail = [raw?.error, raw?.output].filter(Boolean).join("\n\n");
           set(s => {
             s.previewByApp[appId] = {
               ...(s.previewByApp[appId] ?? { url: null }),
               building: false,
-              error: raw?.error ?? "Publish failed",
+              error: detail || "Publish failed",
             };
           });
         }
