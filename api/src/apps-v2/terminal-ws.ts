@@ -185,6 +185,14 @@ export function attachAppsV2TerminalWs(serverType: ServerType): void {
  */
 interface LiveTerminal {
   terminal: SandboxTerminal;
+  /**
+   * Which machine the pty was created on (provider.describe at birth; null
+   * until resolved or when the provider cannot say). onExit compares this
+   * against the session's CURRENT machine to tell `exit` (same box, close
+   * the tab) from the box dying under the shell (different or no box —
+   * reconnect, so the tab heals onto the replacement machine).
+   */
+  bornOn?: string | null;
   /** Recent output, replayed to a client that reconnects. */
   scrollback: Buffer[];
   scrollbackBytes: number;
@@ -670,6 +678,13 @@ async function startSession(
           { timeoutMs: 15_000 },
         );
         const appDirExists = cwdProbe.stdout.includes("yes");
+        void Promise.resolve(getSandboxProvider().describe?.(ctx))
+          .then(info => {
+            created.bornOn = info?.sandboxId ?? null;
+          })
+          .catch(() => {
+            created.bornOn = null;
+          });
         created.terminal = await provider.openTerminal(ctx, {
           cwd: appDirExists ? handle.appRoot : ".",
           cols: options.initialCols,
@@ -691,16 +706,36 @@ async function startSession(
             // so it reconnects into its waiting loop. Code 4000 = "session
             // over, do not reconnect"; 1012 = "shell lost, come back".
             const devWindow = termId.startsWith("dev-");
-            const notice = devWindow
-              ? "\r\n\x1b[2m[the dev server session ended]\x1b[0m\r\n"
-              : "\r\n\x1b[2m[session ended]\x1b[0m\r\n";
-            for (const socket of created.sockets) {
-              if (socket.readyState === socket.OPEN) {
-                socket.send(Buffer.from(notice, "utf8"));
-                socket.close(devWindow ? 1012 : 4000, "session ended");
+            void (async () => {
+              // `exit` must close the tab reliably, so 4000 stays the
+              // default; reconnect (1012) only on POSITIVE evidence the
+              // machine itself died: the session key now resolves to a
+              // different box than the one this pty was born on, or to no
+              // box at all. A transient lookup failure counts as "unknown"
+              // and keeps the close-the-tab behavior.
+              let machineGone = false;
+              if (!devWindow && created.bornOn) {
+                try {
+                  const info = await getSandboxProvider().describe?.(ctx);
+                  machineGone = (info?.sandboxId ?? null) !== created.bornOn;
+                } catch {
+                  machineGone = false;
+                }
               }
-            }
-            created.sockets.clear();
+              const reconnect = devWindow || machineGone;
+              const notice = devWindow
+                ? "\r\n\x1b[2m[the dev server session ended]\x1b[0m\r\n"
+                : machineGone
+                  ? "\r\n\x1b[2m[the machine restarted — reconnecting…]\x1b[0m\r\n"
+                  : "\r\n\x1b[2m[session ended]\x1b[0m\r\n";
+              for (const socket of created.sockets) {
+                if (socket.readyState === socket.OPEN) {
+                  socket.send(Buffer.from(notice, "utf8"));
+                  socket.close(reconnect ? 1012 : 4000, "session ended");
+                }
+              }
+              created.sockets.clear();
+            })();
           },
           onData: data => {
             let payload: Uint8Array | string = data;
