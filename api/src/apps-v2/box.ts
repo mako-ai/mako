@@ -138,6 +138,18 @@ export async function configureBoxRemote(input: {
 }): Promise<void> {
   const { ctx, workspaceId, userId, author } = input;
   const url = appsV2GitOriginUrl(workspaceId);
+  if (
+    getSandboxProvider().id !== "local" &&
+    /\/\/(localhost|127\.0\.0\.1)[:/]/.test(url)
+  ) {
+    // A microVM cannot reach this machine's localhost. Configuring it
+    // anyway is how agent commits ended up "committed but not durable"
+    // with the failure buried in a log. Fail loudly instead: the tunnel
+    // (.env.tunnel) is not up yet — retry after `pnpm dev` finishes booting.
+    throw new Error(
+      `Refusing to configure a remote sandbox with a localhost git origin (${url}) — the tunnel is not up yet.`,
+    );
+  }
   const token = mintGitToken({ workspaceId, userId });
   const credential = tokenPath(ctx);
   const helper = `!f() { printf 'username=mako\\npassword=%s\\n' "$(cat ${credential})"; }; f`;
@@ -592,17 +604,29 @@ export async function boxCommitAll(input: {
     ].join(" "),
     { timeoutMs: 120_000 },
   );
+  let madeCommit = true;
   if (committed.exitCode !== 0) {
     const said = `${committed.stdout}${committed.stderr}`;
     if (/nothing to commit|nothing added to commit/i.test(said)) {
-      return { committed: false, reason: "No changes to commit" };
+      // No NEW commit — but don't return yet. An earlier commit whose push
+      // failed (stale tunnel origin, say) is still local-only, and this is
+      // exactly the moment to make it durable: fall through to the push,
+      // which is a no-op when everything is already upstream.
+      madeCommit = false;
+    } else {
+      throw new Error(`Could not commit: ${said.slice(-300)}`);
     }
-    throw new Error(`Could not commit: ${said.slice(-300)}`);
   }
 
   let pushed = await boxExec(ctx, boxGit(ctx, "push", "-q", "origin", "HEAD"), {
     timeoutMs: 180_000,
   });
+  if (pushed.exitCode !== 0 && isUnreachableOrigin(pushed.stderr)) {
+    await healBoxOrigin(ctx);
+    pushed = await boxExec(ctx, boxGit(ctx, "push", "-q", "origin", "HEAD"), {
+      timeoutMs: 180_000,
+    });
+  }
   if (pushed.exitCode !== 0) {
     // Someone else pushed to this branch first, so the push is a
     // non-fast-forward. Pull and try once more — which is exactly what a
@@ -621,6 +645,9 @@ export async function boxCommitAll(input: {
     );
   }
 
+  if (!madeCommit) {
+    return { committed: false, reason: "No changes to commit" };
+  }
   const head = await boxExec(ctx, boxGit(ctx, "rev-parse", "HEAD"), {
     timeoutMs: 30_000,
   });
@@ -640,18 +667,33 @@ export async function boxCommitAll(input: {
  * costs no network at all.
  */
 export async function boxPushIfAhead(ctx: SandboxExecContext): Promise<void> {
-  await boxExec(
-    ctx,
-    // A branch with no upstream is the `git checkout -b` case, and there the
-    // answer is not "nothing to do" — the branch and every commit on it exist
-    // ONLY on a machine that can be thrown away. Push it and set the upstream,
-    // which is what push.autoSetupRemote already says we want.
-    `if ${boxGit(ctx, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")} >/dev/null 2>&1; then ` +
-      `ahead=$(${boxGit(ctx, "rev-list", "--count", "@{u}..HEAD")} 2>/dev/null || echo 0); ` +
-      `if [ "$ahead" -gt 0 ]; then ${boxGit(ctx, "push", "-q", "origin", "HEAD")}; fi; ` +
-      `else ${boxGit(ctx, "push", "-q", "-u", "origin", "HEAD")}; fi`,
-    { timeoutMs: 180_000 },
-  );
+  const push = () =>
+    boxExec(
+      ctx,
+      // A branch with no upstream is the `git checkout -b` case, and there the
+      // answer is not "nothing to do" — the branch and every commit on it exist
+      // ONLY on a machine that can be thrown away. Push it and set the upstream,
+      // which is what push.autoSetupRemote already says we want.
+      `if ${boxGit(ctx, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")} >/dev/null 2>&1; then ` +
+        `ahead=$(${boxGit(ctx, "rev-list", "--count", "@{u}..HEAD")} 2>/dev/null || echo 0); ` +
+        `if [ "$ahead" -gt 0 ]; then ${boxGit(ctx, "push", "-q", "origin", "HEAD")}; fi; ` +
+        `else ${boxGit(ctx, "push", "-q", "-u", "origin", "HEAD")}; fi`,
+      { timeoutMs: 180_000 },
+    );
+  let result = await push();
+  if (result.exitCode !== 0 && isUnreachableOrigin(result.stderr)) {
+    await healBoxOrigin(ctx);
+    result = await push();
+  }
+  if (result.exitCode !== 0) {
+    // This is a safety net, so a failure must not break the caller's flow —
+    // but silence here is how commits quietly stay trapped in a disposable
+    // machine. Leave a trail.
+    logger.warn("Apps v2 push-if-ahead failed", {
+      sessionKey: ctx.sessionKey,
+      said: (result.stderr || result.stdout).slice(-300),
+    });
+  }
 }
 
 /**
@@ -709,6 +751,29 @@ export async function boxDiscard(ctx: SandboxExecContext): Promise<void> {
   }
 }
 
+/** Push/fetch stderr that means "could not REACH origin" (vs a git refusal). */
+export function isUnreachableOrigin(stderr: string): boolean {
+  return /unable to access|Failed to connect|Could not resolve host/i.test(
+    stderr,
+  );
+}
+
+/**
+ * Re-point the box's origin at the CURRENT git endpoint and token.
+ *
+ * Every `pnpm dev` restarts the tunnel with a fresh URL, so a box configured
+ * against the previous one keeps failing every push and pull until something
+ * rewrites its remote. Callers invoke this when a git network operation could
+ * not reach origin, then retry once.
+ */
+export async function healBoxOrigin(ctx: SandboxExecContext): Promise<void> {
+  logger.warn("Apps v2 origin unreachable; reconfiguring the box remote", {
+    sessionKey: ctx.sessionKey,
+  });
+  const [workspaceId, ...rest] = ctx.sessionKey.split(":");
+  await configureBoxRemote({ ctx, workspaceId, userId: rest.join(":") });
+}
+
 /**
  * Bring the box up to date with the server — `git pull`, essentially.
  *
@@ -722,7 +787,7 @@ export async function boxPull(ctx: SandboxExecContext): Promise<void> {
   // ours to force. But refusing SILENTLY cost a debugging session when a
   // stale box kept lacking an app that main had for days: log what git said
   // so "the box is behind and won't catch up" has a trail.
-  const result = await boxExec(
+  let result = await boxExec(
     ctx,
     [
       boxGit(ctx, "fetch", "-q", "origin"),
@@ -730,6 +795,17 @@ export async function boxPull(ctx: SandboxExecContext): Promise<void> {
     ].join(" && "),
     { timeoutMs: 180_000 },
   );
+  if (result.exitCode !== 0 && isUnreachableOrigin(result.stderr)) {
+    await healBoxOrigin(ctx);
+    result = await boxExec(
+      ctx,
+      [
+        boxGit(ctx, "fetch", "-q", "origin"),
+        `${boxGit(ctx, "merge", "--no-edit", "@{u}")}`,
+      ].join(" && "),
+      { timeoutMs: 180_000 },
+    );
+  }
   if (result.exitCode !== 0) {
     logger.warn("Apps v2 box pull did not merge", {
       sessionKey: ctx.sessionKey,
