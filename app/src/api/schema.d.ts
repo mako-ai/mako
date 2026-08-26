@@ -4114,6 +4114,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Is the app's dev server session serving right now?
+         * @description Cheap truth for the workbench: the session socket AND the port, not client-side state. Never starts a sandbox. Lets the UI notice a server stopped from inside its own terminal (Ctrl-C) and flip to the launch state.
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_v2_id_dev_preview_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview/log": {
         parameters: {
             query?: never;
@@ -18920,6 +18940,47 @@ export interface operations {
                 "application/json": Record<string, never>;
             };
         };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_v2_id_dev_preview_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful response */
             "2XX": {

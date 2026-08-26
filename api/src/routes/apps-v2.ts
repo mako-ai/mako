@@ -1380,6 +1380,34 @@ appsV2Routes.openapi(
 appsV2Routes.openapi(
   createRoute({
     method: "get",
+    path: "/{id}/dev-preview/status",
+    tags: ["Apps v2"],
+    summary: "Is the app's dev server session serving right now?",
+    description:
+      "Cheap truth for the workbench: the session socket AND the port, not client-side state. Never starts a sandbox. Lets the UI notice a server stopped from inside its own terminal (Ctrl-C) and flip to the launch state.",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const handle = await ensureWorktree(
+        loaded.project,
+        loaded.userId ?? "api-key",
+      );
+      const serving = await isServingApp(handle);
+      return c.json({ success: true as const, serving }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
     path: "/{id}/dev-preview/log",
     tags: ["Apps v2"],
     summary: "Tail the dev-session boot log (npm install + vite output)",

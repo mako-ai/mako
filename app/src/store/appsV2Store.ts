@@ -285,6 +285,13 @@ interface AppsV2Store {
    * Tail the dev-session boot log — the sandbox's real npm install + vite
    * output from `offset` on. What the boot screen shows.
    */
+  /**
+   * Ask the server whether the dev session is actually serving; when it is
+   * not (stopped from its own terminal with Ctrl-C, crashed, sandbox
+   * recycled), drop the client's preview state so the workbench flips to
+   * the launch state instead of showing a stale iframe as "live".
+   */
+  checkDevStatus: (workspaceId: string, appId: string) => Promise<void>;
   fetchDevLog: (
     workspaceId: string,
     appId: string,
@@ -1082,6 +1089,36 @@ export const useAppsV2Store = create<AppsV2Store>()(
             error: message(e, "Build failed"),
           };
         });
+      }
+    },
+
+    checkDevStatus: async (workspaceId, appId) => {
+      try {
+        const body = unwrapBody(
+          await api.GET(
+            "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview/status",
+            { params: { path: { workspaceId, id: appId } } },
+          ),
+        ) as { serving?: boolean };
+        if (body.serving === false) {
+          try {
+            localStorage.removeItem(`apps-v2-devurl:${appId}`);
+          } catch {
+            // Best effort.
+          }
+          set(s => {
+            const preview = s.previewByApp[appId];
+            if (preview?.mode === "dev") {
+              s.previewByApp[appId] = {
+                url: null,
+                building: false,
+                error: null,
+              };
+            }
+          });
+        }
+      } catch {
+        // Advisory: an unreachable probe must not kill a working preview.
       }
     },
 

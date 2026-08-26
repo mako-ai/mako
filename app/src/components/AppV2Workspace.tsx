@@ -614,6 +614,20 @@ export default function AppV2Workspace({
     return () => setIframeDragGuard(false);
   }, [terminalDragging]);
 
+  const checkDevStatus = useAppsV2Store(s => s.checkDevStatus);
+  // The preview chip and iframe are CLIENT state; the server is the truth.
+  // While a dev session is believed live, verify every 15s — Ctrl-C in the
+  // dev terminal, a crash, or a recycled sandbox all flip the workbench to
+  // the launch state within one beat instead of showing a stale "live".
+  useEffect(() => {
+    if (!workspaceId || !devSessionLive) return;
+    const timer = setInterval(
+      () => void checkDevStatus(workspaceId, appId),
+      15_000,
+    );
+    return () => clearInterval(timer);
+  }, [workspaceId, appId, devSessionLive, checkDevStatus]);
+
   const fetchApps = useAppsV2Store(s => s.fetchApps);
   const fetchFiles = useAppsV2Store(s => s.fetchFiles);
   const fetchStatus = useAppsV2Store(s => s.fetchStatus);

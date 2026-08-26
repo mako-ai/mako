@@ -304,6 +304,37 @@ async function listening(
 }
 
 /**
+ * Is the dev server SERVING — with its session intact?
+ *
+ * "The port answers" stopped being the whole truth once the server became a
+ * session: an orphaned older-generation process can hold the port while the
+ * dtach session is gone. Reusing that orphan looks fine in the iframe but
+ * is exactly wrong everywhere else — the new session dies on EADDRINUSE,
+ * the dev window waits forever, and Ctrl-C kills a session that was not
+ * the thing serving. Three answers:
+ *   serving — port up and (where dtach exists) the session socket with it
+ *   orphan  — port up but the session is gone: kill and relaunch
+ *   down    — nothing listening
+ */
+async function servingState(
+  provider: ReturnType<typeof getSandboxProvider>,
+  ctx: SandboxExecContext,
+  handle: WorktreeHandle,
+  port: number,
+): Promise<"serving" | "orphan" | "down"> {
+  const probe = await provider.exec(
+    ctx,
+    `if curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:${port}/; then ` +
+      `if command -v dtach >/dev/null; then test -S ${devSockPath(handle)} && echo serving || echo orphan; ` +
+      `else echo serving; fi; else echo down; fi`,
+    { timeoutMs: 15_000 },
+  );
+  if (probe.stdout.includes("serving")) return "serving";
+  if (probe.stdout.includes("orphan")) return "orphan";
+  return "down";
+}
+
+/**
  * Is this app's dev server already up in an existing sandbox? Never creates
  * a sandbox and never allocates a port. The reattach path uses this to keep
  * its hands off the boot log: truncating it and then skipping the launch
@@ -316,7 +347,7 @@ export async function isServingApp(handle: WorktreeHandle): Promise<boolean> {
   if (!(await provider.hasSession(ctx))) return false;
   const port = await devPort(handle, provider, ctx, { allocate: false });
   if (!port) return false;
-  return listening(provider, ctx, port);
+  return (await servingState(provider, ctx, handle, port)) === "serving";
 }
 
 /**
@@ -340,7 +371,22 @@ export async function ensureDevServer(
   const logPath = devLogPath(handle);
   const launcher = launcherPath(handle);
 
-  const wasListening = await listening(provider, ctx, port);
+  const state = await servingState(provider, ctx, handle, port);
+  if (state === "orphan") {
+    // An older-generation server holds the port without a session. Kill it
+    // by its launcher paths (this app's, plus the pre-per-app global name)
+    // — never by port pattern, other apps' servers are innocent.
+    await provider.exec(
+      ctx,
+      `pkill -f "[m]ako-dev-${appSlug(handle)}.mjs" 2>/dev/null; pkill -f "[m]ako-dev-server.mjs" 2>/dev/null; sleep 1; echo reaped`,
+      { timeoutMs: 30_000 },
+    );
+    logger.warn("Apps v2 dev server orphan reaped", {
+      projectId: handle.project._id.toString(),
+      appRoot: handle.appRoot,
+    });
+  }
+  const wasListening = state === "serving";
   if (!wasListening) {
     const write = await provider.exec(
       ctx,
