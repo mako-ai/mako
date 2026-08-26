@@ -66,8 +66,15 @@ async function main(): Promise<void> {
 }
 
 main()
-  .then(() => process.exitCode === undefined && (process.exitCode = 0))
+  .then(() => {
+    // Exit explicitly: the services this pulls in (mirror queue, pub/sub,
+    // loggers) keep handles open, and an operator CLI that hangs after
+    // printing "Dry run — nothing written" looks like it did not finish.
+    // eslint-disable-next-line no-process-exit -- operator CLI, not server code
+    process.exit(0);
+  })
   .catch(error => {
     console.error(error instanceof Error ? error.message : error);
-    process.exitCode = 1;
+    // eslint-disable-next-line no-process-exit -- operator CLI, not server code
+    process.exit(1);
   });
