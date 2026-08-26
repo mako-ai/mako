@@ -145,7 +145,7 @@ function launcherSource(
 ): string {
   return `
 import { createServer } from "${appDir}/node_modules/vite/dist/node/index.js";
-import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 // Tell Mako the moment this server is up or gone, instead of leaving the UI
@@ -253,7 +253,9 @@ const makoData = {
                 method: "POST",
                 headers: { "content-type": "application/json", authorization: "Bearer " + token },
                 body: JSON.stringify({ slug: ${JSON.stringify(slug)}, name }),
-                signal: AbortSignal.timeout(60000),
+                // A materialized query can be slow (a heavy dashboard mart runs
+                // for a minute); give it room rather than failing the table.
+                signal: AbortSignal.timeout(180000),
               },
             );
             if (!upstream.ok) {
@@ -263,6 +265,14 @@ const makoData = {
               return;
             }
             const buf = Buffer.from(await upstream.arrayBuffer());
+            // Write-through cache: keep this result as a static parquet and drop
+            // the live marker, so the binding is queried at most ONCE per dev
+            // session — the next fetch (and every re-open) serves the file, not
+            // a fresh 60s query. A rebuild/re-stage overwrites it.
+            try {
+              writeFileSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".parquet"), buf);
+              rmSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".live"), { force: true });
+            } catch {}
             res.statusCode = 200;
             res.setHeader("content-type", "application/vnd.apache.parquet");
             res.setHeader("content-length", String(buf.length));
