@@ -173,6 +173,12 @@ export interface IWorkspace extends Document {
      * Clamped to [1, APP_BINDING_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX].
      */
     appBindingRefreshConcurrency?: number;
+    /**
+     * Apps v2 (git-backed apps, sandbox, Source Control) for this workspace.
+     * Off by default; super-admins flip it per workspace for the incremental
+     * rollout (Settings › Super Admin › Feature flags).
+     */
+    appsV2Enabled?: boolean;
   };
   billing: IWorkspaceBilling;
   selfDirective?: string;
@@ -1310,6 +1316,7 @@ Add any specific instructions for how the AI should interpret your data or respo
         default: 2,
         min: 1,
       },
+      appsV2Enabled: { type: Boolean, default: false },
     },
     billing: {
       stripeCustomerId: { type: String, default: null },

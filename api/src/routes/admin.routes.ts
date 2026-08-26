@@ -19,6 +19,7 @@ import {
   setCuratedModel,
 } from "../services/model-catalog.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import { Workspace } from "../database/workspace-schema";
 
 const logger = loggers.app();
 
@@ -249,5 +250,91 @@ adminRoutes.openapi(
         500,
       );
     }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Feature flags — per-workspace rollout switches (Settings › Super Admin).
+// ---------------------------------------------------------------------------
+
+adminRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/workspaces/features",
+    tags: ["Admin"],
+    summary: "Every workspace with its feature flags",
+    security: AUTH_SECURITY,
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    const workspaces = await Workspace.find({})
+      .select("name slug settings.appsV2Enabled createdAt")
+      .sort({ name: 1 })
+      .lean();
+    return c.json(
+      {
+        success: true as const,
+        workspaces: workspaces.map(w => ({
+          id: w._id.toString(),
+          name: w.name,
+          slug: w.slug,
+          appsV2Enabled: w.settings?.appsV2Enabled === true,
+        })),
+      },
+      200,
+    );
+  },
+);
+
+adminRoutes.openapi(
+  createRoute({
+    method: "patch",
+    path: "/workspaces/{workspaceId}/features",
+    tags: ["Admin"],
+    summary: "Flip a workspace's feature flags",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({ workspaceId: z.string().min(1) }),
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({ appsV2Enabled: z.boolean().optional() }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    const { workspaceId } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const $set: Record<string, unknown> = {};
+    if (typeof body.appsV2Enabled === "boolean") {
+      $set["settings.appsV2Enabled"] = body.appsV2Enabled;
+    }
+    const updated = await Workspace.findByIdAndUpdate(
+      workspaceId,
+      { $set },
+      { new: true },
+    )
+      .select("name slug settings.appsV2Enabled")
+      .lean();
+    if (!updated) return c.json({ error: "Workspace not found" }, 404);
+    logger.info("Admin changed workspace feature flags", {
+      workspaceId,
+      flags: $set,
+    });
+    return c.json(
+      {
+        success: true as const,
+        workspace: {
+          id: updated._id.toString(),
+          name: updated.name,
+          slug: updated.slug,
+          appsV2Enabled: updated.settings?.appsV2Enabled === true,
+        },
+      },
+      200,
+    );
   },
 );

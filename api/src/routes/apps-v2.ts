@@ -14,6 +14,7 @@ import { Types } from "mongoose";
 import {
   AppProjectV2,
   GitHubInstallation,
+  Workspace,
   type IAppProjectV2,
 } from "../database/workspace-schema";
 import { loggers, enrichContextWithWorkspace } from "../logging";
@@ -273,11 +274,17 @@ appsV2Routes.openapi(
   }),
   async c => {
     const { workspaceId } = c.req.valid("param");
-    const repos = await listWorkspaceRepos(workspaceId);
+    // The rollout flag, per workspace (Settings › Super Admin › Feature
+    // flags). Off = the rail entry and everything behind it stay hidden.
+    const workspace = await Workspace.findById(workspaceId)
+      .select("settings.appsV2Enabled")
+      .lean();
+    const enabled = workspace?.settings?.appsV2Enabled === true;
+    const repos = enabled ? await listWorkspaceRepos(workspaceId) : [];
     return c.json(
       {
         success: true as const,
-        enabled: true,
+        enabled,
         linked: repos.length > 0,
         // Creation works without a connected repo when Mako-hosted cloud
         // storage is configured (per-app repos under MAKO_CLOUD_GITHUB_ORG).

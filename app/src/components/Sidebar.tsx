@@ -14,7 +14,7 @@ import { CHAT_ICON as ChatIcon, EXPLORER_ICONS } from "../lib/entity-icons";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useAuth } from "../contexts/auth-context";
-import { startTransition, useEffect, useMemo, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useConnectorStore } from "../store/connectorStore";
@@ -118,35 +118,18 @@ function useRepoDirty(enabled: boolean): boolean {
 }
 
 /**
- * Probe + report whether the Apps v2 rail entry should be visible. Both the
- * desktop rail and the mobile drawer nav filter on this so v1 and v2 can run
- * side by side while v2 is rolled out.
+ * Whether the Apps v2 and Source Control rail entries exist for this
+ * workspace. Read from the workspace object the app already loaded — a
+ * synchronous fact, like the workspace's name. It is deliberately NOT a
+ * network probe: rail icons are fixed chrome, and gating them on a request
+ * made them pop in a second late on every load and vanish outright when the
+ * request failed (a Mongo DNS blip took both icons with it). Whatever the
+ * explorer needs to load (repos, canCreate) loads on its own, behind the
+ * icon, not in front of it.
  */
 function useAppsV2Visible(): boolean {
   const { currentWorkspace } = useWorkspace();
-  const enabled = useAppsV2Store(state => state.enabled);
-  const probeEnabled = useAppsV2Store(state => state.probeEnabled);
-  useEffect(() => {
-    if (currentWorkspace?.id && enabled === undefined) {
-      void probeEnabled(currentWorkspace.id);
-    }
-  }, [currentWorkspace?.id, enabled, probeEnabled]);
-  // While the probe is in flight, paint from the last known answer for this
-  // workspace instead of hiding the items. Gating nav on an async probe made
-  // Apps v2 — and Source Control, which sits SECOND in the rail — pop in
-  // after first paint and shove every icon below them down, on every load.
-  // First-ever visit still has no hint; each one after paints right.
-  const hint = useMemo(() => {
-    if (!currentWorkspace?.id) return false;
-    try {
-      return (
-        localStorage.getItem(`apps-v2-enabled:${currentWorkspace.id}`) === "1"
-      );
-    } catch {
-      return false;
-    }
-  }, [currentWorkspace?.id]);
-  return enabled === undefined ? hint : enabled;
+  return currentWorkspace?.settings?.appsV2Enabled === true;
 }
 
 const bottomNavigationItems: {
