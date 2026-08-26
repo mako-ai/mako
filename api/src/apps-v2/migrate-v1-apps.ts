@@ -37,6 +37,8 @@ import {
   MakoApp,
   type IMakoApp,
   type IMakoAppDataBinding,
+  type ResourceShareRole,
+  type IResourceShareEntry,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { APP_SDK_DEPENDENCY } from "./app-sdk-package";
@@ -67,6 +69,16 @@ export interface V1AppMigrationPlan {
     liveAsScheduled: Array<{ name: string; cron: string }>;
   };
   access: "private" | "workspace";
+  /**
+   * The full ACL carries over, not just `access`: `workspaceRole` decides
+   * whether workspace members may EDIT (and thus dev-run) a workspace-access
+   * app, and `sharedWith` names per-user collaborators. Dropping them made
+   * every migrated workspace app view-only to everyone but its owner — so
+   * members opening one to run it got a misleading "App not found" (the
+   * dev-preview write gate, obscured).
+   */
+  workspaceRole?: ResourceShareRole;
+  sharedWith?: IResourceShareEntry[];
   alreadyMigrated: boolean;
 }
 
@@ -261,6 +273,8 @@ export function planV1AppMigration(app: IMakoApp): V1AppMigrationPlan {
     fileCount: (app.files ?? []).length,
     bindings: { migrated, skipped, carried, liveAsScheduled },
     access: app.access === "workspace" ? "workspace" : "private",
+    workspaceRole: app.workspaceRole,
+    sharedWith: app.sharedWith,
     alreadyMigrated: Boolean(
       (app as unknown as { migratedToV2ProjectId?: unknown })
         .migratedToV2ProjectId,
@@ -354,11 +368,23 @@ export async function migrateV1App(
   }
   plan.bindings.carried = adopted;
 
-  // Access carries over; publish state deliberately does not (see header).
+  // The ACL carries over — access, the workspace-member role, and per-user
+  // collaborators — so a migrated app is exactly as visible and editable as
+  // its v1 original. Only publish state is deliberately dropped (see header).
+  let aclChanged = false;
   if (plan.access !== project.access) {
     project.access = plan.access;
-    await project.save();
+    aclChanged = true;
   }
+  if (plan.workspaceRole && plan.workspaceRole !== project.workspaceRole) {
+    project.workspaceRole = plan.workspaceRole;
+    aclChanged = true;
+  }
+  if (plan.sharedWith && plan.sharedWith.length > 0) {
+    project.sharedWith = plan.sharedWith;
+    aclChanged = true;
+  }
+  if (aclChanged) await project.save();
 
   // Stamp the SOURCE, not just the destination: re-runs skip stamped apps,
   // and un-migrating is "delete the folder, clear the stamp".
