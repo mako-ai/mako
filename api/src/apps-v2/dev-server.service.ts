@@ -365,22 +365,35 @@ async function stageBindingData(
 
   const store = getDashboardArtifactStore();
   const staged: string[] = [];
+  // A marker (no parquet) tells the dev server's data middleware to fetch this
+  // binding FRESH from Mako on each request. Listed in index.json so the SDK
+  // still registers the table.
+  const stageLive = async (name: string) => {
+    await provider.writeFile(
+      ctx,
+      `${stageDir}/${name}.live`,
+      new TextEncoder().encode("1"),
+    );
+    staged.push(name);
+  };
   for (const binding of bindings) {
     if (binding.materialization === "live") {
-      // No artifact: a marker tells the dev server's data middleware to
-      // fetch this binding's parquet FRESH from Mako on each request. Listed
-      // in index.json so the SDK still registers it.
-      await provider.writeFile(
-        ctx,
-        `${stageDir}/${binding.name}.live`,
-        new TextEncoder().encode("1"),
-      );
-      staged.push(binding.name);
+      await stageLive(binding.name);
       continue;
     }
     const key = bindingArtifactKey(projectId, binding.name);
     const stream = await store.openReadStream(key);
-    if (!stream) continue;
+    if (!stream) {
+      // A scheduled binding with no materialized artifact yet (never built, or
+      // its data lives only in the prod store). Rather than leave the app with
+      // a missing DuckDB table, fall back to LIVE — query it fresh on demand —
+      // so dev mode always shows data. A real build later replaces the marker
+      // with a static parquet (the stale-marker rm below handles that). Dev
+      // only: the box token authorizes the live query; a published app never
+      // reaches this path.
+      await stageLive(binding.name);
+      continue;
+    }
     // A stale marker from a previous life mustn't shadow a now-static binding.
     await provider
       .exec(ctx, `rm -f ${stageDir}/${binding.name}.live`, {
