@@ -110,8 +110,8 @@ describe("v1 → v2 migration", () => {
     const { parseBindingFrontMatter } = await import("./bindings.service");
     const app = await makeV1App();
 
-    const result = await migrateV1App(app);
-    expect(result.slug).toBeTruthy();
+    const result = await migrateV1App(app, "legacy-dashboard");
+    expect(result.slug).toBe("legacy-dashboard");
     const project = await AppProjectV2.findById(result.projectId);
     expect(project?.access).toBe("workspace");
     // Unpublished on purpose: nothing has been built.
@@ -162,28 +162,40 @@ describe("v1 → v2 migration", () => {
     expect(notes.contents).toContain("aggregate");
   }, 180_000);
 
-  it("is idempotent: a second run skips the stamped app", async () => {
-    const { migrateV1App, migrateWorkspaceV1Apps } = await import(
-      "./migrate-v1-apps"
-    );
+  it("is idempotent by overwrite: a second run replaces in place, no duplicates", async () => {
+    const { migrateWorkspaceV1Apps } = await import("./migrate-v1-apps");
     const { MakoApp, AppProjectV2 } = await import(
       "../database/workspace-schema"
     );
     const app = await makeV1App();
-    const first = await migrateV1App(app);
-    expect(first.alreadyMigrated).toBe(false);
 
-    const before = await AppProjectV2.countDocuments({});
+    const first = await migrateWorkspaceV1Apps({
+      workspaceId: WS,
+      execute: true,
+    });
+    const beforeCount = await AppProjectV2.countDocuments({
+      workspaceId: new Types.ObjectId(WS),
+    });
+
+    // Re-run: every app lands on the SAME deterministic slug and overwrites its
+    // previous occupant — no "…-2", and the project count does not grow.
     const again = await migrateWorkspaceV1Apps({
       workspaceId: WS,
       execute: true,
     });
-    // Every app in the workspace is stamped by now; nothing new is created.
-    expect(again.every(r => r.alreadyMigrated)).toBe(true);
-    expect(await AppProjectV2.countDocuments({})).toBe(before);
+    expect(again.map(r => r.slug).sort()).toEqual(
+      first.map(r => r.slug).sort(),
+    );
+    expect(
+      await AppProjectV2.countDocuments({
+        workspaceId: new Types.ObjectId(WS),
+      }),
+    ).toBe(beforeCount);
 
+    // The stamp points at the current (rebuilt) project for this app.
+    const mine = again.find(r => r.v1AppId === app._id.toString())!;
     const stamped = await MakoApp.findById(app._id);
-    expect(stamped?.migratedToV2ProjectId?.toString()).toBe(first.projectId);
+    expect(stamped?.migratedToV2ProjectId?.toString()).toBe(mine.projectId);
   }, 180_000);
 
   it("dry run writes nothing", async () => {

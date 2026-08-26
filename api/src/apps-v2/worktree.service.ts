@@ -442,7 +442,7 @@ async function updateRef(
 // Project lifecycle
 // ---------------------------------------------------------------------------
 
-function slugify(title: string): string {
+export function slugify(title: string): string {
   const base = title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -537,9 +537,16 @@ export async function createProject(input: {
   description?: string;
   userId?: string;
   author?: GitAuthor;
+  /**
+   * Force an exact slug instead of deriving a unique one from the title. The
+   * caller owns uniqueness — used by the v1→v2 migration, which assigns each
+   * app a deterministic slug and clears any prior occupant first, so a re-run
+   * overwrites in place rather than spawning a "…-2" duplicate.
+   */
+  slug?: string;
 }): Promise<IAppProjectV2> {
   const title = input.title.trim() || "Untitled app";
-  const slug = await uniqueSlug(input.workspaceId, title);
+  const slug = input.slug ?? (await uniqueSlug(input.workspaceId, title));
   const project = await AppProjectV2.create({
     workspaceId: new Types.ObjectId(input.workspaceId),
     title,

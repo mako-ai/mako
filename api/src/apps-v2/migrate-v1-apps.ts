@@ -35,6 +35,7 @@
 import { Types } from "mongoose";
 import {
   MakoApp,
+  AppProjectV2,
   type IMakoApp,
   type IMakoAppDataBinding,
   type ResourceShareRole,
@@ -47,6 +48,8 @@ import {
   appRootFor,
   commitFilesOnBranch,
   createProject,
+  deleteProject,
+  slugify,
 } from "./worktree.service";
 import { repoDirFor } from "./repository.service";
 import { queueMirrorPush } from "./cloud-repo.service";
@@ -291,14 +294,31 @@ export function planV1AppMigration(app: IMakoApp): V1AppMigrationPlan {
   };
 }
 
-/** Migrate one v1 app into its workspace's v2 repo. Idempotent per app. */
+/**
+ * Migrate one v1 app into its workspace's v2 repo at a deterministic `slug`.
+ *
+ * Idempotent by OVERWRITE, not by skip: every run re-materializes the app at
+ * `slug`, clearing any prior occupant first (folder + row), so re-running —
+ * or iterating on this script — reproduces the same result instead of piling
+ * up "…-2" duplicates. The caller assigns `slug` deterministically so the same
+ * v1 app always lands in the same place.
+ */
 export async function migrateV1App(
   app: IMakoApp,
+  slug: string,
 ): Promise<V1AppMigrationResult> {
   const plan = planV1AppMigration(app);
-  if (plan.alreadyMigrated) return plan;
-
   const workspaceId = app.workspaceId.toString();
+
+  // Overwrite: drop whatever currently owns this slug (a previous run, a
+  // hand-made app, a leftover from before the DB was re-cloned) so the new
+  // migration is the sole occupant. deleteProject removes the folder and the
+  // row; a fresh createProject then rebuilds it.
+  const existing = await AppProjectV2.findOne({
+    workspaceId: new Types.ObjectId(workspaceId),
+    slug,
+  });
+  if (existing) await deleteProject(existing);
 
   // The scaffold first (real Vite chassis), then the v1 files over it — the
   // v1 file wins any collision, because it IS the app. Migrating onto the
@@ -309,6 +329,7 @@ export async function migrateV1App(
     title: app.title,
     description: app.description,
     userId: app.owner_id || app.createdBy,
+    slug,
   });
 
   const scaffold = createAppsV2Scaffold({
@@ -413,21 +434,87 @@ export async function migrateV1App(
   return { ...plan, projectId: project._id.toString(), slug: project.slug };
 }
 
+/**
+ * A stable slug per v1 app, independent of run order, so re-running the
+ * migration overwrites the same folder every time. Apps whose titles slug to
+ * the same base are disambiguated by a short suffix of their v1 id —
+ * deterministic, unlike the arrival-order "-2" that `uniqueSlug` would assign.
+ */
+export function deterministicSlugs(apps: IMakoApp[]): Map<string, string> {
+  const baseCount = new Map<string, number>();
+  for (const app of apps) {
+    const base = slugify(app.title?.trim() || "Untitled app");
+    baseCount.set(base, (baseCount.get(base) ?? 0) + 1);
+  }
+  const slugs = new Map<string, string>();
+  for (const app of apps) {
+    const base = slugify(app.title?.trim() || "Untitled app");
+    const id = app._id.toString();
+    slugs.set(
+      id,
+      (baseCount.get(base) ?? 0) > 1 ? `${base}-${id.slice(-6)}` : base,
+    );
+  }
+  return slugs;
+}
+
+/**
+ * Remove EVERY v2 app in a workspace — folders (one commit) and rows — and
+ * clear the v1 migration stamps, returning the repo to "no apps yet". Used by
+ * `--reset` so a remigration starts from a clean slate rather than layering
+ * onto leftovers.
+ */
+export async function clearWorkspaceV2Apps(workspaceId: string): Promise<{
+  projectsDeleted: number;
+  stampsCleared: number;
+}> {
+  const ws = new Types.ObjectId(workspaceId);
+  const projects = await AppProjectV2.find({ workspaceId: ws });
+  for (const project of projects) {
+    await deleteProject(project);
+  }
+  const stamp = await MakoApp.updateMany(
+    { workspaceId: ws, migratedToV2ProjectId: { $exists: true } },
+    { $unset: { migratedToV2ProjectId: "" } },
+  );
+  return {
+    projectsDeleted: projects.length,
+    stampsCleared: stamp.modifiedCount ?? 0,
+  };
+}
+
 /** Migrate every v1 app in a workspace (or one app). */
 export async function migrateWorkspaceV1Apps(input: {
   workspaceId: string;
   appId?: string;
   execute: boolean;
+  /** Wipe all existing v2 apps first (see clearWorkspaceV2Apps). */
+  reset?: boolean;
 }): Promise<V1AppMigrationResult[]> {
+  if (input.execute && input.reset && !input.appId) {
+    const cleared = await clearWorkspaceV2Apps(input.workspaceId);
+    logger.info("Apps v2 migration reset: cleared existing apps", {
+      workspaceId: input.workspaceId,
+      ...cleared,
+    });
+  }
   const query: Record<string, unknown> = {
     workspaceId: new Types.ObjectId(input.workspaceId),
   };
   if (input.appId) query._id = new Types.ObjectId(input.appId);
   const apps = await MakoApp.find(query);
+  // Slugs are computed over the FULL workspace app set (not the filtered
+  // query), so a single-app migration lands on the same slug it would in a
+  // full run.
+  const all = input.appId
+    ? await MakoApp.find({ workspaceId: new Types.ObjectId(input.workspaceId) })
+    : apps;
+  const slugs = deterministicSlugs(all);
   const results: V1AppMigrationResult[] = [];
   for (const app of apps) {
+    const slug = slugs.get(app._id.toString()) ?? slugify(app.title);
     results.push(
-      input.execute ? await migrateV1App(app) : planV1AppMigration(app),
+      input.execute ? await migrateV1App(app, slug) : planV1AppMigration(app),
     );
   }
   return results;

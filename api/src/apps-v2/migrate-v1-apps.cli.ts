@@ -30,6 +30,7 @@ async function main(): Promise<void> {
   const workspaceId = arg("workspace");
   const appId = arg("app");
   const execute = process.argv.includes("--execute");
+  const reset = process.argv.includes("--reset");
   if (!workspaceId) {
     throw new Error(
       "Usage: migrate-v1-apps --workspace <id> [--app <id>] [--execute]",
@@ -40,7 +41,15 @@ async function main(): Promise<void> {
   if (!uri) throw new Error("DATABASE_URL is not set");
   await mongoose.connect(uri);
 
-  const results = await migrateWorkspaceV1Apps({ workspaceId, appId, execute });
+  if (reset && execute) {
+    console.log("--reset: clearing all existing v2 apps in this workspace…");
+  }
+  const results = await migrateWorkspaceV1Apps({
+    workspaceId,
+    appId,
+    execute,
+    reset,
+  });
   for (const r of results) {
     const marker = r.alreadyMigrated
       ? "SKIP (already migrated)"
