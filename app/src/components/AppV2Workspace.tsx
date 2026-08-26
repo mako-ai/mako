@@ -45,6 +45,7 @@ import { useRealtimeStore } from "../store/realtimeStore";
 import { useAppsV2Store } from "../store/appsV2Store";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { setIframeDragGuard } from "../lib/iframe-drag-guard";
+import { TerminalTypeAhead } from "../lib/terminal-type-ahead";
 
 // ---------------------------------------------------------------------------
 // Terminal panel
@@ -109,6 +110,11 @@ function TerminalPanel({
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    // Predictive local echo (Mosh / VS Code "local echo"): typed characters
+    // render immediately instead of after the ~175ms sandbox round trip;
+    // the real echo is matched and consumed, mismatches roll back. See
+    // lib/terminal-type-ahead.ts for the safety rules.
+    const typeAhead = new TerminalTypeAhead(term);
     term.open(host);
     // Debug handle: lets devtools reach the live instance (buffer state,
     // options) — xterm exposes nothing on its DOM nodes.
@@ -195,11 +201,21 @@ function TerminalPanel({
         setStatus("open");
         sendResize();
       };
+      const chunkDecoder = new TextDecoder();
       socket.onmessage = event => {
+        if (typeof event.data === "string") {
+          term.write(typeAhead.onServerData(event.data));
+          return;
+        }
+        const bytes = new Uint8Array(event.data as ArrayBuffer);
+        // Byte chunks only need decoding while predictions are pending —
+        // the common case writes them through untouched.
         term.write(
-          typeof event.data === "string"
-            ? event.data
-            : new Uint8Array(event.data as ArrayBuffer),
+          typeAhead.hasPending()
+            ? typeAhead.onServerData(
+                chunkDecoder.decode(bytes, { stream: true }),
+              )
+            : bytes,
         );
       };
       socket.onclose = () => {
@@ -216,7 +232,10 @@ function TerminalPanel({
     };
     connect();
 
-    const typed = term.onData(send);
+    const typed = term.onData(data => {
+      typeAhead.onUserData(data);
+      send(data);
+    });
     const observer = new ResizeObserver(() => sendResize());
     observer.observe(host);
     window.addEventListener("resize", sendResize);
@@ -228,6 +247,7 @@ function TerminalPanel({
       window.removeEventListener("resize", sendResize);
       observer.disconnect();
       typed.dispose();
+      typeAhead.dispose();
       ws?.close();
       term.dispose();
     };
