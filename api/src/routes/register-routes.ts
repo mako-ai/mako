@@ -43,6 +43,7 @@ import { mcpOAuthRoutes } from "./mcp-oauth.routes";
 import { appPreviewRoutes } from "./app-preview.routes";
 import { appsV2Routes } from "./apps-v2";
 import { appsV2GitRoutes } from "./apps-v2-git";
+import { appsV2BoxRoutes } from "./apps-v2-box";
 import { appsV2PreviewRoutes } from "./apps-v2-preview";
 
 /**
@@ -108,6 +109,9 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   // authorized by a scoped `mgt_` token. This is what makes a sandbox a
   // normal machine with a normal remote.
   app.route("/api/apps-v2-git", appsV2GitRoutes);
+  // Also public, same token: processes inside a sandbox reporting the box's
+  // own state (branch, dirty files, dev servers) the moment it changes.
+  app.route("/api/apps-v2-box", appsV2BoxRoutes);
   app.route(
     "/api/workspaces/:workspaceId/data-sources",
     resourceDataSourceRoutes,

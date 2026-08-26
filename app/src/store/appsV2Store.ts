@@ -40,6 +40,14 @@ export interface AppV2Change {
   status: "added" | "modified" | "deleted" | "renamed";
 }
 
+/** Mirror of the API's BoxState — what the sandbox pushed about itself. */
+export interface AppsV2BoxState {
+  branch: string | null;
+  changes: AppV2Change[] | null;
+  devServers: Array<{ slug: string; port: number; url?: string }> | null;
+  updatedAt: number;
+}
+
 export interface AppV2Status {
   branch: string;
   /** Commit the working copy is on. */
@@ -292,6 +300,19 @@ interface AppsV2Store {
    * the launch state instead of showing a stale iframe as "live".
    */
   checkDevStatus: (workspaceId: string, appId: string) => Promise<void>;
+  /** A dev server for this app is serving at `url` (discovery or push). */
+  markDevServing: (appId: string, url: string) => void;
+  /** No dev server is serving this app any more. */
+  markDevDown: (appId: string) => void;
+  /**
+   * Whose sandbox pushes to believe. Boxes are per (workspace, user); the
+   * realtime channel is per workspace, so events name their user and the
+   * store ignores other people's machines.
+   */
+  currentUserId: string | null;
+  setCurrentUserId: (userId: string | null) => void;
+  /** Apply a pushed box snapshot directly to dev-server and git state. */
+  applyBoxState: (userId: string, state: AppsV2BoxState) => void;
   /** Slugs of apps whose dev server is live — the sidebar's green dots. */
   runningDevApps: string[];
   fetchRunningDevApps: (workspaceId: string) => Promise<void>;
@@ -342,6 +363,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
     historyByApp: {},
     repoHistoryByApp: {},
     runningDevApps: [],
+    currentUserId: null,
     branchesByApp: {},
     terminalByApp: {},
     execRunning: {},
@@ -1140,50 +1162,117 @@ export const useAppsV2Store = create<AppsV2Store>()(
             { params: { path: { workspaceId, id: appId } } },
           ),
         ) as { serving?: boolean; url?: string };
-        if (body.serving && body.url) {
+        const url = body.url;
+        if (body.serving && url) {
           // Discovery: a dev server is ALREADY running for this app (started
           // in another tab, another browser, or before a reload that lost
           // client state). Show it — do not make the user "start" a thing
           // that is running.
-          try {
-            localStorage.setItem(`apps-v2-devurl:${appId}`, body.url);
-          } catch {
-            // Best effort.
-          }
-          set(s => {
-            const current = s.previewByApp[appId];
-            if (!current?.building && current?.url !== body.url) {
-              s.previewByApp[appId] = {
-                url: body.url ?? null,
-                building: false,
-                error: null,
-                builtAt: Date.now(),
-                mode: "dev",
-              };
-              s.viewMode[appId] = "preview";
-            }
-          });
+          get().markDevServing(appId, url);
           return;
         }
-        if (body.serving === false) {
-          try {
-            localStorage.removeItem(`apps-v2-devurl:${appId}`);
-          } catch {
-            // Best effort.
-          }
-          set(s => {
-            const preview = s.previewByApp[appId];
-            if (preview?.mode === "dev") {
-              s.previewByApp[appId] = {
-                url: null,
-                building: false,
-                error: null,
-              };
-            }
+        if (body.serving === false) get().markDevDown(appId);
+      } catch {
+        // Advisory: an unreachable probe must not kill a working preview.
+      }
+    },
+
+    markDevServing: (appId, url) => {
+      try {
+        localStorage.setItem(`apps-v2-devurl:${appId}`, url);
+      } catch {
+        // Best effort.
+      }
+      set(s => {
+        const current = s.previewByApp[appId];
+        if (!current?.building && current?.url !== url) {
+          s.previewByApp[appId] = {
+            url,
+            building: false,
+            error: null,
+            builtAt: Date.now(),
+            mode: "dev",
+          };
+          s.viewMode[appId] = "preview";
+        }
+      });
+    },
+
+    markDevDown: appId => {
+      try {
+        localStorage.removeItem(`apps-v2-devurl:${appId}`);
+      } catch {
+        // Best effort.
+      }
+      set(s => {
+        const preview = s.previewByApp[appId];
+        // A launch in flight (building) is not "down": the snapshot that
+        // arrived mid-boot simply predates the server.
+        if (preview?.mode === "dev" && !preview.building) {
+          s.previewByApp[appId] = {
+            url: null,
+            building: false,
+            error: null,
+          };
+        }
+      });
+    },
+
+    setCurrentUserId: userId => {
+      set(s => {
+        s.currentUserId = userId;
+      });
+    },
+
+    applyBoxState: (userId, state) => {
+      const { currentUserId, apps } = get();
+      // Diagnostics: `localStorage["apps-v2-debug"] = "1"` records every
+      // pushed snapshot on window.__appsV2BoxEvents for inspection.
+      try {
+        if (localStorage.getItem("apps-v2-debug")) {
+          const w = window as Window & {
+            __appsV2BoxEvents?: unknown[];
+          };
+          (w.__appsV2BoxEvents ??= []).push({
+            at: Date.now(),
+            userId,
+            currentUserId,
+            state,
           });
         }
       } catch {
-        // Advisory: an unreachable probe must not kill a working preview.
+        // Best effort.
+      }
+      if (currentUserId && userId !== currentUserId) return;
+      if (state.devServers) {
+        const serving = new Map(state.devServers.map(d => [d.slug, d]));
+        set(s => {
+          s.runningDevApps = [...serving.keys()];
+        });
+        for (const app of apps) {
+          const url = app.slug ? serving.get(app.slug)?.url : undefined;
+          if (url) get().markDevServing(app.id, url);
+          else get().markDevDown(app.id);
+        }
+      }
+      if (state.branch !== null || state.changes !== null) {
+        set(s => {
+          for (const app of apps) {
+            const prev = s.statusByApp[app.id];
+            const repoChanges = state.changes ?? prev?.repoChanges ?? [];
+            s.statusByApp[app.id] = {
+              branch: state.branch ?? prev?.branch ?? "main",
+              baseSha: prev?.baseSha ?? "",
+              branchHead: prev?.branchHead ?? null,
+              ahead: prev?.ahead ?? 0,
+              changes: repoChanges.filter(c =>
+                c.path.startsWith(`apps/${app.slug}/`),
+              ),
+              repoChanges,
+              offline: false,
+            };
+          }
+        });
       }
     },
 

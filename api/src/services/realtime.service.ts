@@ -12,6 +12,7 @@
  * API instance forwards events to its own connected SSE clients
  * (routes/realtime.ts).
  */
+import type { BoxState } from "../apps-v2/box-state.service";
 import {
   createPubSubPublisher,
   createPubSubSubscriber,
@@ -182,6 +183,13 @@ export type RealtimeEvent =
   // Explorer tree changed (folder CRUD, move, create, delete).
   | {
       type: "notebook.tree.updated";
+    }
+  // The (workspace, user) sandbox reported its own state — branch, dirty
+  // files, dev servers — pushed from inside the box (apps-v2/box-state).
+  | {
+      type: "app-v2.box-state";
+      userId: string;
+      state: BoxState;
     };
 
 function channelFor(workspaceId: string): string {

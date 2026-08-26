@@ -52,6 +52,28 @@ if [ -z "$url" ]; then
   exit 0
 fi
 
+# Do not publish the name before it EXISTS. A quick tunnel's hostname takes a
+# while to appear in public DNS; a sandbox that looks it up in that window
+# gets NXDOMAIN and its resolver caches the miss (Cloudflare's negative TTL
+# is long), after which the box cannot reach this API for the life of that
+# cache — git pushes fail, box events never arrive. Wait until the big public
+# resolvers answer AND the tunnel serves a response, then write the file.
+ready=""
+hits=0
+for _ in $(seq 1 90); do
+  if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${url}/api/auth/me" 2>/dev/null)" != "000" ]; then
+    hits=$((hits + 1))
+    # Two answers a second apart: the edge is routing it, not a one-off.
+    [ "$hits" -ge 2 ] && { ready=1; break; }
+  else
+    hits=0
+  fi
+  sleep 1
+done
+if [ -z "$ready" ]; then
+  echo "sandbox-tunnel: ${url} is not resolvable/answering after 90s; publishing anyway" >&2
+fi
+
 printf 'APPS_V2_GIT_ORIGIN_URL=%s\n' "$url" > "$OUT"
 echo "sandbox-tunnel: sandboxes will reach this API at ${url}"
 wait "$pid"

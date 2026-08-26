@@ -24,7 +24,7 @@ import {
   hasPendingAgentReview,
 } from "./consoleStore";
 import { useAppStore } from "./appStore";
-import { useAppsV2Store } from "./appsV2Store";
+import { useAppsV2Store, type AppsV2BoxState } from "./appsV2Store";
 import { useDashboardStore } from "./dashboardStore";
 import { useDbtStore } from "./dbtStore";
 import { useNotebookStore } from "./notebookStore";
@@ -152,6 +152,13 @@ export type RealtimeEvent =
     }
   | {
       type: "notebook.tree.updated";
+    }
+  // The (workspace, user) sandbox reported its own state, pushed from inside
+  // the box the moment it changed. Applied directly — no refetch.
+  | {
+      type: "app-v2.box-state";
+      userId: string;
+      state: AppsV2BoxState;
     };
 
 export type RealtimeStatus = "idle" | "connecting" | "open" | "reconnecting";
@@ -690,6 +697,12 @@ export const useRealtimeStore = create<RealtimeStore>()(
       if (ws) void useNotebookTreeStore.getState().refresh(ws);
     };
 
+    const handleBoxState = (
+      event: Extract<RealtimeEvent, { type: "app-v2.box-state" }>,
+    ) => {
+      useAppsV2Store.getState().applyBoxState(event.userId, event.state);
+    };
+
     const handleEvent = (event: RealtimeEvent) => {
       switch (event.type) {
         case "console.updated":
@@ -700,6 +713,9 @@ export const useRealtimeStore = create<RealtimeStore>()(
           break;
         case "app-v2.updated":
           handleAppV2Updated(event);
+          break;
+        case "app-v2.box-state":
+          handleBoxState(event);
           break;
         case "dashboard.updated":
           handleDashboardUpdated(event);

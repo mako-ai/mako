@@ -24,7 +24,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { appsV2GitOriginUrl } from "./config";
+import { appsV2GitOriginBase, appsV2GitOriginUrl } from "./config";
 import type { ChangedFile, GrepMatch, TreeEntry } from "./repository.service";
 import { mintGitToken } from "./git-token.service";
 import { loggers } from "../logging";
@@ -118,6 +118,15 @@ function tokenPath(ctx: SandboxExecContext): string {
 }
 
 /**
+ * Where box processes (launcher, hooks, agent) find how to reach the API:
+ * `MAKO_API`, `MAKO_WS`, `MAKO_TOKEN_FILE`, one per line. Rewritten with the
+ * token on every configure/heal, so a tunnel restart updates it too.
+ */
+export function boxEnvPath(ctx: SandboxExecContext): string {
+  return `${boxRoot(ctx)}/.git/mako-box.env`;
+}
+
+/**
  * Give the sandbox a remote and the credential to use it.
  *
  * The token goes in a file rather than in the remote URL so that rotating it
@@ -160,6 +169,7 @@ export async function configureBoxRemote(input: {
       // umask first: the file must never exist world-readable, not even for
       // the instant between creation and a chmod.
       `(umask 077 && printf '%s' ${sh(token)} > ${sh(credential)})`,
+      `(umask 077 && printf 'MAKO_API=%s\\nMAKO_WS=%s\\nMAKO_TOKEN_FILE=%s\\n' ${sh(appsV2GitOriginBase())} ${sh(workspaceId)} ${sh(credential)} > ${sh(boxEnvPath(ctx))})`,
       // An EMPTY helper resets the inherited list, then ours is the only one.
       //
       // Git runs every configured helper in order, including any from system

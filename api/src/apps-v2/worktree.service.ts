@@ -55,7 +55,12 @@ import {
   workspaceRootGitignore,
 } from "./box";
 import { publishRealtimeEvent } from "../services/realtime.service";
-import { appsV2SessionsRoot, APPS_V2_MAX_FILE_BYTES } from "./config";
+import { forgetBoxState } from "./box-state.service";
+import {
+  APPS_V2_MAX_FILE_BYTES,
+  appsV2GitOriginBase,
+  appsV2SessionsRoot,
+} from "./config";
 import { assertSafeRelPath, runGit, ZERO_OID } from "./git";
 import {
   DEFAULT_BRANCH,
@@ -248,7 +253,8 @@ const PULL_INTERVAL_MS = 60_000;
  * not need doing at all. The token lasts twelve hours; refreshing it twice an
  * hour is plenty, and it keeps ordinary file writes off git's config lock.
  */
-const lastConfigured = new Map<string, number>();
+/** sessionKey -> { at, base }: when, and against WHICH origin, the box was last configured. */
+const lastConfigured = new Map<string, { at: number; base: string }>();
 const RECONFIGURE_INTERVAL_MS = 30 * 60_000;
 
 /**
@@ -266,6 +272,8 @@ const ensureInFlight = new Map<string, Promise<SandboxExecContext>>();
 export function forgetBoxCaches(sessionKey: string): void {
   lastPull.delete(sessionKey);
   lastConfigured.delete(sessionKey);
+  // Nothing the old machine said about itself holds for the next one.
+  void forgetBoxState(sessionKey);
 }
 
 /** The provider's "cwd does not exist" — the fingerprint of an unhydrated box. */
@@ -293,7 +301,10 @@ export async function rehydrateBox(
       branch: handle.doc.branch,
     });
     lastPull.set(ctx.sessionKey, Date.now());
-    lastConfigured.set(ctx.sessionKey, Date.now());
+    lastConfigured.set(ctx.sessionKey, {
+      at: Date.now(),
+      base: appsV2GitOriginBase(),
+    });
   }
 }
 
@@ -319,11 +330,19 @@ async function ensureBoxNow(
   const workspaceId = handle.doc.workspaceId.toString();
   const userId = handle.doc.userId;
   if (await boxHasRepo(ctx)) {
-    const configuredAgo =
-      Date.now() - (lastConfigured.get(ctx.sessionKey) ?? 0);
-    if (configuredAgo > RECONFIGURE_INTERVAL_MS) {
-      lastConfigured.set(ctx.sessionKey, Date.now());
+    // Reconfigure when the token is due for a refresh OR when the origin the
+    // box should point at has changed (a tunnel restart in development). The
+    // record is written only after configure SUCCEEDS: recording first meant
+    // a failed configure was remembered as done for the whole interval.
+    const base = appsV2GitOriginBase();
+    const last = lastConfigured.get(ctx.sessionKey);
+    if (
+      !last ||
+      last.base !== base ||
+      Date.now() - last.at > RECONFIGURE_INTERVAL_MS
+    ) {
       await configureBoxRemote({ ctx, workspaceId, userId });
+      lastConfigured.set(ctx.sessionKey, { at: Date.now(), base });
     }
     // Catch up with the server. Someone else may have added an app on main,
     // and your branch tracks main — this is the `git pull` you would type
@@ -347,7 +366,10 @@ async function ensureBoxNow(
     branch: handle.doc.branch,
   });
   lastPull.set(ctx.sessionKey, Date.now());
-  lastConfigured.set(ctx.sessionKey, Date.now());
+  lastConfigured.set(ctx.sessionKey, {
+    at: Date.now(),
+    base: appsV2GitOriginBase(),
+  });
   return ctx;
 }
 

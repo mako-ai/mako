@@ -35,6 +35,7 @@ import {
   type WorktreeHandle,
 } from "./worktree.service";
 import { loggers } from "../logging";
+import { boxEnvPath } from "./box";
 import { readBindings, bindingArtifactKey } from "./bindings.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 
@@ -138,11 +139,78 @@ function launcherSource(
   appDir: string,
   port: number,
   stagedDataDir: string,
+  slug: string,
+  boxEnv: string,
 ): string {
   return `
 import { createServer } from "${appDir}/node_modules/vite/dist/node/index.js";
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+
+// Tell Mako the moment this server is up or gone, instead of leaving the UI
+// to discover it on a poll. Best effort: the API address and token are read
+// from the box's env file at send time (a tunnel restart rewrites it), and a
+// failure here never affects the server itself.
+function makoEnv() {
+  try {
+    return Object.fromEntries(
+      readFileSync(${JSON.stringify(boxEnv)}, "utf8")
+        .split("\\n")
+        .filter(Boolean)
+        .map(line => {
+          const at = line.indexOf("=");
+          return [line.slice(0, at), line.slice(at + 1)];
+        }),
+    );
+  } catch {
+    return {};
+  }
+}
+// Retried: the API sits behind a tunnel in development and quick tunnels
+// drop the odd request (a 530 with nothing wrong on either end). A missed
+// "serving" would leave the UI on its slow poll, so try a few times; a
+// missed "down" matters less (the box agent's next snapshot covers it) and
+// must not hold up exit, so it gets fewer, faster attempts.
+async function tellMako(state, attempts, delaysMs) {
+  const env = makoEnv();
+  if (!env.MAKO_API || !env.MAKO_WS || !env.MAKO_TOKEN_FILE) return;
+  let token;
+  try {
+    token = readFileSync(env.MAKO_TOKEN_FILE, "utf8").trim();
+  } catch {
+    return;
+  }
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const res = await fetch(env.MAKO_API + "/api/apps-v2-box/" + env.MAKO_WS + "/events", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + token },
+        body: JSON.stringify({
+          source: "launcher",
+          devServer: { slug: ${JSON.stringify(slug)}, port: ${port}, state },
+        }),
+        signal: AbortSignal.timeout(4000),
+      });
+      if (res.ok) return;
+      console.log("mako: notify " + state + " got http " + res.status + " (attempt " + (attempt + 1) + ")");
+    } catch (error) {
+      console.log("mako: notify " + state + " failed: " + (error && error.message) + " (attempt " + (attempt + 1) + ")");
+    }
+    if (attempt + 1 < attempts) {
+      await new Promise(resolve => setTimeout(resolve, delaysMs[attempt] || 1000));
+    }
+  }
+}
+let farewellSent = false;
+async function farewell(code) {
+  if (farewellSent) return;
+  farewellSent = true;
+  await tellMako("down", 2, [800]);
+  process.exit(code);
+}
+process.on("SIGINT", () => void farewell(130));
+process.on("SIGTERM", () => void farewell(143));
+process.on("SIGHUP", () => void farewell(129));
 
 // Serve materialized data bindings at __data/<name>.parquet.
 //
@@ -212,6 +280,7 @@ await server.listen();
 // time, URLs — so the boot log reads like the real thing, because it is.
 server.printUrls();
 console.log("mako dev server listening on ${port}");
+void tellMako("serving", 7, [1000, 3000, 8000, 15000, 30000, 60000]);
 // Watcher lifecycle in the boot log: "ready" proves the polling scan
 // finished (inotify is dead in this VM, so a silent watcher means frozen
 // transforms), and errors here are otherwise invisible.
@@ -352,6 +421,40 @@ export async function isServingApp(handle: WorktreeHandle): Promise<boolean> {
 }
 
 /**
+ * Every dev server serving in the box right now, by discovery: the session
+ * sockets name the apps, the port registry names the ports. One exec.
+ * Used to seed a cold box-state snapshot, so that the first launcher delta
+ * to arrive does not pose as the full list and mark every OTHER running
+ * server down.
+ */
+export async function discoverDevServers(
+  ctx: SandboxExecContext,
+): Promise<Array<{ slug: string; port: number }>> {
+  const provider = getSandboxProvider();
+  if (!(await provider.hasSession(ctx))) return [];
+  const result = await provider.exec(
+    ctx,
+    `ls /tmp/mako-term-dev-*.sock 2>/dev/null; echo ---; cat ${PORTS_REGISTRY} 2>/dev/null || echo {}`,
+    { timeoutMs: 15_000 },
+  );
+  const [socks, json] = result.stdout.split("---");
+  let ports: Record<string, number> = {};
+  try {
+    ports = JSON.parse((json ?? "{}").trim() || "{}") as Record<string, number>;
+  } catch {
+    ports = {};
+  }
+  const out: Array<{ slug: string; port: number }> = [];
+  for (const line of (socks ?? "").split("\n")) {
+    const slug = line.match(/mako-term-dev-(.+)\.sock$/)?.[1];
+    if (!slug) continue;
+    const port = ports[`apps/${slug}`];
+    if (Number.isInteger(port)) out.push({ slug, port });
+  }
+  return out;
+}
+
+/**
  * Discovery, not memory: is this app's dev server serving, and where?
  * The url lets a fresh browser (no client-side state at all) walk up to an
  * app whose server is already running and just show it.
@@ -431,7 +534,7 @@ async function ensureDevServerLaunch(
   if (!wasListening) {
     const write = await provider.exec(
       ctx,
-      `cat > ${launcher} <<'MAKO_LAUNCHER_EOF'\n${launcherSource(appDir, port, dataDir(handle))}\nMAKO_LAUNCHER_EOF\necho written`,
+      `cat > ${launcher} <<'MAKO_LAUNCHER_EOF'\n${launcherSource(appDir, port, dataDir(handle), appSlug(handle), boxEnvPath(ctx))}\nMAKO_LAUNCHER_EOF\necho written`,
       { timeoutMs: 30_000 },
     );
     if (write.exitCode !== 0) {
