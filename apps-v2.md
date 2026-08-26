@@ -1252,3 +1252,117 @@ early ones stop the current UI from actively misleading:
    Edit as the way in.
 4. Authorized data path for published apps (13.4.1) — the hard one.
 5. Scheduled binding refresh (13.4.2), then rollback (13.4.4).
+
+## 14. State of play and roadmap (2026-08-26)
+
+What exists now, what was decided in the 2026-08-26 planning round, and the
+order we intend to work in. Earlier sections stay as the record of how we
+got here; where this section disagrees with one of them, this one wins.
+
+### 14.1 What shipped since §13
+
+- **The sandbox is a real machine.** Interactive terminals are `dtach` +
+  `script` sessions that survive reloads, reconnect after the box dies, and
+  close on `exit`. The dev server is a session like any other (`dev-<slug>`),
+  attachable from the workbench, stoppable with Ctrl-C, and killed by
+  **Exit dev mode**. One box per (workspace, user), found by an E2B metadata
+  tag — no database id in the identity path. Settings › Sandbox shows the
+  box, its sessions and load, and recycles it.
+- **Discovery over bookkeeping.** Branch, dirty tree, running dev servers and
+  the box itself are all discovered from the machine; the UI never trusts a
+  client-side or database memory of them. A wiped browser and a fresh login
+  reconstruct everything.
+- **Box events.** A small agent inside every box (installed by `ensureBox`,
+  under dtach, version-stamped) pushes a snapshot of branch/HEAD/ahead/dirty
+  files/serving ports on change and on a 30s heartbeat; the dev-server
+  launcher and git hooks push instantly. The API merges these into a
+  per-box snapshot in Redis (memory without `REDIS_URL`) with a 90s TTL and
+  fans them out over the workspace realtime channel; the hot reads (`status`,
+  `dev-servers`, `dev-preview/status`) answer from the snapshot when warm.
+  Measured: state changes reach the UI in 250ms–2s instead of 15–30s; warm
+  reads ~200ms instead of 1–1.5s. The snapshot is a cache with an expiry,
+  never a source of truth: a box that stops asserting its state stops being
+  believed, and reads fall back to discovery.
+- **Source Control like VS Code.** Staged/unstaged groups, inline stage /
+  unstage / discard / open-file, group actions, smart commit (staged only
+  when anything is staged), diffs in Monaco tabs (Working Tree = index →
+  working copy, Index = HEAD → index), branch menu with checkout, create and
+  merge-into-main, an `↑N` unpushed badge, the GitHub link, and a red dot on
+  the rail when the tree is dirty. Git is only in this panel; the Apps
+  explorer is purely the tree.
+- **Self-healing.** Stale git origins (tunnel restarts) reconfigure and retry
+  on push/pull; a box that died under a shell reconnects the tab onto its
+  replacement; a dead box's snapshot is forgotten the moment a replacement
+  is cloned; a server started from a shell is detected (port scan +
+  `package.json`) and adopted, or replaced if it rejects the preview host.
+- **Verified by adversarial rounds** (kill the box via the E2B API, recycle,
+  Redis outage, agent kill, API restart, 300 untracked files, quoted
+  filenames, path traversal, branch flapping, delete under an open diff).
+  Bugs found were fixed as they were found; this should become a nightly
+  job (14.4).
+
+### 14.2 Decisions from the planning round
+
+- **Merge behind the existing per-workspace flag, soon.** The flag already
+  hides the rail entry; make it settable by super-admins in Settings and
+  merge. The v1 → v2 migration script is run over copies of every real
+  workspace first, and v1 stays read-only for a while after a workspace
+  switches.
+- **Everything moves into the monorepo, in this order:** consoles (SQL text
+  with revisions → files), notebooks (`.ipynb`; the kernel keeps running
+  where it runs, only storage moves), then dbt (it has its own git
+  integration today — this is unification, not migration). Flow
+  *definitions* follow, with a push reaction that re-registers Inngest
+  functions the way a push to `apps/` deploys; run state stays out of git.
+  Dashboards are deferred: apps have replaced them in practice, so they
+  move only if a generic entity-as-folder layer makes it free.
+- **No GitHub requirement.** The bare repo plus cloud mirror is the source
+  of truth and works with no GitHub at all; GitHub stays an optional mirror
+  and escape hatch. Blocking a workspace without one would hurt exactly the
+  users the git model exists to hide git from.
+- **Repository health instead of "corrupted → block".** A Repository section
+  next to Settings › Sandbox: `git fsck`, size and GC, mirror and GitHub
+  sync lag, last push, and one-click repair from the mirror. Only the
+  mutating paths are blocked, and only while a repair runs.
+- **The agent gets rewritten for the sandbox.** Collapse the `App2 *` tool
+  family into bash + read + edit; move git/vite/dbt know-how into skills;
+  feed it the pushed box state; commit only what it touched (today's
+  end-of-turn `git add -A` sweeps unrelated files); land its changes as a
+  staged group the user reviews with the diff view; give it its own `git
+  worktree` per chat so it and the user stop treading on each other.
+- **Coding agents in the box.** Two tracks: ship the CLIs (Claude Code,
+  Codex, OpenCode, Pi) in the template so people use their own accounts in
+  the terminal — nearly free; then drive an agent running in the box over
+  ACP (the types already exist) from Mako's chat, so Mako is a front-end
+  for any agent and the user's own subscription pays for tokens.
+
+### 14.3 Also on the list
+
+- **Branch previews.** Publish already yields immutable deployments keyed by
+  sha; extend to any branch → shareable preview URLs, so a feature branch
+  is reviewable without a sandbox and "merge to main" is the release.
+- **Pre-warmed boxes.** One spare box per template, adopted on first use, so
+  a first terminal opens in under a second and a recycle is usable in five.
+- **Secrets and env for apps**, injected from Secret Manager into the dev
+  server and the deployment, never committed.
+- **Git polish** the diff view set up: gutter change bars, hunk staging and
+  revert, file timeline, compare-with-main, a real conflict view.
+- **Horizontal scaling check** before the first multi-instance deploy: box
+  state and pub/sub are Redis-ready, but the terminal relay keeps ptys in
+  per-instance memory, so websockets need sticky sessions or a relay hop.
+
+### 14.4 Order
+
+1. Merge behind the flag, with the migration script iterated on real
+   workspaces first.
+2. Consoles → notebooks → dbt into the monorepo.
+3. Agent rewrite: tool collapse, commit-what-you-touched, review mode,
+   worktree isolation.
+4. Repository health and repair; branch previews; secrets.
+5. Coding agents: terminal track immediately, ACP track as the next product
+   bet.
+6. Nightly chaos job replaying the adversarial rounds against a staging
+   workspace.
+
+Flows and dashboards after that, if the entity-as-folder layer makes them
+cheap.
