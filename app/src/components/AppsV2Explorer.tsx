@@ -4,28 +4,16 @@
  * (loaded lazily from the durable worktree API), folders expand in place,
  * and every file opens in its own editor tab.
  */
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
-import {
-  Alert,
   Box,
   Button,
-  Chip,
-  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
-  Divider,
   IconButton,
   ListItemIcon,
-  ListItemText,
-  Menu,
   MenuItem,
   TextField,
   Tooltip,
@@ -33,17 +21,12 @@ import {
 } from "@mui/material";
 import {
   Braces as JsonFileIcon,
-  ChevronDown as ChevronDownIcon,
-  ChevronRight as ChevronRightIcon,
   Database as BindingIcon,
   File as PlainFileIcon,
   FileCode as CodeFileIcon,
   FileText as TextFileIcon,
   Folder as FolderIcon,
   FolderOpen as FolderOpenIcon,
-  GitBranch as BranchIcon,
-  GitMerge as MergeIcon,
-  MoreVertical as KebabIcon,
   Plus as AddIcon,
   Github as LinkIcon,
   RefreshCw as RefreshIcon,
@@ -55,7 +38,6 @@ import {
   selectTabBySettingsSection,
 } from "../store/consoleStore";
 import { SECTION_LABELS } from "../pages/settings/sections";
-import { useRealtimeStore } from "../store/realtimeStore";
 import { useAppsV2Store, type AppV2FileEntry } from "../store/appsV2Store";
 import { focusAppsV2FileTab, focusAppsV2Tab } from "../apps-v2-runtime/shell";
 import {
@@ -66,67 +48,6 @@ import { APP_DIR_SEP, APP_FILE_SEP } from "../lib/explorer-reveal";
 import { TAB_KIND_ICONS } from "../lib/entity-icons";
 import ExplorerShell from "./ExplorerShell";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
-
-function SectionHeader({
-  label,
-  open,
-  onToggle,
-  actions,
-}: {
-  label: string;
-  open: boolean;
-  onToggle: () => void;
-  actions?: ReactNode;
-}) {
-  return (
-    <Box
-      sx={{
-        display: "flex",
-        alignItems: "center",
-        gap: 0.5,
-        px: 1,
-        py: 0.5,
-        cursor: "pointer",
-        userSelect: "none",
-        "&:hover .apps-v2-section-actions": { opacity: 1 },
-      }}
-      onClick={onToggle}
-    >
-      {open ? (
-        <ChevronDownIcon size={14} strokeWidth={2} />
-      ) : (
-        <ChevronRightIcon size={14} strokeWidth={2} />
-      )}
-      <Typography
-        variant="caption"
-        sx={{
-          flex: 1,
-          fontWeight: 700,
-          textTransform: "uppercase",
-          letterSpacing: 0.4,
-          color: "text.secondary",
-          fontSize: "0.68rem",
-        }}
-      >
-        {label}
-      </Typography>
-      {actions && (
-        <Box
-          className="apps-v2-section-actions"
-          sx={{
-            display: "flex",
-            gap: 0,
-            opacity: 0,
-            transition: "opacity .1s",
-          }}
-          onClick={e => e.stopPropagation()}
-        >
-          {actions}
-        </Box>
-      )}
-    </Box>
-  );
-}
 
 const AppIcon = TAB_KIND_ICONS["app-v2"];
 
@@ -280,31 +201,7 @@ export default function AppsV2Explorer() {
     return undefined;
   }, [activeTab]);
 
-  const status = useAppsV2Store(s =>
-    activeAppId ? s.statusByApp[activeAppId] : undefined,
-  );
-  const branches = useAppsV2Store(s =>
-    activeAppId ? s.branchesByApp[activeAppId] : undefined,
-  );
-  const fetchStatus = useAppsV2Store(s => s.fetchStatus);
-  const fetchBranches = useAppsV2Store(s => s.fetchBranches);
-  const mergeBranch = useAppsV2Store(s => s.mergeBranch);
-  const checkoutBranch = useAppsV2Store(s => s.checkoutBranch);
-  const commitWork = useAppsV2Store(s => s.commit);
   const editingByApp = useAppsV2Store(s => s.editingByApp);
-
-  // Chat.tsx generates its own MongoDB-ObjectId-shaped chatId client-side and
-  // pushes it to realtimeStore (NOT chatStore.currentChatId, which is an
-  // unrelated client-only concept for the chat-history sidebar). That real
-  // chatId is what apps-v2 tool calls use for `chat/<chatId>` branches.
-  const activeChatId = useRealtimeStore(s => s.activeChatId);
-  // The conversation you're currently chatting in works on its own
-  // `chat/<chatId>` branch (RFC: one branch per conversation). Prefer showing
-  // that branch here when it exists for this app — that's what's actually
-  // "current" while a chat is in progress, not your own separate (usually
-  // untouched) worktree, which always starts on main.
-  const activeChatBranchName = activeChatId ? `chat/${activeChatId}` : null;
-  const activeChatBranch = branches?.find(b => b.name === activeChatBranchName);
 
   const reveal = useExplorerRevealStore(selectRevealFor("apps-v2"));
 
@@ -321,10 +218,6 @@ export default function AppsV2Explorer() {
   const [createOpen, setCreateOpen] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [creating, setCreating] = useState(false);
-  const [vcOpen, setVcOpen] = useState(true);
-  const [gitMenuAnchor, setGitMenuAnchor] = useState<null | HTMLElement>(null);
-  const [merging, setMerging] = useState<string | null>(null);
-  const [mergeError, setMergeError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -349,60 +242,6 @@ export default function AppsV2Explorer() {
     );
     return () => clearInterval(timer);
   }, [workspaceId, appsLoaded, fetchRunningDevApps]);
-
-  useEffect(() => {
-    if (!workspaceId || !activeAppId) return;
-    void fetchStatus(workspaceId, activeAppId);
-    void fetchBranches(workspaceId, activeAppId);
-  }, [workspaceId, activeAppId, fetchStatus, fetchBranches]);
-
-  const [switching, setSwitching] = useState<string | null>(null);
-  const handleCheckout = useCallback(
-    async (branch: string) => {
-      if (!workspaceId || !activeAppId) return;
-      setSwitching(branch);
-      setMergeError(null);
-      const error = await checkoutBranch(workspaceId, activeAppId, branch);
-      setSwitching(null);
-      // Refusals are the interesting case — "you have uncommitted changes" is
-      // a decision the user has to make, so it stays on screen instead of the
-      // menu closing as though the switch happened.
-      if (error) setMergeError(error);
-      else setGitMenuAnchor(null);
-    },
-    [workspaceId, activeAppId, checkoutBranch],
-  );
-
-  // Committing your own uncommitted work. The agent commits at the end of its
-  // turn and Discard throws work away, which between them left no way to KEEP
-  // a change you made yourself — so "commit or discard them", the advice git
-  // gives and this UI repeated, named an action the UI did not offer.
-  const [commitOpen, setCommitOpen] = useState(false);
-  const [commitMsg, setCommitMsg] = useState("");
-  const [committing, setCommitting] = useState(false);
-  const handleCommit = useCallback(async () => {
-    if (!workspaceId || !activeAppId || !commitMsg.trim()) return;
-    setCommitting(true);
-    setMergeError(null);
-    const result = await commitWork(workspaceId, activeAppId, commitMsg.trim());
-    setCommitting(false);
-    if (result.ok) {
-      setCommitOpen(false);
-      setCommitMsg("");
-    } else setMergeError(result.error ?? "Commit failed");
-  }, [workspaceId, activeAppId, commitMsg, commitWork]);
-
-  const handleMerge = useCallback(
-    async (branch: string) => {
-      if (!workspaceId || !activeAppId) return;
-      setMerging(branch);
-      setMergeError(null);
-      const result = await mergeBranch(workspaceId, activeAppId, branch);
-      setMerging(null);
-      if (!result.ok) setMergeError(result.error ?? "Merge failed");
-    },
-    [workspaceId, activeAppId, mergeBranch],
-  );
 
   // App rows are directories whose children are the file tree — `undefined`
   // until fetched so ResourceTree shows the loading skeleton and fires
@@ -564,175 +403,6 @@ export default function AppsV2Explorer() {
       >
         {({ searchQuery }) => (
           <Box sx={{ display: "flex", flexDirection: "column" }}>
-            {activeAppId && (
-              <>
-                <SectionHeader
-                  label="Version control"
-                  open={vcOpen}
-                  onToggle={() => setVcOpen(o => !o)}
-                  actions={
-                    <Tooltip title="Branch actions">
-                      <IconButton
-                        size="small"
-                        onClick={e => setGitMenuAnchor(e.currentTarget)}
-                      >
-                        <KebabIcon size={15} strokeWidth={1.75} />
-                      </IconButton>
-                    </Tooltip>
-                  }
-                />
-                {vcOpen && (
-                  <Box sx={{ px: 1.25, pb: 1 }}>
-                    <Box
-                      sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 0.5,
-                        color: "text.secondary",
-                        mb: 0.75,
-                        minWidth: 0,
-                      }}
-                    >
-                      <BranchIcon size={13} strokeWidth={1.75} />
-                      <Box
-                        component="span"
-                        sx={{
-                          fontSize: 12,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                          flex: 1,
-                        }}
-                      >
-                        {activeChatBranch
-                          ? activeChatBranch.name
-                          : (status?.branch ?? "main")}
-                      </Box>
-                      {activeChatBranch && (
-                        <Tooltip title="Your active chat conversation is working on this branch">
-                          <Chip
-                            label="active chat"
-                            size="small"
-                            color="info"
-                            sx={{ height: 16, fontSize: "0.62rem" }}
-                          />
-                        </Tooltip>
-                      )}
-                    </Box>
-                    {mergeError && (
-                      <Alert
-                        severity="error"
-                        onClose={() => setMergeError(null)}
-                        sx={{
-                          mb: 1,
-                          fontSize: 11,
-                          // git's refusals are multi-line and name the files
-                          // they are about; collapsing them loses the only
-                          // part the reader can act on. Paths have no spaces
-                          // to wrap at and this rail is narrow, so let them
-                          // break and cap the height rather than let one
-                          // message push the tree off screen.
-                          whiteSpace: "pre-wrap",
-                          wordBreak: "break-word",
-                          "& .MuiAlert-message": {
-                            maxHeight: 200,
-                            overflowY: "auto",
-                          },
-                        }}
-                      >
-                        {mergeError}
-                      </Alert>
-                    )}
-                    {(status?.repoChanges?.length ?? 0) > 0 && (
-                      <Box sx={{ mb: 1 }}>
-                        <Box
-                          sx={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 0.5,
-                            mb: 0.25,
-                          }}
-                        >
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            sx={{ flex: 1 }}
-                          >
-                            {status!.repoChanges.length} uncommitted change
-                            {status!.repoChanges.length === 1 ? "" : "s"}
-                          </Typography>
-                          <Button
-                            size="small"
-                            sx={{ fontSize: 11, py: 0, minWidth: 0 }}
-                            onClick={() => setCommitOpen(true)}
-                          >
-                            Commit
-                          </Button>
-                        </Box>
-                        {/* Repo-wide and unabbreviated: the file that blocks a
-                            branch switch is often one another app's build
-                            wrote, and a path trimmed to this app's folder
-                            would hide exactly that one. */}
-                        {status!.repoChanges.map(change => (
-                          <Box
-                            key={change.path}
-                            title={`${change.status} ${change.path}`}
-                            sx={{
-                              display: "flex",
-                              gap: 0.75,
-                              fontFamily: "monospace",
-                              fontSize: 10.5,
-                              color: "text.secondary",
-                              minWidth: 0,
-                            }}
-                          >
-                            <Box component="span">
-                              {change.status[0].toUpperCase()}
-                            </Box>
-                            {/* The status letter sits OUTSIDE the truncating
-                                span: `direction: rtl` keeps the end of a long
-                                path visible, which is the informative half,
-                                but it also reorders anything sharing the
-                                element — the letter ended up at the far end
-                                and clipped away with the ellipsis. */}
-                            <Box
-                              component="span"
-                              sx={{
-                                flex: 1,
-                                minWidth: 0,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                                direction: "rtl",
-                                textAlign: "left",
-                              }}
-                            >
-                              {change.path}
-                            </Box>
-                          </Box>
-                        ))}
-                      </Box>
-                    )}
-                    {activeChatBranch && (
-                      <Typography
-                        variant="caption"
-                        color="text.secondary"
-                        sx={{ display: "block" }}
-                      >
-                        {activeChatBranch.aheadOfMain} commit
-                        {activeChatBranch.aheadOfMain === 1 ? "" : "s"} ahead of
-                        main
-                        {activeChatBranch.lastCommit
-                          ? ` · ${activeChatBranch.lastCommit.subject}`
-                          : ""}
-                      </Typography>
-                    )}
-                  </Box>
-                )}
-                <Divider />
-              </>
-            )}
-
             {canCreate === false ? (
               <Box sx={{ p: 2 }}>
                 <Typography variant="body2" color="text.secondary" gutterBottom>
@@ -842,71 +512,6 @@ export default function AppsV2Explorer() {
         )}
       </ExplorerShell>
 
-      {/* Branch menu */}
-      <Menu
-        anchorEl={gitMenuAnchor}
-        open={Boolean(gitMenuAnchor)}
-        onClose={() => setGitMenuAnchor(null)}
-      >
-        {(branches ?? []).map(branch => {
-          const isCurrent = branch.name === status?.branch;
-          return (
-            <MenuItem
-              key={branch.name}
-              selected={isCurrent}
-              disabled={switching !== null}
-              // Selecting a branch checks it out. It used to be inert, which
-              // made the menu a list of branches you could look at and not
-              // reach — and switching is the whole reason to open it.
-              onClick={() => !isCurrent && void handleCheckout(branch.name)}
-            >
-              {switching === branch.name && (
-                <CircularProgress size={12} sx={{ mr: 1 }} />
-              )}
-              <ListItemText
-                primary={
-                  isCurrent
-                    ? `${branch.name} — current`
-                    : branch.isDefault
-                      ? `${branch.name} (default)`
-                      : `${branch.name} — ${branch.aheadOfMain} ahead`
-                }
-                secondary={
-                  branch.lastCommit
-                    ? `${branch.lastCommit.subject} · ${new Date(branch.lastCommit.timestamp).toLocaleString()}`
-                    : undefined
-                }
-              />
-              {!branch.isDefault && branch.aheadOfMain > 0 && (
-                <Button
-                  size="small"
-                  sx={{ ml: 2 }}
-                  startIcon={
-                    merging === branch.name ? (
-                      <CircularProgress size={12} />
-                    ) : (
-                      <MergeIcon size={14} />
-                    )
-                  }
-                  disabled={merging !== null || switching !== null}
-                  onClick={event => {
-                    // Merging is not switching: without this the row's own
-                    // click handler would also fire and check the branch out.
-                    event.stopPropagation();
-                    void handleMerge(branch.name);
-                  }}
-                >
-                  Merge into main
-                </Button>
-              )}
-            </MenuItem>
-          );
-        })}
-        {(branches ?? []).length === 0 && (
-          <MenuItem disabled>No branches</MenuItem>
-        )}
-      </Menu>
-
       <Dialog
         open={createOpen}
         onClose={() => !creating && setCreateOpen(false)}
@@ -943,46 +548,6 @@ export default function AppsV2Explorer() {
             disabled={creating || !newTitle.trim()}
           >
             {creating ? "Creating..." : "Create"}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={commitOpen}
-        onClose={() => !committing && setCommitOpen(false)}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>Commit changes</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            fullWidth
-            margin="dense"
-            label="Message"
-            value={commitMsg}
-            onChange={e => setCommitMsg(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter") void handleCommit();
-            }}
-            disabled={committing}
-          />
-          <Typography variant="caption" color="text.secondary">
-            Commits all {status?.repoChanges?.length ?? 0} uncommitted change
-            {(status?.repoChanges?.length ?? 0) === 1 ? "" : "s"} onto{" "}
-            {status?.branch ?? "your branch"}.
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setCommitOpen(false)} disabled={committing}>
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            onClick={() => void handleCommit()}
-            disabled={committing || !commitMsg.trim()}
-          >
-            {committing ? "Committing..." : "Commit"}
           </Button>
         </DialogActions>
       </Dialog>

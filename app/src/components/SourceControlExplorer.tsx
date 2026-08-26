@@ -42,6 +42,7 @@ import {
   ChevronDown as ChevronDownIcon,
   ChevronRight as ChevronRightIcon,
   GitBranch as BranchIcon,
+  GitMerge as MergeIcon,
   Plus as PlusIcon,
   RefreshCw as RefreshIcon,
 } from "lucide-react";
@@ -252,6 +253,34 @@ export default function SourceControlExplorer() {
   );
   const fetchBranches = useAppsV2Store(s => s.fetchBranches);
   const checkoutBranch = useAppsV2Store(s => s.checkoutBranch);
+  const mergeBranch = useAppsV2Store(s => s.mergeBranch);
+  const [merging, setMerging] = useState(false);
+  // The current branch's entry in the listing — what "Merge into main" acts
+  // on. Only offered for a non-default branch that is actually ahead.
+  const currentEntry = branches?.find(b => b.name === branch);
+  const canMerge =
+    !!currentEntry && !currentEntry.isDefault && currentEntry.aheadOfMain > 0;
+  const mergeCurrent = useCallback(async () => {
+    if (!workspaceId || !appId || !currentEntry || merging) return;
+    setMerging(true);
+    setError(null);
+    const result = await mergeBranch(workspaceId, appId, currentEntry.name);
+    setMerging(false);
+    setBranchAnchor(null);
+    if (!result.ok) setError(result.error ?? "Merge failed");
+    else {
+      void fetchStatus(workspaceId, appId);
+      void fetchHistory(workspaceId, appId, "repo");
+    }
+  }, [
+    workspaceId,
+    appId,
+    currentEntry,
+    merging,
+    mergeBranch,
+    fetchStatus,
+    fetchHistory,
+  ]);
 
   const switchTo = useCallback(
     async (target: string, options?: { create?: boolean }) => {
@@ -365,6 +394,27 @@ export default function SourceControlExplorer() {
             </MenuItem>
           ))}
           <Divider />
+          {canMerge && (
+            <MenuItem
+              dense
+              disabled={switching || merging}
+              onClick={() => void mergeCurrent()}
+            >
+              <ListItemIcon sx={{ minWidth: 28 }}>
+                {merging ? (
+                  <CircularProgress size={14} />
+                ) : (
+                  <MergeIcon size={14} strokeWidth={1.75} />
+                )}
+              </ListItemIcon>
+              <ListItemText
+                primary={`Merge "${branch}" into main`}
+                secondary={`${currentEntry?.aheadOfMain} commit${currentEntry?.aheadOfMain === 1 ? "" : "s"} ahead`}
+                primaryTypographyProps={{ fontSize: 13 }}
+                secondaryTypographyProps={{ fontSize: 11 }}
+              />
+            </MenuItem>
+          )}
           <MenuItem
             dense
             disabled={switching}

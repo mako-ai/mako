@@ -87,6 +87,37 @@ const topNavigationItems: {
 ];
 
 /**
+ * Is the workspace checkout dirty? VS Code's SCM badge, reduced to a dot.
+ *
+ * Status is repo-wide (any app id reaches it), lives in the store so a
+ * commit made in the Source Control panel clears the dot instantly, and is
+ * refreshed here on a slow poll so the dot is honest even while no panel
+ * that fetches status is open. Reads come from the box when it is running
+ * and from the last commit when it is not — the poll never boots a machine.
+ */
+function useRepoDirty(enabled: boolean): boolean {
+  const { currentWorkspace } = useWorkspace();
+  const workspaceId = currentWorkspace?.id;
+  const appId = useAppsV2Store(state => state.apps[0]?.id);
+  const fetchStatus = useAppsV2Store(state => state.fetchStatus);
+  const dirty = useAppsV2Store(state =>
+    Object.values(state.statusByApp).some(
+      status => (status?.repoChanges?.length ?? 0) > 0,
+    ),
+  );
+  useEffect(() => {
+    if (!enabled || !workspaceId || !appId) return;
+    void fetchStatus(workspaceId, appId);
+    const timer = setInterval(
+      () => void fetchStatus(workspaceId, appId),
+      30_000,
+    );
+    return () => clearInterval(timer);
+  }, [enabled, workspaceId, appId, fetchStatus]);
+  return dirty;
+}
+
+/**
  * Probe + report whether the Apps v2 rail entry should be visible. Both the
  * desktop rail and the mobile drawer nav filter on this so v1 and v2 can run
  * side by side while v2 is rolled out.
@@ -331,6 +362,7 @@ function Sidebar() {
   const openRightPane = useUIStore(state => state.openRightPane);
   const isMobile = useIsMobile();
   const appsV2Visible = useAppsV2Visible();
+  const repoDirty = useRepoDirty(appsV2Visible);
 
   const handleNavigation = (view: NavigationView) => {
     // Settings now behaves like any other explorer: clicking the cog opens
@@ -417,6 +449,26 @@ function Sidebar() {
                     }
                   >
                     <Icon size={24} strokeWidth={1.5} />
+                    {item.view === "source-control" && repoDirty && (
+                      <Box
+                        component="span"
+                        aria-label="Uncommitted changes"
+                        sx={{
+                          position: "absolute",
+                          top: 6,
+                          right: 6,
+                          width: 8,
+                          height: 8,
+                          borderRadius: "50%",
+                          bgcolor: "error.main",
+                          // Ring in the rail background so the dot reads as
+                          // sitting ON the icon rather than touching it.
+                          boxShadow: theme =>
+                            `0 0 0 2px ${theme.palette.background.paper}`,
+                          pointerEvents: "none",
+                        }}
+                      />
+                    )}
                   </NavButton>
                 </Tooltip>
               );
