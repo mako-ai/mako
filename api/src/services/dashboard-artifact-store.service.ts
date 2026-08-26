@@ -176,7 +176,11 @@ class FilesystemDashboardArtifactStore implements DashboardArtifactStore {
 class GcsDashboardArtifactStore implements DashboardArtifactStore {
   readonly type = "gcs" as const;
   private readonly storage = new Storage();
-  private readonly bucketName = process.env.GCS_DASHBOARD_BUCKET || "";
+  private readonly bucketName: string;
+
+  constructor(bucketName?: string) {
+    this.bucketName = bucketName || process.env.GCS_DASHBOARD_BUCKET || "";
+  }
 
   private file(key: string) {
     if (!this.bucketName) {
@@ -603,6 +607,20 @@ export function getDashboardArtifactStore(): DashboardArtifactStore {
   }
 
   return artifactStore;
+}
+
+/**
+ * A read-only artifact store to COPY existing artifacts FROM, distinct from
+ * the live store written TO. Set APPS_V2_ARTIFACT_SOURCE_BUCKET to a GCS
+ * bucket to hydrate a rehearsal environment (e.g. dev, cloned from prod's DB
+ * but NOT its artifact store) with prod's parquet — the migration then adopts
+ * real data instead of finding nothing local. Unset (prod and normal runs) →
+ * null, and callers read from the main store exactly as before.
+ */
+export function getArtifactSourceStore(): DashboardArtifactStore | null {
+  const bucket = process.env.APPS_V2_ARTIFACT_SOURCE_BUCKET;
+  if (!bucket) return null;
+  return new GcsDashboardArtifactStore(bucket);
 }
 
 export function getFilesystemArtifactPath(key: string): string {
