@@ -340,6 +340,14 @@ function TerminalPanel({
           flex: 1,
           minHeight: 0,
           overflow: "hidden",
+          // Rows are whole cells (floor(height / cellHeight)), so up to one
+          // cell of the pane is always left over. Anchor the terminal to the
+          // BOTTOM like VS Code does: the remainder lands at the top, where
+          // scrollback fills it, instead of reading as a fat bottom margin
+          // under the prompt.
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "flex-end",
           "& .xterm": { padding: "4px 4px 4px 6px" },
           // Stock xterm.css paints the (xterm 6: vestigial) viewport BLACK
           // and stretches it across the whole .xterm box — padding included —
