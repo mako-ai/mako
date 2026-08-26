@@ -58,6 +58,19 @@ import { TerminalTypeAhead } from "../lib/terminal-type-ahead";
  * the three dividers on screen are actually the same thickness — they were not
  * before, and it showed.
  */
+/** Vertical divider between the terminal panes and the sessions list. */
+const SessionsResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
+  flex: "0 0 4px",
+  width: "4px",
+  alignSelf: "stretch",
+  background: theme.palette.divider,
+  touchAction: "none",
+  transition: "background-color 0.2s ease",
+  "&[data-resize-handle-state='hover'], &[data-resize-handle-state='drag']": {
+    backgroundColor: theme.palette.primary.main,
+  },
+}));
+
 const TerminalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
   flex: "0 0 4px",
   height: "4px",
@@ -340,7 +353,36 @@ function TerminalTabs({
     }
     return ["1"];
   });
-  const [active, setActive] = useState<string>("dev");
+  // The active session survives reloads like everything else about the
+  // terminal area: sessions and their scrollback live server-side, so the
+  // page coming back on a different tab than you were working in reads as
+  // state loss even though nothing was lost.
+  const [active, setActiveState] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem(`apps-v2-term-active:${appId}`);
+      if (saved === "dev") return "dev";
+      if (saved && /^[0-9]{1,6}$/.test(saved)) return saved;
+    } catch {
+      // Storage unavailable — default below.
+    }
+    return "dev";
+  });
+  const setActive = useCallback(
+    (id: string) => {
+      setActiveState(id);
+      try {
+        localStorage.setItem(`apps-v2-term-active:${appId}`, id);
+      } catch {
+        // Best effort.
+      }
+    },
+    [appId],
+  );
+  // A persisted shell id whose tab was closed in another session falls back
+  // to the dev window instead of pointing at nothing.
+  useEffect(() => {
+    if (active !== "dev" && !shells.includes(active)) setActiveState("dev");
+  }, [active, shells]);
   const nextId = useRef(Math.max(0, ...shells.map(Number)) + 1);
   useEffect(() => {
     try {
@@ -360,128 +402,134 @@ function TerminalTabs({
     // is simply the first session in it (server-side it runs in a tmux
     // session named mako-dev-<slug>, attachable from any shell), not a
     // special surface.
-    <Box sx={{ height: "100%", display: "flex", minHeight: 0 }}>
-      <Box
-        sx={{
-          flex: 1,
-          minWidth: 0,
-          minHeight: 0,
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
-        {/* Every pane STAYS MOUNTED — an unmounted xterm is a dropped
-            session and a re-scroll; hiding keeps the socket, the scrollback
-            and the dev-log offset alive across switches. */}
+    <PanelGroup
+      direction="horizontal"
+      autoSaveId="apps-v2-terminal-sessions"
+      style={{ height: "100%" }}
+    >
+      <Panel minSize={40}>
         <Box
           sx={{
-            flex: 1,
+            height: "100%",
+            minWidth: 0,
             minHeight: 0,
-            display: active === "dev" ? "block" : "none",
+            display: "flex",
+            flexDirection: "column",
           }}
         >
-          {slug ? (
-            // The dev server runs in a dtach session named like any other
-            // (mako-term-dev-<slug>) — this is a normal terminal attached
-            // to it: colors, native scrollback, prefit history, and Ctrl-C
-            // reaches vite. When the session is down, the server side
-            // shows a waiting notice, tails the boot recording live (npm
-            // install progress), and attaches the moment it starts.
-            <TerminalPanel
-              appId={appId}
-              workspaceId={workspaceId}
-              termId={`dev-${slug}`}
-            />
-          ) : null}
-        </Box>
-        {shells.map(id => (
+          {/* Every pane STAYS MOUNTED — an unmounted xterm is a dropped
+            session and a re-scroll; hiding keeps the socket, the scrollback
+            and the dev-log offset alive across switches. */}
           <Box
-            key={id}
             sx={{
               flex: 1,
               minHeight: 0,
-              display: active === id ? "block" : "none",
+              display: active === "dev" ? "block" : "none",
             }}
           >
-            <TerminalPanel
-              appId={appId}
-              workspaceId={workspaceId}
-              termId={id}
-            />
+            {slug ? (
+              // The dev server runs in a dtach session named like any other
+              // (mako-term-dev-<slug>) — this is a normal terminal attached
+              // to it: colors, native scrollback, prefit history, and Ctrl-C
+              // reaches vite. When the session is down, the server side
+              // shows a waiting notice, tails the boot recording live (npm
+              // install progress), and attaches the moment it starts.
+              <TerminalPanel
+                appId={appId}
+                workspaceId={workspaceId}
+                termId={`dev-${slug}`}
+              />
+            ) : null}
           </Box>
-        ))}
-      </Box>
-      <Box
-        sx={{
-          width: 168,
-          flexShrink: 0,
-          borderLeft: "1px solid",
-          borderColor: "divider",
-          display: "flex",
-          flexDirection: "column",
-          overflowY: "auto",
-        }}
-      >
-        <Box
-          sx={{
-            display: "flex",
-            alignItems: "center",
-            pl: 1.25,
-            pr: 0.25,
-            py: 0.25,
-          }}
-        >
-          <Typography
-            variant="caption"
-            sx={{
-              flex: 1,
-              fontSize: "0.66rem",
-              fontWeight: 700,
-              letterSpacing: 0.4,
-              color: "text.secondary",
-            }}
-          >
-            SESSIONS
-          </Typography>
-          <Tooltip title="New terminal — another real shell in the same sandbox">
-            <IconButton
-              size="small"
-              onClick={() => {
-                const id = String(nextId.current++);
-                setShells(prev => [...prev, id]);
-                setActive(id);
+          {shells.map(id => (
+            <Box
+              key={id}
+              sx={{
+                flex: 1,
+                minHeight: 0,
+                display: active === id ? "block" : "none",
               }}
             >
-              <PlusIcon size={13} strokeWidth={2} />
-            </IconButton>
-          </Tooltip>
+              <TerminalPanel
+                appId={appId}
+                workspaceId={workspaceId}
+                termId={id}
+              />
+            </Box>
+          ))}
         </Box>
-        <SessionRow
-          label={slug ? `dev: ${slug}` : "dev server"}
-          selected={active === "dev"}
-          onSelect={() => setActive("dev")}
-        />
-        {shells.map((id, index) => (
+      </Panel>
+      <SessionsResizeHandle />
+      <Panel defaultSize={14} minSize={7} maxSize={40}>
+        <Box
+          sx={{
+            height: "100%",
+            display: "flex",
+            flexDirection: "column",
+            overflowY: "auto",
+          }}
+        >
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              pl: 1.25,
+              pr: 0.25,
+              py: 0.25,
+            }}
+          >
+            <Typography
+              variant="caption"
+              sx={{
+                flex: 1,
+                fontSize: "0.66rem",
+                fontWeight: 700,
+                letterSpacing: 0.4,
+                color: "text.secondary",
+              }}
+            >
+              SESSIONS
+            </Typography>
+            <Tooltip title="New terminal — another real shell in the same sandbox">
+              <IconButton
+                size="small"
+                onClick={() => {
+                  const id = String(nextId.current++);
+                  setShells(prev => [...prev, id]);
+                  setActive(id);
+                }}
+              >
+                <PlusIcon size={13} strokeWidth={2} />
+              </IconButton>
+            </Tooltip>
+          </Box>
           <SessionRow
-            key={id}
-            label={`bash ${index + 1}`}
-            selected={active === id}
-            onSelect={() => setActive(id)}
-            onClose={
-              shells.length > 1
-                ? () => {
-                    setShells(prev => {
-                      const next = prev.filter(x => x !== id);
-                      if (active === id) setActive(next[0] ?? "dev");
-                      return next;
-                    });
-                  }
-                : undefined
-            }
+            label={slug ? `dev: ${slug}` : "dev server"}
+            selected={active === "dev"}
+            onSelect={() => setActive("dev")}
           />
-        ))}
-      </Box>
-    </Box>
+          {shells.map((id, index) => (
+            <SessionRow
+              key={id}
+              label={`bash ${index + 1}`}
+              selected={active === id}
+              onSelect={() => setActive(id)}
+              onClose={
+                shells.length > 1
+                  ? () => {
+                      setShells(prev => {
+                        const next = prev.filter(x => x !== id);
+                        if (active === id) setActive(next[0] ?? "dev");
+                        return next;
+                      });
+                    }
+                  : undefined
+              }
+            />
+          ))}
+        </Box>
+      </Panel>
+    </PanelGroup>
   );
 }
 
