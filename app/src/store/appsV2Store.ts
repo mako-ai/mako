@@ -38,6 +38,17 @@ export interface AppV2FileEntry {
 export interface AppV2Change {
   path: string;
   status: "added" | "modified" | "deleted" | "renamed";
+  /** In the index (git add) — VS Code's "Staged Changes" group. */
+  staged?: boolean;
+  /** In the working tree, not (fully) staged — the "Changes" group. */
+  unstaged?: boolean;
+}
+
+export interface AppV2FileVersions {
+  head: string | null;
+  index: string | null;
+  working: string | null;
+  binary: boolean;
 }
 
 /** Mirror of the API's BoxState — what the sandbox pushed about itself. */
@@ -285,7 +296,20 @@ interface AppsV2Store {
     workspaceId: string,
     appId: string,
     message: string,
+    options?: { stagedOnly?: boolean },
   ) => Promise<{ ok: boolean; error?: string }>;
+  /** Per-file git actions from the Source Control view (repo-relative paths). */
+  gitPaths: (
+    workspaceId: string,
+    appId: string,
+    action: "stage" | "unstage" | "discard",
+    paths: string[],
+  ) => Promise<{ ok: boolean; error?: string }>;
+  fetchFileVersions: (
+    workspaceId: string,
+    appId: string,
+    path: string,
+  ) => Promise<AppV2FileVersions | null>;
   discard: (workspaceId: string, appId: string) => Promise<void>;
 
   // No branch parameter on any of these: chats no longer have their own
@@ -970,12 +994,12 @@ export const useAppsV2Store = create<AppsV2Store>()(
       }
     },
 
-    commit: async (workspaceId, appId, msg) => {
+    commit: async (workspaceId, appId, msg, options) => {
       try {
         const body = unwrapBody(
           await api.POST("/api/workspaces/{workspaceId}/apps-v2/{id}/commit", {
             params: { path: { workspaceId, id: appId } },
-            body: { message: msg },
+            body: { message: msg, stagedOnly: options?.stagedOnly },
           }),
         ) as { result?: { committed: boolean; reason?: string } };
         void get().fetchStatus(workspaceId, appId);
@@ -985,6 +1009,32 @@ export const useAppsV2Store = create<AppsV2Store>()(
         return { ok: false, error: body.result?.reason ?? "Nothing to commit" };
       } catch (e) {
         return { ok: false, error: message(e, "Commit failed") };
+      }
+    },
+
+    gitPaths: async (workspaceId, appId, action, paths) => {
+      try {
+        await api.POST(
+          `/api/workspaces/{workspaceId}/apps-v2/{id}/git/${action}` as "/api/workspaces/{workspaceId}/apps-v2/{id}/git/stage",
+          { params: { path: { workspaceId, id: appId } }, body: { paths } },
+        );
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: message(e, `Could not ${action}`) };
+      }
+    },
+
+    fetchFileVersions: async (workspaceId, appId, path) => {
+      try {
+        const body = unwrapBody(
+          await api.GET(
+            "/api/workspaces/{workspaceId}/apps-v2/{id}/git/file-versions",
+            { params: { path: { workspaceId, id: appId }, query: { path } } },
+          ),
+        ) as { versions?: AppV2FileVersions };
+        return body.versions ?? null;
+      } catch {
+        return null;
       }
     },
 

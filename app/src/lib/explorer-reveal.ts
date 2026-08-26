@@ -156,6 +156,9 @@ export function tabRevealTarget(
       const projectId = meta.projectId as string | undefined;
       return projectId ? { explorer: "dbt", nodeId: projectId } : null;
     }
+    case "app-v2-diff":
+      // A transient diff view; nothing in an explorer corresponds to it.
+      return null;
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.
       const exhaustivenessCheck: never = kind;

@@ -544,19 +544,24 @@ export async function boxStatus(ctx: SandboxExecContext): Promise<BoxStatus> {
     }
     const code = record.slice(0, 2);
     const path = record.slice(3);
+    // X = index vs HEAD, Y = working tree vs index (porcelain v1).
+    const flags = {
+      staged: code[0] !== " " && code[0] !== "?",
+      unstaged: code === "??" || code[1] !== " ",
+    };
     if (code === "??") {
-      changes.push({ path, status: "added" });
+      changes.push({ path, status: "added", ...flags });
     } else if (code.includes("D")) {
-      changes.push({ path, status: "deleted" });
+      changes.push({ path, status: "deleted", ...flags });
     } else if (code.includes("R")) {
       // A rename's second NUL-separated field is the old path; skip it so it
       // is not reported as a file of its own.
       i++;
-      changes.push({ path, status: "renamed" });
+      changes.push({ path, status: "renamed", ...flags });
     } else if (code.includes("A")) {
-      changes.push({ path, status: "added" });
+      changes.push({ path, status: "added", ...flags });
     } else {
-      changes.push({ path, status: "modified" });
+      changes.push({ path, status: "modified", ...flags });
     }
   }
 
@@ -586,18 +591,22 @@ export async function boxCommitAll(input: {
   ctx: SandboxExecContext;
   message: string;
   author?: { name?: string; email?: string };
+  /** Commit only what is staged (VS Code with a non-empty Staged group). */
+  stagedOnly?: boolean;
 }): Promise<BoxCommitResult> {
-  const { ctx, message, author } = input;
+  const { ctx, message, author, stagedOnly } = input;
   const identity =
     author?.name && author?.email
       ? ["-c", `user.name=${author.name}`, "-c", `user.email=${author.email}`]
       : [];
 
-  const staged = await boxExec(ctx, boxGit(ctx, "add", "-A"), {
-    timeoutMs: 120_000,
-  });
-  if (staged.exitCode !== 0) {
-    throw new Error(`Could not stage changes: ${staged.stderr.slice(-300)}`);
+  if (!stagedOnly) {
+    const staged = await boxExec(ctx, boxGit(ctx, "add", "-A"), {
+      timeoutMs: 120_000,
+    });
+    if (staged.exitCode !== 0) {
+      throw new Error(`Could not stage changes: ${staged.stderr.slice(-300)}`);
+    }
   }
 
   const committed = await boxExec(
@@ -662,6 +671,115 @@ export async function boxCommitAll(input: {
     timeoutMs: 30_000,
   });
   return { committed: true, commitOid: head.stdout.trim(), message };
+}
+
+/** A repo-relative path that stays inside the repo. */
+function safeRepoPath(relPath: string): string {
+  if (
+    !relPath ||
+    relPath.startsWith("/") ||
+    relPath.split("/").some(seg => seg === "..") ||
+    relPath.includes("\0")
+  ) {
+    throw new Error(`Refusing path outside the repository: ${relPath}`);
+  }
+  return relPath;
+}
+
+/**
+ * Stage, unstage, or discard specific files — the per-file actions of VS
+ * Code's Source Control view, as the git commands they stand for.
+ *
+ * discard: the working tree goes back to the INDEX version (what "Discard
+ * Changes" on an unstaged change means), and an untracked file is removed;
+ * each path is handled on its own so an untracked path does not fail the
+ * checkout of the others.
+ */
+export async function boxGitPaths(
+  ctx: SandboxExecContext,
+  action: "stage" | "unstage" | "discard",
+  paths: string[],
+): Promise<void> {
+  const safe = paths.map(safeRepoPath);
+  if (safe.length === 0) return;
+  let command: string;
+  if (action === "stage") {
+    command = boxGit(ctx, "add", "-A", "--", ...safe);
+  } else if (action === "unstage") {
+    command = boxGit(ctx, "reset", "-q", "HEAD", "--", ...safe);
+  } else {
+    command = safe
+      .map(
+        p =>
+          `(${boxGit(ctx, "clean", "-qf", "--", p)} || true); (${boxGit(ctx, "checkout", "-q", "--", p)} 2>/dev/null || true)`,
+      )
+      .join("; ");
+  }
+  const result = await boxExec(ctx, command, { timeoutMs: 120_000 });
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `Could not ${action} ${safe.length} file(s): ${(result.stderr || result.stdout).slice(-300)}`,
+    );
+  }
+}
+
+export interface BoxFileVersions {
+  /** Contents at HEAD; null when the file is new. */
+  head: string | null;
+  /** Contents in the index; null when not staged/tracked. */
+  index: string | null;
+  /** Contents in the working tree; null when deleted. */
+  working: string | null;
+  binary: boolean;
+}
+
+/** The three versions a diff can be drawn between (HEAD, index, working tree). */
+export async function boxFileVersions(
+  ctx: SandboxExecContext,
+  relPath: string,
+): Promise<BoxFileVersions> {
+  const p = safeRepoPath(relPath);
+  const show = async (spec: string): Promise<string | null> => {
+    const result = await boxExec(ctx, boxGit(ctx, "show", spec), {
+      timeoutMs: 60_000,
+    });
+    return result.exitCode === 0 ? result.stdout : null;
+  };
+  const [head, index] = await Promise.all([show(`HEAD:${p}`), show(`:${p}`)]);
+  let working: string | null = null;
+  let binary = false;
+  try {
+    const file = await boxReadFile(ctx, p);
+    binary = file.isBinary;
+    working = file.isBinary ? null : file.contents;
+  } catch {
+    working = null;
+  }
+  return { head, index, working, binary };
+}
+
+/** Raw porcelain lines + branch, for pushing a fresh snapshot after a mutation. */
+export async function boxPorcelain(
+  ctx: SandboxExecContext,
+): Promise<{ branch: string | null; lines: string[] }> {
+  const result = await boxExec(
+    ctx,
+    `git --no-optional-locks -C ${sh(boxRoot(ctx))} status --porcelain=v1 --branch --untracked-files=all`,
+    { timeoutMs: 60_000 },
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(`Could not read status: ${result.stderr.slice(-300)}`);
+  }
+  let branch: string | null = null;
+  const lines: string[] = [];
+  for (const line of result.stdout.split("\n")) {
+    if (!line) continue;
+    if (line.startsWith("## ")) {
+      const fresh = /^## No commits yet on (\S+)/.exec(line);
+      branch = fresh ? fresh[1] : (/^## ([^. ]+)/.exec(line)?.[1] ?? null);
+    } else lines.push(line);
+  }
+  return { branch, lines };
 }
 
 /**

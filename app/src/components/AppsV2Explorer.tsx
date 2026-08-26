@@ -379,15 +379,6 @@ export default function AppsV2Explorer() {
           <RefreshIcon size={20} strokeWidth={2} />
         </IconButton>
       </Tooltip>
-      {repos.length > 0 && (
-        <Tooltip
-          title={`Connected: ${repos.map(r => `${r.owner}/${r.repo}`).join(", ")} — manage in Settings`}
-        >
-          <IconButton size="small" onClick={openGitHubSettings}>
-            <LinkIcon size={18} strokeWidth={2} />
-          </IconButton>
-        </Tooltip>
-      )}
     </>
   );
 

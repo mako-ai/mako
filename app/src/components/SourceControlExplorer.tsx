@@ -43,11 +43,24 @@ import {
   ChevronRight as ChevronRightIcon,
   GitBranch as BranchIcon,
   GitMerge as MergeIcon,
+  Github as GitHubIcon,
+  Minus as MinusIcon,
   Plus as PlusIcon,
   RefreshCw as RefreshIcon,
+  RotateCcw as DiscardIcon,
+  SquareArrowOutUpRight as OpenFileIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppsV2Store, type AppV2Change } from "../store/appsV2Store";
+import {
+  useConsoleStore,
+  selectTabBySettingsSection,
+} from "../store/consoleStore";
+import { SECTION_LABELS } from "../pages/settings/sections";
+import {
+  focusAppsV2DiffTab,
+  focusAppsV2FileTab,
+} from "../apps-v2-runtime/shell";
 import VSScrollArea from "./VSScrollArea";
 
 /** VS Code's status letters, in VS Code's colors. */
@@ -122,8 +135,45 @@ function Section({
   );
 }
 
-/** One changed file, VS Code style: name bright, directory dimmed, letter. */
-function ChangeRow({ change }: { change: AppV2Change }) {
+/** A small icon button that only shows on row hover (VS Code's inline actions). */
+function RowAction({
+  title,
+  onClick,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <Tooltip title={title}>
+      <IconButton
+        size="small"
+        sx={{ p: 0.25, borderRadius: 0.5 }}
+        onClick={e => {
+          e.stopPropagation();
+          onClick();
+        }}
+      >
+        {children}
+      </IconButton>
+    </Tooltip>
+  );
+}
+
+/**
+ * One changed file, VS Code style: name bright, directory dimmed, status
+ * letter, inline actions on hover; clicking the row opens its diff.
+ */
+function ChangeRow({
+  change,
+  onOpen,
+  actions,
+}: {
+  change: AppV2Change;
+  onOpen: () => void;
+  actions: React.ReactNode;
+}) {
   const slash = change.path.lastIndexOf("/");
   const name = slash === -1 ? change.path : change.path.slice(slash + 1);
   const dir = slash === -1 ? "" : change.path.slice(0, slash);
@@ -131,6 +181,7 @@ function ChangeRow({ change }: { change: AppV2Change }) {
   return (
     <Box
       title={`${change.status}: ${change.path}`}
+      onClick={onOpen}
       sx={{
         display: "flex",
         alignItems: "center",
@@ -138,7 +189,10 @@ function ChangeRow({ change }: { change: AppV2Change }) {
         px: 2,
         py: 0.25,
         minWidth: 0,
+        cursor: "pointer",
         "&:hover": { bgcolor: "action.hover" },
+        "&:hover .scm-row-actions": { display: "flex" },
+        "&:hover .scm-row-letter": { display: "none" },
       }}
     >
       <Box
@@ -173,6 +227,13 @@ function ChangeRow({ change }: { change: AppV2Change }) {
         </Box>
       )}
       <Box
+        className="scm-row-actions"
+        sx={{ ml: "auto", display: "none", gap: 0, flexShrink: 0 }}
+      >
+        {actions}
+      </Box>
+      <Box
+        className="scm-row-letter"
         component="span"
         sx={{
           ml: "auto",
@@ -204,7 +265,78 @@ export default function SourceControlExplorer() {
   const appId = apps[0]?.id;
   const status = appId ? statusByApp[appId] : undefined;
   const history = appId ? historyByApp[appId] : undefined;
-  const changes = status?.repoChanges ?? [];
+  const changes = useMemo(() => status?.repoChanges ?? [], [status]);
+  // VS Code's two groups. A file can be in both (staged, then edited again).
+  // Older status payloads carry no flags: treat them as unstaged.
+  const staged = useMemo(() => changes.filter(c => c.staged), [changes]);
+  const unstaged = useMemo(
+    () => changes.filter(c => c.unstaged ?? !c.staged),
+    [changes],
+  );
+  const gitPaths = useAppsV2Store(s => s.gitPaths);
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    body: string;
+    paths: string[];
+  } | null>(null);
+  const [acting, setActing] = useState(false);
+
+  const runGit = useCallback(
+    async (action: "stage" | "unstage" | "discard", paths: string[]) => {
+      if (!workspaceId || !appId || paths.length === 0) return;
+      setActing(true);
+      setError(null);
+      const result = await gitPaths(workspaceId, appId, action, paths);
+      setActing(false);
+      if (!result.ok) setError(result.error ?? `Could not ${action}`);
+    },
+    [workspaceId, appId, gitPaths],
+  );
+
+  // Opening a change = its diff (VS Code's "Open Changes"); the inline
+  // "Open File" action opens the editor instead, when the path is an app's.
+  const ownerOf = useCallback(
+    (path: string) => {
+      for (const app of apps) {
+        if (app.slug && path.startsWith(`apps/${app.slug}/`)) {
+          return { app, rel: path.slice(`apps/${app.slug}/`.length) };
+        }
+      }
+      return null;
+    },
+    [apps],
+  );
+  const openDiff = useCallback(
+    (path: string, mode: "working" | "index") => {
+      if (!appId) return;
+      const owner = ownerOf(path);
+      focusAppsV2DiffTab(owner?.app.id ?? appId, path, mode, owner?.app.slug);
+    },
+    [appId, ownerOf],
+  );
+  const openFile = useCallback(
+    (path: string) => {
+      const owner = ownerOf(path);
+      if (owner) focusAppsV2FileTab(owner.app.id, owner.rel, owner.app.slug);
+    },
+    [ownerOf],
+  );
+
+  const openGitHubSettings = useCallback(() => {
+    const state = useConsoleStore.getState();
+    const existing = selectTabBySettingsSection("github")(state);
+    if (existing) {
+      state.setActiveTab(existing.id);
+      return;
+    }
+    const id = state.openTab({
+      title: SECTION_LABELS.github,
+      content: "",
+      kind: "settings",
+      settingsSection: "github",
+    });
+    state.setActiveTab(id);
+  }, []);
 
   const [changesOpen, setChangesOpen] = useState(true);
   const [graphOpen, setGraphOpen] = useState(true);
@@ -241,11 +373,13 @@ export default function SourceControlExplorer() {
     if (!workspaceId || !appId || !message.trim() || committing) return;
     setCommitting(true);
     setError(null);
-    const result = await commit(workspaceId, appId, message.trim());
+    const result = await commit(workspaceId, appId, message.trim(), {
+      stagedOnly: staged.length > 0,
+    });
     setCommitting(false);
     if (result.ok) setMessage("");
     else setError(result.error ?? "Commit failed");
-  }, [workspaceId, appId, message, committing, commit]);
+  }, [workspaceId, appId, message, committing, commit, staged.length]);
 
   const branch = status?.branch ?? "…";
   const branches = useAppsV2Store(s =>
@@ -361,6 +495,22 @@ export default function SourceControlExplorer() {
               </Button>
             </Tooltip>
           )}
+          {(status?.ahead ?? 0) > 0 && (
+            <Tooltip
+              title={`${status?.ahead} commit${status?.ahead === 1 ? "" : "s"} not yet pushed — pushed automatically`}
+            >
+              <Chip
+                size="small"
+                label={`↑${status?.ahead}`}
+                sx={{ height: 16, fontSize: "0.62rem", mr: 0.5 }}
+              />
+            </Tooltip>
+          )}
+          <Tooltip title="GitHub — link or manage the repository">
+            <IconButton size="small" onClick={openGitHubSettings}>
+              <GitHubIcon size={14} strokeWidth={1.75} />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="Refresh">
             <IconButton size="small" onClick={refresh}>
               <RefreshIcon size={14} strokeWidth={1.75} />
@@ -473,6 +623,35 @@ export default function SourceControlExplorer() {
           </DialogActions>
         </Dialog>
 
+        <Dialog open={!!confirm} onClose={() => !acting && setConfirm(null)}>
+          <DialogTitle sx={{ fontSize: 15 }}>{confirm?.title}</DialogTitle>
+          <DialogContent>
+            <Typography variant="body2">{confirm?.body}</Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button
+              size="small"
+              onClick={() => setConfirm(null)}
+              disabled={acting}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="small"
+              color="error"
+              variant="contained"
+              disabled={acting}
+              onClick={async () => {
+                const paths = confirm?.paths ?? [];
+                await runGit("discard", paths);
+                setConfirm(null);
+              }}
+            >
+              {acting ? "Discarding…" : "Discard"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
         {error && (
           <Alert
             severity="error"
@@ -497,64 +676,199 @@ export default function SourceControlExplorer() {
           </Typography>
         ) : (
           <>
+            <Box sx={{ px: 1.5, pt: 1, pb: 1 }}>
+              <TextField
+                fullWidth
+                size="small"
+                multiline
+                maxRows={4}
+                placeholder={`Message (⌘⏎ to commit on "${branch}")`}
+                value={message}
+                onChange={e => setMessage(e.target.value)}
+                onKeyDown={e => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                    void handleCommit();
+                  }
+                }}
+                disabled={committing}
+                sx={{ mb: 1, "& .MuiInputBase-input": { fontSize: 13 } }}
+              />
+              <Tooltip
+                title={
+                  staged.length > 0
+                    ? "Commits the staged changes only"
+                    : "Nothing is staged: commits all changes (VS Code's smart commit)"
+                }
+              >
+                <span>
+                  <Button
+                    fullWidth
+                    variant="contained"
+                    size="small"
+                    disabled={
+                      committing || !message.trim() || changes.length === 0
+                    }
+                    onClick={() => void handleCommit()}
+                    startIcon={
+                      committing ? <CircularProgress size={14} /> : undefined
+                    }
+                  >
+                    {committing
+                      ? "Committing…"
+                      : staged.length > 0
+                        ? `✓ Commit ${staged.length} staged`
+                        : "✓ Commit all"}
+                  </Button>
+                </span>
+              </Tooltip>
+            </Box>
+
+            {staged.length > 0 && (
+              <Section
+                label="Staged Changes"
+                open={changesOpen}
+                onToggle={() => setChangesOpen(o => !o)}
+                actions={
+                  <>
+                    <RowAction
+                      title="Unstage all changes"
+                      onClick={() =>
+                        void runGit(
+                          "unstage",
+                          staged.map(c => c.path),
+                        )
+                      }
+                    >
+                      <MinusIcon size={14} />
+                    </RowAction>
+                    <Chip
+                      label={staged.length}
+                      size="small"
+                      sx={{ height: 16, fontSize: "0.62rem" }}
+                    />
+                  </>
+                }
+              >
+                <Box sx={{ pb: 1 }}>
+                  {staged.map(change => (
+                    <ChangeRow
+                      key={`staged:${change.path}`}
+                      change={change}
+                      onOpen={() => openDiff(change.path, "index")}
+                      actions={
+                        <>
+                          {ownerOf(change.path) && (
+                            <RowAction
+                              title="Open file"
+                              onClick={() => openFile(change.path)}
+                            >
+                              <OpenFileIcon size={13} />
+                            </RowAction>
+                          )}
+                          <RowAction
+                            title="Unstage changes"
+                            onClick={() =>
+                              void runGit("unstage", [change.path])
+                            }
+                          >
+                            <MinusIcon size={14} />
+                          </RowAction>
+                        </>
+                      }
+                    />
+                  ))}
+                </Box>
+              </Section>
+            )}
+
             <Section
               label="Changes"
               open={changesOpen}
               onToggle={() => setChangesOpen(o => !o)}
               actions={
-                changes.length > 0 ? (
-                  <Chip
-                    label={changes.length}
-                    size="small"
-                    sx={{ height: 16, fontSize: "0.62rem" }}
-                  />
+                unstaged.length > 0 ? (
+                  <>
+                    <RowAction
+                      title="Discard all changes"
+                      onClick={() =>
+                        setConfirm({
+                          title: "Discard all changes?",
+                          body: `This restores ${unstaged.length} file${unstaged.length === 1 ? "" : "s"} to the last staged/committed version and deletes untracked files. This cannot be undone.`,
+                          paths: unstaged.map(c => c.path),
+                        })
+                      }
+                    >
+                      <DiscardIcon size={13} />
+                    </RowAction>
+                    <RowAction
+                      title="Stage all changes"
+                      onClick={() =>
+                        void runGit(
+                          "stage",
+                          unstaged.map(c => c.path),
+                        )
+                      }
+                    >
+                      <PlusIcon size={14} />
+                    </RowAction>
+                    <Chip
+                      label={unstaged.length}
+                      size="small"
+                      sx={{ height: 16, fontSize: "0.62rem" }}
+                    />
+                  </>
                 ) : undefined
               }
             >
-              <Box sx={{ px: 1.5, pb: 1 }}>
-                <TextField
-                  fullWidth
-                  size="small"
-                  multiline
-                  maxRows={4}
-                  placeholder={`Message (⌘⏎ to commit on "${branch}")`}
-                  value={message}
-                  onChange={e => setMessage(e.target.value)}
-                  onKeyDown={e => {
-                    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                      void handleCommit();
-                    }
-                  }}
-                  disabled={committing}
-                  sx={{ mb: 1, "& .MuiInputBase-input": { fontSize: 13 } }}
-                />
-                <Button
-                  fullWidth
-                  variant="contained"
-                  size="small"
-                  disabled={
-                    committing || !message.trim() || changes.length === 0
-                  }
-                  onClick={() => void handleCommit()}
-                  startIcon={
-                    committing ? <CircularProgress size={14} /> : undefined
-                  }
-                >
-                  {committing ? "Committing…" : "✓ Commit"}
-                </Button>
-              </Box>
-              {changes.length === 0 ? (
+              {unstaged.length === 0 ? (
                 <Typography
                   variant="caption"
                   color="text.secondary"
                   sx={{ px: 2, pb: 1, display: "block" }}
                 >
-                  No changes.
+                  {staged.length > 0 ? "Everything is staged." : "No changes."}
                 </Typography>
               ) : (
                 <Box sx={{ pb: 1 }}>
-                  {changes.map(change => (
-                    <ChangeRow key={change.path} change={change} />
+                  {unstaged.map(change => (
+                    <ChangeRow
+                      key={`unstaged:${change.path}`}
+                      change={change}
+                      onOpen={() => openDiff(change.path, "working")}
+                      actions={
+                        <>
+                          {ownerOf(change.path) && (
+                            <RowAction
+                              title="Open file"
+                              onClick={() => openFile(change.path)}
+                            >
+                              <OpenFileIcon size={13} />
+                            </RowAction>
+                          )}
+                          <RowAction
+                            title="Discard changes"
+                            onClick={() =>
+                              setConfirm({
+                                title: `Discard changes to ${change.path.split("/").pop()}?`,
+                                body:
+                                  change.status === "added"
+                                    ? "This deletes the file. It cannot be undone."
+                                    : "This restores the last staged/committed version. It cannot be undone.",
+                                paths: [change.path],
+                              })
+                            }
+                          >
+                            <DiscardIcon size={13} />
+                          </RowAction>
+                          <RowAction
+                            title="Stage changes"
+                            onClick={() => void runGit("stage", [change.path])}
+                          >
+                            <PlusIcon size={14} />
+                          </RowAction>
+                        </>
+                      }
+                    />
                   ))}
                 </Box>
               )}

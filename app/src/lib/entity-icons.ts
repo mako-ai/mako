@@ -48,6 +48,7 @@ import {
   Terminal,
   Users,
   Wallet,
+  GitCompare,
   type LucideIcon,
 } from "lucide-react";
 import DbtIcon from "../components/icons/DbtIcon";
@@ -97,6 +98,7 @@ export const TAB_KIND_ICONS = {
   "app-binding": Database,
   "app-v2": AppWindowMac,
   "app-v2-file": FileCode,
+  "app-v2-diff": GitCompare,
   plan: ClipboardList,
   "dbt-file": FileCode,
   "dbt-job": CalendarClock,

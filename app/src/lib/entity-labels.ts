@@ -24,6 +24,7 @@ export const TAB_KIND_ENTITY_LABELS = {
   "app-binding": "data source",
   "app-v2": "app",
   "app-v2-file": "file",
+  "app-v2-diff": "diff",
   plan: "plan",
   settings: "settings section",
   members: "members page",

@@ -43,32 +43,34 @@ import {
   listWorkspaceRepos,
 } from "../services/workspace-repos.service";
 import {
+  PUBLISH_ACTOR,
   WorktreeConflictError,
   autoCommitFileEdit,
-  commitWorktree,
-  createProject,
-  deleteProject,
-  discardWorktree,
   boxCtx,
   checkoutBranch,
   checkoutInBox,
+  commitWorktree,
+  createProject,
   defaultBranchSha,
+  deleteProject,
+  derivedAppId,
+  discardWorktree,
   ensureWorktree,
   execInWorktree,
+  fileVersions,
+  forgetBoxCaches,
+  gitPathsAction,
+  listAppFolders,
   listBranches,
   listFiles,
   mergeBranchToMain,
-  PUBLISH_ACTOR,
-  listAppFolders,
-  synthesizeProjectFromFolder,
-  derivedAppId,
-  trialMerge,
-  promoteToMain,
   projectHistory,
+  promoteToMain,
   readFile,
+  synthesizeProjectFromFolder,
+  trialMerge,
   worktreeStatus,
   writeFile,
-  forgetBoxCaches,
 } from "../apps-v2/worktree.service";
 import {
   APPS_V2_EXEC_MAX_TIMEOUT_MS,
@@ -975,7 +977,11 @@ appsV2Routes.openapi(
       body: {
         content: {
           "application/json": {
-            schema: z.object({ message: z.string().min(1) }),
+            schema: z.object({
+              message: z.string().min(1),
+              /** Commit only the index (VS Code with a non-empty Staged group). */
+              stagedOnly: z.boolean().optional(),
+            }),
           },
         },
       },
@@ -987,15 +993,105 @@ appsV2Routes.openapi(
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const userId = loaded.userId ?? "api-key";
-      const { message } = c.req.valid("json");
+      const { message, stagedOnly } = c.req.valid("json");
       const user = c.get("user");
       const handle = await ensureWorktree(loaded.project, userId);
       const result = await commitWorktree(
         handle,
         message,
         user?.email ? { name: user.email, email: user.email } : undefined,
+        { stagedOnly },
       );
       return c.json({ success: true as const, result }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Per-file git actions (VS Code's Source Control view)
+// ---------------------------------------------------------------------------
+
+const RepoPaths = z.object({
+  paths: z
+    .array(
+      z
+        .string()
+        .min(1)
+        .max(4096)
+        .refine(
+          p => !p.startsWith("/") && !p.split("/").includes(".."),
+          "path must stay inside the repository",
+        ),
+    )
+    .min(1)
+    .max(500),
+});
+
+for (const action of ["stage", "unstage", "discard"] as const) {
+  appsV2Routes.openapi(
+    createRoute({
+      method: "post",
+      path: `/{id}/git/${action}`,
+      tags: ["Apps v2"],
+      summary:
+        action === "stage"
+          ? "Stage files for commit (git add)"
+          : action === "unstage"
+            ? "Unstage files (git reset HEAD --)"
+            : "Discard working-tree changes to files (checkout / clean)",
+      description:
+        "Repo-relative paths. The box's fresh status is pushed to every open window right after, so the Source Control view updates at once.",
+      security: AUTH_SECURITY,
+      request: {
+        params: ProjectParam,
+        body: { content: { "application/json": { schema: RepoPaths } } },
+      },
+      responses: OPEN_RESPONSES,
+    }),
+    async c => {
+      try {
+        const loaded = await loadProject(c, { write: true });
+        if ("errorResponse" in loaded) return loaded.errorResponse;
+        const { paths } = c.req.valid("json");
+        const handle = await ensureWorktree(
+          loaded.project,
+          loaded.userId ?? "api-key",
+        );
+        await gitPathsAction(handle, action, paths);
+        return c.json({ success: true as const }, 200);
+      } catch (error) {
+        return handleError(c, error);
+      }
+    },
+  );
+}
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/git/file-versions",
+    tags: ["Apps v2"],
+    summary: "HEAD, index and working-tree contents of a repo path (for diffs)",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      query: z.object({ path: z.string().min(1).max(4096) }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { path: relPath } = c.req.valid("query");
+      const handle = await ensureWorktree(
+        loaded.project,
+        loaded.userId ?? "api-key",
+      );
+      const versions = await fileVersions(handle, relPath);
+      return c.json({ success: true as const, versions }, 200);
     } catch (error) {
       return handleError(c, error);
     }

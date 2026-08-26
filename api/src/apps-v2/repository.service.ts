@@ -427,6 +427,10 @@ export async function log(
 export interface ChangedFile {
   path: string;
   status: "added" | "modified" | "deleted" | "renamed";
+  /** Change recorded in the index (git add) — VS Code's "Staged Changes". */
+  staged?: boolean;
+  /** Change in the working tree not (fully) in the index — "Changes". */
+  unstaged?: boolean;
 }
 
 /** Name-status diff between two commits/trees. */

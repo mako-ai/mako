@@ -53,9 +53,18 @@ import {
   configureBoxRemote,
   sh,
   workspaceRootGitignore,
+  boxGitPaths,
+  boxFileVersions,
+  boxPorcelain,
+  type BoxFileVersions,
 } from "./box";
 import { publishRealtimeEvent } from "../services/realtime.service";
-import { forgetBoxState, getBoxState, hasGitState } from "./box-state.service";
+import {
+  forgetBoxState,
+  getBoxState,
+  hasGitState,
+  patchBoxState,
+} from "./box-state.service";
 import { ensureBoxAgent, forgetBoxAgent } from "./box-agent";
 import {
   APPS_V2_MAX_FILE_BYTES,
@@ -1320,6 +1329,43 @@ export interface CommitResult {
 }
 
 /**
+ * Per-file git actions (stage / unstage / discard), then push the box's
+ * fresh status so every open panel updates at once — the agent would report
+ * it within a tick anyway, but a click deserves an immediate answer.
+ */
+export async function gitPathsAction(
+  handle: WorktreeHandle,
+  action: "stage" | "unstage" | "discard",
+  paths: string[],
+): Promise<void> {
+  const ctx = await ensureBox(handle);
+  await boxGitPaths(ctx, action, paths);
+  try {
+    const { branch, lines } = await boxPorcelain(ctx);
+    await patchBoxState({
+      workspaceId: handle.doc.workspaceId.toString(),
+      userId: handle.doc.userId,
+      patch: { ...(branch ? { branch } : {}), changes: lines },
+      source: "api",
+    });
+  } catch (error) {
+    logger.warn("Apps v2 could not push status after a git action", {
+      action,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/** HEAD / index / working-tree contents of one repo-relative path, for diffs. */
+export async function fileVersions(
+  handle: WorktreeHandle,
+  relPath: string,
+): Promise<BoxFileVersions> {
+  const ctx = await ensureBox(handle);
+  return boxFileVersions(ctx, relPath);
+}
+
+/**
  * Commit the working copy and push it.
  *
  * `git commit && git push`, run in the sandbox, by the person or agent whose
@@ -1330,9 +1376,15 @@ export async function commitWorktree(
   handle: WorktreeHandle,
   message: string,
   author?: GitAuthor,
+  options: { stagedOnly?: boolean } = {},
 ): Promise<CommitResult> {
   const ctx = await ensureBox(handle);
-  const result = await boxCommitAll({ ctx, message, author });
+  const result = await boxCommitAll({
+    ctx,
+    message,
+    author,
+    stagedOnly: options.stagedOnly,
+  });
   if (!result.committed) return result;
   await syncBranchFromBox(handle);
   // No mirror queue and no poke here: boxCommitAll PUSHED, the push went

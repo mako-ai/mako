@@ -73,6 +73,7 @@ import AppFileEditor from "./AppFileEditor";
 import AppBindingEditor from "./AppBindingEditor";
 import AppV2Workspace from "./AppV2Workspace";
 import AppV2FileEditor from "./AppV2FileEditor";
+import AppV2DiffTab from "./AppV2DiffTab";
 import AppV2BindingEditor from "./AppV2BindingEditor";
 import PlanDocumentTab from "./PlanDocumentTab";
 import DbtFileEditor from "./DbtFileEditor";
@@ -2878,6 +2879,14 @@ function Editor({
                       tabId={tab.id}
                       appId={tab.metadata?.appV2Id as string}
                       path={tab.metadata?.path as string}
+                    />
+                  ) : tab.kind === "app-v2-diff" ? (
+                    <AppV2DiffTab
+                      appId={tab.metadata?.appV2Id as string}
+                      path={tab.metadata?.path as string}
+                      mode={
+                        (tab.metadata?.mode as "working" | "index") ?? "working"
+                      }
                     />
                   ) : tab.kind === "app-v2-file" ? (
                     <AppV2FileEditor

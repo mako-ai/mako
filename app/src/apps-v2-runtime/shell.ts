@@ -66,6 +66,43 @@ export function focusAppsV2FileTab(
 }
 
 /**
+ * Open (or focus) a diff of one repo-relative path, VS Code style: "Working
+ * Tree" compares index → working copy (the Changes group), "Index" compares
+ * HEAD → index (the Staged Changes group).
+ */
+export function focusAppsV2DiffTab(
+  appId: string,
+  path: string,
+  mode: "working" | "index",
+  slug?: string,
+): string {
+  const consoleStore = useConsoleStore.getState();
+  const existingTab = Object.values(consoleStore.tabs).find(
+    (tab: {
+      kind?: string;
+      metadata?: { appV2Id?: string; path?: string; mode?: string };
+    }) =>
+      tab.kind === "app-v2-diff" &&
+      tab.metadata?.appV2Id === appId &&
+      tab.metadata?.path === path &&
+      tab.metadata?.mode === mode,
+  );
+  if (existingTab) {
+    consoleStore.setActiveTab(existingTab.id);
+    return existingTab.id;
+  }
+  const fileName = path.split("/").pop() || path;
+  const tabId = consoleStore.openTab({
+    title: `${fileName} (${mode === "index" ? "Index" : "Working Tree"})`,
+    content: "",
+    kind: "app-v2-diff",
+    metadata: { appV2Id: appId, appV2Slug: slug, path, mode },
+  });
+  consoleStore.setActiveTab(tabId);
+  return tabId;
+}
+
+/**
  * Close any `app-v2` / `app-v2-file` tab pointing at an app that no longer
  * exists, and report whether anything was closed.
  *
@@ -79,7 +116,9 @@ export function closeAppsV2TabsFor(appId: string): boolean {
   const store = useConsoleStore.getState();
   const doomed = Object.values(store.tabs).filter(
     (tab: { id: string; kind?: string; metadata?: { appV2Id?: string } }) =>
-      (tab.kind === "app-v2" || tab.kind === "app-v2-file") &&
+      (tab.kind === "app-v2" ||
+        tab.kind === "app-v2-file" ||
+        tab.kind === "app-v2-diff") &&
       tab.metadata?.appV2Id === appId,
   );
   for (const tab of doomed) store.closeTab(tab.id);

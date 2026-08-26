@@ -33,6 +33,8 @@ export type BoxChangeStatus = "added" | "modified" | "deleted" | "renamed";
 export interface BoxChange {
   path: string;
   status: BoxChangeStatus;
+  staged?: boolean;
+  unstaged?: boolean;
 }
 
 export interface BoxDevServer {
@@ -63,7 +65,15 @@ export interface BoxStatePatch {
   head?: string;
   ahead?: number;
   /** `git status --porcelain=v1` lines, or already-shaped changes. */
-  changes?: Array<string | { path: string; status?: BoxChangeStatus }>;
+  changes?: Array<
+    | string
+    | {
+        path: string;
+        status?: BoxChangeStatus;
+        staged?: boolean;
+        unstaged?: boolean;
+      }
+  >;
   /** The full list (an agent snapshot) — replaces. */
   devServers?: Array<{ slug: string; port: number }>;
   /** One server's transition (the launcher) — merges. */
@@ -188,11 +198,24 @@ function parsePorcelain(line: string): BoxChange | null {
   if (xy === "??" || xy.includes("A")) status = "added";
   else if (xy.includes("D")) status = "deleted";
   else if (xy.includes("R")) status = "renamed";
-  return { path, status };
+  return {
+    path,
+    status,
+    staged: xy[0] !== " " && xy[0] !== "?",
+    unstaged: xy === "??" || xy[1] !== " ",
+  };
 }
 
 function shapeChanges(
-  input: Array<string | { path: string; status?: BoxChangeStatus }>,
+  input: Array<
+    | string
+    | {
+        path: string;
+        status?: BoxChangeStatus;
+        staged?: boolean;
+        unstaged?: boolean;
+      }
+  >,
 ): BoxChange[] {
   const out: BoxChange[] = [];
   for (const item of input) {
@@ -200,7 +223,12 @@ function shapeChanges(
       const parsed = parsePorcelain(item);
       if (parsed) out.push(parsed);
     } else if (item && typeof item.path === "string") {
-      out.push({ path: item.path, status: item.status ?? "modified" });
+      out.push({
+        path: item.path,
+        status: item.status ?? "modified",
+        staged: item.staged,
+        unstaged: item.unstaged,
+      });
     }
   }
   return out;
