@@ -114,7 +114,9 @@ function TerminalPanel({
     // render immediately instead of after the ~175ms sandbox round trip;
     // the real echo is matched and consumed, mismatches roll back. See
     // lib/terminal-type-ahead.ts for the safety rules.
-    const typeAhead = new TerminalTypeAhead(term);
+    const typeAhead = termId.startsWith("dev-")
+      ? null
+      : new TerminalTypeAhead(term);
     term.open(host);
     // Debug handle: lets devtools reach the live instance (buffer state,
     // options) — xterm exposes nothing on its DOM nodes.
@@ -204,14 +206,16 @@ function TerminalPanel({
       const chunkDecoder = new TextDecoder();
       socket.onmessage = event => {
         if (typeof event.data === "string") {
-          term.write(typeAhead.onServerData(event.data));
+          term.write(
+            typeAhead ? typeAhead.onServerData(event.data) : event.data,
+          );
           return;
         }
         const bytes = new Uint8Array(event.data as ArrayBuffer);
         // Byte chunks only need decoding while predictions are pending —
         // the common case writes them through untouched.
         term.write(
-          typeAhead.hasPending()
+          typeAhead?.hasPending()
             ? typeAhead.onServerData(
                 chunkDecoder.decode(bytes, { stream: true }),
               )
@@ -233,7 +237,7 @@ function TerminalPanel({
     connect();
 
     const typed = term.onData(data => {
-      typeAhead.onUserData(data);
+      typeAhead?.onUserData(data);
       send(data);
     });
     const observer = new ResizeObserver(() => sendResize());
@@ -247,7 +251,7 @@ function TerminalPanel({
       window.removeEventListener("resize", sendResize);
       observer.disconnect();
       typed.dispose();
-      typeAhead.dispose();
+      typeAhead?.dispose();
       ws?.close();
       term.dispose();
     };
@@ -299,94 +303,6 @@ function TerminalPanel({
 // ---------------------------------------------------------------------------
 // Main view
 // ---------------------------------------------------------------------------
-
-/**
- * The dev-session boot, shown as what it actually is: the sandbox's own
- * output — npm install, then vite — tailed live from the machine. Nothing
- * invented; if the log is quiet, the pane says only that it is waiting.
- * Colors come from the theme, so it belongs to the app in light and dark
- * alike; the monospace and the auto-follow are the only "terminal" about it.
- */
-// Strip ANSI color codes: vite writes them for a real tty, and raw escape
-// bytes in a div are noise, not color. Built with fromCharCode so no control
-// character has to appear in a regex literal.
-const ANSI_ESCAPES = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, "g");
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_ESCAPES, "");
-}
-
-function DevBootLog({
-  workspaceId,
-  appId,
-}: {
-  workspaceId: string;
-  appId: string;
-}) {
-  const fetchDevLog = useAppsV2Store(s => s.fetchDevLog);
-  const [text, setText] = useState("");
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    let offset = 0;
-    let first = true;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      const { size, chunk } = await fetchDevLog(workspaceId, appId, offset);
-      if (stopped) return;
-      if (first) {
-        // Tail, don't replay: on a reattach (page reload) the server has
-        // been running for a while, and replaying its whole boot log from
-        // byte 0 looks exactly like the dev server restarting. Show the
-        // recent end and stream from there, like `tail -f`.
-        first = false;
-        if (size > 8_000) {
-          offset = size - 8_000;
-          timer = setTimeout(poll, 0);
-          return;
-        }
-      }
-      if (size < offset) {
-        // The log was truncated — a new boot started over it. Start over too.
-        offset = 0;
-        setText("");
-      } else if (chunk) {
-        offset += chunk.length;
-        setText(prev => (prev + stripAnsi(chunk)).slice(-40_000));
-      }
-      timer = setTimeout(poll, 1000);
-    };
-    void poll();
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
-  }, [workspaceId, appId, fetchDevLog]);
-
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [text]);
-
-  return (
-    <Box
-      ref={scrollRef}
-      sx={{
-        height: "100%",
-        overflowY: "auto",
-        bgcolor: "background.default",
-        color: "text.secondary",
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-        fontSize: 12.5,
-        lineHeight: 1.5,
-        p: 2,
-        whiteSpace: "pre-wrap",
-        wordBreak: "break-word",
-      }}
-    >
-      {text || "Starting the dev sandbox — waiting for output…"}
-    </Box>
-  );
-}
 
 /**
  * VS Code-shaped terminal area: a tab bar over N shells plus one read-only
@@ -464,7 +380,19 @@ function TerminalTabs({
             display: active === "dev" ? "block" : "none",
           }}
         >
-          <DevBootLog workspaceId={workspaceId} appId={appId} />
+          {slug ? (
+            // The dev server runs in a dtach session named like any other
+            // (mako-term-dev-<slug>) — this is a normal terminal attached
+            // to it: colors, native scrollback, prefit history, and Ctrl-C
+            // reaches vite. When the session is down, the server side
+            // shows a waiting notice, tails the boot recording live (npm
+            // install progress), and attaches the moment it starts.
+            <TerminalPanel
+              appId={appId}
+              workspaceId={workspaceId}
+              termId={`dev-${slug}`}
+            />
+          ) : null}
         </Box>
         {shells.map(id => (
           <Box

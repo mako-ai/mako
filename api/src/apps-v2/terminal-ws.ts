@@ -119,7 +119,7 @@ export function attachAppsV2TerminalWs(serverType: ServerType): void {
     // a client-chosen id. Absent (older clients) = the first tab.
     const termId =
       new URLSearchParams((query ?? "").replace(/^\?/, "")).get("term") ?? "1";
-    if (!/^[A-Za-z0-9_-]{1,32}$/.test(termId)) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(termId)) {
       socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
       socket.destroy();
       return;
@@ -208,6 +208,16 @@ interface LiveTerminal {
 }
 
 const live = new Map<string, LiveTerminal>();
+
+/**
+ * Single-flight session creation. Two sockets for the same key race the
+ * whole multi-second creation body (React StrictMode mounts twice, opening
+ * two websockets) — without this, the second creation overwrote the first
+ * in `live`, one pty leaked, and whichever ring the surviving session had
+ * was the one clients replayed. Symptom: a dev window attached "open" but
+ * blank while a fresh probe socket on the same termId got the full replay.
+ */
+const creating = new Map<string, Promise<LiveTerminal>>();
 
 /** Enough to redraw a screen and the tail of a build, not a whole session. */
 const SCROLLBACK_LIMIT = 256 * 1024;
@@ -382,6 +392,18 @@ function reattach(session: LiveTerminal, ws: WebSocket): void {
         // stream picks up. Nothing repaints because nothing needs to.
         const history = await sessionHistory(session.ctx, session.histFile);
         if (history && ws.readyState === ws.OPEN) ws.send(history);
+        if (!history && ws.readyState === ws.OPEN) {
+          // Nothing recorded yet — a dev window waiting for its server, or
+          // a brand-new shell. The pty printed its one-shot notice at
+          // birth, which an earlier (possibly StrictMode-discarded) socket
+          // consumed; say it again for this one.
+          ws.send(
+            Buffer.from(
+              "\x1b[2m[waiting for the session to produce output]\x1b[0m\r\n",
+              "utf8",
+            ),
+          );
+        }
         return;
       }
       if (session.ctx && session.tmuxSession) {
@@ -408,9 +430,14 @@ function reattach(session: LiveTerminal, ws: WebSocket): void {
   // replay would end up to one flush-interval short of what the shell has
   // actually printed.
   session.flush();
+  let replayed = 0;
   for (const chunk of session.scrollback) {
-    if (ws.readyState === ws.OPEN) ws.send(chunk);
+    if (ws.readyState === ws.OPEN) {
+      ws.send(chunk);
+      replayed += chunk.length;
+    }
   }
+  logger.info("Apps v2 terminal ring replayed", { bytes: replayed });
 }
 
 async function startSession(
@@ -441,6 +468,7 @@ async function startSession(
 
   let key: string;
   let session: LiveTerminal;
+  let ranCreation = false;
 
   if (running) {
     key = `${knownKey!}:${termId}`;
@@ -451,205 +479,263 @@ async function startSession(
     const handle = await ensureWorktree(project, userId);
     key = `${handle.doc._id.toString()}:${termId}`;
     const existing = live.get(key);
+    const inFlight = creating.get(key);
     if (existing) {
       session = existing;
       reattach(session, ws);
+    } else if (inFlight) {
+      session = await inFlight;
+      reattach(session, ws);
     } else {
-      const provider = getSandboxProvider();
-      const created: LiveTerminal = {
-        terminal: undefined as unknown as SandboxTerminal,
-        scrollback: [],
-        scrollbackBytes: 0,
-        sockets: new Set(),
-        reaper: null,
-        flush: () => undefined,
-        tmux: false,
-        repaint: false,
-        ctx: null,
-        tmuxSession: null,
-        histFile: null,
-        lastCols: 0,
-        lastRows: 0,
-      };
-      // Output is BATCHED before it leaves the process.
-      //
-      // E2B delivers pty output almost byte by byte: 125KB of echo arrived as
-      // 68,000 separate callbacks, which without this would be 68,000 WebSocket
-      // frames for a single paste. Coalescing on a short timer makes that a few
-      // hundred. VS Code batches terminal output for the same reason.
-      //
-      // Worth being precise about what this did NOT fix: the terminal freezing
-      // on a large paste looked like client backpressure reaching the pty, and
-      // it was not — it was the interactive shell (see BASHRC in
-      // e2b-template.ts). Batching is a real saving on a chatty stream, not the
-      // cure for that bug.
-      let outbox: Buffer[] = [];
-      let outboxBytes = 0;
-      let flushTimer: NodeJS.Timeout | null = null;
+      let resolveCreated!: (t: LiveTerminal) => void;
+      let rejectCreated!: (e: unknown) => void;
+      const creation = new Promise<LiveTerminal>((res, rej) => {
+        resolveCreated = res;
+        rejectCreated = rej;
+      });
+      creation.catch(() => undefined); // observed via `creating`, not here
+      creating.set(key, creation);
+      ranCreation = true;
+      try {
+        const provider = getSandboxProvider();
+        const created: LiveTerminal = {
+          terminal: undefined as unknown as SandboxTerminal,
+          scrollback: [],
+          scrollbackBytes: 0,
+          sockets: new Set(),
+          reaper: null,
+          flush: () => undefined,
+          tmux: false,
+          repaint: false,
+          ctx: null,
+          tmuxSession: null,
+          histFile: null,
+          lastCols: 0,
+          lastRows: 0,
+        };
+        // Output is BATCHED before it leaves the process.
+        //
+        // E2B delivers pty output almost byte by byte: 125KB of echo arrived as
+        // 68,000 separate callbacks, which without this would be 68,000 WebSocket
+        // frames for a single paste. Coalescing on a short timer makes that a few
+        // hundred. VS Code batches terminal output for the same reason.
+        //
+        // Worth being precise about what this did NOT fix: the terminal freezing
+        // on a large paste looked like client backpressure reaching the pty, and
+        // it was not — it was the interactive shell (see BASHRC in
+        // e2b-template.ts). Batching is a real saving on a chatty stream, not the
+        // cure for that bug.
+        let outbox: Buffer[] = [];
+        let outboxBytes = 0;
+        let flushTimer: NodeJS.Timeout | null = null;
 
-      const flush = () => {
-        flushTimer = null;
-        if (outbox.length === 0) return;
-        const chunk = outbox.length === 1 ? outbox[0] : Buffer.concat(outbox);
-        outbox = [];
-        outboxBytes = 0;
-        remember(created, chunk);
-        for (const socket of created.sockets) {
-          // Skip a client that has stopped reading rather than buffering without
-          // limit: one wedged tab must not take the server with it.
-          if (
-            socket.readyState === socket.OPEN &&
-            socket.bufferedAmount < 8 * 1024 * 1024
-          ) {
-            socket.send(chunk);
-          }
-        }
-      };
-
-      // Hydrating here is what makes the terminal a real checkout: the
-      // sandbox holds the repository, and nothing overwrites it afterwards —
-      // so a `git checkout` typed in this shell survives.
-      const ctx = await ensureBox(handle);
-      created.ctx = ctx;
-      // The pty may be new while the SESSION is old (API restart, new
-      // sandbox connection): prefill history now, before any live output,
-      // so the client gets [history][live] in that order. A session that
-      // does not exist yet has nothing to replay.
-      const priorHistory =
-        (await sessionHistory(ctx, `/tmp/mako-hist-${termId}.raw`)) ??
-        (await tmuxHistory(ctx, `mako-${termId}`));
-      if (priorHistory && ws.readyState === ws.OPEN) ws.send(priorHistory);
-      // The app's folder can legitimately be absent — a box on a branch from
-      // before the app existed, or a pull that refused to merge. A real
-      // computer still gives you a shell; refusing to open one here bricked
-      // the only tool that could fix the situation. Fall back to the repo
-      // root and say so.
-      const cwdProbe = await provider.exec(
-        ctx,
-        `test -d ${JSON.stringify(`/home/user/app/${handle.appRoot}`)} && echo yes || echo no`,
-        { timeoutMs: 15_000 },
-      );
-      const appDirExists = cwdProbe.stdout.includes("yes");
-      created.terminal = await provider.openTerminal(ctx, {
-        cwd: appDirExists ? handle.appRoot : ".",
-        cols: 80,
-        rows: 24,
-        onExit: () => {
-          // The shell is gone for good. Forget it, so the next connection
-          // builds a fresh one instead of attaching to a corpse, and tell
-          // whoever is watching — the client reconnects on close, and would
-          // otherwise sit in front of a terminal that silently ignores every
-          // keystroke. This is the difference between a sandbox expiring
-          // overnight being invisible and it bricking the terminal until the
-          // API restarts.
-          if (live.get(key) === created) live.delete(key);
-          if (created.reaper) clearTimeout(created.reaper);
-          // A sentence, not the provider's wording: `reason` is whatever E2B
-          // put on the wire ("...reached end of life while the request was in
-          // flight"), which is useful in a log and baffling in a terminal. The
-          // provider already logged it.
-          const notice =
-            "\r\n\x1b[2m[this shell ended — reconnecting]\x1b[0m\r\n";
+        const flush = () => {
+          flushTimer = null;
+          if (outbox.length === 0) return;
+          const chunk = outbox.length === 1 ? outbox[0] : Buffer.concat(outbox);
+          outbox = [];
+          outboxBytes = 0;
+          remember(created, chunk);
           for (const socket of created.sockets) {
-            if (socket.readyState === socket.OPEN) {
-              socket.send(Buffer.from(notice, "utf8"));
-              socket.close(1012, "terminal ended");
+            // Skip a client that has stopped reading rather than buffering without
+            // limit: one wedged tab must not take the server with it.
+            if (
+              socket.readyState === socket.OPEN &&
+              socket.bufferedAmount < 8 * 1024 * 1024
+            ) {
+              socket.send(chunk);
             }
           }
-          created.sockets.clear();
-        },
-        onData: data => {
-          outbox.push(Buffer.from(data));
-          outboxBytes += data.length;
-          // Flush early on volume so a burst is not held back by the timer,
-          // and otherwise coalesce a frame's worth of keystroke echo.
-          if (outboxBytes >= 64 * 1024) {
-            if (flushTimer) clearTimeout(flushTimer);
-            flush();
-          } else if (!flushTimer) {
-            flushTimer = setTimeout(flush, 8);
+        };
+
+        // Hydrating here is what makes the terminal a real checkout: the
+        // sandbox holds the repository, and nothing overwrites it afterwards —
+        // so a `git checkout` typed in this shell survives.
+        const ctx = await ensureBox(handle);
+        created.ctx = ctx;
+        // The pty may be new while the SESSION is old (API restart, new
+        // sandbox connection): prefill history now, before any live output,
+        // so the client gets [history][live] in that order. A session that
+        // does not exist yet has nothing to replay.
+        const priorHistory =
+          (await sessionHistory(ctx, `/tmp/mako-hist-${termId}.raw`)) ??
+          (await tmuxHistory(ctx, `mako-${termId}`));
+        if (priorHistory) {
+          if (termId.startsWith("dev-")) {
+            // Dev windows are ring-replay sessions: put the history IN the
+            // ring, where every attaching socket (including StrictMode's
+            // second mount, which discards the first) replays it. A direct
+            // send would reach only the first, often-doomed socket.
+            remember(created, priorHistory);
+          } else if (ws.readyState === ws.OPEN) {
+            ws.send(priorHistory);
           }
-        },
-      });
-      created.flush = () => {
-        if (flushTimer) clearTimeout(flushTimer);
-        flush();
-      };
-
-      // Hand the shell to tmux when the sandbox has it. This is what makes
-      // sessions durable in the SANDBOX rather than in this process's `live`
-      // map: an API restart loses the map, but the next attach runs the same
-      // line and tmux `new -A` reattaches to the running session — scrollback,
-      // running processes and all. Guarded, not exec'd blind: a sandbox
-      // without tmux just keeps its plain bash, which is today's behavior.
-      // `clear` hides the handoff line itself so the terminal opens clean.
-      if (!appDirExists) {
-        // Into the replay buffer, not the socket list — the caller's socket
-        // attaches AFTER this block, and replay is what it reads first.
-        remember(
-          created,
-          Buffer.from(
-            `\r\n\x1b[33m[${handle.appRoot} is not in this checkout — opened at the repo root; try \x1b[1mgit pull\x1b[22m]\x1b[0m\r\n`,
-            "utf8",
-          ),
-        );
-      }
-      // Session persistence WITHOUT a screen engine. dtach is a pure
-      // socket relay around a pty: the shell's output reaches xterm.js as
-      // the linear stream it is, so the browser terminal's own scrollback
-      // and wheel physics work natively — no alternate screen, no
-      // copy-mode, no scroll-event translation. (tmux was tried first: its
-      // redraw engine and a browser terminal fight over scrolling — the
-      // wheel either goes dead or turns erratic, and stripping smcup with
-      // terminal-overrides no longer yields native scrollback on tmux 3.x,
-      // whose engine scrolls with sequences emulators rightly keep out of
-      // the scrollback buffer.) script(1) records the session to a file,
-      // which is where reattach history comes from (sessionHistory). tmux
-      // stays as the fallback for sandboxes without dtach, and remains the
-      // right tool for the HEADLESS dev-server sessions.
-      const tmuxSession = `mako-${termId}`;
-      const histFile = `/tmp/mako-hist-${termId}.raw`;
-      const dtachSock = `/tmp/mako-term-${termId}.sock`;
-      const conf =
-        `# mako-terminal v2\\nset -g mouse off\\nset -g status off\\n` +
-        `set -g history-limit 50000\\nset -g terminal-overrides ",*:smcup@:rmcup@"\\n`;
-      const handoff =
-        ` if command -v dtach >/dev/null && command -v script >/dev/null; then exec dtach -A ${dtachSock} -r winch script -qf -c 'bash -l' ${histFile}; fi; ` +
-        `command -v tmux >/dev/null && { if [ ! -f "$HOME/.tmux.conf" ] || grep -q mako-terminal "$HOME/.tmux.conf"; then printf '${conf}' > "$HOME/.tmux.conf"; fi; ` +
-        `tmux set -g mouse off 2>/dev/null; tmux set -g status off 2>/dev/null; ` +
-        `exec tmux new -A -s ${tmuxSession}; }; clear\n`;
-      await created.terminal
-        .write(new TextEncoder().encode(handoff))
-        .catch(() => undefined);
-      // Which manager took over decides the reattach strategy. Probe once:
-      // the dtach socket appears within a beat of the exec when dtach won.
-      created.tmux = true;
-      const probe = await getSandboxProvider()
-        .exec(
+        }
+        // The app's folder can legitimately be absent — a box on a branch from
+        // before the app existed, or a pull that refused to merge. A real
+        // computer still gives you a shell; refusing to open one here bricked
+        // the only tool that could fix the situation. Fall back to the repo
+        // root and say so.
+        const cwdProbe = await provider.exec(
           ctx,
-          `sleep 1; test -S ${dtachSock} && echo dtach || echo other`,
-          {
-            timeoutMs: 15_000,
+          `test -d ${JSON.stringify(`/home/user/app/${handle.appRoot}`)} && echo yes || echo no`,
+          { timeoutMs: 15_000 },
+        );
+        const appDirExists = cwdProbe.stdout.includes("yes");
+        created.terminal = await provider.openTerminal(ctx, {
+          cwd: appDirExists ? handle.appRoot : ".",
+          cols: 80,
+          rows: 24,
+          onExit: () => {
+            // The shell is gone for good. Forget it, so the next connection
+            // builds a fresh one instead of attaching to a corpse, and tell
+            // whoever is watching — the client reconnects on close, and would
+            // otherwise sit in front of a terminal that silently ignores every
+            // keystroke. This is the difference between a sandbox expiring
+            // overnight being invisible and it bricking the terminal until the
+            // API restarts.
+            if (live.get(key) === created) live.delete(key);
+            if (created.reaper) clearTimeout(created.reaper);
+            // A sentence, not the provider's wording: `reason` is whatever E2B
+            // put on the wire ("...reached end of life while the request was in
+            // flight"), which is useful in a log and baffling in a terminal. The
+            // provider already logged it.
+            const notice =
+              "\r\n\x1b[2m[this shell ended — reconnecting]\x1b[0m\r\n";
+            for (const socket of created.sockets) {
+              if (socket.readyState === socket.OPEN) {
+                socket.send(Buffer.from(notice, "utf8"));
+                socket.close(1012, "terminal ended");
+              }
+            }
+            created.sockets.clear();
           },
-        )
-        .catch(() => null);
-      if (probe?.stdout.includes("dtach")) {
-        created.histFile = histFile;
-      } else {
-        created.tmuxSession = tmuxSession;
-      }
+          onData: data => {
+            outbox.push(Buffer.from(data));
+            outboxBytes += data.length;
+            // Flush early on volume so a burst is not held back by the timer,
+            // and otherwise coalesce a frame's worth of keystroke echo.
+            if (outboxBytes >= 64 * 1024) {
+              if (flushTimer) clearTimeout(flushTimer);
+              flush();
+            } else if (!flushTimer) {
+              flushTimer = setTimeout(flush, 8);
+            }
+          },
+        });
+        created.flush = () => {
+          if (flushTimer) clearTimeout(flushTimer);
+          flush();
+        };
 
-      live.set(key, created);
-      session = created;
-      logger.info("Apps v2 terminal started", {
-        projectId: project._id.toString(),
-        appRoot: handle.appRoot,
-      });
+        // Hand the shell to tmux when the sandbox has it. This is what makes
+        // sessions durable in the SANDBOX rather than in this process's `live`
+        // map: an API restart loses the map, but the next attach runs the same
+        // line and tmux `new -A` reattaches to the running session — scrollback,
+        // running processes and all. Guarded, not exec'd blind: a sandbox
+        // without tmux just keeps its plain bash, which is today's behavior.
+        // `clear` hides the handoff line itself so the terminal opens clean.
+        if (!appDirExists) {
+          // Into the replay buffer, not the socket list — the caller's socket
+          // attaches AFTER this block, and replay is what it reads first.
+          remember(
+            created,
+            Buffer.from(
+              `\r\n\x1b[33m[${handle.appRoot} is not in this checkout — opened at the repo root; try \x1b[1mgit pull\x1b[22m]\x1b[0m\r\n`,
+              "utf8",
+            ),
+          );
+        }
+        // Session persistence WITHOUT a screen engine. dtach is a pure
+        // socket relay around a pty: the shell's output reaches xterm.js as
+        // the linear stream it is, so the browser terminal's own scrollback
+        // and wheel physics work natively — no alternate screen, no
+        // copy-mode, no scroll-event translation. (tmux was tried first: its
+        // redraw engine and a browser terminal fight over scrolling — the
+        // wheel either goes dead or turns erratic, and stripping smcup with
+        // terminal-overrides no longer yields native scrollback on tmux 3.x,
+        // whose engine scrolls with sequences emulators rightly keep out of
+        // the scrollback buffer.) script(1) records the session to a file,
+        // which is where reattach history comes from (sessionHistory). tmux
+        // stays as the fallback for sandboxes without dtach, and remains the
+        // right tool for the HEADLESS dev-server sessions.
+        const tmuxSession = `mako-${termId}`;
+        const histFile = `/tmp/mako-hist-${termId}.raw`;
+        const dtachSock = `/tmp/mako-term-${termId}.sock`;
+        // A `dev-<slug>` terminal is a WINDOW onto a session the dev-server
+        // service owns (ensureDevServer starts it headlessly with dtach -n,
+        // same socket/history naming). Attach-only: never start a shell at
+        // this id — if the session is not up yet, wait for the socket and
+        // attach the moment it appears. Ctrl-C then reaches vite like any
+        // process in a terminal, colors flow because vite has a real pty,
+        // and scrollback/prefill work exactly as in every other session.
+        const isDevWindow = termId.startsWith("dev-");
+        const conf =
+          `# mako-terminal v2\\nset -g mouse off\\nset -g status off\\n` +
+          `set -g history-limit 50000\\nset -g terminal-overrides ",*:smcup@:rmcup@"\\n`;
+        const handoff = isDevWindow
+          ? // Not running yet: say so, then tail the recording (a cold Launch
+            // tees npm install into it — live progress), and attach the
+            // moment the session's socket appears. Running: attach directly.
+            ` set +m; if [ ! -S ${dtachSock} ]; then printf '\\x1b[2m[waiting for the dev server]\\x1b[0m\\r\\n'; tail -n 0 -F ${histFile} 2>/dev/null & MAKO_TP=$!; while [ ! -S ${dtachSock} ]; do sleep 0.5; done; kill $MAKO_TP 2>/dev/null; fi; exec dtach -A ${dtachSock} -r winch true\n`
+          : ` if command -v dtach >/dev/null && command -v script >/dev/null; then exec dtach -A ${dtachSock} -r winch script -qf -c 'bash -l' ${histFile}; fi; ` +
+            `command -v tmux >/dev/null && { if [ ! -f "$HOME/.tmux.conf" ] || grep -q mako-terminal "$HOME/.tmux.conf"; then printf '${conf}' > "$HOME/.tmux.conf"; fi; ` +
+            `tmux set -g mouse off 2>/dev/null; tmux set -g status off 2>/dev/null; ` +
+            `exec tmux new -A -s ${tmuxSession}; }; clear\n`;
+        await created.terminal
+          .write(new TextEncoder().encode(handoff))
+          .catch(() => undefined);
+        // Which manager took over decides the reattach strategy. Probe once:
+        // the dtach socket appears within a beat of the exec when dtach won.
+        if (isDevWindow) {
+          // A dev window is a plain ring-buffer session: dtach relays vite's
+          // bytes with no terminal queries (the tmux-era reason to skip the
+          // ring), so the ring replay is safe AND necessary — it is what
+          // carries the waiting notice, the boot stream and the attach
+          // output to sockets that connect after the pty was born
+          // (StrictMode double-mounts eat one-shot output otherwise).
+          created.tmux = false;
+        } else {
+          created.tmux = true;
+          const probe = await getSandboxProvider()
+            .exec(
+              ctx,
+              `sleep 1; test -S ${dtachSock} && echo dtach || echo other`,
+              { timeoutMs: 15_000 },
+            )
+            .catch(() => null);
+          if (probe?.stdout.includes("dtach")) {
+            created.histFile = histFile;
+          } else {
+            created.tmuxSession = tmuxSession;
+          }
+        }
+
+        live.set(key, created);
+        session = created;
+        logger.info("Apps v2 terminal started", {
+          termId,
+          projectId: project._id.toString(),
+          appRoot: handle.appRoot,
+        });
+        resolveCreated(created);
+      } catch (error) {
+        rejectCreated(error);
+        throw error;
+      } finally {
+        creating.delete(key);
+      }
     }
   }
 
   const current = session;
   current.sockets.add(ws);
+  if (ranCreation && !current.tmux) {
+    // The creator's socket is attached AFTER the pty started talking, so
+    // whatever the shell said in between lives only in the ring. Replay it —
+    // for a dev window that is the waiting notice and the boot stream.
+    reattach(current, ws);
+  }
 
   ws.on("message", (raw: Buffer, isBinary: boolean) => {
     if (!isBinary) {

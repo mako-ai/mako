@@ -60,7 +60,18 @@ function appSlug(handle: WorktreeHandle): string {
  * file per app so each workbench's Dev server tab tails its own boot.
  */
 export function devLogPath(handle: WorktreeHandle): string {
-  return `/tmp/mako-dev-${appSlug(handle)}.log`;
+  // The dev server IS a terminal session (dtach socket mako-term-dev-<slug>,
+  // recording mako-hist-dev-<slug>.raw — the same naming every interactive
+  // session uses), so the workbench's dev tab attaches to it like any other
+  // shell: colors, scrollback, prefill and Ctrl-C all come from the same
+  // machinery. This file doubles as the boot log the route tees npm install
+  // into, so the recording holds the WHOLE story of a boot.
+  return `/tmp/mako-hist-dev-${appSlug(handle)}.raw`;
+}
+
+/** The dev session's dtach socket — its existence is "the server has a session". */
+function devSockPath(handle: WorktreeHandle): string {
+  return `/tmp/mako-term-dev-${appSlug(handle)}.sock`;
 }
 
 function launcherPath(handle: WorktreeHandle): string {
@@ -342,16 +353,21 @@ export async function ensureDevServer(
       );
     }
 
-    // The dev server is a SESSION, not a daemon: inside tmux it is
-    // `tmux attach -t mako-dev-<slug>` away from any shell, survives API
-    // restarts like every other session, and shows up in `tmux ls` next to
-    // the user's own shells — the launcher still tees to the log so the
-    // boot tab can tail it. Sandboxes without tmux fall back to nohup,
-    // which is the same server minus the attachability.
+    // The dev server is a SESSION the workbench attaches to like any shell:
+    // dtach -n creates it headless on the standard socket, script(1) gives
+    // vite a REAL PTY (so it prints colors) and records everything to the
+    // same file the install step teed into — one recording holds the whole
+    // boot, and the dev terminal's prefill replays it. Ctrl-C typed in the
+    // attached window reaches vite and ends the session; the stale-socket
+    // rm covers a SIGKILLed predecessor. Fallbacks: tmux (headless, no
+    // attach UI), then plain nohup.
+    const devSock = devSockPath(handle);
     const devSession = `mako-dev-${appSlug(handle)}`;
     await provider.execDetached(
       ctx,
-      `if command -v tmux >/dev/null; then tmux new-session -d -s ${devSession} 'node ${launcher} 2>&1 | tee -a ${logPath}' 2>/dev/null || true; else nohup node ${launcher} >> ${logPath} 2>&1 & fi; echo started`,
+      `if command -v dtach >/dev/null && command -v script >/dev/null; then rm -f ${devSock}; dtach -n ${devSock} script -qfa -c 'node ${launcher} 2>&1' ${logPath}; ` +
+        `elif command -v tmux >/dev/null; then tmux new-session -d -s ${devSession} 'node ${launcher} 2>&1 | tee -a ${logPath}' 2>/dev/null || true; ` +
+        `else nohup node ${launcher} >> ${logPath} 2>&1 & fi; echo started`,
       { cwd: handle.appRoot, timeoutMs: 60_000 },
     );
 
