@@ -213,10 +213,30 @@ async function loadProject(
   const userId = actingUserId(c);
   if (userId) {
     const role = await memberRoleFor(workspaceId, userId);
-    const allowed = opts.write
-      ? canWriteResource(project, userId, role)
-      : canReadResource(project, userId, role);
-    if (!allowed) {
+    if (opts.write && !canWriteResource(project, userId, role)) {
+      // Distinguish "can't touch it" from "doesn't exist". If the caller can
+      // READ the app but not write it, a write-gated action (like starting a
+      // dev preview) must NOT masquerade as "App not found" — the app is
+      // right there in their list. Say it's read-only instead. Only when the
+      // app is invisible to them too do we fall through to the 404, which
+      // deliberately does not reveal that a private app exists.
+      if (canReadResource(project, userId, role)) {
+        return {
+          errorResponse: c.json(
+            {
+              success: false,
+              error:
+                "You have read-only access to this app. Ask an editor or the owner to run it in dev mode (or to share edit access with you).",
+            },
+            403,
+          ),
+        };
+      }
+      return {
+        errorResponse: c.json({ success: false, error: "App not found" }, 404),
+      };
+    }
+    if (!opts.write && !canReadResource(project, userId, role)) {
       return {
         errorResponse: c.json({ success: false, error: "App not found" }, 404),
       };
