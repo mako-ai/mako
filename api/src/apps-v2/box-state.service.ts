@@ -112,7 +112,15 @@ function memoryStore(): StateStore {
 }
 
 function redisStore(url: string): StateStore {
-  const redis = new Redis(url, { maxRetriesPerRequest: 2 });
+  // Fail fast. This is a cache in front of discovery: while Redis is down a
+  // read must fall through to the sandbox in milliseconds, not after the
+  // client has queued the command and retried it (measured: 3–5s per read,
+  // 12s for a git action, during an outage). No offline queue, one retry.
+  const redis = new Redis(url, {
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    connectTimeout: 2000,
+  });
   redis.on("error", error =>
     logger.warn("Apps v2 box-state redis error", {
       error: error instanceof Error ? error.message : String(error),

@@ -708,12 +708,16 @@ export async function boxGitPaths(
   } else if (action === "unstage") {
     command = boxGit(ctx, "reset", "-q", "HEAD", "--", ...safe);
   } else {
-    command = safe
-      .map(
-        p =>
-          `(${boxGit(ctx, "clean", "-qf", "--", p)} || true); (${boxGit(ctx, "checkout", "-q", "--", p)} 2>/dev/null || true)`,
-      )
-      .join("; ");
+    // Tracked paths go back to the index version (checkout), untracked ones
+    // are removed (clean) — split by `ls-files` so each command runs ONCE
+    // over its list. Per-path invocations were 2 git calls per file, which
+    // on 300 files outlived the request; and a single checkout over a mixed
+    // list aborts entirely on the first untracked pathspec.
+    const list = safe.map(sh).join(" ");
+    command =
+      `tracked=$(${boxGit(ctx, "ls-files", "-z", "--")} ${list} | tr '\\0' '\\n'); ` +
+      `if [ -n "$tracked" ]; then printf '%s\\n' "$tracked" | tr '\\n' '\\0' | xargs -0 git -C ${sh(boxRoot(ctx))} checkout -q -- ; fi; ` +
+      `${boxGit(ctx, "clean", "-qf", "--")} ${list}`;
   }
   const result = await boxExec(ctx, command, { timeoutMs: 120_000 });
   if (result.exitCode !== 0) {
