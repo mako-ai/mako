@@ -94,6 +94,7 @@ import {
 } from "../apps-v2/terminal-ws";
 import {
   devLogPath,
+  devServerStatus,
   ensureDevServer,
   isServingApp,
 } from "../apps-v2/dev-server.service";
@@ -1536,8 +1537,8 @@ appsV2Routes.openapi(
         loaded.project,
         loaded.userId ?? "api-key",
       );
-      const serving = await isServingApp(handle);
-      return c.json({ success: true as const, serving }, 200);
+      const status = await devServerStatus(handle);
+      return c.json({ success: true as const, ...status }, 200);
     } catch (error) {
       return handleError(c, error);
     }

@@ -348,12 +348,27 @@ async function servingState(
  * permanently blank after a page reload.
  */
 export async function isServingApp(handle: WorktreeHandle): Promise<boolean> {
+  return (await devServerStatus(handle)).serving;
+}
+
+/**
+ * Discovery, not memory: is this app's dev server serving, and where?
+ * The url lets a fresh browser (no client-side state at all) walk up to an
+ * app whose server is already running and just show it.
+ */
+export async function devServerStatus(
+  handle: WorktreeHandle,
+): Promise<{ serving: boolean; url?: string }> {
   const provider = getSandboxProvider();
   const ctx = boxCtx(handle);
-  if (!(await provider.hasSession(ctx))) return false;
+  if (!(await provider.hasSession(ctx))) return { serving: false };
   const port = await devPort(handle, provider, ctx, { allocate: false });
-  if (!port) return false;
-  return (await servingState(provider, ctx, handle, port)) === "serving";
+  if (!port) return { serving: false };
+  if ((await servingState(provider, ctx, handle, port)) !== "serving") {
+    return { serving: false };
+  }
+  const url = await provider.publicUrlForPort(ctx, port);
+  return { serving: true, url };
 }
 
 /**

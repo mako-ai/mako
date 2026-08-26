@@ -330,7 +330,10 @@ function TerminalPanel({
           {status}
         </Typography>
       </Box>
-      <Box ref={hostRef} sx={{ flex: 1, minHeight: 0, p: 0.5 }} />
+      <Box
+        ref={hostRef}
+        sx={{ flex: 1, minHeight: 0, pt: 0.5, px: 0.5, pb: 1.5 }}
+      />
     </Box>
   );
 }
@@ -707,13 +710,18 @@ export default function AppV2Workspace({
   // dev terminal, a crash, or a recycled sandbox all flip the workbench to
   // the launch state within one beat instead of showing a stale "live".
   useEffect(() => {
-    if (!workspaceId || !devSessionLive) return;
+    if (!workspaceId || !editing) return;
+    // Immediately on entering the workbench: DISCOVER a server that is
+    // already running (started elsewhere, or client state lost) instead of
+    // asking the user to "start" it. Then keep verifying while editing —
+    // the same probe notices Ctrl-C/crashes and flips the other way.
+    void checkDevStatus(workspaceId, appId);
     const timer = setInterval(
       () => void checkDevStatus(workspaceId, appId),
       15_000,
     );
     return () => clearInterval(timer);
-  }, [workspaceId, appId, devSessionLive, checkDevStatus]);
+  }, [workspaceId, appId, editing, checkDevStatus]);
 
   const fetchApps = useAppsV2Store(s => s.fetchApps);
   const fetchFiles = useAppsV2Store(s => s.fetchFiles);

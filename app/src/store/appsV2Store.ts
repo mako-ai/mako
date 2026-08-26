@@ -1117,7 +1117,32 @@ export const useAppsV2Store = create<AppsV2Store>()(
             "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview/status",
             { params: { path: { workspaceId, id: appId } } },
           ),
-        ) as { serving?: boolean };
+        ) as { serving?: boolean; url?: string };
+        if (body.serving && body.url) {
+          // Discovery: a dev server is ALREADY running for this app (started
+          // in another tab, another browser, or before a reload that lost
+          // client state). Show it — do not make the user "start" a thing
+          // that is running.
+          try {
+            localStorage.setItem(`apps-v2-devurl:${appId}`, body.url);
+          } catch {
+            // Best effort.
+          }
+          set(s => {
+            const current = s.previewByApp[appId];
+            if (!current?.building && current?.url !== body.url) {
+              s.previewByApp[appId] = {
+                url: body.url ?? null,
+                building: false,
+                error: null,
+                builtAt: Date.now(),
+                mode: "dev",
+              };
+              s.viewMode[appId] = "preview";
+            }
+          });
+          return;
+        }
         if (body.serving === false) {
           try {
             localStorage.removeItem(`apps-v2-devurl:${appId}`);
