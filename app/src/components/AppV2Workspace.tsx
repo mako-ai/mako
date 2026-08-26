@@ -108,7 +108,7 @@ function TerminalPanel({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
-    fit.fit();
+    if (host.clientWidth && host.clientHeight) fit.fit();
 
     let ws: WebSocket | null = null;
     let attempt = 0;
@@ -149,13 +149,28 @@ function TerminalPanel({
       return true;
     });
 
+    let resizeRaf = 0;
     const sendResize = () => {
-      fit.fit();
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(
-          JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }),
-        );
-      }
+      // Coalesce to one refit per frame, and never fit a zero-size host: a
+      // hidden pane (display:none session) measures 0x0, and fitting to it
+      // corrupts cols/rows in a way the next real fit does not always fully
+      // repair — which is how a terminal ended up drawing 24 rows in a
+      // 700px pane after a drawer resize.
+      if (resizeRaf) return;
+      resizeRaf = requestAnimationFrame(() => {
+        resizeRaf = 0;
+        if (!host.clientWidth || !host.clientHeight) return;
+        fit.fit();
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: "resize",
+              cols: term.cols,
+              rows: term.rows,
+            }),
+          );
+        }
+      });
     };
 
     const connect = () => {
@@ -199,10 +214,13 @@ function TerminalPanel({
     const typed = term.onData(send);
     const observer = new ResizeObserver(() => sendResize());
     observer.observe(host);
+    window.addEventListener("resize", sendResize);
 
     return () => {
       disposed = true;
       if (retry) clearTimeout(retry);
+      if (resizeRaf) cancelAnimationFrame(resizeRaf);
+      window.removeEventListener("resize", sendResize);
       observer.disconnect();
       typed.dispose();
       ws?.close();

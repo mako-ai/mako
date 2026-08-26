@@ -177,6 +177,17 @@ interface LiveTerminal {
   flush: () => void;
   /** Set when the last socket leaves; cancelled if someone comes back. */
   reaper: NodeJS.Timeout | null;
+  /**
+   * The shell handed itself off to tmux. Replay is then WRONG, not just
+   * redundant: the buffered output contains tmux's terminal queries (device
+   * attributes, cursor position), and a reconnecting xterm re-answers every
+   * one — the answers land at the shell prompt as junk keystrokes
+   * ("0;276;0c", strings of R's). tmux repaints the screen itself; all a
+   * returning client needs is one real resize to trigger it.
+   */
+  tmux: boolean;
+  /** A client reattached; force a repaint via a size jiggle on next resize. */
+  repaint: boolean;
 }
 
 const live = new Map<string, LiveTerminal>();
@@ -266,6 +277,12 @@ function reattach(session: LiveTerminal, ws: WebSocket): void {
     clearTimeout(session.reaper);
     session.reaper = null;
   }
+  if (session.tmux) {
+    // No replay (see LiveTerminal.tmux) — mark the session so the client's
+    // first resize triggers a full tmux repaint instead.
+    session.repaint = true;
+    return;
+  }
   // Push any batched-but-unsent output into the scrollback first, or the
   // replay would end up to one flush-interval short of what the shell has
   // actually printed.
@@ -325,6 +342,8 @@ async function startSession(
         sockets: new Set(),
         reaper: null,
         flush: () => undefined,
+        tmux: false,
+        repaint: false,
       };
       // Output is BATCHED before it leaves the process.
       //
@@ -440,14 +459,19 @@ async function startSession(
           ),
         );
       }
+      // Mouse mode makes the wheel scroll tmux's own history — without it,
+      // tmux's alternate screen leaves xterm.js with nothing to scroll and
+      // the wheel goes dead. history-limit is the scrollback that wheel
+      // reaches. Only written once, so a user's own ~/.tmux.conf wins.
       const tmuxSession = `mako-${termId}`;
       await created.terminal
         .write(
           new TextEncoder().encode(
-            ` command -v tmux >/dev/null && exec tmux new -A -s ${tmuxSession}; clear\n`,
+            ` command -v tmux >/dev/null && { [ -f "$HOME/.tmux.conf" ] || printf 'set -g mouse on\\nset -g history-limit 50000\\n' > "$HOME/.tmux.conf"; tmux set -g mouse on 2>/dev/null; tmux set -g history-limit 50000 2>/dev/null; exec tmux new -A -s ${tmuxSession}; }; clear\n`,
           ),
         )
         .catch(() => undefined);
+      created.tmux = true;
 
       live.set(key, created);
       session = created;
@@ -468,6 +492,19 @@ async function startSession(
         try {
           const msg = JSON.parse(text) as ResizeMessage;
           if (msg.type === "resize" && msg.cols > 0 && msg.rows > 0) {
+            if (current.repaint) {
+              // tmux only repaints when the size CHANGES, and a reattaching
+              // client usually reports exactly the size the pty already
+              // has. One row down, then the real size: guaranteed change,
+              // full redraw, invisible to the eye.
+              current.repaint = false;
+              const jiggle = msg.rows > 1 ? msg.rows - 1 : msg.rows + 1;
+              void current.terminal
+                .resize(msg.cols, jiggle)
+                .then(() => current.terminal.resize(msg.cols, msg.rows))
+                .catch(() => undefined);
+              return;
+            }
             void current.terminal
               .resize(msg.cols, msg.rows)
               .catch(() => undefined);

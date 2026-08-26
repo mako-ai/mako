@@ -329,7 +329,8 @@ export async function ensureDevServer(
   const logPath = devLogPath(handle);
   const launcher = launcherPath(handle);
 
-  if (!(await listening(provider, ctx, port))) {
+  const wasListening = await listening(provider, ctx, port);
+  if (!wasListening) {
     const write = await provider.exec(
       ctx,
       `cat > ${launcher} <<'MAKO_LAUNCHER_EOF'\n${launcherSource(appDir, port, dataDir(handle))}\nMAKO_LAUNCHER_EOF\necho written`,
@@ -375,8 +376,21 @@ export async function ensureDevServer(
   }
 
   // Refresh staged data on every call, so re-materializing a binding and
-  // hitting preview again picks up the new rows without a restart.
-  const stagedBindings = await stageBindingData(handle, provider, ctx);
+  // hitting preview again picks up the new rows without a restart. On a
+  // REATTACH, though, the previous staging is still on disk and almost
+  // always current — restage in the background instead of adding seconds
+  // of exec round-trips to a page reload that should feel instant.
+  let stagedBindings: string[] = [];
+  if (wasListening) {
+    void stageBindingData(handle, provider, ctx).catch(error => {
+      logger.warn("Apps v2 background binding restage failed", {
+        projectId: handle.project._id.toString(),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  } else {
+    stagedBindings = await stageBindingData(handle, provider, ctx);
+  }
 
   const url = await provider.publicUrlForPort(ctx, port);
   logger.info("Apps v2 dev preview ready", {

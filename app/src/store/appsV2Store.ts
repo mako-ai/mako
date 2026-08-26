@@ -1106,12 +1106,35 @@ export const useAppsV2Store = create<AppsV2Store>()(
     },
 
     startDevPreview: async (workspaceId, appId) => {
+      // Optimistic reattach: if this app had a dev server last time, its URL
+      // is almost certainly still valid (the sandbox sleeps rather than
+      // dies), so show the iframe IMMEDIATELY and let the POST revalidate
+      // behind it. Cold starts still show the boot state — there is no
+      // remembered URL to be optimistic with. A stale URL costs a broken
+      // iframe for the seconds until the POST corrects it; the alternative
+      // cost 10+ seconds of "Starting..." on every reload, for a server
+      // that was already running.
+      let optimistic: string | null = null;
+      try {
+        optimistic = localStorage.getItem(`apps-v2-devurl:${appId}`);
+      } catch {
+        // Storage unavailable — no optimism, same as before.
+      }
       set(s => {
-        s.previewByApp[appId] = {
-          ...(s.previewByApp[appId] ?? { url: null }),
-          building: true,
-          error: null,
-        };
+        s.previewByApp[appId] = optimistic
+          ? {
+              url: optimistic,
+              building: false,
+              error: null,
+              builtAt: Date.now(),
+              mode: "dev",
+            }
+          : {
+              ...(s.previewByApp[appId] ?? { url: null }),
+              building: true,
+              error: null,
+            };
+        if (optimistic) s.viewMode[appId] = "preview";
       });
       try {
         // One retry, for the takeover shape: when another app's dev server
@@ -1140,6 +1163,11 @@ export const useAppsV2Store = create<AppsV2Store>()(
           | { success?: boolean; url?: string; error?: string }
           | undefined;
         if (res.response.ok && raw?.url) {
+          try {
+            localStorage.setItem(`apps-v2-devurl:${appId}`, raw.url);
+          } catch {
+            // Best effort.
+          }
           set(s => {
             s.previewByApp[appId] = {
               url: raw.url ?? null,
