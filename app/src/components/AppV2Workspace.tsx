@@ -699,6 +699,11 @@ export default function AppV2Workspace({
   // others rather than a hand-picked 5px.
   const editing = useAppsV2Store(s => s.editingByApp[appId] ?? false);
   const setEditing = useAppsV2Store(s => s.setEditing);
+  const killTerminalSession = useAppsV2Store(s => s.killTerminalSession);
+  const markDevDown = useAppsV2Store(s => s.markDevDown);
+  const slug = useAppsV2Store(
+    s => s.apps.find(a => a.id === appId)?.slug ?? null,
+  );
   const viewUrl = useAppsV2Store(s => s.viewUrlByApp[appId]);
   const fetchViewUrl = useAppsV2Store(s => s.fetchViewUrl);
 
@@ -862,11 +867,22 @@ export default function AppV2Workspace({
         </Tooltip>
         <Box sx={{ flex: 1 }} />
         {editing && (
-          <Tooltip title="Back to viewing — the sandbox keeps running; the terminal and preview just leave the screen.">
+          <Tooltip title="Stop the dev server and go back to viewing. Your shells and the sandbox keep running.">
             <Button
               size="small"
               variant="text"
-              onClick={() => setEditing(workspaceId, appId, false)}
+              onClick={() => {
+                // Leaving dev mode STOPS the dev server: a session nobody is
+                // watching kept vite (and its green dot) alive indefinitely,
+                // and "exit" that leaves the process running is not an exit.
+                // Killing the session reaps vite; the launcher reports "down"
+                // and the dot clears on the push.
+                setEditing(workspaceId, appId, false);
+                if (slug) {
+                  void killTerminalSession(workspaceId, appId, `dev-${slug}`);
+                }
+                markDevDown(appId);
+              }}
             >
               Exit dev mode
             </Button>

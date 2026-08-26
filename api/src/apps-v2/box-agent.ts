@@ -37,7 +37,7 @@ const ENSURE_INTERVAL_MS = 5 * 60 * 1000;
 function agentSource(root: string, envPath: string): string {
   const body = `
 import { execFile } from "node:child_process";
-import { appendFileSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -115,31 +115,27 @@ async function gitState() {
 }
 
 async function devServers() {
+  // Truth is the PORT, not the session socket: a server whose dtach session
+  // died (an orphan) still answers, still holds its port, and must still
+  // show as running — that is exactly the state a user needs to see and
+  // stop. The port registry names every app that ever got a port; probe
+  // each and report the ones that answer.
   let ports = {};
   try {
     ports = JSON.parse(readFileSync(PORTS, "utf8"));
   } catch {
     ports = {};
   }
-  let files = [];
-  try {
-    files = readdirSync("/tmp");
-  } catch {
-    return [];
-  }
   const out = [];
-  for (const file of files) {
-    const m = /^mako-term-dev-(.+)\\.sock$/.exec(file);
-    if (!m) continue;
-    const port = ports["apps/" + m[1]];
+  for (const [key, port] of Object.entries(ports)) {
     if (!Number.isInteger(port)) continue;
-    // A socket names a session; only a port that ANSWERS is a server.
+    const slug = key.replace(/^apps\\//, "");
     const up = await fetch("http://127.0.0.1:" + port + "/", {
       signal: AbortSignal.timeout(800),
     })
       .then(() => true)
       .catch(() => false);
-    if (up) out.push({ slug: m[1], port });
+    if (up) out.push({ slug, port });
   }
   return out;
 }

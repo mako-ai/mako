@@ -506,19 +506,30 @@ export async function killTerminalSession(
   const handle = await ensureWorktree(project, userId);
   const ctx = boxCtx(handle);
   if (await getSandboxProvider().hasSession(ctx)) {
-    await getSandboxProvider()
+    const provider = getSandboxProvider();
+    // Two execs on purpose. `pkill -f` matches against every process's
+    // command line — INCLUDING the shell running this very command. The
+    // [m] guard keeps the pattern itself from matching, but any other
+    // literal mention of the same path in the same command (the rm below)
+    // made the shell match, kill itself, and skip everything after the
+    // first pkill: the launcher survived every "kill" with its port. So the
+    // kills run alone, with nothing else on their command line.
+    const slug = termId.startsWith("dev-") ? termId.slice(4) : null;
+    await provider
       .exec(
         ctx,
-        `pkill -f "mako-term-${termId}.sock" 2>/dev/null; ` +
+        `pkill -f "[m]ako-term-${termId}.sock" 2>/dev/null; ` +
           // A dev session's real payload is the node launcher hosting vite —
-          // a child the dtach kill does not reach. Killing the session while
-          // leaving the server holding its port is the worst of both worlds:
-          // reap it by launcher path, same as the orphan path does.
-          (termId.startsWith("dev-")
-            ? `pkill -f "[m]ako-dev-${termId.slice(4)}.mjs" 2>/dev/null; `
-            : "") +
-          `tmux kill-session -t mako-${termId} 2>/dev/null; ` +
-          `rm -f /tmp/mako-term-${termId}.sock /tmp/mako-hist-${termId}.raw; echo done`,
+          // a child the dtach kill does not reach. Reap it by launcher path.
+          (slug ? `pkill -f "[m]ako-dev-${slug}.mjs" 2>/dev/null; ` : "") +
+          `tmux kill-session -t mako-${termId} 2>/dev/null; echo killed`,
+        { timeoutMs: 30_000 },
+      )
+      .catch(() => undefined);
+    await provider
+      .exec(
+        ctx,
+        `rm -f /tmp/mako-term-${termId}.sock /tmp/mako-hist-${termId}.raw; echo done`,
         { timeoutMs: 30_000 },
       )
       .catch(() => undefined);
