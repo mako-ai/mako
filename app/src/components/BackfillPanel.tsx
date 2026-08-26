@@ -42,6 +42,13 @@ import {
   WarningAmber as WarningAmberIcon,
 } from "@mui/icons-material";
 import { useFlowStore } from "../store/flowStore";
+import {
+  pillToneForMuiColor,
+  ResultBadge,
+  SpinnerRingBadge,
+  StatusPill,
+} from "./bui-status";
+import { BUI_MONO_FONT_FAMILY } from "./chat/bui-styles";
 
 interface BackfillPanelProps {
   workspaceId: string;
@@ -1019,12 +1026,9 @@ export function BackfillPanel({
                       mb: 0.75,
                     }}
                   >
-                    <Chip
-                      label={ss.label}
-                      color={ss.color}
-                      size="small"
-                      sx={{ fontWeight: 600, fontSize: "0.75rem" }}
-                    />
+                    <StatusPill tone={pillToneForMuiColor(ss.color)}>
+                      {ss.label}
+                    </StatusPill>
                     {cdc.lagSeconds !== null && (
                       <Typography
                         variant="caption"
@@ -1128,12 +1132,9 @@ export function BackfillPanel({
             <Box sx={kpi}>
               <Typography sx={kpiLabel}>Backfill</Typography>
               <Box sx={{ mb: 0.75 }}>
-                <Chip
-                  label={bs.label}
-                  color={bs.color}
-                  size="small"
-                  sx={{ fontWeight: 600, fontSize: "0.75rem" }}
-                />
+                <StatusPill tone={pillToneForMuiColor(bs.color)}>
+                  {bs.label}
+                </StatusPill>
               </Box>
               <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
                 {(bfStatus === "idle" || bfStatus === "completed") && (
@@ -1484,17 +1485,11 @@ export function BackfillPanel({
                                       : ""
                                   }
                                 >
-                                  <Chip
-                                    label={streamChip.label}
-                                    color={streamChip.color}
-                                    size="small"
-                                    variant="outlined"
-                                    sx={{
-                                      height: 22,
-                                      fontSize: "0.68rem",
-                                      fontWeight: 500,
-                                    }}
-                                  />
+                                  <StatusPill
+                                    tone={pillToneForMuiColor(streamChip.color)}
+                                  >
+                                    {streamChip.label}
+                                  </StatusPill>
                                 </Tooltip>
                               )}
                             </TableCell>
@@ -1506,17 +1501,11 @@ export function BackfillPanel({
                                   gap: 0.75,
                                 }}
                               >
-                                <Chip
-                                  label={backfillChip.label}
-                                  color={backfillChip.color}
-                                  size="small"
-                                  variant="outlined"
-                                  sx={{
-                                    height: 22,
-                                    fontSize: "0.68rem",
-                                    fontWeight: 500,
-                                  }}
-                                />
+                                <StatusPill
+                                  tone={pillToneForMuiColor(backfillChip.color)}
+                                >
+                                  {backfillChip.label}
+                                </StatusPill>
                                 {e.execStatus === "syncing" && (
                                   <Typography
                                     variant="caption"
@@ -1779,15 +1768,14 @@ export function BackfillPanel({
                   >
                     {executionId ? "Running" : "Last run"}
                   </Typography>
-                  {executionId && (
-                    <LinearProgress sx={{ width: 40, height: 3 }} />
-                  )}
+                  {executionId && <SpinnerRingBadge size={14} />}
                 </Box>
                 <Box
                   sx={{
-                    borderRadius: 1,
-                    border: 1,
-                    borderColor: executionId ? "info.main" : "divider",
+                    borderRadius: "10px",
+                    boxShadow: executionId
+                      ? "0 0 0 1px var(--bui-accent)"
+                      : "var(--bui-shadow-hairline)",
                     bgcolor: "grey.950",
                     p: 1.5,
                     height: 200,
@@ -1950,144 +1938,155 @@ export function BackfillPanel({
                     Past runs
                   </Typography>
                 )}
-                <TableContainer
-                  sx={{ borderRadius: 1, border: 1, borderColor: "divider" }}
+                {/* BUI Task Rows: badge + started time + duration/log meta +
+                    status pill; click loads the run's logs. */}
+                <Box
+                  sx={{
+                    borderRadius: "14px",
+                    backgroundColor: "var(--bui-surface)",
+                    boxShadow: "var(--bui-shadow-card)",
+                    p: 0.5,
+                    display: "flex",
+                    flexDirection: "column",
+                  }}
                 >
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow
+                  {runs.map(run => {
+                    const durationStr = run.duration
+                      ? run.duration < 60000
+                        ? `${Math.round(run.duration / 1000)}s`
+                        : run.duration < 3600000
+                          ? `${Math.floor(run.duration / 60000)}m ${Math.round((run.duration % 60000) / 1000)}s`
+                          : `${Math.floor(run.duration / 3600000)}h ${Math.floor((run.duration % 3600000) / 60000)}m`
+                      : "—";
+                    const errorText = run.error
+                      ? typeof run.error === "string"
+                        ? run.error
+                        : run.error.message
+                      : null;
+                    const logCount = (run as { logCount?: number }).logCount;
+                    return (
+                      <Box
+                        key={run.executionId}
+                        onClick={() => loadRunLogs(run.executionId)}
                         sx={{
-                          "& th": {
-                            fontSize: "0.72rem",
-                            color: "text.secondary",
-                            fontWeight: 600,
-                            textTransform: "uppercase",
-                            letterSpacing: 0.3,
+                          px: 1,
+                          py: 0.75,
+                          borderRadius: "8px",
+                          cursor: "pointer",
+                          transition: "background-color 0.1s",
+                          "&:hover": {
+                            backgroundColor: "var(--bui-hover)",
                           },
                         }}
                       >
-                        <TableCell>Status</TableCell>
-                        <TableCell>Started</TableCell>
-                        <TableCell align="right">Duration</TableCell>
-                        <TableCell align="right">Logs</TableCell>
-                        <TableCell>Error</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {runs.map(run => {
-                        const chipColor =
-                          run.status === "completed"
-                            ? ("success" as const)
-                            : run.status === "failed"
-                              ? ("error" as const)
-                              : run.status === "abandoned"
-                                ? ("warning" as const)
-                                : run.status === "running"
-                                  ? ("info" as const)
-                                  : ("default" as const);
-                        const durationStr = run.duration
-                          ? run.duration < 60000
-                            ? `${Math.round(run.duration / 1000)}s`
-                            : run.duration < 3600000
-                              ? `${Math.floor(run.duration / 60000)}m ${Math.round((run.duration % 60000) / 1000)}s`
-                              : `${Math.floor(run.duration / 3600000)}h ${Math.floor((run.duration % 3600000) / 60000)}m`
-                          : "—";
-                        return (
-                          <TableRow
-                            key={run.executionId}
-                            hover
-                            onClick={() => loadRunLogs(run.executionId)}
+                        <Box
+                          sx={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 1.25,
+                          }}
+                        >
+                          {run.status === "running" ? (
+                            <SpinnerRingBadge size={18} />
+                          ) : (
+                            <ResultBadge
+                              size={18}
+                              tone={
+                                run.status === "completed"
+                                  ? "green"
+                                  : run.status === "failed"
+                                    ? "red"
+                                    : "neutral"
+                              }
+                            />
+                          )}
+                          <Typography
                             sx={{
-                              cursor: "pointer",
-                              "&:last-child td": { borderBottom: 0 },
+                              fontSize: "12.5px",
+                              fontWeight: 500,
+                              color: "var(--bui-ink)",
+                              flex: 1,
+                              minWidth: 0,
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
                             }}
                           >
-                            <TableCell>
-                              <Chip
-                                label={run.status}
-                                color={chipColor}
-                                size="small"
-                                variant="outlined"
-                                sx={{
-                                  height: 22,
-                                  fontSize: "0.68rem",
-                                  fontWeight: 500,
-                                }}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <Typography
-                                variant="caption"
-                                color="text.secondary"
-                              >
-                                {new Date(run.executedAt).toLocaleString()}
-                              </Typography>
-                            </TableCell>
-                            <TableCell align="right">
-                              <Typography
-                                variant="caption"
-                                color="text.secondary"
-                                sx={{ fontFamily: "monospace" }}
-                              >
-                                {durationStr}
-                              </Typography>
-                            </TableCell>
-                            <TableCell align="right">
-                              <Typography
-                                variant="caption"
-                                color="text.secondary"
-                                sx={{ fontFamily: "monospace" }}
-                              >
-                                {(run as any).logCount ?? "—"}
-                              </Typography>
-                            </TableCell>
-                            <TableCell sx={{ maxWidth: 280 }}>
-                              {run.error && (
-                                <Tooltip
-                                  title={
-                                    typeof run.error === "string"
-                                      ? run.error
-                                      : run.error.message
-                                  }
-                                  placement="bottom-start"
-                                  slotProps={{
-                                    tooltip: {
-                                      sx: {
-                                        maxWidth: 420,
-                                        fontFamily: "monospace",
-                                        fontSize: "0.72rem",
-                                        whiteSpace: "pre-wrap",
-                                        wordBreak: "break-word",
-                                      },
-                                    },
-                                  }}
-                                >
-                                  <Typography
-                                    variant="caption"
-                                    color="error.main"
-                                    sx={{
-                                      fontSize: "0.68rem",
-                                      display: "-webkit-box",
-                                      WebkitLineClamp: 2,
-                                      WebkitBoxOrient: "vertical",
-                                      overflow: "hidden",
-                                      wordBreak: "break-word",
-                                      cursor: "help",
-                                    }}
-                                  >
-                                    {typeof run.error === "string"
-                                      ? run.error
-                                      : run.error.message}
-                                  </Typography>
-                                </Tooltip>
-                              )}
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
+                            {new Date(run.executedAt).toLocaleString()}
+                          </Typography>
+                          <Box
+                            component="span"
+                            sx={{
+                              fontFamily: BUI_MONO_FONT_FAMILY,
+                              fontSize: "11px",
+                              color: "var(--bui-ink-3)",
+                              fontVariantNumeric: "tabular-nums",
+                              flexShrink: 0,
+                            }}
+                          >
+                            {durationStr}
+                            {logCount !== undefined && ` · ${logCount} logs`}
+                          </Box>
+                          <StatusPill
+                            tone={
+                              run.status === "completed"
+                                ? "green"
+                                : run.status === "failed"
+                                  ? "red"
+                                  : run.status === "abandoned"
+                                    ? "orange"
+                                    : run.status === "running"
+                                      ? "accent"
+                                      : "neutral"
+                            }
+                          >
+                            {run.status.charAt(0).toUpperCase() +
+                              run.status.slice(1)}
+                          </StatusPill>
+                        </Box>
+                        {errorText && (
+                          <Tooltip
+                            title={errorText}
+                            placement="bottom-start"
+                            slotProps={{
+                              tooltip: {
+                                sx: {
+                                  maxWidth: 420,
+                                  fontFamily: "monospace",
+                                  fontSize: "0.72rem",
+                                  whiteSpace: "pre-wrap",
+                                  wordBreak: "break-word",
+                                },
+                              },
+                            }}
+                          >
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: "-webkit-box",
+                                WebkitLineClamp: 2,
+                                WebkitBoxOrient: "vertical",
+                                overflow: "hidden",
+                                wordBreak: "break-word",
+                                cursor: "help",
+                                mt: 0.5,
+                                ml: "30px",
+                                px: 1,
+                                py: 0.25,
+                                borderRadius: "6px",
+                                fontSize: "0.68rem",
+                                color: "var(--bui-red)",
+                                backgroundColor: "var(--bui-red-tint)",
+                              }}
+                            >
+                              {errorText}
+                            </Typography>
+                          </Tooltip>
+                        )}
+                      </Box>
+                    );
+                  })}
+                </Box>
               </Box>
             ) : null}
           </Box>

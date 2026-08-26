@@ -1,9 +1,10 @@
 ---
 title: Coding Agents (ACP)
-description: Run Claude Code or Codex inside Mako via the Agent Client Protocol — on your machine, on your subscription.
+description: Run Claude Code, Codex, or Cursor Agent (Grok) inside Mako via the Agent Client Protocol — on your machine, on your subscription.
 ---
 
-Mako can host **Claude Code** and **Codex (ChatGPT)** inside the app using the
+Mako can host **Claude Code**, **Codex (ChatGPT)**, and **Cursor Agent**
+(Grok, Composer, …) inside the app using the
 [Agent Client Protocol](https://agentclientprotocol.com/) (ACP).
 
 This is the reverse of [MCP Server](/mcp-server/):
@@ -11,7 +12,7 @@ This is the reverse of [MCP Server](/mcp-server/):
 | Surface | Direction | Who pays for model tokens |
 | --- | --- | --- |
 | **Connect Agents** (MCP) | External agent → Mako tools/data | Your Claude / Cursor / Codex sub |
-| **Coding Agents** (ACP) | Mako UI → Claude Code / Codex | Your Claude Pro/Max or ChatGPT sub |
+| **Coding Agents** (ACP) | Mako UI → Claude Code / Codex / Cursor Agent | Your Claude Pro/Max, ChatGPT, or Cursor sub |
 | **In-product chat** | Mako → AI Gateway | Mako / workspace billing |
 
 ## Requirements
@@ -22,9 +23,13 @@ This is the reverse of [MCP Server](/mcp-server/):
 2. An ACP adapter on `PATH`:
    - Claude: `npm i -g @agentclientprotocol/claude-agent-acp`
    - Codex: `npm i -g @zed-industries/codex-acp`
+   - Cursor: no adapter needed — Cursor CLI speaks ACP natively
+     (`cursor-agent acp`). Install it with
+     `curl https://cursor.com/install -fsS | bash`.
 3. Sign in with the provider when prompted. **Claude Code** uses a **Terminal**
    login (`claude auth login` / Claude subscription) — Mako’s **Sign in** button
-   opens Terminal; it is not a browser popup inside the app.
+   opens Terminal; it is not a browser popup inside the app. **Cursor Agent**
+   uses `cursor-agent login` (Cursor subscription).
 
 ## How to use
 
@@ -32,11 +37,19 @@ This is the reverse of [MCP Server](/mcp-server/):
 2. Optional: **Settings → Coding Agents** to sign in and set the default
    working directory.
 3. Open **Chat**, open the model dropdown, and under **On this machine** pick
-   **Claude Code · Fable (local)** (or Sonnet / Opus / Haiku / Default), or
-   **Codex (local)**. Mako applies the choice via ACP
-   `session/set_config_option` — no Terminal `/model` required.
+   **Claude Code · Fable (local)** (or Sonnet / Opus / Haiku / Default),
+   **Codex (local)**, or **Cursor · Grok 4.6 (local)** (or Grok 4.5 /
+   Composer / Default) to run Grok on your Cursor subscription. Mako applies
+   the choice via ACP `session/set_config_option` — no Terminal `/model`
+   required.
 4. Send messages in the normal Chat composer. Mako starts the local ACP session
    automatically and attaches workspace data tools.
+5. Optional: attach images in the composer (screenshots, diagrams). They are
+   sent to Claude Code / Codex as ACP image blocks, same as cloud chats.
+   Requires **Desktop 0.3.11+** — older Local Agents reject the turn with an
+   "update Mako Desktop" error instead of silently dropping the image.
+   Non-image and remote attachments are not supported on the local ACP path
+   and fail loudly.
 
 ACP traffic stays on loopback (`127.0.0.1:41720`). Mako Cloud does **not** proxy
 the ACP stdio pipe — prompts and tool calls do not transit Mako servers.
@@ -69,6 +82,9 @@ To feel like the in-app agent, Mako:
   into the system prompt. Workspace **custom prompt** is appended when set.
 - **Codex ACP:** skills/tools come from MCP server instructions (Codex adapters
   often ignore Claude-style `systemPrompt` `_meta` today)
+- **Cursor ACP:** same as Codex — Mako guidance rides the first prompt; skills
+  stay on demand via MCP. Model switches (e.g. Grok 4.6 → Composer) start a
+  fresh local session with Chat continuity instead of a mid-chat hot-swap.
 
 If attach fails (offline API, missing workspace), Chat shows an **Enable
 workspace tools** banner — one click remints the token and starts a fresh ACP

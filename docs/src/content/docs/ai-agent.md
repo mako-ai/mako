@@ -51,12 +51,12 @@ You don't configure dialects — Mako reads the connection metadata and does the
 
 Before writing any query, Mako inspects your actual schema. No guessing, no hallucinated column names:
 
-| Tool                                             | What It Does                                    |
-| ------------------------------------------------ | ----------------------------------------------- |
-| `list_connections`                               | Shows all database connections in the workspace |
-| `sql_list_databases` / `mongo_list_databases`    | Lists databases on a connection                 |
-| `sql_list_tables` / `mongo_list_collections`     | Lists tables/collections with row counts        |
-| `sql_inspect_table` / `mongo_inspect_collection` | Gets column types, constraints, and sample data |
+| Tool               | What It Does                                                          |
+| ------------------ | --------------------------------------------------------------------- |
+| `list_connections` | Shows all database connections in the workspace                       |
+| `list_databases`   | Lists databases on a connection (any type — SQL or MongoDB)           |
+| `list_tables`      | Lists tables/views (SQL) or collections (MongoDB)                     |
+| `inspect_table`    | Gets column types, constraints, and sample data (or MongoDB fields)   |
 
 The agent uses sample data to understand real values — not just types. If your `status` column contains `'active'`, `'churned'`, `'trial'`, it knows what to filter on.
 

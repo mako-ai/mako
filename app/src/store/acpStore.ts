@@ -26,6 +26,12 @@ import {
   shouldClearAcpAuthGuidance,
 } from "../lib/acp-user-errors";
 
+function providerLabel(id: AcpProviderId): string {
+  if (id === "codex") return "Codex";
+  if (id === "cursor") return "Cursor Agent";
+  return "Claude Code";
+}
+
 function messageId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -457,9 +463,9 @@ export const useAcpStore = create<AcpState>()(
           options?.workspaceId?.trim() || getActiveWorkspaceId();
         if (!workspaceId) {
           throw new Error(
-            `Select a workspace before starting ${
-              selectedProviderId === "codex" ? "Codex" : "Claude Code"
-            } (local).`,
+            `Select a workspace before starting ${providerLabel(
+              selectedProviderId,
+            )} (local).`,
           );
         }
 
@@ -478,6 +484,16 @@ export const useAcpStore = create<AcpState>()(
           systemPromptAppend,
           model: options?.model?.trim() || undefined,
         });
+        if (session.providerId !== selectedProviderId) {
+          // Old Local Agents coerce unknown provider ids (cursor) to claude —
+          // fail loudly instead of silently chatting with the wrong agent.
+          void acpClient.closeSession(session.id).catch(() => undefined);
+          throw new Error(
+            `Local Agent does not support ${providerLabel(
+              selectedProviderId,
+            )} yet. Update Mako Desktop (or restart the Local Agent from this branch), then retry.`,
+          );
+        }
         if (requireMakoMcp && !session.makoMcpAttached) {
           throw new Error(
             "Local session started without Mako data tools. Restart Local Agent from this branch and try again.",
@@ -568,7 +584,9 @@ export const useAcpStore = create<AcpState>()(
           message =
             providerId === "codex"
               ? `Codex could not switch to "${value}". Fully quit/reopen Desktop 0.3.9+, Update adapter, then pick GPT-5.6 Terra/Luna again.`
-              : `Claude could not switch to "${value}". Fully quit/reopen Desktop 0.3.9+, Update adapter, then pick Opus/Sonnet again.`;
+              : providerId === "cursor"
+                ? `Cursor Agent could not switch to "${value}". Update Cursor CLI (\`cursor-agent update\`), then pick Grok 4.6/4.5 again.`
+                : `Claude could not switch to "${value}". Fully quit/reopen Desktop 0.3.9+, Update adapter, then pick Opus/Sonnet again.`;
         }
         set(s => {
           s.error = sanitizeAcpUserError(message, { providerId }) || message;
@@ -685,15 +703,17 @@ export const useAcpStore = create<AcpState>()(
     ensureAdapter: async (providerId, options) => {
       const id = providerId || get().selectedProviderId;
       if (!acpSupportsAdapterEnsure(get().status)) {
-        const npmCmd =
+        const installCmd =
           id === "codex"
             ? "npm i -g @openai/codex @agentclientprotocol/codex-acp"
-            : "npm i -g @agentclientprotocol/claude-agent-acp";
+            : id === "cursor"
+              ? "curl https://cursor.com/install -fsS | bash"
+              : "npm i -g @agentclientprotocol/claude-agent-acp";
         const message =
           "One-click Update needs PR Desktop 0.3.9 Local Agent " +
           "(mako.ai/download is still 0.3.1). Until then, run this in Terminal, " +
           "then click Retry / refresh status:\n\n" +
-          npmCmd;
+          installCmd;
         // Explicit Update/Install: show Terminal fallback instead of a dead button.
         if (options?.force) {
           set(s => {
@@ -709,7 +729,9 @@ export const useAcpStore = create<AcpState>()(
           packages:
             id === "codex"
               ? ["@openai/codex", "@agentclientprotocol/codex-acp"]
-              : ["@agentclientprotocol/claude-agent-acp"],
+              : id === "cursor"
+                ? []
+                : ["@agentclientprotocol/claude-agent-acp"],
           message,
           adapterCommand: null,
           adapterVia: null,

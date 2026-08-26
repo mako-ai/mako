@@ -76,10 +76,17 @@ export function resolveAdapterCommand(
     if (!name.startsWith("@")) {
       const resolved = resolveOnPath(name);
       if (resolved) {
-        return { command: resolved, args: [], via: "path" };
+        return {
+          command: resolved,
+          args: provider.commandArgs ? [...provider.commandArgs] : [],
+          via: "path",
+        };
       }
     }
   }
+
+  // No npx fallback for CLIs that aren't npm-distributed (Cursor).
+  if (!provider.npxPackage) return null;
 
   const npx = resolveOnPath(process.platform === "win32" ? "npx.cmd" : "npx");
   if (npx) {

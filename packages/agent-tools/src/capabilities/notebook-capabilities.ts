@@ -64,14 +64,10 @@ export const NOTEBOOK_CAPABILITIES = [
     resultKind: "artifact",
   }),
   define({
-    name: "add_notebook_cell",
-    pack: "notebook-edit",
-    risk: "write",
-    requiredGrant: "artifact-write",
-    surfaces: ALL_AGENT_SURFACES,
-    resultKind: "artifact",
-  }),
-  define({
+    // Single cell CRUD tool: mode 'insert' | 'replace' (default) | 'delete'.
+    // The delete leg is recoverable via notebook versions and needs the same
+    // artifact-write grant, so the merged tool stays write-risk; the
+    // deprecated delete_notebook_cell alias below keeps its destructive hint.
     name: "edit_notebook_cell",
     pack: "notebook-edit",
     risk: "write",
@@ -80,6 +76,20 @@ export const NOTEBOOK_CAPABILITIES = [
     resultKind: "artifact",
   }),
   define({
+    // Deprecated alias of edit_notebook_cell (mode: 'insert'); kept
+    // registered for external MCP clients. Deferred out of the in-product
+    // working set (see DEFERRED_BUILTIN_TOOL_DOMAINS).
+    name: "add_notebook_cell",
+    pack: "notebook-edit",
+    risk: "write",
+    requiredGrant: "artifact-write",
+    surfaces: ALL_AGENT_SURFACES,
+    resultKind: "artifact",
+  }),
+  define({
+    // Deprecated alias of edit_notebook_cell (mode: 'delete'); kept
+    // registered for external MCP clients. Deferred out of the in-product
+    // working set (see DEFERRED_BUILTIN_TOOL_DOMAINS).
     name: "delete_notebook_cell",
     pack: "notebook-edit",
     risk: "destructive",

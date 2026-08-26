@@ -120,7 +120,7 @@ const executeQuerySchema = z.object({
         "configured database (Postgres/MySQL/SQLite). For BigQuery and " +
         "ClickHouse, omit it and fully qualify tables in the query " +
         "(dataset.table / db.table), or pass the dataset name. " +
-        "For Cloudflare D1, pass the database UUID from sql_list_databases.",
+        "For Cloudflare D1, pass the database UUID from list_databases.",
     ),
   query: z.string().describe("The SQL query to execute"),
 });
@@ -173,7 +173,9 @@ async function listSqlConnectionsImpl(workspaceId: string) {
 // ============================================================================
 // sql_list_databases
 // ============================================================================
-async function listDatabasesImpl(
+// Exported for the unified discovery tools (discovery-tools.ts), which
+// dispatch on connection type.
+export async function listSqlDatabasesImpl(
   connectionId: string,
   workspaceId: string,
   toolExecutionContext?: AgentToolExecutionContext,
@@ -315,7 +317,7 @@ async function listDatabasesImpl(
 // ============================================================================
 // sql_list_tables
 // ============================================================================
-async function listTablesImpl(
+export async function listSqlTablesImpl(
   connectionId: string,
   databaseName: string,
   workspaceId: string,
@@ -488,7 +490,7 @@ async function listTablesImpl(
 // ============================================================================
 // sql_inspect_table
 // ============================================================================
-async function inspectTableImpl(
+export async function inspectSqlTableImpl(
   connectionId: string,
   databaseName: string,
   tableName: string,
@@ -873,6 +875,20 @@ function compactQueryFields(fields: unknown): unknown {
   });
 }
 
+/**
+ * Resolve "write-opt-in" (the query:write scope) against one connection:
+ * write only where a workspace admin set allowAgentWrites, read everywhere
+ * else. A plain "read" key can never be upgraded by the connection flag.
+ * Exported for tests.
+ */
+export function effectiveSqlQueryAccess(
+  queryAccess: QueryAccess,
+  connection: { allowAgentWrites?: boolean },
+): QueryAccess {
+  if (queryAccess !== "write-opt-in") return queryAccess;
+  return connection.allowAgentWrites === true ? "write" : "read";
+}
+
 async function executeQueryImpl(
   connectionId: string,
   requestedDatabase: string | undefined,
@@ -897,6 +913,19 @@ async function executeQueryImpl(
 
   const database = await fetchSqlDatabase(connectionId, workspaceId);
   const dialect = getDialect(database.type);
+  const effectiveAccess = effectiveSqlQueryAccess(queryAccess, database);
+  if (queryAccess === "write-opt-in" && effectiveAccess === "read") {
+    const accessError = sqlReadOnlyAccessError(query);
+    if (accessError) {
+      // Agents relay this verbatim, so the error is the docs: say why AND
+      // how to fix it.
+      throw new Error(
+        `${accessError} This API key has the query:write scope, but this ` +
+          "connection has not opted into agent writes — a workspace admin " +
+          "must enable allowAgentWrites on the connection first.",
+      );
+    }
+  }
 
   // Resolve the target database, falling back to the connection's configured
   // default when the model omits `database`. BigQuery/ClickHouse/MSSQL run
@@ -921,7 +950,7 @@ async function executeQueryImpl(
   ) {
     throw new Error(
       "'database' is required for this connection (it has no configured " +
-        "default). Call sql_list_databases with this connectionId and retry " +
+        "default). Call list_databases with this connectionId and retry " +
         "with one of the returned names.",
     );
   }
@@ -953,7 +982,7 @@ async function executeQueryImpl(
             ...options,
             executionId: registeredExecutionId,
             signal,
-            readOnly: queryAccess === "read",
+            readOnly: effectiveAccess === "read",
           },
         ),
       { signal },
@@ -1103,7 +1132,7 @@ export const createSqlToolsV2 = (
       inputSchema: connectionIdSchema,
       execute: async ({ connectionId }) => {
         try {
-          return await listDatabasesImpl(
+          return await listSqlDatabasesImpl(
             connectionId,
             workspaceId,
             toolExecutionContext,
@@ -1127,7 +1156,7 @@ export const createSqlToolsV2 = (
       inputSchema: connectionAndDbSchema,
       execute: async ({ connectionId, database }) => {
         try {
-          return await listTablesImpl(
+          return await listSqlTablesImpl(
             connectionId,
             database,
             workspaceId,
@@ -1152,7 +1181,7 @@ export const createSqlToolsV2 = (
       inputSchema: inspectTableSchema,
       execute: async ({ connectionId, database, table }) => {
         try {
-          return await inspectTableImpl(
+          return await inspectSqlTableImpl(
             connectionId,
             database,
             table,
@@ -1178,7 +1207,7 @@ export const createSqlToolsV2 = (
 
     sql_execute_query: tool({
       description:
-        "Execute a SQL query and return results. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. The 'database' parameter is optional: when omitted, the query runs against the connection's default database (Postgres/MySQL) — for BigQuery/ClickHouse fully qualify tables (dataset.table) or pass the dataset as 'database'. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
+        "Execute a SQL query and return results. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. The 'database' parameter is optional: when omitted, the query runs against the connection's default database (Postgres/MySQL) — for BigQuery/ClickHouse fully qualify tables (dataset.table) or pass the dataset as 'database'. IMPORTANT for Cloudflare D1: use the UUID from list_databases 'id' field as the database parameter.",
       inputSchema: executeQuerySchema,
       execute: async ({ connectionId, database, query }) => {
         try {

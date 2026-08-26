@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  defaultTerminalLoginLaunch,
   extractTerminalAuthLaunch,
   formatTerminalAuthCommand,
 } from "./terminal-auth";
@@ -30,5 +31,22 @@ describe("extractTerminalAuthLaunch", () => {
     });
     assert.ok(launch);
     assert.match(formatTerminalAuthCommand(launch), /claudeai/);
+  });
+});
+
+describe("defaultTerminalLoginLaunch", () => {
+  it("uses provider CLI logins", () => {
+    assert.equal(
+      formatTerminalAuthCommand(defaultTerminalLoginLaunch("codex")),
+      "codex login",
+    );
+    assert.equal(
+      formatTerminalAuthCommand(defaultTerminalLoginLaunch("cursor")),
+      "cursor-agent login",
+    );
+    assert.match(
+      formatTerminalAuthCommand(defaultTerminalLoginLaunch("claude")),
+      /claude-agent-acp/,
+    );
   });
 });

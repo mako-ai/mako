@@ -228,7 +228,9 @@ const baseModeState = (loaded: string[] = []): ModeState => ({
     "dbt_run_model",
     "dbt_commit_and_push",
     "app_write_file",
-    "app_set_binding_schedule",
+    // Carries the schedule-write gate as an input-conditional grant since the
+    // app_set_binding_schedule fold (that name is now a deferred alias).
+    "app_update_data_binding",
     "materialize_binding",
   ]);
   const withoutPlan: ModeState = {
@@ -299,6 +301,61 @@ async function grantEnforcement() {
   };
   assert.equal(stillDenied.success, false, "unheld git-write still denied");
   assert.deepEqual(calls, ["dbt_git_status", "edit_dbt_file", "dbt_run_model"]);
+}
+
+// --- input-conditional grants: schedule leg of app_update_data_binding -------
+// app_set_binding_schedule's schedule-write gate survives the fold into
+// app_update_data_binding: the merged tool needs schedule-write only when the
+// input actually carries materializationSchedule.
+async function conditionalGrantEnforcement() {
+  const calls: unknown[] = [];
+  const grants = new Set<CapabilityGrant>(["artifact-write"]);
+  const tools = enforceCapabilityGrantsAtExecution(
+    {
+      app_update_data_binding: tool({
+        description: "app_update_data_binding",
+        inputSchema: z.object({}).passthrough(),
+        execute: async (input: unknown) => {
+          calls.push(input);
+          return { success: true };
+        },
+      }),
+    } as unknown as ToolSet,
+    () => grants,
+  );
+  const run = async (input: unknown) => {
+    const execute = tools.app_update_data_binding?.execute as (
+      input: unknown,
+      options: unknown,
+    ) => Promise<unknown>;
+    return execute(input, { toolCallId: "t1", messages: [] });
+  };
+
+  // Query-definition updates need only artifact-write.
+  const plain = (await run({ appId: "a", name: "b", code: "SELECT 1" })) as {
+    success: boolean;
+  };
+  assert.equal(plain.success, true, "definition update runs on artifact-write");
+
+  // Touching the schedule without schedule-write is denied with recovery.
+  const denied = (await run({
+    appId: "a",
+    name: "b",
+    materializationSchedule: { enabled: true, cron: "0 * * * *" },
+  })) as { success: boolean; error?: string };
+  assert.equal(denied.success, false, "schedule change denied without grant");
+  assert.ok(denied.error?.includes("schedule-write"), "error names the grant");
+  assert.ok(denied.error?.includes("submit_plan"), "error names the recovery");
+
+  // Acquiring schedule-write unlocks the schedule leg.
+  grants.add("schedule-write");
+  const allowed = (await run({
+    appId: "a",
+    name: "b",
+    materializationSchedule: { enabled: false, cron: null },
+  })) as { success: boolean };
+  assert.equal(allowed.success, true, "held schedule-write executes");
+  assert.equal(calls.length, 2, "denied call never reached the tool");
 }
 
 // --- policy: plan-grant gating is DISABLED in native Chat pending review ------
@@ -518,6 +575,21 @@ async function endToEnd() {
     false,
     "redundant app_get_data_binding should not be registered",
   );
+  // Notebook cell CRUD fold: only the merged edit_notebook_cell stays in the
+  // notebook working set; the add/delete aliases remain loadable.
+  const notebookModeTools = toolNamesForModes(new Set(["notebook"] as const));
+  assert.ok(notebookModeTools.has("edit_notebook_cell"));
+  for (const alias of ["add_notebook_cell", "delete_notebook_cell"]) {
+    assert.equal(
+      notebookModeTools.has(alias),
+      false,
+      `deprecated ${alias} should stay out of the notebook working set`,
+    );
+    assert.ok(
+      DEFERRED_BUILTIN_TOOL_NAMES.includes(alias),
+      `deprecated ${alias} should remain loadable for compatibility`,
+    );
+  }
 
   // Preload: a Slack-flavored user message pre-activates relevant tools
   // with zero search/load round-trips.
@@ -536,6 +608,7 @@ async function endToEnd() {
 // schemas), which keeps the event loop alive — exit explicitly like
 // derive-mode-state.test.ts does.
 void grantEnforcement()
+  .then(conditionalGrantEnforcement)
   .then(endToEnd)
   .then(() => {
     // eslint-disable-next-line no-console

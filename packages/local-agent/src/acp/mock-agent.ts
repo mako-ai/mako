@@ -44,6 +44,7 @@ async function main(): Promise<void> {
       protocolVersion: acp.PROTOCOL_VERSION,
       agentCapabilities: {
         loadSession: false,
+        promptCapabilities: { image: true },
         mcpCapabilities: { http: true, sse: false },
       },
       authMethods: [],
@@ -111,6 +112,13 @@ async function main(): Promise<void> {
           block?.type === "text" ? String(block.text || "") : "",
         )
         .join("");
+      // Echo image blocks so tests can assert attachments crossed the wire.
+      const imageBlocks = (ctx.params.prompt || []).filter(
+        block =>
+          block?.type === "image" &&
+          typeof block.data === "string" &&
+          block.data.length > 0,
+      );
 
       await ctx.client.notify(acp.methods.client.session.update, {
         sessionId,
@@ -118,7 +126,9 @@ async function main(): Promise<void> {
           sessionUpdate: "agent_message_chunk",
           content: {
             type: "text",
-            text: `Mock agent received: ${userText || "(empty)"}`,
+            text: `Mock agent received: ${userText || "(empty)"}${
+              imageBlocks.length > 0 ? ` [images:${imageBlocks.length}]` : ""
+            }`,
           },
         },
       });

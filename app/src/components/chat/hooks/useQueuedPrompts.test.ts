@@ -13,7 +13,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import type { MutableRefObject } from "react";
-import type { UIMessage } from "ai";
+import type { FileUIPart, UIMessage } from "ai";
 import type { SubmitPlanOutput } from "@mako/agent-tools";
 
 vi.mock("../../../store/consoleStore", () => ({
@@ -83,9 +83,9 @@ function buildArgs(overrides: Partial<UseQueuedPromptsArgs> = {}): Harness {
     autoSendWhenComplete: () => false,
     interruptActiveTurn,
     drainQueuedPromptAfterTurnRef: makeRef<(() => void) | null>(null),
-    sendViaLocalAcpRef: makeRef<((text: string) => Promise<boolean>) | null>(
-      null,
-    ),
+    sendViaLocalAcpRef: makeRef<
+      ((text: string, files?: FileUIPart[]) => Promise<boolean>) | null
+    >(null),
     ...overrides,
   };
   return { args, sendMessage, interruptActiveTurn };

@@ -33,6 +33,7 @@ import {
   DefaultChatTransport,
   lastAssistantMessageIsCompleteWithApprovalResponses,
   lastAssistantMessageIsCompleteWithToolCalls,
+  type FileUIPart,
 } from "ai";
 import { useMcpStore } from "../store/mcpStore";
 import { api } from "../api/client";
@@ -52,6 +53,7 @@ import {
   localAcpModelIdToProviderId,
 } from "../lib/local-acp-models";
 import { runLocalAcpChatTurn } from "../lib/local-acp-chat";
+import { resumeLocalAcpChatTurn } from "../lib/resume-local-acp-chat";
 import { clearLocalAcpChatBinding } from "../lib/persist-local-acp-chat";
 import {
   completeDesktopHitlJob,
@@ -106,6 +108,7 @@ import { useQueuedPrompts } from "./chat/hooks/useQueuedPrompts";
 import { useChatScroll } from "./chat/hooks/useChatScroll";
 import { useNotebookAutoOpen } from "./chat/hooks/useNotebookAutoOpen";
 import { ChatMessageRow, MessageVirtuosoList } from "./chat/ChatMessageRow";
+import { ChatMessageErrorBoundary } from "./chat/ChatMessageErrorBoundary";
 import { QueuedPromptList } from "./chat/QueuedPrompts";
 import { ChatInputArea } from "./chat/ChatInputArea";
 import { AcpPermissionBanner } from "./AcpPermissionBanner";
@@ -297,7 +300,7 @@ const Chat: React.FC<ChatProps> = ({
   const manualStopRequestedRef = useRef(false);
   const drainQueuedPromptAfterTurnRef = useRef<(() => void) | null>(null);
   const sendViaLocalAcpRef = useRef<
-    ((text: string) => Promise<boolean>) | null
+    ((text: string, files?: FileUIPart[]) => Promise<boolean>) | null
   >(null);
   const localAcpAbortRef = useRef<AbortController | null>(null);
   const localAcpBindingRef = useRef<{
@@ -307,6 +310,9 @@ const Chat: React.FC<ChatProps> = ({
   } | null>(null);
   /** Bumps on each ACP send so overlapping finally blocks don't clear busy early. */
   const localAcpGenerationRef = useRef(0);
+  /** In-flight refresh/wake reattach to a Local Agent turn (see resume below). */
+  const localAcpResumeAbortRef = useRef<AbortController | null>(null);
+  const requestLocalAcpResumeRef = useRef<(() => void) | undefined>();
   const [localAcpBusy, setLocalAcpBusy] = useState(false);
   const localAcpBusyRef = useRef(false);
   localAcpBusyRef.current = localAcpBusy;
@@ -682,6 +688,8 @@ const Chat: React.FC<ChatProps> = ({
     // Abort an in-flight local ACP (Claude Code / Codex) turn if any.
     localAcpAbortRef.current?.abort();
     localAcpAbortRef.current = null;
+    localAcpResumeAbortRef.current?.abort();
+    localAcpResumeAbortRef.current = null;
     setLocalAcpBusy(false);
     void useAcpStore
       .getState()
@@ -714,11 +722,15 @@ const Chat: React.FC<ChatProps> = ({
   // Generation counter: overlapping send/abort must not clear busy while an
   // older turn is still awaiting the Local Agent (that race poisoned Skill
   // cards as "Interrupted" and surfaced "Session is already processing").
-  sendViaLocalAcpRef.current = async (text: string) => {
+  sendViaLocalAcpRef.current = async (text: string, files?: FileUIPart[]) => {
     const modelId = modelIdRef.current;
     if (!modelId || !isLocalAcpModelId(modelId)) return false;
 
     localAcpAbortRef.current?.abort();
+    // A refresh-reattach must yield to a fresh user send (it would otherwise
+    // race this turn's assistant bubble with replayed events).
+    localAcpResumeAbortRef.current?.abort();
+    localAcpResumeAbortRef.current = null;
     // Cancel the in-flight ACP prompt so the next turn can start cleanly.
     void useAcpStore
       .getState()
@@ -740,6 +752,7 @@ const Chat: React.FC<ChatProps> = ({
       await runLocalAcpChatTurn({
         modelId,
         text,
+        files,
         workspaceId: workspaceIdRef.current,
         chatId: chatIdRef.current,
         preferredSessionId:
@@ -768,6 +781,84 @@ const Chat: React.FC<ChatProps> = ({
     }
     return true;
   };
+
+  // Refresh / History-reopen / tab-wake reattach for Local ACP: the Local
+  // Agent keeps running the turn (and buffering events for replay) while the
+  // page is gone, but nothing re-subscribed — the chat froze at the last
+  // checkpoint. Rebuild the in-flight turn from the replay backlog, stream
+  // the rest live, and persist the finished turn. Cheap no-op when idle.
+  requestLocalAcpResumeRef.current = () => {
+    const binding = localAcpBindingRef.current;
+    const workspaceId = workspaceIdRef.current;
+    const targetChatId = chatIdRef.current;
+    if (!binding || !workspaceId || !targetChatId) return;
+    // An in-page turn (or an already-attached resume) is streaming — leave it.
+    if (localAcpBusyRef.current) return;
+    localAcpResumeAbortRef.current?.abort();
+    const abort = new AbortController();
+    localAcpResumeAbortRef.current = abort;
+    let attached = false;
+    void resumeLocalAcpChatTurn({
+      binding,
+      workspaceId,
+      chatId: targetChatId,
+      setMessages,
+      getMessages: () => messagesRef.current,
+      signal: abort.signal,
+      onLiveAttach: () => {
+        if (abort.signal.aborted) return;
+        attached = true;
+        // Ref first: the state flush lags, and the wake handler must not
+        // start a second resume in that window.
+        localAcpBusyRef.current = true;
+        setLocalAcpBusy(true);
+        isLoadingRef.current = true;
+      },
+      onPersisted: b => {
+        if (b) localAcpBindingRef.current = b;
+        setIsExistingChat(true);
+        void fetchSessionsRef.current?.();
+      },
+    })
+      .catch(() => undefined)
+      .finally(() => {
+        if (localAcpResumeAbortRef.current === abort) {
+          localAcpResumeAbortRef.current = null;
+        }
+        // Clear busy only if no in-page send took over after aborting us.
+        if (attached && !localAcpAbortRef.current) {
+          localAcpBusyRef.current = false;
+          setLocalAcpBusy(false);
+          isLoadingRef.current = false;
+          queueMicrotask(() => drainQueuedPromptAfterTurnRef.current?.());
+        }
+      });
+  };
+
+  // Drop a stale reattach when the user switches chats (the loader kicks off
+  // a fresh one for the next chat if its binding warrants it) or unmounts.
+  useEffect(() => {
+    return () => {
+      localAcpResumeAbortRef.current?.abort();
+      localAcpResumeAbortRef.current = null;
+    };
+  }, [chatId]);
+
+  // Tab wake / network back: if the resume (or its SSE) died while the
+  // machine slept, reattach to a still-running local ACP turn. No-ops fast
+  // when there is no binding or a turn is already streaming in-page.
+  useEffect(() => {
+    const onWake = () => {
+      if (document.visibilityState !== "visible") return;
+      requestLocalAcpResumeRef.current?.();
+    };
+    document.addEventListener("visibilitychange", onWake);
+    window.addEventListener("online", onWake);
+    return () => {
+      document.removeEventListener("visibilitychange", onWake);
+      window.removeEventListener("online", onWake);
+    };
+  }, []);
 
   // Bottom-pin / streaming-follow machinery (see useChatScroll).
   const { isAtBottom, setIsAtBottom, scrollerElRef, handleListHeightChanged } =
@@ -848,6 +939,7 @@ const Chat: React.FC<ChatProps> = ({
     toolDispatchGateRef,
     loadPersistedMessagesRef,
     requestResumeRef,
+    requestLocalAcpResumeRef,
     localAcpBindingRef,
     localAcpBusyRef,
   });
@@ -1422,17 +1514,22 @@ const Chat: React.FC<ChatProps> = ({
             components={messageVirtuosoComponents}
             style={{ flex: 1 }}
             itemContent={(msgIdx, message) => (
-              <ChatMessageRow
-                message={message}
-                isLastMessage={msgIdx === messages.length - 1}
-                isStreaming={status === "streaming" || localAcpBusy}
-                collapseEmptyReasoningWhileStreaming={localAcpBusy}
-                onToolClick={handleToolClick}
-                onConsoleTitleClick={handleConsoleTitleClick}
-                onMcpApprovalResponse={handleMcpApprovalResponse}
-                connectionIconById={connectionIconById}
-                paletteMode={paletteMode}
-              />
+              <ChatMessageErrorBoundary
+                messageId={message.id}
+                messageRevision={message}
+              >
+                <ChatMessageRow
+                  message={message}
+                  isLastMessage={msgIdx === messages.length - 1}
+                  isStreaming={status === "streaming" || localAcpBusy}
+                  collapseEmptyReasoningWhileStreaming={localAcpBusy}
+                  onToolClick={handleToolClick}
+                  onConsoleTitleClick={handleConsoleTitleClick}
+                  onMcpApprovalResponse={handleMcpApprovalResponse}
+                  connectionIconById={connectionIconById}
+                  paletteMode={paletteMode}
+                />
+              </ChatMessageErrorBoundary>
             )}
           />
         </React.Profiler>
@@ -1474,8 +1571,8 @@ const Chat: React.FC<ChatProps> = ({
         <Box
           sx={
             pendingInteractiveTool.toolName === "ask_clarifying_questions"
-              ? { mx: 2.25, mt: 1, mb: -1 }
-              : { mx: 1, mt: 1, mb: -0.5 }
+              ? { mx: 3.25, mt: 1, mb: -1 }
+              : { mx: 2, mt: 1, mb: -0.5 }
           }
           key={pendingInteractiveTool.toolCallId}
         >

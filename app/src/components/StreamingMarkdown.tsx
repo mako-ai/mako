@@ -33,7 +33,11 @@ export const StreamingMarkdown: React.FC<StreamingMarkdownProps> = React.memo(
       <Streamdown
         plugins={{ code: code as unknown as CodeHighlighterPlugin }}
         shikiTheme={["github-light", "github-dark"]}
-        controls={false}
+        controls={{
+          code: { copy: true, download: false },
+          table: false,
+          mermaid: false,
+        }}
         isAnimating={isStreaming}
       >
         {children}

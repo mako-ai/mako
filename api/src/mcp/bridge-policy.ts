@@ -150,6 +150,13 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   create_preview_token: mcpOnly(),
   render_app: mcpOnly(),
 
+  // ── MCP-only ChatGPT connector contract (chatgpt-connector-tools.ts) ──
+  // ChatGPT only accepts an MCP server as a chat/deep-research connector
+  // when it exposes this exact search/fetch pair; both are read-only views
+  // over content other bridged tools already expose.
+  fetch: mcpOnly(),
+  search: mcpOnly(),
+
   // ── Charts / screenshots (client) ─────────────────────────────────────
   capture_screenshot: exclude(
     "client-only",
@@ -182,27 +189,19 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
     "Flow template placeholder docs; not needed for apps authoring.",
   ),
   get_form_state: exclude("client-only", "Reads the open flow form in the UI."),
+  // NOTE: list_databases / list_tables / inspect_table are the unified
+  // cross-engine discovery family, classified via the capability registry
+  // above (bridged). The standalone flow agent's same-named discovery tools
+  // are shadowed by that classification.
   inspect_collection: exclude(
     "deferred",
-    "Unnamespaced mongo alias; MCP uses mongo_inspect_collection.",
-  ),
-  inspect_table: exclude(
-    "deferred",
-    "Unnamespaced flow discovery duplicate of sql_inspect_table.",
+    "Unnamespaced mongo alias; MCP uses inspect_table (or mongo_inspect_collection).",
   ),
   list_collections: exclude(
     "deferred",
-    "Unnamespaced mongo alias; MCP uses mongo_list_collections.",
-  ),
-  list_databases: exclude(
-    "deferred",
-    "Unnamespaced mongo/flow discovery alias; MCP uses sql_list_databases / mongo_list_databases.",
+    "Unnamespaced mongo alias; MCP uses list_tables (or mongo_list_collections).",
   ),
   list_flow_tabs: exclude("client-only", "Lists open flow editor tabs."),
-  list_tables: exclude(
-    "deferred",
-    "Unnamespaced flow discovery duplicate of sql_list_tables.",
-  ),
   set_form_field: exclude(
     "client-only",
     "Writes the open flow form in the UI.",
@@ -227,11 +226,11 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   create_data_source: exclude("client-only", "Dashboard builder UI."),
   dashboard_restore_version: exclude(
     "deferred",
-    "Dashboard versioning stays in-product until dashboards are MCP-bridged.",
+    "Deprecated alias of restore_version; dashboard versioning stays in-product until dashboards are MCP-bridged.",
   ),
   dashboard_save_version: exclude(
     "deferred",
-    "Dashboard versioning stays in-product until dashboards are MCP-bridged.",
+    "Deprecated alias of save_version; dashboard versioning stays in-product until dashboards are MCP-bridged.",
   ),
   enter_edit_mode: exclude("client-only", "Dashboard builder UI."),
   get_dashboard_state: exclude(
@@ -254,7 +253,8 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   run_data_source_query: exclude("client-only", "Dashboard builder UI."),
   search_dashboards: bridge(),
   set_time_dimension: exclude("client-only", "Dashboard builder UI."),
-  update_data_source_query: exclude("client-only", "Dashboard builder UI."),
+  // update_data_source_query migrated to the capability registry (dashboard
+  // domain) with a server leg — its bridge entry now derives from there.
 
   // ── Shared DuckDB data-source primitives (client) ─────────────────────
   inspect_data_source: exclude(
@@ -311,6 +311,17 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // ── Version history ───────────────────────────────────────────────────
   browse_version_history: bridge(),
   get_version_snapshot: bridge(),
+  // Generic save/restore dispatches in the browser (dashboard drafts live in
+  // the open tab); MCP keeps the server-side app_save_version /
+  // app_restore_version pair instead.
+  restore_version: exclude(
+    "client-only",
+    "Dispatches in the browser (dashboard drafts live in the open tab); MCP uses app_restore_version.",
+  ),
+  save_version: exclude(
+    "client-only",
+    "Dispatches in the browser (dashboard drafts live in the open tab); MCP uses app_save_version.",
+  ),
 
   // ── Web ───────────────────────────────────────────────────────────────
   fetch_url: bridge({ openWorldHint: true }),
@@ -401,7 +412,7 @@ export function assertBridgePolicyNotStale(
  */
 export function mcpReadOnlyHint(
   name: string,
-  queryAccess: "none" | "read" | "write",
+  queryAccess: "none" | "read" | "write-opt-in" | "write",
 ): boolean {
   if (READ_ONLY_TOOL_NAMES.has(name)) return true;
   const entry = MCP_BRIDGE_POLICY[name];
@@ -420,6 +431,15 @@ export function mcpReadOnlyHint(
     // (affects auto-approval annotations). check_query_status and
     // list_console_executions are read-risk in the capability registry, so
     // they are covered by READ_ONLY_TOOL_NAMES above regardless of scope.
+    return true;
+  }
+  if (
+    queryAccess === "write-opt-in" &&
+    (name === "run_console" || name === "cancel_query")
+  ) {
+    // Console runs fail closed to read under write-opt-in (only
+    // sql_execute_query resolves the per-connection allowAgentWrites flag,
+    // so it must NOT be annotated read-only here).
     return true;
   }
   return false;

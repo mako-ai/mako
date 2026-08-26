@@ -85,6 +85,28 @@ export function buildPublicShareUrl(
   return `${window.location.origin}/share/${ws ? `${ws}/` : ""}${token}`;
 }
 
+/**
+ * Deep-link path prefix per resource — must match TAB_DEEP_LINK_PATTERNS in
+ * lib/tab-routing.ts so the copied link hydrates into the right tab.
+ */
+const RESOURCE_URL_PREFIX: Record<ShareResourceType, string> = {
+  dashboard: "d",
+  console: "c",
+  app: "a",
+};
+
+/**
+ * Workspace-internal URL for logged-in collaborators (/a/:id, /d/:id, /c/:id).
+ * Built from the resource id rather than read off the address bar so it also
+ * works in the desktop shell, which has no address bar to copy from.
+ */
+export function buildWorkspaceResourceUrl(
+  resourceType: ShareResourceType,
+  resourceId: string,
+): string {
+  return `${window.location.origin}/${RESOURCE_URL_PREFIX[resourceType]}/${resourceId}`;
+}
+
 function errMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }

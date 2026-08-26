@@ -9,6 +9,10 @@ import {
   BackfillStatus,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import {
+  computeEntityPendingBacklog,
+  computePendingLagSeconds,
+} from "./backlog";
 
 const log = loggers.sync("cdc.sync-state");
 
@@ -565,52 +569,18 @@ export async function getCdcFlowStats(params: { flowId: string }): Promise<{
     };
   }
 
-  const backlogCount = Math.max(
-    pendingCount,
-    states.reduce(
-      (sum, state) =>
-        sum +
-        Math.max(
-          (state.lastIngestSeq || 0) - (state.lastMaterializedSeq || 0),
-          state.backlogCount || 0,
-        ),
-      0,
-    ),
-  );
+  // Real pending CdcChangeEvents only — do not max() with cursor seq gaps.
+  const backlogCount = computeEntityPendingBacklog(pendingCount);
   const mode = states.some(state => state.mode === "backfill")
     ? "backfill"
     : "steady";
-  let lagSeconds: number | null;
-  if (backlogCount > 0) {
-    const oldestPendingTs = oldestPendingResult?.ingestTs
-      ? new Date(oldestPendingResult.ingestTs).getTime()
-      : null;
-    if (oldestPendingTs) {
-      lagSeconds = Math.max(
-        Math.floor((Date.now() - oldestPendingTs) / 1000),
-        0,
-      );
-    } else {
-      const withBacklog = states.filter(
-        s =>
-          Math.max(
-            (s.lastIngestSeq || 0) - (s.lastMaterializedSeq || 0),
-            s.backlogCount || 0,
-          ) > 0,
-      );
-      const candidates = withBacklog.length > 0 ? withBacklog : states;
-      const oldest = candidates
-        .map(s => s.lastMaterializedAt)
-        .filter(Boolean)
-        .map(d => new Date(d as Date).getTime())
-        .sort((a, b) => a - b)[0];
-      lagSeconds = oldest
-        ? Math.max(Math.floor((Date.now() - oldest) / 1000), 0)
-        : -1;
-    }
-  } else {
-    lagSeconds = 0;
-  }
+  const oldestPendingTs = oldestPendingResult?.ingestTs
+    ? new Date(oldestPendingResult.ingestTs)
+    : null;
+  const lagSeconds = computePendingLagSeconds({
+    pendingCount: backlogCount,
+    oldestPendingTs,
+  });
 
   return {
     enabled: true,

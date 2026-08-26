@@ -45,9 +45,12 @@ const mongoDiscover = (name: string): QueryCapabilityDefinition =>
   });
 
 export const QUERY_CAPABILITIES = [
-  // ── Cross-engine discovery ──────────────────────────────────────────────
+  // ── Cross-engine discovery (dispatches on connection type) ──────────────
   sqlDiscover("list_connections"),
-  // ── SQL ─────────────────────────────────────────────────────────────────
+  sqlDiscover("list_databases"),
+  sqlDiscover("list_tables"),
+  sqlDiscover("inspect_table"),
+  // ── SQL (deprecated aliases of the cross-engine family) ─────────────────
   sqlDiscover("sql_list_connections"),
   sqlDiscover("sql_list_databases"),
   sqlDiscover("sql_list_tables"),
@@ -60,7 +63,7 @@ export const QUERY_CAPABILITIES = [
     resultKind: "data",
     requiresQueryAccess: true,
   }),
-  // ── MongoDB ─────────────────────────────────────────────────────────────
+  // ── MongoDB (discovery entries are deprecated aliases) ──────────────────
   mongoDiscover("mongo_list_connections"),
   mongoDiscover("mongo_list_databases"),
   mongoDiscover("mongo_list_collections"),

@@ -1,6 +1,6 @@
 /** Types for the Local Agent ACP bridge (`/acp/*`). */
 
-export type AcpProviderId = "claude" | "codex";
+export type AcpProviderId = "claude" | "codex" | "cursor";
 
 export interface AcpModelChoice {
   value: string;
@@ -55,6 +55,7 @@ export interface AcpStatus {
     hitlTools?: boolean;
     adapterEnsure?: boolean;
     modelWarm?: boolean;
+    promptImages?: boolean;
   };
   lastAdapterError?: string | null;
   ensureByProvider?: Partial<
@@ -148,6 +149,14 @@ export type AcpBridgeEvent =
       message: string;
       at: string;
     };
+
+/** Image attachment forwarded to the Local Agent as an ACP image ContentBlock. */
+export interface AcpPromptImage {
+  /** Base64 payload (no `data:` URL prefix). */
+  data: string;
+  /** e.g. `image/png` */
+  mimeType: string;
+}
 
 export interface AcpChatMessage {
   id: string;

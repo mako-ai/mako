@@ -135,6 +135,20 @@ export const APP_CAPABILITIES = [
     pack: "app-data",
     risk: "write",
     requiredGrant: "artifact-write",
+    // Scheduling folded in from app_set_binding_schedule: the schedule leg
+    // keeps that tool's schedule-write gate, applied only when the input
+    // actually touches the schedule.
+    inputConditionalGrants: [
+      {
+        grant: "schedule-write",
+        behavior: "changing a binding's materialization schedule",
+        appliesTo: input =>
+          typeof input === "object" &&
+          input !== null &&
+          (input as { materializationSchedule?: unknown })
+            .materializationSchedule !== undefined,
+      },
+    ],
     surfaces: ALL_AGENT_SURFACES,
     resultKind: "artifact",
   }),
@@ -147,6 +161,9 @@ export const APP_CAPABILITIES = [
     resultKind: "artifact",
   }),
   define({
+    // Deprecated alias of app_update_data_binding({ materialization }); kept
+    // registered for external MCP clients. Deferred out of the in-product
+    // working set (see DEFERRED_BUILTIN_TOOL_DOMAINS).
     name: "app_set_binding_materialization",
     pack: "app-data",
     risk: "write",
@@ -166,6 +183,9 @@ export const APP_CAPABILITIES = [
     requiresQueryAccess: true,
   }),
   define({
+    // Deprecated alias of app_update_data_binding({ materializationSchedule });
+    // kept registered for external MCP clients. Deferred out of the
+    // in-product working set (see DEFERRED_BUILTIN_TOOL_DOMAINS).
     name: "app_set_binding_schedule",
     pack: "app-data",
     risk: "write",
@@ -204,11 +224,12 @@ export const APP_CAPABILITIES = [
     },
   }),
   define({
-    // One capability, one name, three adapters: Chat rebuilds the live
-    // iframe (client tool), Desktop delivers it via the mako-desktop
-    // loopback server, and external MCP runs the server-side headless
-    // renderer (api/src/mcp/preview-tools.ts). Rendering a draft mutates
-    // nothing, so it is read-risk on every surface.
+    // One capability, one name, one result envelope (run-app.ts), three
+    // adapters: Chat rebuilds the live iframe and self-captures a screenshot
+    // (client tool), Desktop delivers the same executor via the mako-desktop
+    // loopback server (screenshot as MCP image content), and external MCP
+    // runs the server-side headless renderer (api/src/mcp/preview-tools.ts).
+    // Rendering a draft mutates nothing, so it is read-risk on every surface.
     name: "run_app",
     pack: "app-ui",
     risk: "read",
@@ -217,6 +238,34 @@ export const APP_CAPABILITIES = [
     desktopDelivery: "mako-desktop",
   }),
   define({
+    // Merged preview setter (viewport + dbt environment). The environment leg
+    // keeps app_set_preview_environment's artifact-write gate, applied only
+    // when the input actually switches the environment; viewport-only calls
+    // are pure per-user view state.
+    name: "app_set_preview",
+    pack: "app-ui",
+    risk: "write",
+    inputConditionalGrants: [
+      {
+        grant: "artifact-write",
+        behavior: "switching the draft preview's dbt environment",
+        appliesTo: input =>
+          typeof input === "object" &&
+          input !== null &&
+          (input as { environment?: unknown }).environment !== undefined,
+      },
+    ],
+    surfaces: IN_CHAT_ONLY_SURFACES,
+    resultKind: "ui-effect",
+    mcpExclusion: {
+      why: "client-only",
+      note: "Per-user browser preview state; headless agents pass width/height to run_app.",
+    },
+  }),
+  define({
+    // Deprecated alias of app_set_preview({ environment }); kept registered
+    // for old chats. Deferred out of the in-product working set (see
+    // DEFERRED_BUILTIN_TOOL_DOMAINS).
     name: "app_set_preview_environment",
     pack: "app-ui",
     risk: "write",
@@ -226,6 +275,21 @@ export const APP_CAPABILITIES = [
     mcpExclusion: {
       why: "client-only",
       note: "Per-user browser preview state; headless agents use run_app / bindings directly.",
+    },
+  }),
+  define({
+    // Deprecated alias of app_set_preview({ preset | width+height }). Pure
+    // view state (which viewport the browser preview renders at) — the
+    // sticky sibling of run_app's ephemeral width/height. Mutates nothing
+    // durable, so read-risk; headless agents pass width/height to run_app.
+    name: "app_set_preview_viewport",
+    pack: "app-ui",
+    risk: "read",
+    surfaces: IN_CHAT_ONLY_SURFACES,
+    resultKind: "ui-effect",
+    mcpExclusion: {
+      why: "client-only",
+      note: "Per-user browser preview viewport; headless agents pass width/height to run_app.",
     },
   }),
 ] as const satisfies readonly AppCapabilityDefinition[];

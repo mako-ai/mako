@@ -52,7 +52,8 @@ export const CodeBlock = React.memo(
       <Box
         sx={{
           overflow: "hidden",
-          borderRadius: 1,
+          borderRadius: "10px",
+          boxShadow: "var(--bui-shadow-hairline)",
           my: 1,
           position: "relative",
         }}

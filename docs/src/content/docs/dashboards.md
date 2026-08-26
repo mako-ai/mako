@@ -187,6 +187,10 @@ Data sources can be refreshed on a schedule using cron expressions:
 
 Scheduled refreshes run via Inngest, re-executing the source queries and rebuilding Parquet artifacts. The `dataFreshnessTtlMs` field controls how long cached data is considered fresh before triggering a new materialization.
 
+Refresh throughput is bounded per workspace: **Workspace settings → Limits** sets `dashboardRefreshConcurrency` (default 2) — how many dashboard refreshes may run in parallel for the workspace. Excess runs soft-gate with a retry instead of piling onto the warehouse, and the workspace setting is clamped to a hard ceiling (`DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX`, default 10) that Inngest enforces regardless. App binding refreshes have their own independent knob (`appBindingRefreshConcurrency`) on the same page.
+
+The agent can manage scheduling too: `update_data_source_query` accepts a `materializationSchedule` and edits the dashboard document in place — one schedule refreshes every parquet source on the dashboard. This also works headlessly over the [MCP server](/mcp-server/), where the same tool executes server-side against the saved dashboard.
+
 ## AI Agent Integration
 
 The Dashboard Agent is a specialized agent that helps create and manage dashboards via natural language. It can:
@@ -198,3 +202,5 @@ The Dashboard Agent is a specialized agent that helps create and manage dashboar
 - Manage data sources and materialization
 
 The agent activates automatically when you're working on a dashboard tab. In the unified agent, modality triage routes dashboard-related requests to the dashboard toolset.
+
+Data-source edits (`update_data_source_query`: query replace/patch/append, live ↔ parquet toggle, refresh schedule) run through one capability with per-surface adapters — in the browser it edits the open tab, and a server leg executes the same edits against the saved dashboard document, so headless and [MCP](/mcp-server/) agents can manage dashboard data sources too. Server writes bump the dashboard version, live-update open tabs, and queue a Parquet rebuild when the definition or materialization changes (schedule-only changes don't). Widget and layout tools remain client-only — dashboards are not yet fully editable over MCP.

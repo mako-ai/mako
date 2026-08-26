@@ -20,6 +20,12 @@ export interface McpPresetHeaderField {
   type: "password" | "string";
   required: boolean;
   helperText?: string;
+  /**
+   * Prepended to the stored value when building the request header (e.g.
+   * "Bearer " for GitHub's `Authorization` header), unless the user already
+   * typed it. Lets forms ask for just the token.
+   */
+  valuePrefix?: string;
 }
 
 /**
@@ -79,6 +85,7 @@ export interface McpPreset {
    */
   scopeHeader?: {
     name: string;
+    /** Header value per write scope; an empty value omits the header. */
     scopeValues: Record<McpWriteScope, string>;
   };
   /** OAuth client registration behavior; absent = DCR (the spec default). */
@@ -227,6 +234,67 @@ export const SLACK_MCP_PRESET: McpPreset = {
   },
 };
 
+/**
+ * GitHub's official hosted MCP server (`api.githubcopilot.com/mcp/`).
+ *
+ * Two auth modes:
+ *  - OAuth: GitHub does not support Dynamic Client Registration, so — like
+ *    Slack — the flow needs a pre-registered OAuth app (deployment-wide via
+ *    `GITHUB_MCP_CLIENT_ID`/`GITHUB_MCP_CLIENT_SECRET`, or saved per
+ *    workspace by an admin). Each member then signs in with their own GitHub
+ *    account.
+ *  - Personal access token: the server accepts `Authorization: Bearer <PAT>`;
+ *    the form asks for just the token and the "Bearer " prefix is applied
+ *    when building headers (`valuePrefix`).
+ *
+ * Read-only connections are enforced server-side through GitHub's
+ * `X-MCP-Readonly: true` header (GitHub's coarse OAuth scopes can't express
+ * read-only repo access, so no per-scope OAuth scope sets here — the SDK
+ * falls back to the provider's advertised scopes).
+ */
+export const GITHUB_MCP_PRESET: McpPreset = {
+  type: "github",
+  label: "GitHub",
+  description:
+    "Lets the agent browse repositories, read code and issues, search across GitHub, and (with write access) create issues, branches, and pull requests as you.",
+  icon: "/api/mcp/presets/github/icon.svg",
+  url: "https://api.githubcopilot.com/mcp/",
+  urlEditable: false,
+  authType: "oauth",
+  authOptions: ["oauth", "api_key"],
+  headerFields: [
+    {
+      name: "Authorization",
+      label: "GitHub Personal Access Token",
+      type: "password",
+      required: true,
+      valuePrefix: "Bearer ",
+      helperText:
+        "Generate on GitHub under Settings → Developer settings → Personal access tokens — paste just the token",
+    },
+  ],
+  scopeHeader: {
+    name: "X-MCP-Readonly",
+    scopeValues: {
+      read: "true",
+      // Empty = header omitted: GitHub's flag is only meaningful when true,
+      // and write capability is then governed by the token's own permissions.
+      write_safe: "",
+      write_destructive: "",
+    },
+  },
+  oauth: {
+    clientMode: "manual",
+    helperText:
+      "Create a GitHub OAuth App under Settings → Developer settings → OAuth Apps, set Mako's OAuth callback as the Authorization callback URL, then paste the app's Client ID and Client Secret.",
+    docsUrl: "https://github.com/settings/developers",
+    clientEnvVars: {
+      clientId: "GITHUB_MCP_CLIENT_ID",
+      clientSecret: "GITHUB_MCP_CLIENT_SECRET",
+    },
+  },
+};
+
 export const CUSTOM_MCP_PRESET: McpPreset = {
   type: "custom",
   label: "Custom MCP server",
@@ -242,6 +310,7 @@ export const CUSTOM_MCP_PRESET: McpPreset = {
 export const MCP_PRESETS: Record<string, McpPreset> = {
   close: CLOSE_MCP_PRESET,
   slack: SLACK_MCP_PRESET,
+  github: GITHUB_MCP_PRESET,
   custom: CUSTOM_MCP_PRESET,
 };
 

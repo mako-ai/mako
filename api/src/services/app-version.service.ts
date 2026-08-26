@@ -69,7 +69,8 @@ export function buildAppSnapshot(doc: IMakoApp): AppSnapshot {
  * Revert `doc` to `snapshot` in place. Binding materialization caches are
  * preserved by binding id so a restore re-points at the same artifacts the
  * server already built (and a binding that did not exist before simply has no
- * cache). The caller is responsible for bumping `version` and saving.
+ * cache). The caller is responsible for persisting behind a version
+ * predicate (`persistMutatedAppDraft`), not a plain `doc.save()`.
  */
 export function applyAppSnapshot(doc: IMakoApp, snapshot: AppSnapshot): void {
   doc.title = snapshot.title;
@@ -97,6 +98,10 @@ export function applyAppSnapshot(doc: IMakoApp, snapshot: AppSnapshot): void {
     materializationSchedule: b.materializationSchedule,
     cache: cacheById.get(b.id as string),
   })) as IMakoApp["dataBindings"];
-  // `dependencies` is a Mixed path — assignment isn't auto-tracked by Mongoose.
+  // persistMutatedAppDraft $sets only dirty paths. Mixed `dependencies` is
+  // not auto-tracked; force files/dataBindings too so a restore always writes
+  // the snapshot even when Mongoose sees no change.
+  doc.markModified("files");
+  doc.markModified("dataBindings");
   doc.markModified("dependencies");
 }

@@ -190,11 +190,20 @@ export const ChatInputArea = React.memo(
       <Paper
         elevation={0}
         sx={{
-          border: 1,
-          borderColor: "divider",
-          borderRadius: 2.5,
+          // Beautiful UI "Prompt Bar": hairline ring + soft card shadow that
+          // strengthens on focus, instead of a plain divider border.
+          border: "none",
+          borderRadius: "14px",
+          boxShadow: "var(--bui-shadow-card)",
+          backgroundColor: "var(--bui-surface)",
+          transition: "box-shadow 0.15s ease",
+          "&:focus-within": {
+            boxShadow:
+              "0 0 0 1px var(--bui-line-strong), 0 1px 2px oklch(0% 0 0 / 0.06), 0 4px 12px oklch(0% 0 0 / 0.06)",
+          },
           p: 1,
-          m: 1,
+          my: 1,
+          mx: 2,
           display: "flex",
           flexDirection: "column",
           gap: 1,
@@ -363,6 +372,10 @@ export const ChatInputArea = React.memo(
               overflowY: "auto",
               "& .MuiInputBase-input": {
                 fontSize: { xs: 16, sm: 14 },
+                "&::placeholder": {
+                  color: "var(--bui-ink-3)",
+                  opacity: 1,
+                },
               },
               "& .MuiInputBase-root": {
                 p: 0,
@@ -426,8 +439,11 @@ export const ChatInputArea = React.memo(
                   width: 28,
                   height: 28,
                   flexShrink: 0,
-                  color: "text.secondary",
-                  "&:hover": { color: "text.primary" },
+                  color: "var(--bui-ink-3)",
+                  "&:hover": {
+                    color: "var(--bui-ink)",
+                    backgroundColor: "var(--bui-hover)",
+                  },
                 }}
               >
                 <ImagePlus size={16} />
@@ -444,11 +460,10 @@ export const ChatInputArea = React.memo(
                   width: 28,
                   height: 28,
                   borderRadius: "50%",
-                  backgroundColor: "action.hover",
-                  border: 1,
-                  borderColor: "divider",
+                  backgroundColor: "var(--bui-field)",
+                  boxShadow: "var(--bui-shadow-hairline)",
                   "&:hover": {
-                    backgroundColor: "action.selected",
+                    backgroundColor: "var(--bui-hover-2)",
                   },
                   flexShrink: 0,
                 }}
@@ -457,7 +472,7 @@ export const ChatInputArea = React.memo(
                   sx={{
                     width: 10,
                     height: 10,
-                    backgroundColor: "text.primary",
+                    backgroundColor: "var(--bui-ink)",
                     borderRadius: 0.5,
                   }}
                 />
@@ -473,19 +488,21 @@ export const ChatInputArea = React.memo(
                   height: 28,
                   borderRadius: "50%",
                   backgroundColor: !isSubmitDisabled
-                    ? "primary.main"
-                    : "action.disabledBackground",
-                  color: !isSubmitDisabled
-                    ? "primary.contrastText"
-                    : "text.disabled",
+                    ? "var(--bui-accent)"
+                    : "var(--bui-field)",
+                  color: !isSubmitDisabled ? "#fff" : "var(--bui-ink-3)",
+                  transition: "background-color 0.15s ease, transform 0.1s",
                   "&:hover": {
                     backgroundColor: !isSubmitDisabled
-                      ? "primary.dark"
-                      : "action.disabledBackground",
+                      ? "var(--bui-accent-ink)"
+                      : "var(--bui-field)",
+                  },
+                  "&:active": {
+                    transform: !isSubmitDisabled ? "scale(0.94)" : "none",
                   },
                   "&.Mui-disabled": {
-                    backgroundColor: "action.disabledBackground",
-                    color: "text.disabled",
+                    backgroundColor: "var(--bui-field)",
+                    color: "var(--bui-ink-3)",
                   },
                   flexShrink: 0,
                 }}

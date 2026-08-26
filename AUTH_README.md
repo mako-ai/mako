@@ -498,8 +498,9 @@ would fall through to the SPA fallback and poison client discovery.
 - `unifiedAuthMiddleware` recognizes the `mcpat_` Bearer prefix and sets
   `authType: "mcpOAuth"` with the grant's workspace binding and scopes.
 - Scopes are always the read-only set (`mcp`, `query:read`). There is
-  deliberately no `query:write` scope — an OAuth grant can never do more
-  than a freshly-created MCP API key.
+  deliberately no `query:write` scope, and OAuth grants can never carry
+  `warehouse:write` — an OAuth grant can never do more than a
+  freshly-created MCP API key with default scopes.
 - Redirect URIs accepted at registration: `https` anywhere, `http` on
   loopback only (RFC 8252), or a custom app scheme (e.g. `cursor://`).
   Max 10 per client.
@@ -513,6 +514,25 @@ Workspace API keys (`revops_*`) now carry a `scopes` array
 `["mcp", "query:read"]`. Legacy keys created before scopes existed have
 `scopes: undefined` and are refused by the MCP endpoint with a rotation
 hint — they keep working everywhere else.
+
+The opt-in `warehouse:write` scope (never granted by default, never
+available to OAuth) maps to the `warehouse-write` capability grant on the
+external MCP surface, exposing governed dbt executions (`dbt_run_model`,
+`dbt_run_job`, `dbt_cancel_run`). It does not unlock raw SQL writes —
+`sql_execute_query` stays read-only under every scope combination.
+
+The opt-in `git:write` scope works the same way: it maps to the
+`git-write` capability grant, exposing dbt repository mutations (commit,
+branch, and pull-request tools). Git *reads* (`dbt_git_status`, branch and
+PR listings) are part of the default surface so headless agents can tell
+when their edits are uncommitted drafts.
+
+The opt-in `query:write` scope is double-gated: it yields "write-opt-in"
+query access, which `sql_execute_query` resolves per connection — write
+only where a workspace admin set `allowAgentWrites` on the connection
+document, read-only everywhere else. Console runs and REST query
+endpoints fail closed to read under this scope, and the connection flag
+can never upgrade a key that lacks `query:write`.
 
 ### Managing connected agents
 

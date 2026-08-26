@@ -29,6 +29,7 @@ import {
   resolveWorkspaceApiKeyScopes,
 } from "../auth/api-key-scopes";
 import { buildMakoMcpServer } from "../mcp/mako-mcp-server";
+import { createChatGptConnectorTools } from "../mcp/chatgpt-connector-tools";
 import { createMcpPreviewTools } from "../mcp/preview-tools";
 import { StatelessMcpTransport } from "../mcp/stateless-transport";
 import { ACP_MCP_CLIENT_ID } from "../auth/mcp-oauth.service";
@@ -151,9 +152,17 @@ mcpProtocolRoutes.post(
       acpDesktop,
       capabilityGrants,
     };
+    // External clients also get the ChatGPT connector contract (search /
+    // fetch) — required for ChatGPT to accept the server as a connector,
+    // harmless workspace search for everyone else.
     const server = buildMakoMcpServer(
       mcpContext,
-      acpDesktop ? undefined : createMcpPreviewTools(mcpContext),
+      acpDesktop
+        ? undefined
+        : {
+            ...createMcpPreviewTools(mcpContext),
+            ...createChatGptConnectorTools(mcpContext),
+          },
     );
     const transport = new StatelessMcpTransport();
 

@@ -232,7 +232,7 @@ The full safe-iteration loop:
    `dbt_run_model` (defaults: the user's dev environment — dev itself when
    solo, personal `dbt_<user>` in teams (auto-provisioned on first build) —
    + defer to prod manifest).
-2. `app_set_preview_environment` with the personal environment — the app's
+2. `app_set_preview` with `environment` set to the personal one — the app's
    DRAFT preview now reads the freshly built schema. This is per-user view
    state: other editors, the published app, and shared links keep reading
    prod. Verify visually (screenshot) if useful.
@@ -240,8 +240,9 @@ The full safe-iteration loop:
    (after review) `dbt_merge_pull_request`; then run the prod job via
    `dbt_run_job` — ONLY with explicit user confirmation.
 4. After the prod build succeeds, reset the preview
-   (`app_set_preview_environment` with `environment: null`) and, if app code
-   changed, publish with `app_save_version`.
+   (`app_set_preview` with `environment: null`) and, if app code
+   changed, publish with `save_version` (`entityType: "app"`; over MCP:
+   `app_save_version`).
 
 ## Tier-3 references
 

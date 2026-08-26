@@ -93,13 +93,18 @@ export const clientFlowTools = {
 
   set_form_field: tool({
     description:
-      'Update a single form field using nested path. Examples: "databaseSource.query", "schedule.cron", "tableDestination.tableName", "typeCoercions" (for column mappings array).',
+      "Deprecated alias of set_multiple_fields — update a single form field " +
+      "using a nested path. Prefer set_multiple_fields, which handles one or " +
+      "many fields.",
     inputSchema: setFormFieldSchema,
   }),
 
   set_multiple_fields: tool({
     description:
-      "Update multiple form fields at once. Use nested paths as keys.",
+      "Update one or more form fields at once. Use nested field paths as " +
+      'keys, e.g. "databaseSource.query", "schedule.cron", ' +
+      '"tableDestination.tableName", or "typeCoercions" (column mappings ' +
+      "array). Arrays and objects must be actual JSON, NOT stringified.",
     inputSchema: setMultipleFieldsSchema,
   }),
 

@@ -23,10 +23,6 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   ...AGENT_CAPABILITIES.filter(capability => capability.risk === "read").map(
     capability => capability.name,
   ),
-  // Flow discovery / inspection (shared agent-lib builders)
-  "list_databases",
-  "list_tables",
-  "inspect_table",
   // Dashboard reads / previews
   "list_open_dashboards",
   "get_dashboard_state",

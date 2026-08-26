@@ -2,17 +2,31 @@
  * Minimal stateless MCP (JSON-RPC) server for Desktop-only tools.
  * Claude ACP attaches this as `mako-desktop` over loopback HTTP.
  */
-import { HITL_TOOL_JSON_SCHEMAS } from "@mako/agent-tools";
+import {
+  HITL_TOOL_JSON_SCHEMAS,
+  isRunAppResult,
+  runAppResultToMcpContent,
+  validateHitlToolArguments,
+} from "@mako/agent-tools";
 
 import {
   desktopBridgeRegistry,
   isDesktopHitlTool,
+  type DesktopBridgeCapabilities,
   type DesktopBridgeToolName,
 } from "./registry";
 
 const SERVER_NAME = "mako-desktop";
-const SERVER_VERSION = "0.3.0";
+const SERVER_VERSION = "0.4.0";
 const PROTOCOL_VERSION = "2024-11-05";
+
+/**
+ * Delivery capabilities of THIS build, stamped on every bridge job. The
+ * renderer inlines screenshot payloads only when the enqueuing Local Agent
+ * declares it can emit them as MCP image content — an older build without
+ * the marker keeps getting the old text-only result shape.
+ */
+const BRIDGE_CAPABILITIES: DesktopBridgeCapabilities = { imageContent: true };
 
 type JsonRpcId = string | number | null;
 
@@ -38,7 +52,7 @@ const TOOLS: Array<{
   {
     name: "run_app",
     description:
-      "Rebuild the in-Desktop app preview iframe and return live build/runtime errors (previewErrors). Pass rebuild: false to read the current previewErrors without forcing a rebuild. Prefer this over create_preview_token when Chat is open in Mako Desktop.",
+      "Verify the app: rebuild the in-Desktop preview iframe, wait for it to render, and return status, live build/runtime errors, and a screenshot of exactly what the user sees. Pass rebuild: false to read the current preview state without forcing a rebuild, and includeScreenshot: false when you only need status/errors (much cheaper). Prefer this over create_preview_token when Chat is open in Mako Desktop.",
     inputSchema: {
       type: "object",
       properties: {
@@ -46,7 +60,26 @@ const TOOLS: Array<{
         rebuild: {
           type: "boolean",
           description:
-            "Default true. false = return current previewErrors without rebuilding the iframe.",
+            "Default true. false = return the current preview state without rebuilding the iframe.",
+        },
+        includeScreenshot: {
+          type: "boolean",
+          description:
+            "Default true. false = status/errors only, no screenshot (much cheaper).",
+        },
+        timeoutMs: {
+          type: "number",
+          description:
+            "How long to wait for the preview to finish rendering, in ms (5000-45000, default 20000).",
+        },
+        width: {
+          type: "number",
+          description:
+            "Viewport width in px (320-1920). Pass e.g. 390x844 to verify the MOBILE layout — applied for this render only, then the user's viewport is restored.",
+        },
+        height: {
+          type: "number",
+          description: "Viewport height in px (320-1920), with width.",
         },
       },
       required: ["appId"],
@@ -85,34 +118,63 @@ function fail(id: JsonRpcId, code: number, message: string): JsonRpcResponse {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
+type McpContent = Array<Record<string, unknown>>;
+
+function textContent(text: string): McpContent {
+  return [{ type: "text", text }];
+}
+
 async function callTool(
   rawName: string,
   rawArgs: Record<string, unknown>,
   context?: { agentSessionId?: string; workspaceId?: string },
-): Promise<{ text: string; isError?: boolean }> {
+): Promise<{ content: McpContent; isError?: boolean }> {
   // Legacy alias from pre-0.3 tool lists: agents mid-session across an
-  // update may still call it — same job as run_app({ rebuild: false }).
+  // update may still call it — same job as run_app({ rebuild: false }),
+  // minus the screenshot (the old cheap error poll).
   const legacyPreviewErrors = rawName === "get_preview_errors";
   const name = legacyPreviewErrors ? "run_app" : rawName;
-  const args = legacyPreviewErrors
-    ? { ...rawArgs, rebuild: false }
+  let args = legacyPreviewErrors
+    ? { ...rawArgs, rebuild: false, includeScreenshot: false }
     : rawArgs;
   if (!TOOL_NAMES.has(name as DesktopBridgeToolName)) {
-    return { text: `Unknown tool: ${name}`, isError: true };
+    return { content: textContent(`Unknown tool: ${name}`), isError: true };
+  }
+  // HITL payloads render directly in the Desktop dock — bounce malformed
+  // arguments back to the agent as a correctable tool error instead of
+  // forwarding a shape the renderer cannot display.
+  if (isDesktopHitlTool(name)) {
+    const validated = validateHitlToolArguments(name, args);
+    if (!validated.ok) {
+      return { content: textContent(validated.error), isError: true };
+    }
+    args = validated.data;
   }
   try {
     const result = await desktopBridgeRegistry.enqueue(
       name as DesktopBridgeToolName,
       args && typeof args === "object" ? args : {},
       undefined,
-      context,
+      { ...context, capabilities: BRIDGE_CAPABILITIES },
     );
+    // run_app envelopes with a screenshot become text + image content blocks
+    // (shared formatter — same shape the Mako MCP server emits). The
+    // renderer only inlines screenshots because we declared imageContent.
+    if (isRunAppResult(result) && result.screenshot) {
+      return {
+        content: runAppResultToMcpContent(result).map(part => ({ ...part })),
+      };
+    }
     return {
-      text: typeof result === "string" ? result : JSON.stringify(result),
+      content: textContent(
+        typeof result === "string" ? result : JSON.stringify(result),
+      ),
     };
   } catch (error) {
     return {
-      text: error instanceof Error ? error.message : String(error),
+      content: textContent(
+        error instanceof Error ? error.message : String(error),
+      ),
       isError: true,
     };
   }
@@ -164,7 +226,7 @@ async function handleOne(
     ) {
       const result = await callTool(name, args, context);
       return ok(id, {
-        content: [{ type: "text", text: result.text }],
+        content: result.content,
         ...(result.isError ? { isError: true } : {}),
       });
     }

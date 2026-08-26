@@ -12,13 +12,15 @@ import {
 } from "./commands";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useVersionStore } from "../store/versionStore";
-import type { DashboardDataSource, DashboardWidget } from "./types";
+import type { Dashboard, DashboardDataSource, DashboardWidget } from "./types";
+import { CronExpressionParser } from "cron-parser";
 import { classifyDuckDBError, classifySourceError } from "./error-kinds";
 import { computeDashboardStateHash } from "../utils/stateHash";
 import {
   DASHBOARD_EXECUTOR_TOOL_NAMES,
   type AgentToolName,
 } from "../agent-runtime/client-tool-manifest";
+import { resolveDataSourceCodeEdit } from "@mako/agent-tools";
 import { captureScreenshot } from "../agent-runtime/screenshot-agent-tools";
 import { focusDashboardTab, getCurrentWorkspaceId } from "./shell";
 import {
@@ -98,7 +100,80 @@ const EDIT_MODE_EXEMPT_TOOLS = new Set([
   // Restore is a server-side revert + reload; it does not require holding the
   // edit lock (it replaces the open tab's state with the restored draft).
   "dashboard_restore_version",
+  // Generic version tools take an entityType/entityId ref (not dashboardId),
+  // so the blanket dashboardId edit-mode gate below cannot apply; the
+  // dashboard save leg re-checks edit mode itself.
+  "save_version",
+  "restore_version",
 ]);
+
+async function saveDashboardVersionLeg(
+  dashboardId: string,
+  comment: string,
+): Promise<Record<string, unknown>> {
+  const store = useDashboardStore.getState();
+  if (!store.openDashboards[dashboardId]) {
+    return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+  }
+  if (!store.isEditMode(dashboardId)) {
+    return {
+      success: false,
+      error:
+        "Dashboard is in read mode. Use enter_edit_mode first to enable editing.",
+      errorKind: "not_in_edit_mode",
+    };
+  }
+  const workspaceId = store.openDashboards[dashboardId].workspaceId;
+  const result = await store.saveDashboard(workspaceId, dashboardId, comment);
+  if (!result.ok) {
+    return {
+      success: false,
+      error:
+        result.error ||
+        "Save failed (the dashboard may have been modified elsewhere; reload and retry).",
+    };
+  }
+  const d = useDashboardStore.getState().openDashboards[dashboardId] as
+    | (Record<string, any> & { version?: number; publishedVersion?: number })
+    | undefined;
+  return {
+    success: true,
+    version: d?.version,
+    publishedVersion: d?.publishedVersion,
+    message: `Saved and published "${d?.title ?? "dashboard"}" as version ${d?.publishedVersion ?? d?.version}.`,
+  };
+}
+
+async function restoreDashboardVersionLeg(
+  dashboardId: string,
+  version: number,
+  comment: string | undefined,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const store = useDashboardStore.getState();
+  const dashboard = store.openDashboards[dashboardId];
+  if (!dashboard) {
+    return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+  }
+  const workspaceId = dashboard.workspaceId;
+  const res = await useVersionStore
+    .getState()
+    .restoreVersion(workspaceId, "dashboard", dashboardId, version, comment);
+  if (!res.success) {
+    return { success: false, error: res.error || "Restore failed" };
+  }
+  await useDashboardStore.getState().reloadDashboard(workspaceId, dashboardId);
+  throwIfAborted(signal);
+  const d = useDashboardStore.getState().openDashboards[dashboardId];
+  return {
+    success: true,
+    restoredFrom: version,
+    title: (d as any)?.title,
+    message:
+      `Restored the dashboard draft to version ${version}. This is not yet ` +
+      "published — save a version to push it live to viewers.",
+  };
+}
 
 export async function executeDashboardAgentTool(
   toolName: string,
@@ -194,6 +269,80 @@ export async function executeDashboardAgentTool(
     }
   }
 
+  // Generic version tools: dispatch on entityType. Dashboards go through the
+  // local draft flows (the working draft lives in this tab); apps are
+  // server-authoritative (autosaved), so the REST endpoints via the version
+  // store are the full save/restore — open app tabs follow along through the
+  // server's realtime app.updated poke.
+  if (toolName === "save_version" || toolName === "restore_version") {
+    const entityType =
+      input.entityType === "app" || input.entityType === "dashboard"
+        ? input.entityType
+        : null;
+    const entityId = typeof input.entityId === "string" ? input.entityId : null;
+    if (!entityType || !entityId) {
+      return {
+        success: false,
+        error: "entityType ('app' | 'dashboard') and entityId are required.",
+      };
+    }
+    const comment =
+      typeof input.comment === "string" ? input.comment : undefined;
+
+    if (toolName === "save_version") {
+      if (entityType === "dashboard") {
+        return saveDashboardVersionLeg(entityId, comment ?? "");
+      }
+      const workspaceId = getCurrentWorkspaceId();
+      if (!workspaceId) {
+        return { success: false, error: "No active workspace" };
+      }
+      const res = await useVersionStore
+        .getState()
+        .saveVersion(workspaceId, "app", entityId, comment);
+      if (!res.success) {
+        return {
+          success: false,
+          error: res.error || "Failed to save version",
+        };
+      }
+      return {
+        success: true,
+        version: res.version,
+        publishedVersion: res.version,
+        message: `Saved and published app version ${res.version}.`,
+      };
+    }
+
+    const version =
+      typeof input.version === "number" ? input.version : Number(input.version);
+    if (!Number.isFinite(version)) {
+      return { success: false, error: "version (number) is required" };
+    }
+    if (entityType === "dashboard") {
+      return restoreDashboardVersionLeg(entityId, version, comment, signal);
+    }
+    const workspaceId = getCurrentWorkspaceId();
+    if (!workspaceId) {
+      return { success: false, error: "No active workspace" };
+    }
+    const res = await useVersionStore
+      .getState()
+      .restoreVersion(workspaceId, "app", entityId, version, comment);
+    if (!res.success) {
+      return { success: false, error: res.error || "Restore failed" };
+    }
+    return {
+      success: true,
+      restoredFrom: version,
+      message:
+        `Restored the app draft to version ${version}. This is not yet ` +
+        "published — save a version to push it live to viewers.",
+    };
+  }
+
+  // Deprecated aliases of restore_version / save_version (entityType:
+  // "dashboard") — existing chats may replay these names.
   if (toolName === "dashboard_restore_version") {
     const ctx = requireDashboardId(input);
     if (!ctx) return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
@@ -204,57 +353,19 @@ export async function executeDashboardAgentTool(
     }
     const comment =
       typeof input.comment === "string" ? input.comment : undefined;
-    const res = await useVersionStore
-      .getState()
-      .restoreVersion(
-        ctx.workspaceId,
-        "dashboard",
-        ctx.dashboardId,
-        version,
-        comment,
-      );
-    if (!res.success) {
-      return { success: false, error: res.error || "Restore failed" };
-    }
-    await useDashboardStore
-      .getState()
-      .reloadDashboard(ctx.workspaceId, ctx.dashboardId);
-    throwIfAborted(signal);
-    const d = useDashboardStore.getState().openDashboards[ctx.dashboardId];
-    return {
-      success: true,
-      restoredFrom: version,
-      title: (d as any)?.title,
-      message:
-        `Restored the dashboard draft to version ${version}. This is not yet ` +
-        "published — call dashboard_save_version to push it live to viewers.",
-    };
+    return restoreDashboardVersionLeg(
+      ctx.dashboardId,
+      version,
+      comment,
+      signal,
+    );
   }
 
   if (toolName === "dashboard_save_version") {
     const ctx = requireDashboardId(input);
     if (!ctx) return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     const comment = typeof input.comment === "string" ? input.comment : "";
-    const result = await useDashboardStore
-      .getState()
-      .saveDashboard(ctx.workspaceId, ctx.dashboardId, comment);
-    if (!result.ok) {
-      return {
-        success: false,
-        error:
-          result.error ||
-          "Save failed (the dashboard may have been modified elsewhere; reload and retry).",
-      };
-    }
-    const d = useDashboardStore.getState().openDashboards[ctx.dashboardId] as
-      | (Record<string, any> & { version?: number; publishedVersion?: number })
-      | undefined;
-    return {
-      success: true,
-      version: d?.version,
-      publishedVersion: d?.publishedVersion,
-      message: `Saved and published "${d?.title ?? "dashboard"}" as version ${d?.publishedVersion ?? d?.version}.`,
-    };
+    return saveDashboardVersionLeg(ctx.dashboardId, comment);
   }
 
   if (toolName === "capture_screenshot") {
@@ -420,7 +531,10 @@ export async function executeDashboardAgentTool(
 
   if (
     toolName === "add_data_source" ||
-    toolName === "import_console_as_data_source"
+    toolName === "import_console_as_data_source" ||
+    // create_data_source with consoleId imports the console by value — same
+    // path as the deprecated import aliases above.
+    (toolName === "create_data_source" && typeof input.consoleId === "string")
   ) {
     const ctx = requireDashboardId(input);
     if (!ctx) {
@@ -481,13 +595,22 @@ export async function executeDashboardAgentTool(
     }
 
     if (typeof input.name !== "string") {
-      return { success: false, error: "name is required" };
+      return {
+        success: false,
+        error: "name is required (unless consoleId is given)",
+      };
     }
     if (typeof input.connectionId !== "string") {
-      return { success: false, error: "connectionId is required" };
+      return {
+        success: false,
+        error: "connectionId is required (unless consoleId is given)",
+      };
     }
     if (typeof input.code !== "string") {
-      return { success: false, error: "code is required" };
+      return {
+        success: false,
+        error: "code is required (unless consoleId is given)",
+      };
     }
 
     try {
@@ -563,69 +686,17 @@ export async function executeDashboardAgentTool(
       return { success: false, error: "Data source not found" };
     }
 
-    const action = typeof input.action === "string" ? input.action : "replace";
-
-    if (action === "patch") {
-      if (
-        typeof input.startLine !== "number" ||
-        typeof input.endLine !== "number"
-      ) {
-        return {
-          success: false,
-          error:
-            "startLine and endLine are required for patch action. Use get_dashboard_state to see the current query code.",
-        };
-      }
-      if (typeof input.code !== "string") {
-        return {
-          success: false,
-          error: "code is required for patch action.",
-        };
-      }
+    const edit = resolveDataSourceCodeEdit(existing.query.code ?? "", {
+      action: typeof input.action === "string" ? input.action : undefined,
+      code: typeof input.code === "string" ? input.code : undefined,
+      startLine:
+        typeof input.startLine === "number" ? input.startLine : undefined,
+      endLine: typeof input.endLine === "number" ? input.endLine : undefined,
+    });
+    if (!edit.ok) {
+      return { success: false, error: edit.error };
     }
-
-    const existingCode = existing.query.code ?? "";
-    let resolvedCode = existingCode;
-
-    if (typeof input.code === "string") {
-      switch (action) {
-        case "patch": {
-          const lines = existingCode.split("\n");
-          const rawStart = input.startLine as number;
-          const rawEnd = input.endLine as number;
-          if (rawStart < 1 || rawStart > lines.length) {
-            return {
-              success: false,
-              error: `startLine ${rawStart} is out of range — the query only has ${lines.length} line(s). Use get_dashboard_state to see the current query code.`,
-            };
-          }
-          if (rawEnd < rawStart || rawEnd > lines.length) {
-            return {
-              success: false,
-              error: `endLine ${rawEnd} is out of range — the query only has ${lines.length} line(s) and startLine is ${rawStart}. Use get_dashboard_state to see the current query code.`,
-            };
-          }
-          const startLine = rawStart;
-          const endLine = rawEnd;
-          const before = lines.slice(0, startLine - 1);
-          const after = lines.slice(endLine);
-          const patchLines = input.code.split("\n");
-          resolvedCode = [...before, ...patchLines, ...after].join("\n");
-          break;
-        }
-        case "append": {
-          resolvedCode =
-            existingCode +
-            (existingCode.endsWith("\n") ? "" : "\n") +
-            input.code;
-          break;
-        }
-        case "replace":
-        default:
-          resolvedCode = input.code;
-          break;
-      }
-    }
+    const resolvedCode = edit.code;
 
     const nextLanguage = (
       typeof input.language === "string"
@@ -678,6 +749,91 @@ export async function executeDashboardAgentTool(
       });
       throwIfAborted(signal);
 
+      // Dashboard-level cron auto-refresh (parity with
+      // app_update_data_binding's materializationSchedule): one schedule
+      // refreshes every parquet source of the dashboard.
+      let scheduleMessage = "";
+      if (
+        input.materializationSchedule &&
+        typeof input.materializationSchedule === "object"
+      ) {
+        const requested = input.materializationSchedule as {
+          enabled?: boolean;
+          cron?: string | null;
+          timezone?: string;
+          dataFreshnessTtlMs?: number | null;
+        };
+        const enabled = requested.enabled === true;
+        const cron = enabled ? (requested.cron ?? "").trim() || null : null;
+        if (enabled) {
+          if (!cron) {
+            return {
+              success: false,
+              error:
+                "materializationSchedule.cron is required when enabling the schedule (5-field cron, e.g. '0 * * * *' = hourly).",
+            };
+          }
+          try {
+            CronExpressionParser.parse(cron, {
+              tz: requested.timezone ?? "UTC",
+            });
+          } catch {
+            return {
+              success: false,
+              error: `Invalid materialization schedule cron: "${cron}"`,
+            };
+          }
+          const dashboardAfterUpdate =
+            useDashboardStore.getState().openDashboards[ctx.dashboardId];
+          const hasParquetSource = dashboardAfterUpdate?.dataSources.some(
+            ds => ds.materialization === "parquet",
+          );
+          if (!hasParquetSource) {
+            return {
+              success: false,
+              error:
+                "Scheduled refresh only rebuilds 'parquet' data sources and this dashboard has none. Switch a data source to materialization: 'parquet' first (this tool can do both in one call).",
+            };
+          }
+        }
+        const current =
+          useDashboardStore.getState().openDashboards[ctx.dashboardId]
+            ?.materializationSchedule;
+        const nextSchedule = {
+          enabled,
+          cron,
+          timezone: requested.timezone ?? current?.timezone ?? "UTC",
+          dataFreshnessTtlMs:
+            requested.dataFreshnessTtlMs !== undefined
+              ? requested.dataFreshnessTtlMs
+              : (current?.dataFreshnessTtlMs ?? null),
+        };
+        await useDashboardStore
+          .getState()
+          .updateDashboard(ctx.workspaceId, ctx.dashboardId, {
+            materializationSchedule: nextSchedule,
+          } as Partial<Dashboard>);
+        throwIfAborted(signal);
+        // updateDashboard swallows request errors — confirm the write landed
+        // before reporting success to the agent.
+        const persisted =
+          useDashboardStore.getState().openDashboards[ctx.dashboardId]
+            ?.materializationSchedule;
+        if (
+          (persisted?.enabled ?? false) !== enabled ||
+          (persisted?.cron ?? null) !== cron
+        ) {
+          return {
+            success: false,
+            error:
+              "The data source was updated, but persisting the dashboard schedule failed. Retry the schedule change, or check write access to this dashboard.",
+          };
+        }
+        scheduleMessage = enabled
+          ? ` Dashboard auto-refresh schedule set: ${cron} (${nextSchedule.timezone}) — one schedule refreshes all parquet sources.`
+          : " Dashboard auto-refresh schedule is now off.";
+      }
+
       if (shouldRun) {
         const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
         const runtimeSource = snapshot.dataSources.find(
@@ -694,7 +850,7 @@ export async function executeDashboardAgentTool(
           rowCount: runtimeSource?.rowCount ?? null,
           schema: runtimeSource?.columns ?? [],
           sampleRows: runtimeSource?.sampleRows?.slice(0, 5) ?? [],
-          message: `Updated "${existing.name}" and loaded fresh draft-stream data into DuckDB.`,
+          message: `Updated "${existing.name}" and loaded fresh draft-stream data into DuckDB.${scheduleMessage}`,
         };
       }
       const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
@@ -712,8 +868,7 @@ export async function executeDashboardAgentTool(
         rowCount: null,
         schema: [],
         sampleRows: [],
-        message:
-          "Definition saved only. The dashboard is still using the previously loaded data until run_data_source_query is called.",
+        message: `Definition saved only. The dashboard is still using the previously loaded data until run_data_source_query is called.${scheduleMessage}`,
       };
     } catch (error) {
       const message =
@@ -789,13 +944,14 @@ export async function executeDashboardAgentTool(
 
   if (toolName === "get_chart_template") {
     if (typeof input.templateId !== "string") {
-      return { success: false, error: "templateId is required" };
+      // No templateId = list mode (folded in from get_chart_templates).
+      return { success: true, templates: getAllTemplates() };
     }
     const tpl = getTemplate(input.templateId);
     if (!tpl) {
       return {
         success: false,
-        error: `Template "${input.templateId}" not found. Call get_chart_templates to see available IDs.`,
+        error: `Template "${input.templateId}" not found. Call get_chart_template without templateId to see available IDs.`,
       };
     }
     return { success: true, template: tpl };

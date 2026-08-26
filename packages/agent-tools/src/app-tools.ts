@@ -14,6 +14,12 @@
 import { tool } from "ai";
 import { z } from "zod";
 
+import {
+  runAppBaseSchema,
+  RUN_APP_MIN_VIEWPORT_PX,
+  RUN_APP_MAX_VIEWPORT_PX,
+} from "./run-app";
+
 const appIdField = z.string().describe("App ID (from list_open_apps)");
 
 // NOTE: the mutation tools below (write/delete/rename file, add/remove
@@ -180,7 +186,7 @@ export const createDataBindingSchema = z.object({
       "Optional cron schedule that auto-refreshes a 'parquet' binding. Only " +
         "applies when materialization is 'parquet' (ignored/disabled for " +
         "'live'). You can also set or change this later with " +
-        "app_set_binding_schedule.",
+        "app_update_data_binding.",
     ),
 });
 
@@ -223,6 +229,24 @@ export const updateDataBindingSchema = z.object({
     .describe(
       "Link the binding to a dbt project (enables the {{ dbt_schema }} " +
         "token in code) or pass null to unlink it.",
+    ),
+  materialization: z
+    .enum(["live", "parquet"])
+    .optional()
+    .describe(
+      "Switch the binding's materialization IN PLACE (preserves its id, " +
+        "code, connection, and artifact history). 'live' runs the query " +
+        "server-side on every read; 'parquet' materializes it to a Parquet " +
+        "artifact for client-side DuckDB analytics — after switching to " +
+        "'parquet', call materialize_binding to build the artifact.",
+    ),
+  materializationSchedule: bindingMaterializationScheduleSchema
+    .optional()
+    .describe(
+      "Set or clear the cron auto-refresh on a 'parquet' binding, e.g. " +
+        "{ enabled: true, cron: '0 * * * *' } for hourly or " +
+        "{ enabled: false } to turn it off. Requires the binding to be (or " +
+        "become, via materialization in the same call) 'parquet'.",
     ),
   expectedResourceVersion: z
     .string()
@@ -750,7 +774,7 @@ export const setBindingMaterializationSchema = z.object({
     .describe(
       "Optional cron schedule to set at the same time. Only applies when " +
         "switching to 'parquet' (forced disabled for 'live'). Can also be set " +
-        "later with app_set_binding_schedule.",
+        "later with app_update_data_binding.",
     ),
 });
 
@@ -783,35 +807,67 @@ export const clientAppTools = {
   }),
   run_app: tool({
     description:
-      "Rebuild and reload the app's LIVE PREVIEW in the browser and return any " +
-      "build/runtime errors. Pass rebuild: false to read the current preview " +
-      "errors without forcing a rebuild. Use it to validate that edits render " +
-      "and to read preview errors. Requires an attached browser tab; it is " +
-      "not needed to author or persist an app.",
+      "Verify the app: rebuild and reload its LIVE PREVIEW, wait for it to " +
+      "render, and return status, build/runtime errors, and a screenshot of " +
+      "the rendered preview. Use after edits to confirm the app actually " +
+      "works. Pass rebuild: false to read the current preview state without " +
+      "forcing a rebuild, and includeScreenshot: false when you only need " +
+      "status/errors (much cheaper).",
+    inputSchema: runAppBaseSchema,
+  }),
+  app_set_preview: tool({
+    description:
+      "Configure the app's DRAFT PREVIEW: a device viewport (preset phone " +
+      "390x844 / tablet 768x1024 / desktop = fill the pane, or custom " +
+      "width/height — media queries re-evaluate, no rebuild) and/or which " +
+      "dbt ENVIRONMENT it reads data from (for dbt-linked bindings using the " +
+      "{{ dbt_schema }} token; null resets to prod). Pass at least one of " +
+      "preset, width+height, or environment. This is per-user VIEW state — " +
+      "it never changes the app definition or what published/shared viewers " +
+      "see (those always read prod). While a dbt override is active, " +
+      "dbt-linked parquet bindings serve a live (row-capped) run against the " +
+      "override schema — do NOT call materialize_binding to preview dev data " +
+      "(materialization always builds from prod). For a one-off size check " +
+      "without changing what's on screen, pass width/height to run_app " +
+      "instead.",
     inputSchema: z.object({
       appId: appIdField,
-      rebuild: z
-        .boolean()
+      preset: z
+        .enum(["phone", "tablet", "desktop"])
         .optional()
         .describe(
-          "Default true. false = return the current preview errors without " +
-            "rebuilding the iframe (no preview flash).",
+          "Named viewport: phone 390x844, tablet 768x1024, desktop = clear " +
+            "the override (fill the pane). Ignored when width/height are set.",
+        ),
+      width: z
+        .number()
+        .int()
+        .min(RUN_APP_MIN_VIEWPORT_PX)
+        .max(RUN_APP_MAX_VIEWPORT_PX)
+        .optional()
+        .describe("Custom viewport width in px (with height)"),
+      height: z
+        .number()
+        .int()
+        .min(RUN_APP_MIN_VIEWPORT_PX)
+        .max(RUN_APP_MAX_VIEWPORT_PX)
+        .optional()
+        .describe("Custom viewport height in px (with width)"),
+      environment: z
+        .string()
+        .nullable()
+        .optional()
+        .describe(
+          "dbt environment name from the linked project (e.g. 'dev' or a " +
+            "personal environment), or null to reset to the prod default. " +
+            "Omit to leave the environment unchanged.",
         ),
     }),
   }),
   app_set_preview_environment: tool({
     description:
-      "Switch which dbt ENVIRONMENT the app's DRAFT PREVIEW reads data from " +
-      "(for dbt-linked bindings using the {{ dbt_schema }} token). This is " +
-      "per-user VIEW state — it never changes the app definition, other " +
-      "editors' previews, or what published/shared viewers see (those always " +
-      "read the prod environment). While an override is active, dbt-linked " +
-      "parquet bindings serve a live (row-capped) run against the override " +
-      "schema — useQuery, useDuckDB, and query_duckdb all read it; do NOT " +
-      "call materialize_binding to preview dev data (materialization always " +
-      "builds from prod). Pass environment: null to go back to the default " +
-      "(prod). Use it to verify an app against models you just built in a " +
-      "dev/personal schema before promoting them to prod.",
+      "Deprecated alias of app_set_preview({ environment }) — switch which " +
+      "dbt environment the app's draft preview reads data from.",
     inputSchema: z.object({
       appId: appIdField,
       environment: z
@@ -821,6 +877,35 @@ export const clientAppTools = {
           "dbt environment name from the linked project (e.g. 'dev' or a " +
             "personal environment), or null to reset to the prod default",
         ),
+    }),
+  }),
+  app_set_preview_viewport: tool({
+    description:
+      "Deprecated alias of app_set_preview({ preset | width+height }) — " +
+      "switch the app's draft preview to a device viewport.",
+    inputSchema: z.object({
+      appId: appIdField,
+      preset: z
+        .enum(["phone", "tablet", "desktop"])
+        .optional()
+        .describe(
+          "Named viewport: phone 390x844, tablet 768x1024, desktop = clear " +
+            "the override (fill the pane). Ignored when width/height are set.",
+        ),
+      width: z
+        .number()
+        .int()
+        .min(RUN_APP_MIN_VIEWPORT_PX)
+        .max(RUN_APP_MAX_VIEWPORT_PX)
+        .optional()
+        .describe("Custom viewport width in px (with height)"),
+      height: z
+        .number()
+        .int()
+        .min(RUN_APP_MIN_VIEWPORT_PX)
+        .max(RUN_APP_MAX_VIEWPORT_PX)
+        .optional()
+        .describe("Custom viewport height in px (with width)"),
     }),
   }),
 };

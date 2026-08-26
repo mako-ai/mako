@@ -111,24 +111,93 @@ interface PlanActions {
 
 type PlanStore = PlanState & PlanActions;
 
+const TODO_STATUSES = new Set<PlanTodo["status"]>([
+  "pending",
+  "in_progress",
+  "completed",
+  "cancelled",
+]);
+
+const CAPABILITY_GRANTS = new Set([
+  "artifact-write",
+  "warehouse-write",
+  "git-write",
+  "schedule-write",
+]);
+
+const normalizeTodos = (todos: unknown): PlanTodo[] => {
+  if (!Array.isArray(todos)) return [];
+  return todos
+    .filter((t): t is Partial<PlanTodo> => Boolean(t) && typeof t === "object")
+    .map(t => ({
+      ...(typeof t.id === "string" ? { id: t.id } : {}),
+      content: typeof t.content === "string" ? t.content : "",
+      status: TODO_STATUSES.has(t.status as PlanTodo["status"])
+        ? (t.status as PlanTodo["status"])
+        : ("pending" as const),
+    }));
+};
+
+/**
+ * Desktop ACP forwards raw agent tool arguments with no schema validation
+ * (mako-desktop MCP → bridge job → renderer), so any field may be missing or
+ * of the wrong type — the same goes for mid-stream partial input. Coerce to a
+ * well-formed SubmitPlanInput once at the boundary; everything downstream
+ * (store, card, tab) can then trust the shape.
+ */
+export const normalizeSubmitPlanInput = (input: unknown): SubmitPlanInput => {
+  const raw = (input && typeof input === "object" ? input : {}) as Partial<
+    Record<keyof SubmitPlanInput, unknown>
+  >;
+  const requiredCapabilities = Array.isArray(raw.requiredCapabilities)
+    ? (raw.requiredCapabilities.filter(
+        g => typeof g === "string" && CAPABILITY_GRANTS.has(g),
+      ) as SubmitPlanInput["requiredCapabilities"])
+    : undefined;
+  return {
+    title: typeof raw.title === "string" ? raw.title : "",
+    planMarkdown: typeof raw.planMarkdown === "string" ? raw.planMarkdown : "",
+    todos: normalizeTodos(raw.todos),
+    ...(requiredCapabilities?.length ? { requiredCapabilities } : {}),
+  };
+};
+
+/**
+ * Same boundary treatment for tool outputs (hydrated from history / coerced
+ * ACP MCP results). Returns undefined when there is no usable decision —
+ * callers treat that as "not resolved".
+ */
+export const normalizeSubmitPlanOutput = (
+  output: unknown,
+): SubmitPlanOutput | undefined => {
+  const raw = (output && typeof output === "object" ? output : {}) as Record<
+    string,
+    unknown
+  >;
+  const decision = raw.decision;
+  if (
+    decision !== "approve" &&
+    decision !== "request_changes" &&
+    decision !== "cancel"
+  ) {
+    return undefined;
+  }
+  const result: SubmitPlanOutput = { success: raw.success !== false, decision };
+  if (typeof raw.feedback === "string") result.feedback = raw.feedback;
+  if (raw.editedPlan && typeof raw.editedPlan === "object") {
+    const { title, planMarkdown, todos } = normalizeSubmitPlanInput(
+      raw.editedPlan,
+    );
+    result.editedPlan = { title, planMarkdown, todos };
+  }
+  return result;
+};
+
+/** Inputs reaching this are already normalized — todos is always an array. */
 const draftFromInput = (input: SubmitPlanInput): PlanDraft => ({
   title: input.title,
   planMarkdown: input.planMarkdown,
   todos: input.todos.map(t => ({ status: "pending" as const, ...t })),
-});
-
-const draftFromPartialInput = (
-  partial: PartialSubmitPlanInput | undefined,
-): PlanDraft => ({
-  title: partial?.title ?? "",
-  planMarkdown: partial?.planMarkdown ?? "",
-  todos: (partial?.todos ?? [])
-    .filter((t): t is Partial<PlanTodo> => Boolean(t))
-    .map(t => ({
-      ...(t.id !== undefined ? { id: t.id } : {}),
-      content: t.content ?? "",
-      status: t.status ?? "pending",
-    })),
 });
 
 export const usePlanStore = create<PlanStore>()(
@@ -139,16 +208,12 @@ export const usePlanStore = create<PlanStore>()(
       setStreamingInput: (toolCallId, chatId, partial) => {
         const existing = get().plans[toolCallId];
         if (existing && existing.status !== "streaming") return;
+        const input = normalizeSubmitPlanInput(partial);
         set(state => {
-          const draft = draftFromPartialInput(partial);
           state.plans[toolCallId] = {
             chatId,
-            input: {
-              title: draft.title,
-              planMarkdown: draft.planMarkdown,
-              todos: draft.todos,
-            },
-            draft,
+            input,
+            draft: draftFromInput(input),
             status: "streaming",
           };
         });
@@ -160,11 +225,13 @@ export const usePlanStore = create<PlanStore>()(
         // a half-streamed plan is never persisted as a user draft; once
         // pending, user edits are preserved.
         if (existing && existing.status !== "streaming") return;
+        // ACP bridge input is unvalidated — never trust the shape.
+        const safe = normalizeSubmitPlanInput(input);
         set(state => {
           state.plans[toolCallId] = {
             chatId,
-            input,
-            draft: draftFromInput(input),
+            input: safe,
+            draft: draftFromInput(safe),
             status: "pending",
           };
         });
@@ -255,17 +322,21 @@ export const usePlanStore = create<PlanStore>()(
         ) {
           return;
         }
+        // Outputs are unvalidated at this boundary (coerced ACP MCP text) —
+        // a payload without a usable decision is simply not a resolution.
+        const safe = normalizeSubmitPlanOutput(output);
+        if (!safe) return;
         resolvers.delete(toolCallId);
         set(state => {
           const entry = state.plans[toolCallId];
           if (!entry) return;
-          entry.status = output.decision;
-          entry.output = output;
-          if (output.editedPlan) {
+          entry.status = safe.decision;
+          entry.output = safe;
+          // Clone so draft never aliases output.editedPlan in the store.
+          if (safe.editedPlan) {
             entry.draft = {
-              title: output.editedPlan.title,
-              planMarkdown: output.editedPlan.planMarkdown,
-              todos: output.editedPlan.todos.map(t => ({ ...t })),
+              ...safe.editedPlan,
+              todos: safe.editedPlan.todos.map(t => ({ ...t })),
             };
           }
         });

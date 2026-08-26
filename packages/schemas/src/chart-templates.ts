@@ -2,7 +2,7 @@
  * Chart Template Registry
  *
  * Named best-practice chart patterns that the AI agent can look up on demand
- * via `get_chart_templates` / `get_chart_template` tools. Each template
+ * via the `get_chart_template` tool (no templateId = list). Each template
  * provides a full working vegaLiteSpec, an example SQL pattern, and notes
  * about constraints and gotchas.
  *

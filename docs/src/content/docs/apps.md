@@ -82,6 +82,14 @@ navigate("/", { replace: true }); // replace the current entry
 
 Use distinct **paths** for separate views (`/`, `/customers/42`) and **query params** for filters and sort within a view. The app's pathname rides on the host URL in a reserved `_path` param; query params stay readable on the address bar. Hashes (`#…`) are not carried across the bridge — keep state in the path or query.
 
+## Preview Viewport
+
+The draft preview can render at phone or tablet size so you can check responsive layouts without leaving the tab. Click the **viewport toggle** in the preview toolbar (monitor / phone / tablet icon) to cycle desktop (fill) → phone (390×844) → tablet (768×1024) → desktop. The iframe keeps its true CSS size so media queries render the real mobile layout; the pane scales it down to fit when needed.
+
+The choice is per-user view state (remembered per app, like the dbt environment switcher) — it never changes the app definition, and published/shared viewers are unaffected.
+
+The AI agent verifies mobile layouts the same way: it runs `run_app` with an explicit `width`/`height` (e.g. 390×844 for phone) and inspects the screenshot, or switches your on-screen preview with `app_set_preview` while iterating in chat.
+
 ## Versioning & Publishing
 
 Apps autosave every edit, so what you (or the AI agent) work on is a **draft**. Every app starts with a v1 `App created` checkpoint (also its first published version), so version history is never empty. To create a further immutable checkpoint, **save a version** — this snapshots the current draft into version history *and* **publishes** it.
@@ -94,10 +102,12 @@ See [Version History](/version-history/) for the REST endpoints, response shapes
 
 ## Access Control
 
-Apps follow the same model as dashboards:
+Apps follow the same model as dashboards (see [Sharing & Collaborators](/dashboards/#sharing--collaborators)):
 
 - **`private`** (default): owner-only. Workspace admins and API keys cannot read or modify another member's private app.
 - **`workspace`**: visible and editable by any workspace member.
+
+The **Share** dialog also has a **Copy link** button that copies the workspace-internal URL (`/a/:appId`) for logged-in collaborators — the only way to grab the link from [Mako Desktop](/desktop/), whose shell has no address bar. The recipient still needs access (collaborator or `workspace` visibility) to open it.
 
 ## Security Model
 

@@ -8,26 +8,96 @@
  */
 
 import {
+  APP_PREVIEW_VIEWPORT_PRESETS,
   APP_READ_FILE_MAX_CHARS,
   appBindingResourceVersion,
   appResourceRef,
   appResourceVersion,
   appVersionedResourceVersion,
+  clampRunAppTimeoutMs,
   clipAgentText,
   parseAppResourceRef,
   readAppResourceRange,
   searchAppResources,
   summarizeAppBindingForState,
   summarizePreviewErrors,
+  type RunAppResult,
 } from "@mako/agent-tools";
+import { enqueueScreenshotVisionAttachment } from "../agent-runtime/screenshot-agent-tools";
 import { useConsoleStore } from "../store/consoleStore";
-import { useAppStore, type AppEntity } from "../store/appStore";
+import {
+  useAppStore,
+  type AppEntity,
+  type AppPreviewViewport,
+} from "../store/appStore";
+import { captureAppPreview, findAppPreviewIframe } from "./preview-capture";
 import { focusAppTab, getCurrentWorkspaceId } from "./shell";
 
 type ToolResult = Record<string, unknown>;
 
 function fail(error: string): ToolResult {
   return { success: false, error };
+}
+
+/**
+ * How a run_app screenshot reaches the calling agent:
+ *  - "vision-attachment" (chat): queued as a real image input on the next
+ *    model request — base64 never enters the JSON tool result.
+ *  - "inline" (desktop bridge): returned in the envelope for the mako-desktop
+ *    loopback server to emit as MCP image content.
+ *  - "none": caller cannot deliver images (older Local Agent) — skip capture.
+ */
+export type RunAppScreenshotDelivery = "vision-attachment" | "inline" | "none";
+
+const PREVIEW_SETTLE_POLL_MS = 150;
+/** Grace for a preview iframe to mount after bumpPreview / tab focus. */
+const PREVIEW_IFRAME_MOUNT_GRACE_MS = 2_000;
+
+/**
+ * Await the iframe bootstrap's ready/error report (previewStatus in the app
+ * store) instead of sleeping a fixed delay. Bails early as "timeout" when no
+ * preview iframe is on screen — nothing will ever report in that case.
+ */
+async function waitForPreviewSettle(
+  appId: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<{ status: "ready" | "error" | "timeout"; noIframe?: boolean }> {
+  const startedAt = Date.now();
+  for (;;) {
+    const status = useAppStore.getState().previewStatus[appId];
+    if (status === "ready" || status === "error") return { status };
+    if (status === undefined) {
+      // Nothing has ever built/reported for this app in this browser. Fall
+      // back to the error list (pre-previewStatus behavior) when a preview
+      // is on screen; report cleanly when it is not.
+      if (findAppPreviewIframe(appId)) {
+        const hasErrors =
+          (useAppStore.getState().previewErrors[appId] ?? []).length > 0;
+        return { status: hasErrors ? "error" : "ready" };
+      }
+      if (Date.now() - startedAt >= PREVIEW_IFRAME_MOUNT_GRACE_MS) {
+        return { status: "timeout", noIframe: true };
+      }
+    } else if (
+      !findAppPreviewIframe(appId) &&
+      Date.now() - startedAt >= PREVIEW_IFRAME_MOUNT_GRACE_MS
+    ) {
+      // "building" with no iframe mounted: the report can never arrive.
+      return { status: "timeout", noIframe: true };
+    }
+    if (signal?.aborted || Date.now() - startedAt >= timeoutMs) {
+      return { status: "timeout" };
+    }
+    await new Promise(resolve => setTimeout(resolve, PREVIEW_SETTLE_POLL_MS));
+  }
+}
+
+function dataUrlToParts(
+  dataUrl: string,
+): { mimeType: string; base64: string } | null {
+  const match = /^data:([^;,]+);base64,(.+)$/.exec(dataUrl);
+  return match ? { mimeType: match[1], base64: match[2] } : null;
 }
 
 function listOpenApps() {
@@ -69,7 +139,12 @@ const MATERIALIZE_TOOL_MAX_WAIT_MS = 600_000;
 export async function executeAppAgentTool(
   toolName: string,
   input: Record<string, unknown>,
-  options?: { executionId?: string; signal?: AbortSignal },
+  options?: {
+    executionId?: string;
+    signal?: AbortSignal;
+    /** run_app only — how a captured screenshot reaches the agent. */
+    screenshotDelivery?: RunAppScreenshotDelivery;
+  },
 ): Promise<ToolResult> {
   const store = useAppStore.getState();
   const workspaceId = getCurrentWorkspaceId();
@@ -85,6 +160,89 @@ export async function executeAppAgentTool(
 
   const persist = async () => {
     if (workspaceId && appId) await store.persistApp(workspaceId, appId);
+  };
+
+  // Viewport leg of app_set_preview (and its deprecated alias
+  // app_set_preview_viewport): sticky per-user preview viewport.
+  const applyPreviewViewport = async (
+    id: string,
+    legInput: Record<string, unknown>,
+  ): Promise<ToolResult> => {
+    await ensureApp(id);
+    const width =
+      typeof legInput.width === "number" ? legInput.width : undefined;
+    const height =
+      typeof legInput.height === "number" ? legInput.height : undefined;
+    const preset = legInput.preset as
+      | "phone"
+      | "tablet"
+      | "desktop"
+      | undefined;
+    let viewport: AppPreviewViewport | null;
+    if (width !== undefined && height !== undefined) {
+      viewport = { width, height };
+    } else if (width !== undefined || height !== undefined) {
+      return fail("Pass both width and height for a custom viewport.");
+    } else if (preset === "phone" || preset === "tablet") {
+      viewport = { ...APP_PREVIEW_VIEWPORT_PRESETS[preset], preset };
+    } else if (preset === "desktop") {
+      viewport = null;
+    } else {
+      return fail(
+        "Pass preset ('phone' | 'tablet' | 'desktop') or width + height.",
+      );
+    }
+    store.setPreviewViewport(id, viewport);
+    return {
+      success: true,
+      viewport,
+      hint: viewport
+        ? `Preview now renders at ${viewport.width}×${viewport.height} for you AND the user — no rebuild needed. Verify with run_app; reset with preset: "desktop".`
+        : "Preview viewport reset — the app fills the pane again.",
+    };
+  };
+
+  // Environment leg of app_set_preview (and its deprecated alias
+  // app_set_preview_environment): per-user dbt environment override.
+  const applyPreviewEnvironment = async (
+    id: string,
+    legInput: Record<string, unknown>,
+  ): Promise<ToolResult> => {
+    if (!workspaceId) return fail("No active workspace");
+    const appEntity = await ensureApp(id);
+    if (!appEntity) return fail("App not found");
+    const environment = (legInput.environment ?? null) as string | null;
+    const dbtProjectId = appEntity.dataBindings.find(
+      b => b.dbtProjectId,
+    )?.dbtProjectId;
+    if (!dbtProjectId) {
+      return fail(
+        "This app has no dbt-linked data bindings. Link a binding to a " +
+          "dbt project (dbtProjectId + the {{ dbt_schema }} token) first.",
+      );
+    }
+    if (environment) {
+      const info = await store.fetchDbtEnvInfo(workspaceId, dbtProjectId);
+      if (!info) return fail("Failed to load the linked dbt project");
+      if (!info.environments.some(env => env.name === environment)) {
+        return fail(
+          `Environment "${environment}" not found on the linked dbt ` +
+            `project. Available: ${info.environments
+              .map(env => env.name)
+              .join(", ")}`,
+        );
+      }
+    }
+    store.setPreviewDbtEnvironment(id, environment);
+    return {
+      success: true,
+      appId: id,
+      environment,
+      hint: environment
+        ? `Draft preview now reads dbt environment "${environment}". This ` +
+          "is your view only — published/shared viewers still read prod."
+        : "Draft preview reset to the default (prod) dbt environment.",
+    };
   };
 
   switch (toolName) {
@@ -438,59 +596,173 @@ export async function executeAppAgentTool(
     case "run_app": {
       if (!appId) return fail("appId is required");
       await ensureApp(appId);
-      // rebuild: false = read current errors only — no bumpPreview, which
-      // flashes a black "Building preview…" screen and can remount Chat.
-      if (input.rebuild !== false) {
-        store.bumpPreview(appId);
-        // Give the preview a moment to rebuild and report errors.
-        await new Promise(resolve => setTimeout(resolve, 1200));
+      // Ephemeral viewport: verify the responsive layout at an exact size
+      // (e.g. 390x844 for mobile) without stickily changing what the user
+      // sees — the previous viewport is restored after the capture. Media
+      // queries respond to the iframe's own size, so a resize IS the
+      // responsive check; no rebuild is needed for it.
+      const requestedWidth =
+        typeof input.width === "number" ? input.width : undefined;
+      const requestedHeight =
+        typeof input.height === "number" ? input.height : undefined;
+      const ephemeralViewport: AppPreviewViewport | null =
+        requestedWidth !== undefined || requestedHeight !== undefined
+          ? { width: requestedWidth ?? 1280, height: requestedHeight ?? 800 }
+          : null;
+      const previousViewport = ephemeralViewport
+        ? (useAppStore.getState().previewViewport[appId] ?? null)
+        : null;
+      if (ephemeralViewport) {
+        store.setPreviewViewport(appId, ephemeralViewport);
       }
-      const errors = summarizePreviewErrors(
-        useAppStore.getState().previewErrors[appId],
-      );
-      return {
-        success: true,
-        errors,
-      };
+      try {
+        // rebuild: false = read the current preview state — no bumpPreview,
+        // which flashes a black "Building preview…" screen and can remount
+        // Chat. With only a viewport change, give the app a beat to re-lay
+        // out before capturing.
+        if (input.rebuild !== false) {
+          store.bumpPreview(appId);
+        } else if (ephemeralViewport) {
+          await new Promise(resolve => setTimeout(resolve, 350));
+        }
+        const timeoutMs = clampRunAppTimeoutMs(
+          typeof input.timeoutMs === "number" ? input.timeoutMs : undefined,
+        );
+        const settled = await waitForPreviewSettle(
+          appId,
+          timeoutMs,
+          options?.signal,
+        );
+        const errors = summarizePreviewErrors(
+          useAppStore.getState().previewErrors[appId],
+        );
+        const result: RunAppResult = {
+          success: settled.status === "ready",
+          status: settled.status,
+          errors,
+          consoleLogs: [],
+          source: "iframe",
+          ...(settled.noIframe
+            ? {
+                error:
+                  "No visible preview iframe for this app — open it with " +
+                  "open_app so the preview can build and report.",
+              }
+            : {}),
+        };
+
+        const delivery = options?.screenshotDelivery ?? "vision-attachment";
+        const wantScreenshot = input.includeScreenshot !== false;
+        let screenshotPassedToModel = false;
+        if (wantScreenshot && delivery === "none") {
+          result.screenshotUnavailableReason =
+            "This client cannot deliver screenshots (update Mako Desktop / " +
+            "Local Agent). Status and errors above are still authoritative.";
+        } else if (wantScreenshot) {
+          try {
+            const dataUrl = await captureAppPreview(appId);
+            const parts = dataUrlToParts(dataUrl);
+            if (!parts) {
+              throw new Error("Preview returned an unreadable capture");
+            }
+            if (delivery === "inline") {
+              result.screenshot = {
+                mimeType: parts.mimeType,
+                base64: parts.base64,
+              };
+            } else {
+              const enqueued = enqueueScreenshotVisionAttachment({
+                renderer: "app-preview-self-capture",
+                filename: `run-app-${appId}-${Date.now()}.png`,
+                mediaType: "image/png",
+                dataUrl,
+                outputBytes: Math.ceil((parts.base64.length * 3) / 4),
+                targetLabel: "app-preview",
+              });
+              if (enqueued) {
+                screenshotPassedToModel = true;
+              } else {
+                result.screenshotUnavailableReason =
+                  "Screenshot was too large to pass to the model.";
+              }
+            }
+          } catch (error) {
+            result.screenshotUnavailableReason =
+              error instanceof Error ? error.message : "Preview capture failed";
+          }
+        }
+
+        return {
+          ...result,
+          ...(ephemeralViewport
+            ? {
+                viewport: {
+                  width: ephemeralViewport.width,
+                  height: ephemeralViewport.height,
+                },
+              }
+            : {}),
+          ...(screenshotPassedToModel
+            ? {
+                screenshotPassedToModel: true,
+                note: "The preview screenshot is sent as a real image input in the next model request, not inside this tool result.",
+              }
+            : {}),
+        };
+      } finally {
+        // The verify viewport is ephemeral — put back whatever the user had.
+        if (ephemeralViewport) {
+          store.setPreviewViewport(appId, previousViewport);
+        }
+      }
+    }
+
+    // app_set_preview merges the two deprecated per-leg setters below; all
+    // three share the same viewport/environment legs.
+    case "app_set_preview": {
+      if (!appId) return fail("appId is required");
+      const wantsViewport =
+        input.preset !== undefined ||
+        input.width !== undefined ||
+        input.height !== undefined;
+      const wantsEnvironment = input.environment !== undefined;
+      if (!wantsViewport && !wantsEnvironment) {
+        return fail(
+          "Pass at least one of preset, width + height, or environment.",
+        );
+      }
+      const result: ToolResult = { success: true };
+      if (wantsViewport) {
+        const viewportResult = await applyPreviewViewport(appId, input);
+        if (viewportResult.success !== true) return viewportResult;
+        result.viewport = viewportResult.viewport;
+        result.viewportHint = viewportResult.hint;
+      }
+      if (wantsEnvironment) {
+        const envResult = await applyPreviewEnvironment(appId, input);
+        if (envResult.success !== true) {
+          return wantsViewport
+            ? {
+                ...envResult,
+                viewport: result.viewport,
+                note: "The viewport change was applied; the environment change failed.",
+              }
+            : envResult;
+        }
+        result.environment = envResult.environment;
+        result.environmentHint = envResult.hint;
+      }
+      return result;
+    }
+
+    case "app_set_preview_viewport": {
+      if (!appId) return fail("appId is required");
+      return applyPreviewViewport(appId, input);
     }
 
     case "app_set_preview_environment": {
       if (!appId) return fail("appId is required");
-      if (!workspaceId) return fail("No active workspace");
-      const appEntity = await ensureApp(appId);
-      if (!appEntity) return fail("App not found");
-      const environment = (input.environment ?? null) as string | null;
-      const dbtProjectId = appEntity.dataBindings.find(
-        b => b.dbtProjectId,
-      )?.dbtProjectId;
-      if (!dbtProjectId) {
-        return fail(
-          "This app has no dbt-linked data bindings. Link a binding to a " +
-            "dbt project (dbtProjectId + the {{ dbt_schema }} token) first.",
-        );
-      }
-      if (environment) {
-        const info = await store.fetchDbtEnvInfo(workspaceId, dbtProjectId);
-        if (!info) return fail("Failed to load the linked dbt project");
-        if (!info.environments.some(env => env.name === environment)) {
-          return fail(
-            `Environment "${environment}" not found on the linked dbt ` +
-              `project. Available: ${info.environments
-                .map(env => env.name)
-                .join(", ")}`,
-          );
-        }
-      }
-      store.setPreviewDbtEnvironment(appId, environment);
-      return {
-        success: true,
-        appId,
-        environment,
-        hint: environment
-          ? `Draft preview now reads dbt environment "${environment}". This ` +
-            "is your view only — published/shared viewers still read prod."
-          : "Draft preview reset to the default (prod) dbt environment.",
-      };
+      return applyPreviewEnvironment(appId, input);
     }
 
     default:

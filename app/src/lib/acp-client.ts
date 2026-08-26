@@ -7,6 +7,7 @@ import type {
   AcpAuthenticateResult,
   AcpBridgeEvent,
   AcpEnsureAdapterResult,
+  AcpPromptImage,
   AcpProviderId,
   AcpSessionInfo,
   AcpStatus,
@@ -50,6 +51,20 @@ export const acpClient = {
     const body =
       await localAgentClient.get<Envelope<AcpSessionInfo[]>>("/acp/sessions");
     return unwrap(body, "Failed to list ACP sessions");
+  },
+
+  /** Null when the session is unknown or the Local Agent is unreachable. */
+  async getSession(sessionId: string): Promise<AcpSessionInfo | null> {
+    try {
+      const body = await localAgentClient.get<Envelope<AcpSessionInfo>>(
+        `/acp/sessions/${encodeURIComponent(sessionId)}`,
+        undefined,
+        { timeoutMs: 5000 },
+      );
+      return body?.success && body.data ? body.data : null;
+    } catch {
+      return null;
+    }
   },
 
   async authenticate(
@@ -141,10 +156,11 @@ export const acpClient = {
   async prompt(
     sessionId: string,
     text: string,
+    images?: AcpPromptImage[],
   ): Promise<{ stopReason: string }> {
     const body = await localAgentClient.post<Envelope<{ stopReason: string }>>(
       `/acp/sessions/${encodeURIComponent(sessionId)}/prompt`,
-      { text },
+      images?.length ? { text, images } : { text },
     );
     return unwrap(body, "Prompt failed");
   },

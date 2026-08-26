@@ -18,18 +18,23 @@ process.env.ENCRYPTION_KEY =
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import {
   AGENT_CAPABILITIES,
+  AGENT_CAPABILITY_BY_NAME,
   CAPABILITY_GRANTS,
   DBT_CAPABILITY_NAMES,
   type CapabilityGrant,
 } from "@mako/agent-tools";
 import { buildMakoMcpServer } from "./mako-mcp-server";
+import { createChatGptConnectorTools } from "./chatgpt-connector-tools";
 import { StatelessMcpTransport } from "./stateless-transport";
 import {
+  capabilityGrantsFromScopes,
   parseWorkspaceApiKeyScopes,
+  queryAccessFromScopes,
   restQueryAccessFromStoredScopes,
   resolveWorkspaceApiKeyScopes,
   type WorkspaceApiKeyScope,
 } from "../auth/api-key-scopes";
+import { effectiveSqlQueryAccess } from "../agent-lib/tools/sql-tools";
 import { sqlReadOnlyAccessError } from "../services/read-only-query.service";
 import {
   assertBridgePolicyCovers,
@@ -82,10 +87,56 @@ async function main() {
     () => parseWorkspaceApiKeyScopes(["mcp", "unknown"]),
     /Unsupported API key scope/,
   );
-  // MCP is read-only by design: query:write is not a grantable scope.
-  assert.throws(
-    () => parseWorkspaceApiKeyScopes(["mcp", "query:write"]),
-    /Unsupported API key scope/,
+  // query:write is double-gated: the scope alone yields "write-opt-in",
+  // which resolves to write ONLY against connections a workspace admin
+  // marked allowAgentWrites — and can never upgrade a plain query:read key.
+  assert.deepEqual(parseWorkspaceApiKeyScopes(["mcp", "query:write"]), [
+    "mcp",
+    "query:write",
+  ]);
+  assert.equal(
+    queryAccessFromScopes(["mcp", "query:read", "query:write"]),
+    "write-opt-in",
+  );
+  assert.equal(queryAccessFromScopes(["mcp", "query:read"]), "read");
+  assert.equal(
+    effectiveSqlQueryAccess("write-opt-in", { allowAgentWrites: true }),
+    "write",
+  );
+  assert.equal(
+    effectiveSqlQueryAccess("write-opt-in", { allowAgentWrites: false }),
+    "read",
+  );
+  assert.equal(effectiveSqlQueryAccess("write-opt-in", {}), "read");
+  assert.equal(
+    effectiveSqlQueryAccess("read", { allowAgentWrites: true }),
+    "read",
+    "the connection flag must never upgrade a read-only key",
+  );
+  assert.equal(
+    effectiveSqlQueryAccess("none", { allowAgentWrites: true }),
+    "none",
+  );
+  // REST endpoints have not adopted per-connection resolution: a
+  // query:write key stays read there.
+  assert.equal(
+    restQueryAccessFromStoredScopes(["mcp", "query:read", "query:write"]),
+    "read",
+  );
+  // warehouse:write is grantable (opt-in, never default) and maps to the
+  // warehouse-write capability grant only.
+  assert.deepEqual(
+    parseWorkspaceApiKeyScopes(["mcp", "query:read", "warehouse:write"]),
+    ["mcp", "query:read", "warehouse:write"],
+  );
+  assert.deepEqual(
+    capabilityGrantsFromScopes(["mcp", "query:read", "warehouse:write"]),
+    ["warehouse-write"],
+  );
+  assert.deepEqual(capabilityGrantsFromScopes(["mcp", "query:read"]), []);
+  assert.deepEqual(
+    capabilityGrantsFromScopes(["mcp", "query:read", "git:write"]),
+    ["git-write"],
   );
   assert.equal(
     sqlReadOnlyAccessError("SELECT 'UPDATE is text' AS value"),
@@ -203,6 +254,9 @@ async function main() {
     // Annotations drive client-side auto-approval: pure reads must say so,
     // and under a query:read key the enforced-read-only query loop too.
     for (const readOnlyTool of [
+      "list_databases",
+      "list_tables",
+      "inspect_table",
       "sql_list_tables",
       "sql_inspect_table",
       "sql_execute_query",
@@ -252,6 +306,9 @@ async function main() {
       "app_save_version",
       "app_restore_version",
       "list_connections",
+      "list_databases",
+      "list_tables",
+      "inspect_table",
       "sql_list_connections",
       "sql_list_databases",
       "sql_list_tables",
@@ -290,6 +347,17 @@ async function main() {
       "dbt_get_run",
       "dbt_list_recoverable_files",
       "dbt_restore_file",
+      // Async validation runs (queue + poll dbt_get_run) — read-risk, so
+      // they bridge for every query:read key: author AND validate headlessly.
+      "dbt_parse",
+      "dbt_compile_model",
+      "dbt_show",
+      // Git reads bridge unconditionally so headless agents can see that
+      // their edits are uncommitted working-tree drafts.
+      "dbt_git_status",
+      "dbt_list_branches",
+      "dbt_compare_branches",
+      "dbt_list_pull_requests",
     ]) {
       assert.ok(names.has(expected), `missing tool: ${expected}`);
     }
@@ -327,6 +395,10 @@ async function main() {
       false,
       "skill writes stay in-product",
     );
+    // Generic version save/restore is client-side; MCP keeps the server-side
+    // app_save_version / app_restore_version pair instead.
+    assert.equal(names.has("save_version"), false);
+    assert.equal(names.has("restore_version"), false);
     assert.equal(
       names.has("open_app"),
       false,
@@ -340,19 +412,189 @@ async function main() {
       true,
       "run_app renders a draft and mutates nothing",
     );
-    for (const desktopOnlyTool of [
-      "dbt_parse",
-      "dbt_compile_model",
-      "dbt_show",
+    // Warehouse-mutating dbt runs require the explicit warehouse:write
+    // scope; a default query:read key must not see them.
+    for (const warehouseGatedTool of [
       "dbt_run_model",
+      "dbt_run_job",
       "dbt_cancel_run",
     ]) {
       assert.equal(
-        names.has(desktopOnlyTool),
+        names.has(warehouseGatedTool),
         false,
-        `${desktopOnlyTool} must stay off general MCP`,
+        `${warehouseGatedTool} must stay hidden without warehouse:write`,
       );
     }
+    // Git mutations require the explicit git:write scope.
+    for (const gitGatedTool of [
+      "dbt_sync_from_repo",
+      "dbt_commit_and_push",
+      "dbt_commit_to_branch",
+      "dbt_create_branch",
+      "dbt_switch_branch",
+      "dbt_delete_branch",
+      "dbt_open_pull_request",
+      "dbt_merge_pull_request",
+      "dbt_update_pull_request",
+      "dbt_close_pull_request",
+    ]) {
+      assert.equal(
+        names.has(gitGatedTool),
+        false,
+        `${gitGatedTool} must stay hidden without git:write`,
+      );
+    }
+  }
+
+  // 3a. warehouse:write opt-in: run tools appear (destructive-annotated) and
+  //     authorize; without the scope the call fails as an unknown tool and
+  //     the capability runtime would refuse it regardless.
+  {
+    const [res] = await exchange(
+      [{ jsonrpc: "2.0", id: "wh-list", method: "tools/list" }],
+      ["mcp", "query:read", "warehouse:write"],
+    );
+    const { tools } = res.result as {
+      tools: {
+        name: string;
+        annotations?: { destructiveHint?: boolean; readOnlyHint?: boolean };
+      }[];
+    };
+    const byName = new Map(tools.map(tool => [tool.name, tool]));
+    for (const runTool of ["dbt_run_model", "dbt_run_job", "dbt_cancel_run"]) {
+      assert.ok(
+        byName.has(runTool),
+        `${runTool} must be exposed with warehouse:write`,
+      );
+    }
+    assert.equal(
+      byName.get("dbt_run_model")?.annotations?.destructiveHint,
+      true,
+    );
+    assert.equal(byName.get("dbt_run_job")?.annotations?.destructiveHint, true);
+    // Validation stays read-annotated so clients can auto-approve it.
+    assert.equal(byName.get("dbt_parse")?.annotations?.readOnlyHint, true);
+    assert.equal(byName.get("dbt_show")?.annotations?.readOnlyHint, true);
+
+    const [ungated] = await exchange([
+      {
+        jsonrpc: "2.0",
+        id: "wh-call",
+        method: "tools/call",
+        params: { name: "dbt_run_model", arguments: {} },
+      },
+    ]);
+    const ungatedResult = ungated.result as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+    assert.equal(
+      ungatedResult.isError,
+      true,
+      "dbt_run_model without warehouse:write must fail",
+    );
+    assert.match(ungatedResult.content[0].text, /Unknown tool/);
+
+    // With the scope, authorization passes and the zod schema rejects the
+    // empty arguments (proves no grant gate blocked the call).
+    const [gatedCall] = await exchange(
+      [
+        {
+          jsonrpc: "2.0",
+          id: "wh-call-scoped",
+          method: "tools/call",
+          params: { name: "dbt_run_model", arguments: {} },
+        },
+      ],
+      ["mcp", "query:read", "warehouse:write"],
+    );
+    assert.match(
+      (gatedCall.result as { content: { text: string }[] }).content[0].text,
+      /Invalid arguments/,
+      "warehouse:write key reaches dbt_run_model",
+    );
+  }
+
+  // 3a2. git:write opt-in: Git mutations appear (risk-annotated) and
+  //      authorize, independently of warehouse:write.
+  {
+    const [res] = await exchange(
+      [{ jsonrpc: "2.0", id: "git-list", method: "tools/list" }],
+      ["mcp", "query:read", "git:write"],
+    );
+    const { tools } = res.result as {
+      tools: {
+        name: string;
+        annotations?: { destructiveHint?: boolean; readOnlyHint?: boolean };
+      }[];
+    };
+    const byName = new Map(tools.map(tool => [tool.name, tool]));
+    for (const gitTool of [
+      "dbt_commit_to_branch",
+      "dbt_create_branch",
+      "dbt_open_pull_request",
+      "dbt_switch_branch",
+      "dbt_merge_pull_request",
+    ]) {
+      assert.ok(byName.has(gitTool), `${gitTool} must appear with git:write`);
+    }
+    assert.equal(
+      byName.get("dbt_switch_branch")?.annotations?.destructiveHint,
+      true,
+    );
+    assert.equal(
+      byName.get("dbt_commit_to_branch")?.annotations?.destructiveHint,
+      false,
+    );
+    // git:write alone does not surface warehouse runs.
+    assert.equal(
+      byName.has("dbt_run_model"),
+      false,
+      "git:write must not imply warehouse:write",
+    );
+    assert.equal(byName.get("dbt_git_status")?.annotations?.readOnlyHint, true);
+
+    const [gatedCall] = await exchange(
+      [
+        {
+          jsonrpc: "2.0",
+          id: "git-call-scoped",
+          method: "tools/call",
+          params: { name: "dbt_commit_to_branch", arguments: {} },
+        },
+      ],
+      ["mcp", "query:read", "git:write"],
+    );
+    assert.match(
+      (gatedCall.result as { content: { text: string }[] }).content[0].text,
+      /Invalid arguments/,
+      "git:write key reaches dbt_commit_to_branch",
+    );
+  }
+
+  // 3a3. query:write annotations: sql_execute_query may write (per-connection
+  //      resolution happens at execution), so it must NOT be annotated
+  //      read-only; console runs fail closed to read and stay annotated so.
+  {
+    const [res] = await exchange(
+      [{ jsonrpc: "2.0", id: "qw-list", method: "tools/list" }],
+      ["mcp", "query:read", "query:write"],
+    );
+    const { tools } = res.result as {
+      tools: { name: string; annotations?: { readOnlyHint?: boolean } }[];
+    };
+    const byName = new Map(tools.map(tool => [tool.name, tool]));
+    assert.equal(
+      byName.get("sql_execute_query")?.annotations?.readOnlyHint,
+      false,
+      "sql_execute_query may write under query:write — no read-only hint",
+    );
+    assert.equal(
+      byName.get("run_console")?.annotations?.readOnlyHint,
+      true,
+      "run_console fails closed to read under query:write",
+    );
+    assert.equal(byName.get("cancel_query")?.annotations?.readOnlyHint, true);
   }
 
   // 3b. Bridge policy covers the live agent inventory — this is how we stay
@@ -372,6 +614,16 @@ async function main() {
       // Conditional tools (e.g. web_search) only appear when optional
       // providers are configured.
       if (entry.conditional || entry.acpDesktopOnly) continue;
+      // Grant-gated tools only appear when the key's scopes opt into the
+      // grant (e.g. warehouse:write); this exchange used the default scopes.
+      const requiredGrant = AGENT_CAPABILITY_BY_NAME.get(name)?.requiredGrant;
+      if (
+        requiredGrant &&
+        requiredGrant !== "artifact-write" &&
+        requiredGrant !== "schedule-write"
+      ) {
+        continue;
+      }
       assert.ok(
         exposed.has(name),
         `policy says bridge ${name} but tools/list omitted it`,
@@ -554,6 +806,115 @@ async function main() {
       false,
       "Desktop ACP must get list_open_consoles from mako-desktop, not the Mako bridge",
     );
+  }
+
+  // 3g. ChatGPT connector contract: the route layer registers search/fetch
+  //     as extraTools for external clients (ChatGPT refuses a connector
+  //     without exactly this pair). Both are read-only and policy-classified.
+  {
+    const context = {
+      workspaceId: WORKSPACE_ID,
+      scopes: ["mcp", "query:read"] as WorkspaceApiKeyScope[],
+    };
+    const chatGptExchange = async (messages: Record<string, unknown>[]) => {
+      const server = buildMakoMcpServer(
+        context,
+        createChatGptConnectorTools(context),
+      );
+      const transport = new StatelessMcpTransport();
+      await server.connect(transport);
+      try {
+        return (await transport.handle(
+          messages as unknown as JSONRPCMessage[],
+          5_000,
+        )) as unknown as Record<string, unknown>[];
+      } finally {
+        await server.close().catch(() => undefined);
+      }
+    };
+
+    const [listRes] = await chatGptExchange([
+      { jsonrpc: "2.0", id: "chatgpt-list", method: "tools/list" },
+    ]);
+    const { tools } = listRes.result as {
+      tools: {
+        name: string;
+        inputSchema: { type?: string };
+        annotations?: { readOnlyHint?: boolean };
+      }[];
+    };
+    const byName = new Map(tools.map(tool => [tool.name, tool]));
+    for (const name of ["search", "fetch"]) {
+      const entry = byName.get(name);
+      assert.ok(entry, `ChatGPT connector tool missing: ${name}`);
+      assert.equal(entry?.inputSchema.type, "object");
+      assert.equal(
+        entry?.annotations?.readOnlyHint,
+        true,
+        `${name} must be annotated read-only`,
+      );
+      const policy = MCP_BRIDGE_POLICY[name];
+      assert.equal(
+        policy?.status,
+        "mcp-only",
+        `${name} must be classified mcp-only in the bridge policy`,
+      );
+    }
+
+    // Malformed / unknown document ids fail in-band before any DB access.
+    const [badId] = await chatGptExchange([
+      {
+        jsonrpc: "2.0",
+        id: "chatgpt-bad-id",
+        method: "tools/call",
+        params: { name: "fetch", arguments: { id: "bogus" } },
+      },
+    ]);
+    const badIdResult = badId.result as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+    assert.equal(badIdResult.isError, true);
+    assert.match(badIdResult.content[0].text, /console, dashboard, app/);
+
+    const [badKind] = await chatGptExchange([
+      {
+        jsonrpc: "2.0",
+        id: "chatgpt-bad-kind",
+        method: "tools/call",
+        params: { name: "fetch", arguments: { id: "widget:123" } },
+      },
+    ]);
+    assert.match(
+      (badKind.result as { content: { text: string }[] }).content[0].text,
+      /Unknown document kind/,
+    );
+
+    // Zod schema validation applies like every other bridged tool.
+    const [missingQuery] = await chatGptExchange([
+      {
+        jsonrpc: "2.0",
+        id: "chatgpt-no-query",
+        method: "tools/call",
+        params: { name: "search", arguments: {} },
+      },
+    ]);
+    assert.match(
+      (missingQuery.result as { content: { text: string }[] }).content[0].text,
+      /Invalid arguments/,
+    );
+
+    // ACP Desktop must NOT get the pair (route passes no extraTools there).
+    const [acpList] = await exchange(
+      [{ jsonrpc: "2.0", id: "chatgpt-acp", method: "tools/list" }],
+      ["mcp", "query:read"],
+      true,
+    );
+    const acpNames = new Set(
+      (acpList.result as { tools: { name: string }[] }).tools.map(t => t.name),
+    );
+    assert.equal(acpNames.has("search"), false);
+    assert.equal(acpNames.has("fetch"), false);
   }
 
   // 4. Arbitrary MongoDB JavaScript execution is never bridged over MCP.

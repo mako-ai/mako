@@ -52,7 +52,7 @@ export interface UseQueuedPromptsArgs {
    * Chat.tsx handles the turn. Return true if the send was claimed.
    */
   sendViaLocalAcpRef: MutableRefObject<
-    ((text: string) => Promise<boolean>) | null
+    ((text: string, files?: FileUIPart[]) => Promise<boolean>) | null
   >;
 }
 
@@ -256,7 +256,7 @@ export function useQueuedPrompts({
     });
     const localSend = sendViaLocalAcpRef.current;
     if (localSend) {
-      void localSend(next.text).then(handled => {
+      void localSend(next.text, next.files).then(handled => {
         if (!handled) {
           sendMessageRef.current?.({ text: next.text, files: next.files });
         }
@@ -364,7 +364,7 @@ export function useQueuedPrompts({
       const localSend = sendViaLocalAcpRef.current;
       if (localSend) {
         isLoadingRef.current = true;
-        void localSend(text).then(handled => {
+        void localSend(text, files).then(handled => {
           if (!handled) {
             sendMessageRef.current?.({ text, files });
           }
