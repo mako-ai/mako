@@ -430,7 +430,7 @@ function reattach(session: LiveTerminal, ws: WebSocket): void {
           // consumed; say it again for this one.
           ws.send(
             Buffer.from(
-              "\x1b[2m[waiting for the session to produce output]\x1b[0m\r\n",
+              "\r\n\x1b[2m[waiting for the session to produce output]\x1b[0m\r\n",
               "utf8",
             ),
           );
