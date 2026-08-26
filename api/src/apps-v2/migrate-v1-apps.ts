@@ -48,6 +48,7 @@ import {
 } from "./worktree.service";
 import { repoDirFor } from "./repository.service";
 import { queueMirrorPush } from "./cloud-repo.service";
+import { adoptBindingArtifact } from "./bindings.service";
 
 const logger = loggers.api("apps-v2-migrate-v1");
 
@@ -60,6 +61,10 @@ export interface V1AppMigrationPlan {
   bindings: {
     migrated: string[];
     skipped: Array<{ name: string; reason: string }>;
+    /** Bindings whose current v1 parquet artifact (and last run) carry over as-is. */
+    carried: string[];
+    /** Live v1 bindings now refreshed on a schedule, with the cron chosen. */
+    liveAsScheduled: Array<{ name: string; cron: string }>;
   };
   access: "private" | "workspace";
   alreadyMigrated: boolean;
@@ -85,16 +90,45 @@ function bindingFileName(name: string, taken: Set<string>): string {
   return candidate;
 }
 
-/** Render one v1 SQL binding as a v2 binding file (front matter + query). */
-function renderBindingFile(binding: IMakoAppDataBinding): string {
-  const lines = [`-- connection: ${binding.connectionId}`];
-  lines.push("-- materialization: parquet");
-  const cron = binding.materializationSchedule?.enabled
-    ? binding.materializationSchedule.cron
-    : null;
-  if (cron) lines.push(`-- schedule: ${cron}`);
+/**
+ * A live v1 binding queried the source on every load. v2 serves parquet, so
+ * the closest equivalent is a scheduled refresh: the binding's own schedule
+ * if it had one, else a cron derived from its freshness TTL, else the
+ * scheduler's finest grain (every 15 minutes).
+ */
+function scheduleForLiveBinding(binding: IMakoAppDataBinding): string {
+  const sched = binding.materializationSchedule;
+  if (sched?.enabled && sched.cron) return sched.cron;
+  const ttl = sched?.dataFreshnessTtlMs ?? null;
+  if (ttl == null || ttl <= 15 * 60_000) return "*/15 * * * *";
+  if (ttl <= 60 * 60_000) return "0 * * * *";
+  if (ttl <= 6 * 60 * 60_000) return "0 */6 * * *";
+  return "0 6 * * *";
+}
+
+/** Render one v1 binding as a v2 binding file (front matter + code). */
+function renderBindingFile(
+  binding: IMakoAppDataBinding,
+  options: { cron: string | null; wasLive: boolean },
+): string {
+  const c = binding.language === "mongodb" ? "//" : "--";
+  const lines = [`${c} connection: ${binding.connectionId}`];
+  if (binding.databaseId) lines.push(`${c} database: ${binding.databaseId}`);
+  if (binding.databaseName) {
+    lines.push(`${c} database_name: ${binding.databaseName}`);
+  }
+  lines.push(`${c} materialization: parquet`);
+  if (options.cron) lines.push(`${c} schedule: ${options.cron}`);
+  if (binding.materializationSchedule?.timezone) {
+    lines.push(`${c} timezone: ${binding.materializationSchedule.timezone}`);
+  }
   if (binding.dbtProjectId) {
-    lines.push(`-- dbt_project: ${binding.dbtProjectId}`);
+    lines.push(`${c} dbt_project: ${binding.dbtProjectId}`);
+  }
+  if (options.wasLive) {
+    lines.push(
+      `${c} migrated_from: live (v1 queried on every load; v2 refreshes on the schedule above)`,
+    );
   }
   return `${lines.join("\n")}\n${binding.code.trim()}\n`;
 }
@@ -103,32 +137,54 @@ function classifyBindings(app: IMakoApp): {
   files: Record<string, string>;
   migrated: string[];
   skipped: Array<{ name: string; reason: string }>;
+  carried: string[];
+  liveAsScheduled: Array<{ name: string; cron: string }>;
+  /** v1 binding id → v2 file name, for artifact adoption after the commit. */
+  fileNames: Map<string, string>;
 } {
   const files: Record<string, string> = {};
   const migrated: string[] = [];
   const skipped: Array<{ name: string; reason: string }> = [];
+  const carried: string[] = [];
+  const liveAsScheduled: Array<{ name: string; cron: string }> = [];
+  const fileNames = new Map<string, string>();
   const taken = new Set<string>();
-
   for (const binding of app.dataBindings ?? []) {
-    if (binding.language !== "sql") {
+    if (binding.language !== "sql" && binding.language !== "mongodb") {
+      // v1 never materialized these either (buildExecutableQuery rejects
+      // them); there is no data path to carry.
       skipped.push({
         name: binding.name,
-        reason: `v2 bindings are SQL files; this one is ${binding.language}`,
-      });
-      continue;
-    }
-    if (binding.materialization === "live") {
-      skipped.push({
-        name: binding.name,
-        reason: "v2 has no live materialization; convert to parquet manually",
+        reason: `v2 bindings are SQL or MongoDB executables; this one is ${binding.language}`,
       });
       continue;
     }
     const file = bindingFileName(binding.name, taken);
-    files[`bindings/${file}.sql`] = renderBindingFile(binding);
+    const wasLive = binding.materialization === "live";
+    const cron = wasLive
+      ? scheduleForLiveBinding(binding)
+      : binding.materializationSchedule?.enabled
+        ? (binding.materializationSchedule.cron ?? null)
+        : null;
+    const ext = binding.language === "mongodb" ? "mongodb.js" : "sql";
+    files[`bindings/${file}.${ext}`] = renderBindingFile(binding, {
+      cron,
+      wasLive,
+    });
     migrated.push(file);
+    fileNames.set(binding.id, file);
+    if (wasLive && cron) liveAsScheduled.push({ name: file, cron });
+    // A ready parquet build is data the app already has; it carries over
+    // untouched, so the app arrives with its numbers and the scheduler sees
+    // a real last run rather than "never built".
+    if (
+      binding.cache?.parquetBuildStatus === "ready" &&
+      binding.cache.parquetArtifactKey
+    ) {
+      carried.push(file);
+    }
   }
-  return { files, migrated, skipped };
+  return { files, migrated, skipped, carried, liveAsScheduled, fileNames };
 }
 
 /** Merge v1 dependency pins into the scaffold's package.json. */
@@ -177,12 +233,12 @@ function migrationNotes(
 
 /** Build the plan for one app without writing anything. */
 export function planV1AppMigration(app: IMakoApp): V1AppMigrationPlan {
-  const { migrated, skipped } = classifyBindings(app);
+  const { migrated, skipped, carried, liveAsScheduled } = classifyBindings(app);
   return {
     v1AppId: app._id.toString(),
     title: app.title,
     fileCount: (app.files ?? []).length,
-    bindings: { migrated, skipped },
+    bindings: { migrated, skipped, carried, liveAsScheduled },
     access: app.access === "workspace" ? "workspace" : "private",
     alreadyMigrated: Boolean(
       (app as unknown as { migratedToV2ProjectId?: unknown })
@@ -243,6 +299,39 @@ export async function migrateV1App(
     { message: `Migrate v1 app "${app.title}" (${app._id.toString()})` },
   );
   queueMirrorPush(workspaceId);
+
+  // Carry the data: copy each ready v1 artifact to the v2 key and record its
+  // build as this binding's last run. No re-query, no gap in the numbers.
+  const adopted: string[] = [];
+  for (const binding of app.dataBindings ?? []) {
+    const file = bindings.fileNames.get(binding.id);
+    const cache = binding.cache;
+    if (
+      !file ||
+      cache?.parquetBuildStatus !== "ready" ||
+      !cache.parquetArtifactKey
+    ) {
+      continue;
+    }
+    try {
+      const ok = await adoptBindingArtifact({
+        projectId: project._id.toString(),
+        name: file,
+        fromKey: cache.parquetArtifactKey,
+        builtAt: cache.parquetBuiltAt ?? cache.lastRefreshedAt ?? new Date(),
+        rowCount: cache.rowCount,
+        byteSize: cache.byteSize,
+      });
+      if (ok) adopted.push(file);
+    } catch (error) {
+      logger.warn("Could not carry a v1 binding artifact into v2", {
+        v1AppId: app._id.toString(),
+        binding: binding.name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  plan.bindings.carried = adopted;
 
   // Access carries over; publish state deliberately does not (see header).
   if (plan.access !== project.access) {

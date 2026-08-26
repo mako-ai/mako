@@ -55,6 +55,16 @@ async function main(): Promise<void> {
           : "") +
         `  access: ${r.access}`,
     );
+    if (r.bindings.carried.length) {
+      console.log(
+        `  data carried over (artifact + last run): ${r.bindings.carried.join(", ")}`,
+      );
+    }
+    for (const live of r.bindings.liveAsScheduled) {
+      console.log(
+        `  ~ binding "${live.name}" was live; now refreshes on "${live.cron}"`,
+      );
+    }
     for (const skipped of r.bindings.skipped) {
       console.log(`  ! binding "${skipped.name}": ${skipped.reason}`);
     }

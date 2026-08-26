@@ -81,6 +81,19 @@ async function makeV1App() {
         language: "sql",
         code: "SELECT 1",
         materialization: "live",
+        materializationSchedule: {
+          enabled: false,
+          cron: null,
+          dataFreshnessTtlMs: 30 * 60_000,
+        },
+      },
+      {
+        id: "b4",
+        name: "mongo agg",
+        connectionId: "conn-1",
+        language: "mongodb",
+        code: "db.users.aggregate([{ $group: { _id: null, n: { $sum: 1 } } }])",
+        materialization: "parquet",
       },
     ],
     version: 3,
@@ -118,24 +131,40 @@ describe("v1 → v2 migration", () => {
     expect(pkg.dependencies["date-fns"]).toBe("^3.0.0");
     expect(pkg.dependencies.react).toBe("^18.2.0");
 
-    // The SQL binding is a real v2 binding the real parser accepts —
-    // hostile display name sanitized into a legal filename.
-    const bindingFiles = listed.filter(p => p.startsWith("bindings/"));
-    expect(bindingFiles).toHaveLength(1);
-    const sql = await readFile(project!, bindingFiles[0]);
+    // Three bindings migrate now: the scheduled SQL one, the MongoDB one
+    // (as bindings/<name>.mongodb.js), and the live one (as a scheduled
+    // refresh). Only the JavaScript binding — which v1 could not
+    // materialize either — is skipped.
+    const bindingFiles = listed.filter(p => p.startsWith("bindings/")).sort();
+    expect(bindingFiles).toHaveLength(3);
+    expect(bindingFiles.some(p => p.endsWith(".mongodb.js"))).toBe(true);
+
+    const sqlFile = bindingFiles.find(
+      p => p.endsWith(".sql") && !p.includes("live"),
+    )!;
+    const sql = await readFile(project!, sqlFile);
     const meta = parseBindingFrontMatter(sql.contents);
     expect(meta.connection).toBe("conn-1");
     expect(meta.schedule).toBe("0 6 * * *");
     expect(sql.contents).toContain("GROUP BY 1");
 
-    // What could not migrate is REPORTED, in the result and in the repo.
+    // The MongoDB binding uses // front matter and the parser reads it.
+    const mongoFile = bindingFiles.find(p => p.endsWith(".mongodb.js"))!;
+    const mongo = await readFile(project!, mongoFile);
+    const mongoMeta = parseBindingFrontMatter(mongo.contents);
+    expect(mongoMeta.connection).toBe("conn-1");
+    expect(mongo.contents).toContain("aggregate");
+
+    // The live binding became a scheduled refresh (its TTL → hourly cron).
+    const live = result.bindings.liveAsScheduled;
+    expect(live.map(l => l.cron)).toContain("0 * * * *");
+
+    // Only the JavaScript binding could not migrate; it is REPORTED.
     expect(result.bindings.skipped.map(s => s.name).sort()).toEqual([
       "computed",
-      "live-one",
     ]);
     const notes = await readFile(project!, "MIGRATION.md");
     expect(notes.contents).toContain("computed");
-    expect(notes.contents).toContain("live-one");
   }, 180_000);
 
   it("is idempotent: a second run skips the stamped app", async () => {

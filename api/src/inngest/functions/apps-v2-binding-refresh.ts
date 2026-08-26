@@ -52,7 +52,11 @@ export const appsV2BindingSchedulerFunction = inngest.createFunction(
         try {
           const state = await getBindingState(projectId, binding.name);
           due = isDashboardMaterializationDue({
-            schedule: { enabled: true, cron: binding.schedule },
+            schedule: {
+              enabled: true,
+              cron: binding.schedule,
+              timezone: binding.timezone,
+            },
             lastRefreshedAt: state?.lastMaterializedAt ?? null,
           });
         } catch (error) {

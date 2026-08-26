@@ -82,7 +82,10 @@ const CODE_FILE_EXTENSIONS = new Set([
   "sql",
 ]);
 function fileIcon(name: string, path: string) {
-  if (/^(apps\/[^/]+\/)?bindings\//.test(path) && name.endsWith(".sql")) {
+  if (
+    /^(apps\/[^/]+\/)?bindings\//.test(path) &&
+    (name.endsWith(".sql") || name.endsWith(".mongodb.js"))
+  ) {
     return <BindingIcon size={16} strokeWidth={1.5} />;
   }
   const ext = name.split(".").pop()?.toLowerCase() ?? "";

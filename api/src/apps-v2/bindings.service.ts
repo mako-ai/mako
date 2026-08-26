@@ -16,7 +16,12 @@
  * fetches a relative URL and reads it with DuckDB-WASM (v1's useRows
  * pattern ports over with a one-line URL change).
  */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { pipeline } from "node:stream/promises";
 import mongoose, { Schema, Types } from "mongoose";
+import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import {
   DatabaseConnection,
   type IAppProjectV2,
@@ -80,7 +85,7 @@ export async function getBindingState(
   }).lean() as Promise<AppV2BindingStateDoc | null>;
 }
 
-async function recordBindingRun(
+export async function recordBindingRun(
   projectId: string,
   name: string,
   run: AppV2BindingRun,
@@ -105,6 +110,7 @@ async function recordBindingRun(
 import {
   buildQueryParquetFile,
   storeParquetArtifactFile,
+  assertReadOnlyMaterializationQuery,
 } from "../services/parquet-build.service";
 import { globFiles, readFile } from "./worktree.service";
 import { loggers } from "../logging";
@@ -116,13 +122,27 @@ const NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
 export interface AppV2Binding {
   name: string;
   connectionId: string;
+  /**
+   * `bindings/<name>.sql` is SQL; `bindings/<name>.mongodb.js` is a MongoDB
+   * executable (a shell-style string such as `db.users.aggregate([...])`).
+   * Both materialize through the same parquet builder v1 uses.
+   */
+  language: "sql" | "mongodb";
   /** Only "parquet" exists in v2 — live bindings are a later phase. */
   materialization: "parquet";
   /** Cron expression from `-- schedule:` front matter (Block 4 consumes it). */
   schedule?: string;
+  /** IANA timezone for the schedule (`-- timezone:`), when the source had one. */
+  timezone?: string;
   /** From `-- dbt_project:` front matter ({{ dbt_schema }} rendering, later). */
   dbtProjectId?: string;
+  /** `-- database:` / `-- database_name:` for connections that need one selected. */
+  databaseId?: string;
+  databaseName?: string;
+  /** The whole file, front matter included. */
   sql: string;
+  /** The executable part: the file with its leading comment block removed. */
+  code: string;
 }
 
 export function bindingArtifactKey(projectId: string, name: string): string {
@@ -141,19 +161,40 @@ export function bindingArtifactKey(projectId: string, name: string): string {
  * Stays valid SQL for every editor/highlighter, and — unlike a central
  * manifest — two conversation branches adding bindings can never conflict.
  */
-export function parseBindingFrontMatter(sql: string): Record<string, string> {
+/**
+ * Front matter is the leading block of comment lines, `-- key: value` in SQL
+ * files and `// key: value` in JavaScript (MongoDB) files. The first
+ * non-comment line ends it.
+ */
+export function parseBindingFrontMatter(
+  source: string,
+): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const line of sql.split("\n")) {
+  for (const line of source.split("\n")) {
     const trimmed = line.trim();
-    if (trimmed === "" || trimmed === "--") continue;
-    const m = trimmed.match(/^--\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$/);
+    if (trimmed === "" || trimmed === "--" || trimmed === "//") continue;
+    const m = trimmed.match(
+      /^(?:--|\/\/)\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$/,
+    );
     if (!m) {
-      if (trimmed.startsWith("--")) continue; // plain comment inside block
-      break; // first SQL line ends the front matter
+      if (trimmed.startsWith("--") || trimmed.startsWith("//")) continue;
+      break;
     }
     out[m[1].toLowerCase()] = m[2];
   }
   return out;
+}
+
+/** The file without its leading comment block — what actually executes. */
+export function stripBindingFrontMatter(source: string): string {
+  const lines = source.split("\n");
+  let i = 0;
+  while (i < lines.length) {
+    const t = lines[i].trim();
+    if (t === "" || t.startsWith("--") || t.startsWith("//")) i++;
+    else break;
+  }
+  return lines.slice(i).join("\n");
 }
 
 /**
@@ -180,10 +221,19 @@ export async function readBindings(
     // No manifest — fine; front matter is the source of truth anyway.
   }
 
-  const paths = await globFiles(project, "bindings/*.sql", actorId);
+  const paths = [
+    ...(await globFiles(project, "bindings/*.sql", actorId)),
+    ...(await globFiles(project, "bindings/*.mongodb.js", actorId)),
+  ];
   const out: AppV2Binding[] = [];
   for (const path of paths) {
-    const name = path.replace(/^bindings\//, "").replace(/\.sql$/, "");
+    const language: AppV2Binding["language"] = path.endsWith(".mongodb.js")
+      ? "mongodb"
+      : "sql";
+    const name = path
+      .replace(/^bindings\//, "")
+      .replace(/\.mongodb\.js$/, "")
+      .replace(/\.sql$/, "");
     if (!NAME_RE.test(name)) {
       throw new Error(`Invalid binding filename: ${path}`);
     }
@@ -192,16 +242,21 @@ export async function readBindings(
     const connectionId = meta.connection ?? legacyByName.get(name);
     if (!connectionId) {
       throw new Error(
-        `Binding "${name}" has no connection — add "-- connection: <id>" front matter to ${path}`,
+        `Binding "${name}" has no connection — add "${language === "sql" ? "--" : "//"} connection: <id>" front matter to ${path}`,
       );
     }
     out.push({
       name,
       connectionId,
+      language,
       materialization: "parquet",
       schedule: meta.schedule,
+      timezone: meta.timezone,
       dbtProjectId: meta.dbt_project,
+      databaseId: meta.database,
+      databaseName: meta.database_name,
       sql: file.contents,
+      code: stripBindingFrontMatter(file.contents),
     });
   }
   return out;
@@ -235,11 +290,20 @@ export async function materializeAppV2Binding(
   const startedAt = Date.now();
   let built;
   try {
+    // Same builder and same read-only gate as v1: a Mongo executable is a
+    // shell string the driver runs; its schema cannot be probed, so it
+    // infers columns at runtime (lenient), exactly as v1 did.
+    assertReadOnlyMaterializationQuery(
+      binding.code,
+      binding.language === "mongodb" ? "mongodb" : undefined,
+    );
     built = await buildQueryParquetFile({
       connection,
-      executableQuery: binding.sql,
+      executableQuery: binding.code,
+      databaseId: binding.databaseId,
+      databaseName: binding.databaseName,
       filenameBase: `appv2-${projectId}-${binding.name}`,
-      schemaProbe: "strict",
+      schemaProbe: binding.language === "mongodb" ? "lenient" : "strict",
     });
   } catch (error) {
     await recordBindingRun(projectId, binding.name, {
@@ -267,4 +331,44 @@ export async function materializeAppV2Binding(
     rowCount: built.rowCount,
   });
   return { rowCount: built.rowCount, byteSize: built.byteSize };
+}
+
+/**
+ * Adopt an existing parquet artifact as this binding's current build — the
+ * v1 → v2 migration uses it so an app arrives with the data it had, and the
+ * scheduler sees a real last run instead of "never built".
+ */
+export async function adoptBindingArtifact(input: {
+  projectId: string;
+  name: string;
+  fromKey: string;
+  builtAt: Date;
+  rowCount?: number;
+  byteSize?: number;
+}): Promise<boolean> {
+  const store = getDashboardArtifactStore();
+  if (!(await store.exists(input.fromKey))) return false;
+  const stream = await store.openReadStream(input.fromKey);
+  if (!stream) return false;
+  const tmp = path.join(
+    os.tmpdir(),
+    `mako-adopt-${input.projectId}-${input.name}-${Date.now()}.parquet`,
+  );
+  try {
+    await pipeline(stream, fs.createWriteStream(tmp));
+    await store.put(tmp, bindingArtifactKey(input.projectId, input.name), {
+      appV2ProjectId: input.projectId,
+      binding: input.name,
+      adoptedFrom: input.fromKey,
+    });
+  } finally {
+    await fs.promises.rm(tmp, { force: true });
+  }
+  await recordBindingRun(input.projectId, input.name, {
+    at: input.builtAt,
+    status: "ready",
+    rowCount: input.rowCount,
+    durationMs: 0,
+  });
+  return true;
 }

@@ -2872,7 +2872,7 @@ function Editor({
                       appId={tab.metadata?.appV2Id as string}
                     />
                   ) : tab.kind === "app-v2-file" &&
-                    /^bindings\/[^/]+\.sql$/.test(
+                    /^bindings\/[^/]+\.(sql|mongodb\.js)$/.test(
                       (tab.metadata?.path as string) ?? "",
                     ) ? (
                     <AppV2BindingEditor
