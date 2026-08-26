@@ -56,6 +56,7 @@ import {
 } from "./box";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { forgetBoxState } from "./box-state.service";
+import { ensureBoxAgent, forgetBoxAgent } from "./box-agent";
 import {
   APPS_V2_MAX_FILE_BYTES,
   appsV2GitOriginBase,
@@ -274,6 +275,7 @@ export function forgetBoxCaches(sessionKey: string): void {
   lastConfigured.delete(sessionKey);
   // Nothing the old machine said about itself holds for the next one.
   void forgetBoxState(sessionKey);
+  forgetBoxAgent(sessionKey);
 }
 
 /** The provider's "cwd does not exist" — the fingerprint of an unhydrated box. */
@@ -300,6 +302,7 @@ export async function rehydrateBox(
       userId: handle.doc.userId,
       branch: handle.doc.branch,
     });
+    await ensureBoxAgent(ctx, { force: true });
     lastPull.set(ctx.sessionKey, Date.now());
     lastConfigured.set(ctx.sessionKey, {
       at: Date.now(),
@@ -344,6 +347,8 @@ async function ensureBoxNow(
       await configureBoxRemote({ ctx, workspaceId, userId });
       lastConfigured.set(ctx.sessionKey, { at: Date.now(), base });
     }
+    // The agent that pushes this box's state; throttled, off the hot path.
+    void ensureBoxAgent(ctx);
     // Catch up with the server. Someone else may have added an app on main,
     // and your branch tracks main — this is the `git pull` you would type
     // after opening a laptop that has been shut for a day.
@@ -365,6 +370,7 @@ async function ensureBoxNow(
     userId,
     branch: handle.doc.branch,
   });
+  await ensureBoxAgent(ctx, { force: true });
   lastPull.set(ctx.sessionKey, Date.now());
   lastConfigured.set(ctx.sessionKey, {
     at: Date.now(),
