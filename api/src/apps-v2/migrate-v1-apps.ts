@@ -267,13 +267,22 @@ function migrationNotes(
 /** Build the plan for one app without writing anything. */
 export function planV1AppMigration(app: IMakoApp): V1AppMigrationPlan {
   const { migrated, skipped, carried, liveAsScheduled } = classifyBindings(app);
+  const access = app.access === "workspace" ? "workspace" : "private";
   return {
     v1AppId: app._id.toString(),
     title: app.title,
     fileCount: (app.files ?? []).length,
     bindings: { migrated, skipped, carried, liveAsScheduled },
-    access: app.access === "workspace" ? "workspace" : "private",
-    workspaceRole: app.workspaceRole,
+    access,
+    // Workspace apps are the team's shared apps. A migrated app arrives
+    // UNPUBLISHED, and the only way to see an unpublished v2 app is dev mode —
+    // which needs editor. v1 workspace apps were viewer for members, but there
+    // the team could still *view* the rendered dashboard; here viewer would
+    // lock every member out of the app entirely until an owner republishes.
+    // So workspace apps migrate as `editor` for members: the team can open and
+    // run them, exactly as they used the v1 dashboards. Private apps stay
+    // owner-only regardless of this field.
+    workspaceRole: access === "workspace" ? "editor" : app.workspaceRole,
     sharedWith: app.sharedWith,
     alreadyMigrated: Boolean(
       (app as unknown as { migratedToV2ProjectId?: unknown })
