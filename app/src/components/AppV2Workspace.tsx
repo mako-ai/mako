@@ -332,7 +332,16 @@ function TerminalPanel({
       </Box>
       <Box
         ref={hostRef}
-        sx={{ flex: 1, minHeight: 0, pt: 0.5, px: 0.5, pb: 1.5 }}
+        // Padding goes on .xterm, NOT on this host: FitAddon subtracts the
+        // terminal element's own padding when computing rows, and (with
+        // border-box sizing) counts host padding zero times — padding here
+        // pushed the last row and the scrollbar's end past the pane edge.
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          overflow: "hidden",
+          "& .xterm": { padding: "4px 4px 12px 6px" },
+        }}
       />
     </Box>
   );
@@ -684,6 +693,20 @@ export default function AppV2Workspace({
     if (persisted && !editing && workspaceId) {
       setEditing(workspaceId, appId, true);
       void useAppsV2Store.getState().startDevPreview(workspaceId, appId);
+    } else if (!editing && workspaceId) {
+      // No client-side preference (fresh browser, cleared storage) — ask
+      // the MACHINE. A dev server already running for this app is strong
+      // evidence its owner was mid-development; walk them back into the
+      // workbench instead of showing the published view over a live server.
+      void useAppsV2Store
+        .getState()
+        .checkDevStatus(workspaceId, appId)
+        .then(() => {
+          const preview = useAppsV2Store.getState().previewByApp[appId];
+          if (preview?.mode === "dev" && preview.url) {
+            setEditing(workspaceId, appId, true);
+          }
+        });
     }
     // Run once per app open; `editing` is deliberately not a dependency —
     // exiting dev mode clears the flag, and re-entering here would fight it.

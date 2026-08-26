@@ -234,6 +234,8 @@ export default function AppsV2Explorer() {
   const repos = useAppsV2Store(s => s.repos);
   const probeEnabled = useAppsV2Store(s => s.probeEnabled);
   const filesByApp = useAppsV2Store(s => s.filesByApp);
+  const runningDevApps = useAppsV2Store(s => s.runningDevApps);
+  const fetchRunningDevApps = useAppsV2Store(s => s.fetchRunningDevApps);
   const filesTruncatedByApp = useAppsV2Store(s => s.filesTruncatedByApp);
   const fetchApps = useAppsV2Store(s => s.fetchApps);
   const fetchFiles = useAppsV2Store(s => s.fetchFiles);
@@ -334,6 +336,19 @@ export default function AppsV2Explorer() {
   useEffect(() => {
     if (workspaceId) void fetchApps(workspaceId);
   }, [workspaceId, fetchApps]);
+
+  // Green dots for live dev servers — discovery, refreshed while the
+  // explorer is on screen.
+  const appsLoaded = apps.length > 0;
+  useEffect(() => {
+    if (!workspaceId || !appsLoaded) return;
+    void fetchRunningDevApps(workspaceId);
+    const timer = setInterval(
+      () => void fetchRunningDevApps(workspaceId),
+      30_000,
+    );
+    return () => clearInterval(timer);
+  }, [workspaceId, appsLoaded, fetchRunningDevApps]);
 
   useEffect(() => {
     if (!workspaceId || !activeAppId) return;
@@ -766,6 +781,27 @@ export default function AppsV2Explorer() {
                   activeItemId={activeItemId}
                   revealNodeId={reveal?.nodeId}
                   revealNonce={reveal?.nonce}
+                  getRightAdornment={node => {
+                    const parsed = parseNodeId(node.id);
+                    if (parsed.kind !== "app") return null;
+                    const slug = apps.find(a => a.id === parsed.appId)?.slug;
+                    if (!slug || !runningDevApps.includes(slug)) return null;
+                    return (
+                      <Tooltip title="Dev server running">
+                        <Box
+                          component="span"
+                          sx={{
+                            width: 7,
+                            height: 7,
+                            borderRadius: "50%",
+                            bgcolor: "success.main",
+                            display: "inline-block",
+                            flexShrink: 0,
+                          }}
+                        />
+                      </Tooltip>
+                    );
+                  }}
                   getItemIcon={(node, ctx) => {
                     const kind = parseNodeId(node.id).kind;
                     if (kind === "app") {

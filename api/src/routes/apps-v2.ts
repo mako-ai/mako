@@ -1386,6 +1386,46 @@ appsV2Routes.openapi(
 appsV2Routes.openapi(
   createRoute({
     method: "get",
+    path: "/{id}/dev-servers",
+    tags: ["Apps v2"],
+    summary: "Slugs of apps with a live dev-server session",
+    description:
+      "Discovery for the sidebar's running indicators: one cheap exec listing the dev-session sockets. Never creates a sandbox; empty when none is running.",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const handle = await ensureWorktree(
+        loaded.project,
+        loaded.userId ?? "api-key",
+      );
+      const ctx = boxCtx(handle);
+      if (!(await getSandboxProvider().hasSession(ctx))) {
+        return c.json({ success: true as const, running: [] }, 200);
+      }
+      const result = await getSandboxProvider().exec(
+        ctx,
+        `ls /tmp/mako-term-dev-*.sock 2>/dev/null || true`,
+        { timeoutMs: 15_000 },
+      );
+      const running = result.stdout
+        .split("\n")
+        .map(l => l.match(/mako-term-dev-(.+)\.sock$/)?.[1])
+        .filter((x): x is string => Boolean(x));
+      return c.json({ success: true as const, running }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
     path: "/{id}/sandbox",
     tags: ["Apps v2"],
     summary: "The workspace sandbox: identity, uptime, sessions, resources",

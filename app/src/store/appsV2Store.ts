@@ -292,6 +292,9 @@ interface AppsV2Store {
    * the launch state instead of showing a stale iframe as "live".
    */
   checkDevStatus: (workspaceId: string, appId: string) => Promise<void>;
+  /** Slugs of apps whose dev server is live — the sidebar's green dots. */
+  runningDevApps: string[];
+  fetchRunningDevApps: (workspaceId: string) => Promise<void>;
   /** Closing a terminal tab kills its remote session (pty + dtach + recording). */
   killTerminalSession: (
     workspaceId: string,
@@ -338,6 +341,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
     viewUrlByApp: {},
     historyByApp: {},
     repoHistoryByApp: {},
+    runningDevApps: [],
     branchesByApp: {},
     terminalByApp: {},
     execRunning: {},
@@ -1095,6 +1099,24 @@ export const useAppsV2Store = create<AppsV2Store>()(
             error: message(e, "Build failed"),
           };
         });
+      }
+    },
+
+    fetchRunningDevApps: async workspaceId => {
+      const appId = get().apps[0]?.id;
+      if (!appId) return;
+      try {
+        const body = unwrapBody(
+          await api.GET(
+            "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-servers",
+            { params: { path: { workspaceId, id: appId } } },
+          ),
+        ) as { running?: string[] };
+        set(s => {
+          s.runningDevApps = body.running ?? [];
+        });
+      } catch {
+        // Advisory dots; a failed probe changes nothing.
       }
     },
 

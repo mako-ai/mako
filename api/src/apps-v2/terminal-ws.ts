@@ -371,8 +371,12 @@ async function sessionHistory(
     );
     const raw = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
     if (raw.length === 0) return null;
-    const text = raw
-      .toString("binary")
+    let recorded = raw.toString("binary");
+    // The recording appends across boots; replaying several generations of
+    // the same session reads as chaos. Keep the newest one only.
+    const lastBanner = recorded.lastIndexOf("Script started on ");
+    if (lastBanner > 0) recorded = recorded.slice(lastBanner);
+    const text = recorded
       .replace(QUERY_SEQUENCES, "")
       // script(1) writes its banner and sign-off INTO the recording even
       // with -q; they are bookkeeping, not session output.
@@ -768,6 +772,14 @@ async function startSession(
         const conf =
           `# mako-terminal v2\\nset -g mouse off\\nset -g status off\\n` +
           `set -g history-limit 50000\\nset -g terminal-overrides ",*:smcup@:rmcup@"\\n`;
+        if (isDevWindow) {
+          // The handoff line is plumbing; without this it echoes as a wall
+          // of shell into the dev window before the session content. Sent
+          // as its own write so echo is off when the handoff is typed.
+          await created.terminal
+            .write(new TextEncoder().encode(" stty -echo 2>/dev/null\n"))
+            .catch(() => undefined);
+        }
         const handoff = isDevWindow
           ? // Not running yet: say so, then tail the recording (a cold Launch
             // tees npm install into it — live progress), and attach the

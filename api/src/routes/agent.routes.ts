@@ -4,6 +4,7 @@
  * Uses agent registry for multi-agent support
  */
 
+import { Types } from "mongoose";
 import { createRoute, z } from "@hono/zod-openapi";
 import { ObjectId } from "mongodb";
 import {
@@ -40,6 +41,7 @@ import {
 } from "../agent-lib/ai-models";
 import { getWorkspaceGatewayModelListings } from "../services/model-catalog.service";
 import {
+  AppWorktreeV2,
   Workspace,
   DatabaseConnection,
   Chat,
@@ -704,10 +706,21 @@ agentRoutes.openapi(
       }
     }
 
+    // The caller's Apps v2 checkout branch, so the agent starts oriented
+    // instead of spending a tool call on `git status`. The doc is synced by
+    // every exec and checkout; a missing doc simply means "main".
+    const appsV2Worktree = await AppWorktreeV2.findOne(
+      { workspaceId: new Types.ObjectId(workspaceId), userId: actorId },
+      { branch: 1 },
+    )
+      .lean()
+      .catch(() => null);
+
     // Build agent context
     const agentContext: AgentContext = {
       workspaceId,
       chatId,
+      appsV2Branch: appsV2Worktree?.branch ?? undefined,
       activeView,
       activeExplorer,
       userId: actorId,
