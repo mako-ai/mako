@@ -155,10 +155,53 @@ export async function ensureLocalRepo(workspaceId: string): Promise<void> {
   return run;
 }
 
-// Per-workspace push serialization: `pending` coalesces bursts (N commits
-// while a push is in flight -> exactly one trailing push).
+// Per-workspace push serialization. Two `git push --mirror` to the SAME remote
+// at once lose a ref-lock race ("cannot lock ref … is at X but expected Y"), so
+// pushes for one workspace must never overlap — not the fire-and-forget commit
+// path (`queueMirrorPush`) against the awaited create path (`mirrorPushNow`),
+// nor two of either. A push captures the repo's ref state when it RUNS, so a
+// caller that needs its just-made commit mirrored must wait for a push that
+// STARTS after that commit; that is exactly what `schedulePush` guarantees.
 const inFlight = new Map<string, Promise<void>>();
-const pending = new Set<string>();
+// The single trailing push per workspace: every request that arrives while a
+// push is in flight collapses into one more push, which starts only after the
+// current one ends (so it sees all their commits). Awaiters share its promise.
+const trailing = new Map<string, Promise<void>>();
+
+async function runPush(workspaceId: string): Promise<void> {
+  const cloudRepo = await findCloudRepoPointer(workspaceId);
+  if (cloudRepo) await pushMirror(workspaceId, cloudRepo);
+}
+
+/**
+ * Schedule a mirror push that is guaranteed to START after this call, and
+ * return a promise for its completion. Never runs two pushes for one workspace
+ * at once; coalesces every request made during an in-flight push into a single
+ * trailing push.
+ */
+function schedulePush(workspaceId: string): Promise<void> {
+  const running = inFlight.get(workspaceId);
+  if (!running) {
+    const p = runPush(workspaceId).finally(() => {
+      if (inFlight.get(workspaceId) === p) inFlight.delete(workspaceId);
+    });
+    inFlight.set(workspaceId, p);
+    return p;
+  }
+  // A push is already running and may predate our commit — ride the single
+  // trailing push, which begins only once the current one finishes.
+  let t = trailing.get(workspaceId);
+  if (!t) {
+    t = running
+      .catch(() => undefined)
+      .then(() => {
+        trailing.delete(workspaceId);
+        return schedulePush(workspaceId);
+      });
+    trailing.set(workspaceId, t);
+  }
+  return t;
+}
 
 async function pushMirror(
   workspaceId: string,
@@ -192,35 +235,23 @@ async function pushMirror(
  */
 export function queueMirrorPush(workspaceId: string): void {
   if (!isMakoCloudConfigured()) return;
-  const key = workspaceId;
-  if (inFlight.has(key)) {
-    pending.add(key);
-    return;
-  }
-  const run = (async () => {
-    try {
-      const cloudRepo = await findCloudRepoPointer(workspaceId);
-      if (cloudRepo) {
-        await pushMirror(workspaceId, cloudRepo);
-      }
-    } catch (error) {
-      logger.warn("Apps v2 cloud mirror push failed", {
-        workspaceId: key,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      inFlight.delete(key);
-      if (pending.delete(key)) queueMirrorPush(workspaceId);
-    }
-  })();
-  inFlight.set(key, run);
+  void schedulePush(workspaceId).catch(error => {
+    logger.warn("Apps v2 cloud mirror push failed", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 }
 
-/** Awaitable variant for the initial push right after repo/app creation. */
+/**
+ * Awaitable variant for the initial push right after repo/app creation. Shares
+ * the same per-workspace serialization as `queueMirrorPush`, so it never races
+ * a fire-and-forget push already in flight — and the push it awaits is
+ * guaranteed to start after the caller's commit.
+ */
 export async function mirrorPushNow(workspaceId: string): Promise<void> {
-  const cloudRepo = await findCloudRepoPointer(workspaceId);
-  if (!cloudRepo) return;
-  await pushMirror(workspaceId, cloudRepo);
+  if (!isMakoCloudConfigured()) return;
+  await schedulePush(workspaceId);
 }
 
 /**
