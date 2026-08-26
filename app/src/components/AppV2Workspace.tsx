@@ -1084,6 +1084,15 @@ export default function AppV2Workspace({
                   <strong>Dev server</strong> terminal tab below.
                 </Typography>
               </Box>
+            ) : preview?.mode === "dev" && preview.reachable === false ? (
+              <Alert severity="warning" sx={{ m: 2 }}>
+                A dev server for this app is running in the sandbox but rejects
+                the preview host — it was started outside Mako without{" "}
+                <code>server.allowedHosts</code> including{" "}
+                <code>&quot;.e2b.app&quot;</code>. Use{" "}
+                <strong>Restart dev session</strong> to let Mako run it, or add
+                that host to the app&apos;s <code>vite.config</code>.
+              </Alert>
             ) : preview?.url ? (
               <iframe
                 title="App preview"

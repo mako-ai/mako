@@ -42,6 +42,13 @@ export interface BoxDevServer {
   port: number;
   /** Public origin for the browser, resolved by the API (the box cannot know it). */
   url?: string;
+  /**
+   * Whether the server answers on that public origin. A vite started from
+   * a shell without `server.allowedHosts` accepts 127.0.0.1 (which is how
+   * the agent found it) and 403s the preview host — framing that is worse
+   * than saying so.
+   */
+  reachable?: boolean;
 }
 
 export interface BoxState {
@@ -175,6 +182,21 @@ export async function getBoxState(
   }
 }
 
+/** Does the public origin answer (anything but a 4xx/5xx)? One request, 4s cap. */
+export async function probeReachable(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(url, {
+      redirect: "manual",
+      signal: AbortSignal.timeout(4000),
+    });
+    return res.status < 400;
+  } catch {
+    // Unreachable from here says nothing certain about the browser; only a
+    // definite refusal counts as unreachable.
+    return true;
+  }
+}
+
 /** A snapshot that can answer git status without touching the box. */
 export function hasGitState(
   state: BoxState | null,
@@ -262,15 +284,19 @@ function applyPatch(prev: BoxState | null, patch: BoxStatePatch): BoxState {
     // are still there on the same port, so a heartbeat does not cost a
     // provider lookup per server.
     const known = new Map(
-      (prev?.devServers ?? []).map(d => [`${d.slug}:${d.port}`, d.url]),
+      (prev?.devServers ?? []).map(d => [`${d.slug}:${d.port}`, d]),
     );
     next.devServers = patch.devServers
       .filter(d => d && typeof d.slug === "string" && Number.isInteger(d.port))
-      .map(d => ({
-        slug: d.slug,
-        port: d.port,
-        url: known.get(`${d.slug}:${d.port}`),
-      }));
+      .map(d => {
+        const before = known.get(`${d.slug}:${d.port}`);
+        return {
+          slug: d.slug,
+          port: d.port,
+          url: before?.url,
+          reachable: before?.reachable,
+        };
+      });
   }
   if (patch.devServer && typeof patch.devServer.slug === "string") {
     const { slug, port, state } = patch.devServer;
@@ -281,6 +307,7 @@ function applyPatch(prev: BoxState | null, patch: BoxStatePatch): BoxState {
         slug,
         port,
         url: previous?.port === port ? previous.url : undefined,
+        reachable: previous?.port === port ? previous.reachable : undefined,
       });
     }
     next.devServers = list;
@@ -330,6 +357,7 @@ export async function patchBoxState(input: {
           { sessionKey },
           server.port,
         );
+        server.reachable = await probeReachable(server.url);
       } catch (error) {
         logger.warn("Apps v2 box-state could not resolve a dev-server url", {
           sessionKey,

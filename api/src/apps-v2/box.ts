@@ -737,29 +737,42 @@ export interface BoxFileVersions {
   binary: boolean;
 }
 
-/** The three versions a diff can be drawn between (HEAD, index, working tree). */
+/**
+ * The three versions a diff can be drawn between (HEAD, index, working
+ * tree) — in ONE exec. Each round trip to the sandbox is ~600ms, and the
+ * obvious three-command shape made a one-line diff take three seconds.
+ * Sections are base64 so no delimiter can occur inside a file.
+ */
 export async function boxFileVersions(
   ctx: SandboxExecContext,
   relPath: string,
 ): Promise<BoxFileVersions> {
   const p = safeRepoPath(relPath);
-  const show = async (spec: string): Promise<string | null> => {
-    const result = await boxExec(ctx, boxGit(ctx, "show", spec), {
-      timeoutMs: 60_000,
-    });
-    return result.exitCode === 0 ? result.stdout : null;
-  };
-  const [head, index] = await Promise.all([show(`HEAD:${p}`), show(`:${p}`)]);
-  let working: string | null = null;
-  let binary = false;
-  try {
-    const file = await boxReadFile(ctx, p);
-    binary = file.isBinary;
-    working = file.isBinary ? null : file.contents;
-  } catch {
-    working = null;
+  const git = (spec: string) => boxGit(ctx, "show", spec);
+  const file = sh(`${boxRoot(ctx)}/${p}`);
+  const script =
+    `printf 'H:'; ${git(`HEAD:${p}`)} 2>/dev/null | base64 -w0 && printf '\\n' || printf '-\\n'; ` +
+    `printf 'I:'; ${git(`:${p}`)} 2>/dev/null | base64 -w0 && printf '\\n' || printf '-\\n'; ` +
+    `printf 'W:'; if [ -f ${file} ]; then base64 -w0 < ${file}; printf '\\n'; else printf '-\\n'; fi`;
+  const result = await boxExec(ctx, script, { timeoutMs: 60_000 });
+  const sections: Record<string, string | null> = { H: null, I: null, W: null };
+  for (const line of result.stdout.split("\n")) {
+    const key = line.slice(0, 1);
+    if (!(key in sections) || line[1] !== ":") continue;
+    const body = line.slice(2);
+    // `git show` of a missing object prints nothing and fails: the `||`
+    // branch writes "-" for absent. An EMPTY existing file is "" (present).
+    sections[key] =
+      body === "-" ? null : Buffer.from(body, "base64").toString("utf8");
   }
-  return { head, index, working, binary };
+  const working = sections.W;
+  const binary = working !== null && working.includes("\u0000");
+  return {
+    head: sections.H,
+    index: sections.I,
+    working: binary ? null : working,
+    binary,
+  };
 }
 
 /** Branch + shaped changes, for pushing a fresh snapshot after a mutation. */

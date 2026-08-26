@@ -1367,7 +1367,14 @@ export async function fileVersions(
   handle: WorktreeHandle,
   relPath: string,
 ): Promise<BoxFileVersions> {
-  const ctx = await ensureBox(handle);
+  // A read of the working copy: no configure, no pull, no hydration — the
+  // box either has it or the diff cannot exist.
+  const ctx = boxCtx(handle);
+  if (!(await getSandboxProvider().hasSession(ctx))) {
+    throw new Error(
+      "The sandbox is not running; there is no working copy to diff.",
+    );
+  }
   return boxFileVersions(ctx, relPath);
 }
 

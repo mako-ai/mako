@@ -83,6 +83,13 @@ export default defineConfig({
   // Relative asset URLs so builds work under any hosting prefix
   // (including Mako's token-scoped preview paths).
   base: "./",
+  server: {
+    // The preview reaches the dev server on the sandbox's public origin
+    // (<port>-<sandbox>.e2b.app). Without this, a \`vite\` started from the
+    // terminal answers "Blocked request. This host is not allowed."
+    host: true,
+    allowedHosts: [".e2b.app"],
+  },
 });
 `,
     "tsconfig.json": `${JSON.stringify(

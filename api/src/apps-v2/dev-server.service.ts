@@ -36,7 +36,7 @@ import {
 } from "./worktree.service";
 import { loggers } from "../logging";
 import { boxEnvPath } from "./box";
-import { getBoxState } from "./box-state.service";
+import { getBoxState, probeReachable } from "./box-state.service";
 import { readBindings, bindingArtifactKey } from "./bindings.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 
@@ -462,7 +462,7 @@ export async function discoverDevServers(
  */
 export async function devServerStatus(
   handle: WorktreeHandle,
-): Promise<{ serving: boolean; url?: string }> {
+): Promise<{ serving: boolean; url?: string; reachable?: boolean }> {
   const provider = getSandboxProvider();
   const ctx = boxCtx(handle);
   // Snapshot first (pushed by the box; expires unless refreshed): no exec.
@@ -471,7 +471,7 @@ export async function devServerStatus(
     const entry = snapshot.devServers.find(d => d.slug === appSlug(handle));
     if (!entry) return { serving: false };
     const url = entry.url ?? (await provider.publicUrlForPort(ctx, entry.port));
-    return { serving: true, url };
+    return { serving: true, url, reachable: entry.reachable };
   }
   if (!(await provider.hasSession(ctx))) return { serving: false };
   const port = await devPort(handle, provider, ctx, { allocate: false });
@@ -542,12 +542,30 @@ async function ensureDevServerLaunch(
   // Still answering after the reap means the server is not ours to kill —
   // someone started it from a shell (npm run dev). Adopt it: show it, do
   // not launch a second vite into the same port.
-  const adopted = state === "orphan" && (await listening(provider, ctx, port));
+  let adopted = state === "orphan" && (await listening(provider, ctx, port));
   if (adopted) {
-    logger.info("Apps v2 adopting a dev server started outside Mako", {
-      appRoot: handle.appRoot,
-      port,
-    });
+    // Only adopt a server the browser can actually reach. A vite started
+    // from a shell without `server.allowedHosts` 403s the preview host;
+    // "restart" of such a server means exactly this: replace it with one
+    // that Mako runs. Kill by port — the launcher-path reap cannot see it.
+    const url = await provider.publicUrlForPort(ctx, port);
+    if (await probeReachable(url)) {
+      logger.info("Apps v2 adopting a dev server started outside Mako", {
+        appRoot: handle.appRoot,
+        port,
+      });
+    } else {
+      logger.warn(
+        "Apps v2 replacing a dev server that rejects the preview host",
+        { appRoot: handle.appRoot, port },
+      );
+      await provider.exec(
+        ctx,
+        `pid=$(ss -tlnp 2>/dev/null | grep ":${port} " | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2); [ -n "$pid" ] && kill "$pid" 2>/dev/null; sleep 1; echo replaced`,
+        { timeoutMs: 30_000 },
+      );
+      adopted = false;
+    }
   }
   const wasListening = state === "serving" || adopted;
   if (!wasListening) {

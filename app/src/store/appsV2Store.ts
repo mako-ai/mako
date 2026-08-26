@@ -57,7 +57,12 @@ export interface AppsV2BoxState {
   head?: string | null;
   ahead?: number | null;
   changes: AppV2Change[] | null;
-  devServers: Array<{ slug: string; port: number; url?: string }> | null;
+  devServers: Array<{
+    slug: string;
+    port: number;
+    url?: string;
+    reachable?: boolean;
+  }> | null;
   updatedAt: number;
 }
 
@@ -118,6 +123,8 @@ export interface AppV2Preview {
   builtAt?: number;
   /** "dev" = live `vite dev` proxy (HMR, no rebuild step); "static" = one-shot build. */
   mode?: "static" | "dev";
+  /** false = the server answers the box but 403s the preview host (see box-state). */
+  reachable?: boolean;
 }
 
 export interface AppV2RepoBinding {
@@ -327,7 +334,7 @@ interface AppsV2Store {
    */
   checkDevStatus: (workspaceId: string, appId: string) => Promise<void>;
   /** A dev server for this app is serving at `url` (discovery or push). */
-  markDevServing: (appId: string, url: string) => void;
+  markDevServing: (appId: string, url: string, reachable?: boolean) => void;
   /** No dev server is serving this app any more. */
   markDevDown: (appId: string) => void;
   /**
@@ -1213,14 +1220,14 @@ export const useAppsV2Store = create<AppsV2Store>()(
             "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview/status",
             { params: { path: { workspaceId, id: appId } } },
           ),
-        ) as { serving?: boolean; url?: string };
+        ) as { serving?: boolean; url?: string; reachable?: boolean };
         const url = body.url;
         if (body.serving && url) {
           // Discovery: a dev server is ALREADY running for this app (started
           // in another tab, another browser, or before a reload that lost
           // client state). Show it — do not make the user "start" a thing
           // that is running.
-          get().markDevServing(appId, url);
+          get().markDevServing(appId, url, body.reachable);
           return;
         }
         if (body.serving === false) get().markDevDown(appId);
@@ -1229,7 +1236,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
       }
     },
 
-    markDevServing: (appId, url) => {
+    markDevServing: (appId, url, reachable) => {
       try {
         localStorage.setItem(`apps-v2-devurl:${appId}`, url);
       } catch {
@@ -1237,15 +1244,19 @@ export const useAppsV2Store = create<AppsV2Store>()(
       }
       set(s => {
         const current = s.previewByApp[appId];
-        if (!current?.building && current?.url !== url) {
+        if (current?.building) return;
+        if (current?.url !== url) {
           s.previewByApp[appId] = {
             url,
             building: false,
             error: null,
             builtAt: Date.now(),
             mode: "dev",
+            reachable,
           };
           s.viewMode[appId] = "preview";
+        } else if (current && current.reachable !== reachable) {
+          current.reachable = reachable;
         }
       });
     },
@@ -1302,9 +1313,10 @@ export const useAppsV2Store = create<AppsV2Store>()(
           s.runningDevApps = [...serving.keys()];
         });
         for (const app of apps) {
-          const url = app.slug ? serving.get(app.slug)?.url : undefined;
-          if (url) get().markDevServing(app.id, url);
-          else get().markDevDown(app.id);
+          const entry = app.slug ? serving.get(app.slug) : undefined;
+          if (entry?.url) {
+            get().markDevServing(app.id, entry.url, entry.reachable);
+          } else get().markDevDown(app.id);
         }
       }
       if (state.branch !== null || state.changes !== null) {
