@@ -239,13 +239,50 @@ const makoData = {
       }
       const match = /^\\/__data\\/([A-Za-z0-9_][A-Za-z0-9_-]*)\\.parquet$/.exec(url);
       if (!match) return next();
-      const file = path.join(${JSON.stringify(stagedDataDir)}, match[1] + ".parquet");
+      const name = match[1];
+      // Live binding: query it fresh through Mako, stream the parquet back.
+      // dev/edit only — the box token authorizes it as this box's actor.
+      if (existsSync(path.join(${JSON.stringify(stagedDataDir)}, name + ".live"))) {
+        const env = makoEnv();
+        (async () => {
+          try {
+            const token = readFileSync(env.MAKO_TOKEN_FILE, "utf8").trim();
+            const upstream = await fetch(
+              env.MAKO_API + "/api/apps-v2-box/" + env.MAKO_WS + "/live-binding",
+              {
+                method: "POST",
+                headers: { "content-type": "application/json", authorization: "Bearer " + token },
+                body: JSON.stringify({ slug: ${JSON.stringify(slug)}, name }),
+                signal: AbortSignal.timeout(60000),
+              },
+            );
+            if (!upstream.ok) {
+              res.statusCode = 502;
+              res.setHeader("content-type", "application/json");
+              res.end(JSON.stringify({ error: "Live binding failed", binding: name, status: upstream.status }));
+              return;
+            }
+            const buf = Buffer.from(await upstream.arrayBuffer());
+            res.statusCode = 200;
+            res.setHeader("content-type", "application/vnd.apache.parquet");
+            res.setHeader("content-length", String(buf.length));
+            res.setHeader("cache-control", "no-store");
+            res.end(buf);
+          } catch (error) {
+            res.statusCode = 502;
+            res.setHeader("content-type", "application/json");
+            res.end(JSON.stringify({ error: "Live binding failed", binding: name, detail: String(error && error.message) }));
+          }
+        })();
+        return;
+      }
+      const file = path.join(${JSON.stringify(stagedDataDir)}, name + ".parquet");
       if (!existsSync(file)) {
         res.statusCode = 404;
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify({
           error: "Binding not materialized",
-          binding: match[1],
+          binding: name,
         }));
         return;
       }
@@ -329,9 +366,27 @@ async function stageBindingData(
   const store = getDashboardArtifactStore();
   const staged: string[] = [];
   for (const binding of bindings) {
+    if (binding.materialization === "live") {
+      // No artifact: a marker tells the dev server's data middleware to
+      // fetch this binding's parquet FRESH from Mako on each request. Listed
+      // in index.json so the SDK still registers it.
+      await provider.writeFile(
+        ctx,
+        `${stageDir}/${binding.name}.live`,
+        new TextEncoder().encode("1"),
+      );
+      staged.push(binding.name);
+      continue;
+    }
     const key = bindingArtifactKey(projectId, binding.name);
     const stream = await store.openReadStream(key);
     if (!stream) continue;
+    // A stale marker from a previous life mustn't shadow a now-static binding.
+    await provider
+      .exec(ctx, `rm -f ${stageDir}/${binding.name}.live`, {
+        timeoutMs: 15_000,
+      })
+      .catch(() => undefined);
     const chunks: Buffer[] = [];
     for await (const chunk of stream) {
       chunks.push(Buffer.from(chunk as Buffer));

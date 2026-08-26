@@ -25,6 +25,7 @@ import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.
 import {
   DatabaseConnection,
   type IAppProjectV2,
+  type IDatabaseConnection,
 } from "../database/workspace-schema";
 
 /**
@@ -122,8 +123,13 @@ const NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
 export interface AppV2Binding {
   name: string;
   connectionId: string;
-  /** Only "parquet" exists in v2 — live bindings are a later phase. */
-  materialization: "parquet";
+  /**
+   * "parquet" = materialized to a stored artifact (default, scheduled).
+   * "live" = re-queried on demand and served fresh, no artifact. Live is
+   * dev/edit-mode only for now (a published app has no authorized data
+   * path yet — apps-v2.md §13.4.1).
+   */
+  materialization: "parquet" | "live";
   /** Cron expression from `-- schedule:` front matter (Block 4 consumes it). */
   schedule?: string;
   /** IANA timezone for the schedule (`-- timezone:`), when the source had one. */
@@ -233,7 +239,7 @@ export async function readBindings(
     out.push({
       name,
       connectionId,
-      materialization: "parquet",
+      materialization: meta.materialization === "live" ? "live" : "parquet",
       schedule: meta.schedule,
       timezone: meta.timezone,
       dbtProjectId: meta.dbt_project,
@@ -251,11 +257,11 @@ export async function readBindings(
  * read-only-enforced parquet pipeline; the artifact overwrites in place, so
  * previews pick up fresh data on the next fetch.
  */
-export async function materializeAppV2Binding(
+async function resolveBindingForBuild(
   project: IAppProjectV2,
   name: string,
   actorId: string,
-): Promise<{ rowCount: number; byteSize: number }> {
+): Promise<{ binding: AppV2Binding; connection: IDatabaseConnection }> {
   const bindings = await readBindings(project, actorId);
   const binding = bindings.find(b => b.name === name);
   if (!binding) {
@@ -270,22 +276,57 @@ export async function materializeAppV2Binding(
   if (!connection) {
     throw new Error(`Connection ${binding.connectionId} not found`);
   }
+  return { binding, connection };
+}
+
+/**
+ * Run a binding's query NOW and return the parquet on disk — no store, no run
+ * record. This is the shared core of both materialize (which stores it) and
+ * the live path (which streams it and throws it away). Same read-only gate
+ * and same builder v1 used, so a MongoDB source flattens to tabular exactly
+ * as it did there.
+ */
+export async function buildBindingParquet(
+  project: IAppProjectV2,
+  name: string,
+  actorId: string,
+): Promise<{ filePath: string; rowCount: number; byteSize: number }> {
+  const { binding, connection } = await resolveBindingForBuild(
+    project,
+    name,
+    actorId,
+  );
+  // The CONNECTION decides how the query runs and how it is gated: a Mongo
+  // connection runs a pipeline (validated by its driver, columns inferred at
+  // runtime), a SQL connection runs SELECT (lexically gated, schema probed).
+  // The binding file is language-agnostic; only its target matters.
+  const isMongo = connection.type === "mongodb";
+  assertReadOnlyMaterializationQuery(
+    binding.code,
+    isMongo ? "mongodb" : undefined,
+  );
+  return buildQueryParquetFile({
+    connection,
+    executableQuery: binding.code,
+    databaseId: binding.databaseId,
+    databaseName: binding.databaseName,
+    filenameBase: `appv2-${project._id.toString()}-${binding.name}`,
+    schemaProbe: isMongo ? "lenient" : "strict",
+  });
+}
+
+export async function materializeAppV2Binding(
+  project: IAppProjectV2,
+  name: string,
+  actorId: string,
+): Promise<{ rowCount: number; byteSize: number }> {
   const projectId = project._id.toString();
   const startedAt = Date.now();
   let built;
   try {
-    // Same read-only gate v1 used for SQL.
-    assertReadOnlyMaterializationQuery(binding.code);
-    built = await buildQueryParquetFile({
-      connection,
-      executableQuery: binding.code,
-      databaseId: binding.databaseId,
-      databaseName: binding.databaseName,
-      filenameBase: `appv2-${projectId}-${binding.name}`,
-      schemaProbe: "strict",
-    });
+    built = await buildBindingParquet(project, name, actorId);
   } catch (error) {
-    await recordBindingRun(projectId, binding.name, {
+    await recordBindingRun(projectId, name, {
       at: new Date(),
       status: "error",
       durationMs: Date.now() - startedAt,
@@ -295,10 +336,10 @@ export async function materializeAppV2Binding(
   }
   await storeParquetArtifactFile({
     filePath: built.filePath,
-    artifactKey: bindingArtifactKey(projectId, binding.name),
-    metadata: { appV2ProjectId: projectId, binding: binding.name },
+    artifactKey: bindingArtifactKey(projectId, name),
+    metadata: { appV2ProjectId: projectId, binding: name },
   });
-  await recordBindingRun(projectId, binding.name, {
+  await recordBindingRun(projectId, name, {
     at: new Date(),
     status: "ready",
     rowCount: built.rowCount,
@@ -306,7 +347,7 @@ export async function materializeAppV2Binding(
   });
   logger.info("Apps v2 binding materialized", {
     projectId,
-    binding: binding.name,
+    binding: name,
     rowCount: built.rowCount,
   });
   return { rowCount: built.rowCount, byteSize: built.byteSize };
