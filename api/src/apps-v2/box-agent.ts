@@ -86,17 +86,29 @@ async function gitState() {
   try {
     const { stdout } = await run(
       "git",
-      ["-C", ROOT, "status", "--porcelain=v1", "--branch", "--untracked-files=all"],
+      // --no-optional-locks: a background observer must never take the
+      // index lock (status refreshes the index by default) — it raced a
+      // git commit typed in the terminal into "index.lock: File exists".
+      ["--no-optional-locks", "-C", ROOT, "status", "--porcelain=v1", "--branch", "--untracked-files=all"],
       { maxBuffer: 16 * 1024 * 1024 },
     );
     let branch = null;
+    let ahead = 0;
     const changes = [];
     for (const line of stdout.split("\\n")) {
       if (!line) continue;
-      if (line.startsWith("## ")) branch = parseHeader(line);
-      else changes.push(line);
+      if (line.startsWith("## ")) {
+        branch = parseHeader(line);
+        ahead = Number(/\\[ahead (\\d+)/.exec(line)?.[1] ?? 0);
+      } else changes.push(line);
     }
-    return { branch, changes: changes.slice(0, 5000) };
+    let head = null;
+    try {
+      head = (await run("git", ["-C", ROOT, "rev-parse", "HEAD"])).stdout.trim() || null;
+    } catch {
+      head = null;
+    }
+    return { branch, ahead, head, changes: changes.slice(0, 5000) };
   } catch (error) {
     return null;
   }
@@ -142,6 +154,8 @@ async function tick() {
   const snapshot = { source: "agent", devServers: servers };
   if (git) {
     if (git.branch) snapshot.branch = git.branch;
+    if (git.head) snapshot.head = git.head;
+    snapshot.ahead = git.ahead;
     snapshot.changes = git.changes;
   }
   const key = JSON.stringify(snapshot);
@@ -262,6 +276,9 @@ export async function ensureBoxAgent(
   ctx: SandboxExecContext,
   options: { force?: boolean } = {},
 ): Promise<void> {
+  // Unit tests run the local provider on the developer's machine; they must
+  // not leave a daemon polling a temp dir behind.
+  if (process.env.VITEST) return;
   const at = ensured.get(ctx.sessionKey) ?? 0;
   if (!options.force && Date.now() - at < ENSURE_INTERVAL_MS) return;
   ensured.set(ctx.sessionKey, Date.now());

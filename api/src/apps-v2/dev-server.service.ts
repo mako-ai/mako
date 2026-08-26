@@ -36,6 +36,7 @@ import {
 } from "./worktree.service";
 import { loggers } from "../logging";
 import { boxEnvPath } from "./box";
+import { getBoxState } from "./box-state.service";
 import { readBindings, bindingArtifactKey } from "./bindings.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 
@@ -464,6 +465,14 @@ export async function devServerStatus(
 ): Promise<{ serving: boolean; url?: string }> {
   const provider = getSandboxProvider();
   const ctx = boxCtx(handle);
+  // Snapshot first (pushed by the box; expires unless refreshed): no exec.
+  const snapshot = await getBoxState(ctx.sessionKey);
+  if (snapshot?.devServers) {
+    const entry = snapshot.devServers.find(d => d.slug === appSlug(handle));
+    if (!entry) return { serving: false };
+    const url = entry.url ?? (await provider.publicUrlForPort(ctx, entry.port));
+    return { serving: true, url };
+  }
   if (!(await provider.hasSession(ctx))) return { serving: false };
   const port = await devPort(handle, provider, ctx, { allocate: false });
   if (!port) return { serving: false };

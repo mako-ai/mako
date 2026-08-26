@@ -55,7 +55,7 @@ import {
   workspaceRootGitignore,
 } from "./box";
 import { publishRealtimeEvent } from "../services/realtime.service";
-import { forgetBoxState } from "./box-state.service";
+import { forgetBoxState, getBoxState, hasGitState } from "./box-state.service";
 import { ensureBoxAgent, forgetBoxAgent } from "./box-agent";
 import {
   APPS_V2_MAX_FILE_BYTES,
@@ -1181,6 +1181,44 @@ export async function worktreeStatus(
     appRoot: appRootFor(project),
   };
   const ctx = boxCtx(handle);
+
+  // Snapshot first: what the box's own agent pushed moments ago answers this
+  // without three execs into the machine (~2s). The snapshot expires unless
+  // the agent keeps refreshing it, so a hit is by construction recent; a
+  // miss (agent not up yet, API just restarted in memory mode, box gone)
+  // falls through to discovery exactly as before.
+  const snapshot = await getBoxState(ctx.sessionKey);
+  if (hasGitState(snapshot)) {
+    if (
+      snapshot.branch !== "HEAD" &&
+      snapshot.branch !== doc.branch &&
+      !snapshot.branch.startsWith("No ")
+    ) {
+      logger.info("Apps v2 following a branch switch reported by the box", {
+        from: doc.branch,
+        to: snapshot.branch,
+      });
+      doc.branch = snapshot.branch;
+      await doc.save();
+    }
+    const branchHead = await resolveCommit(
+      repoDir,
+      `refs/heads/${snapshot.branch}`,
+    );
+    const prefix = `${appRootFor(project)}/`;
+    return {
+      branch: snapshot.branch,
+      baseSha: snapshot.head ?? branchHead ?? "",
+      branchHead,
+      ahead: snapshot.ahead ?? 0,
+      changes: snapshot.changes
+        .filter(ch => ch.path.startsWith(prefix))
+        .map(ch => ({ ...ch, path: ch.path.slice(prefix.length) })),
+      repoChanges: snapshot.changes,
+      offline: false,
+    };
+  }
+
   const live =
     (await getSandboxProvider()
       .hasSession(ctx)

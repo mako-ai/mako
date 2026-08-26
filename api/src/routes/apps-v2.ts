@@ -97,7 +97,9 @@ import {
   devServerStatus,
   ensureDevServer,
   isServingApp,
+  discoverDevServers,
 } from "../apps-v2/dev-server.service";
+import { getBoxState } from "../apps-v2/box-state.service";
 import { getSandboxProvider } from "../apps-v2/sandbox/provider";
 import { Readable } from "node:stream";
 import {
@@ -1404,18 +1406,11 @@ appsV2Routes.openapi(
         loaded.userId ?? "api-key",
       );
       const ctx = boxCtx(handle);
-      if (!(await getSandboxProvider().hasSession(ctx))) {
-        return c.json({ success: true as const, running: [] }, 200);
-      }
-      const result = await getSandboxProvider().exec(
-        ctx,
-        `ls /tmp/mako-term-dev-*.sock 2>/dev/null || true`,
-        { timeoutMs: 15_000 },
-      );
-      const running = result.stdout
-        .split("\n")
-        .map(l => l.match(/mako-term-dev-(.+)\.sock$/)?.[1])
-        .filter((x): x is string => Boolean(x));
+      // Snapshot first: the box's agent pushed this; no exec.
+      const snapshot = await getBoxState(ctx.sessionKey);
+      const running = snapshot?.devServers
+        ? snapshot.devServers.map(d => d.slug)
+        : (await discoverDevServers(ctx)).map(d => d.slug);
       return c.json({ success: true as const, running }, 200);
     } catch (error) {
       return handleError(c, error);

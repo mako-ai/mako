@@ -45,6 +45,10 @@ export interface BoxDevServer {
 export interface BoxState {
   /** null = the box has not said yet. */
   branch: string | null;
+  /** Commit the working copy is on; null = unknown. */
+  head: string | null;
+  /** Commits ahead of the tracked upstream; null = unknown. */
+  ahead: number | null;
   /** Repo-wide uncommitted changes; null = unknown. */
   changes: BoxChange[] | null;
   /** Dev servers serving right now; null = unknown. */
@@ -56,6 +60,8 @@ export interface BoxState {
 /** What a box process may send. Partial on purpose: each sender knows one thing. */
 export interface BoxStatePatch {
   branch?: string;
+  head?: string;
+  ahead?: number;
   /** `git status --porcelain=v1` lines, or already-shaped changes. */
   changes?: Array<string | { path: string; status?: BoxChangeStatus }>;
   /** The full list (an agent snapshot) — replaces. */
@@ -151,6 +157,15 @@ export async function getBoxState(
   }
 }
 
+/** A snapshot that can answer git status without touching the box. */
+export function hasGitState(
+  state: BoxState | null,
+): state is BoxState & { branch: string; changes: BoxChange[] } {
+  return (
+    !!state && typeof state.branch === "string" && Array.isArray(state.changes)
+  );
+}
+
 /** The box is gone (recycled, destroyed): nothing it said still holds. */
 export async function forgetBoxState(sessionKey: string): Promise<void> {
   await getStore()
@@ -194,8 +209,17 @@ function shapeChanges(
 function applyPatch(prev: BoxState | null, patch: BoxStatePatch): BoxState {
   const next: BoxState = prev
     ? { ...prev, devServers: prev.devServers ? [...prev.devServers] : null }
-    : { branch: null, changes: null, devServers: null, updatedAt: 0 };
+    : {
+        branch: null,
+        head: null,
+        ahead: null,
+        changes: null,
+        devServers: null,
+        updatedAt: 0,
+      };
   if (typeof patch.branch === "string") next.branch = patch.branch;
+  if (typeof patch.head === "string") next.head = patch.head;
+  if (Number.isInteger(patch.ahead)) next.ahead = patch.ahead as number;
   if (Array.isArray(patch.changes)) next.changes = shapeChanges(patch.changes);
   if (Array.isArray(patch.devServers)) {
     // A full list replaces — but keep already-resolved urls for servers that

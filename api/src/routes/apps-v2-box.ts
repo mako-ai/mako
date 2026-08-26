@@ -29,6 +29,8 @@ const ChangeSchema = z.union([
 const PatchSchema = z.object({
   source: z.string().max(40).optional(),
   branch: z.string().max(400).optional(),
+  head: z.string().max(64).optional(),
+  ahead: z.number().int().min(0).optional(),
   changes: z.array(ChangeSchema).max(5000).optional(),
   devServers: z
     .array(z.object({ slug: z.string().max(200), port: z.number().int() }))

@@ -43,6 +43,8 @@ export interface AppV2Change {
 /** Mirror of the API's BoxState — what the sandbox pushed about itself. */
 export interface AppsV2BoxState {
   branch: string | null;
+  head?: string | null;
+  ahead?: number | null;
   changes: AppV2Change[] | null;
   devServers: Array<{ slug: string; port: number; url?: string }> | null;
   updatedAt: number;
@@ -1262,9 +1264,9 @@ export const useAppsV2Store = create<AppsV2Store>()(
             const repoChanges = state.changes ?? prev?.repoChanges ?? [];
             s.statusByApp[app.id] = {
               branch: state.branch ?? prev?.branch ?? "main",
-              baseSha: prev?.baseSha ?? "",
+              baseSha: state.head ?? prev?.baseSha ?? "",
               branchHead: prev?.branchHead ?? null,
-              ahead: prev?.ahead ?? 0,
+              ahead: state.ahead ?? prev?.ahead ?? 0,
               changes: repoChanges.filter(c =>
                 c.path.startsWith(`apps/${app.slug}/`),
               ),
