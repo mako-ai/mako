@@ -38,6 +38,7 @@ import {
 } from "./sandbox/provider";
 import {
   afterTerminalSession,
+  boxCtx,
   ensureBox,
   ensureWorktree,
   synthesizeProjectFromFolder,
@@ -232,6 +233,12 @@ const live = new Map<string, LiveTerminal>();
  * blank while a fresh probe socket on the same termId got the full replay.
  */
 const creating = new Map<string, Promise<LiveTerminal>>();
+
+/**
+ * dtach+script availability per sandbox — capabilities do not change while
+ * a sandbox lives, so one probe per box, not one per terminal open.
+ */
+const dtachCapable = new Map<string, boolean>();
 
 /** Enough to redraw a screen and the tail of a build, not a whole session. */
 const SCROLLBACK_LIMIT = 256 * 1024;
@@ -460,6 +467,45 @@ function reattach(session: LiveTerminal, ws: WebSocket): void {
   logger.info("Apps v2 terminal ring replayed", { bytes: replayed });
 }
 
+/**
+ * Kill a terminal session for real — the pty, the dtach/tmux session behind
+ * it, its socket and its recording. This is what closing the tab in the UI
+ * means: without it, every closed tab left a bash + script + dtach chain
+ * running in the sandbox forever, reachable by nothing.
+ */
+export async function killTerminalSession(
+  project: IAppProjectV2,
+  userId: string,
+  termId: string,
+): Promise<void> {
+  const knownKey = await existingWorktreeKey(project, userId).catch(() => null);
+  if (knownKey) {
+    const key = `${knownKey}:${termId}`;
+    const session = live.get(key);
+    if (session) {
+      live.delete(key);
+      if (session.reaper) clearTimeout(session.reaper);
+      for (const socket of session.sockets) {
+        socket.close(4000, "session killed");
+      }
+      void session.terminal?.close().catch(() => undefined);
+    }
+  }
+  const handle = await ensureWorktree(project, userId);
+  const ctx = boxCtx(handle);
+  if (await getSandboxProvider().hasSession(ctx)) {
+    await getSandboxProvider()
+      .exec(
+        ctx,
+        `pkill -f "mako-term-${termId}.sock" 2>/dev/null; ` +
+          `tmux kill-session -t mako-${termId} 2>/dev/null; ` +
+          `rm -f /tmp/mako-term-${termId}.sock /tmp/mako-hist-${termId}.raw; echo done`,
+        { timeoutMs: 30_000 },
+      )
+      .catch(() => undefined);
+  }
+}
+
 async function startSession(
   ws: WebSocket,
   project: IAppProjectV2,
@@ -581,7 +627,7 @@ async function startSession(
         // Hydrating here is what makes the terminal a real checkout: the
         // sandbox holds the repository, and nothing overwrites it afterwards —
         // so a `git checkout` typed in this shell survives.
-        const ctx = await ensureBox(handle);
+        const ctx = await ensureBox(handle, { lazyPull: true });
         created.ctx = ctx;
         // The pty may be new while the SESSION is old (API restart, new
         // sandbox connection): prefill history now, before any live output,
@@ -627,16 +673,20 @@ async function startSession(
             // API restarts.
             if (live.get(key) === created) live.delete(key);
             if (created.reaper) clearTimeout(created.reaper);
-            // A sentence, not the provider's wording: `reason` is whatever E2B
-            // put on the wire ("...reached end of life while the request was in
-            // flight"), which is useful in a log and baffling in a terminal. The
-            // provider already logged it.
-            const notice =
-              "\r\n\x1b[2m[this shell ended — reconnecting]\x1b[0m\r\n";
+            // A shell's pty ending is what `exit` MEANS: close the tab like
+            // a real terminal app (client keys off the close code) instead
+            // of respawning a shell nobody asked for. A dev window is the
+            // opposite — it exists to watch a session that comes and goes,
+            // so it reconnects into its waiting loop. Code 4000 = "session
+            // over, do not reconnect"; 1012 = "shell lost, come back".
+            const devWindow = termId.startsWith("dev-");
+            const notice = devWindow
+              ? "\r\n\x1b[2m[the dev server session ended]\x1b[0m\r\n"
+              : "\r\n\x1b[2m[session ended]\x1b[0m\r\n";
             for (const socket of created.sockets) {
               if (socket.readyState === socket.OPEN) {
                 socket.send(Buffer.from(notice, "utf8"));
-                socket.close(1012, "terminal ended");
+                socket.close(devWindow ? 1012 : 4000, "session ended");
               }
             }
             created.sockets.clear();
@@ -744,18 +794,21 @@ async function startSession(
           created.tmux = true;
           // Deterministic: the handoff execs dtach exactly when dtach AND
           // script exist, so ask for the capabilities, not the socket —
-          // the socket appears whenever the handoff gets around to it, and
-          // a 1s sniff lost that race on slow attaches, silently switching
-          // a fresh shell to the tmux strategy and dropping its reattach
-          // history.
-          const probe = await getSandboxProvider()
-            .exec(
-              ctx,
-              `command -v dtach >/dev/null && command -v script >/dev/null && echo dtach || echo other`,
-              { timeoutMs: 15_000 },
-            )
-            .catch(() => null);
-          if (probe?.stdout.includes("dtach")) {
+          // and only once per sandbox; capabilities are immutable while
+          // the box lives.
+          let capable = dtachCapable.get(ctx.sessionKey);
+          if (capable === undefined) {
+            const probe = await getSandboxProvider()
+              .exec(
+                ctx,
+                `command -v dtach >/dev/null && command -v script >/dev/null && echo dtach || echo other`,
+                { timeoutMs: 15_000 },
+              )
+              .catch(() => null);
+            capable = probe?.stdout.includes("dtach") ?? false;
+            if (probe) dtachCapable.set(ctx.sessionKey, capable);
+          }
+          if (capable) {
             created.histFile = histFile;
           } else {
             created.tmuxSession = tmuxSession;

@@ -26176,6 +26176,93 @@
         "operationId": "post_api_workspaces_workspaceId_apps_v2_id_dev_preview"
       }
     },
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/terminal-sessions/{termId}": {
+      "delete": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Kill a terminal session — pty, dtach/tmux session, recording",
+        "description": "What closing a terminal tab means: the remote counterpart dies too. Idempotent; a session that is already gone is a success.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            },
+            "required": true,
+            "name": "termId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "delete_api_workspaces_workspaceId_apps_v2_id_terminal_sessions_termId"
+      }
+    },
     "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview/status": {
       "get": {
         "tags": [

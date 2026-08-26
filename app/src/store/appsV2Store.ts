@@ -292,6 +292,12 @@ interface AppsV2Store {
    * the launch state instead of showing a stale iframe as "live".
    */
   checkDevStatus: (workspaceId: string, appId: string) => Promise<void>;
+  /** Closing a terminal tab kills its remote session (pty + dtach + recording). */
+  killTerminalSession: (
+    workspaceId: string,
+    appId: string,
+    termId: string,
+  ) => Promise<void>;
   fetchDevLog: (
     workspaceId: string,
     appId: string,
@@ -1089,6 +1095,18 @@ export const useAppsV2Store = create<AppsV2Store>()(
             error: message(e, "Build failed"),
           };
         });
+      }
+    },
+
+    killTerminalSession: async (workspaceId, appId, termId) => {
+      try {
+        await api.DELETE(
+          "/api/workspaces/{workspaceId}/apps-v2/{id}/terminal-sessions/{termId}",
+          { params: { path: { workspaceId, id: appId, termId } } },
+        );
+      } catch {
+        // Best effort — an unreachable API still lets the tab close; the
+        // sandbox-side reaper collects orphans later.
       }
     },
 

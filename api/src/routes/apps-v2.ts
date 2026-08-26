@@ -87,6 +87,7 @@ import {
   mintPreviewGrant,
   mintPublishedGrant,
 } from "../apps-v2/preview.service";
+import { killTerminalSession } from "../apps-v2/terminal-ws";
 import {
   devLogPath,
   ensureDevServer,
@@ -1371,6 +1372,39 @@ appsV2Routes.openapi(
           500,
         );
       }
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/{id}/terminal-sessions/{termId}",
+    tags: ["Apps v2"],
+    summary: "Kill a terminal session — pty, dtach/tmux session, recording",
+    description:
+      "What closing a terminal tab means: the remote counterpart dies too. Idempotent; a session that is already gone is a success.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam.extend({
+        termId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { termId } = c.req.valid("param");
+      await killTerminalSession(
+        loaded.project,
+        loaded.userId ?? "api-key",
+        termId,
+      );
+      return c.json({ success: true as const }, 200);
     } catch (error) {
       return handleError(c, error);
     }

@@ -245,17 +245,23 @@ const RECONFIGURE_INTERVAL_MS = 30 * 60_000;
  */
 const ensureInFlight = new Map<string, Promise<SandboxExecContext>>();
 
-export function ensureBox(handle: WorktreeHandle): Promise<SandboxExecContext> {
+export function ensureBox(
+  handle: WorktreeHandle,
+  options: { lazyPull?: boolean } = {},
+): Promise<SandboxExecContext> {
   const key = handle.doc._id.toString();
   const existing = ensureInFlight.get(key);
   if (existing) return existing;
-  const run = ensureBoxNow(handle).finally(() => ensureInFlight.delete(key));
+  const run = ensureBoxNow(handle, options).finally(() =>
+    ensureInFlight.delete(key),
+  );
   ensureInFlight.set(key, run);
   return run;
 }
 
 async function ensureBoxNow(
   handle: WorktreeHandle,
+  options: { lazyPull?: boolean } = {},
 ): Promise<SandboxExecContext> {
   const ctx = boxCtx(handle);
   const workspaceId = handle.doc.workspaceId.toString();
@@ -273,7 +279,12 @@ async function ensureBoxNow(
     const since = Date.now() - (lastPull.get(ctx.sessionKey) ?? 0);
     if (since > PULL_INTERVAL_MS) {
       lastPull.set(ctx.sessionKey, Date.now());
-      await boxPull(ctx).catch(() => undefined);
+      // A terminal opening does not need the pull to have FINISHED — the
+      // shell is interactive, the pull lands moments later like a
+      // background `git pull` on a laptop. Callers that read files next
+      // (the default) still wait.
+      const pull = boxPull(ctx).catch(() => undefined);
+      if (!options.lazyPull) await pull;
     }
     return ctx;
   }

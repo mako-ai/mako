@@ -91,6 +91,7 @@ function TerminalPanel({
   workspaceId,
   termId,
   fresh = false,
+  onSessionEnd,
 }: {
   appId: string;
   workspaceId: string;
@@ -98,6 +99,8 @@ function TerminalPanel({
   termId: string;
   /** Tab created this pageview — no history exists, skip the replay probe. */
   fresh?: boolean;
+  /** The session ended for good (`exit`, kill): close the tab, do not respawn. */
+  onSessionEnd?: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<"connecting" | "open" | "reconnecting">(
@@ -243,8 +246,16 @@ function TerminalPanel({
             : bytes,
         );
       };
-      socket.onclose = () => {
+      socket.onclose = event => {
         if (disposed) return;
+        if (event.code === 4000) {
+          // The session is OVER — the user typed `exit`, or the tab was
+          // killed elsewhere. A real terminal closes; respawning a shell
+          // nobody asked for was how `exit` produced a zombie reconnect.
+          setStatus("connecting");
+          onSessionEnd?.();
+          return;
+        }
         // The shell keeps running server-side, so reconnecting picks the
         // session back up — including the output missed while away. Back off
         // so a server that is down does not get hammered.
@@ -276,7 +287,10 @@ function TerminalPanel({
       ws?.close();
       term.dispose();
     };
-  }, [appId, workspaceId, termId, theme.palette.mode]);
+    // onSessionEnd deliberately not a dependency: it is stable in practice
+    // and reconnecting the pty because a parent re-rendered would be worse.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appId, workspaceId, termId, fresh, theme.palette.mode]);
 
   return (
     <Box
@@ -395,6 +409,23 @@ function TerminalTabs({
   // Ids born in this pageview — their sessions have no history to replay,
   // and telling the server so skips a probe round-trip on open.
   const freshIds = useRef<Set<string>>(new Set());
+  const killTerminalSession = useAppsV2Store(st => st.killTerminalSession);
+  // One path for both ways a shell dies: the x on its row (killRemote —
+  // closing the tab kills the pty, the dtach session and the recording) and
+  // the session ending on its own (`exit` — already dead, just drop the tab).
+  const closeShell = useCallback(
+    (id: string, opts: { killRemote: boolean }) => {
+      if (opts.killRemote) {
+        void killTerminalSession(workspaceId, appId, id);
+      }
+      setShells(prev => {
+        const next = prev.filter(x => x !== id);
+        return next.length > 0 ? next : ["1"];
+      });
+      setActiveState(current => (current === id ? "dev" : current));
+    },
+    [appId, workspaceId, killTerminalSession],
+  );
   useEffect(() => {
     try {
       localStorage.setItem(`apps-v2-shells:${appId}`, JSON.stringify(shells));
@@ -466,6 +497,7 @@ function TerminalTabs({
                 workspaceId={workspaceId}
                 termId={id}
                 fresh={freshIds.current.has(id)}
+                onSessionEnd={() => closeShell(id, { killRemote: false })}
               />
             </Box>
           ))}
@@ -529,13 +561,7 @@ function TerminalTabs({
               onSelect={() => setActive(id)}
               onClose={
                 shells.length > 1
-                  ? () => {
-                      setShells(prev => {
-                        const next = prev.filter(x => x !== id);
-                        if (active === id) setActive(next[0] ?? "dev");
-                        return next;
-                      });
-                    }
+                  ? () => closeShell(id, { killRemote: true })
                   : undefined
               }
             />
