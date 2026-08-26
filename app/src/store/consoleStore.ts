@@ -579,10 +579,20 @@ export const useConsoleStore = create<ConsoleStore>()(
         const id = tab.id || generateObjectId();
         const content = tab.content || "";
 
-        // Replace first pristine tab if present
+        // Replace first pristine tab if present. Only an untouched CONSOLE
+        // is preview-tab fodder: for every other kind (app workbench,
+        // dashboard, connector) "not dirty" is its normal resting state, not
+        // a sign it is disposable — the old !isDirty check silently closed
+        // an open app's tab whenever a second app was opened.
         const replacePristine = options?.replacePristine ?? true;
         const pristineTabId = replacePristine
-          ? Object.keys(get().tabs).find(tabId => !get().tabs[tabId].isDirty)
+          ? Object.keys(get().tabs).find(tabId => {
+              const candidate = get().tabs[tabId];
+              return (
+                (!candidate.kind || candidate.kind === "console") &&
+                !candidate.isDirty
+              );
+            })
           : undefined;
 
         if (tab.kind === undefined || tab.kind === "console") {

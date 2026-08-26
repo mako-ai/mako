@@ -502,6 +502,13 @@ export async function killTerminalSession(
       .exec(
         ctx,
         `pkill -f "mako-term-${termId}.sock" 2>/dev/null; ` +
+          // A dev session's real payload is the node launcher hosting vite —
+          // a child the dtach kill does not reach. Killing the session while
+          // leaving the server holding its port is the worst of both worlds:
+          // reap it by launcher path, same as the orphan path does.
+          (termId.startsWith("dev-")
+            ? `pkill -f "[m]ako-dev-${termId.slice(4)}.mjs" 2>/dev/null; `
+            : "") +
           `tmux kill-session -t mako-${termId} 2>/dev/null; ` +
           `rm -f /tmp/mako-term-${termId}.sock /tmp/mako-hist-${termId}.raw; echo done`,
         { timeoutMs: 30_000 },

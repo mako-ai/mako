@@ -378,7 +378,27 @@ export async function devServerStatus(
  * previews do not restart vite and lose its module graph. Other apps' dev
  * servers are left alone — each has its own port.
  */
+const launching = new Map<string, Promise<DevPreview>>();
+
 export async function ensureDevServer(
+  handle: WorktreeHandle,
+): Promise<DevPreview> {
+  // Single-flight per (session, app): the workbench can ask for the dev
+  // server from more than one place at once (mount effect + status poll +
+  // StrictMode double-invoke), and two concurrent launches race — the loser
+  // binds a busy port and dies, taking shared state down with it. All
+  // concurrent callers share one launch instead.
+  const key = `${boxCtx(handle).sessionKey}:${handle.appRoot}`;
+  const inflight = launching.get(key);
+  if (inflight) return inflight;
+  const run = ensureDevServerLaunch(handle).finally(() => {
+    launching.delete(key);
+  });
+  launching.set(key, run);
+  return run;
+}
+
+async function ensureDevServerLaunch(
   handle: WorktreeHandle,
 ): Promise<DevPreview> {
   const provider = getSandboxProvider();
@@ -431,7 +451,13 @@ export async function ensureDevServer(
     const devSock = devSockPath(handle);
     const devSession = `mako-dev-${appSlug(handle)}`;
     const launchCmd =
-      `if command -v dtach >/dev/null && command -v script >/dev/null; then rm -f ${devSock}; dtach -n ${devSock} script -qfa -c 'node ${launcher} 2>&1' ${logPath}; ` +
+      // The stale-socket rm is guarded: rm ONLY when no dtach master holds
+      // the socket. Two racing launches used to both pass the serving check,
+      // and the loser's unconditional rm unlinked the WINNER's socket before
+      // crashing on the busy port — leaving a healthy server that discovery
+      // reported as down forever. With the guard, the loser's dtach -n just
+      // fails against the existing socket and the winner is untouched.
+      `if command -v dtach >/dev/null && command -v script >/dev/null; then if ! pgrep -f "dtach -n ${devSock}" >/dev/null 2>&1; then rm -f ${devSock}; fi; dtach -n ${devSock} script -qfa -c 'node ${launcher} 2>&1' ${logPath} || true; ` +
       `elif command -v tmux >/dev/null; then tmux new-session -d -s ${devSession} 'node ${launcher} 2>&1 | tee -a ${logPath}' 2>/dev/null || true; ` +
       `else nohup node ${launcher} >> ${logPath} 2>&1 & fi; echo started`;
     try {
