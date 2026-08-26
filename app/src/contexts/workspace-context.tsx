@@ -221,6 +221,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         );
         if (!stillExists) {
           setCurrentWorkspace(null);
+        } else {
+          // Take the fresh object: settings (feature flags, tiers) changed on
+          // the server are what a refresh is FOR, and the rail reads them
+          // from here.
+          setCurrentWorkspace(stillExists);
         }
       }
     } catch (err: any) {
