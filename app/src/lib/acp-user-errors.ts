@@ -24,7 +24,7 @@ export function isAcpAdapterNoise(text: string): boolean {
 
 export function sanitizeAcpUserError(
   message: string | null | undefined,
-  options?: { providerId?: "claude" | "codex" | null },
+  options?: { providerId?: "claude" | "codex" | "cursor" | null },
 ): string | null {
   const raw = (message || "").trim();
   if (!raw) return null;
@@ -56,6 +56,13 @@ export function sanitizeAcpUserError(
     return (
       "Codex could not apply that model setting. Pick Codex · GPT-5.6 Terra " +
       "(or Luna), then Enable workspace tools again."
+    );
+  }
+  if (/Invalid params/i.test(kept) && options?.providerId === "cursor") {
+    return (
+      "Cursor Agent could not apply that model setting. Pick Cursor · Grok " +
+      "(local) again, or update Cursor CLI (`cursor-agent update`), then " +
+      "Enable workspace tools again."
     );
   }
   return kept.length > 600 ? `${kept.slice(0, 600)}…` : kept;

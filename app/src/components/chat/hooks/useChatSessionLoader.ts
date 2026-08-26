@@ -8,6 +8,7 @@ import { isLocalAcpModelId } from "../../../lib/local-acp-models";
 import { useConsoleStore } from "../../../store/consoleStore";
 import { useSettingsStore } from "../../../store/settingsStore";
 import { convertStoredMessages } from "../convert-stored-messages";
+import { buildCostByAssistantOrdinal } from "../response-cost";
 import type { ToolDispatchGate } from "../tool-dispatch-gate";
 
 type ChatHelpers = UseChatHelpers<UIMessage>;
@@ -211,6 +212,7 @@ export function useChatSessionLoader({
         consoles?: Array<{ id: string }>;
         activeStreamId?: string | null;
         localAcp?: LocalAcpChatBinding | null;
+        usage?: unknown;
       };
       if (chatIdRef.current !== targetChatId) return false;
 
@@ -260,6 +262,9 @@ export function useChatSessionLoader({
         {
           turnActive:
             Boolean(data.activeStreamId) || Boolean(localAcpBusyRef.current),
+          // Attach per-response cost from the persisted usage.history so
+          // historical assistant messages show their cost tag too.
+          costByAssistantOrdinal: buildCostByAssistantOrdinal(data.usage),
         },
       );
 

@@ -1,6 +1,6 @@
 /** Types for the Local Agent ACP bridge (`/acp/*`). */
 
-export type AcpProviderId = "claude" | "codex";
+export type AcpProviderId = "claude" | "codex" | "cursor";
 
 export interface AcpModelChoice {
   value: string;

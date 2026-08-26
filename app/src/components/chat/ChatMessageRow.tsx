@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Box, List, ListItem, Paper } from "@mui/material";
+import { Box, List, ListItem, Paper, Tooltip } from "@mui/material";
 import { StreamingMarkdown } from "../StreamingMarkdown";
 import { StreamingToolCard, type ToolPartState } from "../StreamingToolCard";
 import { ClarifyingQuestionsCard } from "../ClarifyingQuestionsCard";
@@ -27,7 +27,15 @@ import {
 } from "./tool-presentation";
 import { ReasoningDisplay } from "./ReasoningDisplay";
 import { StreamingIndicator } from "./StreamingIndicator";
+import {
+  formatCostUsd,
+  formatTokenCount,
+  getResponseCostMetadata,
+  type ResponseCostMetadata,
+} from "./response-cost";
+import { BUI_MONO_FONT_FAMILY } from "./bui-styles";
 import { CollapsibleUserText } from "./CollapsibleUserText";
+import { WebSearchCard } from "./WebSearchCard";
 import { ImagePreviewDialog } from "./ImagePreviewDialog";
 import { isRawMcpToolLabel } from "../../lib/local-acp-parts";
 
@@ -70,6 +78,45 @@ const assistantMessageSx = {
   "& pre": { margin: 0, overflow: "hidden" },
 } as const;
 const listItemSx = { p: 0 } as const;
+
+// Quiet per-response cost tag at the end of a finished assistant turn.
+// Memoized per the ChatMessageRow child rule (chat-performance).
+const ResponseCostTag = React.memo(function ResponseCostTag({
+  meta,
+}: {
+  meta: ResponseCostMetadata;
+}) {
+  const tooltip = [
+    meta.modelId,
+    meta.inputTokens != null && `${formatTokenCount(meta.inputTokens)} in`,
+    meta.outputTokens != null && `${formatTokenCount(meta.outputTokens)} out`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <Tooltip title={tooltip} placement="left">
+      <Box
+        component="span"
+        sx={{
+          display: "inline-flex",
+          alignItems: "center",
+          width: "fit-content",
+          mt: 0.75,
+          fontFamily: BUI_MONO_FONT_FAMILY,
+          fontSize: "11px",
+          color: "var(--bui-ink-3)",
+          fontVariantNumeric: "tabular-nums",
+          cursor: "default",
+          transition: "color 0.15s",
+          "&:hover": { color: "var(--bui-ink-2)" },
+          animation: "bui-fade-in 300ms ease-out both",
+        }}
+      >
+        {formatCostUsd(meta.costUsd ?? 0)}
+      </Box>
+    </Tooltip>
+  );
+});
 
 export const ChatMessageRow = React.memo(function ChatMessageRow({
   message,
@@ -294,6 +341,28 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
               }
             }
 
+            // Web search: BUI "Search" trace (query chip + source links)
+            // instead of the generic JSON card. Errors and denied states fall
+            // through to the generic card so failures stay visible.
+            if (
+              toolName === "web_search" &&
+              cardState !== "error" &&
+              !(
+                cardState === "output-available" &&
+                (cardOutput as { success?: boolean } | undefined)?.success ===
+                  false
+              )
+            ) {
+              return (
+                <WebSearchCard
+                  key={key}
+                  state={cardState}
+                  input={part.input}
+                  output={cardOutput}
+                />
+              );
+            }
+
             // Async dbt builds: once dbt_run_model has dispatched a run (output
             // carries a runId), render a live run card that self-polls the run
             // — decoupled from the agent turn, so it keeps updating after the
@@ -411,6 +480,12 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
           return null;
         })}
         {isStreaming && isLastMessage && <StreamingIndicator />}
+        {(() => {
+          // Cost tag only once the turn is settled — never under the loader.
+          if (isStreaming && isLastMessage) return null;
+          const costMeta = getResponseCostMetadata(message);
+          return costMeta ? <ResponseCostTag meta={costMeta} /> : null;
+        })()}
       </Box>
     </ListItem>
   );

@@ -110,8 +110,9 @@ async function ensureSessionModelOrNeedsFresh(
     return "ok";
   }
 
-  // Codex: never hot-swap model on a live chat session.
-  if (providerId === "codex") {
+  // Codex/Cursor: never hot-swap model on a live chat session (Codex dumps
+  // "Conversation interrupted"; Cursor set_config support varies by build).
+  if (providerId === "codex" || providerId === "cursor") {
     return "needs_fresh";
   }
 
@@ -626,8 +627,8 @@ export async function runLocalAcpChatTurn(
     }
     if (skippedAttachments > 0) {
       throw new Error(
-        "Only image attachments can be sent to local Claude/Codex. " +
-          "Remove other file types and try again.",
+        "Only image attachments can be sent to local coding agents " +
+          "(Claude/Codex/Cursor). Remove other file types and try again.",
       );
     }
 
@@ -652,7 +653,7 @@ export async function runLocalAcpChatTurn(
           parts,
           modelSwitch
             ? "_Switching local model — starting a fresh session…_"
-            : "_Reconnecting local Claude/Codex…_",
+            : "_Reconnecting local coding agent…_",
         ),
       );
       // Clear the reconnect notice before the retry streams real tokens.
@@ -689,8 +690,11 @@ export async function runLocalAcpChatTurn(
         providerId === "codex"
           ? "Codex could not apply that model (or Local Agent is outdated). " +
             "Fully quit/reopen Mako Desktop 0.3.9+, then pick GPT-5.6 Sol/Terra/Luna again."
-          : "Claude could not apply that model (or Local Agent is outdated). " +
-            "Fully quit/reopen Mako Desktop 0.3.9+, then pick Opus/Sonnet again.";
+          : providerId === "cursor"
+            ? "Cursor Agent could not apply that model (or Local Agent is outdated). " +
+              "Update Cursor CLI (`cursor-agent update`), then pick Grok 4.6/4.5 again."
+            : "Claude could not apply that model (or Local Agent is outdated). " +
+              "Fully quit/reopen Mako Desktop 0.3.9+, then pick Opus/Sonnet again.";
     }
     // Codex often returns opaque "Internal error" / missing model metadata
     // when the CLI or ACP adapter is outdated. Local Agent auto-updates;

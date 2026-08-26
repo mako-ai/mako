@@ -41,6 +41,7 @@ import {
 import {
   CLOSE_MCP_PRESET,
   CUSTOM_MCP_PRESET,
+  GITHUB_MCP_PRESET,
   SLACK_MCP_PRESET,
   getMcpPreset,
   mcpPresetEnvOAuthClient,
@@ -224,7 +225,29 @@ function testPresetsAndOAuthScopes() {
   // custom (any Streamable-HTTP server).
   assert.equal(getMcpPreset("close"), CLOSE_MCP_PRESET);
   assert.equal(getMcpPreset("slack"), SLACK_MCP_PRESET);
+  assert.equal(getMcpPreset("github"), GITHUB_MCP_PRESET);
   assert.equal(getMcpPreset("nope"), CUSTOM_MCP_PRESET);
+
+  // GitHub: official hosted endpoint, OAuth (manual pre-registered app —
+  // GitHub has no DCR) or a personal access token whose "Bearer " prefix is
+  // applied server-side. Read-only is enforced by the X-MCP-Readonly header
+  // (empty values for write scopes = header omitted), not OAuth scopes.
+  assert.equal(GITHUB_MCP_PRESET.url, "https://api.githubcopilot.com/mcp/");
+  assert.equal(GITHUB_MCP_PRESET.urlEditable, false);
+  assert.deepEqual(GITHUB_MCP_PRESET.authOptions, ["oauth", "api_key"]);
+  assert.equal(GITHUB_MCP_PRESET.oauth?.clientMode, "manual");
+  const patField = GITHUB_MCP_PRESET.headerFields.find(
+    f => f.name === "Authorization",
+  );
+  assert.equal(patField?.valuePrefix, "Bearer ");
+  assert.equal(GITHUB_MCP_PRESET.scopeHeader?.name, "X-MCP-Readonly");
+  assert.equal(GITHUB_MCP_PRESET.scopeHeader?.scopeValues.read, "true");
+  assert.equal(GITHUB_MCP_PRESET.scopeHeader?.scopeValues.write_safe, "");
+  assert.equal(
+    GITHUB_MCP_PRESET.scopeHeader?.scopeValues.write_destructive,
+    "",
+  );
+  assert.equal(mcpPresetOAuthScope(GITHUB_MCP_PRESET, "read"), undefined);
 
   // Slack: official hosted endpoint, OAuth-only, manual (pre-registered
   // confidential app) client mode — Slack does not support DCR.

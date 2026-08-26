@@ -58,6 +58,8 @@ export interface McpPresetHeaderField {
   type: "password" | "string";
   required: boolean;
   helperText?: string;
+  /** Server-applied value prefix (e.g. "Bearer ") — users paste just the token. */
+  valuePrefix?: string;
 }
 
 export interface McpPresetOAuthInfo {
