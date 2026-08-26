@@ -14,6 +14,7 @@ import {
   Typography,
 } from "@mui/material";
 import { Search as SearchIcon, X as ClearIcon } from "lucide-react";
+import VSScrollArea from "./VSScrollArea";
 
 export interface ExplorerShellProps {
   title: string;
@@ -190,11 +191,14 @@ export default function ExplorerShell({
         </Alert>
       )}
 
-      <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+      {/* Overlay scrolling, not an overflow Box: the scrollbar floats over
+          the content, so a selected row's highlight reaches the container's
+          true edge instead of stopping at a scrollbar gutter. */}
+      <VSScrollArea style={{ flex: 1, minHeight: 0 }}>
         {loading && skeleton
           ? skeleton
           : children({ searchQuery: debouncedQuery, rawSearchQuery: rawQuery })}
-      </Box>
+      </VSScrollArea>
     </Box>
   );
 }

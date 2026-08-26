@@ -47,6 +47,7 @@ import {
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppsV2Store, type AppV2Change } from "../store/appsV2Store";
+import VSScrollArea from "./VSScrollArea";
 
 /** VS Code's status letters, in VS Code's colors. */
 const STATUS_STYLE: Record<
@@ -275,334 +276,337 @@ export default function SourceControlExplorer() {
   if (!workspaceId) return null;
 
   return (
-    <Box
-      sx={{
-        height: "100%",
-        display: "flex",
-        flexDirection: "column",
-        overflowY: "auto",
-      }}
-    >
-      {/* Panel title, VS Code style. */}
-      <Box
-        sx={{ display: "flex", alignItems: "center", px: 1.5, pt: 1, pb: 0.5 }}
-      >
-        <Typography
-          variant="caption"
-          sx={{ fontWeight: 700, letterSpacing: 0.4, fontSize: "0.72rem" }}
+    <VSScrollArea style={{ height: "100%" }}>
+      <Box sx={{ display: "flex", flexDirection: "column" }}>
+        {/* Panel title, VS Code style. */}
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            px: 1.5,
+            pt: 1,
+            pb: 0.5,
+          }}
         >
-          SOURCE CONTROL
-        </Typography>
-        <Box sx={{ flex: 1 }} />
-        {appId && (
-          <Tooltip title="Switch branch — the same `git checkout` the terminal runs">
-            <Button
-              size="small"
-              onClick={e => {
-                setBranchAnchor(e.currentTarget);
-                if (workspaceId) void fetchBranches(workspaceId, appId);
-              }}
-              startIcon={
-                switching ? (
-                  <CircularProgress size={12} />
-                ) : (
-                  <BranchIcon size={13} strokeWidth={1.75} />
-                )
-              }
-              sx={{
-                textTransform: "none",
-                fontSize: "0.72rem",
-                color: "text.secondary",
-                minWidth: 0,
-                maxWidth: 180,
-                "& .MuiButton-startIcon": { mr: 0.5 },
-              }}
-            >
-              <Box
-                component="span"
+          <Typography
+            variant="caption"
+            sx={{ fontWeight: 700, letterSpacing: 0.4, fontSize: "0.72rem" }}
+          >
+            SOURCE CONTROL
+          </Typography>
+          <Box sx={{ flex: 1 }} />
+          {appId && (
+            <Tooltip title="Switch branch — the same `git checkout` the terminal runs">
+              <Button
+                size="small"
+                onClick={e => {
+                  setBranchAnchor(e.currentTarget);
+                  if (workspaceId) void fetchBranches(workspaceId, appId);
+                }}
+                startIcon={
+                  switching ? (
+                    <CircularProgress size={12} />
+                  ) : (
+                    <BranchIcon size={13} strokeWidth={1.75} />
+                  )
+                }
                 sx={{
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
+                  textTransform: "none",
+                  fontSize: "0.72rem",
+                  color: "text.secondary",
+                  minWidth: 0,
+                  maxWidth: 180,
+                  "& .MuiButton-startIcon": { mr: 0.5 },
                 }}
               >
-                {branch}
-              </Box>
-            </Button>
+                <Box
+                  component="span"
+                  sx={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {branch}
+                </Box>
+              </Button>
+            </Tooltip>
+          )}
+          <Tooltip title="Refresh">
+            <IconButton size="small" onClick={refresh}>
+              <RefreshIcon size={14} strokeWidth={1.75} />
+            </IconButton>
           </Tooltip>
-        )}
-        <Tooltip title="Refresh">
-          <IconButton size="small" onClick={refresh}>
-            <RefreshIcon size={14} strokeWidth={1.75} />
-          </IconButton>
-        </Tooltip>
-      </Box>
+        </Box>
 
-      <Menu
-        anchorEl={branchAnchor}
-        open={!!branchAnchor}
-        onClose={() => setBranchAnchor(null)}
-      >
-        {(branches ?? []).map(b => (
+        <Menu
+          anchorEl={branchAnchor}
+          open={!!branchAnchor}
+          onClose={() => setBranchAnchor(null)}
+        >
+          {(branches ?? []).map(b => (
+            <MenuItem
+              key={b.name}
+              dense
+              disabled={switching}
+              onClick={() => void switchTo(b.name)}
+            >
+              <ListItemIcon sx={{ minWidth: 28 }}>
+                {b.name === branch ? (
+                  <CheckIcon size={14} />
+                ) : (
+                  <BranchIcon size={14} strokeWidth={1.5} />
+                )}
+              </ListItemIcon>
+              <ListItemText
+                primary={b.name}
+                primaryTypographyProps={{ fontSize: 13 }}
+              />
+            </MenuItem>
+          ))}
+          <Divider />
           <MenuItem
-            key={b.name}
             dense
             disabled={switching}
-            onClick={() => void switchTo(b.name)}
+            onClick={() => {
+              setBranchAnchor(null);
+              setCreateOpen(true);
+            }}
           >
             <ListItemIcon sx={{ minWidth: 28 }}>
-              {b.name === branch ? (
-                <CheckIcon size={14} />
-              ) : (
-                <BranchIcon size={14} strokeWidth={1.5} />
-              )}
+              <PlusIcon size={14} strokeWidth={1.75} />
             </ListItemIcon>
             <ListItemText
-              primary={b.name}
+              primary="Create new branch…"
               primaryTypographyProps={{ fontSize: 13 }}
             />
           </MenuItem>
-        ))}
-        <Divider />
-        <MenuItem
-          dense
-          disabled={switching}
-          onClick={() => {
-            setBranchAnchor(null);
-            setCreateOpen(true);
-          }}
+        </Menu>
+
+        <Dialog
+          open={createOpen}
+          onClose={() => setCreateOpen(false)}
+          maxWidth="xs"
+          fullWidth
         >
-          <ListItemIcon sx={{ minWidth: 28 }}>
-            <PlusIcon size={14} strokeWidth={1.75} />
-          </ListItemIcon>
-          <ListItemText
-            primary="Create new branch…"
-            primaryTypographyProps={{ fontSize: 13 }}
-          />
-        </MenuItem>
-      </Menu>
-
-      <Dialog
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle sx={{ fontSize: 15 }}>Create branch</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            fullWidth
-            size="small"
-            placeholder={`New branch from "${branch}"`}
-            value={newBranchName}
-            onChange={e => setNewBranchName(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter" && newBranchName.trim()) {
-                void switchTo(newBranchName.trim(), { create: true });
-              }
-            }}
-            sx={{ mt: 0.5 }}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button size="small" onClick={() => setCreateOpen(false)}>
-            Cancel
-          </Button>
-          <Button
-            size="small"
-            variant="contained"
-            disabled={!newBranchName.trim() || switching}
-            onClick={() =>
-              void switchTo(newBranchName.trim(), { create: true })
-            }
-          >
-            {switching ? "Creating…" : "Create & switch"}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {error && (
-        <Alert
-          severity="error"
-          onClose={() => setError(null)}
-          sx={{
-            mx: 1.5,
-            mb: 1,
-            fontSize: 12,
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-            "& .MuiAlert-message": { maxHeight: 200, overflowY: "auto" },
-          }}
-        >
-          {error}
-        </Alert>
-      )}
-
-      {!appId ? (
-        <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
-          The workspace repository appears with its first app — create one in
-          Apps v2 and this panel takes over from there.
-        </Typography>
-      ) : (
-        <>
-          <Section
-            label="Changes"
-            open={changesOpen}
-            onToggle={() => setChangesOpen(o => !o)}
-            actions={
-              changes.length > 0 ? (
-                <Chip
-                  label={changes.length}
-                  size="small"
-                  sx={{ height: 16, fontSize: "0.62rem" }}
-                />
-              ) : undefined
-            }
-          >
-            <Box sx={{ px: 1.5, pb: 1 }}>
-              <TextField
-                fullWidth
-                size="small"
-                multiline
-                maxRows={4}
-                placeholder={`Message (⌘⏎ to commit on "${branch}")`}
-                value={message}
-                onChange={e => setMessage(e.target.value)}
-                onKeyDown={e => {
-                  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                    void handleCommit();
-                  }
-                }}
-                disabled={committing}
-                sx={{ mb: 1, "& .MuiInputBase-input": { fontSize: 13 } }}
-              />
-              <Button
-                fullWidth
-                variant="contained"
-                size="small"
-                disabled={committing || !message.trim() || changes.length === 0}
-                onClick={() => void handleCommit()}
-                startIcon={
-                  committing ? <CircularProgress size={14} /> : undefined
+          <DialogTitle sx={{ fontSize: 15 }}>Create branch</DialogTitle>
+          <DialogContent>
+            <TextField
+              autoFocus
+              fullWidth
+              size="small"
+              placeholder={`New branch from "${branch}"`}
+              value={newBranchName}
+              onChange={e => setNewBranchName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Enter" && newBranchName.trim()) {
+                  void switchTo(newBranchName.trim(), { create: true });
                 }
-              >
-                {committing ? "Committing…" : "✓ Commit"}
-              </Button>
-            </Box>
-            {changes.length === 0 ? (
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                sx={{ px: 2, pb: 1, display: "block" }}
-              >
-                No changes.
-              </Typography>
-            ) : (
-              <Box sx={{ pb: 1 }}>
-                {changes.map(change => (
-                  <ChangeRow key={change.path} change={change} />
-                ))}
-              </Box>
-            )}
-          </Section>
+              }}
+              sx={{ mt: 0.5 }}
+            />
+          </DialogContent>
+          <DialogActions>
+            <Button size="small" onClick={() => setCreateOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              size="small"
+              variant="contained"
+              disabled={!newBranchName.trim() || switching}
+              onClick={() =>
+                void switchTo(newBranchName.trim(), { create: true })
+              }
+            >
+              {switching ? "Creating…" : "Create & switch"}
+            </Button>
+          </DialogActions>
+        </Dialog>
 
-          <Divider />
-
-          <Section
-            label="Graph"
-            open={graphOpen}
-            onToggle={() => setGraphOpen(o => !o)}
+        {error && (
+          <Alert
+            severity="error"
+            onClose={() => setError(null)}
+            sx={{
+              mx: 1.5,
+              mb: 1,
+              fontSize: 12,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              "& .MuiAlert-message": { maxHeight: 200, overflowY: "auto" },
+            }}
           >
-            <Box sx={{ pb: 1 }}>
-              {commits.length === 0 && (
+            {error}
+          </Alert>
+        )}
+
+        {!appId ? (
+          <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
+            The workspace repository appears with its first app — create one in
+            Apps v2 and this panel takes over from there.
+          </Typography>
+        ) : (
+          <>
+            <Section
+              label="Changes"
+              open={changesOpen}
+              onToggle={() => setChangesOpen(o => !o)}
+              actions={
+                changes.length > 0 ? (
+                  <Chip
+                    label={changes.length}
+                    size="small"
+                    sx={{ height: 16, fontSize: "0.62rem" }}
+                  />
+                ) : undefined
+              }
+            >
+              <Box sx={{ px: 1.5, pb: 1 }}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  multiline
+                  maxRows={4}
+                  placeholder={`Message (⌘⏎ to commit on "${branch}")`}
+                  value={message}
+                  onChange={e => setMessage(e.target.value)}
+                  onKeyDown={e => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                      void handleCommit();
+                    }
+                  }}
+                  disabled={committing}
+                  sx={{ mb: 1, "& .MuiInputBase-input": { fontSize: 13 } }}
+                />
+                <Button
+                  fullWidth
+                  variant="contained"
+                  size="small"
+                  disabled={
+                    committing || !message.trim() || changes.length === 0
+                  }
+                  onClick={() => void handleCommit()}
+                  startIcon={
+                    committing ? <CircularProgress size={14} /> : undefined
+                  }
+                >
+                  {committing ? "Committing…" : "✓ Commit"}
+                </Button>
+              </Box>
+              {changes.length === 0 ? (
                 <Typography
                   variant="caption"
                   color="text.secondary"
-                  sx={{ px: 2, display: "block" }}
+                  sx={{ px: 2, pb: 1, display: "block" }}
                 >
-                  No commits yet.
+                  No changes.
                 </Typography>
+              ) : (
+                <Box sx={{ pb: 1 }}>
+                  {changes.map(change => (
+                    <ChangeRow key={change.path} change={change} />
+                  ))}
+                </Box>
               )}
-              {commits.map((entry, index) => (
-                <Box
-                  key={entry.oid}
-                  title={`${entry.oid.slice(0, 8)} — ${entry.author}`}
-                  sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 1,
-                    px: 1.5,
-                    py: 0.4,
-                    minWidth: 0,
-                    overflow: "hidden",
-                    "&:hover": { bgcolor: "action.hover" },
-                  }}
-                >
-                  {/* The rail dot; VS Code rings the newest commit. */}
+            </Section>
+
+            <Divider />
+
+            <Section
+              label="Graph"
+              open={graphOpen}
+              onToggle={() => setGraphOpen(o => !o)}
+            >
+              <Box sx={{ pb: 1 }}>
+                {commits.length === 0 && (
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ px: 2, display: "block" }}
+                  >
+                    No commits yet.
+                  </Typography>
+                )}
+                {commits.map((entry, index) => (
                   <Box
+                    key={entry.oid}
+                    title={`${entry.oid.slice(0, 8)} — ${entry.author}`}
                     sx={{
-                      width: 9,
-                      height: 9,
-                      borderRadius: "50%",
-                      flexShrink: 0,
-                      bgcolor: index === 0 ? "transparent" : "primary.main",
-                      border: index === 0 ? 2 : 0,
-                      borderColor: "primary.main",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 1,
+                      px: 1.5,
+                      py: 0.4,
+                      minWidth: 0,
+                      overflow: "hidden",
+                      "&:hover": { bgcolor: "action.hover" },
                     }}
-                  />
-                  {/* Subject owns the row; the author yields. VS Code does
+                  >
+                    {/* The rail dot; VS Code rings the newest commit. */}
+                    <Box
+                      sx={{
+                        width: 9,
+                        height: 9,
+                        borderRadius: "50%",
+                        flexShrink: 0,
+                        bgcolor: index === 0 ? "transparent" : "primary.main",
+                        border: index === 0 ? 2 : 0,
+                        borderColor: "primary.main",
+                      }}
+                    />
+                    {/* Subject owns the row; the author yields. VS Code does
                       the same — with both fighting for the same pixels the
                       subject collapsed to two letters in a narrow rail while
                       an email address took the line. */}
-                  <Box
-                    component="span"
-                    sx={{
-                      flex: 1,
-                      minWidth: 40,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                      fontSize: 13,
-                    }}
-                  >
-                    {entry.subject}
-                  </Box>
-                  <Box
-                    component="span"
-                    sx={{
-                      color: "text.disabled",
-                      fontSize: 11.5,
-                      flexShrink: 1,
-                      minWidth: 0,
-                      maxWidth: "35%",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {entry.author}
-                  </Box>
-                  {index === 0 && (
-                    <Chip
-                      icon={<BranchIcon size={11} />}
-                      label={branch}
-                      size="small"
-                      color="primary"
+                    <Box
+                      component="span"
                       sx={{
-                        ml: "auto",
-                        height: 18,
-                        fontSize: "0.66rem",
-                        flexShrink: 0,
+                        flex: 1,
+                        minWidth: 40,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        fontSize: 13,
                       }}
-                    />
-                  )}
-                </Box>
-              ))}
-            </Box>
-          </Section>
-        </>
-      )}
-    </Box>
+                    >
+                      {entry.subject}
+                    </Box>
+                    <Box
+                      component="span"
+                      sx={{
+                        color: "text.disabled",
+                        fontSize: 11.5,
+                        flexShrink: 1,
+                        minWidth: 0,
+                        maxWidth: "35%",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {entry.author}
+                    </Box>
+                    {index === 0 && (
+                      <Chip
+                        icon={<BranchIcon size={11} />}
+                        label={branch}
+                        size="small"
+                        color="primary"
+                        sx={{
+                          ml: "auto",
+                          height: 18,
+                          fontSize: "0.66rem",
+                          flexShrink: 0,
+                        }}
+                      />
+                    )}
+                  </Box>
+                ))}
+              </Box>
+            </Section>
+          </>
+        )}
+      </Box>
+    </VSScrollArea>
   );
 }
