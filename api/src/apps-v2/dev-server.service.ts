@@ -381,7 +381,7 @@ async function stageBindingData(
       await stageLive(binding.name);
       continue;
     }
-    const key = bindingArtifactKey(projectId, binding.name);
+    const key = bindingArtifactKey(binding);
     const stream = await store.openReadStream(key);
     if (!stream) {
       // A scheduled binding with no materialized artifact yet (never built, or

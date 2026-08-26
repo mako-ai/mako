@@ -53,7 +53,7 @@ import {
 } from "./worktree.service";
 import { repoDirFor } from "./repository.service";
 import { queueMirrorPush } from "./cloud-repo.service";
-import { adoptBindingArtifact } from "./bindings.service";
+import { adoptBindingArtifact, readBindings } from "./bindings.service";
 
 const logger = loggers.api("apps-v2-migrate-v1");
 
@@ -365,9 +365,17 @@ export async function migrateV1App(
   );
   queueMirrorPush(workspaceId);
 
-  // Carry the data: copy each ready v1 artifact to the v2 key and record its
-  // build as this binding's last run. No re-query, no gap in the numbers.
+  // Carry the data: copy each ready v1 artifact to the v2 binding's
+  // content-addressed key and record its build as this binding's last run. No
+  // re-query, no gap in the numbers. The v2 binding (read back from the repo
+  // we just committed) is what determines the target key, so it matches what
+  // the dev server and scheduler will look up.
   const adopted: string[] = [];
+  const v2Bindings = await readBindings(
+    project,
+    app.owner_id || app.createdBy || "system",
+  );
+  const v2ByName = new Map(v2Bindings.map(b => [b.name, b]));
   for (const binding of app.dataBindings ?? []) {
     const file = bindings.fileNames.get(binding.id);
     const cache = binding.cache;
@@ -378,10 +386,13 @@ export async function migrateV1App(
     ) {
       continue;
     }
+    const v2Binding = v2ByName.get(file);
+    if (!v2Binding) continue;
     try {
       const ok = await adoptBindingArtifact({
         projectId: project._id.toString(),
         name: file,
+        binding: v2Binding,
         fromKey: cache.parquetArtifactKey,
         builtAt: cache.parquetBuiltAt ?? cache.lastRefreshedAt ?? new Date(),
         rowCount: cache.rowCount,

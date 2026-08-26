@@ -12,7 +12,8 @@
  */
 import { Readable } from "node:stream";
 import type { Context } from "hono";
-import { bindingArtifactKey } from "../apps-v2/bindings.service";
+import { bindingArtifactKeyByName } from "../apps-v2/bindings.service";
+import { AppProjectV2 } from "../database/workspace-schema";
 import { serveDeploymentFile } from "../apps-v2/deployment.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import {
@@ -77,9 +78,12 @@ async function serveAsset(c: Context): Promise<Response> {
   );
   if (dataMatch) {
     const store = getDashboardArtifactStore();
-    const key = bindingArtifactKey(grant.projectId, dataMatch[1]);
-    const stream = await store.openReadStream(key);
-    if (!stream) {
+    const project = await AppProjectV2.findById(grant.projectId);
+    const key = project
+      ? await bindingArtifactKeyByName(project, dataMatch[1], "")
+      : null;
+    const stream = key ? await store.openReadStream(key) : null;
+    if (!key || !stream) {
       return c.json(
         { success: false, error: `Binding "${dataMatch[1]}" not materialized` },
         404,

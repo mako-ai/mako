@@ -41,7 +41,7 @@ import {
   queueAppBindingMaterialization,
 } from "../services/app-binding-materialization.service";
 import { executePublicAppLiveBinding } from "../services/public-live-query.service";
-import { bindingArtifactKey } from "../apps-v2/bindings.service";
+import { bindingArtifactKeyByName } from "../apps-v2/bindings.service";
 import { serveDeploymentFile } from "../apps-v2/deployment.service";
 
 const logger = loggers.api("public-share");
@@ -516,9 +516,10 @@ app.openapi(
         revision = status.artifactRevision;
         rowCount = status.rowCount;
       } else if (resource.type === "app-v2") {
-        artifactKey = bindingArtifactKey(
-          resource.doc._id.toString(),
+        artifactKey = await bindingArtifactKeyByName(
+          resource.doc,
           artifactId,
+          "",
         );
       } else {
         const info = getBindingArtifactInfo(resource.doc, artifactId);

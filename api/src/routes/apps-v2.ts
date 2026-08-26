@@ -106,7 +106,7 @@ import { getBoxState } from "../apps-v2/box-state.service";
 import { getSandboxProvider } from "../apps-v2/sandbox/provider";
 import { Readable } from "node:stream";
 import {
-  bindingArtifactKey,
+  bindingArtifactKeyByName,
   getBindingState,
   materializeAppV2Binding,
   readBindings,
@@ -1195,9 +1195,13 @@ appsV2Routes.openapi(
         return c.json({ success: false, error: "Invalid binding name" }, 400);
       }
       const store = getDashboardArtifactStore();
-      const key = bindingArtifactKey(loaded.project._id.toString(), name);
-      const stream = await store.openReadStream(key);
-      if (!stream) {
+      const key = await bindingArtifactKeyByName(
+        loaded.project,
+        name,
+        loaded.userId ?? "",
+      );
+      const stream = key ? await store.openReadStream(key) : null;
+      if (!key || !stream) {
         return c.json(
           { success: false, error: `Binding "${name}" is not materialized` },
           404,
