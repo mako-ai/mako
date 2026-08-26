@@ -31,7 +31,11 @@ import {
 import { sessionManager } from "../auth/session";
 import { workspaceService } from "../services/workspace.service";
 import { canWriteResource } from "../utils/resource-acl";
-import { getSandboxProvider, type SandboxTerminal } from "./sandbox/provider";
+import {
+  type SandboxExecContext,
+  getSandboxProvider,
+  type SandboxTerminal,
+} from "./sandbox/provider";
 import {
   afterTerminalSession,
   ensureBox,
@@ -188,6 +192,19 @@ interface LiveTerminal {
   tmux: boolean;
   /** A client reattached; force a repaint via a size jiggle on next resize. */
   repaint: boolean;
+  /** Exec context of the sandbox this pty lives in (for capture-pane). */
+  ctx: SandboxExecContext | null;
+  /** tmux session name, when the shell handed off to tmux (fallback). */
+  tmuxSession: string | null;
+  /**
+   * Raw session recording inside the sandbox (script(1) under dtach) — the
+   * reattach history source. When set, reattaches replay its tail instead
+   * of the ring buffer or capture-pane.
+   */
+  histFile: string | null;
+  /** Last size the client reported, for server-driven repaint jiggles. */
+  lastCols: number;
+  lastRows: number;
 }
 
 const live = new Map<string, LiveTerminal>();
@@ -269,6 +286,85 @@ async function existingWorktreeKey(
 }
 
 /**
+ * tmux pane history as plain bytes, for prefilling xterm.js's OWN scrollback.
+ *
+ * The scrolling model is: tmux keeps the session alive; xterm.js does ALL
+ * the scrolling. tmux runs with mouse off, status off and the alternate
+ * screen stripped (terminal-overrides smcup@/rmcup@), so shell output flows
+ * onto the normal buffer where the browser's native scrollback and wheel
+ * physics just work — no escape-sequence scroll translation, no copy-mode,
+ * no fighting between the div scrollbar and tmux's own scrolling (which
+ * produced position indicators and duplicated repaints on screen at once).
+ * What the buffer cannot have natively is history from before this client
+ * attached — capture-pane provides exactly that.
+ */
+const TMUX_HISTORY_LINES = 5000;
+
+/** How much of the raw session recording a reattach replays. */
+const HIST_REPLAY_BYTES = 256 * 1024;
+
+/**
+ * Strip sequences that would make a REPLAYING terminal talk back. The
+ * recording holds everything applications wrote, including queries (device
+ * attributes, cursor position, DCS/OSC introspection); a fresh xterm.js
+ * dutifully answers each one on replay and the answers land at the shell
+ * prompt as junk keystrokes. Colors, cursor movement and screen switches
+ * replay fine — only request/response machinery is removed.
+ */
+const ESC = String.fromCharCode(0x1b);
+const BEL = String.fromCharCode(0x07);
+const QUERY_SEQUENCES = new RegExp(
+  [
+    `${ESC}\\[[>=?]?[0-9;]*c`, // DA1/DA2/DA3 requests
+    `${ESC}\\[[0-9;?]*n`, // DSR / CPR requests
+    `${ESC}P[^${ESC}]*?${ESC}\\\\`, // any DCS (termcap queries etc.)
+    `${ESC}\\][0-9]+;\\?(?:${BEL}|${ESC}\\\\)`, // OSC color queries
+  ].join("|"),
+  "g",
+);
+
+/**
+ * Tail of the interactive session's raw recording, for scrollback prefill.
+ * Base64 through the exec channel: the recording is binary-ish (escape
+ * sequences, arbitrary bytes) and must arrive intact.
+ */
+async function sessionHistory(
+  ctx: SandboxExecContext,
+  histFile: string,
+): Promise<Buffer | null> {
+  try {
+    const result = await getSandboxProvider().exec(
+      ctx,
+      `tail -c ${HIST_REPLAY_BYTES} ${histFile} 2>/dev/null | base64`,
+      { timeoutMs: 30_000 },
+    );
+    const raw = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
+    if (raw.length === 0) return null;
+    const text = raw.toString("binary").replace(QUERY_SEQUENCES, "");
+    return Buffer.from(text, "binary");
+  } catch {
+    return null;
+  }
+}
+async function tmuxHistory(
+  ctx: SandboxExecContext,
+  tmuxSession: string,
+): Promise<Buffer | null> {
+  try {
+    const result = await getSandboxProvider().exec(
+      ctx,
+      `tmux capture-pane -pJ -e -S -${TMUX_HISTORY_LINES} -t ${tmuxSession} 2>/dev/null || true`,
+      { timeoutMs: 30_000 },
+    );
+    const text = result.stdout.replace(/\s+$/u, "");
+    if (!text) return null;
+    return Buffer.from(`${text.replace(/\n/g, "\r\n")}\r\n`, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Attach a returning client to a shell that kept running: cancel the reaper
  * and replay what it missed.
  */
@@ -278,9 +374,34 @@ function reattach(session: LiveTerminal, ws: WebSocket): void {
     session.reaper = null;
   }
   if (session.tmux) {
-    // No replay (see LiveTerminal.tmux) — mark the session so the client's
-    // first resize triggers a full tmux repaint instead.
-    session.repaint = true;
+    // No ring-buffer replay (see LiveTerminal.tmux).
+    void (async () => {
+      if (session.ctx && session.histFile) {
+        // dtach: replay the tail of the session recording — history AND
+        // the current prompt, byte-faithful, ending exactly where the live
+        // stream picks up. Nothing repaints because nothing needs to.
+        const history = await sessionHistory(session.ctx, session.histFile);
+        if (history && ws.readyState === ws.OPEN) ws.send(history);
+        return;
+      }
+      if (session.ctx && session.tmuxSession) {
+        // tmux fallback: capture-pane history, then a size jiggle so tmux
+        // repaints the live viewport BELOW it (repainting first would push
+        // the fresh screen up into scrollback above the history).
+        const history = await tmuxHistory(session.ctx, session.tmuxSession);
+        if (history && ws.readyState === ws.OPEN) ws.send(history);
+        if (session.lastCols > 1 && session.lastRows > 1) {
+          await session.terminal
+            .resize(session.lastCols, session.lastRows - 1)
+            .then(() =>
+              session.terminal.resize(session.lastCols, session.lastRows),
+            )
+            .catch(() => undefined);
+        } else {
+          session.repaint = true;
+        }
+      }
+    })();
     return;
   }
   // Push any batched-but-unsent output into the scrollback first, or the
@@ -344,6 +465,11 @@ async function startSession(
         flush: () => undefined,
         tmux: false,
         repaint: false,
+        ctx: null,
+        tmuxSession: null,
+        histFile: null,
+        lastCols: 0,
+        lastRows: 0,
       };
       // Output is BATCHED before it leaves the process.
       //
@@ -384,6 +510,15 @@ async function startSession(
       // sandbox holds the repository, and nothing overwrites it afterwards —
       // so a `git checkout` typed in this shell survives.
       const ctx = await ensureBox(handle);
+      created.ctx = ctx;
+      // The pty may be new while the SESSION is old (API restart, new
+      // sandbox connection): prefill history now, before any live output,
+      // so the client gets [history][live] in that order. A session that
+      // does not exist yet has nothing to replay.
+      const priorHistory =
+        (await sessionHistory(ctx, `/tmp/mako-hist-${termId}.raw`)) ??
+        (await tmuxHistory(ctx, `mako-${termId}`));
+      if (priorHistory && ws.readyState === ws.OPEN) ws.send(priorHistory);
       // The app's folder can legitimately be absent — a box on a branch from
       // before the app existed, or a pull that refused to merge. A real
       // computer still gives you a shell; refusing to open one here bricked
@@ -459,19 +594,50 @@ async function startSession(
           ),
         );
       }
-      // Mouse mode makes the wheel scroll tmux's own history — without it,
-      // tmux's alternate screen leaves xterm.js with nothing to scroll and
-      // the wheel goes dead. history-limit is the scrollback that wheel
-      // reaches. Only written once, so a user's own ~/.tmux.conf wins.
+      // Session persistence WITHOUT a screen engine. dtach is a pure
+      // socket relay around a pty: the shell's output reaches xterm.js as
+      // the linear stream it is, so the browser terminal's own scrollback
+      // and wheel physics work natively — no alternate screen, no
+      // copy-mode, no scroll-event translation. (tmux was tried first: its
+      // redraw engine and a browser terminal fight over scrolling — the
+      // wheel either goes dead or turns erratic, and stripping smcup with
+      // terminal-overrides no longer yields native scrollback on tmux 3.x,
+      // whose engine scrolls with sequences emulators rightly keep out of
+      // the scrollback buffer.) script(1) records the session to a file,
+      // which is where reattach history comes from (sessionHistory). tmux
+      // stays as the fallback for sandboxes without dtach, and remains the
+      // right tool for the HEADLESS dev-server sessions.
       const tmuxSession = `mako-${termId}`;
+      const histFile = `/tmp/mako-hist-${termId}.raw`;
+      const dtachSock = `/tmp/mako-term-${termId}.sock`;
+      const conf =
+        `# mako-terminal v2\\nset -g mouse off\\nset -g status off\\n` +
+        `set -g history-limit 50000\\nset -g terminal-overrides ",*:smcup@:rmcup@"\\n`;
+      const handoff =
+        ` if command -v dtach >/dev/null && command -v script >/dev/null; then exec dtach -A ${dtachSock} -r winch script -qf -c 'bash -l' ${histFile}; fi; ` +
+        `command -v tmux >/dev/null && { if [ ! -f "$HOME/.tmux.conf" ] || grep -q mako-terminal "$HOME/.tmux.conf"; then printf '${conf}' > "$HOME/.tmux.conf"; fi; ` +
+        `tmux set -g mouse off 2>/dev/null; tmux set -g status off 2>/dev/null; ` +
+        `exec tmux new -A -s ${tmuxSession}; }; clear\n`;
       await created.terminal
-        .write(
-          new TextEncoder().encode(
-            ` command -v tmux >/dev/null && { [ -f "$HOME/.tmux.conf" ] || printf 'set -g mouse on\\nset -g history-limit 50000\\n' > "$HOME/.tmux.conf"; tmux set -g mouse on 2>/dev/null; tmux set -g history-limit 50000 2>/dev/null; exec tmux new -A -s ${tmuxSession}; }; clear\n`,
-          ),
-        )
+        .write(new TextEncoder().encode(handoff))
         .catch(() => undefined);
+      // Which manager took over decides the reattach strategy. Probe once:
+      // the dtach socket appears within a beat of the exec when dtach won.
       created.tmux = true;
+      const probe = await getSandboxProvider()
+        .exec(
+          ctx,
+          `sleep 1; test -S ${dtachSock} && echo dtach || echo other`,
+          {
+            timeoutMs: 15_000,
+          },
+        )
+        .catch(() => null);
+      if (probe?.stdout.includes("dtach")) {
+        created.histFile = histFile;
+      } else {
+        created.tmuxSession = tmuxSession;
+      }
 
       live.set(key, created);
       session = created;
@@ -492,6 +658,8 @@ async function startSession(
         try {
           const msg = JSON.parse(text) as ResizeMessage;
           if (msg.type === "resize" && msg.cols > 0 && msg.rows > 0) {
+            current.lastCols = msg.cols;
+            current.lastRows = msg.rows;
             if (current.repaint) {
               // tmux only repaints when the size CHANGES, and a reattaching
               // client usually reports exactly the size the pty already

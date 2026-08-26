@@ -102,12 +102,17 @@ function TerminalPanel({
         theme.palette.mode === "dark"
           ? { background: "#0b0b0d", foreground: "#e6e6e6" }
           : { background: "#ffffff", foreground: "#1a1a1a", cursor: "#1a1a1a" },
-      // Enough history to scroll back through a build.
-      scrollback: 5000,
+      // Holds the tmux history prefill (TMUX_HISTORY_LINES server-side)
+      // plus a session's worth of new output — xterm.js is the ONLY
+      // scrolling layer now; tmux just keeps the session alive.
+      scrollback: 8000,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    // Debug handle: lets devtools reach the live instance (buffer state,
+    // options) — xterm exposes nothing on its DOM nodes.
+    (host as HTMLElement & { __term?: Terminal }).__term = term;
     if (host.clientWidth && host.clientHeight) fit.fit();
 
     let ws: WebSocket | null = null;

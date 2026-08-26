@@ -170,16 +170,22 @@ export function createAppsV2E2BTemplate() {
         // and the image shipped without vi, vim or nano, so it failed with a
         // confusing error. vim-tiny provides /usr/bin/vi for muscle memory and
         // nano for everyone else; together they are a couple of MB.
-        // tmux is what makes terminal sessions durable: the relay attaches
-        // with `tmux new -A -s <id>`, so sessions survive page reloads, API
-        // restarts and dropped sockets alike (the guard in terminal-ws falls
-        // back to plain bash on images without it).
-        "if ! command -v zsh >/dev/null || ! command -v vi >/dev/null || ! command -v tmux >/dev/null; then " +
-          "(apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends zsh vim-tiny nano bash-completion ca-certificates tmux && rm -rf /var/lib/apt/lists/*) " +
-          "|| (apk add --no-cache zsh vim nano bash-completion ca-certificates tmux) " +
-          "|| (yum install -y zsh vim-minimal nano bash-completion ca-certificates tmux); fi",
+        // dtach + tmux make sessions durable, with different jobs: dtach is
+        // the INTERACTIVE session keeper — a pure socket relay with no
+        // screen engine, so xterm.js sees a linear byte stream and its own
+        // native scrollback and wheel work (tmux's redraw engine and a
+        // browser terminal fight over scrolling; see terminal-ws). tmux
+        // remains for HEADLESS sessions (per-app dev servers), where its
+        // attachability is pure upside. script(1) ships in util-linux and
+        // records interactive sessions for reattach history.
+        "if ! command -v zsh >/dev/null || ! command -v vi >/dev/null || ! command -v tmux >/dev/null || ! command -v dtach >/dev/null; then " +
+          "(apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends zsh vim-tiny nano bash-completion ca-certificates tmux dtach && rm -rf /var/lib/apt/lists/*) " +
+          "|| (apk add --no-cache zsh vim nano bash-completion ca-certificates tmux dtach) " +
+          "|| (yum install -y zsh vim-minimal nano bash-completion ca-certificates tmux dtach); fi",
         "zsh --version",
         "command -v tmux",
+        "command -v dtach",
+        "command -v script",
         // Prove the editor is really there, rather than discovering it the
         // first time someone runs `git commit`.
         "command -v vi",
