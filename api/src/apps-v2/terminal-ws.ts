@@ -720,10 +720,16 @@ async function startSession(
           created.tmux = false;
         } else {
           created.tmux = true;
+          // Deterministic: the handoff execs dtach exactly when dtach AND
+          // script exist, so ask for the capabilities, not the socket —
+          // the socket appears whenever the handoff gets around to it, and
+          // a 1s sniff lost that race on slow attaches, silently switching
+          // a fresh shell to the tmux strategy and dropping its reattach
+          // history.
           const probe = await getSandboxProvider()
             .exec(
               ctx,
-              `sleep 1; test -S ${dtachSock} && echo dtach || echo other`,
+              `command -v dtach >/dev/null && command -v script >/dev/null && echo dtach || echo other`,
               { timeoutMs: 15_000 },
             )
             .catch(() => null);
