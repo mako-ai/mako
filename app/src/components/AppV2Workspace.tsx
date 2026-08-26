@@ -285,11 +285,24 @@ function DevBootLog({
 
   useEffect(() => {
     let offset = 0;
+    let first = true;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       const { size, chunk } = await fetchDevLog(workspaceId, appId, offset);
       if (stopped) return;
+      if (first) {
+        // Tail, don't replay: on a reattach (page reload) the server has
+        // been running for a while, and replaying its whole boot log from
+        // byte 0 looks exactly like the dev server restarting. Show the
+        // recent end and stream from there, like `tail -f`.
+        first = false;
+        if (size > 8_000) {
+          offset = size - 8_000;
+          timer = setTimeout(poll, 0);
+          return;
+        }
+      }
       if (size < offset) {
         // The log was truncated — a new boot started over it. Start over too.
         offset = 0;

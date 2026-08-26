@@ -111,14 +111,16 @@ async function connectSession(sessionKey: string): Promise<Sandbox> {
     apiKey: apiKey(),
     timeoutMs: IDLE_TIMEOUT_MS,
     metadata: { makoAppsV2SessionKey: sessionKey },
-    // Pause instead of kill on idle: a filesystem-only snapshot freezes the
-    // sandbox (node_modules, caches, everything on disk) at zero compute
-    // cost. Resume is explicit via Sandbox.connect() in connectSession —
-    // fs-only snapshots cold-boot, which is fine because commands are
-    // one-shot (no long-lived processes to preserve). If the sandbox is
-    // instead fully dead (deleted/expired), connectSession falls through to
-    // creating a fresh one, which ensureBox then hydrates from the repo.
-    lifecycle: { onTimeout: { action: "pause", keepMemory: false } },
+    // Pause WITH MEMORY on idle: the sandbox is a stateful computer now —
+    // tmux sessions, per-app dev servers, a user's running processes — so
+    // idling must be sleep, not death. A full memory snapshot means resume
+    // restores every process exactly where it was: reopening the page after
+    // a night away reattaches to the same dev server and the same shells
+    // instead of cold-booting (fs-only snapshots reboot the VM on resume,
+    // which is how "why did my dev server restart overnight" happened).
+    // Resume is explicit via Sandbox.connect() in connectSession; a sandbox
+    // that is fully dead still falls through to a fresh create + hydrate.
+    lifecycle: { onTimeout: { action: "pause", keepMemory: true } },
   });
   await sandbox.commands.run(`mkdir -p ${REMOTE_ROOT}`, {
     user: SANDBOX_USER,
