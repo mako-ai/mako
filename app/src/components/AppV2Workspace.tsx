@@ -140,22 +140,11 @@ function TerminalPanel({
     // Debug handle: lets devtools reach the live instance (buffer state,
     // options) — xterm exposes nothing on its DOM nodes.
     (host as HTMLElement & { __term?: Terminal }).__term = term;
-    // Fit, then absorb the row remainder. Rows are whole cells, so up to one
-    // cell height of the pane is always left over — a blank band at the top
-    // (bottom-anchored terminal) or the bottom. Add one row and let it
-    // overflow the pane at the TOP, clipped by the host: the pane is filled
-    // edge to edge, and a partially visible top row reads as scrollback
-    // continuing above the fold (on a fresh shell it is empty anyway).
-    const fitFlush = () => {
-      fit.fit();
-      const el = term.element;
-      if (!el) return;
-      const leftover = host.clientHeight - el.offsetHeight;
-      const cell = term.rows > 0 ? el.offsetHeight / term.rows : 0;
-      if (leftover > 1 && cell > 0 && leftover < cell) {
-        term.resize(term.cols, term.rows + 1);
-      }
-    };
+    // Plain fit. The terminal is bottom-anchored (see the host's sx), so the
+    // sub-row remainder lands at the top as a little blank space — exactly
+    // what VS Code does. An earlier trick fitted one extra row and let it
+    // overflow the top edge, which clipped real scrollback in half.
+    const fitFlush = () => fit.fit();
     if (host.clientWidth && host.clientHeight) fitFlush();
 
     let ws: WebSocket | null = null;
