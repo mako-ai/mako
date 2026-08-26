@@ -539,7 +539,17 @@ async function ensureDevServerLaunch(
       appRoot: handle.appRoot,
     });
   }
-  const wasListening = state === "serving";
+  // Still answering after the reap means the server is not ours to kill —
+  // someone started it from a shell (npm run dev). Adopt it: show it, do
+  // not launch a second vite into the same port.
+  const adopted = state === "orphan" && (await listening(provider, ctx, port));
+  if (adopted) {
+    logger.info("Apps v2 adopting a dev server started outside Mako", {
+      appRoot: handle.appRoot,
+      port,
+    });
+  }
+  const wasListening = state === "serving" || adopted;
   if (!wasListening) {
     const write = await provider.exec(
       ctx,

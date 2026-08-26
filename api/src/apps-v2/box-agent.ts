@@ -37,7 +37,7 @@ const ENSURE_INTERVAL_MS = 5 * 60 * 1000;
 function agentSource(root: string, envPath: string): string {
   const body = `
 import { execFile } from "node:child_process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -118,24 +118,45 @@ async function devServers() {
   // Truth is the PORT, not the session socket: a server whose dtach session
   // died (an orphan) still answers, still holds its port, and must still
   // show as running — that is exactly the state a user needs to see and
-  // stop. The port registry names every app that ever got a port; probe
-  // each and report the ones that answer.
+  // stop. Probe every registered port, AND the dev-port range: a server
+  // someone started from a shell (npm run dev) has no registry entry, so
+  // ask it which app it serves — vite serves the app root, and the app's
+  // package.json name is its folder.
   let ports = {};
   try {
     ports = JSON.parse(readFileSync(PORTS, "utf8"));
   } catch {
     ports = {};
   }
-  const out = [];
+  const bySlug = new Map();
   for (const [key, port] of Object.entries(ports)) {
-    if (!Number.isInteger(port)) continue;
-    const slug = key.replace(/^apps\\//, "");
-    const up = await fetch("http://127.0.0.1:" + port + "/", {
-      signal: AbortSignal.timeout(800),
-    })
+    if (Number.isInteger(port)) bySlug.set(key.replace(/^apps\\//, ""), port);
+  }
+  const knownPorts = new Set(bySlug.values());
+  const probe = port =>
+    fetch("http://127.0.0.1:" + port + "/", { signal: AbortSignal.timeout(800) })
       .then(() => true)
       .catch(() => false);
-    if (up) out.push({ slug, port });
+  const out = [];
+  for (const [slug, port] of bySlug) {
+    if (await probe(port)) out.push({ slug, port });
+  }
+  for (let port = 5173; port <= 5183; port++) {
+    if (knownPorts.has(port)) continue;
+    if (!(await probe(port))) continue;
+    try {
+      const res = await fetch("http://127.0.0.1:" + port + "/package.json", {
+        signal: AbortSignal.timeout(800),
+      });
+      if (!res.ok) continue;
+      const pkg = await res.json();
+      const name = typeof pkg.name === "string" ? pkg.name : "";
+      if (name && existsSync(ROOT + "/apps/" + name) && !out.some(d => d.slug === name)) {
+        out.push({ slug: name, port });
+      }
+    } catch {
+      // Something else on that port; not an app.
+    }
   }
   return out;
 }

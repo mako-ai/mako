@@ -304,6 +304,7 @@ export async function rehydrateBox(
   });
   lastPull.delete(ctx.sessionKey);
   lastConfigured.delete(ctx.sessionKey);
+  await forgetBoxState(ctx.sessionKey);
   if (!(await boxHasRepo(ctx))) {
     await cloneIntoBox({
       ctx,
@@ -373,6 +374,11 @@ async function ensureBoxNow(
     }
     return ctx;
   }
+  // A box with no repository is a NEW machine (first boot, or a replacement
+  // after the previous one died). Nothing the old one said about itself
+  // holds: drop its snapshot now rather than letting it expire on its own,
+  // so a dead server cannot show as running until the TTL runs out.
+  await forgetBoxState(ctx.sessionKey);
   await cloneIntoBox({
     ctx,
     workspaceId,
