@@ -55,6 +55,15 @@ async function makeProject() {
 beforeEach(async () => {
   const { AppWorktreeV2 } = await import("../database/workspace-schema");
   await AppWorktreeV2.deleteMany({});
+  // A fresh MACHINE per test, explicitly. This used to happen by accident:
+  // the session key was the worktree doc's _id, so wiping the docs above
+  // silently rotated every box. Keys are convention now (workspace:user),
+  // stable across the wipe — which is the production property under test —
+  // so test isolation has to be stated rather than inherited.
+  await fs.rm(path.join(tmpRoot, "sessions"), {
+    recursive: true,
+    force: true,
+  });
 });
 
 describe("hostile file names", () => {

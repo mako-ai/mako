@@ -20,6 +20,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {
+  boxCtx,
   checkoutBranch,
   commitAgentTurn,
   commitWorktree,
@@ -87,12 +88,12 @@ beforeEach(async () => {
 });
 
 /** Lose the machine. Not every provider can, and a test must not pretend. */
-async function destroyBox(handle: { doc: { _id: { toString(): string } } }) {
+async function destroyBox(handle: Awaited<ReturnType<typeof ensureWorktree>>) {
   const provider = getSandboxProvider();
   if (!provider.destroySession) {
     throw new Error(`${provider.id} cannot destroy a session`);
   }
-  await provider.destroySession(handle.doc._id.toString());
+  await provider.destroySession(boxCtx(handle).sessionKey);
 }
 
 async function makeProject(title = "Test App") {

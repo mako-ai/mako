@@ -23,11 +23,7 @@ import type { ServerType } from "@hono/node-server";
 import { WebSocketServer, type WebSocket } from "ws";
 import { Types } from "mongoose";
 import { loggers } from "../logging";
-import {
-  AppProjectV2,
-  AppWorktreeV2,
-  type IAppProjectV2,
-} from "../database/workspace-schema";
+import { AppProjectV2, type IAppProjectV2 } from "../database/workspace-schema";
 import { sessionManager } from "../auth/session";
 import { workspaceService } from "../services/workspace.service";
 import { canWriteResource } from "../utils/resource-acl";
@@ -41,6 +37,7 @@ import {
   boxCtx,
   ensureBox,
   ensureWorktree,
+  sessionKeyFor,
   synthesizeProjectFromFolder,
 } from "./worktree.service";
 
@@ -240,6 +237,11 @@ const creating = new Map<string, Promise<LiveTerminal>>();
  */
 const dtachCapable = new Map<string, boolean>();
 
+/** Forget per-box capability knowledge when the box is destroyed. */
+export function forgetTerminalCaches(sessionKey: string): void {
+  dtachCapable.delete(sessionKey);
+}
+
 /** Enough to redraw a screen and the tail of a build, not a whole session. */
 const SCROLLBACK_LIMIT = 256 * 1024;
 
@@ -309,11 +311,9 @@ async function existingWorktreeKey(
   project: IAppProjectV2,
   userId: string,
 ): Promise<string | null> {
-  const doc = await AppWorktreeV2.findOne(
-    { workspaceId: project.workspaceId, userId },
-    { _id: 1 },
-  ).lean();
-  return doc ? String(doc._id) : null;
+  // Convention, not lookup: the session key IS <workspaceId>:<userId>.
+  // Kept async-shaped for its callers; there is nothing left to await.
+  return sessionKeyFor(project.workspaceId, userId);
 }
 
 /**
@@ -544,7 +544,7 @@ async function startSession(
   } else {
     // Only the cold path pays for worktree setup.
     const handle = await ensureWorktree(project, userId);
-    key = `${handle.doc._id.toString()}:${termId}`;
+    key = `${boxCtx(handle).sessionKey}:${termId}`;
     const existing = live.get(key);
     const inFlight = creating.get(key);
     if (existing) {

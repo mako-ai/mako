@@ -183,7 +183,24 @@ export interface WorktreeHandle {
 
 /** Addresses the actor's sandbox — the one working copy. */
 export function boxCtx(handle: WorktreeHandle): SandboxExecContext {
-  return { sessionKey: handle.doc._id.toString() };
+  return {
+    sessionKey: sessionKeyFor(handle.doc.workspaceId, handle.doc.userId),
+  };
+}
+
+/**
+ * The sandbox's name at the provider: `<workspaceId>:<userId>`.
+ *
+ * Convention, not bookkeeping: the sandbox is DISCOVERED by this tag (E2B
+ * metadata), so identity needs no stored id anywhere — the same box is
+ * findable from any API process, after any restart, with no database in the
+ * loop. One sandbox per (workspace, user), by name.
+ */
+export function sessionKeyFor(
+  workspaceId: { toString(): string },
+  userId: string,
+): string {
+  return `${workspaceId.toString()}:${userId}`;
 }
 
 /**
@@ -245,11 +262,46 @@ const RECONFIGURE_INTERVAL_MS = 30 * 60_000;
  */
 const ensureInFlight = new Map<string, Promise<SandboxExecContext>>();
 
+/** Forget per-box throttles when the box itself is destroyed. */
+export function forgetBoxCaches(sessionKey: string): void {
+  lastPull.delete(sessionKey);
+  lastConfigured.delete(sessionKey);
+}
+
+/** The provider's "cwd does not exist" — the fingerprint of an unhydrated box. */
+export function isMissingCwd(error: unknown): boolean {
+  return (
+    error instanceof Error && /cwd '.*' does not exist/i.test(error.message)
+  );
+}
+
+/** Force-hydrate a box that turned out to be missing its working copy. */
+export async function rehydrateBox(
+  handle: WorktreeHandle,
+  ctx: SandboxExecContext,
+): Promise<void> {
+  logger.warn("Apps v2 box missing its working copy; rehydrating", {
+    sessionKey: ctx.sessionKey,
+  });
+  lastPull.delete(ctx.sessionKey);
+  lastConfigured.delete(ctx.sessionKey);
+  if (!(await boxHasRepo(ctx))) {
+    await cloneIntoBox({
+      ctx,
+      workspaceId: handle.doc.workspaceId.toString(),
+      userId: handle.doc.userId,
+      branch: handle.doc.branch,
+    });
+    lastPull.set(ctx.sessionKey, Date.now());
+    lastConfigured.set(ctx.sessionKey, Date.now());
+  }
+}
+
 export function ensureBox(
   handle: WorktreeHandle,
   options: { lazyPull?: boolean } = {},
 ): Promise<SandboxExecContext> {
-  const key = handle.doc._id.toString();
+  const key = boxCtx(handle).sessionKey;
   const existing = ensureInFlight.get(key);
   if (existing) return existing;
   const run = ensureBoxNow(handle, options).finally(() =>
@@ -699,10 +751,24 @@ export async function execInWorktree(
   // default (caller cwd is app-relative). posix.join keeps it session-rooted.
   const cwd = path.posix.join(handle.appRoot, options.cwd ?? "");
   const ctx = await ensureBox(handle);
-  const result = await getSandboxProvider().exec(ctx, command, {
-    ...options,
-    cwd,
-  });
+  let result: ExecOutcome;
+  try {
+    result = await getSandboxProvider().exec(ctx, command, {
+      ...options,
+      cwd,
+    });
+  } catch (error) {
+    if (!isMissingCwd(error)) throw error;
+    // The box under this exec is not the box ensureBox inspected — a
+    // recycle or expiry swapped machines between calls, and the fresh one
+    // has no clone yet. Hydrate THIS box and retry once; convention
+    // (rebuild from the repo) beats tracing which cache went stale.
+    await rehydrateBox(handle, ctx);
+    result = await getSandboxProvider().exec(ctx, command, {
+      ...options,
+      cwd,
+    });
+  }
   // A command can `git checkout`, and it can commit. Nothing needs
   // snapshotting — but the cached branch should follow, and a commit made in
   // the shell should not be left sitting only on a disposable machine.
@@ -1013,7 +1079,9 @@ export async function afterTerminalSession(
       userId,
     });
     if (!doc) return;
-    const ctx: SandboxExecContext = { sessionKey: doc._id.toString() };
+    const ctx: SandboxExecContext = {
+      sessionKey: sessionKeyFor(doc.workspaceId, doc.userId),
+    };
     if (!(await getSandboxProvider().hasSession(ctx))) return;
     if (!(await boxHasRepo(ctx))) return;
 
@@ -1254,7 +1322,9 @@ export async function commitAgentTurn(
   });
   if (!doc) return [];
 
-  const ctx: SandboxExecContext = { sessionKey: doc._id.toString() };
+  const ctx: SandboxExecContext = {
+    sessionKey: sessionKeyFor(doc.workspaceId, doc.userId),
+  };
   try {
     // No sandbox means no uncommitted work to commit.
     if (!(await getSandboxProvider().hasSession(ctx))) return [];

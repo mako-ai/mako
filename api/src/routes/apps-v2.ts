@@ -68,6 +68,7 @@ import {
   readFile,
   worktreeStatus,
   writeFile,
+  forgetBoxCaches,
 } from "../apps-v2/worktree.service";
 import {
   APPS_V2_EXEC_MAX_TIMEOUT_MS,
@@ -87,7 +88,10 @@ import {
   mintPreviewGrant,
   mintPublishedGrant,
 } from "../apps-v2/preview.service";
-import { killTerminalSession } from "../apps-v2/terminal-ws";
+import {
+  forgetTerminalCaches,
+  killTerminalSession,
+} from "../apps-v2/terminal-ws";
 import {
   devLogPath,
   ensureDevServer,
@@ -1469,6 +1473,9 @@ appsV2Routes.openapi(
       );
       const ctx = boxCtx(handle);
       await getSandboxProvider().destroySession?.(ctx.sessionKey);
+      // The machine is gone; so is everything the API believed about it.
+      forgetBoxCaches(ctx.sessionKey);
+      forgetTerminalCaches(ctx.sessionKey);
       return c.json({ success: true as const }, 200);
     } catch (error) {
       return handleError(c, error);

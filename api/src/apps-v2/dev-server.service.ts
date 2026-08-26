@@ -27,7 +27,13 @@ import {
   getSandboxProvider,
   type SandboxExecContext,
 } from "./sandbox/provider";
-import { boxCtx, ensureBox, type WorktreeHandle } from "./worktree.service";
+import {
+  boxCtx,
+  ensureBox,
+  isMissingCwd,
+  rehydrateBox,
+  type WorktreeHandle,
+} from "./worktree.service";
 import { loggers } from "../logging";
 import { readBindings, bindingArtifactKey } from "./bindings.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
@@ -409,13 +415,24 @@ export async function ensureDevServer(
     // attach UI), then plain nohup.
     const devSock = devSockPath(handle);
     const devSession = `mako-dev-${appSlug(handle)}`;
-    await provider.execDetached(
-      ctx,
+    const launchCmd =
       `if command -v dtach >/dev/null && command -v script >/dev/null; then rm -f ${devSock}; dtach -n ${devSock} script -qfa -c 'node ${launcher} 2>&1' ${logPath}; ` +
-        `elif command -v tmux >/dev/null; then tmux new-session -d -s ${devSession} 'node ${launcher} 2>&1 | tee -a ${logPath}' 2>/dev/null || true; ` +
-        `else nohup node ${launcher} >> ${logPath} 2>&1 & fi; echo started`,
-      { cwd: handle.appRoot, timeoutMs: 60_000 },
-    );
+      `elif command -v tmux >/dev/null; then tmux new-session -d -s ${devSession} 'node ${launcher} 2>&1 | tee -a ${logPath}' 2>/dev/null || true; ` +
+      `else nohup node ${launcher} >> ${logPath} 2>&1 & fi; echo started`;
+    try {
+      await provider.execDetached(ctx, launchCmd, {
+        cwd: handle.appRoot,
+        timeoutMs: 60_000,
+      });
+    } catch (error) {
+      if (!isMissingCwd(error)) throw error;
+      // A recycle swapped machines under this request; hydrate and retry.
+      await rehydrateBox(handle, ctx);
+      await provider.execDetached(ctx, launchCmd, {
+        cwd: handle.appRoot,
+        timeoutMs: 60_000,
+      });
+    }
 
     // Vite is usually listening within seconds, but a cold boot on E2B can
     // take over a minute (cold ESM import of vite off microVM disk, plus the
