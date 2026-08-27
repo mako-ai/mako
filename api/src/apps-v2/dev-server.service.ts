@@ -56,6 +56,17 @@ const PORTS_REGISTRY = "/tmp/mako-dev-ports.json";
 /** How long to hold the sandbox open past the last preview request. */
 const DEV_SESSION_KEEPALIVE_MS = 30 * 60 * 1000;
 
+/**
+ * At most this many dev servers run at once per box (apps-v2.md §13.9).
+ *
+ * A dozen vite servers fills a 2 GiB microVM; this is the hard ceiling that
+ * keeps a heavy workspace from ever getting there. Starting a server beyond
+ * the cap evicts the oldest to make room — the system may STOP to bound
+ * resources, but it never auto-starts. Reaping idle servers below the cap is
+ * the box agent's job.
+ */
+const MAX_RUNNING_DEV_SERVERS = 3;
+
 /** One filesystem identity per app for launcher, log and staged data. */
 function appSlug(handle: WorktreeHandle): string {
   const base = handle.appRoot.split("/").filter(Boolean).pop() ?? "app";
@@ -342,6 +353,8 @@ export interface DevPreview {
   url: string;
   /** Binding names whose data was staged into the session. */
   stagedBindings: string[];
+  /** Other apps' dev servers stopped to stay within the running cap, if any. */
+  evicted?: string[];
 }
 
 /**
@@ -562,6 +575,60 @@ export async function devServerStatus(
 }
 
 /**
+ * Stop one app's dev server and free its registry slot — a STOP, never a
+ * start. Kills the launcher process (which is vite), removes the session
+ * socket, and deletes the app's port from the registry so a fresh launch
+ * reallocates cleanly. Used by the running-cap here and, in-box, by the
+ * agent's idle reaper.
+ */
+async function reapDevServerBySlug(
+  provider: ReturnType<typeof getSandboxProvider>,
+  ctx: SandboxExecContext,
+  slug: string,
+): Promise<void> {
+  // Slugs are sanitized app-folder names; refuse anything else rather than
+  // interpolate it into a shell.
+  if (!/^[A-Za-z0-9_-]+$/.test(slug)) return;
+  await provider
+    .exec(
+      ctx,
+      `pkill -f "[m]ako-dev-${slug}.mjs" 2>/dev/null; rm -f /tmp/mako-term-dev-${slug}.sock; ` +
+        `node -e 'const fs=require("fs");const f=${JSON.stringify(PORTS_REGISTRY)};let m={};try{m=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}delete m["apps/"+process.argv[1]];try{fs.writeFileSync(f,JSON.stringify(m))}catch{}' ${JSON.stringify(slug)}; echo reaped`,
+      { timeoutMs: 30_000 },
+    )
+    .catch(() => undefined);
+}
+
+/**
+ * Enforce the per-box running cap before launching a NEW server: evict the
+ * oldest others (lowest port ≈ earliest allocated) until this one fits under
+ * MAX_RUNNING_DEV_SERVERS. Returns the slugs it stopped, so the caller can
+ * tell the user what was closed to make room.
+ */
+async function enforceRunningCap(
+  provider: ReturnType<typeof getSandboxProvider>,
+  ctx: SandboxExecContext,
+  selfSlug: string,
+): Promise<string[]> {
+  const running = await discoverDevServers(ctx);
+  if (running.some(d => d.slug === selfSlug)) return [];
+  const others = running
+    .filter(d => d.slug !== selfSlug)
+    .sort((a, b) => a.port - b.port);
+  const overflow = others.length - (MAX_RUNNING_DEV_SERVERS - 1);
+  if (overflow <= 0) return [];
+  const victims = others.slice(0, overflow);
+  for (const v of victims) {
+    await reapDevServerBySlug(provider, ctx, v.slug);
+    logger.info("Apps v2 dev server evicted to honor the running cap", {
+      evicted: v.slug,
+      cap: MAX_RUNNING_DEV_SERVERS,
+    });
+  }
+  return victims.map(v => v.slug);
+}
+
+/**
  * Ensure a dev server is running for this app and return its public URL.
  *
  * Idempotent: a server that is already listening is reused, so repeated
@@ -646,7 +713,10 @@ async function ensureDevServerLaunch(
     }
   }
   const wasListening = state === "serving" || adopted;
+  let evicted: string[] = [];
   if (!wasListening) {
+    // Make room BEFORE launching: never let this box exceed the running cap.
+    evicted = await enforceRunningCap(provider, ctx, appSlug(handle));
     const write = await provider.exec(
       ctx,
       `cat > ${launcher} <<'MAKO_LAUNCHER_EOF'\n${launcherSource(appDir, port, dataDir(handle), appSlug(handle), boxEnvPath(ctx))}\nMAKO_LAUNCHER_EOF\necho written`,
@@ -735,6 +805,7 @@ async function ensureDevServerLaunch(
     projectId: handle.project._id.toString(),
     appRoot: handle.appRoot,
     stagedBindings,
+    ...(evicted.length ? { evicted } : {}),
   });
-  return { url, stagedBindings };
+  return { url, stagedBindings, ...(evicted.length ? { evicted } : {}) };
 }

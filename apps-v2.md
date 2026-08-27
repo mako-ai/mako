@@ -1409,3 +1409,46 @@ make the bare repo a **store, not a per-instance cache**: a shared/persistent
 volume for `APPS_V2_GIT_ROOT`, or `min-instances=1` per environment, or an
 *additive* fetch-by-missing-sha at the git endpoint (never a forced ref update).
 This is an infra decision to make before high-concurrency use.
+
+## §13.9 The client renders; the box governs dev processes (RFC, 2026-08-27)
+
+**The bug that forced this.** After recycling every apps-v2 box, one came back
+in ~15 minutes running **ten** vite dev servers and out of memory, with nobody
+having clicked anything. Process forensics inside the box (ten `mako-dev-*.mjs`
+launchers, ports 5173–5182, started in a ~60-second burst, matching exactly the
+set that had been running before the recycle) traced it to the **client**: the
+editor persists open app tabs and a per-app `apps-v2-editing` flag, and each
+tab's workbench, on mount, called `startDevPreview` to "restore" its dev server.
+Ten tabs remounting after the recycle = ten cold `startDevPreview` POSTs = ten
+vite servers. The client was healing itself back to a remembered state.
+
+**The invariant.** The client **renders state and requests actions on an
+explicit click; it never heals.** No `useEffect` — no mount, reload, reconnect,
+or restore path — may start a process. Restoring a *view* (which pane to show)
+is fine; starting a *server* is not. Reads fall back to the last commit when no
+sandbox is running, so a restored workbench costs nothing until the user acts.
+
+**The asymmetry that makes it safe.** The system may **STOP** a dev server; it
+may never **START** one. Stops can only ever reduce load, so they cannot run
+away; auto-starts are the dangerous direction and are click-only, everywhere.
+
+**Who governs what.**
+- **The box is the authority for liveness.** Its agent observes running servers
+  every 2s and now also **reaps** any dev server with no viewer for 20 minutes
+  ("viewer" = an established TCP connection to the port — the preview iframe's
+  HMR socket; the agent's own probes are raw connects that close at once, so
+  they do not count). A reap is a STOP; the agent still never starts anything.
+- **The start path enforces a hard cap of 3** running dev servers per box
+  (`MAX_RUNNING_DEV_SERVERS`). Launching a fourth evicts the oldest first and
+  reports what it stopped, so the box can never climb to a dozen again.
+- **State is pushed, never polled into being.** The box POSTs snapshots →
+  `patchBoxState` merges them into a Redis-or-memory cache (TTL'd, so a silent
+  box stops being believed) → `publishRealtimeEvent` fans out → the client's
+  `applyBoxState` renders. A reaped or evicted server simply stops appearing in
+  the snapshot, and its dot clears reactively. The client's remaining polls are
+  read-only fallbacks for when realtime is disconnected — they too never start.
+
+**Still open.** Reaper liveness assumes vite's HMR socket rides the same port
+(true for the scaffold); an app that moves HMR elsewhere would look idle. The
+running cap evicts by age (lowest port ≈ oldest), not true LRU; wiring the
+agent's per-server activity into eviction would make it exact.

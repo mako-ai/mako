@@ -765,35 +765,38 @@ export default function AppV2Workspace({
   const viewUrl = useAppsV2Store(s => s.viewUrlByApp[appId]);
   const fetchViewUrl = useAppsV2Store(s => s.fetchViewUrl);
 
-  // Dev mode survives reloads: the flag is client-side but the sandbox and
-  // dev server outlive the page, so re-enter the workbench instead of
-  // dumping the user back to the viewing pane. startDevPreview reattaches
-  // to the running server (or restarts it) rather than double-starting.
+  // Restore the VIEW on reload — never a process. The client renders state
+  // and requests actions on click; it must NOT heal (apps-v2.md §13.4). The
+  // old version of this effect called startDevPreview here, so every app left
+  // in dev mode relaunched its own vite the moment its tab remounted — a
+  // recycle brought a dozen servers back and filled the box, with nobody
+  // having clicked anything. Now: reflect the box's REAL state (a read-only
+  // probe), and re-enter the workbench pane if that was the user's view, but
+  // start nothing. A stopped server shows its "Start" control; the user
+  // decides.
   useEffect(() => {
+    if (!workspaceId) return;
     let persisted = false;
     try {
       persisted = localStorage.getItem(`apps-v2-editing:${appId}`) === "1";
     } catch {
       // Storage unavailable — nothing to restore.
     }
-    if (persisted && !editing && workspaceId) {
-      setEditing(workspaceId, appId, true);
-      void useAppsV2Store.getState().startDevPreview(workspaceId, appId);
-    } else if (!editing && workspaceId) {
-      // No client-side preference (fresh browser, cleared storage) — ask
-      // the MACHINE. A dev server already running for this app is strong
-      // evidence its owner was mid-development; walk them back into the
-      // workbench instead of showing the published view over a live server.
-      void useAppsV2Store
-        .getState()
-        .checkDevStatus(workspaceId, appId)
-        .then(() => {
-          const preview = useAppsV2Store.getState().previewByApp[appId];
-          if (preview?.mode === "dev" && preview.url) {
-            setEditing(workspaceId, appId, true);
-          }
-        });
-    }
+    // View preference only: land back in the workbench instead of the
+    // published pane. This spins no dev server; file reads fall back to the
+    // last commit when no sandbox is running.
+    if (persisted && !editing) setEditing(workspaceId, appId, true);
+    // Reflect what is ACTUALLY running (read-only). If a dev server is up,
+    // show it and walk into the workbench over it — discovery, not a start.
+    void useAppsV2Store
+      .getState()
+      .checkDevStatus(workspaceId, appId)
+      .then(() => {
+        const p = useAppsV2Store.getState().previewByApp[appId];
+        if (p?.mode === "dev" && p.url && !editing) {
+          setEditing(workspaceId, appId, true);
+        }
+      });
     // Run once per app open; `editing` is deliberately not a dependency —
     // exiting dev mode clears the flag, and re-entering here would fight it.
     // eslint-disable-next-line react-hooks/exhaustive-deps

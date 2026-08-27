@@ -38,6 +38,7 @@ function agentSource(root: string, envPath: string): string {
   const body = `
 import { execFile } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -46,6 +47,10 @@ const ENV_PATH = ${JSON.stringify(envPath)};
 const PORTS = ${JSON.stringify(PORTS_REGISTRY)};
 const LOG = ${JSON.stringify(AGENT_LOG)};
 const PID = ${JSON.stringify(AGENT_PID)};
+// Idle reaper state: last time each dev server had a viewer, and how long a
+// server may sit with none before the agent stops it.
+const ACTIVE = "/tmp/mako-dev-active.json";
+const IDLE_TTL_MS = 20 * 60 * 1000;
 const ONCE = process.argv.includes("--once");
 
 function log(message) {
@@ -160,10 +165,23 @@ async function devServers() {
     if (Number.isInteger(port)) bySlug.set(key.replace(/^apps\\//, ""), port);
   }
   const knownPorts = new Set(bySlug.values());
+  // A raw TCP connect that closes at once — NOT an HTTP fetch. fetch keeps its
+  // socket in a keep-alive pool, which would linger as an ESTABLISHED
+  // connection to the port and make the idle reaper below think a viewer is
+  // present on every server the agent probes. A connect/destroy leaves nothing
+  // behind, so activeConns() sees only real viewers.
   const probe = port =>
-    fetch("http://127.0.0.1:" + port + "/", { signal: AbortSignal.timeout(800) })
-      .then(() => true)
-      .catch(() => false);
+    new Promise(resolve => {
+      const sock = connect(port, "127.0.0.1");
+      const done = ok => {
+        try { sock.destroy(); } catch {}
+        resolve(ok);
+      };
+      sock.setTimeout(800);
+      sock.once("connect", () => done(true));
+      sock.once("error", () => done(false));
+      sock.once("timeout", () => done(false));
+    });
   const out = [];
   for (const [slug, port] of bySlug) {
     if (await probe(port)) out.push({ slug, port });
@@ -188,6 +206,58 @@ async function devServers() {
   return out;
 }
 
+// How many viewers are connected to a dev-server port right now. "Viewer" =
+// an ESTABLISHED TCP connection to the port — the preview iframe holds one
+// open for HMR while it is on screen, and E2B's proxy holds it for as long as
+// the browser does. Read from /proc so it costs nothing and needs no tool.
+function activeConns(port) {
+  let count = 0;
+  for (const f of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    let data = "";
+    try {
+      data = readFileSync(f, "utf8");
+    } catch {
+      continue;
+    }
+    const lines = data.split("\\n");
+    for (let i = 1; i < lines.length; i++) {
+      const parts = lines[i].trim().split(/\\s+/);
+      if (parts.length < 4) continue;
+      if (parts[3] !== "01") continue; // TCP_ESTABLISHED
+      const lp = parts[1].split(":")[1];
+      if (lp && parseInt(lp, 16) === port) count++;
+    }
+  }
+  return count;
+}
+
+// Stop an idle dev server: kill the launcher (which is vite), drop its
+// session socket, and free its registry slot. A STOP, never a start.
+async function reap(slug) {
+  if (!/^[A-Za-z0-9_-]+$/.test(slug)) return;
+  try {
+    await run("/bin/sh", [
+      "-c",
+      'pkill -f "[m]ako-dev-' + slug + '.mjs" 2>/dev/null; rm -f /tmp/mako-term-dev-' + slug + '.sock',
+    ]);
+  } catch {
+    // pkill exits non-zero when nothing matched; not an error here.
+  }
+  try {
+    let m = {};
+    try {
+      m = JSON.parse(readFileSync(PORTS, "utf8"));
+    } catch {
+      m = {};
+    }
+    delete m["apps/" + slug];
+    writeFileSync(PORTS, JSON.stringify(m));
+  } catch {
+    // Registry rewrite is best effort; a stale entry is probed away next tick.
+  }
+  log("reaped idle dev server " + slug);
+}
+
 let lastSent = "";
 let lastSentAt = 0;
 let failStreak = 0;
@@ -195,7 +265,35 @@ let failStreak = 0;
 async function tick() {
   const git = await gitState();
   const servers = await devServers();
-  const snapshot = { source: "agent", devServers: servers };
+  // Idle reaper (apps-v2.md §13.9): the box is the authority for liveness and
+  // may STOP a dev server no one is watching — it must NEVER start one. A
+  // freshly seen server gets a full TTL of grace before it can be reaped.
+  let active = {};
+  try {
+    active = JSON.parse(readFileSync(ACTIVE, "utf8"));
+  } catch {
+    active = {};
+  }
+  const now = Date.now();
+  const alive = [];
+  for (const s of servers) {
+    if (activeConns(s.port) > 0 || active[s.slug] == null) active[s.slug] = now;
+    if (now - active[s.slug] > IDLE_TTL_MS) {
+      await reap(s.slug);
+      delete active[s.slug];
+    } else {
+      alive.push(s);
+    }
+  }
+  for (const k of Object.keys(active)) {
+    if (!servers.some(s => s.slug === k)) delete active[k];
+  }
+  try {
+    writeFileSync(ACTIVE, JSON.stringify(active));
+  } catch {
+    // Best effort; a lost file just restarts the grace window.
+  }
+  const snapshot = { source: "agent", devServers: alive };
   if (git) {
     if (git.branch) snapshot.branch = git.branch;
     if (git.head) snapshot.head = git.head;

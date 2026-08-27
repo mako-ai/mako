@@ -1504,8 +1504,11 @@ appsV2Routes.openapi(
       // the browser loads it directly — there is no Mako-side proxy or token
       // to mint for this tier.
       try {
-        const { url, stagedBindings } = await ensureDevServer(handle);
-        return c.json({ success: true as const, url, stagedBindings }, 200);
+        const { url, stagedBindings, evicted } = await ensureDevServer(handle);
+        return c.json(
+          { success: true as const, url, stagedBindings, evicted },
+          200,
+        );
       } catch (error) {
         return c.json(
           {

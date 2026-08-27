@@ -1462,9 +1462,30 @@ export const useAppsV2Store = create<AppsV2Store>()(
           );
         }
         const raw = (res.data ?? res.error) as
-          | { success?: boolean; url?: string; error?: string }
+          | {
+              success?: boolean;
+              url?: string;
+              error?: string;
+              evicted?: string[];
+            }
           | undefined;
         if (res.response.ok && raw?.url) {
+          // The box enforces a running cap; if starting this one closed
+          // others, reflect that immediately instead of waiting for the next
+          // running-servers poll — clear their dots and preview state.
+          const evicted = raw.evicted ?? [];
+          if (evicted.length) {
+            const apps = get().apps;
+            set(s => {
+              s.runningDevApps = s.runningDevApps.filter(
+                sl => !evicted.includes(sl),
+              );
+            });
+            for (const sl of evicted) {
+              const a = apps.find(x => x.slug === sl);
+              if (a) get().markDevDown(a.id);
+            }
+          }
           try {
             localStorage.setItem(`apps-v2-devurl:${appId}`, raw.url);
           } catch {
