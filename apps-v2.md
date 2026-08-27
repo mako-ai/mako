@@ -1519,3 +1519,65 @@ realtime/Redis) land in Zustand via one reducer and components read only from
 there; localStorage is for per-browser UI prefs only and may never auto-trigger
 a side effect. Redis flows *through* Zustand — that is the correct unidirectional
 shape, not an anti-pattern.
+
+## §13.12 The dev tunnel: how a cloud box reaches a laptop API (2026-08-27)
+
+**Who uses it: the E2B sandbox, and only in local dev.** The box is a
+Firecracker microVM in E2B's cloud whose git origin is *this* API —
+but `localhost:8080` inside that microVM is the microVM, not the developer's
+machine. Deployed, `BASE_URL` is already public and no tunnel runs.
+
+Exactly three arrows go **box → API**, and all three ride the tunnel:
+
+1. **Git transport** — `clone`/`pull`/`fetch`/`push` against
+   `/api/apps-v2-git/<wsId>.git`, authenticated by the `mgt_` token in the
+   box's credential helper. The initial hydrate in `ensureBoxNow`, auto-push
+   after commits, agent-turn commits — all plain git over HTTPS through the
+   tunnel hostname baked into the box's `origin`.
+2. **Box-state events** — the in-box agent POSTs its snapshot (running dev
+   servers, terminals, sandboxId, branch) to `/api/apps-v2-box/:wsId/events`
+   (the §13.10 pipeline). Without the tunnel the green dots and cross-browser
+   liveness go dark, not just git.
+3. Nothing else. The **terminal does not use it**: xterm traffic is
+   browser → API → E2B SDK, outbound from the API — same for every exec the
+   API runs in the box. The API can always reach the box; the tunnel exists so
+   the box can reach the API *back*.
+
+**Mechanics.** Cloudflare Tunnel is inbound-without-inbound: `cloudflared` on
+the laptop holds a few persistent outbound QUIC connections to Cloudflare's
+edge; a DNS CNAME (`<host> → <tunnel-id>.cfargotunnel.com`) tells the edge to
+route requests for that hostname down those held connections, and `cloudflared`
+proxies them to `localhost:8080`. No open port, no NAT config, works from any
+network.
+
+**Two modes** (`scripts/sandbox-tunnel.sh`, started by `pnpm dev` via
+concurrently):
+
+- **Named tunnel (preferred).** One-time `pnpm sandbox:tunnel:setup` creates a
+  per-developer tunnel (`apps-v2-dev-<user>`) with a permanent hostname
+  (`apps-v2-dev-<user>.realadvisor.com` — the zone must be one the developer's
+  `cloudflared tunnel login` cert covers, which is why it is realadvisor.com
+  and not mako.ai) and records `APPS_V2_TUNNEL_NAME`/`APPS_V2_TUNNEL_HOSTNAME`
+  in `.env` (machine-specific, never synced to Secret Manager). The runner then
+  only supervises the *process* — the URL never changes, so `.env.tunnel` is
+  written once and boxes never need their origin reconfigured.
+- **Quick tunnel (fallback).** No named vars → an ephemeral
+  `trycloudflare.com` URL. These get **revoked by Cloudflare while cloudflared
+  is still running** (every clone/push/event then fails "could not resolve
+  host"), and macOS's mDNSResponder negatively caches the dead name so a live
+  tunnel can *look* dead locally. The supervisor therefore health-checks end to
+  end — resolve via `1.1.1.1` directly, `curl --resolve` through the tunnel to
+  `/api/auth/me` — publishes the URL only after it verifies, re-checks every
+  15s, and respawns with a fresh URL after two consecutive failures.
+
+**Propagation.** The runner writes `.env.tunnel`
+(`APPS_V2_GIT_ORIGIN_URL=https://<host>`); the API reads it **per request**
+when configuring a box, so an origin change propagates on the next
+`ensureBox` with no restart. With a named tunnel that path is dormant —
+set-and-forget.
+
+**Security surface.** The hostname is a public URL to the developer's local
+API, fenced only by the API's own auth (git endpoint: valid `mgt_` HMAC token;
+everything else: a session). Named tunnels make the hostname stable and
+guessable; if that ever matters, a Cloudflare Access policy can be layered on
+the hostname with no code change.

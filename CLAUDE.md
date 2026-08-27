@@ -161,8 +161,14 @@ Uncommitted work lives only in the box, like a laptop: pushed commits survive
 losing the machine, uncommitted edits do not.
 
 Two dev facts that bite: (1) a microVM cannot reach `localhost:8080`, so
-`pnpm dev` starts a cloudflared tunnel and writes `.env.tunnel`
-(`APPS_V2_GIT_ORIGIN_URL`) — without it sandboxes cannot clone or push.
+`pnpm dev` starts a cloudflared tunnel (`scripts/sandbox-tunnel.sh`) and writes
+`.env.tunnel` (`APPS_V2_GIT_ORIGIN_URL`) — without it sandboxes cannot clone,
+push, or post box-state events (terminals are unaffected: that path is
+API→E2B SDK, outbound). Run `pnpm sandbox:tunnel:setup` once per machine to
+get a NAMED tunnel with a stable hostname (`APPS_V2_TUNNEL_NAME`/`_HOSTNAME`
+in `.env`, never synced); without it the fallback is a supervised ephemeral
+`trycloudflare` URL that Cloudflare revokes over time. Full mechanics:
+`apps-v2.md` §13.12.
 (2) `APPS_V2_SANDBOX_PROVIDER=local` swaps the microVM for a directory on this
 machine (tests, or working without E2B credentials); it executes tenant
 commands in the API process, so it refuses to load when `NODE_ENV=production`,
