@@ -212,6 +212,17 @@ export async function readDeploymentAsset(
  * `--base=./` because a deployment is always served under a path prefix
  * (`/live/`, `/api/share/<token>/app/`), never at a domain root.
  */
+/**
+ * The build's live log inside the sandbox. `buildApp` tees `npm install` and
+ * `npm run build` into it (truncating first), so the client can tail it via
+ * the `build/log` route and watch the build run — the same pattern the dev
+ * boot log uses.
+ */
+export function buildLogPath(handle: WorktreeHandle): string {
+  const slug = handle.project.slug || handle.project._id.toString();
+  return `/tmp/mako-build-${slug.replace(/[^A-Za-z0-9_-]/g, "-")}.log`;
+}
+
 export async function buildApp(
   handle: WorktreeHandle,
   exec: (
@@ -220,23 +231,32 @@ export async function buildApp(
     options: { timeoutMs: number },
   ) => Promise<{ exitCode: number; stdout: string; stderr: string }>,
 ): Promise<{ ok: boolean; output: string }> {
+  const log = buildLogPath(handle);
+  // Fresh log per build; `pipefail` so a failing step's exit code survives the
+  // `tee`, and `2>&1 | tee` puts the whole stream both on the wire (for the
+  // final payload) and in the file the client tails live.
+  await exec(handle, `: > ${log}`, { timeoutMs: 15_000 }).catch(
+    () => undefined,
+  );
   const install = await exec(
     handle,
-    "[ -d node_modules ] || npm install --no-audit --no-fund",
+    `set -o pipefail; ( [ -d node_modules ] || npm install --no-audit --no-fund ) 2>&1 | tee -a ${log}`,
     { timeoutMs: 300_000 },
   );
   if (install.exitCode !== 0) {
     return {
       ok: false,
-      output: `npm install failed\n${install.stdout.slice(-2000)}${install.stderr.slice(-2000)}`,
+      output: `npm install failed\n${(install.stdout + install.stderr).slice(-4000)}`,
     };
   }
-  const build = await exec(handle, "npm run build -- --base=./", {
-    timeoutMs: 300_000,
-  });
+  const build = await exec(
+    handle,
+    `set -o pipefail; npm run build -- --base=./ 2>&1 | tee -a ${log}`,
+    { timeoutMs: 300_000 },
+  );
   return {
     ok: build.exitCode === 0,
-    output: `${build.stdout.slice(-3000)}${build.stderr.slice(-3000)}`,
+    output: `${(build.stdout + build.stderr).slice(-6000)}`,
   };
 }
 

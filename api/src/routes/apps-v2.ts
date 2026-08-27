@@ -80,6 +80,7 @@ import {
 import { registerPublicShareRoutes } from "./lib/public-share-routes";
 import {
   buildApp,
+  buildLogPath,
   deployBuild,
   setPublishedSha,
   deploymentExists,
@@ -1749,6 +1750,49 @@ appsV2Routes.openapi(
         // Size first, then the requested slice, capped so one poll can never
         // exceed the provider's output budget.
         `wc -c < ${devLogPath(handle)} 2>/dev/null || echo 0; tail -c +${offset + 1} ${devLogPath(handle)} 2>/dev/null | head -c 65536`,
+        { timeoutMs: 15_000 },
+      );
+      const newline = result.stdout.indexOf("\n");
+      const size = Number(result.stdout.slice(0, newline).trim()) || 0;
+      const chunk = result.stdout.slice(newline + 1);
+      return c.json({ success: true as const, size, chunk }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/build/log",
+    tags: ["Apps v2"],
+    summary: "Tail the publish/preview build log (npm install + build output)",
+    description:
+      "Returns the sandbox's live build output from `offset` onward, plus the log's current size for the next poll — what the Publish button streams so you can watch the build run. Never starts a sandbox.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      query: z.object({ offset: z.coerce.number().int().min(0).default(0) }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { offset } = c.req.valid("query");
+      // The build runs in the shared PUBLISH_ACTOR box (not the user's dev
+      // box), so its log lives there — tail that one, or the client watches an
+      // empty file in the wrong sandbox.
+      const handle = await ensureWorktree(loaded.project, PUBLISH_ACTOR);
+      const ctx = boxCtx(handle);
+      if (!(await getSandboxProvider().hasSession(ctx))) {
+        return c.json({ success: true as const, size: 0, chunk: "" }, 200);
+      }
+      const result = await getSandboxProvider().exec(
+        ctx,
+        `wc -c < ${buildLogPath(handle)} 2>/dev/null || echo 0; tail -c +${offset + 1} ${buildLogPath(handle)} 2>/dev/null | head -c 65536`,
         { timeoutMs: 15_000 },
       );
       const newline = result.stdout.indexOf("\n");
