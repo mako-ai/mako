@@ -67,6 +67,41 @@ healthy() {
   case "$code" in 2* | 3* | 4*) return 0 ;; *) return 1 ;; esac
 }
 
+# --------------------------------------------------------------------------
+# Preferred: a NAMED tunnel with a STABLE hostname (scripts/sandbox-tunnel-
+# setup.sh). No URL churn, no revocation, so a box never has to reconfigure its
+# origin — .env.tunnel is written once and never changes. We only supervise the
+# PROCESS: if cloudflared dies, restart it; the hostname stays put.
+# --------------------------------------------------------------------------
+env_val() { grep -E "^$1=" "${ROOT}/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'\'' '; }
+TUNNEL_NAME="$(env_val APPS_V2_TUNNEL_NAME)"
+TUNNEL_HOST="$(env_val APPS_V2_TUNNEL_HOSTNAME)"
+
+if [ -n "$TUNNEL_NAME" ] && [ -n "$TUNNEL_HOST" ]; then
+  url="https://${TUNNEL_HOST}"
+  echo "sandbox-tunnel: named tunnel ${TUNNEL_NAME} → ${url} (stable)"
+  while true; do
+    cloudflared tunnel run --url "http://localhost:${PORT}" "$TUNNEL_NAME" \
+      >/tmp/mako-named-tunnel.log 2>&1 &
+    CF_PID=$!
+    # Confirm it is answering before publishing; the named hostname is permanent
+    # so there is no NXDOMAIN-caching risk, only the edge-connect delay.
+    for _ in $(seq 1 30); do
+      healthy "$url" && break
+      sleep 2
+    done
+    printf 'APPS_V2_GIT_ORIGIN_URL=%s\n' "$url" >"$OUT"
+    echo "sandbox-tunnel: sandboxes will reach this API at ${url}"
+    wait "$CF_PID"
+    echo "sandbox-tunnel: named tunnel exited; restarting (${TUNNEL_HOST} unchanged)" >&2
+    sleep 2
+  done
+fi
+
+# --------------------------------------------------------------------------
+# Fallback: an ephemeral quick tunnel, supervised (churns the URL on
+# revocation). Used when no named tunnel is configured.
+# --------------------------------------------------------------------------
 while true; do
   log="$(mktemp)"
   cloudflared tunnel --url "http://localhost:${PORT}" >"$log" 2>&1 &

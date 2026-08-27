@@ -64,7 +64,8 @@
     "secrets:push": "tsx scripts/secrets.ts push",
     "secrets:list": "tsx scripts/secrets.ts list",
     "secrets:diff": "tsx scripts/secrets.ts diff",
-    "secrets:salvage-prod": "tsx scripts/secrets.ts salvage-prod"
+    "secrets:salvage-prod": "tsx scripts/secrets.ts salvage-prod",
+    "sandbox:tunnel:setup": "bash scripts/sandbox-tunnel-setup.sh"
   },
   "keywords": [
     "analytics",
