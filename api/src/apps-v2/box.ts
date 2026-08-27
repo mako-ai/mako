@@ -159,7 +159,7 @@ export async function configureBoxRemote(input: {
       `Refusing to configure a remote sandbox with a localhost git origin (${url}) — the tunnel is not up yet.`,
     );
   }
-  const token = mintGitToken({ workspaceId, userId });
+  const token = mintGitToken({ workspaceId, userId, email: author?.email });
   const credential = tokenPath(ctx);
   const helper = `!f() { printf 'username=mako\\npassword=%s\\n' "$(cat ${credential})"; }; f`;
 
@@ -181,8 +181,22 @@ export async function configureBoxRemote(input: {
       // would do the same, so this is not a macOS workaround.
       boxGit(ctx, "config", "--replace-all", "credential.helper", ""),
       boxGit(ctx, "config", "--add", "credential.helper", helper),
-      boxGit(ctx, "config", "user.name", author?.name || "Mako Session"),
-      boxGit(ctx, "config", "user.email", author?.email || "session@mako.ai"),
+      // Commit identity. Set it to the real actor when we know who they are;
+      // the git endpoint enforces that pushed commits carry exactly this email
+      // (its pre-receive hook), so a stale or generic identity here would get
+      // the actor's own commit rejected. When the actor is unknown — a
+      // low-level origin heal that has only a sessionKey — leave whatever is
+      // already configured rather than stamping a generic identity over the
+      // real one, and only fall back to a placeholder if nothing is set yet,
+      // so `git commit` never fails with "who are you" on a fresh box.
+      ...(author?.name
+        ? [boxGit(ctx, "config", "user.name", author.name)]
+        : []),
+      ...(author?.email
+        ? [boxGit(ctx, "config", "user.email", author.email)]
+        : []),
+      `${boxGit(ctx, "config", "user.email")} >/dev/null 2>&1 || ${boxGit(ctx, "config", "user.email", "session@mako.ai")}`,
+      `${boxGit(ctx, "config", "user.name")} >/dev/null 2>&1 || ${boxGit(ctx, "config", "user.name", "Mako Session")}`,
       // Push the current branch to the same name, the modern default. Without
       // it, a `git push` with no arguments on a fresh branch fails with advice
       // instead of pushing.
@@ -591,14 +605,28 @@ export async function boxCommitAll(input: {
   ctx: SandboxExecContext;
   message: string;
   author?: { name?: string; email?: string };
+  /**
+   * Who is recorded as the COMMITTER, when it differs from the author. An agent
+   * turn is authored by the human it acted for (so blame and the endpoint's
+   * authorship check both see the accountable person) but committed by "Mako
+   * Agent", so `git log --format='%an / %cn'` still shows an AI wrote it.
+   */
+  committer?: { name?: string; email?: string };
   /** Commit only what is staged (VS Code with a non-empty Staged group). */
   stagedOnly?: boolean;
 }): Promise<BoxCommitResult> {
-  const { ctx, message, author, stagedOnly } = input;
+  const { ctx, message, author, committer, stagedOnly } = input;
   const identity =
     author?.name && author?.email
       ? ["-c", `user.name=${author.name}`, "-c", `user.email=${author.email}`]
       : [];
+  // The committer is set through the env git reads for it, which takes
+  // precedence over user.* — so author (from -c user.*) and committer stay
+  // independent. Prefixed onto the commit command below.
+  const committerEnv =
+    committer?.name && committer?.email
+      ? `GIT_COMMITTER_NAME=${sh(committer.name)} GIT_COMMITTER_EMAIL=${sh(committer.email)} `
+      : "";
 
   if (!stagedOnly) {
     const staged = await boxExec(ctx, boxGit(ctx, "add", "-A"), {
@@ -611,16 +639,17 @@ export async function boxCommitAll(input: {
 
   const committed = await boxExec(
     ctx,
-    [
-      "git",
-      "-C",
-      sh(boxRoot(ctx)),
-      ...identity.map(sh),
-      "commit",
-      "-q",
-      "-m",
-      sh(message),
-    ].join(" "),
+    committerEnv +
+      [
+        "git",
+        "-C",
+        sh(boxRoot(ctx)),
+        ...identity.map(sh),
+        "commit",
+        "-q",
+        "-m",
+        sh(message),
+      ].join(" "),
     { timeoutMs: 120_000 },
   );
   let madeCommit = true;

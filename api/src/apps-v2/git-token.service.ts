@@ -37,6 +37,15 @@ export interface GitTokenPayload {
   wsId: string;
   /** Actor the pushes are attributed to. */
   userId: string;
+  /**
+   * The actor's email, when known at mint time. The git endpoint enforces that
+   * a pushed commit is authored by this address (see the pre-receive hook),
+   * which is how "who changed which files" stays trustworthy without the
+   * endpoint reaching into the database. Optional: a token minted for an actor
+   * whose email could not be resolved (a system actor, a lookup failure) omits
+   * it, and the endpoint then falls back to attribution-without-enforcement.
+   */
+  email?: string;
   scope: "git";
   iat: number;
   exp: number;
@@ -66,6 +75,8 @@ function sign(body: string, secret: string): string {
 export function mintGitToken(input: {
   workspaceId: string;
   userId: string;
+  /** The actor's email, bound into the token for authorship enforcement. */
+  email?: string;
   ttlSeconds?: number;
 }): string {
   const now = Math.floor(Date.now() / 1000);
@@ -73,6 +84,7 @@ export function mintGitToken(input: {
     v: 1,
     wsId: input.workspaceId,
     userId: input.userId,
+    ...(input.email ? { email: input.email } : {}),
     scope: "git",
     iat: now,
     exp: now + (input.ttlSeconds ?? DEFAULT_TTL_SECONDS),

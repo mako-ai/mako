@@ -33,6 +33,7 @@ import {
   type IAppProjectV2,
   type IAppWorktreeV2,
 } from "../database/workspace-schema";
+import { User } from "../database/schema";
 import { loggers } from "../logging";
 import {
   boxCheckout,
@@ -219,6 +220,48 @@ export function sessionKeyFor(
 }
 
 /**
+ * The git identity for an actor: who their commits are authored as.
+ *
+ * This is the ONE place the box's commit identity is decided, and it is the
+ * same identity minted into the git token — so a commit's author and the
+ * endpoint's authorship check can never disagree. The name is the email's
+ * local part; a real display name is not something apps v2 needs to carry.
+ *
+ * Cached per process: it is read on every box reconfigure, and a user's email
+ * does not change under us. A non-user actor (the `publish` box) or a lookup
+ * miss returns undefined — the caller then leaves the box's existing identity
+ * alone rather than stamping a wrong one.
+ */
+const actorIdentityCache = new Map<
+  string,
+  { name: string; email: string } | undefined
+>();
+
+export async function resolveActorIdentity(
+  userId: string,
+): Promise<{ name: string; email: string } | undefined> {
+  if (actorIdentityCache.has(userId)) return actorIdentityCache.get(userId);
+  let identity: { name: string; email: string } | undefined;
+  try {
+    const user = await User.findById(userId).select("email").lean<{
+      email?: string;
+    } | null>();
+    if (user?.email) {
+      identity = {
+        name: user.email.split("@")[0] || user.email,
+        email: user.email,
+      };
+    }
+  } catch {
+    // A non-ObjectId actor id (e.g. the publish actor) makes findById throw on
+    // cast — that is a "no user", not an error worth surfacing.
+    identity = undefined;
+  }
+  actorIdentityCache.set(userId, identity);
+  return identity;
+}
+
+/**
  * Make sure the actor's sandbox holds a checkout before touching files.
  *
  * Separate from ensureWorktree on purpose: knowing which branch someone is on
@@ -311,6 +354,7 @@ export async function rehydrateBox(
       workspaceId: handle.doc.workspaceId.toString(),
       userId: handle.doc.userId,
       branch: handle.doc.branch,
+      author: await resolveActorIdentity(handle.doc.userId),
     });
     await ensureBoxAgent(ctx, { force: true });
     lastPull.set(ctx.sessionKey, Date.now());
@@ -342,6 +386,7 @@ async function ensureBoxNow(
   const ctx = boxCtx(handle);
   const workspaceId = handle.doc.workspaceId.toString();
   const userId = handle.doc.userId;
+  const author = await resolveActorIdentity(userId);
   if (await boxHasRepo(ctx)) {
     // Reconfigure when the token is due for a refresh OR when the origin the
     // box should point at has changed (a tunnel restart in development). The
@@ -354,7 +399,7 @@ async function ensureBoxNow(
       last.base !== base ||
       Date.now() - last.at > RECONFIGURE_INTERVAL_MS
     ) {
-      await configureBoxRemote({ ctx, workspaceId, userId });
+      await configureBoxRemote({ ctx, workspaceId, userId, author });
       lastConfigured.set(ctx.sessionKey, { at: Date.now(), base });
     }
     // The agent that pushes this box's state; throttled, off the hot path.
@@ -384,6 +429,7 @@ async function ensureBoxNow(
     workspaceId,
     userId,
     branch: handle.doc.branch,
+    author,
   });
   await ensureBoxAgent(ctx, { force: true });
   lastPull.set(ctx.sessionKey, Date.now());
@@ -1471,10 +1517,17 @@ export async function commitAgentTurn(
     const message = turnSummary?.trim()
       ? `Agent turn: ${turnSummary.trim().slice(0, 120)}`
       : `Agent turn (${new Date().toISOString()})`;
+    // Authored by the human the agent acted for — blame and the git endpoint's
+    // authorship check must both see the accountable person, not a bot — but
+    // COMMITTED by "Mako Agent", so `git log --format='%an / %cn'` still shows
+    // the change came from an agent turn. Falling back to the box's configured
+    // identity (also the human) if the lookup misses.
+    const human = await resolveActorIdentity(actorId);
     const result = await boxCommitAll({
       ctx,
       message,
-      author: { name: "Mako Agent", email: "agent@mako.ai" },
+      author: human,
+      committer: { name: "Mako Agent", email: "agent@mako.ai" },
     });
     if (!result.committed) return [];
     // Mirror queue and window poke happen in the git endpoint's push

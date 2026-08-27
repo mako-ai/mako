@@ -343,3 +343,99 @@ describe("what the network may do to refs", () => {
     expect(log.stdout.trim()).toBe("ship it");
   });
 });
+
+describe("commit authorship enforcement", () => {
+  const ALICE = "alice@mako.ai";
+  const aliceToken = () =>
+    mintGitToken({ workspaceId: WS, userId: "alice", email: ALICE });
+
+  /** Commit `file` on a new branch, authored by `email`, and return the dir. */
+  async function commitAs(email: string, message: string): Promise<string> {
+    const dir = await freshClone(aliceToken());
+    await fs.writeFile(path.join(dir, "auth.txt"), `${message}\n`);
+    await run("git", ["-C", dir, "add", "-A"]);
+    await run("git", [
+      "-C",
+      dir,
+      "-c",
+      `user.email=${email}`,
+      "-c",
+      "user.name=Author",
+      "commit",
+      "-qm",
+      message,
+    ]);
+    return dir;
+  }
+
+  it("accepts a commit authored by the pushing user", async () => {
+    const dir = await commitAs(ALICE, "alice authored");
+    await run(
+      "git",
+      ["-C", dir, "push", "-q", "origin", "HEAD:refs/heads/alice-ok"],
+      { env: gitEnv(aliceToken()) },
+    );
+    const { stdout } = await run("git", [
+      "-C",
+      repoDir,
+      "log",
+      "--format=%ae",
+      "-1",
+      "refs/heads/alice-ok",
+    ]);
+    expect(stdout.trim()).toBe(ALICE);
+  });
+
+  it("rejects a commit forged to look like someone else's", async () => {
+    const dir = await commitAs("victim@mako.ai", "spoofed");
+    await expect(
+      run("git", ["-C", dir, "push", "-q", "origin", "HEAD:refs/heads/spoof"], {
+        env: gitEnv(aliceToken()),
+      }),
+    ).rejects.toThrow(
+      /authored by <victim@mako\.ai>|can only push commits you authored/i,
+    );
+    // And nothing was created.
+    await expect(
+      run("git", ["-C", repoDir, "rev-parse", "--verify", "refs/heads/spoof"]),
+    ).rejects.toThrow();
+  });
+
+  it("does not re-check commits already on the server (merges keep their authors)", async () => {
+    // The clone already contains the seed commit, authored by s@s. Alice adds
+    // her own commit on top and pushes: the seed is reachable from main, so it
+    // is excluded from the check and its foreign author does not block Alice.
+    const dir = await commitAs(ALICE, "on top of the seed");
+    await run(
+      "git",
+      ["-C", dir, "push", "-q", "origin", "HEAD:refs/heads/alice-ontop"],
+      { env: gitEnv(aliceToken()) },
+    );
+    const { stdout } = await run("git", [
+      "-C",
+      repoDir,
+      "log",
+      "--format=%ae",
+      "refs/heads/alice-ontop",
+    ]);
+    // Both authors survive in history; the push was allowed.
+    expect(stdout).toContain(ALICE);
+    expect(stdout).toContain("s@s");
+  });
+
+  it("a legacy token without an email is attributed but not gated", async () => {
+    // Backward compatibility: tokens minted before authorship was bound in
+    // carry no email, so the endpoint sets no expectation and the hook skips
+    // the check — exactly the pre-existing behaviour.
+    const dir = await commitAs("anyone@example.com", "legacy");
+    const legacy = mintGitToken({ workspaceId: WS, userId: "u1" });
+    await run(
+      "git",
+      ["-C", dir, "push", "-q", "origin", "HEAD:refs/heads/legacy"],
+      { env: gitEnv(legacy) },
+    );
+    await expect(
+      run("git", ["-C", repoDir, "rev-parse", "--verify", "refs/heads/legacy"]),
+    ).resolves.toBeTruthy();
+  });
+});

@@ -79,6 +79,30 @@ while read old new ref; do
         exit 1
       fi ;;
   esac
+
+  # Authorship: a commit this push INTRODUCES (reachable from the new tip but
+  # from no ref already on the server) must be authored by the pushing user.
+  # This is what makes "who changed which files" trustworthy - a caller cannot
+  # push a commit forged to look like a colleague's. Commits merged in from
+  # main or another branch are already on the server, so they are excluded and
+  # keep their original authors. Enforced only when the endpoint supplied an
+  # identity (MAKO_AUTHOR_EMAIL); an older token without one is attributed but
+  # not gated, which is the pre-existing behaviour.
+  if [ -n "$MAKO_AUTHOR_EMAIL" ] && [ "$new" != "$zero" ]; then
+    case "$ref" in
+      refs/heads/*)
+        for c in $(git rev-list "$new" --not --all); do
+          a=$(git log -1 --format=%ae "$c")
+          if [ "$a" != "$MAKO_AUTHOR_EMAIL" ]; then
+            echo "mako: refusing commit $c - it is authored by <$a>, but you are pushing as <$MAKO_AUTHOR_EMAIL>." >&2
+            echo "mako: Mako records who changed each file, so you can only push commits you authored." >&2
+            echo "mako: fix your git identity in this box and re-commit:" >&2
+            echo "mako:   git config user.email \\"$MAKO_AUTHOR_EMAIL\\" && git commit --amend --reset-author" >&2
+            exit 1
+          fi
+        done ;;
+    esac
+  fi
 done
 exit 0
 `;
@@ -203,6 +227,12 @@ async function serveGit(c: Context): Promise<Response> {
     // Setting this IS the authorization decision, and it is also what lands in
     // the reflog, so a push is attributable.
     remoteUser: payload.userId,
+    // The address the token was minted for. The pre-receive hook rejects a
+    // pushed commit authored by anyone else, so "who changed which files" is
+    // trustworthy — a caller cannot forge a colleague's authorship. Absent on
+    // legacy tokens minted before authorship was bound in; the hook then falls
+    // back to attribution-without-enforcement rather than blocking the push.
+    authorEmail: payload.email,
     body: c.req.method === "POST" ? c.req.raw.body : null,
     onSuccess: isReceivePack
       ? () => notifyRepoPushed(payload.wsId, payload.userId)
@@ -221,6 +251,8 @@ interface BackendInput {
   contentEncoding: string;
   gitProtocol: string;
   remoteUser: string;
+  /** Email the pushed commits must be authored by; undefined disables the check. */
+  authorEmail?: string;
   /** Request body, streamed — a push can be arbitrarily large. */
   body: ReadableStream<Uint8Array> | null;
   /** Called once when a receive-pack completed cleanly (see module doc). */
@@ -246,6 +278,10 @@ function runHttpBackend(input: BackendInput): Promise<Response> {
       QUERY_STRING: input.query,
       CONTENT_TYPE: input.contentType,
       REMOTE_USER: input.remoteUser,
+      // Read by the pre-receive hook to enforce commit authorship. Set only
+      // when the token carried it, so old tokens skip the check (fail-open on
+      // a missing identity, never on a mismatch).
+      ...(input.authorEmail ? { MAKO_AUTHOR_EMAIL: input.authorEmail } : {}),
       // Config injected per invocation instead of written into the repo:
       // it applies to exactly this serving path (updateRefCas and the mirror
       // push never see it), and there is no migration to run over existing
