@@ -409,15 +409,21 @@ export async function patchBoxState(input: {
   const next = applyPatch(prev, patch);
 
   // The browser iframes a public origin the box cannot know about itself.
+  // PEEK, never create: this runs on every box report, including stragglers
+  // that land moments AFTER a recycle — resolving through the create path
+  // booted a fresh billed microVM just to compute a hostname and flipped
+  // every tab back to "online" around an empty box.
   if (next.devServers) {
     const provider = getSandboxProvider();
     for (const server of next.devServers) {
       if (server.url) continue;
       try {
-        server.url = await provider.publicUrlForPort(
+        const url = await provider.peekPublicUrlForPort(
           { sessionKey },
           server.port,
         );
+        if (!url) continue;
+        server.url = url;
         server.reachable = await probeReachable(server.url);
       } catch (error) {
         logger.warn("Apps v2 box-state could not resolve a dev-server url", {

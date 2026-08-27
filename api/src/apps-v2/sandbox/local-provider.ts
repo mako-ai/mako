@@ -207,6 +207,14 @@ export const localSandboxProvider: SandboxProvider = {
     return `http://127.0.0.1:${port}`;
   },
 
+  async peekPublicUrlForPort(ctx, port) {
+    // A directory cannot be accidentally created by describing it, so peek
+    // only differs from publicUrlForPort in answering null for no session.
+    return (await localSandboxProvider.hasSession(ctx))
+      ? `http://127.0.0.1:${port}`
+      : null;
+  },
+
   async writeFile(ctx, remotePath, bytes) {
     assertNotProduction();
     await ensureDirs(ctx);

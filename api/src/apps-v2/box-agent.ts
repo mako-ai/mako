@@ -17,7 +17,7 @@
  */
 import { createHash } from "node:crypto";
 import { loggers } from "../logging";
-import { boxEnvPath, boxRoot, sh } from "./box";
+import { boxEnvPath, boxRoot, configureBoxRemote, sh } from "./box";
 import {
   getSandboxProvider,
   type SandboxExecContext,
@@ -47,10 +47,13 @@ const ENV_PATH = ${JSON.stringify(envPath)};
 const PORTS = ${JSON.stringify(PORTS_REGISTRY)};
 const LOG = ${JSON.stringify(AGENT_LOG)};
 const PID = ${JSON.stringify(AGENT_PID)};
-// Idle reaper state: last time each dev server had a viewer, and how long a
-// server may sit with none before the agent stops it.
-const ACTIVE = "/tmp/mako-dev-active.json";
-const IDLE_TTL_MS = 20 * 60 * 1000;
+// Idle reaper state: consecutive agent TICKS each dev server has gone
+// without a viewer. Ticks, not wall-clock: the box pauses with a full
+// memory snapshot, so a Date.now() delta jumps hours forward on resume and
+// killed the very server the returning user came back for. A frozen process
+// does not tick, so idleness only accrues while the box actually runs; an
+// agent restart resets the counters, which just re-grants the grace window.
+const IDLE_TICKS_MAX = 600; // ~20 min of 2s ticks with no viewer
 const ONCE = process.argv.includes("--once");
 
 function log(message) {
@@ -79,12 +82,14 @@ function env() {
 
 // "## main...origin/main [ahead 1]" / "## main" / "## HEAD (no branch)" /
 // "## No commits yet on main" — the branch is the first token after "## ",
-// up to a dot or space; the "No commits yet" form names it last.
+// split ONLY on "..." (the upstream separator), never on a single dot:
+// branch names like "v1.2-fix" are legal, and truncating one made the
+// server believe the box sat on a branch that did not exist.
 function parseHeader(line) {
   const fresh = /^## No commits yet on (\\S+)/.exec(line);
   if (fresh) return fresh[1];
-  const m = /^## ([^. ]+)/.exec(line);
-  return m ? m[1] : null;
+  const m = /^## (\\S+)/.exec(line);
+  return m ? m[1].split("...")[0] : null;
 }
 
 // Porcelain v1 with -z: NUL-separated, paths UNQUOTED. Without -z git
@@ -273,37 +278,36 @@ function terminals() {
 let lastSent = "";
 let lastSentAt = 0;
 let failStreak = 0;
+let warnedEnv = false;
+const idleTicks = new Map();
 
 async function tick() {
   const git = await gitState();
   const servers = await devServers();
   // Idle reaper (apps-v2.md §13.9): the box is the authority for liveness and
   // may STOP a dev server no one is watching — it must NEVER start one. A
-  // freshly seen server gets a full TTL of grace before it can be reaped.
-  let active = {};
-  try {
-    active = JSON.parse(readFileSync(ACTIVE, "utf8"));
-  } catch {
-    active = {};
-  }
-  const now = Date.now();
+  // freshly seen server gets a full grace window before it can be reaped.
   const alive = [];
   for (const s of servers) {
-    if (activeConns(s.port) > 0 || active[s.slug] == null) active[s.slug] = now;
-    if (now - active[s.slug] > IDLE_TTL_MS) {
+    // A server whose app folder is gone (the app was deleted) serves a
+    // ghost from open fds forever; nothing legitimate watches it. Reap it
+    // regardless of connections.
+    if (!existsSync(ROOT + "/apps/" + s.slug)) {
       await reap(s.slug);
-      delete active[s.slug];
+      idleTicks.delete(s.slug);
+      continue;
+    }
+    const ticks = activeConns(s.port) > 0 ? 0 : (idleTicks.get(s.slug) ?? 0) + 1;
+    idleTicks.set(s.slug, ticks);
+    if (ticks > IDLE_TICKS_MAX) {
+      await reap(s.slug);
+      idleTicks.delete(s.slug);
     } else {
       alive.push(s);
     }
   }
-  for (const k of Object.keys(active)) {
-    if (!servers.some(s => s.slug === k)) delete active[k];
-  }
-  try {
-    writeFileSync(ACTIVE, JSON.stringify(active));
-  } catch {
-    // Best effort; a lost file just restarts the grace window.
+  for (const k of [...idleTicks.keys()]) {
+    if (!servers.some(s => s.slug === k)) idleTicks.delete(k);
   }
   const snapshot = { source: "agent", devServers: alive, terminals: terminals() };
   if (process.env.E2B_SANDBOX_ID) snapshot.sandboxId = process.env.E2B_SANDBOX_ID;
@@ -318,13 +322,26 @@ async function tick() {
   if (key === lastSent && !heartbeatDue && !ONCE) return;
 
   const e = env();
-  if (!e.MAKO_API || !e.MAKO_WS || !e.MAKO_TOKEN_FILE) return;
+  if (!e.MAKO_API || !e.MAKO_WS || !e.MAKO_TOKEN_FILE) {
+    // Silence here is undebuggable: a box whose env file vanished simply
+    // stopped reporting, and nothing anywhere said why. Say it once.
+    if (!warnedEnv) {
+      warnedEnv = true;
+      log("env missing/incomplete at " + ENV_PATH + "; not posting snapshots");
+    }
+    return;
+  }
   let token;
   try {
     token = readFileSync(e.MAKO_TOKEN_FILE, "utf8").trim();
   } catch {
+    if (!warnedEnv) {
+      warnedEnv = true;
+      log("token unreadable at " + e.MAKO_TOKEN_FILE + "; not posting snapshots");
+    }
     return;
   }
+  warnedEnv = false;
   try {
     const res = await fetch(e.MAKO_API + "/api/apps-v2-box/" + e.MAKO_WS + "/events", {
       method: "POST",
@@ -400,16 +417,35 @@ export async function installBoxAgent(ctx: SandboxExecContext): Promise<void> {
   // own command line names the agent file, so a pattern match found the
   // installer itself, concluded "already running", and never launched.
   const alive = `([ -f ${AGENT_PID} ] && kill -0 "$(cat ${AGENT_PID})" 2>/dev/null)`;
-  await provider.exec(
+  const installed = await provider.exec(
     ctx,
     [
       `mkdir -p ${sh(hooksDir)}`,
       `if ! head -n 1 ${AGENT_PATH} 2>/dev/null | grep -qF ${sh(version)}; then cat > ${AGENT_PATH} <<'MAKO_AGENT_EOF'\n${source}\nMAKO_AGENT_EOF\nif ${alive}; then kill "$(cat ${AGENT_PID})" 2>/dev/null; sleep 0.3; fi; rm -f ${AGENT_PID}; fi`,
       hookWrites,
+      `[ -f ${sh(boxEnvPath(ctx))} ] && echo env-ok || echo env-missing`,
       "echo installed",
     ].join("\n"),
     { timeoutMs: 30_000 },
   );
+
+  // A freshly installed agent with no env file is still mute (it reads
+  // MAKO_API/MAKO_WS/token path from there). This is exactly the state a
+  // resumed box was found in — reporting nothing, with nothing logged
+  // anywhere. Rewrite the remote config, which writes the env file.
+  if (installed.stdout.includes("env-missing")) {
+    const [workspaceId, ...rest] = ctx.sessionKey.split(":");
+    await configureBoxRemote({
+      ctx,
+      workspaceId,
+      userId: rest.join(":"),
+    }).catch(error =>
+      logger.warn("Apps v2 box env could not be restored", {
+        sessionKey: ctx.sessionKey,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
 
   // Launch if not running. dtach like every other session in the box; the
   // nohup fallback covers machines without it (the local provider on macOS).

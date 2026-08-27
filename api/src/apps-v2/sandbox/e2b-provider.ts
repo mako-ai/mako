@@ -55,15 +55,21 @@ function apiKey(): string {
 // Sandbox.list metadata when the process restarts.
 const sessions = new Map<string, string>();
 
-/** The canonical box among duplicates for a key: newest, sandboxId as a
- *  deterministic tiebreak so every process/instance picks the SAME winner. */
+/** The canonical box among duplicates for a key: OLDEST, sandboxId as a
+ *  deterministic tiebreak so every process/instance picks the SAME winner.
+ *
+ *  Oldest, not newest: the established box is the one holding the user's
+ *  uncommitted working copy, while a newer duplicate is by construction a
+ *  mistake made later (a create race, a convergence miss). Newest-wins had
+ *  the failure mode of a freshly created EMPTY box beating — and killing —
+ *  the box with the user's work in it. */
 function pickWinner<T extends { sandboxId: string; startedAt?: string | Date }>(
   boxes: T[],
 ): T | undefined {
   return [...boxes].sort((a, b) => {
     const byTime =
-      new Date(b.startedAt ?? 0).getTime() -
-      new Date(a.startedAt ?? 0).getTime();
+      new Date(a.startedAt ?? 0).getTime() -
+      new Date(b.startedAt ?? 0).getTime();
     if (byTime !== 0) return byTime;
     return a.sandboxId < b.sandboxId ? -1 : 1;
   })[0];
@@ -157,54 +163,60 @@ async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
       sessions.delete(sessionKey);
     }
   }
-  // Recover a paused/running sandbox for this worktree if one exists.
-  try {
-    const paginator = Sandbox.list({
-      apiKey: apiKey(),
-      query: { metadata: { makoAppsV2SessionKey: sessionKey } },
-      limit: 5,
-    });
-    if (paginator.hasNext) {
-      const page = await paginator.nextItems();
-      // Deterministic choice when the key matches more than one sandbox.
-      // Duplicates happen: two API processes (a dev machine and a preview
-      // deployment share one E2B account and one database) can each create a
-      // box for the same worktree, and page order is not a contract — so
-      // without sorting, WHICH working copy answered depended on the whim of
-      // a list API, and files written through one process vanished when the
-      // next request read the other box. Newest wins, always, everywhere.
-      const info = pickWinner([...page]);
-      const stale = [...page].filter(x => x.sandboxId !== info?.sandboxId);
-      if (stale.length > 0) {
-        logger.warn("Multiple sandboxes share one session key; using newest", {
-          sessionKey,
-          using: info?.sandboxId,
-          killing: stale.map(x => x.sandboxId),
-        });
-        // Reap the losers, don't just ignore them: "newest wins" without a
-        // reaper is how the account quietly accumulated a hundred boxes —
-        // every duplicate (two API processes, a create racing a pause, an
-        // API restart mid-create) stayed alive forever, billed and
-        // confusing every list-based lookup after it.
-        for (const dupe of stale) {
-          void Sandbox.kill(dupe.sandboxId, { apiKey: apiKey() }).catch(
-            () => undefined,
-          );
-        }
+  // Recover a paused/running sandbox for this worktree if one exists. A
+  // lookup FAILURE must throw, not fall through to create: "the list API
+  // blipped" is not "no box exists", and creating on a blip made a fresh
+  // empty duplicate whose later convergence could kill the user's real box.
+  let page: Array<{ sandboxId: string; startedAt?: string | Date }> = [];
+  const paginator = Sandbox.list({
+    apiKey: apiKey(),
+    query: { metadata: { makoAppsV2SessionKey: sessionKey } },
+    limit: 5,
+  });
+  if (paginator.hasNext) page = [...(await paginator.nextItems())];
+  if (page.length > 0) {
+    // Deterministic choice when the key matches more than one sandbox.
+    // Duplicates happen: two API processes (a dev machine and a preview
+    // deployment share one E2B account and one database) can each create a
+    // box for the same worktree, and page order is not a contract — so
+    // without sorting, WHICH working copy answered depended on the whim of
+    // a list API. pickWinner (oldest) decides, always, everywhere.
+    const info = pickWinner(page);
+    const stale = page.filter(x => x.sandboxId !== info?.sandboxId);
+    if (stale.length > 0) {
+      logger.warn("Multiple sandboxes share one session key; converging", {
+        sessionKey,
+        using: info?.sandboxId,
+        killing: stale.map(x => x.sandboxId),
+      });
+      // Reap the losers, don't just ignore them: a winner without a
+      // reaper is how the account quietly accumulated a hundred boxes —
+      // every duplicate (two API processes, a create racing a pause, an
+      // API restart mid-create) stayed alive forever, billed and
+      // confusing every list-based lookup after it.
+      for (const dupe of stale) {
+        void Sandbox.kill(dupe.sandboxId, { apiKey: apiKey() }).catch(
+          () => undefined,
+        );
       }
-      if (info) {
+    }
+    if (info) {
+      try {
         const sandbox = await Sandbox.connect(info.sandboxId, {
           apiKey: apiKey(),
         });
         sessions.set(sessionKey, sandbox.sandboxId);
         return sandbox;
+      } catch (error) {
+        // The listed box is really gone (killed between list and connect):
+        // fall through to a fresh create.
+        logger.warn("Listed sandbox would not connect; creating fresh", {
+          sessionKey,
+          sandboxId: info.sandboxId,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
-  } catch (error) {
-    logger.warn("E2B session lookup failed; creating fresh sandbox", {
-      sessionKey,
-      error: error instanceof Error ? error.message : String(error),
-    });
   }
 
   const sandbox = await Sandbox.create(templateId(), {
@@ -255,8 +267,11 @@ async function execE2b(
   );
   const startedAt = Date.now();
   const sandbox = await connectSession(ctx.sessionKey);
-  // Keep the sandbox alive long enough for this command + sync overhead.
-  await sandbox.setTimeout(Math.max(IDLE_TIMEOUT_MS, timeoutMs + 60_000));
+  // Keep the sandbox alive long enough for this command + sync overhead —
+  // without clobbering a longer hold someone asked keepAlive() for.
+  await sandbox.setTimeout(
+    lifetimeMs(ctx.sessionKey, Math.max(IDLE_TIMEOUT_MS, timeoutMs + 60_000)),
+  );
 
   const cwd = options.cwd
     ? path.posix.join(REMOTE_ROOT, options.cwd)
@@ -350,7 +365,7 @@ async function execDetachedE2b(
   options: SandboxExecOptions = {},
 ): Promise<void> {
   const sandbox = await connectSession(ctx.sessionKey);
-  await sandbox.setTimeout(IDLE_TIMEOUT_MS);
+  await sandbox.setTimeout(lifetimeMs(ctx.sessionKey, IDLE_TIMEOUT_MS));
   const cwd = options.cwd
     ? path.posix.join(REMOTE_ROOT, options.cwd)
     : REMOTE_ROOT;
@@ -409,11 +424,65 @@ async function publicUrlForPortE2b(
   return `https://${sandbox.getHost(port)}`;
 }
 
+/**
+ * The public URL for a port IF a sandbox already exists — never creates one.
+ *
+ * publicUrlForPort goes through connectSession, whose cold path is
+ * Sandbox.create. Called from a straggler box event after a recycle, that
+ * booted a fresh billed microVM just to compute a hostname and flipped every
+ * tab back to "online". Status/telemetry paths must use this instead.
+ */
+async function peekPublicUrlForPortE2b(
+  ctx: SandboxExecContext,
+  port: number,
+): Promise<string | null> {
+  const known = sessions.get(ctx.sessionKey);
+  if (known) {
+    try {
+      const sandbox = await Sandbox.connect(known, { apiKey: apiKey() });
+      return `https://${sandbox.getHost(port)}`;
+    } catch {
+      sessions.delete(ctx.sessionKey);
+    }
+  }
+  try {
+    const paginator = Sandbox.list({
+      apiKey: apiKey(),
+      query: { metadata: { makoAppsV2SessionKey: ctx.sessionKey } },
+      limit: 5,
+    });
+    if (!paginator.hasNext) return null;
+    const info = pickWinner([...(await paginator.nextItems())]);
+    if (!info) return null;
+    const sandbox = await Sandbox.connect(info.sandboxId, {
+      apiKey: apiKey(),
+    });
+    sessions.set(ctx.sessionKey, sandbox.sandboxId);
+    return `https://${sandbox.getHost(port)}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * keepAlive holds are remembered here because E2B's setTimeout is an
+ * ABSOLUTE remaining lifetime: the next exec's routine setTimeout silently
+ * clobbered a 30-minute hold back down to 10, pausing the box mid-viewing.
+ * Every setTimeout call goes through lifetimeMs so the hold is a floor.
+ */
+const keepAliveUntil = new Map<string, number>();
+
+function lifetimeMs(sessionKey: string, base: number): number {
+  const until = keepAliveUntil.get(sessionKey) ?? 0;
+  return Math.max(base, until - Date.now());
+}
+
 async function keepAliveE2b(
   ctx: SandboxExecContext,
   ms: number,
 ): Promise<void> {
   const sandbox = await connectSession(ctx.sessionKey);
+  keepAliveUntil.set(ctx.sessionKey, Date.now() + Math.max(0, ms));
   await sandbox.setTimeout(Math.max(IDLE_TIMEOUT_MS, ms));
 }
 
@@ -444,7 +513,7 @@ async function openTerminalE2b(
   opts: Parameters<SandboxProvider["openTerminal"]>[1],
 ): Promise<SandboxTerminal> {
   const sandbox = await connectSession(ctx.sessionKey);
-  await sandbox.setTimeout(IDLE_TIMEOUT_MS);
+  await sandbox.setTimeout(lifetimeMs(ctx.sessionKey, IDLE_TIMEOUT_MS));
   const cwd = path.posix.join(REMOTE_ROOT, opts.cwd);
   if (!cwd.startsWith(REMOTE_ROOT)) {
     throw new Error(
@@ -686,15 +755,41 @@ export const e2bSandboxProvider: SandboxProvider = {
   readFile: readFileE2b,
   openTerminal: openTerminalE2b,
   publicUrlForPort: publicUrlForPortE2b,
+  peekPublicUrlForPort: peekPublicUrlForPortE2b,
   keepAlive: keepAliveE2b,
   destroySession: async sessionKey => {
     const sandboxId = sessions.get(sessionKey);
     sessions.delete(sessionKey);
     knownAlive.delete(sessionKey);
-    if (sandboxId) {
-      await Sandbox.kill(sandboxId, { apiKey: apiKey() }).catch(
-        () => undefined,
+    keepAliveUntil.delete(sessionKey);
+    // The in-process map is only THIS instance's memory: after an API
+    // restart (or when another instance created the box) it is empty, and a
+    // recycle that kills nothing while broadcasting "offline" is a lie every
+    // tab believes — the next touch rediscovers the same, un-killed box. The
+    // metadata index is the durable truth; kill everything it names.
+    const ids = new Set<string>(sandboxId ? [sandboxId] : []);
+    try {
+      const paginator = Sandbox.list({
+        apiKey: apiKey(),
+        query: { metadata: { makoAppsV2SessionKey: sessionKey } },
+        limit: 10,
+      });
+      if (paginator.hasNext) {
+        for (const box of await paginator.nextItems()) ids.add(box.sandboxId);
+      }
+    } catch (error) {
+      logger.warn(
+        "Recycle could not list sandboxes by metadata; killing known id only",
+        {
+          sessionKey,
+          error: error instanceof Error ? error.message : String(error),
+        },
       );
     }
+    await Promise.all(
+      [...ids].map(id =>
+        Sandbox.kill(id, { apiKey: apiKey() }).catch(() => undefined),
+      ),
+    );
   },
 };

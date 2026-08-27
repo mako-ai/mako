@@ -103,9 +103,12 @@ function TerminalPanel({
   onSessionEnd?: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const [status, setStatus] = useState<"connecting" | "open" | "reconnecting">(
-    "connecting",
-  );
+  const [status, setStatus] = useState<
+    "connecting" | "open" | "reconnecting" | "off"
+  >("connecting");
+  // Lets the "off" overlay's click FORCE a connect — the user action that is
+  // allowed to boot a machine. Assigned inside the socket effect.
+  const connectRef = useRef<((force?: boolean) => void) | null>(null);
   const theme = useTheme();
 
   useEffect(() => {
@@ -210,8 +213,19 @@ function TerminalPanel({
       });
     };
 
-    const connect = () => {
+    const connect = (force = false) => {
       if (disposed) return;
+      // §13.9: the client never heals. ANY non-forced connect while box
+      // truth says the machine is gone would run ensureBox server-side and
+      // boot a fresh microVM nobody asked for — a recycle undone by a
+      // background socket, or by the replacement tab a dead session spawns.
+      // Render the honest "off" state instead; clicking it is the user
+      // action that boots. A fresh page load has no boxStatus yet, so the
+      // open-a-terminal-boots-the-box flow is unchanged.
+      if (!force && useAppsV2Store.getState().boxStatus === "offline") {
+        setStatus("off");
+        return;
+      }
       const url = new URL(
         `/api/workspaces/${workspaceId}/apps-v2/${appId}/terminal?term=${encodeURIComponent(termId)}`,
         window.location.origin,
@@ -261,6 +275,13 @@ function TerminalPanel({
           onSessionEnd?.();
           return;
         }
+        // The box is gone by BOX TRUTH (a recycle broadcast offline): do not
+        // reconnect and do NOT end the session — a replacement tab's mount
+        // would connect and re-create a sandbox. Show "off"; a click boots.
+        if (useAppsV2Store.getState().boxStatus === "offline") {
+          setStatus("off");
+          return;
+        }
         // The shell keeps running server-side, so reconnecting picks the
         // session back up — including the output missed while away. Back off
         // so a server that is down does not get hammered.
@@ -271,6 +292,7 @@ function TerminalPanel({
       };
       socket.onerror = () => socket.close();
     };
+    connectRef.current = connect;
     connect();
 
     const typed = term.onData(data => {
@@ -303,6 +325,7 @@ function TerminalPanel({
         height: "100%",
         display: "flex",
         flexDirection: "column",
+        position: "relative",
         bgcolor: theme.palette.mode === "dark" ? "#0b0b0d" : "#ffffff",
       }}
     >
@@ -327,7 +350,7 @@ function TerminalPanel({
           color={
             status === "open"
               ? "success.main"
-              : status === "connecting"
+              : status === "connecting" || status === "off"
                 ? "text.secondary"
                 : "warning.main"
           }
@@ -366,6 +389,35 @@ function TerminalPanel({
           },
         }}
       />
+      {status === "off" && (
+        // The machine died under this shell (recycle, expiry). §13.9 forbids
+        // silently booting another; this overlay is the explicit user action
+        // that may.
+        <Box
+          onClick={() => {
+            setStatus("connecting");
+            connectRef.current?.(true);
+          }}
+          sx={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 0.5,
+            cursor: "pointer",
+            bgcolor: theme.palette.mode === "dark" ? "#0b0b0d" : "#ffffff",
+          }}
+        >
+          <Typography variant="body2" color="text.secondary">
+            The machine is off.
+          </Typography>
+          <Typography variant="caption" color="primary.main">
+            Click to start it and open this shell
+          </Typography>
+        </Box>
+      )}
     </Box>
   );
 }
@@ -458,11 +510,17 @@ function TerminalTabs({
       if (opts.killRemote) {
         void killTerminalSession(workspaceId, appId, id);
       }
+      // The last-shell replacement must be a FRESH id, never a reuse of the
+      // one that just died: same id = same React key, so the dead
+      // TerminalPanel never remounts and `exit` in the only shell left a
+      // corpse stuck on "connecting" until reload.
+      const fresh = String(nextId.current++);
+      freshIds.current.add(fresh);
       setShells(prev => {
         const next = prev.filter(x => x !== id);
-        return next.length > 0 ? next : ["1"];
+        return next.length > 0 ? next : [fresh];
       });
-      setActiveState(current => (current === id ? "1" : current));
+      setActiveState(current => (current === id ? fresh : current));
     },
     [appId, workspaceId, killTerminalSession],
   );
@@ -755,8 +813,16 @@ export default function AppV2Workspace({
   const history = useAppsV2Store(s => s.historyByApp[appId]);
   const branches = useAppsV2Store(s => s.branchesByApp[appId]);
   const preview = useAppsV2Store(s => s.previewByApp[appId]);
-  /** A live `vite dev` session is running for this app right now. */
-  const devSessionLive = preview?.mode === "dev" && Boolean(preview?.url);
+  const runningDevAppsForChip = useAppsV2Store(s => s.runningDevApps);
+  /**
+   * A live `vite dev` session is running for this app right now — from BOX
+   * TRUTH (runningDevApps), the same source as the green dot and the Exit
+   * button. Derived from previewByApp it disagreed with both: the optimistic
+   * localStorage URL painted "live · HMR" on a stopped app (§13.11).
+   */
+  const devSessionLive = app?.slug
+    ? runningDevAppsForChip.includes(app.slug)
+    : false;
   const publishedSha = app?.publishedSha;
   const publishApp = useAppsV2Store(s => s.publishApp);
 

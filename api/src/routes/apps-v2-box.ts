@@ -29,6 +29,11 @@ const ChangeSchema = z.union([
   z.object({
     path: z.string().max(4096),
     status: z.enum(["added", "modified", "deleted", "renamed"]).optional(),
+    // The agent reports staging per change; zod strips undeclared keys, and
+    // dropping these made every 2s agent tick wipe the Source Control
+    // staged/unstaged grouping that a direct git action had just set.
+    staged: z.boolean().optional(),
+    unstaged: z.boolean().optional(),
   }),
 ]);
 

@@ -127,6 +127,11 @@ export default function SettingsSandbox() {
         workspaceId,
         appId,
       )) as SandboxStats | null;
+      // The stats exec embeds a 1s CPU sample, so a response is ALWAYS at
+      // least a second stale. If a recycle's offline push landed while this
+      // was in flight, showing the dead machine as running — with a copyable
+      // connect command — would stick until the next manual refresh.
+      if (useAppsV2Store.getState().boxStatus === "offline") return;
       setStats(body);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not reach the sandbox");

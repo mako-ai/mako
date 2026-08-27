@@ -118,6 +118,17 @@ export interface SandboxProvider {
    */
   publicUrlForPort(ctx: SandboxExecContext, port: number): Promise<string>;
   /**
+   * Same as publicUrlForPort, but NEVER creates a sandbox: null when none
+   * exists. publicUrlForPort's cold path is create — correct when launching
+   * work, catastrophic when merely describing it (a straggler box event
+   * after a recycle booted a fresh billed microVM just to compute a
+   * hostname). Status, snapshot, and telemetry paths must use this.
+   */
+  peekPublicUrlForPort(
+    ctx: SandboxExecContext,
+    port: number,
+  ): Promise<string | null>;
+  /**
    * Write raw bytes to an absolute path inside the sandbox, outside the synced
    * working tree. Used to stage data the app must be able to fetch but that
    * must never enter its git tree (§13: materialized binding parquet).

@@ -88,20 +88,21 @@ while read old new ref; do
   # keep their original authors. Enforced only when the endpoint supplied an
   # identity (MAKO_AUTHOR_EMAIL); an older token without one is attributed but
   # not gated, which is the pre-existing behaviour.
+  # EVERY ref, not just refs/heads/*: a tag pushed first makes its commits
+  # reachable, so a later branch push of the same commits introduces nothing
+  # and the check never sees them — tags were a laundering route for forged
+  # authorship. rev-list peels annotated tags, so the same loop covers them.
   if [ -n "$MAKO_AUTHOR_EMAIL" ] && [ "$new" != "$zero" ]; then
-    case "$ref" in
-      refs/heads/*)
-        for c in $(git rev-list "$new" --not --all); do
-          a=$(git log -1 --format=%ae "$c")
-          if [ "$a" != "$MAKO_AUTHOR_EMAIL" ]; then
-            echo "mako: refusing commit $c - it is authored by <$a>, but you are pushing as <$MAKO_AUTHOR_EMAIL>." >&2
-            echo "mako: Mako records who changed each file, so you can only push commits you authored." >&2
-            echo "mako: fix your git identity in this box and re-commit:" >&2
-            echo "mako:   git config user.email \\"$MAKO_AUTHOR_EMAIL\\" && git commit --amend --reset-author" >&2
-            exit 1
-          fi
-        done ;;
-    esac
+    for c in $(git rev-list "$new" --not --all); do
+      a=$(git log -1 --format=%ae "$c")
+      if [ "$a" != "$MAKO_AUTHOR_EMAIL" ]; then
+        echo "mako: refusing commit $c - it is authored by <$a>, but you are pushing as <$MAKO_AUTHOR_EMAIL>." >&2
+        echo "mako: Mako records who changed each file, so you can only push commits you authored." >&2
+        echo "mako: fix your git identity in this box and re-commit:" >&2
+        echo "mako:   git config user.email \\"$MAKO_AUTHOR_EMAIL\\" && git commit --amend --reset-author" >&2
+        exit 1
+      fi
+    done
   fi
 done
 exit 0

@@ -10,6 +10,9 @@ vi.mock("./sandbox/provider", () => ({
   getSandboxProvider: () => ({
     publicUrlForPort: async (_ctx: unknown, port: number) =>
       `https://${port}-box.example`,
+    // The service resolves snapshot urls through the never-create peek.
+    peekPublicUrlForPort: async (_ctx: unknown, port: number) =>
+      `https://${port}-box.example`,
   }),
 }));
 

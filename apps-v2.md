@@ -1581,3 +1581,88 @@ API, fenced only by the API's own auth (git endpoint: valid `mgt_` HMAC token;
 everything else: a session). Named tunnels make the hostname stable and
 guessable; if that ever matters, a Cloudflare Access policy can be layered on
 the hostname with no code change.
+
+## §13.13 The adversarial pass: what testing the invariants actually found (2026-08-28)
+
+A deliberate break-it session (live box inspection + two independent code
+reviews + driving the real UI) against §13.9–§13.11. Everything below is
+fixed on this branch; the point of recording it is the *shapes*, which will
+try to come back.
+
+**The live box was a museum of the bugs.** The (workspace,user) box had been
+paused and resumed; inside it: a stale agent (predating the reaper),
+silently posting nothing — its env file was gone and the failure path
+logged nothing; five dev servers (cap: 3), two of them serving apps that no
+longer existed (deleted app, immortal server); green dots derived from
+dtach socket FILES that outlive the processes they name. Nobody watching,
+nothing reaping, since the previous evening.
+
+Root causes and fixes, grouped by shape:
+
+1. **Truth read from artifacts instead of the thing itself.**
+   - `discoverDevServers` counted socket files; now it probes the PORTS
+     (raw TCP connect in-box), the agent's own definition of running.
+   - The agent's branch regex cut `v1.2-fix` to `v1` (split on any dot, not
+     `...`), making the server fabricate branch `v1` at main and flip-flop
+     the doc. Split only on `...` now.
+   - `boxFileVersions` piped `git show` into base64, so absence took
+     base64's exit status and a missing file parsed as an empty one.
+2. **Time measured across a pause.** The idle reaper compared wall-clock
+   stamps that survive a memory-snapshot pause, so it killed the server the
+   returning user came back for, instantly. It now counts agent TICKS —
+   a frozen process does not tick. Same family: E2B's `setTimeout` is an
+   absolute remaining lifetime, so the next routine exec clobbered a
+   30-minute keepAlive back to 10 (box paused mid-viewing); keepAlive is now
+   a floor every setTimeout call respects.
+3. **Describe-paths that could create.** `publicUrlForPort` cold-path is
+   `Sandbox.create`; a straggler box event arriving seconds after a recycle
+   booted a fresh billed microVM just to compute a hostname, and flipped
+   every tab back "online". New `peekPublicUrlForPort` never creates; every
+   status/snapshot path uses it.
+4. **Memory mistaken for the world.** Recycle killed only the sandbox id in
+   the in-process map — after an API restart it killed NOTHING while still
+   broadcasting "offline". It now also kills everything the E2B metadata
+   index names for the key.
+5. **Newest-wins was backwards.** Convergence preferred the newest box, so
+   an accidentally created EMPTY duplicate could beat — and kill — the box
+   holding the user's uncommitted work. Oldest (the established box) wins
+   now, and a failed `Sandbox.list` throws instead of falling through to
+   create.
+6. **The client healed after all.** Terminal sockets reconnected forever on
+   close, and every reconnect runs `ensureBox` server-side — so recycling a
+   box while any workbench was open resurrected it within seconds (verified
+   live: a fresh billed box appeared ~30s after the recycle). While box truth
+   says offline, a terminal now renders an explicit "The machine is off"
+   overlay and connects only on its click — the user action that is allowed
+   to boot. A fresh page load has no box status yet, so the ordinary
+   open-a-terminal-boots-the-box flow is unchanged.
+7. **Stale responses outrunning pushes.** The explorer poll, the workbench
+   probe, and the Settings stats call all applied in-flight responses over a
+   newer offline push — restoring green dots, dead iframes, and a copyable
+   connect command to a killed machine. All three now check `boxStatus`
+   before applying (§13.11: pushes win).
+8. **localStorage leftovers, again.** The remembered dev URL embeds a
+   sandbox id; it is now validated against pushed `boxSandboxId` before the
+   optimistic iframe, and the whole `apps-v2-devurl:*` namespace is purged
+   on the offline push. The "live · HMR" chip now derives from
+   `runningDevApps` like every other running affordance. The unread
+   `apps-v2-enabled:*` hint write is deleted.
+9. **Quiet enforcement gaps.** The authorship pre-receive checked only
+   `refs/heads/*` — commits laundered through a tag push skipped it (all
+   refs now checked); a transient DB error during identity lookup was cached
+   as "no identity" for the process lifetime (only cast errors cache now);
+   `healBoxOrigin` re-minted the token without the email (it resolves the
+   author now). Port allocation read-modify-wrote a JSON file with no lock —
+   two concurrent launches could both get 5173 and iframe the wrong app
+   (mkdir lock now). The events route's zod schema silently stripped
+   `staged`/`unstaged`, wiping staging state on every agent tick (declared
+   now). `rehydrateBox` bypassed the ensure single-flight (wrapped now).
+10. **A silent agent is undebuggable.** The agent now logs once when its env
+    file is missing, and `ensureBoxAgent` restores the env file when absent —
+    and is called from the discovery path, so a RESUMED box refreshes its
+    agent without waiting for someone to open a terminal.
+
+Held under adversarial review, for the record: the publish rollback CAS
+path (no interleaving loses pushed commits), the running-cap eviction
+(stop-only), the token HMAC + workspace binding, and the client-side
+no-auto-start guard (`AppV2Workspace.heal.test.ts`).

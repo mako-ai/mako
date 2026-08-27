@@ -8,10 +8,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Box, Button, Chip, Typography, useTheme } from "@mui/material";
 import { Database as DatabaseIcon, Play as PlayIcon } from "lucide-react";
-// TODO(state-rules): route these calls through a Zustand store action and
-// remove this disable — see .cursor/rules/18-frontend-state.mdc.
-// eslint-disable-next-line no-restricted-imports
-import { api, unwrapBody } from "../api";
 import MonacoEditor from "@monaco-editor/react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppsV2Store } from "../store/appsV2Store";
@@ -56,6 +52,7 @@ export default function AppV2FileEditor({
   const fetchApps = useAppsV2Store(s => s.fetchApps);
   const openFile = useAppsV2Store(s => s.openFile);
   const updateFileLocal = useAppsV2Store(s => s.updateFileLocal);
+  const materializeAppBinding = useAppsV2Store(s => s.materializeAppBinding);
   const saveFile = useAppsV2Store(s => s.saveFile);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -77,19 +74,18 @@ export default function AppV2FileEditor({
     setMatError(null);
     setMatResult(null);
     try {
-      const body = unwrapBody(
-        await api.POST(
-          "/api/workspaces/{workspaceId}/apps-v2/{id}/bindings/{name}/materialize",
-          { params: { path: { workspaceId, id: appId, name: bindingName } } },
-        ),
-      ) as { rowCount?: number };
+      const body = (await materializeAppBinding(
+        workspaceId,
+        appId,
+        bindingName,
+      )) as { rowCount?: number };
       setMatResult(`Materialized — ${body.rowCount ?? "?"} rows`);
     } catch (e) {
       setMatError(e instanceof Error ? e.message : "Materialization failed");
     } finally {
       setMaterializing(false);
     }
-  }, [workspaceId, appId, bindingName]);
+  }, [workspaceId, appId, bindingName, materializeAppBinding]);
 
   useEffect(() => {
     if (!workspaceId) return;

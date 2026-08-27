@@ -805,10 +805,15 @@ export async function boxFileVersions(
   const p = safeRepoPath(relPath);
   const git = (spec: string) => boxGit(ctx, "show", spec);
   const file = sh(`${boxRoot(ctx)}/${p}`);
+  // Absence must be decided by `git show`'s OWN exit status. Piped straight
+  // into base64, the pipeline's status was base64's (0 even on empty stdin),
+  // so a missing file parsed as an empty existing one and a new file diffed
+  // as "modified from empty". Stage into a temp file first.
   const script =
-    `printf 'H:'; ${git(`HEAD:${p}`)} 2>/dev/null | base64 -w0 && printf '\\n' || printf '-\\n'; ` +
-    `printf 'I:'; ${git(`:${p}`)} 2>/dev/null | base64 -w0 && printf '\\n' || printf '-\\n'; ` +
-    `printf 'W:'; if [ -f ${file} ]; then base64 -w0 < ${file}; printf '\\n'; else printf '-\\n'; fi`;
+    `t=$(mktemp); ` +
+    `printf 'H:'; if ${git(`HEAD:${p}`)} >"$t" 2>/dev/null; then base64 -w0 <"$t"; printf '\\n'; else printf -- '-\\n'; fi; ` +
+    `printf 'I:'; if ${git(`:${p}`)} >"$t" 2>/dev/null; then base64 -w0 <"$t"; printf '\\n'; else printf -- '-\\n'; fi; ` +
+    `printf 'W:'; if [ -f ${file} ]; then base64 -w0 < ${file}; printf '\\n'; else printf -- '-\\n'; fi; rm -f "$t"`;
   const result = await boxExec(ctx, script, { timeoutMs: 60_000 });
   const sections: Record<string, string | null> = { H: null, I: null, W: null };
   for (const line of result.stdout.split("\n")) {
@@ -955,7 +960,15 @@ export async function healBoxOrigin(ctx: SandboxExecContext): Promise<void> {
     sessionKey: ctx.sessionKey,
   });
   const [workspaceId, ...rest] = ctx.sessionKey.split(":");
-  await configureBoxRemote({ ctx, workspaceId, userId: rest.join(":") });
+  const userId = rest.join(":");
+  // Recover the author identity too. Healing without it re-minted the git
+  // token with no email, which fail-opens authorship enforcement until the
+  // next full ensureBox. Dynamic import: worktree.service imports this
+  // module, so a static import would be a cycle.
+  const author = await import("./worktree.service")
+    .then(m => m.resolveActorIdentity(userId))
+    .catch(() => undefined);
+  await configureBoxRemote({ ctx, workspaceId, userId, author });
 }
 
 /**

@@ -373,12 +373,12 @@ interface AppsV2Store {
     workspaceId: string,
     appId: string,
   ) => Promise<Array<Record<string, unknown> & { name: string }>>;
-  /** Kick a materialization run for one binding. */
+  /** Kick a materialization run for one binding; returns the run summary. */
   materializeAppBinding: (
     workspaceId: string,
     appId: string,
     name: string,
-  ) => Promise<void>;
+  ) => Promise<Record<string, unknown>>;
   /** Closing a terminal tab kills its remote session (pty + dtach + recording). */
   killTerminalSession: (
     workspaceId: string,
@@ -449,19 +449,6 @@ export const useAppsV2Store = create<AppsV2Store>()(
         };
         set(s => {
           s.enabled = Boolean(body?.enabled);
-          // Remembered per workspace so the NEXT page load can paint the
-          // rail correctly before the probe returns — an async probe that
-          // gates nav items is otherwise a guaranteed layout shift on every
-          // single load (see appsV2VisibleHint in Sidebar).
-          try {
-            localStorage.setItem(
-              `apps-v2-enabled:${workspaceId}`,
-              body?.enabled ? "1" : "0",
-            );
-          } catch {
-            // Storage full/blocked: the probe still works, only the hint is
-            // lost.
-          }
           s.canCreate = Boolean(body?.canCreate);
           s.repos = body?.repos ?? [];
         });
@@ -1282,12 +1269,12 @@ export const useAppsV2Store = create<AppsV2Store>()(
     },
 
     materializeAppBinding: async (workspaceId, appId, name) => {
-      unwrapBody(
+      return unwrapBody(
         await api.POST(
           "/api/workspaces/{workspaceId}/apps-v2/{id}/bindings/{name}/materialize",
           { params: { path: { workspaceId, id: appId, name } } },
         ),
-      );
+      ) as Record<string, unknown>;
     },
 
     fetchRunningDevApps: async workspaceId => {
@@ -1300,6 +1287,9 @@ export const useAppsV2Store = create<AppsV2Store>()(
             { params: { path: { workspaceId, id: appId } } },
           ),
         ) as { running?: string[] };
+        // A poll answered before a recycle must not overwrite the offline
+        // push that arrived while it was in flight (§13.11: pushes win).
+        if (get().boxStatus === "offline") return;
         set(s => {
           s.runningDevApps = body.running ?? [];
         });
@@ -1328,6 +1318,9 @@ export const useAppsV2Store = create<AppsV2Store>()(
             { params: { path: { workspaceId, id: appId } } },
           ),
         ) as { serving?: boolean; url?: string; reachable?: boolean };
+        // Stale probe vs offline push: the push wins (§13.11). A response
+        // computed before the box died must not repaint dead-sandbox URLs.
+        if (get().boxStatus === "offline") return;
         const url = body.url;
         if (body.serving && url) {
           // Discovery: a dev server is ALREADY running for this app (started
@@ -1413,7 +1406,10 @@ export const useAppsV2Store = create<AppsV2Store>()(
       } catch {
         // Best effort.
       }
-      if (currentUserId && userId !== currentUserId) return;
+      // Unknown identity = drop, not accept: while /me is still resolving in
+      // a multi-user workspace, a TEAMMATE's box push must not paint this
+      // client's dots and previews.
+      if (!currentUserId || userId !== currentUserId) return;
       // Reactive box identity/liveness for the sandbox panel and, crucially,
       // preview coherence: a second browser learns the box's id and status the
       // instant they change, not on a poll.
@@ -1431,6 +1427,18 @@ export const useAppsV2Store = create<AppsV2Store>()(
           s.boxTerminals = [];
         });
         for (const app of apps) get().markDevDown(app.id);
+        // markDevDown only clears keys for apps we KNOW about; if this push
+        // beat fetchApps, the loop above ran over nothing and stale URLs
+        // survive into the next session. Purge the namespace wholesale —
+        // every remembered dev URL died with the machine.
+        try {
+          for (let i = localStorage.length - 1; i >= 0; i--) {
+            const k = localStorage.key(i);
+            if (k?.startsWith("apps-v2-devurl:")) localStorage.removeItem(k);
+          }
+        } catch {
+          // Best effort.
+        }
         return;
       }
       if (state.devServers) {
@@ -1500,6 +1508,23 @@ export const useAppsV2Store = create<AppsV2Store>()(
         optimistic = localStorage.getItem(`apps-v2-devurl:${appId}`);
       } catch {
         // Storage unavailable — no optimism, same as before.
+      }
+      // The remembered URL embeds a sandbox id, and box truth can prove it
+      // dead: an offline box, or a live box with a DIFFERENT id, means the
+      // URL is a corpse — optimism would iframe E2B's error page for the
+      // whole post-recycle cold boot (clone + install + vite, not seconds).
+      const { boxStatus, boxSandboxId } = get();
+      if (
+        optimistic &&
+        (boxStatus === "offline" ||
+          (boxSandboxId && !optimistic.includes(boxSandboxId)))
+      ) {
+        optimistic = null;
+        try {
+          localStorage.removeItem(`apps-v2-devurl:${appId}`);
+        } catch {
+          // Best effort.
+        }
       }
       set(s => {
         s.previewByApp[appId] = optimistic

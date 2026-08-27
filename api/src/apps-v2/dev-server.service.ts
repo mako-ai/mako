@@ -36,6 +36,7 @@ import {
 } from "./worktree.service";
 import { loggers } from "../logging";
 import { boxEnvPath } from "./box";
+import { ensureBoxAgent } from "./box-agent";
 import { getBoxState, probeReachable } from "./box-state.service";
 import { readBindings, bindingArtifactKey } from "./bindings.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
@@ -111,9 +112,13 @@ function dataDir(handle: WorktreeHandle): string {
 /**
  * The app's port, from the in-sandbox registry. `allocate` grants a new port
  * to an app that has none; reads that must not disturb state (is the server
- * up?) pass false and get null for an unregistered app. Allocation runs as
- * one node one-liner in the sandbox, so concurrent allocations for the SAME
- * sandbox serialize on the file rather than racing in two API processes.
+ * up?) pass false and get null for an unregistered app.
+ *
+ * Allocation takes a LOCK (mkdir is atomic) around the read-modify-write:
+ * two apps launched concurrently both read `{}`, both picked 5173, and the
+ * loser's vite died on EADDRINUSE — while its "is it listening" poll saw the
+ * winner answering and iframed the WRONG app. A lock held longer than 5s is
+ * presumed dead (a killed allocator) and stolen.
  */
 async function devPort(
   handle: WorktreeHandle,
@@ -123,12 +128,17 @@ async function devPort(
 ): Promise<number | null> {
   const script =
     `const fs=require("fs");const f=${JSON.stringify(PORTS_REGISTRY)};` +
-    `let m={};try{m=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}` +
     `const app=process.argv[1];` +
     (options.allocate
-      ? `if(!m[app]){const used=new Set(Object.values(m));let p=${DEV_PORT_BASE};while(used.has(p))p++;m[app]=p;fs.writeFileSync(f,JSON.stringify(m));}`
-      : ``) +
-    `console.log(m[app]??"");`;
+      ? `const lock=f+".lock";const t0=Date.now();` +
+        `for(;;){try{fs.mkdirSync(lock);break}catch{` +
+        `if(Date.now()-t0>5000){try{fs.rmdirSync(lock)}catch{}continue}` +
+        `const w=Date.now()+15;while(Date.now()<w);}}` +
+        `try{let m={};try{m=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}` +
+        `if(!m[app]){const used=new Set(Object.values(m));let p=${DEV_PORT_BASE};while(used.has(p))p++;m[app]=p;fs.writeFileSync(f,JSON.stringify(m));}` +
+        `console.log(m[app]??"")}finally{try{fs.rmdirSync(lock)}catch{}}`
+      : `let m={};try{m=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}` +
+        `console.log(m[app]??"");`);
   const result = await provider.exec(
     ctx,
     `node -e '${script.replace(/'/g, String.raw`'\''`)}' ${JSON.stringify(handle.appRoot)}`,
@@ -513,37 +523,54 @@ export async function isServingApp(handle: WorktreeHandle): Promise<boolean> {
 }
 
 /**
- * Every dev server serving in the box right now, by discovery: the session
- * sockets name the apps, the port registry names the ports. One exec.
+ * Every dev server serving in the box right now, by discovery. One exec.
  * Used to seed a cold box-state snapshot, so that the first launcher delta
  * to arrive does not pose as the full list and mark every OTHER running
  * server down.
+ *
+ * Truth is the PORT, exactly as the box agent defines it: each registered
+ * port is probed with a raw TCP connect inside the box. The old heuristic —
+ * "a dtach socket file exists" — survived the death of the server it named
+ * (sockets are not cleaned up by a crash or a resume), so a box could show
+ * green dots for servers that had been dead for hours.
  */
 export async function discoverDevServers(
   ctx: SandboxExecContext,
 ): Promise<Array<{ slug: string; port: number }>> {
   const provider = getSandboxProvider();
   if (!(await provider.hasSession(ctx))) return [];
+  // Any touch of a box is a chance to refresh its agent: a resumed box can
+  // sit for hours with a stale (or silently dead) agent otherwise, because
+  // nothing but the ensureBox flows ever reinstalled it. Throttled inside.
+  void ensureBoxAgent(ctx);
+  const script =
+    `const fs=require("fs"),net=require("net");` +
+    `let m={};try{m=JSON.parse(fs.readFileSync(${JSON.stringify(PORTS_REGISTRY)},"utf8"))}catch{}` +
+    `const entries=Object.entries(m).filter(e=>Number.isInteger(e[1]));` +
+    `let left=entries.length;const out=[];` +
+    `if(!left){console.log("[]");process.exit(0)}` +
+    `entries.forEach(([k,p])=>{let d=false;const s=net.connect(p,"127.0.0.1");` +
+    `const done=ok=>{if(d)return;d=true;try{s.destroy()}catch{}` +
+    `if(ok)out.push({slug:k.replace(/^apps\\//,""),port:p});` +
+    `if(--left===0)console.log(JSON.stringify(out))};` +
+    `s.setTimeout(800);s.once("connect",()=>done(true));` +
+    `s.once("error",()=>done(false));s.once("timeout",()=>done(false));});`;
   const result = await provider.exec(
     ctx,
-    `ls /tmp/mako-term-dev-*.sock 2>/dev/null; echo ---; cat ${PORTS_REGISTRY} 2>/dev/null || echo {}`,
+    `node -e '${script.replace(/'/g, String.raw`'\''`)}'`,
     { timeoutMs: 15_000 },
   );
-  const [socks, json] = result.stdout.split("---");
-  let ports: Record<string, number> = {};
   try {
-    ports = JSON.parse((json ?? "{}").trim() || "{}") as Record<string, number>;
+    const parsed = JSON.parse(result.stdout.trim() || "[]") as Array<{
+      slug: string;
+      port: number;
+    }>;
+    return parsed.filter(
+      d => d && typeof d.slug === "string" && Number.isInteger(d.port),
+    );
   } catch {
-    ports = {};
+    return [];
   }
-  const out: Array<{ slug: string; port: number }> = [];
-  for (const line of (socks ?? "").split("\n")) {
-    const slug = line.match(/mako-term-dev-(.+)\.sock$/)?.[1];
-    if (!slug) continue;
-    const port = ports[`apps/${slug}`];
-    if (Number.isInteger(port)) out.push({ slug, port });
-  }
-  return out;
 }
 
 /**
@@ -561,7 +588,10 @@ export async function devServerStatus(
   if (snapshot?.devServers) {
     const entry = snapshot.devServers.find(d => d.slug === appSlug(handle));
     if (!entry) return { serving: false };
-    const url = entry.url ?? (await provider.publicUrlForPort(ctx, entry.port));
+    // Peek, never create: status must not boot a machine (§13.9).
+    const url =
+      entry.url ?? (await provider.peekPublicUrlForPort(ctx, entry.port));
+    if (!url) return { serving: false };
     return { serving: true, url, reachable: entry.reachable };
   }
   if (!(await provider.hasSession(ctx))) return { serving: false };
@@ -570,7 +600,8 @@ export async function devServerStatus(
   if ((await servingState(provider, ctx, handle, port)) !== "serving") {
     return { serving: false };
   }
-  const url = await provider.publicUrlForPort(ctx, port);
+  const url = await provider.peekPublicUrlForPort(ctx, port);
+  if (!url) return { serving: false };
   return { serving: true, url };
 }
 

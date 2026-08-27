@@ -253,9 +253,19 @@ export async function resolveActorIdentity(
         email: user.email,
       };
     }
-  } catch {
-    // A non-ObjectId actor id (e.g. the publish actor) makes findById throw on
-    // cast — that is a "no user", not an error worth surfacing.
+  } catch (error) {
+    // A non-ObjectId actor id (e.g. the publish actor) makes findById throw
+    // on cast — that is a "no user", cache it. Anything else is a transient
+    // DB failure: caching undefined for the process lifetime silently
+    // disabled authorship for that user until a restart. Answer "unknown"
+    // for THIS call only and let the next one retry.
+    if ((error as Error | null)?.name !== "CastError") {
+      logger.warn("Apps v2 actor identity lookup failed; not caching", {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
     identity = undefined;
   }
   actorIdentityCache.set(userId, identity);
@@ -339,7 +349,26 @@ export function isMissingCwd(error: unknown): boolean {
 }
 
 /** Force-hydrate a box that turned out to be missing its working copy. */
-export async function rehydrateBox(
+const rehydrating = new Map<string, Promise<void>>();
+
+export function rehydrateBox(
+  handle: WorktreeHandle,
+  ctx: SandboxExecContext,
+): Promise<void> {
+  // Single-flight per box: rehydrate is reached from exec's missing-cwd
+  // retry, and an agent firing N parallel tool calls after a recycle hit N
+  // concurrent clones into one directory — the git init/config.lock race
+  // ensureInFlight exists to prevent, recreated through the back door.
+  const inflight = rehydrating.get(ctx.sessionKey);
+  if (inflight) return inflight;
+  const run = rehydrateBoxNow(handle, ctx).finally(() =>
+    rehydrating.delete(ctx.sessionKey),
+  );
+  rehydrating.set(ctx.sessionKey, run);
+  return run;
+}
+
+async function rehydrateBoxNow(
   handle: WorktreeHandle,
   ctx: SandboxExecContext,
 ): Promise<void> {
