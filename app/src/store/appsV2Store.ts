@@ -368,6 +368,17 @@ interface AppsV2Store {
   ) => Promise<Record<string, unknown> | null>;
   /** Kill the sandbox; the next touch builds a fresh one. */
   recycleSandbox: (workspaceId: string, appId: string) => Promise<void>;
+  /** Bindings state for an app (per-binding materialization status/history). */
+  fetchAppBindings: (
+    workspaceId: string,
+    appId: string,
+  ) => Promise<Array<Record<string, unknown> & { name: string }>>;
+  /** Kick a materialization run for one binding. */
+  materializeAppBinding: (
+    workspaceId: string,
+    appId: string,
+    name: string,
+  ) => Promise<void>;
   /** Closing a terminal tab kills its remote session (pty + dtach + recording). */
   killTerminalSession: (
     workspaceId: string,
@@ -1258,6 +1269,24 @@ export const useAppsV2Store = create<AppsV2Store>()(
       await api.POST(
         "/api/workspaces/{workspaceId}/apps-v2/{id}/sandbox/recycle",
         { params: { path: { workspaceId, id: appId } } },
+      );
+    },
+
+    fetchAppBindings: async (workspaceId, appId) => {
+      const body = unwrapBody(
+        await api.GET("/api/workspaces/{workspaceId}/apps-v2/{id}/bindings", {
+          params: { path: { workspaceId, id: appId } },
+        }),
+      ) as { bindings?: Array<Record<string, unknown> & { name: string }> };
+      return body.bindings ?? [];
+    },
+
+    materializeAppBinding: async (workspaceId, appId, name) => {
+      unwrapBody(
+        await api.POST(
+          "/api/workspaces/{workspaceId}/apps-v2/{id}/bindings/{name}/materialize",
+          { params: { path: { workspaceId, id: appId, name } } },
+        ),
       );
     },
 
