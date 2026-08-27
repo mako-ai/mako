@@ -667,6 +667,64 @@ function SessionRow({
   );
 }
 
+/** Live build output during a publish — the streamed npm/vite log. */
+function BuildLogPanel({ text }: { text: string }) {
+  const ref = useRef<HTMLPreElement | null>(null);
+  useEffect(() => {
+    // Follow the tail as the build streams.
+    const el = ref.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [text]);
+  // The build output carries ANSI color codes; strip them for a plain reader.
+  // eslint-disable-next-line no-control-regex
+  const clean = text.replace(/\x1b\[[0-9;]*m/g, "");
+  return (
+    <Box
+      sx={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        bgcolor: "#1e1e1e",
+        color: "#d4d4d4",
+      }}
+    >
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          gap: 1,
+          px: 1.5,
+          py: 1,
+          borderBottom: "1px solid rgba(255,255,255,0.1)",
+          flexShrink: 0,
+        }}
+      >
+        <CircularProgress size={14} sx={{ color: "#d4d4d4" }} />
+        <Typography variant="caption" sx={{ fontWeight: 600 }}>
+          Building &amp; publishing…
+        </Typography>
+      </Box>
+      <Box
+        component="pre"
+        ref={ref}
+        sx={{
+          flex: 1,
+          m: 0,
+          p: 1.5,
+          overflow: "auto",
+          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+          fontSize: 12,
+          lineHeight: 1.5,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+        }}
+      >
+        {clean || "Starting build…"}
+      </Box>
+    </Box>
+  );
+}
+
 export default function AppV2Workspace({
   tabId: _tabId,
   appId,
@@ -1066,7 +1124,9 @@ export default function AppV2Workspace({
           style={{ flex: 1, minHeight: 0 }}
         >
           <Panel defaultSize={70} minSize={20}>
-            {preview?.building ? (
+            {preview?.building && preview.publishing ? (
+              <BuildLogPanel text={preview.buildOutput ?? ""} />
+            ) : preview?.building ? (
               <Box
                 sx={{
                   height: "100%",

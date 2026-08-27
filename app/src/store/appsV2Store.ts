@@ -118,6 +118,8 @@ export interface AppV2Branch {
 export interface AppV2Preview {
   url: string | null;
   building: boolean;
+  /** A publish build is running — distinct from a dev server starting. */
+  publishing?: boolean;
   error: string | null;
   buildOutput?: string;
   builtAt?: number;
@@ -1074,9 +1076,34 @@ export const useAppsV2Store = create<AppsV2Store>()(
         s.previewByApp[appId] = {
           ...(s.previewByApp[appId] ?? { url: null }),
           building: true,
+          publishing: true,
+          buildOutput: "",
           error: null,
         };
       });
+      // Tail the sandbox build log while the publish runs, so the terminal
+      // shows npm install + vite build live instead of a silent spinner.
+      let stopTail = false;
+      const tail = (async () => {
+        let offset = 0;
+        while (!stopTail) {
+          try {
+            const body = (await apiClient.get(
+              `/api/workspaces/${workspaceId}/apps-v2/${appId}/build/log?offset=${offset}`,
+            )) as { size?: number; chunk?: string };
+            if (body.chunk) {
+              set(s => {
+                const p = s.previewByApp[appId];
+                if (p) p.buildOutput = (p.buildOutput ?? "") + body.chunk;
+              });
+            }
+            offset = body.size ?? offset;
+          } catch {
+            // A missed poll is fine; the next one resumes from `offset`.
+          }
+          await new Promise(r => setTimeout(r, 700));
+        }
+      })();
       try {
         const res = await api.POST(
           "/api/workspaces/{workspaceId}/apps-v2/{id}/publish",
@@ -1095,32 +1122,42 @@ export const useAppsV2Store = create<AppsV2Store>()(
               app.publishedSha = raw.sha;
               app.publishedAt = new Date().toISOString();
             }
+            const p = s.previewByApp[appId];
             s.previewByApp[appId] = {
-              ...(s.previewByApp[appId] ?? { url: null }),
+              ...(p ?? { url: null }),
               building: false,
+              publishing: false,
               error: null,
             };
           });
         } else {
           // Surface the build output (tsc/vite errors) — without it a failed
-          // publish is just "Build failed" with nothing to act on.
+          // publish is just "Build failed" with nothing to act on. The full
+          // build log is already in `buildOutput` (tailed live above).
           const detail = [raw?.error, raw?.output].filter(Boolean).join("\n\n");
           set(s => {
+            const p = s.previewByApp[appId];
             s.previewByApp[appId] = {
-              ...(s.previewByApp[appId] ?? { url: null }),
+              ...(p ?? { url: null }),
               building: false,
+              publishing: false,
               error: detail || "Publish failed",
             };
           });
         }
       } catch (e) {
         set(s => {
+          const p = s.previewByApp[appId];
           s.previewByApp[appId] = {
-            ...(s.previewByApp[appId] ?? { url: null }),
+            ...(p ?? { url: null }),
             building: false,
+            publishing: false,
             error: message(e, "Publish failed"),
           };
         });
+      } finally {
+        stopTail = true;
+        void tail;
       }
     },
 
