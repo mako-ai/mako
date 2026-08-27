@@ -55,7 +55,100 @@ function apiKey(): string {
 // Sandbox.list metadata when the process restarts.
 const sessions = new Map<string, string>();
 
-async function connectSession(sessionKey: string): Promise<Sandbox> {
+/** The canonical box among duplicates for a key: newest, sandboxId as a
+ *  deterministic tiebreak so every process/instance picks the SAME winner. */
+function pickWinner<T extends { sandboxId: string; startedAt?: string | Date }>(
+  boxes: T[],
+): T | undefined {
+  return [...boxes].sort((a, b) => {
+    const byTime =
+      new Date(b.startedAt ?? 0).getTime() -
+      new Date(a.startedAt ?? 0).getTime();
+    if (byTime !== 0) return byTime;
+    return a.sandboxId < b.sandboxId ? -1 : 1;
+  })[0];
+}
+
+/**
+ * After creating a box, make sure it is the ONLY one for its key. A create in
+ * another API instance (the single-flight map is per-process) can race this
+ * one; both processes independently pick the same winner via pickWinner and
+ * kill the rest, so they converge on one box even though neither saw the
+ * other's create. Best effort: a lookup failure just keeps the box we made.
+ */
+async function convergeToSingle(
+  sessionKey: string,
+  created: Sandbox,
+): Promise<Sandbox> {
+  try {
+    const paginator = Sandbox.list({
+      apiKey: apiKey(),
+      query: { metadata: { makoAppsV2SessionKey: sessionKey } },
+      limit: 10,
+    });
+    if (!paginator.hasNext) return created;
+    const page = [...(await paginator.nextItems())];
+    if (page.length <= 1) return created;
+    const winner = pickWinner(page);
+    if (!winner || winner.sandboxId === created.sandboxId) {
+      for (const box of page) {
+        if (box.sandboxId === created.sandboxId) continue;
+        void Sandbox.kill(box.sandboxId, { apiKey: apiKey() }).catch(
+          () => undefined,
+        );
+      }
+      logger.warn("Converged duplicate sandboxes to one (kept the new box)", {
+        sessionKey,
+        kept: created.sandboxId,
+        killed: page
+          .filter(b => b.sandboxId !== created.sandboxId)
+          .map(b => b.sandboxId),
+      });
+      return created;
+    }
+    // Another instance's box wins the tiebreak; drop ours and adopt it.
+    void Sandbox.kill(created.sandboxId, { apiKey: apiKey() }).catch(
+      () => undefined,
+    );
+    logger.warn("Converged duplicate sandboxes to one (adopted the winner)", {
+      sessionKey,
+      adopted: winner.sandboxId,
+      dropped: created.sandboxId,
+    });
+    return await Sandbox.connect(winner.sandboxId, { apiKey: apiKey() });
+  } catch (error) {
+    logger.warn("Sandbox convergence failed; using the box we created", {
+      sessionKey,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return created;
+  }
+}
+
+/**
+ * One box per (workspace, user): concurrent callers for a cold session share
+ * ONE connect/create instead of each racing to `Sandbox.create`.
+ *
+ * connectSession is called from every exec/read entry point, not just through
+ * ensureBox — so without this, two requests that arrive before the session id
+ * is cached each list (find nothing), each create, and the account grows a
+ * duplicate box for the same worktree. The single-flight collapses them; the
+ * post-create convergence in connectSessionNow handles the cross-INSTANCE race
+ * this map cannot see.
+ */
+const connecting = new Map<string, Promise<Sandbox>>();
+
+function connectSession(sessionKey: string): Promise<Sandbox> {
+  const inflight = connecting.get(sessionKey);
+  if (inflight) return inflight;
+  const run = connectSessionNow(sessionKey).finally(() =>
+    connecting.delete(sessionKey),
+  );
+  connecting.set(sessionKey, run);
+  return run;
+}
+
+async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
   const known = sessions.get(sessionKey);
   if (known) {
     try {
@@ -80,11 +173,8 @@ async function connectSession(sessionKey: string): Promise<Sandbox> {
       // without sorting, WHICH working copy answered depended on the whim of
       // a list API, and files written through one process vanished when the
       // next request read the other box. Newest wins, always, everywhere.
-      const [info, ...stale] = [...page].sort(
-        (a, b) =>
-          new Date(b.startedAt ?? 0).getTime() -
-          new Date(a.startedAt ?? 0).getTime(),
-      );
+      const info = pickWinner([...page]);
+      const stale = [...page].filter(x => x.sandboxId !== info?.sandboxId);
       if (stale.length > 0) {
         logger.warn("Multiple sandboxes share one session key; using newest", {
           sessionKey,
@@ -135,12 +225,15 @@ async function connectSession(sessionKey: string): Promise<Sandbox> {
   await sandbox.commands.run(`mkdir -p ${REMOTE_ROOT}`, {
     user: SANDBOX_USER,
   });
-  sessions.set(sessionKey, sandbox.sandboxId);
+  // A concurrent create in another API instance may have made a second box
+  // for this key; reduce to one deterministically before anyone uses it.
+  const winner = await convergeToSingle(sessionKey, sandbox);
+  sessions.set(sessionKey, winner.sandboxId);
   logger.info("E2B sandbox created", {
     sessionKey,
-    sandboxId: sandbox.sandboxId,
+    sandboxId: winner.sandboxId,
   });
-  return sandbox;
+  return winner;
 }
 
 // ---------------------------------------------------------------------------
