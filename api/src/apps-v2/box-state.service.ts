@@ -62,6 +62,20 @@ export interface BoxState {
   changes: BoxChange[] | null;
   /** Dev servers serving right now; null = unknown. */
   devServers: BoxDevServer[] | null;
+  /**
+   * The E2B sandbox id backing this box right now; null when none is running.
+   * The dev-server public URL embeds this id, so when it changes every tab's
+   * preview URL is stale — which is why it rides in the pushed snapshot.
+   */
+  sandboxId: string | null;
+  /**
+   * Coarse liveness. A box that reports is "online"; a recycle publishes
+   * "offline" immediately, so a second browser drops its dead sandbox URL and
+   * flips to the launch state instead of waiting for a poll to fail.
+   */
+  status: "online" | "offline";
+  /** Open terminal session ids, so shells opened in one tab show in another. */
+  terminals: string[] | null;
   /** Server receipt time of the newest patch (ms). */
   updatedAt: number;
 }
@@ -85,6 +99,10 @@ export interface BoxStatePatch {
   devServers?: Array<{ slug: string; port: number }>;
   /** One server's transition (the launcher) — merges. */
   devServer?: { slug: string; port: number; state: "serving" | "down" };
+  /** The reporting box's E2B sandbox id (from E2B_SANDBOX_ID in-box). */
+  sandboxId?: string;
+  /** Open terminal session ids (the full list — replaces). */
+  terminals?: string[];
 }
 
 // --------------------------------------------------------------------------
@@ -213,6 +231,39 @@ export async function forgetBoxState(sessionKey: string): Promise<void> {
     .catch(() => undefined);
 }
 
+/**
+ * Announce that a box is gone (recycled/killed), NOW.
+ *
+ * Deleting the cache (forgetBoxState) is not enough: a second browser only
+ * learns on its next poll or when the 90s TTL lapses, and until then it keeps
+ * iframing a dead `<port>-<sandboxId>.e2b.app`. This fans out an offline state
+ * so every open tab drops that URL and flips to the launch state in one beat.
+ */
+export async function markBoxOffline(
+  workspaceId: string,
+  userId: string,
+): Promise<void> {
+  const sessionKey = sessionKeyFor(workspaceId, userId);
+  await getStore()
+    .del(keyFor(sessionKey))
+    .catch(() => undefined);
+  publishRealtimeEvent(workspaceId, {
+    type: "app-v2.box-state",
+    userId,
+    state: {
+      branch: null,
+      head: null,
+      ahead: null,
+      changes: null,
+      devServers: null,
+      sandboxId: null,
+      status: "offline",
+      terminals: null,
+      updatedAt: Date.now(),
+    },
+  });
+}
+
 // --------------------------------------------------------------------------
 // Writes
 // --------------------------------------------------------------------------
@@ -273,6 +324,9 @@ function applyPatch(prev: BoxState | null, patch: BoxStatePatch): BoxState {
         ahead: null,
         changes: null,
         devServers: null,
+        sandboxId: null,
+        status: "online",
+        terminals: null,
         updatedAt: 0,
       };
   if (typeof patch.branch === "string") next.branch = patch.branch;
@@ -312,6 +366,13 @@ function applyPatch(prev: BoxState | null, patch: BoxStatePatch): BoxState {
     }
     next.devServers = list;
   }
+  if (typeof patch.sandboxId === "string") next.sandboxId = patch.sandboxId;
+  if (Array.isArray(patch.terminals)) {
+    next.terminals = patch.terminals.filter(t => typeof t === "string");
+  }
+  // Any patch is a live report, so the box is online. Recycle is the only
+  // thing that flips this, and it publishes offline through markBoxOffline.
+  next.status = "online";
   next.updatedAt = Date.now();
   return next;
 }

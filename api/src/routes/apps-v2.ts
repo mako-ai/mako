@@ -105,7 +105,7 @@ import {
   isServingApp,
   discoverDevServers,
 } from "../apps-v2/dev-server.service";
-import { getBoxState } from "../apps-v2/box-state.service";
+import { getBoxState, markBoxOffline } from "../apps-v2/box-state.service";
 import { getSandboxProvider } from "../apps-v2/sandbox/provider";
 import { Readable } from "node:stream";
 import {
@@ -1654,6 +1654,12 @@ appsV2Routes.openapi(
       // The machine is gone; so is everything the API believed about it.
       forgetBoxCaches(ctx.sessionKey);
       forgetTerminalCaches(ctx.sessionKey);
+      // Tell every open tab NOW, so a second browser drops its dead sandbox
+      // URL instead of waiting for a poll to fail or the cache TTL to lapse.
+      await markBoxOffline(
+        loaded.project.workspaceId.toString(),
+        loaded.userId ?? "api-key",
+      );
       return c.json({ success: true as const }, 200);
     } catch (error) {
       return handleError(c, error);

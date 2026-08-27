@@ -99,6 +99,10 @@ export default function SettingsSandbox() {
   const workspaceId = currentWorkspace?.id;
   const apps = useAppsV2Store(s => s.apps);
   const fetchApps = useAppsV2Store(s => s.fetchApps);
+  // Pushed box liveness/identity — makes this panel coherent across browsers
+  // without a poll: a recycle elsewhere flips us to "no sandbox" instantly.
+  const boxStatus = useAppsV2Store(s => s.boxStatus);
+  const boxSandboxId = useAppsV2Store(s => s.boxSandboxId);
   // The sandbox belongs to the (workspace, user) pair; any app id reaches it.
   const appId = apps[0]?.id;
 
@@ -134,6 +138,15 @@ export default function SettingsSandbox() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // React to the pushed box state: recycled anywhere → show "no sandbox" at
+  // once; a new box (new id) → pull fresh stats. boxStatus stays "online"
+  // across heartbeats, so this only fires on real transitions.
+  useEffect(() => {
+    if (boxStatus === "offline") setStats({ running: false });
+    else if (boxStatus === "online") void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boxStatus, boxSandboxId]);
 
   const recycle = useCallback(async () => {
     if (!workspaceId || !appId) return;

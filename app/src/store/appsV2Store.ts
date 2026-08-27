@@ -63,6 +63,12 @@ export interface AppsV2BoxState {
     url?: string;
     reachable?: boolean;
   }> | null;
+  /** The E2B sandbox id backing this box; null when none is running. */
+  sandboxId?: string | null;
+  /** Coarse liveness — "offline" is published the instant a box is recycled. */
+  status?: "online" | "offline";
+  /** Open terminal session ids. */
+  terminals?: string[] | null;
   updatedAt: number;
 }
 
@@ -350,6 +356,10 @@ interface AppsV2Store {
   applyBoxState: (userId: string, state: AppsV2BoxState) => void;
   /** Slugs of apps whose dev server is live — the sidebar's green dots. */
   runningDevApps: string[];
+  /** Current box liveness/identity from the pushed snapshot (reactive). */
+  boxStatus?: "online" | "offline";
+  boxSandboxId?: string | null;
+  boxTerminals: string[];
   fetchRunningDevApps: (workspaceId: string) => Promise<void>;
   /** Closing a terminal tab kills its remote session (pty + dtach + recording). */
   killTerminalSession: (
@@ -398,6 +408,9 @@ export const useAppsV2Store = create<AppsV2Store>()(
     historyByApp: {},
     repoHistoryByApp: {},
     runningDevApps: [],
+    boxStatus: undefined,
+    boxSandboxId: null,
+    boxTerminals: [],
     currentUserId: null,
     branchesByApp: {},
     terminalByApp: {},
@@ -1354,6 +1367,25 @@ export const useAppsV2Store = create<AppsV2Store>()(
         // Best effort.
       }
       if (currentUserId && userId !== currentUserId) return;
+      // Reactive box identity/liveness for the sandbox panel and, crucially,
+      // preview coherence: a second browser learns the box's id and status the
+      // instant they change, not on a poll.
+      set(s => {
+        if (state.status) s.boxStatus = state.status;
+        if (state.sandboxId !== undefined) s.boxSandboxId = state.sandboxId;
+        if (state.terminals != null) s.boxTerminals = state.terminals;
+      });
+      if (state.status === "offline") {
+        // The box is gone — every dev-server URL now points at a dead sandbox.
+        // Drop them so open previews flip to the launch state immediately
+        // instead of showing E2B's "sandbox not found".
+        set(s => {
+          s.runningDevApps = [];
+          s.boxTerminals = [];
+        });
+        for (const app of apps) get().markDevDown(app.id);
+        return;
+      }
       if (state.devServers) {
         const serving = new Map(state.devServers.map(d => [d.slug, d]));
         set(s => {

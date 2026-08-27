@@ -1452,3 +1452,31 @@ away; auto-starts are the dangerous direction and are click-only, everywhere.
 (true for the scaffold); an app that moves HMR elsewhere would look idle. The
 running cap evicts by age (lowest port ≈ oldest), not true LRU; wiring the
 agent's per-server activity into eviction would make it exact.
+
+## §13.10 Box identity and liveness are pushed, so tabs stay coherent (RFC, 2026-08-27)
+
+The dev-server URL is `https://<port>-<sandboxId>.e2b.app` — the E2B sandbox id
+is baked into the hostname, and E2B offers no stable alias. So a recycle mints a
+new id and every open tab's iframe is suddenly pointing at a dead sandbox
+("sandbox not found"), and a *second* browser had no way to know the first had
+recycled until its own poll failed or the 90s cache TTL lapsed.
+
+Fix, within the existing push pipeline (box → `patchBoxState` → Redis/memory →
+realtime → `applyBoxState`), no new infra:
+
+- **The snapshot now carries identity and liveness**: `sandboxId` (self-reported
+  by the agent from `E2B_SANDBOX_ID` in-box — no per-heartbeat E2B call),
+  `status` (`online` on any report), and the open `terminals`. So a browser
+  learns the box's id, whether it's up, and its shells the instant they change.
+- **Recycle publishes `offline` immediately** (`markBoxOffline`) instead of only
+  deleting the cache. Every tab drops its dead dev URL and flips to the launch
+  state in one realtime beat; the sandbox panel goes to "no sandbox" without a
+  poll. A new box coming up pushes `online` + the new id, and the preview URL
+  swaps reactively (it was already bound to the pushed `devServers[].url`).
+
+What this deliberately does NOT do: give the browser a URL that survives a
+recycle. That needs Mako to reverse-proxy the dev origin (own a stable hostname,
+forward WebSocket/HMR to the current `getHost(port)`, 503 cleanly mid-recycle) —
+which reverses §12.4's "load E2B directly". Worth it only if the sub-second flash
+between `offline` and the next box's `online` proves to be a real irritant; the
+coherence above removes the "sandbox not found" dead-end either way.

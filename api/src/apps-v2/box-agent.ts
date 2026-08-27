@@ -37,7 +37,7 @@ const ENSURE_INTERVAL_MS = 5 * 60 * 1000;
 function agentSource(root: string, envPath: string): string {
   const body = `
 import { execFile } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { promisify } from "node:util";
 
@@ -258,6 +258,18 @@ async function reap(slug) {
   log("reaped idle dev server " + slug);
 }
 
+// Open terminal session ids, so a shell opened in one browser shows in
+// another. The dtach socket names ARE the ids: mako-term-<id>.sock.
+function terminals() {
+  try {
+    return readdirSync("/tmp")
+      .filter(f => f.startsWith("mako-term-") && f.endsWith(".sock"))
+      .map(f => f.slice("mako-term-".length, -".sock".length));
+  } catch {
+    return [];
+  }
+}
+
 let lastSent = "";
 let lastSentAt = 0;
 let failStreak = 0;
@@ -293,7 +305,8 @@ async function tick() {
   } catch {
     // Best effort; a lost file just restarts the grace window.
   }
-  const snapshot = { source: "agent", devServers: alive };
+  const snapshot = { source: "agent", devServers: alive, terminals: terminals() };
+  if (process.env.E2B_SANDBOX_ID) snapshot.sandboxId = process.env.E2B_SANDBOX_ID;
   if (git) {
     if (git.branch) snapshot.branch = git.branch;
     if (git.head) snapshot.head = git.head;

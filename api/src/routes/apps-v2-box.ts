@@ -49,6 +49,8 @@ const PatchSchema = z.object({
       state: z.enum(["serving", "down"]),
     })
     .optional(),
+  sandboxId: z.string().max(64).optional(),
+  terminals: z.array(z.string().max(64)).max(200).optional(),
 });
 
 function bearer(c: Context): string | null {
