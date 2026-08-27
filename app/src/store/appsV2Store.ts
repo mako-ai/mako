@@ -1088,20 +1088,27 @@ export const useAppsV2Store = create<AppsV2Store>()(
         let offset = 0;
         while (!stopTail) {
           try {
-            const body = (await apiClient.get(
+            const res = await fetch(
               `/api/workspaces/${workspaceId}/apps-v2/${appId}/build/log?offset=${offset}`,
-            )) as { size?: number; chunk?: string };
-            if (body.chunk) {
-              set(s => {
-                const p = s.previewByApp[appId];
-                if (p) p.buildOutput = (p.buildOutput ?? "") + body.chunk;
-              });
+              { credentials: "include" },
+            );
+            if (res.ok) {
+              const body = (await res.json()) as {
+                size?: number;
+                chunk?: string;
+              };
+              if (body.chunk) {
+                set(s => {
+                  const p = s.previewByApp[appId];
+                  if (p) p.buildOutput = (p.buildOutput ?? "") + body.chunk;
+                });
+              }
+              offset = body.size ?? offset;
             }
-            offset = body.size ?? offset;
           } catch {
             // A missed poll is fine; the next one resumes from `offset`.
           }
-          await new Promise(r => setTimeout(r, 700));
+          await new Promise(r => setTimeout(r, 500));
         }
       })();
       try {
