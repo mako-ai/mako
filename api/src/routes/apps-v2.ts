@@ -87,6 +87,7 @@ import {
   serveDeploymentFile,
 } from "../apps-v2/deployment.service";
 import { mirrorPushNow } from "../apps-v2/cloud-repo.service";
+import { updateRefCas } from "../apps-v2/repository.service";
 import fs from "node:fs/promises";
 import { readBoxDir } from "../apps-v2/box";
 import {
@@ -1910,7 +1911,34 @@ appsV2Routes.openapi(
           409,
         );
       }
-      await mirrorPushNow(loaded.project.workspaceId.toString());
+      try {
+        await mirrorPushNow(loaded.project.workspaceId.toString());
+      } catch (pushError) {
+        // main advanced locally but the durable push (to the git mirror)
+        // failed — bad credentials, GitHub down, a rejected ref. Roll main
+        // back to where it was so the local repo and the durable store agree:
+        // otherwise a serverless instance recycle would restore from the
+        // (unchanged) mirror and silently "lose" this commit, and the sandbox
+        // could no longer fetch it ("not our ref"). Nothing published; retry.
+        await updateRefCas(
+          handle.repoDir,
+          `refs/heads/${loaded.project.defaultBranch || "main"}`,
+          expectedMain,
+          sha,
+        ).catch(() => undefined);
+        return c.json(
+          {
+            success: false,
+            error:
+              "Could not save the change durably — the push to the git mirror failed, so nothing was published. Try again.",
+            output:
+              pushError instanceof Error
+                ? pushError.message
+                : String(pushError),
+          },
+          502,
+        );
+      }
 
       if (await deploymentExists(loaded.project._id.toString(), sha)) {
         await setPublishedSha(loaded.project, sha);
