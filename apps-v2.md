@@ -1666,3 +1666,14 @@ Held under adversarial review, for the record: the publish rollback CAS
 path (no interleaving loses pushed commits), the running-cap eviction
 (stop-only), the token HMAC + workspace binding, and the client-side
 no-auto-start guard (`AppV2Workspace.heal.test.ts`).
+
+**Round 2 (same session).** The leftovers got closed instead of shipped as
+footnotes: the terminal WS now aborts opening when its client vanished while
+the box was booting (the last create-for-nobody path — a dying page's final
+reconnect could still finish `ensureBox` after the socket closed); a dead
+app link shows a snackbar instead of silently rewriting the URL to `/`;
+Settings › Sandbox's session count consumes the PUSHED `terminals` list
+(live, heartbeat-fresh) instead of only the exec'd snapshot; and the last
+`TODO(state-rules)` component migrations landed — `McpAgentsPanel` and the
+mcp-connections calls now go through `mcpStore`, leaving only `Chat.tsx`'s
+stop call and the hooks exemption grandfathered.

@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Snackbar } from "@mui/material";
 import { useUIStore } from "../store/uiStore";
 import {
   selectTabBySettingsSection,
@@ -51,6 +52,9 @@ import { appLocationFromHostSearch } from "../app-runtime/app-location";
  *    unnecessary re-renders.
  */
 export function UrlSync() {
+  // Dead-link feedback: a URL that no longer resolves (deleted app) used to
+  // silently rewrite to "/" — the page just "lost" what the user asked for.
+  const [deadLinkNotice, setDeadLinkNotice] = useState<string | null>(null);
   const { currentWorkspace } = useWorkspace();
   const { user } = useAuth();
   const loadConsole = useConsoleStore(state => state.loadConsole);
@@ -309,6 +313,9 @@ export function UrlSync() {
           if (!app) {
             closeAppsV2TabsFor(appId);
             window.history.replaceState(null, "", "/");
+            setDeadLinkNotice(
+              "That app link doesn't resolve anymore — the app may have been deleted or renamed.",
+            );
             return;
           }
           focusAppsV2FileTab(app.id, filePath, app.slug);
@@ -333,6 +340,9 @@ export function UrlSync() {
           // permanently stuck. Clear it and fall back to the list instead.
           closeAppsV2TabsFor(appId);
           window.history.replaceState(null, "", "/");
+          setDeadLinkNotice(
+            "That app link doesn't resolve anymore — the app may have been deleted or renamed.",
+          );
           return;
         }
         focusAppsV2Tab(app.id, app.title, app.slug);
@@ -466,5 +476,14 @@ export function UrlSync() {
     }
   }, [activeTabPath, activeView, user]);
 
-  return null; // This component renders nothing
+  // Renders nothing except the dead-link notice.
+  return (
+    <Snackbar
+      open={deadLinkNotice !== null}
+      autoHideDuration={6000}
+      onClose={() => setDeadLinkNotice(null)}
+      message={deadLinkNotice ?? ""}
+      anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+    />
+  );
 }

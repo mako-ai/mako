@@ -132,6 +132,17 @@ interface McpActions {
   fetchPresets: () => Promise<void>;
   fetchToolInfo: (workspaceId: string) => Promise<void>;
   fetchGrants: (workspaceId: string, serverId: string) => Promise<void>;
+  /** Agents holding an OAuth grant on the workspace (mcp-connections). */
+  fetchMcpConnections: (workspaceId: string) => Promise<{
+    connections: Array<Record<string, unknown>>;
+    canSeeAll: boolean;
+  }>;
+  /** Revoke one agent's grant; it must sign in again to reconnect. */
+  revokeMcpConnection: (
+    workspaceId: string,
+    clientId: string,
+    userId: string,
+  ) => Promise<void>;
   createServer: (
     workspaceId: string,
     body: {
@@ -275,6 +286,29 @@ export const useMcpStore = create<McpStore>()(
       } catch {
         // Non-fatal: approval cards fall back to generic labels.
       }
+    },
+
+    fetchMcpConnections: async workspaceId => {
+      const body = unwrapBody(
+        await api.GET("/api/workspaces/{id}/mcp-connections", {
+          params: { path: { id: workspaceId } },
+        }),
+      ) as {
+        connections?: Array<Record<string, unknown>>;
+        canSeeAll?: boolean;
+      };
+      return {
+        connections: body.connections ?? [],
+        canSeeAll: Boolean(body.canSeeAll),
+      };
+    },
+
+    revokeMcpConnection: async (workspaceId, clientId, userId) => {
+      unwrapBody(
+        await api.DELETE("/api/workspaces/{id}/mcp-connections/{clientId}", {
+          params: { path: { id: workspaceId, clientId }, query: { userId } },
+        }),
+      );
     },
 
     fetchGrants: async (workspaceId, serverId) => {

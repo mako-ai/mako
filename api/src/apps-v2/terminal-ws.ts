@@ -657,7 +657,18 @@ async function startSession(
         // Hydrating here is what makes the terminal a real checkout: the
         // sandbox holds the repository, and nothing overwrites it afterwards —
         // so a `git checkout` typed in this shell survives.
+        if (ws.readyState !== ws.OPEN) {
+          throw new Error("client disconnected before the terminal opened");
+        }
         const ctx = await ensureBox(handle, { lazyPull: true });
+        // The client can vanish while the box boots (tab closed, page
+        // reloaded, a dying page's last reconnect). Finishing the open
+        // would leave a pty and a machine running for NOBODY — the shape
+        // that re-created a recycled box from a page mid-teardown. Stop
+        // here; a box ensureBox already made simply idles out.
+        if (ws.readyState !== ws.OPEN) {
+          throw new Error("client disconnected before the box was ready");
+        }
         created.ctx = ctx;
         // The pty may be new while the SESSION is old (API restart, new
         // sandbox connection): prefill history now, before any live output,

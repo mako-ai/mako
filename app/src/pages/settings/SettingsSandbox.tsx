@@ -102,6 +102,7 @@ export default function SettingsSandbox() {
   // without a poll: a recycle elsewhere flips us to "no sandbox" instantly.
   const boxStatus = useAppsV2Store(s => s.boxStatus);
   const boxSandboxId = useAppsV2Store(s => s.boxSandboxId);
+  const boxTerminals = useAppsV2Store(s => s.boxTerminals);
   const fetchSandboxStats = useAppsV2Store(s => s.fetchSandboxStats);
   const recycleSandbox = useAppsV2Store(s => s.recycleSandbox);
   // The sandbox belongs to the (workspace, user) pair; any app id reaches it.
@@ -277,7 +278,20 @@ export default function SettingsSandbox() {
               Active sessions
             </Typography>
             <Box>
-              <Chip size="small" label={stats.sessions ?? 0} />
+              <Tooltip
+                title={boxTerminals.length > 0 ? boxTerminals.join(" · ") : ""}
+              >
+                {/* The pushed list is live (agent heartbeat); the exec'd
+                    stat is a snapshot from the last refresh. Prefer live. */}
+                <Chip
+                  size="small"
+                  label={
+                    boxStatus === "online" && boxTerminals.length > 0
+                      ? boxTerminals.length
+                      : (stats.sessions ?? 0)
+                  }
+                />
+              </Tooltip>
             </Box>
 
             <Typography variant="body2" color="text.secondary">
