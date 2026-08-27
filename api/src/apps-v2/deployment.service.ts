@@ -240,7 +240,10 @@ export async function buildApp(
   );
   const install = await exec(
     handle,
-    `set -o pipefail; ( [ -d node_modules ] || npm install --no-audit --no-fund ) 2>&1 | tee -a ${log}`,
+    // `--loglevel=http` so the install streams progress into the log (npm is
+    // near-silent when its stdout is a pipe), and `--foreground-scripts` so
+    // lifecycle-script output shows too — the client is watching this live.
+    `set -o pipefail; ( [ -d node_modules ] || npm install --no-audit --no-fund --loglevel=http --foreground-scripts ) 2>&1 | tee -a ${log}`,
     { timeoutMs: 300_000 },
   );
   if (install.exitCode !== 0) {
