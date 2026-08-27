@@ -3324,8 +3324,8 @@ export class DatabaseConnectionService {
     try {
       // Execute the query content directly - much simpler and more reliable
       logger.debug("Evaluating MongoDB query");
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const db = dbProxy; // Make db available in eval context for evaluated queries
+      void db; // Referenced by eval(query) at runtime — invisible to tsc/eslint.
       const result = eval(query);
 
       logger.debug("Raw result info", {
@@ -3394,7 +3394,7 @@ export class DatabaseConnectionService {
       // Ensure the result can be safely serialized to JSON (avoid circular refs)
       const getCircularReplacer = () => {
         const seen = new WeakSet();
-        return (key: string, value: any) => {
+        return (_key: string, value: any) => {
           // Handle BigInt explicitly (convert to string)
           if (typeof value === "bigint") return value.toString();
 
@@ -3705,13 +3705,6 @@ export class DatabaseConnectionService {
             : "PostgreSQL connection failed",
       };
     }
-  }
-
-  private async createPostgreSQLConnection(
-    database: IDatabaseConnection,
-  ): Promise<PgPool> {
-    // Return the pool instead of a single client
-    return this.getPostgresPool(database);
   }
 
   private async executePostgreSQLQuery(
