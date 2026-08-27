@@ -8,6 +8,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Box, Button, Chip, Typography, useTheme } from "@mui/material";
 import { Database as DatabaseIcon, Play as PlayIcon } from "lucide-react";
+// TODO(state-rules): route these calls through a Zustand store action and
+// remove this disable — see .cursor/rules/18-frontend-state.mdc.
+// eslint-disable-next-line no-restricted-imports
 import { api, unwrapBody } from "../api";
 import MonacoEditor from "@monaco-editor/react";
 import { useWorkspace } from "../contexts/workspace-context";

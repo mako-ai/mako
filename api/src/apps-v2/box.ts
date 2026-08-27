@@ -100,6 +100,32 @@ export async function boxHasRepo(ctx: SandboxExecContext): Promise<boolean> {
 }
 
 /**
+ * Does the box hold a REAL checkout — not merely a `.git`?
+ *
+ * `boxHasRepo` (a `.git` exists) is not enough as a readiness gate. A clone
+ * that ran `git init` but never completed `fetch`+`checkout` — a hydrate that
+ * threw partway, e.g. the git origin (the dev tunnel) was not up when the box
+ * booted — leaves a `.git` with an UNBORN HEAD and an empty working tree. The
+ * old gate saw the `.git`, declared the box ready, and never re-cloned, so the
+ * box stayed permanently empty ("app is not in this checkout"). This verifies
+ * HEAD actually resolves to a commit, which an unhydrated clone fails.
+ */
+export async function boxHasValidCheckout(
+  ctx: SandboxExecContext,
+): Promise<boolean> {
+  const result = await getSandboxProvider().exec(
+    ctx,
+    // `test -d .git` FIRST: `git rev-parse` alone walks up to a parent repo, so
+    // an empty box nested under one (the local provider in tests) would falsely
+    // report ready. Anchor to a `.git` AT the box root, then require HEAD to
+    // resolve — an unhydrated clone (git init, no commit) fails the second test.
+    `test -d ${sh(`${boxRoot(ctx)}/.git`)} && git -C ${sh(boxRoot(ctx))} rev-parse --verify HEAD >/dev/null 2>&1 && echo ok || echo no`,
+    { timeoutMs: 15_000 },
+  );
+  return result.stdout.includes("ok");
+}
+
+/**
  * Where a sandbox keeps its credential: inside the clone's own `.git`.
  *
  * The two wrong answers have both been shipped and both bit. $HOME: the local

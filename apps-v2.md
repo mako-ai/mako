@@ -1480,3 +1480,42 @@ forward WebSocket/HMR to the current `getHost(port)`, 503 cleanly mid-recycle) �
 which reverses §12.4's "load E2B directly". Worth it only if the sub-second flash
 between `offline` and the next box's `online` proves to be a real irritant; the
 coherence above removes the "sandbox not found" dead-end either way.
+
+## §13.11 One source of truth, or the states drift (RFC, 2026-08-27)
+
+A user opened an app that was **not** running and found: the tab said "Exit dev
+mode", the sidebar showed **no** green dot, a `dev:` terminal sat "[waiting for
+the dev server]", a `bash` shell was attached — and the box's checkout was
+**empty**. Four independent notions of "is this running" had drifted apart:
+
+- `editing` — a localStorage flag (`apps-v2-editing`) that auto-opened the
+  workbench on mount;
+- `runningDevApps` — the pushed box truth (the green dot);
+- the terminal's `active` tab — localStorage, defaulting to `"dev"`, which
+  auto-attached the dev-server terminal;
+- the box's actual checkout — which was `git init`'d but never hydrated.
+
+Fixes:
+
+- **The box is the ONLY source of truth for "running".** Every affordance — the
+  dot, "Exit dev mode" vs "Start dev session", the dev terminal's attach, the
+  `dev:` row's running/stopped label — derives from `runningDevApps` (box push).
+  They can no longer disagree.
+- **The localStorage trash is gone.** `apps-v2-editing` is deleted; the workbench
+  view is derived from box truth (auto-open only when a dev server is actually
+  serving). The terminal never defaults to the `dev` tab, so it stops attaching
+  a waiter to a stopped app on mount.
+- **A box readiness check that means what it says.** `boxHasRepo` (a `.git`
+  exists) was mistaking a half-finished clone — `git init` with no fetch/checkout,
+  left when a hydrate threw (e.g. the tunnel was down) — for a ready box, and
+  `ensureBox` never re-cloned it, so the box stayed empty forever. Readiness is
+  now `boxHasValidCheckout` (a `.git` at the root AND a resolvable HEAD); an
+  unhydrated box falls through and is repaired by the idempotent clone.
+
+**Codified and enforced.** `.cursor/rules/18-frontend-state.mdc`: components/pages
+never call the API directly (go through a Zustand store action, read via a
+selector — enforced by `no-restricted-imports`); external inputs (REST and
+realtime/Redis) land in Zustand via one reducer and components read only from
+there; localStorage is for per-browser UI prefs only and may never auto-trigger
+a side effect. Redis flows *through* Zustand — that is the correct unidirectional
+shape, not an anti-pattern.

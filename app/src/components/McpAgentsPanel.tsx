@@ -25,6 +25,9 @@ import {
   LinkOff as RevokeIcon,
 } from "@mui/icons-material";
 import { formatDistanceToNow } from "date-fns";
+// TODO(state-rules): route these calls through a Zustand store action and
+// remove this disable — see .cursor/rules/18-frontend-state.mdc.
+// eslint-disable-next-line no-restricted-imports
 import { api, unwrapBody } from "../api";
 import { useWorkspace } from "../contexts/workspace-context";
 import {

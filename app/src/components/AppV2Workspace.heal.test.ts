@@ -17,7 +17,7 @@ const src = readFileSync(
 
 describe("apps-v2 workbench never heals (apps-v2.md §13.9)", () => {
   it("restores the view on mount without starting a dev server", () => {
-    const start = src.indexOf("// Restore the VIEW on reload");
+    const start = src.indexOf("// Derive the workbench view from BOX TRUTH");
     expect(start).toBeGreaterThan(-1);
     const end = src.indexOf("}, [appId, workspaceId]);", start);
     expect(end).toBeGreaterThan(start);

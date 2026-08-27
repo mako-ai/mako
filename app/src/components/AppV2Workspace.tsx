@@ -416,13 +416,16 @@ function TerminalTabs({
   // state loss even though nothing was lost.
   const [active, setActiveState] = useState<string>(() => {
     try {
+      // Never auto-select the dev terminal: selecting it ATTACHES to (and
+      // waits for) a dev server, which must not happen on mount just because
+      // it was focused last time. Restore a saved BASH tab only; the dev tab
+      // is entered by an explicit click (apps-v2.md §13.11).
       const saved = localStorage.getItem(`apps-v2-term-active:${appId}`);
-      if (saved === "dev") return "dev";
       if (saved && /^[0-9]{1,6}$/.test(saved)) return saved;
     } catch {
       // Storage unavailable — default below.
     }
-    return "dev";
+    return "1";
   });
   const setActive = useCallback(
     (id: string) => {
@@ -438,7 +441,9 @@ function TerminalTabs({
   // A persisted shell id whose tab was closed in another session falls back
   // to the dev window instead of pointing at nothing.
   useEffect(() => {
-    if (active !== "dev" && !shells.includes(active)) setActiveState("dev");
+    if (active !== "dev" && !shells.includes(active)) {
+      setActiveState(shells[0] ?? "1");
+    }
   }, [active, shells]);
   const nextId = useRef(Math.max(0, ...shells.map(Number)) + 1);
   // Ids born in this pageview — their sessions have no history to replay,
@@ -457,7 +462,7 @@ function TerminalTabs({
         const next = prev.filter(x => x !== id);
         return next.length > 0 ? next : ["1"];
       });
-      setActiveState(current => (current === id ? "dev" : current));
+      setActiveState(current => (current === id ? "1" : current));
     },
     [appId, workspaceId, killTerminalSession],
   );
@@ -472,6 +477,12 @@ function TerminalTabs({
   const slug = useAppsV2Store(
     st => st.apps.find(a => a.id === appId)?.slug ?? null,
   );
+  // Box truth: is a dev server actually serving this app? The dev terminal
+  // attaches to it only when it IS running or the user explicitly selects it —
+  // never on mount for a stopped app, which used to spawn a "[waiting for the
+  // dev server]" attach with nothing behind it (apps-v2.md §13.11).
+  const runningDevApps = useAppsV2Store(st => st.runningDevApps);
+  const devRunning = slug ? runningDevApps.includes(slug) : false;
 
   return (
     // VS Code's panel anatomy: the active session fills the area, and the
@@ -504,13 +515,13 @@ function TerminalTabs({
               display: active === "dev" ? "block" : "none",
             }}
           >
-            {slug ? (
+            {slug && (devRunning || active === "dev") ? (
               // The dev server runs in a dtach session named like any other
               // (mako-term-dev-<slug>) — this is a normal terminal attached
               // to it: colors, native scrollback, prefit history, and Ctrl-C
-              // reaches vite. When the session is down, the server side
-              // shows a waiting notice, tails the boot recording live (npm
-              // install progress), and attaches the moment it starts.
+              // reaches vite. Mounted only when a server is actually running
+              // (box truth) or the user selected this tab — never on mount for
+              // a stopped app, which would attach a waiter to nothing.
               <TerminalPanel
                 appId={appId}
                 workspaceId={workspaceId}
@@ -584,7 +595,11 @@ function TerminalTabs({
             </Tooltip>
           </Box>
           <SessionRow
-            label={slug ? `dev: ${slug}` : "dev server"}
+            label={
+              slug
+                ? `dev: ${slug}${devRunning ? "" : " · stopped"}`
+                : "dev server"
+            }
             selected={active === "dev"}
             onSelect={() => setActive("dev")}
           />
@@ -762,32 +777,25 @@ export default function AppV2Workspace({
   const slug = useAppsV2Store(
     s => s.apps.find(a => a.id === appId)?.slug ?? null,
   );
+  // THE source of truth for "is a dev server running for this app" — the box,
+  // via the pushed runningDevApps (same signal as the sidebar's green dot).
+  // Every "running" affordance derives from this, so they cannot disagree
+  // (apps-v2.md §13.11).
+  const runningDevApps = useAppsV2Store(s => s.runningDevApps);
+  const devRunning = slug ? runningDevApps.includes(slug) : false;
   const viewUrl = useAppsV2Store(s => s.viewUrlByApp[appId]);
   const fetchViewUrl = useAppsV2Store(s => s.fetchViewUrl);
 
-  // Restore the VIEW on reload — never a process. The client renders state
-  // and requests actions on click; it must NOT heal (apps-v2.md §13.4). The
-  // old version of this effect called startDevPreview here, so every app left
-  // in dev mode relaunched its own vite the moment its tab remounted — a
-  // recycle brought a dozen servers back and filled the box, with nobody
-  // having clicked anything. Now: reflect the box's REAL state (a read-only
-  // probe), and re-enter the workbench pane if that was the user's view, but
-  // start nothing. A stopped server shows its "Start" control; the user
-  // decides.
+  // Derive the workbench view from BOX TRUTH, never localStorage. Auto-open
+  // the workbench ONLY when a dev server is actually serving this app — a
+  // read-only probe, no process started, no localStorage flag. The old
+  // version restored an `apps-v2-editing` flag from localStorage, which
+  // auto-opened the workbench (and its terminals) over an empty box and
+  // disagreed with the green dot — the exact multi-source drift §13.11 bans.
+  // Editing a stopped app is a deliberate click now, not a restored side
+  // effect.
   useEffect(() => {
     if (!workspaceId) return;
-    let persisted = false;
-    try {
-      persisted = localStorage.getItem(`apps-v2-editing:${appId}`) === "1";
-    } catch {
-      // Storage unavailable — nothing to restore.
-    }
-    // View preference only: land back in the workbench instead of the
-    // published pane. This spins no dev server; file reads fall back to the
-    // last commit when no sandbox is running.
-    if (persisted && !editing) setEditing(workspaceId, appId, true);
-    // Reflect what is ACTUALLY running (read-only). If a dev server is up,
-    // show it and walk into the workbench over it — discovery, not a start.
     void useAppsV2Store
       .getState()
       .checkDevStatus(workspaceId, appId)
@@ -798,7 +806,7 @@ export default function AppV2Workspace({
         }
       });
     // Run once per app open; `editing` is deliberately not a dependency —
-    // exiting dev mode clears the flag, and re-entering here would fight it.
+    // exiting dev mode clears it, and re-entering here would fight it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId, workspaceId]);
 
@@ -927,7 +935,10 @@ export default function AppV2Workspace({
           />
         </Tooltip>
         <Box sx={{ flex: 1 }} />
-        {editing && (
+        {/* Shown only when a dev server is ACTUALLY running (box truth), so it
+            can never contradict the green dot the way an `editing`-gated
+            control did. */}
+        {devRunning && (
           <Tooltip title="Stop the dev server and go back to viewing. Your shells and the sandbox keep running.">
             <Button
               size="small"
@@ -981,7 +992,7 @@ export default function AppV2Workspace({
                   running session looked identical to a stopped one. */}
               {preview?.building
                 ? "Starting..."
-                : devSessionLive
+                : devRunning
                   ? "Restart dev session"
                   : activeChatBranch
                     ? "Start dev session (active chat)"

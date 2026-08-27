@@ -32,7 +32,6 @@ import {
 } from "lucide-react";
 import { useWorkspace } from "../../contexts/workspace-context";
 import { useAppsV2Store } from "../../store/appsV2Store";
-import { api, unwrapBody } from "../../api";
 
 interface SandboxStats {
   running: boolean;
@@ -103,6 +102,8 @@ export default function SettingsSandbox() {
   // without a poll: a recycle elsewhere flips us to "no sandbox" instantly.
   const boxStatus = useAppsV2Store(s => s.boxStatus);
   const boxSandboxId = useAppsV2Store(s => s.boxSandboxId);
+  const fetchSandboxStats = useAppsV2Store(s => s.fetchSandboxStats);
+  const recycleSandbox = useAppsV2Store(s => s.recycleSandbox);
   // The sandbox belongs to the (workspace, user) pair; any app id reaches it.
   const appId = apps[0]?.id;
 
@@ -122,18 +123,17 @@ export default function SettingsSandbox() {
     setLoading(true);
     setError(null);
     try {
-      const body = unwrapBody(
-        await api.GET("/api/workspaces/{workspaceId}/apps-v2/{id}/sandbox", {
-          params: { path: { workspaceId, id: appId } },
-        }),
-      ) as SandboxStats;
+      const body = (await fetchSandboxStats(
+        workspaceId,
+        appId,
+      )) as SandboxStats | null;
       setStats(body);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not reach the sandbox");
     } finally {
       setLoading(false);
     }
-  }, [workspaceId, appId]);
+  }, [workspaceId, appId, fetchSandboxStats]);
 
   useEffect(() => {
     void refresh();
@@ -152,10 +152,7 @@ export default function SettingsSandbox() {
     if (!workspaceId || !appId) return;
     setRecycling(true);
     try {
-      await api.POST(
-        "/api/workspaces/{workspaceId}/apps-v2/{id}/sandbox/recycle",
-        { params: { path: { workspaceId, id: appId } } },
-      );
+      await recycleSandbox(workspaceId, appId);
       setConfirmOpen(false);
       setStats({ running: false });
     } catch (e) {
@@ -163,7 +160,7 @@ export default function SettingsSandbox() {
     } finally {
       setRecycling(false);
     }
-  }, [workspaceId, appId]);
+  }, [workspaceId, appId, recycleSandbox]);
 
   const copyConnect = useCallback(() => {
     if (!stats?.connectCommand) return;

@@ -1,0 +1,63 @@
+---
+globs: app/src/**/*.ts,app/src/**/*.tsx
+description: Frontend state management — one source of truth, enforced
+---
+
+# Frontend State Management
+
+The web app had four different notions of "is this app running" — a localStorage
+`editing` flag, the pushed `runningDevApps`, a persisted terminal `active` tab,
+and the box's actual checkout — and they drifted into visibly contradictory UI
+(an "Exit dev mode" button with no green dot, terminals attached to nothing).
+These rules exist so that can't happen again. They are not style preferences.
+
+## 1. Zustand is the single client-side source of truth
+
+- **Components and pages never call the API directly.** Every network call goes
+  through a Zustand store action; components read the result through selectors.
+  (Enforced: `no-restricted-imports` bans the `api` client in
+  `app/src/components/**` and `app/src/pages/**`.)
+- **External inputs flow INTO Zustand, never around it.** REST responses AND
+  realtime/Redis pushes are applied into a store by one reducer (e.g.
+  `applyBoxState`); components subscribe to the store, not to the realtime bus.
+  Redis is the *server's* shared truth; on the client it has exactly one
+  landing point — the store.
+- A component that needs data it cannot get from a selector is a missing store
+  action, not a reason to reach for `api` or `fetch`.
+
+## 2. Server truth is owned by the box; the client only renders it
+
+- Whether a dev server is running, the sandbox id, box liveness, open terminals
+  — these are **the box's truth**, pushed through `box-state` into the store
+  (`runningDevApps`, `boxStatus`, `boxSandboxId`, `boxTerminals`). Every UI
+  affordance about "running" derives from those, so they cannot disagree.
+- **Never mirror server truth in localStorage.** A localStorage copy is a second
+  source that goes stale the moment the box changes and produces exactly the
+  drift above. If you catch server-derived state in localStorage, it is a bug.
+
+## 3. localStorage is for per-browser UI preferences only
+
+- Allowed: which pane is open, panel sizes, the last-focused *bash* tab, a draft
+  — things that are genuinely local to this browser and have no server truth.
+- Not allowed: anything the box/server owns (is-running, sandbox id, session
+  lists), and nothing in localStorage may **auto-trigger a side effect**
+  (starting a server, attaching a terminal, opening a workbench over an empty
+  box). Restoring a *view* is fine; restoring an *action* is not.
+
+## 4. The client renders and requests; it never heals
+
+See apps-v2.md §13.9/§13.11. No `useEffect` — mount, reload, reconnect, restore —
+may start a process. Starts happen on an explicit click. The system may STOP
+(reap, cap-evict); it may never auto-START.
+
+## Enforcement
+
+- `no-restricted-imports` blocks the `api` client in components/pages (hooks
+  under `**/hooks/**` are the data-access seam and are exempt for now, but should
+  also route through stores — do not add new ones).
+- Pre-existing violations carry an `eslint-disable-next-line` with a TODO; the
+  rule is `error` for new code. Migrate the grandfathered ones and delete the
+  disables.
+- The rest (rules 2–4) are not fully lintable; they are enforced in review and
+  by the box-truth selectors already in the store. When you add server-derived
+  state, add it to the store's `applyX` reducer, not to a component.

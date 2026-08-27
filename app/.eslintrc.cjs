@@ -66,4 +66,31 @@ module.exports = {
     'react-hooks/rules-of-hooks': 'warn',
     'no-empty': 'warn',
   },
+  overrides: [
+    {
+      // Frontend state rule (.cursor/rules/18-frontend-state.mdc): components
+      // and pages never call the API directly — go through a Zustand store
+      // action and read the result via a selector. Type-only imports from the
+      // api module are fine; only the `api` client is banned. Hooks are the
+      // data-access seam and are exempt for now (but should also route through
+      // stores — do not add new direct calls there).
+      files: ['src/components/**/*.{ts,tsx}', 'src/pages/**/*.{ts,tsx}'],
+      excludedFiles: ['**/hooks/**'],
+      rules: {
+        'no-restricted-imports': [
+          'error',
+          {
+            patterns: [
+              {
+                group: ['**/api', '**/api/index'],
+                importNames: ['api', 'unwrapBody', 'createApiClient'],
+                message:
+                  'Components/pages must not call the API directly. Add a Zustand store action and read via a selector. See .cursor/rules/18-frontend-state.mdc.',
+              },
+            ],
+          },
+        ],
+      },
+    },
+  ],
 };

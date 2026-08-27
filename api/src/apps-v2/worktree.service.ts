@@ -42,6 +42,7 @@ import {
   boxGlob,
   boxGrep,
   boxHasRepo,
+  boxHasValidCheckout,
   boxHead,
   boxListFiles,
   boxPull,
@@ -387,7 +388,11 @@ async function ensureBoxNow(
   const workspaceId = handle.doc.workspaceId.toString();
   const userId = handle.doc.userId;
   const author = await resolveActorIdentity(userId);
-  if (await boxHasRepo(ctx)) {
+  // A REAL checkout, not just a `.git`: a box whose clone git-init'd but never
+  // fetched/checked-out (a hydrate that threw partway) must fall through to the
+  // clone below and be repaired, not be mistaken for a ready box and left empty
+  // forever. cloneIntoBox is idempotent, so re-running it completes the hydrate.
+  if (await boxHasValidCheckout(ctx)) {
     // Reconfigure when the token is due for a refresh OR when the origin the
     // box should point at has changed (a tunnel restart in development). The
     // record is written only after configure SUCCEEDS: recording first meant
