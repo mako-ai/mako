@@ -1366,3 +1366,46 @@ got here; where this section disagrees with one of them, this one wins.
 
 Flows and dashboards after that, if the entity-as-folder layer makes them
 cheap.
+
+## §13.3.1 Publish builds `main`, not a dangling candidate (RFC, 2026-08-27)
+
+**Problem.** Publish computed a *merge commit that no branch points to* (so
+`main` only moved after a green build), parked it as `refs/mako/publish-candidate`
+— a ref namespace deliberately **hidden from the GitHub mirror** — and asked the
+sandbox to `git fetch origin <sha>`. The one object the build depends on was the
+one object that was never durable anywhere. On a serverless host (per-instance
+ephemeral repo, a cache of the mirror) the sandbox's fetch can hit an instance
+that never saw that commit → `upload-pack: not our ref`. It only ever worked on a
+single persistent instance (localhost), which is why it shipped.
+
+**Decision.** Reframe publish as **ship `main`**, matching the standing decision
+that "merging deploys" (decision log, 2026-08-19):
+
+1. Merge the caller's branch into `main` and **advance `main` to the merge
+   NOW** (compare-and-swap against the main the publish started from), then
+   **mirror-push** it. The build target is a real, durable, mirrored ref.
+2. Check that ref out in the sandbox and build it. On success, upload the
+   deployment and move `publishedSha`.
+
+**Source and production are now decoupled.** `main` is the source of truth (may
+or may not build, like any branch). `publishedSha` is production and moves *only*
+on a successful build. So a failed build leaves `main` ahead of what is deployed
+and the **live app untouched** — never "poisoned", just un-deployed. Rollback is
+still repointing `publishedSha`. This deletes the dangling-candidate machinery
+(the class of "not our ref" bug goes with it) and unifies the button with
+`deploy-on-push` (both build `main`; the second is deduped by `deploymentExists`).
+
+**Optional PR gate.** A workspace that wants review flips on "require PR": Publish
+opens a GitHub PR instead of merging directly, and merging it triggers the same
+`deploy-on-push`. Default stays direct-merge — forcing a human PR merge on every
+app tweak is the wrong friction when everyone is building apps.
+
+**Still required for serverless foolproofness (NOT yet done).** Building `main`
+makes the target durable *in the mirror*, so a **cold** instance restores it. An
+**already-warm but stale** instance still can't serve a just-pushed `main`, and a
+naive "reconcile on read" is unsafe (a *forced* mirror fetch can revert a local
+commit that hasn't been mirror-pushed yet — data loss). The durable fix is to
+make the bare repo a **store, not a per-instance cache**: a shared/persistent
+volume for `APPS_V2_GIT_ROOT`, or `min-instances=1` per environment, or an
+*additive* fetch-by-missing-sha at the git endpoint (never a forced ref update).
+This is an infra decision to make before high-concurrency use.

@@ -86,6 +86,7 @@ import {
   deploymentExists,
   serveDeploymentFile,
 } from "../apps-v2/deployment.service";
+import { mirrorPushNow } from "../apps-v2/cloud-repo.service";
 import fs from "node:fs/promises";
 import { readBoxDir } from "../apps-v2/box";
 import {
@@ -1872,18 +1873,12 @@ appsV2Routes.openapi(
       );
       const branch = body.branch ?? callerWorktree.doc.branch;
 
-      // Build the MERGE RESULT before main ever moves. Merging first and
-      // building second left main carrying a broken merge whenever the build
-      // failed — production kept serving the old deployment, but the branch
-      // everyone publishes from was poisoned. Now a failed publish changes
-      // nothing at all.
       const handle = await ensureWorktree(loaded.project, PUBLISH_ACTOR, {
         branch: loaded.project.defaultBranch || "main",
       });
 
-      // Captured BEFORE the merge: promoting is a compare-and-swap against
-      // the main this build started from, so a publish that races another one
-      // fails instead of shipping a stale artifact.
+      // Compare-and-swap against the main this publish started from, so two
+      // publishes racing each other fail cleanly instead of interleaving.
       const expectedMain = await defaultBranchSha(loaded.project);
       const trial = await trialMerge(
         handle,
@@ -1895,31 +1890,14 @@ appsV2Routes.openapi(
       }
       const sha = trial.sha;
 
-      if (await deploymentExists(loaded.project._id.toString(), sha)) {
-        await promoteToMain(handle, { sha, expectedMain });
-        await setPublishedSha(loaded.project, sha);
-        return c.json(
-          { success: true as const, sha, fileCount: 0, reused: true },
-          200,
-        );
-      }
-
-      // Build the MERGE RESULT, not whatever the sandbox happened to hold.
-      await checkoutInBox(handle, sha);
-      const build = await buildApp(handle, execInWorktree);
-      if (!build.ok) {
-        // main never moved, so there is nothing to roll back.
-        return c.json(
-          {
-            success: false,
-            error: "Build failed — nothing was published and main is unchanged",
-            output: build.output,
-          },
-          422,
-        );
-      }
-
-      // The build succeeded: only now does main advance.
+      // Move main to the merge NOW and mirror it, BEFORE building. The build
+      // target is then a real, durable, fetchable ref — not a dangling commit
+      // that a fresh serverless instance (its repo is a cache of the mirror)
+      // has never seen, which is what broke publishing under load with
+      // "upload-pack: not our ref". Advancing main to not-yet-built code is
+      // safe: production is `publishedSha`, which only ever moves to a
+      // SUCCESSFUL build — so a failed build leaves the live app untouched and
+      // just shows main ahead of what is deployed. (apps-v2.md §13.3.1)
       try {
         await promoteToMain(handle, { sha, expectedMain });
       } catch {
@@ -1927,9 +1905,33 @@ appsV2Routes.openapi(
           {
             success: false,
             error:
-              "main moved while this build was running — nothing was published. Try again.",
+              "main moved while this publish was running — nothing shipped. Try again.",
           },
           409,
+        );
+      }
+      await mirrorPushNow(loaded.project.workspaceId.toString());
+
+      if (await deploymentExists(loaded.project._id.toString(), sha)) {
+        await setPublishedSha(loaded.project, sha);
+        return c.json(
+          { success: true as const, sha, fileCount: 0, reused: true },
+          200,
+        );
+      }
+
+      // Build main (now a durable ref) and deploy on success.
+      await checkoutInBox(handle, sha);
+      const build = await buildApp(handle, execInWorktree);
+      if (!build.ok) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "Build failed — main was updated but nothing was deployed; the live app still serves the last successful build.",
+            output: build.output,
+          },
+          422,
         );
       }
 
