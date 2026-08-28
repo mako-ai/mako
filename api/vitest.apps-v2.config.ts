@@ -16,6 +16,7 @@ export default defineConfig({
     environment: "node",
     include: [
       "src/apps-v2/worktree.service.test.ts",
+      "src/apps-v2/cloud-repo.service.test.ts",
       "src/apps-v2/adversarial.test.ts",
       "src/apps-v2/git-endpoint.test.ts",
       "src/apps-v2/migrate-v1-apps.test.ts",

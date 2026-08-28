@@ -86,7 +86,11 @@ import {
   deploymentExists,
   serveDeploymentFile,
 } from "../apps-v2/deployment.service";
-import { mirrorPushNow } from "../apps-v2/cloud-repo.service";
+import {
+  adoptConnectedRepo,
+  type ConnectedRepoAdoption,
+  mirrorPushNow,
+} from "../apps-v2/cloud-repo.service";
 import { updateRefCas } from "../apps-v2/repository.service";
 import fs from "node:fs/promises";
 import { readBoxDir } from "../apps-v2/box";
@@ -545,7 +549,26 @@ appsV2Routes.openapi(
         installationId: body.installationId,
         linkedBy: user?.id ?? "api-key",
       });
-      return c.json({ success: true as const, repo: binding }, 200);
+      // §13.17: the connected repo IS the durable mirror. Reconcile it with
+      // any existing workspace history now — import, seed, or refuse — and
+      // roll the binding back if reconciliation refuses, so pushes never
+      // target a repo we did not adopt.
+      let adoption: ConnectedRepoAdoption;
+      try {
+        adoption = await adoptConnectedRepo(workspaceId, {
+          owner: binding.owner,
+          repo: binding.repo,
+          installationId: binding.installationId,
+        });
+      } catch (error) {
+        await disconnectWorkspaceRepo(
+          workspaceId,
+          binding.owner,
+          binding.repo,
+        ).catch(() => undefined);
+        throw error;
+      }
+      return c.json({ success: true as const, repo: binding, adoption }, 200);
     } catch (error) {
       return handleError(c, error);
     }

@@ -242,7 +242,12 @@ interface AppsV2Store {
       subdirectory?: string;
       installationId?: number;
     },
-  ) => Promise<{ ok: boolean; error?: string }>;
+  ) => Promise<{
+    ok: boolean;
+    error?: string;
+    /** §13.17 connect-time reconciliation outcome. */
+    adoption?: "imported" | "seeded" | "fresh" | "deferred";
+  }>;
   disconnectRepo: (
     workspaceId: string,
     owner: string,
@@ -575,7 +580,10 @@ export const useAppsV2Store = create<AppsV2Store>()(
             params: { path: { workspaceId } },
             body: input,
           }),
-        ) as { repo?: AppV2RepoBinding };
+        ) as {
+          repo?: AppV2RepoBinding;
+          adoption?: "imported" | "seeded" | "fresh" | "deferred";
+        };
         set(s => {
           s.canCreate = true;
           if (body.repo) {
@@ -588,8 +596,9 @@ export const useAppsV2Store = create<AppsV2Store>()(
             ];
           }
         });
+        // An import can make apps appear instantly; refetch either way.
         void get().fetchApps(workspaceId);
-        return { ok: true };
+        return { ok: true, adoption: body.adoption };
       } catch (e) {
         return { ok: false, error: message(e, "Failed to connect repo") };
       }

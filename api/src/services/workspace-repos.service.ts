@@ -133,3 +133,24 @@ export async function disconnectWorkspaceRepo(
   );
   logger.info("Workspace repo disconnected", { workspaceId, owner, repo });
 }
+
+/**
+ * The workspace bound to `owner/repo`, if any — webhook → workspace routing
+ * for pushes to CONNECTED repos (mako-cloud repos encode the workspace id in
+ * their name instead; see workspaceIdFromCloudRepo).
+ */
+export async function findWorkspaceIdByRepoBinding(
+  owner: string,
+  repo: string,
+): Promise<string | null> {
+  const ws = await Workspace.findOne({
+    $or: [
+      { workspaceRepos: { $elemMatch: { owner, repo } } },
+      // Pre-migration fallback: the old single apps-v2 binding.
+      { "appsV2Repo.owner": owner, "appsV2Repo.repo": repo },
+    ],
+  })
+    .select("_id")
+    .lean();
+  return ws ? String(ws._id) : null;
+}

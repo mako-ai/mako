@@ -94,6 +94,7 @@ export default function GitHubConnectionSection() {
   const [busy, setBusy] = useState(false);
   const [disconnectingId, setDisconnectingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const reloadStatus = useCallback(async () => {
     if (!workspaceId) return;
@@ -168,6 +169,14 @@ export default function GitHubConnectionSection() {
     if (result.ok) {
       setAddOpen(false);
       setSelectedRepo(null);
+      // §13.17: connecting reconciles histories — say which way it went.
+      setNotice(
+        result.adoption === "imported"
+          ? "Repository imported — its apps/ folders now appear as apps."
+          : result.adoption === "seeded"
+            ? "Repository connected — the workspace's existing apps were pushed into it."
+            : "Repository connected — it is now where this workspace's apps are stored.",
+      );
     } else {
       setError(result.error ?? "Failed to connect");
     }
@@ -357,6 +366,11 @@ export default function GitHubConnectionSection() {
       )}
 
       {error && !addOpen && <Alert severity="error">{error}</Alert>}
+      {notice && !addOpen && (
+        <Alert severity="success" onClose={() => setNotice(null)}>
+          {notice}
+        </Alert>
+      )}
 
       <Dialog
         open={addOpen}

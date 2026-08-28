@@ -39,7 +39,8 @@ import {
   deployAppsForPush,
   workspaceIdFromCloudRepo,
 } from "../apps-v2/deploy-on-push";
-import { fetchFromCloud } from "../apps-v2/cloud-repo.service";
+import { ensureLocalRepo, fetchFromCloud } from "../apps-v2/cloud-repo.service";
+import { findWorkspaceIdByRepoBinding } from "../services/workspace-repos.service";
 import { repoDirFor } from "../apps-v2/repository.service";
 
 const logger = loggers.api("github");
@@ -141,20 +142,28 @@ interface InstallationPayload {
  * branch. No-op for repos that are not workspace repos.
  */
 async function handleAppsV2Push(input: {
+  owner: string;
   repo: string;
   branch: string;
   before?: string;
   after?: string;
   defaultBranch?: string;
 }): Promise<void> {
-  const { repo, branch, before, after, defaultBranch } = input;
+  const { owner, repo, branch, before, after, defaultBranch } = input;
   if (!after) return;
-  const workspaceId = workspaceIdFromCloudRepo(repo);
+  // Mako-cloud repos encode the workspace id in their name; CONNECTED repos
+  // (§13.17: the customer's own repo as the durable mirror) are matched
+  // through the workspace's binding.
+  const workspaceId =
+    workspaceIdFromCloudRepo(repo) ??
+    (await findWorkspaceIdByRepoBinding(owner, repo));
   if (!workspaceId) return;
   if (branch !== (defaultBranch || "main")) return;
 
   // The bare repo is a cache; the commit arrived at GitHub, so pull it in
-  // before trying to build it.
+  // before trying to build it — and on a fresh serverless instance the cache
+  // may not exist at all yet.
+  await ensureLocalRepo(workspaceId);
   await fetchFromCloud(workspaceId, branch);
   const deployed = await deployAppsForPush({
     workspaceId,
@@ -214,6 +223,7 @@ githubRoutes.post("/webhook", async (c: Context) => {
           // merge on GitHub, or the Publish button. Handled here because
           // GitHub is the one point all of those converge on.
           await handleAppsV2Push({
+            owner,
             repo: name,
             branch,
             before: p.before,

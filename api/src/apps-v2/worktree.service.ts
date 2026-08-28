@@ -96,7 +96,7 @@ import {
 import { appSdkFiles } from "./app-sdk-package";
 import { createAppsV2Scaffold } from "./scaffold";
 import {
-  ensureCloudRepo,
+  ensureDurableRepo,
   ensureLocalRepo,
   mirrorPushNow,
   queueMirrorPush,
@@ -680,12 +680,12 @@ export async function createProject(input: {
     await AppProjectV2.deleteOne({ _id: project._id });
     throw error;
   }
-  // Cloud tier: mirror the workspace repo to Mako's org. When the cloud app
-  // is configured, the durable push is REQUIRED — on serverless hosts the
-  // local repo is an ephemeral cache. Hosts without cloud config (pure local
-  // dev) keep working local-only.
+  // Durable tier (§13.17): the connected repo when one is bound, else the
+  // mako-cloud repo. When either exists, the durable push is REQUIRED — on
+  // serverless hosts the local repo is an ephemeral cache. Hosts without any
+  // durable tier (pure local dev) keep working local-only.
   try {
-    if (await ensureCloudRepo(input.workspaceId)) {
+    if (await ensureDurableRepo(input.workspaceId)) {
       await mirrorPushNow(input.workspaceId);
     }
   } catch (error) {

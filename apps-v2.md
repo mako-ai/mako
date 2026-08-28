@@ -1253,6 +1253,56 @@ early ones stop the current UI from actively misleading:
 4. Authorized data path for published apps (13.4.1) — the hard one.
 5. Scheduled binding refresh (13.4.2), then rollback (13.4.4).
 
+### 13.17 Connected repos are the durable mirror (2026-08-28)
+
+**Decision.** When a workspace has connected its own GitHub repo (Settings →
+GitHub, `workspaceRepos[]`), that repo IS the durable mirror: commits push
+there, serverless restores clone from there, and no `mako-ai-cloud` repo is
+created for the workspace. The `mako-ai-cloud` org is reserved for workspaces
+that never connected a GitHub account (the instant-start tier). Before this,
+the binding was stored but nothing consumed it — every mirror went to
+`mako-ai-cloud` regardless, which is exactly the misunderstanding this section
+retires.
+
+**Target resolution** (`resolveMirrorTarget`, cloud-repo.service.ts): the
+binding wins; the `appsV2CloudRepo` pointer is the fallback. The connected
+tier only engages on prod (`MAKO_CLOUD_REPO_PREFIX=ws`) or under the explicit
+`APPS_V2_CONNECTED_REPO_PUSH=allow` opt-in — previews and dev run on
+prod-cloned databases that carry REAL customer bindings, and a preview's test
+commits must never land in a customer's repo. Gated environments treat the
+binding as inert metadata and keep using their own `staging-`/`dev-` repos.
+
+**Connect-time adoption** (`adoptConnectedRepo`, run by the link route; on
+refusal the binding is rolled back):
+
+| repo on GitHub | workspace history | outcome |
+| --- | --- | --- |
+| empty | none | `fresh` — first commit seeds the repo |
+| empty | exists | `seeded` — history pushed into the repo |
+| has content | none | `imported` — the repo's history becomes the workspace repo; its `apps/<slug>/mako.json` folders appear as apps with no registration step (§13 doctrine, now applied to customer repos) |
+| has content | exists | refused — whose history wins is not ours to guess |
+
+**A customer remote is never force-pushed.** mako-cloud repos are OUR remotes
+and keep `git push --mirror` (all refs, pruned). Connected repos get explicit
+refspecs: `refs/heads/*` and `refs/tags/*` WITHOUT force, `+refs/mako/*`
+(Mako's own WIP namespace) forced, nothing pruned. If someone pushes to
+GitHub directly, our next mirror push fails non-fast-forward and is logged —
+their commit survives. The webhook fetch path reconciles the benign case: a
+push webhook on a bound repo (matched via `findWorkspaceIdByRepoBinding`; the
+name-prefix decoding still covers mako-cloud repos) fetches and advances the
+local branch only when it fast-forwards, and stands still with a logged
+divergence warning otherwise. True divergence (Mako-side commits that could
+not push × direct GitHub commits) is deliberately left un-auto-resolved:
+either side can be recovered manually, nothing is silently dropped.
+
+**Known limits.** The binding's `subdirectory` (Mako root) is stored but not
+yet honored by `listAppFolders` — apps live under `apps/` at the repo root.
+Branch deletions do not propagate to connected remotes (no prune), and
+non-default branches pushed directly to GitHub are mirrored in but not
+deployed. Tests: `cloud-repo.service.test.ts` (file:// remotes, real git)
+covers the adoption matrix, the no-force guarantee, and the
+fast-forward-or-stand-still fetch.
+
 ## 14. State of play and roadmap (2026-08-26)
 
 What exists now, what was decided in the 2026-08-26 planning round, and the
