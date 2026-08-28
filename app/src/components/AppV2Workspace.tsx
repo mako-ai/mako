@@ -33,8 +33,9 @@ import {
 import {
   History as HistoryIcon,
   Play as PlayIcon,
-  RotateCcw as DiscardIcon,
   Plus as PlusIcon,
+  RefreshCw as RefreshIcon,
+  Square as StopIcon,
   TerminalSquare as TerminalIcon,
 } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
@@ -460,7 +461,9 @@ function TerminalTabs({
     } catch {
       // Corrupt or unavailable storage — fall through to the default.
     }
-    return ["1"];
+    // No free shell by default: starting dev opens exactly ONE terminal —
+    // the dev process. Extra shells are a deliberate click on +.
+    return [];
   });
   // The active session survives reloads like everything else about the
   // terminal area: sessions and their scrollback live server-side, so the
@@ -494,7 +497,7 @@ function TerminalTabs({
   // to the dev window instead of pointing at nothing.
   useEffect(() => {
     if (active !== "dev" && !shells.includes(active)) {
-      setActiveState(shells[0] ?? "1");
+      setActiveState(shells[0] ?? "dev");
     }
   }, [active, shells]);
   const nextId = useRef(Math.max(0, ...shells.map(Number)) + 1);
@@ -502,6 +505,7 @@ function TerminalTabs({
   // and telling the server so skips a probe round-trip on open.
   const freshIds = useRef<Set<string>>(new Set());
   const killTerminalSession = useAppsV2Store(st => st.killTerminalSession);
+  const stopDev = useAppsV2Store(st => st.stopDev);
   // One path for both ways a shell dies: the x on its row (killRemote —
   // closing the tab kills the pty, the dtach session and the recording) and
   // the session ending on its own (`exit` — already dead, just drop the tab).
@@ -510,17 +514,11 @@ function TerminalTabs({
       if (opts.killRemote) {
         void killTerminalSession(workspaceId, appId, id);
       }
-      // The last-shell replacement must be a FRESH id, never a reuse of the
-      // one that just died: same id = same React key, so the dead
-      // TerminalPanel never remounts and `exit` in the only shell left a
-      // corpse stuck on "connecting" until reload.
-      const fresh = String(nextId.current++);
-      freshIds.current.add(fresh);
-      setShells(prev => {
-        const next = prev.filter(x => x !== id);
-        return next.length > 0 ? next : [fresh];
-      });
-      setActiveState(current => (current === id ? fresh : current));
+      // An empty shell list is fine now — the dev terminal is the floor.
+      // (No id reuse either: a reused id kept the dead TerminalPanel's
+      // React key, leaving a corpse stuck on "connecting".)
+      setShells(prev => prev.filter(x => x !== id));
+      setActiveState(current => (current === id ? "dev" : current));
     },
     [appId, workspaceId, killTerminalSession],
   );
@@ -660,6 +658,11 @@ function TerminalTabs({
             }
             selected={active === "dev"}
             onSelect={() => setActive("dev")}
+            // Closing the dev session IS stopping dev mode — one mental
+            // model, same as the toolbar's Stop dev.
+            onClose={
+              devRunning ? () => void stopDev(workspaceId, appId) : undefined
+            }
           />
           {shells.map((id, index) => (
             <SessionRow
@@ -667,11 +670,7 @@ function TerminalTabs({
               label={`bash ${index + 1}`}
               selected={active === id}
               onSelect={() => setActive(id)}
-              onClose={
-                shells.length > 1
-                  ? () => closeShell(id, { killRemote: true })
-                  : undefined
-              }
+              onClose={() => closeShell(id, { killRemote: true })}
             />
           ))}
         </Box>
@@ -813,16 +812,6 @@ export default function AppV2Workspace({
   const history = useAppsV2Store(s => s.historyByApp[appId]);
   const branches = useAppsV2Store(s => s.branchesByApp[appId]);
   const preview = useAppsV2Store(s => s.previewByApp[appId]);
-  const runningDevAppsForChip = useAppsV2Store(s => s.runningDevApps);
-  /**
-   * A live `vite dev` session is running for this app right now — from BOX
-   * TRUTH (runningDevApps), the same source as the green dot and the Exit
-   * button. Derived from previewByApp it disagreed with both: the optimistic
-   * localStorage URL painted "live · HMR" on a stopped app (§13.11).
-   */
-  const devSessionLive = app?.slug
-    ? runningDevAppsForChip.includes(app.slug)
-    : false;
   const publishedSha = app?.publishedSha;
   const publishApp = useAppsV2Store(s => s.publishApp);
 
@@ -838,8 +827,6 @@ export default function AppV2Workspace({
   // others rather than a hand-picked 5px.
   const editing = useAppsV2Store(s => s.editingByApp[appId] ?? false);
   const setEditing = useAppsV2Store(s => s.setEditing);
-  const killTerminalSession = useAppsV2Store(s => s.killTerminalSession);
-  const markDevDown = useAppsV2Store(s => s.markDevDown);
   const slug = useAppsV2Store(
     s => s.apps.find(a => a.id === appId)?.slug ?? null,
   );
@@ -914,10 +901,12 @@ export default function AppV2Workspace({
   const fetchStatus = useAppsV2Store(s => s.fetchStatus);
   const fetchHistory = useAppsV2Store(s => s.fetchHistory);
   const fetchBranches = useAppsV2Store(s => s.fetchBranches);
-  const discard = useAppsV2Store(s => s.discard);
   const startDevPreview = useAppsV2Store(s => s.startDevPreview);
+  const stopDev = useAppsV2Store(s => s.stopDev);
 
   const [historyAnchor, setHistoryAnchor] = useState<null | HTMLElement>(null);
+  // Bumping this remounts the preview iframe — a plain page refresh.
+  const [previewNonce, setPreviewNonce] = useState(0);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -932,8 +921,6 @@ export default function AppV2Workspace({
   // Discard throws away the repo-wide set and a branch switch has to get past
   // it. Gating this on the app's own slice disabled the only escape hatch
   // exactly when the blocking file belonged to a different app.
-  const changeCount = status?.repoChanges.length ?? 0;
-
   // Same "prefer the active chat's branch" logic as the sidebar's Version
   // control section: if the conversation you're currently chatting in has
   // already committed work on this app, Preview build should build THAT
@@ -943,16 +930,6 @@ export default function AppV2Workspace({
   const activeChatBranch = (branches ?? []).find(
     b => b.name === `chat/${activeChatId}`,
   );
-
-  const handleDiscard = useCallback(() => {
-    if (!workspaceId) return;
-    const names = (status?.repoChanges ?? []).map(c => c.path);
-    const confirmed = window.confirm(
-      `Discard ALL uncommitted changes in this repository?\n\n${names.join("\n")}`,
-    );
-    if (!confirmed) return;
-    void discard(workspaceId, appId);
-  }, [workspaceId, appId, discard, status]);
 
   if (!workspaceId) return null;
 
@@ -974,7 +951,7 @@ export default function AppV2Workspace({
         <Typography variant="subtitle2" noWrap sx={{ maxWidth: 240 }}>
           {app?.title ?? "App"}
         </Typography>
-        {preview?.mode === "dev" && preview.url && (
+        {devRunning && (
           <Chip
             label="live · HMR"
             size="small"
@@ -1001,74 +978,46 @@ export default function AppV2Workspace({
           />
         </Tooltip>
         <Box sx={{ flex: 1 }} />
-        {/* Shown only when a dev server is ACTUALLY running (box truth), so it
-            can never contradict the green dot the way an `editing`-gated
-            control did. */}
-        {devRunning && (
-          <Tooltip title="Stop the dev server and go back to viewing. Your shells and the sandbox keep running.">
-            <Button
-              size="small"
-              variant="text"
-              onClick={() => {
-                // Leaving dev mode STOPS the dev server: a session nobody is
-                // watching kept vite (and its green dot) alive indefinitely,
-                // and "exit" that leaves the process running is not an exit.
-                // Killing the session reaps vite; the launcher reports "down"
-                // and the dot clears on the push.
-                setEditing(workspaceId, appId, false);
-                if (slug) {
-                  void killTerminalSession(workspaceId, appId, `dev-${slug}`);
-                }
-                markDevDown(appId);
-              }}
-            >
-              Exit dev mode
-            </Button>
-          </Tooltip>
-        )}
+        {/* ONE dev toggle in the query-runner's language: blue Play →
+            "Start dev" when stopped, red Stop → "Stop dev" while running.
+            Restart is gone — stop + start covers it, and agents restart
+            through their own tools. */}
         <Tooltip
           title={
-            devSessionLive
-              ? "A dev session is already running — restart it if the sandbox got into a bad state."
+            devRunning
+              ? "Stop the dev server. All terminal sessions die with it; the sandbox keeps running."
               : "Live preview: keeps the app running in its sandbox so your edits show up instantly, with no rebuild step."
           }
         >
           <span>
             <Button
               size="small"
-              variant="outlined"
+              variant="contained"
+              color={devRunning ? "error" : "primary"}
               startIcon={
                 preview?.building ? (
                   <CircularProgress size={14} color="inherit" />
+                ) : devRunning ? (
+                  <StopIcon size={12} fill="currentColor" />
                 ) : (
                   <PlayIcon size={14} />
                 )
               }
               disabled={preview?.building}
               onClick={() => {
-                // A dev session IS dev mode: without entering it, the live
-                // preview would run behind the published view, invisible.
-                setEditing(workspaceId, appId, true);
-                // When a server is already running this button says
-                // "Restart dev session" — and it must MEAN it. The
-                // idempotent ensure used to reuse the running server, so
-                // restart was a silent no-op (stale launcher included).
-                void startDevPreview(workspaceId, appId, {
-                  restart: devRunning,
-                });
+                if (devRunning) {
+                  void stopDev(workspaceId, appId);
+                } else {
+                  setEditing(workspaceId, appId, true);
+                  void startDevPreview(workspaceId, appId);
+                }
               }}
             >
-              {/* The label has to render STATE, not a fixed verb. It
-                  previously read "Start dev session" while a session was
-                  already running, changing only its variant — which is how a
-                  running session looked identical to a stopped one. */}
               {preview?.building
                 ? "Starting..."
                 : devRunning
-                  ? "Restart dev session"
-                  : activeChatBranch
-                    ? "Start dev session (active chat)"
-                    : "Start dev session"}
+                  ? "Stop dev"
+                  : "Start dev"}
             </Button>
           </span>
         </Tooltip>
@@ -1082,8 +1031,7 @@ export default function AppV2Workspace({
           <span>
             <Button
               size="small"
-              variant="contained"
-              color="primary"
+              variant="outlined"
               disabled={preview?.building}
               onClick={() => void publishApp(workspaceId, appId)}
             >
@@ -1102,14 +1050,15 @@ export default function AppV2Workspace({
             <HistoryIcon size={16} />
           </IconButton>
         </Tooltip>
-        <Tooltip title="Discard all uncommitted changes in the repository">
+        <Tooltip title="Reload the app preview">
           <span>
             <IconButton
               size="small"
-              disabled={changeCount === 0}
-              onClick={handleDiscard}
+              aria-label="Reload the app preview"
+              disabled={!(editing ? preview?.url : viewUrl)}
+              onClick={() => setPreviewNonce(n => n + 1)}
             >
-              <DiscardIcon size={16} />
+              <RefreshIcon size={16} />
             </IconButton>
           </span>
         </Tooltip>
@@ -1155,6 +1104,7 @@ export default function AppV2Workspace({
             // granting it would hand app code our origin and let it out of
             // the sandbox entirely.
             <iframe
+              key={`pub-${previewNonce}`}
               title={`${app?.title ?? "App"} (published)`}
               src={viewUrl}
               sandbox="allow-scripts allow-forms"
@@ -1241,6 +1191,7 @@ export default function AppV2Workspace({
               </Alert>
             ) : preview?.url ? (
               <iframe
+                key={`dev-${previewNonce}`}
                 title="App preview"
                 src={preview.url}
                 // The two preview tiers need DIFFERENT sandboxes.

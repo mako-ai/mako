@@ -536,6 +536,67 @@ export async function killTerminalSession(
   }
 }
 
+/**
+ * Kill EVERY terminal session this (project, user) box holds: all numeric
+ * bash shells, plus this app's dev session. Leaving dev mode means leaving
+ * — old shells that survived reattached as a museum of terminals (with
+ * history) on the next entry. Other apps' dev sessions are NOT touched:
+ * stopping app A must not kill app B's running server.
+ */
+export async function killAllTerminalSessions(
+  project: IAppProjectV2,
+  userId: string,
+  devSlug: string | null,
+): Promise<void> {
+  const slug = devSlug && /^[A-Za-z0-9_-]+$/.test(devSlug) ? devSlug : null;
+  const knownKey = await existingWorktreeKey(project, userId).catch(() => null);
+  if (knownKey) {
+    for (const [key, session] of [...live.entries()]) {
+      if (!key.startsWith(`${knownKey}:`)) continue;
+      const termId = key.slice(knownKey.length + 1);
+      const mine =
+        /^[0-9]+$/.test(termId) || (slug && termId === `dev-${slug}`);
+      if (!mine) continue;
+      live.delete(key);
+      if (session.reaper) clearTimeout(session.reaper);
+      for (const socket of session.sockets) {
+        socket.close(4000, "session killed");
+      }
+      void session.terminal?.close().catch(() => undefined);
+    }
+  }
+  const handle = await ensureWorktree(project, userId);
+  const ctx = boxCtx(handle);
+  const provider = getSandboxProvider();
+  if (!(await provider.hasSession(ctx))) return;
+  // Same two-exec discipline as the single kill: pkill -f matches every
+  // process's command line including the shell running the command, so the
+  // kills run alone with nothing else naming the same paths.
+  await provider
+    .exec(
+      ctx,
+      `pkill -f "[m]ako-term-[0-9]" 2>/dev/null; ` +
+        (slug
+          ? `pkill -f "[m]ako-term-dev-${slug}.sock" 2>/dev/null; ` +
+            `pkill -f "[m]ako-dev-${slug}.mjs" 2>/dev/null; `
+          : "") +
+        `echo killed`,
+      { timeoutMs: 30_000 },
+    )
+    .catch(() => undefined);
+  await provider
+    .exec(
+      ctx,
+      `rm -f /tmp/mako-term-[0-9]*.sock /tmp/mako-hist-[0-9]*.raw` +
+        (slug
+          ? ` /tmp/mako-term-dev-${slug}.sock /tmp/mako-hist-dev-${slug}.raw`
+          : "") +
+        `; echo done`,
+      { timeoutMs: 30_000 },
+    )
+    .catch(() => undefined);
+}
+
 async function startSession(
   ws: WebSocket,
   project: IAppProjectV2,

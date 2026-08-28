@@ -368,6 +368,12 @@ interface AppsV2Store {
   ) => Promise<Record<string, unknown> | null>;
   /** Kill the sandbox; the next touch builds a fresh one. */
   recycleSandbox: (workspaceId: string, appId: string) => Promise<void>;
+  /**
+   * Stop dev mode: kill the dev server AND every terminal session in the
+   * box, and clear the remembered shell tabs — re-entering dev starts from
+   * exactly one fresh dev terminal.
+   */
+  stopDev: (workspaceId: string, appId: string) => Promise<void>;
   /** Bindings state for an app (per-binding materialization status/history). */
   fetchAppBindings: (
     workspaceId: string,
@@ -1261,6 +1267,29 @@ export const useAppsV2Store = create<AppsV2Store>()(
         "/api/workspaces/{workspaceId}/apps-v2/{id}/sandbox/recycle",
         { params: { path: { workspaceId, id: appId } } },
       );
+    },
+
+    stopDev: async (workspaceId, appId) => {
+      // Kill ALL sessions server-side, not just the dev one: leaving old
+      // shells alive meant re-entering dev mode reattached a museum of
+      // terminals with their history. Best effort — an unreachable API
+      // still flips the UI, and the box agent reconciles the dot.
+      try {
+        await api.DELETE(
+          "/api/workspaces/{workspaceId}/apps-v2/{id}/terminal-sessions",
+          { params: { path: { workspaceId, id: appId } } },
+        );
+      } catch {
+        // Best effort.
+      }
+      try {
+        localStorage.removeItem(`apps-v2-shells:${appId}`);
+        localStorage.removeItem(`apps-v2-term-active:${appId}`);
+      } catch {
+        // Best effort.
+      }
+      get().markDevDown(appId);
+      get().setEditing(workspaceId, appId, false);
     },
 
     fetchAppBindings: async (workspaceId, appId) => {

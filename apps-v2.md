@@ -1790,3 +1790,37 @@ Three real defects the matrix flushed out, all fixed:
    nothing re-added — vite served happily while every discovery (browse,
    dots, status) swore no server existed. The reap now runs before the
    allocation, and a UI restart verifiably preserves the registration.
+
+## §13.16 Workbench polish: one dev toggle, honest refresh, one terminal (2026-08-28)
+
+- **One dev button, in the query-runner's language.** "Exit dev mode" +
+  "Start/Restart dev session" (two blue buttons whose meanings overlapped)
+  collapse into a single toggle: blue Play "Start dev" when stopped, red
+  Stop "Stop dev" while running — exactly the Run query / Stop query
+  pattern. Restart is gone from the UI: stop + start covers it, and agents
+  restart through their own tools. Publish moves to `outlined` — the
+  secondary action it is.
+- **The rewind icon now does what it looks like.** Sitting above an iframe
+  it read as "refresh page" while actually discarding ALL uncommitted git
+  changes — a destructive action masquerading as a harmless one. Discard
+  lives where git lives (the explorer's Source Control section); the
+  toolbar icon is now a real preview refresh (remounts the iframe).
+- **Starting dev opens exactly ONE terminal — the dev process.** The free
+  bash shell that always tagged along is gone; extra shells are a
+  deliberate click on +, and every session row (the dev one included) has a
+  close affordance. Closing the dev session IS stopping dev — one mental
+  model with the toolbar toggle.
+- **Leaving dev mode kills every terminal session** (new
+  `DELETE /{id}/terminal-sessions` → `killAllTerminalSessions`): all
+  numeric bash shells plus this app's dev session die server-side — ptys,
+  dtach sessions, recordings — and the remembered tab list is cleared, so
+  re-entering dev starts from one fresh terminal instead of reattaching a
+  museum of old shells with their history (observed: four tabs surviving
+  logout). Other apps' dev sessions are deliberately untouched.
+- The "live · HMR" chip now derives from `runningDevApps` like every other
+  running affordance (it still read the localStorage-tainted preview
+  state).
+
+Verified live: stop leaves `socks=0, devprocs=0` in the box; start shows a
+single `dev:` session; + adds `bash 1` with a working close; `exit` in the
+last shell falls back to the dev tab instead of resurrecting anything.

@@ -96,6 +96,7 @@ import {
 } from "../apps-v2/preview.service";
 import {
   forgetTerminalCaches,
+  killAllTerminalSessions,
   killTerminalSession,
 } from "../apps-v2/terminal-ws";
 import {
@@ -1674,6 +1675,34 @@ appsV2Routes.openapi(
       await markBoxOffline(
         loaded.project.workspaceId.toString(),
         loaded.userId ?? "api-key",
+      );
+      return c.json({ success: true as const }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/{id}/terminal-sessions",
+    tags: ["Apps v2"],
+    summary: "Kill ALL terminal sessions for this user's box",
+    description:
+      "What leaving dev mode means: every bash shell and this app's dev session die (ptys, dtach sessions, recordings), so re-entering dev starts from one fresh terminal instead of reattaching old ones. Other apps' dev sessions are untouched. Idempotent.",
+    security: AUTH_SECURITY,
+    request: { params: ProjectParam },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      await killAllTerminalSessions(
+        loaded.project,
+        loaded.userId ?? "api-key",
+        loaded.project.slug ?? null,
       );
       return c.json({ success: true as const }, 200);
     } catch (error) {
