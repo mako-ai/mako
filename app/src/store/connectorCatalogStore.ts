@@ -146,7 +146,9 @@ export const useConnectorCatalogStore = create<CatalogState>()(
     })),
     {
       name: "connector-catalog-store",
-      version: 2,
+      // v3: invalidate schemas cached before PostHog transferQueries became
+      // optional — a stale required:true blocks saving builtin-only flows.
+      version: 3,
       partialize: state => ({ schemas: state.schemas }), // Only persist schemas, not types
     },
   ),
