@@ -216,7 +216,17 @@ async function ensureEyesRuntime(ctx: {
  */
 export async function browseApp(
   handle: WorktreeHandle,
-  opts: { steps?: EyesStep[]; screenshot?: boolean },
+  opts: {
+    steps?: EyesStep[];
+    screenshot?: boolean;
+    /**
+     * "local" (default) hits 127.0.0.1 inside the box — debugs the APP,
+     * immune to proxy/edge state. "public" hits the sandbox's public
+     * `*.e2b.app` origin — the exact path the user's browser takes, so it
+     * also exercises the E2B proxy, allowedHosts and TLS.
+     */
+    origin?: "local" | "public";
+  },
 ): Promise<EyesResult> {
   const provider = getSandboxProvider();
   if (provider.id === "local") {
@@ -246,8 +256,23 @@ export async function browseApp(
     RUNNER_PATH,
     new TextEncoder().encode(runnerSource()),
   );
+  let base = `http://127.0.0.1:${port}`;
+  if (opts.origin === "public") {
+    // Peek, never create (§13.9): the box exists — a dev server is running
+    // in it — so this only resolves the hostname.
+    const url = await provider.peekPublicUrlForPort(ctx, port);
+    if (!url) {
+      return {
+        ok: false,
+        error:
+          "Could not resolve the sandbox's public origin — it may be " +
+          "mid-recycle. Retry, or browse with the default local origin.",
+      };
+    }
+    base = url;
+  }
   const args = JSON.stringify({
-    base: `http://127.0.0.1:${port}`,
+    base,
     steps: opts.steps ?? [],
     screenshot: opts.screenshot !== false,
   });

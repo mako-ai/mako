@@ -585,8 +585,18 @@ export function createAppsV2Tools({
           .boolean()
           .optional()
           .describe("Capture a JPEG screenshot (default true)."),
+        origin: z
+          .enum(["local", "public"])
+          .optional()
+          .describe(
+            "local (default) hits the dev server inside the sandbox — " +
+              "debugs the app itself. public goes through the sandbox's " +
+              "public URL — the exact path the user's browser takes, so it " +
+              "also verifies the proxy/edge (use when the user reports the " +
+              "preview broken but the app looks fine locally).",
+          ),
       }),
-      execute: async ({ appId, steps, screenshot }) => {
+      execute: async ({ appId, steps, screenshot, origin }) => {
         const loaded = await loadProject(appId, { write: false });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
@@ -594,6 +604,7 @@ export function createAppsV2Tools({
           const result = await browseApp(handle, {
             steps,
             screenshot: screenshot !== false,
+            origin,
           });
           return { success: result.ok, ...result };
         } catch (error) {

@@ -49,7 +49,11 @@ app "should" render when you can check what it DOES render.
    INSIDE the sandbox — it navigates, clicks, types, evaluates JS, and
    returns console output, page errors, failed requests, and a screenshot
    you can SEE. First use in a fresh sandbox installs the browser (~1 min);
-   later calls are fast. It requires a running dev session.
+   later calls are fast. It requires a running dev session. By default it
+   hits the dev server from inside the sandbox (debugs the app itself);
+   pass `origin: "public"` to go through the sandbox's public URL — the
+   exact path the user's browser takes — when the user reports the preview
+   broken but the app looks fine locally.
 4. **When something is broken or blank**, read `app2_dev_log` FIRST — it is
    the cheapest signal. `devLog` is the dev server's own output (vite boot,
    compile errors, HMR activity); `browserConsole` is what the app's runtime
