@@ -1408,7 +1408,11 @@ export const useAppsV2Store = create<AppsV2Store>()(
           s.previewByApp[appId] = {
             url: null,
             building: false,
-            error: null,
+            // PRESERVE a boot failure: the next 15s status poll used to
+            // land here and wipe the error — the red "last start failed"
+            // state lived for seconds, then vanished as if nothing
+            // happened. Down is down; the error explains WHY.
+            error: preview.error ?? null,
           };
         }
       });
