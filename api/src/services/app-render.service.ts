@@ -23,7 +23,21 @@ import { loggers } from "../logging";
 const logger = loggers.api("app-render");
 /** Post-ready delay so late paints (fonts, charts) land before screenshot. */
 const PAINT_DELAY_MS = 750;
-const MAX_CONCURRENT_RENDERS = 2;
+
+/**
+ * Render pool size from RENDER_APP_MAX_CONCURRENT, clamped to [1, 16].
+ * Default 2 — sized for occasional MCP verifies; raise it on deployments
+ * where more surfaces route through the headless renderer.
+ */
+export function resolveMaxConcurrentRenders(raw: string | undefined): number {
+  const parsed = Number.parseInt(raw ?? "", 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return 2;
+  return Math.min(parsed, 16);
+}
+
+const MAX_CONCURRENT_RENDERS = resolveMaxConcurrentRenders(
+  process.env.RENDER_APP_MAX_CONCURRENT,
+);
 const MAX_CONSOLE_LINES = 100;
 const MAX_CONSOLE_LINE_CHARS = 2_000;
 
