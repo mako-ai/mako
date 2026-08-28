@@ -148,8 +148,10 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
 
   // ── Apps v2 (git-backed, server) — full headless authoring surface ────
   app2_bash: bridge(),
+  app2_browse: bridge(),
   app2_commit: bridge(),
   app2_create_app: bridge(),
+  app2_dev_log: bridge(),
   app2_edit_file: bridge(),
   app2_glob: bridge(),
   app2_grep: bridge(),
@@ -157,6 +159,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   app2_materialize: bridge(),
   app2_list_branches: bridge(),
   app2_merge_to_main: bridge(),
+  app2_open_app: bridge(),
   app2_read_file: bridge(),
   app2_status: bridge(),
   app2_write_file: bridge(),
