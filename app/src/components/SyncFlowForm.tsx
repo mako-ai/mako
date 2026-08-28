@@ -1024,7 +1024,28 @@ export function SyncFlowForm({
         const queryEntities = validQueries.map(q => q.name.trim());
         payload.entityFilter = [...enabledBuiltins, ...queryEntities];
         if (layoutMode !== "none" && (data.entityLayouts || []).length > 0) {
-          payload.entityLayouts = data.entityLayouts;
+          // entityLayouts take precedence over entityFilter at sync time
+          // (resolveConfiguredEntities), and the layout table only knows the
+          // data source's built-in entities — flow-level query entities live
+          // in transferQueries. Append layout rows for them so they aren't
+          // silently dropped from the sync.
+          const layoutEntities = new Set(
+            (data.entityLayouts || []).map(l => l.entity),
+          );
+          const queryLayouts: EntityLayoutConfig[] = queryEntities
+            .filter(name => !layoutEntities.has(name))
+            .map(name => ({
+              entity: name,
+              label: name,
+              partitionField: "_syncedAt",
+              partitionGranularity: "day",
+              clusterFields: ["_dataSourceId", "id"],
+              enabled: true,
+            }));
+          payload.entityLayouts = [
+            ...(data.entityLayouts || []),
+            ...queryLayouts,
+          ];
         }
       } else {
         const enabledEntities = (data.entityLayouts || [])

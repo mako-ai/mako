@@ -40,6 +40,9 @@ function testBuiltinEntitiesAlwaysAvailable() {
   assert.deepEqual(withQueries.getAvailableEntities(), [
     "surveys",
     "survey_responses",
+    "feature_flags",
+    "experiments",
+    "annotations",
     "events_7d",
   ]);
 }
@@ -54,6 +57,10 @@ function testEntityMetadataIncludesSurveys() {
   assert.equal(surveys?.layoutSuggestion?.partitionField, "created_at");
   const responses = metadata.find(m => m.name === "survey_responses");
   assert.equal(responses?.layoutSuggestion?.partitionField, "submitted_at");
+  for (const name of ["feature_flags", "experiments", "annotations"]) {
+    const entry = metadata.find(m => m.name === name);
+    assert.equal(entry?.layoutSuggestion?.partitionField, "created_at");
+  }
 }
 
 function testSchemaResolution() {
@@ -68,6 +75,22 @@ function testSchemaResolution() {
   assert.equal(responses.fields.survey_id?.type, "string");
   assert.equal(responses.fields.submitted_at?.type, "timestamp");
 
+  const flags = resolvePosthogEntitySchema("feature_flags");
+  assert.ok(flags);
+  assert.equal(flags.fields.id?.type, "number");
+  assert.equal(flags.fields.key?.type, "string");
+  assert.equal(flags.fields.filters?.type, "json");
+
+  const experiments = resolvePosthogEntitySchema("experiments");
+  assert.ok(experiments);
+  assert.equal(experiments.fields.start_date?.type, "timestamp");
+  assert.equal(experiments.fields.feature_flag_key?.type, "string");
+
+  const annotations = resolvePosthogEntitySchema("annotations");
+  assert.ok(annotations);
+  assert.equal(annotations.fields.date_marker?.type, "timestamp");
+  assert.equal(annotations.fields.content?.type, "string");
+
   assert.equal(resolvePosthogEntitySchema("events_7d"), null);
 }
 
@@ -80,6 +103,10 @@ function testIncrementalCapabilitiesPerEntity() {
   assert.equal(caps.perEntity?.surveys?.mode, "created-anchor");
   assert.equal(caps.perEntity?.survey_responses?.mode, "native");
   assert.equal(caps.perEntity?.survey_responses?.anchorField, "since");
+  for (const name of ["feature_flags", "experiments", "annotations"]) {
+    assert.equal(caps.perEntity?.[name]?.mode, "created-anchor");
+    assert.equal(caps.perEntity?.[name]?.anchorField, "created_at");
+  }
 }
 
 function testTransferQueriesOptional() {
@@ -308,6 +335,46 @@ async function testFetchSurveyResponsesResumesAcrossChunks() {
   assert.ok(rows.length >= 1);
 }
 
+async function testFetchFeatureFlagsChunkUsesEndpoint() {
+  const connector = createConnector();
+  const client = (connector as any).getHttpClient();
+  const calls: Array<{ url: string; params: Record<string, unknown> }> = [];
+
+  client.get = async (
+    url: string,
+    config?: { params?: Record<string, unknown> },
+  ) => {
+    calls.push({ url, params: config?.params || {} });
+    return {
+      data: {
+        count: 1,
+        next: null,
+        results: [
+          { id: 42, key: "new-onboarding", created_at: "2026-05-01T00:00:00Z" },
+        ],
+      },
+    };
+  };
+
+  const batches: unknown[][] = [];
+  const state = await connector.fetchEntityChunk({
+    entity: "feature_flags",
+    maxIterations: 5,
+    batchSize: 100,
+    rateLimitDelay: 0,
+    onBatch: async rows => {
+      batches.push(rows);
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].url.includes("/api/projects/12345/feature_flags/"));
+  assert.equal(batches.length, 1);
+  assert.equal((batches[0][0] as { key: string }).key, "new-onboarding");
+  assert.equal(state.hasMore, false);
+  assert.equal(state.totalProcessed, 1);
+}
+
 async function testHogqlEntityStillWorks() {
   const connector = createConnector({
     queries: [{ name: "events_7d", query: "SELECT event FROM events" }],
@@ -348,6 +415,7 @@ async function main() {
   await testFetchSurveysChunkPaginatesAndFiltersSince();
   await testFetchSurveyResponsesNestsAndAppliesSince();
   await testFetchSurveyResponsesResumesAcrossChunks();
+  await testFetchFeatureFlagsChunkUsesEndpoint();
   await testHogqlEntityStillWorks();
 }
 

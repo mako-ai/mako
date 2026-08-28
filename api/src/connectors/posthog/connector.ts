@@ -17,9 +17,22 @@ type JsonRecord = Record<string, unknown>;
 export const POSTHOG_BUILTIN_ENTITIES = [
   "surveys",
   "survey_responses",
+  "feature_flags",
+  "experiments",
+  "annotations",
 ] as const;
 
 type BuiltinEntity = (typeof POSTHOG_BUILTIN_ENTITIES)[number];
+
+// Plain limit/offset list endpoints sharing the surveys pagination shape.
+// None expose an updated-since filter, so incremental is created-anchor on
+// created_at and edits rely on the periodic full reconcile.
+const REST_LIST_PATHS: Partial<Record<BuiltinEntity, string>> = {
+  surveys: "surveys",
+  feature_flags: "feature_flags",
+  experiments: "experiments",
+  annotations: "annotations",
+};
 
 type PaginatedList<T> = {
   results: T[];
@@ -122,9 +135,9 @@ export class PosthogConnector extends BaseConnector {
   getMetadata() {
     return {
       name: "PostHog",
-      version: "1.1.0",
+      version: "1.2.0",
       description:
-        "Connector for PostHog Surveys API and HogQL Query API (each query is an entity)",
+        "Connector for PostHog REST entities (surveys, feature flags, experiments, annotations) and HogQL Query API (each query is an entity)",
       supportedEntities: this.getAvailableEntities(),
     };
   }
@@ -253,6 +266,39 @@ export class PosthogConnector extends BaseConnector {
           clusterFields: ["_dataSourceId", "survey_id", "id"],
         },
       },
+      {
+        name: "feature_flags",
+        label: "Feature Flags",
+        description:
+          "PostHog feature flag definitions (key, filters, rollout, status)",
+        layoutSuggestion: {
+          partitionField: "created_at",
+          partitionGranularity: "day",
+          clusterFields: ["_dataSourceId", "id"],
+        },
+      },
+      {
+        name: "experiments",
+        label: "Experiments",
+        description:
+          "PostHog experiments / A-B tests (metrics, linked flags, dates, conclusions)",
+        layoutSuggestion: {
+          partitionField: "created_at",
+          partitionGranularity: "day",
+          clusterFields: ["_dataSourceId", "id"],
+        },
+      },
+      {
+        name: "annotations",
+        label: "Annotations",
+        description:
+          "PostHog annotations (release markers and notes pinned to dates)",
+        layoutSuggestion: {
+          partitionField: "created_at",
+          partitionGranularity: "day",
+          clusterFields: ["_dataSourceId", "id"],
+        },
+      },
     ];
 
     const queryEntities: EntityMetadata[] = this.getQueryEntityNames().map(
@@ -278,11 +324,11 @@ export class PosthogConnector extends BaseConnector {
   async fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState> {
     const { entity } = options;
 
-    if (entity === "surveys") {
-      return this.fetchSurveysChunk(options);
-    }
     if (entity === "survey_responses") {
       return this.fetchSurveyResponsesChunk(options);
+    }
+    if (isBuiltinEntity(entity) && REST_LIST_PATHS[entity]) {
+      return this.fetchRestListChunk(options, REST_LIST_PATHS[entity]);
     }
 
     return this.fetchHogqlChunk(options);
@@ -295,15 +341,15 @@ export class PosthogConnector extends BaseConnector {
     });
   }
 
-  // --- Surveys (REST) ---
+  // --- REST list entities (surveys, feature flags, experiments, annotations) ---
 
-  private async fetchSurveysPage(options: {
-    limit: number;
-    offset: number;
-  }): Promise<PaginatedList<JsonRecord>> {
+  private async fetchListPage(
+    path: string,
+    options: { limit: number; offset: number },
+  ): Promise<PaginatedList<JsonRecord>> {
     const response = await this.executeWithRetry(() =>
       this.getHttpClient().get(
-        `/api/projects/${this.getProjectId()}/surveys/`,
+        `/api/projects/${this.getProjectId()}/${path}/`,
         {
           params: { limit: options.limit, offset: options.offset },
           timeout: this.dataSource.settings?.timeout_ms || 30000,
@@ -318,8 +364,16 @@ export class PosthogConnector extends BaseConnector {
     };
   }
 
-  private async fetchSurveysChunk(
+  private async fetchSurveysPage(options: {
+    limit: number;
+    offset: number;
+  }): Promise<PaginatedList<JsonRecord>> {
+    return this.fetchListPage("surveys", options);
+  }
+
+  private async fetchRestListChunk(
     options: ResumableFetchOptions,
+    path: string,
   ): Promise<FetchState> {
     const { onBatch, onProgress, since, state } = options;
     const maxIterations = options.maxIterations || 10;
@@ -337,11 +391,12 @@ export class PosthogConnector extends BaseConnector {
     }
 
     while (hasMore && iterations < maxIterations) {
-      const page = await this.fetchSurveysPage({ limit: batchSize, offset });
+      const page = await this.fetchListPage(path, { limit: batchSize, offset });
       let records = page.results;
 
-      // Surveys list has no updated-since filter; optional client filter on
-      // created_at only (misses later edits — declared as created-anchor).
+      // These list endpoints have no updated-since filter; optional client
+      // filter on created_at only (misses later edits — declared as
+      // created-anchor).
       if (since instanceof Date) {
         const sinceMs = since.getTime();
         records = records.filter(record => {
@@ -765,14 +820,17 @@ export class PosthogConnector extends BaseConnector {
       mode: "native",
       anchorField: "$since",
       perEntity: {
-        // Surveys list has no updated-since filter; client filter on created_at
-        // misses later edits to an existing survey.
+        // The REST list endpoints have no updated-since filter; client filter
+        // on created_at misses later edits to existing records.
         surveys: { mode: "created-anchor", anchorField: "created_at" },
+        feature_flags: { mode: "created-anchor", anchorField: "created_at" },
+        experiments: { mode: "created-anchor", anchorField: "created_at" },
+        annotations: { mode: "created-anchor", anchorField: "created_at" },
         // Responses API accepts a real `since` query parameter.
         survey_responses: { mode: "native", anchorField: "since" },
       },
       warning:
-        "Incremental substitutes $since/{{since}} in your HogQL. Queries without that placeholder still full-repull every poll — add the placeholder or use Full Refresh. Surveys only filter by created_at (edits need a full reconcile).",
+        "Incremental substitutes $since/{{since}} in your HogQL. Queries without that placeholder still full-repull every poll — add the placeholder or use Full Refresh. Surveys, feature flags, experiments, and annotations only filter by created_at (edits need a full reconcile).",
     };
   }
 }
