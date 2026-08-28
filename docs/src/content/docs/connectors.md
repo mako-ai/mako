@@ -19,7 +19,7 @@ Connectors pull data from external services and sync it into your connected data
 | **Calendly**  | Calendly API    | Organizations, Users, Groups, Event Types, Scheduled Events, Invitees, Contacts. *Real-time invitee + event-type webhooks (auto-provisioned); scheduled backfill covers the rest.* |
 | **PandaDoc**  | PandaDoc API    | Documents, Templates, Contacts, Members. *Document + template webhooks (CDC, auto-provisioned); scheduled backfill covers contacts and members. Documents are hydrated with full detail (fields, tokens, pricing, products, recipients) during backfill.* |
 | **Wise**      | Wise API        | Profiles, Balances, Balance Updates, Transfers, Recipients, Activities. *CDC webhooks verified with Wise's RSA-SHA256 public keys; auto-provisioning is not possible with personal API tokens — subscribe the Mako webhook URL manually in the Wise Developer Hub. Transfer polls only see newly created transfers; status changes arrive via webhooks.* |
-| **PostHog**   | PostHog HogQL   | Dynamic — each configured HogQL query becomes an entity                          |
+| **PostHog**   | PostHog API + HogQL | Surveys, Survey Responses, Feature Flags, Experiments, Annotations — plus dynamic HogQL query entities |
 | **GraphQL**   | Any GraphQL API | Dynamic — each configured query becomes an entity                                |
 | **BigQuery**  | Google BigQuery | Dynamic — each configured query becomes an entity                                |
 | **REST**      | Any REST API    | Configurable endpoints                                                           |

@@ -519,7 +519,10 @@ export function SyncFlowForm({
       : layoutMode === "index"
         ? "36px minmax(110px, 1.3fr) minmax(70px, 0.6fr) minmax(120px, 0.9fr) minmax(100px, 1fr) minmax(100px, 1fr)"
         : "36px minmax(110px, 1.3fr) minmax(70px, 0.6fr) minmax(120px, 0.9fr)";
-  const requiresQueries = !!transferQueriesSchema;
+  // Schema may expose optional transferQueries (PostHog: HogQL optional when
+  // syncing built-in entities like surveys) or required ones (GraphQL).
+  const hasTransferQueries = !!transferQueriesSchema;
+  const requiresQueries = Boolean(transferQueriesSchema?.required);
   const requiresDestinationDatabaseName =
     !isCdcCapableDest && availableDatabases.length > 0;
   // For Full Refresh on a CDC destination, "poll on a cron" and "periodic
@@ -913,8 +916,30 @@ export function SyncFlowForm({
       setOpenSteps(prev => new Set([...prev, 1]));
       return;
     }
-    if (requiresQueries && (!data.queries || data.queries.length === 0)) {
+    const validQueries = (data.queries || []).filter(
+      q =>
+        typeof q?.name === "string" &&
+        q.name.trim().length > 0 &&
+        typeof q?.query === "string" &&
+        q.query.trim().length > 0,
+    );
+    const enabledBuiltinEntities = (data.entityLayouts || []).filter(
+      l => l.enabled !== false,
+    );
+    if (requiresQueries && validQueries.length === 0) {
       setError("Please add at least one query to define what data to sync");
+      setOpenSteps(prev => new Set([...prev, 3]));
+      return;
+    }
+    if (
+      hasTransferQueries &&
+      !requiresQueries &&
+      validQueries.length === 0 &&
+      enabledBuiltinEntities.length === 0
+    ) {
+      setError(
+        "Enable at least one built-in entity (e.g. Surveys), or add a HogQL query",
+      );
       setOpenSteps(prev => new Set([...prev, 3]));
       return;
     }
@@ -989,7 +1014,40 @@ export function SyncFlowForm({
 
       // Entity selection: staging destinations use the layout table; other
       // destinations use the same enabled-set without layout hints.
-      if (!requiresQueries) {
+      // Hybrid connectors (PostHog) expose built-in entities via layouts AND
+      // query-named entities via transferQueries — persist both so surveys
+      // stay opt-in while HogQL queries still sync.
+      if (hasTransferQueries) {
+        const enabledBuiltins = (data.entityLayouts || [])
+          .filter(l => l.enabled !== false)
+          .map(l => l.entity);
+        const queryEntities = validQueries.map(q => q.name.trim());
+        payload.entityFilter = [...enabledBuiltins, ...queryEntities];
+        if (layoutMode !== "none" && (data.entityLayouts || []).length > 0) {
+          // entityLayouts take precedence over entityFilter at sync time
+          // (resolveConfiguredEntities), and the layout table only knows the
+          // data source's built-in entities — flow-level query entities live
+          // in transferQueries. Append layout rows for them so they aren't
+          // silently dropped from the sync.
+          const layoutEntities = new Set(
+            (data.entityLayouts || []).map(l => l.entity),
+          );
+          const queryLayouts: EntityLayoutConfig[] = queryEntities
+            .filter(name => !layoutEntities.has(name))
+            .map(name => ({
+              entity: name,
+              label: name,
+              partitionField: "_syncedAt",
+              partitionGranularity: "day",
+              clusterFields: ["_dataSourceId", "id"],
+              enabled: true,
+            }));
+          payload.entityLayouts = [
+            ...(data.entityLayouts || []),
+            ...queryLayouts,
+          ];
+        }
+      } else {
         const enabledEntities = (data.entityLayouts || [])
           .filter(l => l.enabled !== false)
           .map(l => l.entity);
@@ -1714,7 +1772,7 @@ export function SyncFlowForm({
               <AccordionDetails>
                 <Stack spacing={3}>
                   {/* Query-based connectors (GraphQL / PostHog) */}
-                  {requiresQueries && transferQueriesSchema && (
+                  {hasTransferQueries && transferQueriesSchema && (
                     <Box>
                       <Box
                         sx={{
@@ -1756,7 +1814,9 @@ export function SyncFlowForm({
                       </Box>
                       {queryFields.length === 0 ? (
                         <Alert severity="info">
-                          Add at least one query to define what data to sync.
+                          {requiresQueries
+                            ? "Add at least one query to define what data to sync."
+                            : "Optional: add HogQL queries, or sync built-in entities below (Surveys)."}
                         </Alert>
                       ) : (
                         queryFields.map((field, index) => (
@@ -1852,8 +1912,8 @@ export function SyncFlowForm({
                     </Box>
                   )}
 
-                  {/* Entity selection (all connectors with fixed entities) */}
-                  {!requiresQueries && watchEntityLayouts.length > 0 && (
+                  {/* Entity selection (fixed + hybrid connectors with builtins) */}
+                  {watchEntityLayouts.length > 0 && (
                     <Box>
                       <Typography variant="subtitle2" sx={{ mb: 1 }}>
                         Entities
@@ -2140,7 +2200,7 @@ export function SyncFlowForm({
                     </Box>
                   )}
 
-                  {!requiresQueries &&
+                  {!hasTransferQueries &&
                     watchEntityLayouts.length === 0 &&
                     watchDataSourceId && (
                       <Alert severity="info">
