@@ -190,6 +190,15 @@ export type RealtimeEvent =
       type: "app-v2.box-state";
       userId: string;
       state: BoxState;
+    }
+  // An agent in this user's chat asked their UI to open an Apps v2 app tab
+  // (app2_open_app). Pure client-side effect, scoped to the requesting user.
+  | {
+      type: "app-v2.open-app";
+      userId: string;
+      appId: string;
+      slug?: string;
+      title?: string;
     };
 
 function channelFor(workspaceId: string): string {

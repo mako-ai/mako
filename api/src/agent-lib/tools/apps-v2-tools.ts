@@ -51,6 +51,8 @@ import {
   writeFile,
 } from "../../apps-v2/worktree.service";
 import { materializeAppV2Binding } from "../../apps-v2/bindings.service";
+import { ensureDevServer } from "../../apps-v2/dev-server.service";
+import { publishRealtimeEvent } from "../../services/realtime.service";
 import { loggers } from "../../logging";
 
 const logger = loggers.agent();
@@ -469,6 +471,64 @@ export function createAppsV2Tools({
         try {
           const status = await worktreeStatus(loaded.project, actorId);
           return { success: true, status };
+        } catch (error) {
+          return { success: false, error: errorMessage(error) };
+        }
+      },
+    }),
+
+    app2_open_app: tool({
+      description:
+        "Open an Apps v2 app in the user's Mako UI — focuses its tab — and " +
+        "(by default) start its live dev session (vite + HMR) so the user " +
+        "watches edits apply live in the preview. Use it after creating an " +
+        "app or when asked to show one. Returns the dev preview URL. " +
+        "Distinct from the v1 open_app/run_app tools, which cannot see " +
+        "git-backed apps.",
+      inputSchema: z.object({
+        appId: z.string(),
+        dev: z
+          .boolean()
+          .optional()
+          .describe("Also start the live dev session (default true)."),
+      }),
+      execute: async ({ appId, dev }) => {
+        const loaded = await loadProject(appId, { write: false });
+        if ("error" in loaded) return { success: false, error: loaded.error };
+        try {
+          const handle = await ensureActorWorktree(loaded.project);
+          let url: string | undefined;
+          let evicted: string[] | undefined;
+          if (dev !== false) {
+            // The same launch the workbench button runs — this call IS the
+            // user's click, relayed through their agent (§13.9: starts are
+            // user-initiated; this is one).
+            const preview = await ensureDevServer(handle);
+            url = preview.url;
+            evicted = preview.evicted;
+          }
+          // The tab opens in the USER'S browser: a user-scoped UI intent on
+          // the workspace channel. Headless callers (MCP) have no browser
+          // listening and simply use the returned URL.
+          publishRealtimeEvent(workspaceId, {
+            type: "app-v2.open-app",
+            userId: actorId,
+            appId: String(loaded.project._id ?? loaded.project.slug ?? appId),
+            slug: loaded.project.slug ?? undefined,
+            title: loaded.project.title ?? undefined,
+          });
+          return {
+            success: true,
+            app: loaded.project.slug,
+            title: loaded.project.title,
+            devServerUrl: url,
+            evicted,
+            hint:
+              dev !== false
+                ? "The app tab is open in the user's Mako UI with the live " +
+                  "dev session running — file edits hot-reload there."
+                : "The app tab is open in the user's Mako UI.",
+          };
         } catch (error) {
           return { success: false, error: errorMessage(error) };
         }

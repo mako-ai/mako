@@ -25,6 +25,7 @@ import {
 } from "./consoleStore";
 import { useAppStore } from "./appStore";
 import { useAppsV2Store, type AppsV2BoxState } from "./appsV2Store";
+import { focusAppsV2Tab } from "../apps-v2-runtime/shell";
 import { useDashboardStore } from "./dashboardStore";
 import { useDbtStore } from "./dbtStore";
 import { useNotebookStore } from "./notebookStore";
@@ -159,6 +160,15 @@ export type RealtimeEvent =
       type: "app-v2.box-state";
       userId: string;
       state: AppsV2BoxState;
+    }
+  // An agent in this user's chat asked the UI to open an Apps v2 app tab
+  // (app2_open_app). Scoped to the requesting user.
+  | {
+      type: "app-v2.open-app";
+      userId: string;
+      appId: string;
+      slug?: string;
+      title?: string;
     };
 
 export type RealtimeStatus = "idle" | "connecting" | "open" | "reconnecting";
@@ -703,6 +713,20 @@ export const useRealtimeStore = create<RealtimeStore>()(
       useAppsV2Store.getState().applyBoxState(event.userId, event.state);
     };
 
+    const handleOpenAppV2 = (
+      event: Extract<RealtimeEvent, { type: "app-v2.open-app" }>,
+    ) => {
+      // The user's own agent asked the UI to show an app. Scoped to the
+      // requesting user — a teammate's agent must not steal this focus.
+      const me = get().currentUserId;
+      if (!me || event.userId !== me) return;
+      focusAppsV2Tab(
+        event.appId,
+        event.title ?? event.slug ?? "App",
+        event.slug,
+      );
+    };
+
     const handleEvent = (event: RealtimeEvent) => {
       switch (event.type) {
         case "console.updated":
@@ -716,6 +740,9 @@ export const useRealtimeStore = create<RealtimeStore>()(
           break;
         case "app-v2.box-state":
           handleBoxState(event);
+          break;
+        case "app-v2.open-app":
+          handleOpenAppV2(event);
           break;
         case "dashboard.updated":
           handleDashboardUpdated(event);

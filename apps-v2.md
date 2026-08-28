@@ -1677,3 +1677,32 @@ Settings › Sandbox's session count consumes the PUSHED `terminals` list
 `TODO(state-rules)` component migrations landed — `McpAgentsPanel` and the
 mcp-connections calls now go through `mcpStore`, leaving only `Chat.tsx`'s
 stop call and the hooks exemption grandfathered.
+
+## §13.14 app2_open_app: the agent can put an app on the user's screen (2026-08-28)
+
+Tested the promised loop end-to-end through the chat panel: *create an app →
+it appears in the tree → opens in a tab → dev session starts → agent edits
+files → the user watches live reload.* It broke exactly at the seam between
+the tool families: `open_app`/`run_app` are v1-only (Mongo apps, client-side
+preview iframes), so after `app2_create_app` the agent had no way to show its
+work — `run_app` answered "No visible preview iframe … open it with
+open_app", `open_app` cannot see git-backed apps, and the agent ended up
+telling the user to open the tab by hand.
+
+The missing link is `app2_open_app` (server tool, in the v2 family):
+
+- resolves the app (slug or legacy id, folder-synthesized rows included),
+- ensures the dev server via the same `ensureDevServer` the workbench button
+  uses — the chat request IS the user's click, so §13.9 is intact,
+- publishes a user-scoped `app-v2.open-app` realtime event; the client
+  (realtimeStore) reacts by focusing the app's tab — teammates' agents
+  cannot steal focus, and headless callers (MCP) just get the returned URL.
+
+Verified live: "Open the Live Reload Probe app and start its dev session" →
+tab opened itself, preview served; when deps were missing the agent
+recovered alone (`app2_bash` npm install, retried, succeeded); "make the
+title orange" hot-reloaded on screen with no manual action. The box-state
+push keeps every other tab's dots consistent throughout. One observation
+for the record: the file is the only truth the preview renders — when the
+model *claimed* an edit it had not made, the preview correctly kept showing
+v1 until a real edit landed.
