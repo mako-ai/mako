@@ -156,6 +156,7 @@ export default function AppsV2Explorer() {
   const probeEnabled = useAppsV2Store(s => s.probeEnabled);
   const filesByApp = useAppsV2Store(s => s.filesByApp);
   const runningDevApps = useAppsV2Store(s => s.runningDevApps);
+  const previewByApp = useAppsV2Store(s => s.previewByApp);
   const fetchRunningDevApps = useAppsV2Store(s => s.fetchRunningDevApps);
   const filesTruncatedByApp = useAppsV2Store(s => s.filesTruncatedByApp);
   const fetchApps = useAppsV2Store(s => s.fetchApps);
@@ -446,16 +447,28 @@ export default function AppsV2Explorer() {
                     const parsed = parseNodeId(node.id);
                     if (parsed.kind !== "app") return null;
                     const slug = apps.find(a => a.id === parsed.appId)?.slug;
-                    if (!slug || !runningDevApps.includes(slug)) return null;
+                    const running = !!slug && runningDevApps.includes(slug);
+                    const p = previewByApp[parsed.appId];
+                    // Tri-state dot: amber while a boot is in flight, green
+                    // when the box says it serves, red when the last start
+                    // failed. Nothing → no dot.
+                    const booting = !!p?.building;
+                    const failed = !running && !booting && !!p?.error;
+                    if (!running && !booting && !failed) return null;
+                    const [color, title] = booting
+                      ? ["warning.main", "Dev server starting…"]
+                      : running
+                        ? ["success.main", "Dev server running"]
+                        : ["error.main", "Last dev start failed"];
                     return (
-                      <Tooltip title="Dev server running">
+                      <Tooltip title={title}>
                         <Box
                           component="span"
                           sx={{
                             width: 7,
                             height: 7,
                             borderRadius: "50%",
-                            bgcolor: "success.main",
+                            bgcolor: color,
                             display: "inline-block",
                             flexShrink: 0,
                           }}

@@ -1824,3 +1824,14 @@ Three real defects the matrix flushed out, all fixed:
 Verified live: stop leaves `socks=0, devprocs=0` in the box; start shows a
 single `dev:` session; + adds `bash 1` with a working close; `exit` in the
 last shell falls back to the dev tab instead of resurrecting anything.
+
+**Six follow-ups, same day.** (1) Ghost sessions: shells that exist in the
+box (pushed `terminals`) but have no tab in this browser render as
+attachable "bash · detached" rows — invisible sessions were how people
+collided with them. (2) The boot spinner became a boot LOG: while a dev
+server starts, the launch pane streams the real npm-install → vite output.
+(3) The explorer dot is tri-state: amber while booting, green when
+serving, red when the last start failed. (4) The publish chips act:
+"not published" publishes, "published · sha" opens the live app. (5) An
+open-in-new-tab button joins the preview refresh. (6) The terminal header
+echoes the active session's name instead of a generic caption.

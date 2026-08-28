@@ -31,6 +31,7 @@ import {
   useTheme,
 } from "@mui/material";
 import {
+  ExternalLink as ExternalLinkIcon,
   History as HistoryIcon,
   Play as PlayIcon,
   Plus as PlusIcon,
@@ -91,6 +92,7 @@ function TerminalPanel({
   appId,
   workspaceId,
   termId,
+  label,
   fresh = false,
   onSessionEnd,
 }: {
@@ -98,6 +100,8 @@ function TerminalPanel({
   workspaceId: string;
   /** Which shell tab this is — each id is its own PTY in the same sandbox. */
   termId: string;
+  /** Session name echoed in the header (e.g. "dev: my-app", "bash 2"). */
+  label?: string;
   /** Tab created this pageview — no history exists, skip the replay probe. */
   fresh?: boolean;
   /** The session ended for good (`exit`, kill): close the tab, do not respawn. */
@@ -344,7 +348,7 @@ function TerminalPanel({
       >
         <TerminalIcon size={14} />
         <Typography variant="caption" sx={{ flex: 1 }}>
-          Terminal — a real shell in the app&apos;s sandbox
+          Terminal — {label ?? "a real shell in the app's sandbox"}
         </Typography>
         <Typography
           variant="caption"
@@ -506,6 +510,8 @@ function TerminalTabs({
   const freshIds = useRef<Set<string>>(new Set());
   const killTerminalSession = useAppsV2Store(st => st.killTerminalSession);
   const stopDev = useAppsV2Store(st => st.stopDev);
+  // Box truth: sessions that exist server-side (pushed by the agent).
+  const boxTerminals = useAppsV2Store(st => st.boxTerminals);
   // One path for both ways a shell dies: the x on its row (killRemote —
   // closing the tab kills the pty, the dtach session and the recording) and
   // the session ending on its own (`exit` — already dead, just drop the tab).
@@ -582,10 +588,11 @@ function TerminalTabs({
                 appId={appId}
                 workspaceId={workspaceId}
                 termId={`dev-${slug}`}
+                label={`dev: ${slug}`}
               />
             ) : null}
           </Box>
-          {shells.map(id => (
+          {shells.map((id, index) => (
             <Box
               key={id}
               sx={{
@@ -598,6 +605,7 @@ function TerminalTabs({
                 appId={appId}
                 workspaceId={workspaceId}
                 termId={id}
+                label={`bash ${index + 1}`}
                 fresh={freshIds.current.has(id)}
                 onSessionEnd={() => closeShell(id, { killRemote: false })}
               />
@@ -673,6 +681,23 @@ function TerminalTabs({
               onClose={() => closeShell(id, { killRemote: true })}
             />
           ))}
+          {/* GHOST sessions: shells that exist in the box (pushed truth)
+              but have no tab here — opened by the agent, another browser,
+              or a previous pageview. One click attaches, history and all;
+              invisible sessions were how people collided with them. */}
+          {boxTerminals
+            .filter(id => /^[0-9]+$/.test(id) && !shells.includes(id))
+            .map(id => (
+              <SessionRow
+                key={`ghost-${id}`}
+                label={`bash · detached (${id})`}
+                selected={false}
+                onSelect={() => {
+                  setShells(prev => (prev.includes(id) ? prev : [...prev, id]));
+                  setActive(id);
+                }}
+              />
+            ))}
         </Box>
       </Panel>
     </PanelGroup>
@@ -739,8 +764,56 @@ function SessionRow({
   );
 }
 
+/** Streams the dev boot log (npm install → vite) while a server starts. */
+function DevBootLog({
+  workspaceId,
+  appId,
+}: {
+  workspaceId: string;
+  appId: string;
+}) {
+  const fetchDevLog = useAppsV2Store(s => s.fetchDevLog);
+  const [text, setText] = useState("");
+  const offsetRef = useRef(0);
+  useEffect(() => {
+    let alive = true;
+    offsetRef.current = 0;
+    const ansi = new RegExp(
+      String.fromCharCode(27) + "\\[[0-9;?]*[A-Za-z]",
+      "g",
+    );
+    const tick = async () => {
+      const { size, chunk } = await fetchDevLog(
+        workspaceId,
+        appId,
+        offsetRef.current,
+      );
+      if (!alive) return;
+      offsetRef.current = size;
+      if (chunk) {
+        setText(t =>
+          (t + chunk.replace(ansi, "").replace(/\r/g, "")).slice(-20000),
+        );
+      }
+    };
+    void tick();
+    const iv = setInterval(() => void tick(), 1500);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
+  }, [workspaceId, appId, fetchDevLog]);
+  return <BuildLogPanel text={text} title="Dev server starting…" />;
+}
+
 /** Live build output during a publish — the streamed npm/vite log. */
-function BuildLogPanel({ text }: { text: string }) {
+function BuildLogPanel({
+  text,
+  title = "Building & publishing…",
+}: {
+  text: string;
+  title?: string;
+}) {
   const ref = useRef<HTMLPreElement | null>(null);
   useEffect(() => {
     // Follow the tail as the build streams.
@@ -773,7 +846,7 @@ function BuildLogPanel({ text }: { text: string }) {
       >
         <CircularProgress size={14} sx={{ color: "#d4d4d4" }} />
         <Typography variant="caption" sx={{ fontWeight: 600 }}>
-          Building &amp; publishing…
+          {title}
         </Typography>
       </Box>
       <Box
@@ -962,8 +1035,8 @@ export default function AppV2Workspace({
         <Tooltip
           title={
             publishedSha
-              ? `Deployed from commit ${publishedSha.slice(0, 7)} — this is what everyone else sees.`
-              : "Nobody can see this app yet. Publish deploys it from main."
+              ? `Deployed from commit ${publishedSha.slice(0, 7)} — click to open the live app.`
+              : "Nobody can see this app yet. Click to publish it from main."
           }
         >
           <Chip
@@ -975,6 +1048,17 @@ export default function AppV2Workspace({
             size="small"
             color={publishedSha ? "default" : "warning"}
             variant="outlined"
+            // Dead chips become navigation: published → open the live app;
+            // not published → this IS the call to action, publish.
+            onClick={
+              publishedSha
+                ? viewUrl
+                  ? () => window.open(viewUrl, "_blank", "noopener")
+                  : undefined
+                : preview?.building
+                  ? undefined
+                  : () => void publishApp(workspaceId, appId)
+            }
           />
         </Tooltip>
         <Box sx={{ flex: 1 }} />
@@ -1049,6 +1133,21 @@ export default function AppV2Workspace({
           >
             <HistoryIcon size={16} />
           </IconButton>
+        </Tooltip>
+        <Tooltip title="Open the preview in a new tab">
+          <span>
+            <IconButton
+              size="small"
+              aria-label="Open the preview in a new tab"
+              disabled={!(editing ? preview?.url : viewUrl)}
+              onClick={() => {
+                const url = editing ? preview?.url : viewUrl;
+                if (url) window.open(url, "_blank", "noopener");
+              }}
+            >
+              <ExternalLinkIcon size={16} />
+            </IconButton>
+          </span>
         </Tooltip>
         <Tooltip title="Reload the app preview">
           <span>
@@ -1163,23 +1262,10 @@ export default function AppV2Workspace({
             {preview?.building && preview.publishing ? (
               <BuildLogPanel text={preview.buildOutput ?? ""} />
             ) : preview?.building ? (
-              <Box
-                sx={{
-                  height: "100%",
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 1.5,
-                  color: "text.secondary",
-                }}
-              >
-                <CircularProgress size={22} />
-                <Typography variant="body2">
-                  Dev server starting — its output is live in the{" "}
-                  <strong>Dev server</strong> terminal tab below.
-                </Typography>
-              </Box>
+              // A 60-second cold boot behind a bare spinner reads as frozen.
+              // The boot writes a real log (npm install → vite); stream its
+              // tail here so starting reads as PROGRESS.
+              <DevBootLog workspaceId={workspaceId} appId={appId} />
             ) : preview?.mode === "dev" && preview.reachable === false ? (
               <Alert severity="warning" sx={{ m: 2 }}>
                 A dev server for this app is running in the sandbox but rejects
