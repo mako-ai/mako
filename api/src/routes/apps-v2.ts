@@ -1456,7 +1456,16 @@ appsV2Routes.openapi(
         required: false,
         content: {
           "application/json": {
-            schema: z.object({}),
+            schema: z.object({
+              restart: z
+                .boolean()
+                .optional()
+                .describe(
+                  "Stop the running server first and boot a fresh one " +
+                    "(new launcher, clean state). Without it a running " +
+                    "server is reused.",
+                ),
+            }),
           },
         },
       },
@@ -1471,6 +1480,10 @@ appsV2Routes.openapi(
         loaded.project,
         loaded.userId ?? "api-key",
       );
+      const body = (await c.req.json().catch(() => ({}))) as {
+        restart?: boolean;
+      };
+      const restart = body?.restart === true;
 
       // Reattach (page reload, second tab): the server is already serving
       // this app, so leave the boot log alone — it holds the real boot's
@@ -1504,7 +1517,9 @@ appsV2Routes.openapi(
       // the browser loads it directly — there is no Mako-side proxy or token
       // to mint for this tier.
       try {
-        const { url, stagedBindings, evicted } = await ensureDevServer(handle);
+        const { url, stagedBindings, evicted } = await ensureDevServer(handle, {
+          restart,
+        });
         return c.json(
           { success: true as const, url, stagedBindings, evicted },
           200,

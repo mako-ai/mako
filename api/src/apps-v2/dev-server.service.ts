@@ -89,6 +89,28 @@ export function devLogPath(handle: WorktreeHandle): string {
   return `/tmp/mako-hist-dev-${appSlug(handle)}.raw`;
 }
 
+/**
+ * Where the injected runtime-console bridge (the makoEyes vite plugin in the
+ * launcher below) appends browser-side errors/warnings as JSONL. Read by
+ * app2_dev_log so an agent sees what the BROWSER said, not just vite.
+ */
+export function devConsolePath(handle: WorktreeHandle): string {
+  return `/tmp/mako-console-${appSlug(handle)}.jsonl`;
+}
+
+/**
+ * Port of this app's RUNNING dev server, or null. Never allocates and never
+ * boots anything — a question, not an act (§13.9).
+ */
+export async function currentDevPort(
+  handle: WorktreeHandle,
+): Promise<number | null> {
+  const provider = getSandboxProvider();
+  const ctx = boxCtx(handle);
+  if (!(await provider.hasSession(ctx))) return null;
+  return devPort(handle, provider, ctx, { allocate: false });
+}
+
 /** The dev session's dtach socket — its existence is "the server has a session". */
 function devSockPath(handle: WorktreeHandle): string {
   return `/tmp/mako-term-dev-${appSlug(handle)}.sock`;
@@ -166,7 +188,7 @@ function launcherSource(
 ): string {
   return `
 import { createServer } from "${appDir}/node_modules/vite/dist/node/index.js";
-import { createReadStream, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, createReadStream, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 // Tell Mako the moment this server is up or gone, instead of leaving the UI
@@ -327,9 +349,76 @@ const makoData = {
   },
 };
 
+// Runtime eyes (apps-v2.md §13.15): the app itself reports browser-side
+// errors. A tiny client hook (served below, injected into index.html)
+// batches console.error/warn, window errors and unhandled rejections to a
+// same-origin endpoint, which appends them to a capped JSONL file the
+// agent reads via app2_dev_log. Same-origin, so no CORS and it works in
+// the workbench iframe AND in the in-box headless browser alike.
+const CONSOLE_FILE = ${JSON.stringify(`/tmp/mako-console-${slug}.jsonl`)};
+const EYES_CLIENT = \`(() => {
+  const q = [];
+  let t = null;
+  const flush = () => {
+    t = null;
+    if (!q.length) return Promise.resolve();
+    const batch = q.splice(0);
+    return fetch("/__mako/console", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(batch), keepalive: true }).catch(() => {});
+  };
+  // Deterministic flush for the headless browser: hidden pages throttle
+  // timers, so the 500ms batch timer can fire only as the runner closes the
+  // browser — aborting the POST mid-flight. app2_browse awaits this instead.
+  window.__makoEyesFlush = flush;
+  const push = (level, parts) => {
+    try {
+      const text = parts.map(a => { try { return typeof a === "string" ? a : JSON.stringify(a); } catch { return String(a); } }).join(" ").slice(0, 2000);
+      q.push({ t: Date.now(), level, text });
+      if (q.length > 50) q.splice(0, q.length - 50);
+      if (!t) t = setTimeout(flush, 500);
+    } catch {}
+  };
+  const orig = { error: console.error, warn: console.warn };
+  console.error = (...a) => { push("error", a); orig.error.apply(console, a); };
+  console.warn = (...a) => { push("warn", a); orig.warn.apply(console, a); };
+  window.addEventListener("error", e => push("error", [(e.message || "error") + " @" + (e.filename || "") + ":" + (e.lineno || 0)]));
+  window.addEventListener("unhandledrejection", e => push("error", ["unhandledrejection: " + (e.reason && (e.reason.stack || e.reason.message) || String(e.reason))]));
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flush(); });
+})();\`;
+const makoEyes = {
+  name: "mako-eyes",
+  transformIndexHtml() {
+    return [{ tag: "script", attrs: { src: "/__mako_eyes.js" }, injectTo: "head" }];
+  },
+  configureServer(server) {
+    server.middlewares.use("/__mako_eyes.js", (req, res) => {
+      res.setHeader("content-type", "text/javascript");
+      res.end(EYES_CLIENT);
+    });
+    server.middlewares.use("/__mako/console", (req, res) => {
+      if (req.method !== "POST") { res.statusCode = 405; return res.end(); }
+      let body = "";
+      req.on("data", c => { body += c; if (body.length > 100000) req.destroy(); });
+      req.on("end", () => {
+        try {
+          const entries = JSON.parse(body);
+          if (Array.isArray(entries)) {
+            // Capped, not unbounded: a render loop spamming console.error
+            // must not fill the box's disk. Truncate-and-restart is fine —
+            // this is a debugging buffer, not an archive.
+            try { if (existsSync(CONSOLE_FILE) && statSync(CONSOLE_FILE).size > 512000) writeFileSync(CONSOLE_FILE, ""); } catch {}
+            appendFileSync(CONSOLE_FILE, entries.slice(0, 100).map(e => JSON.stringify({ t: Number(e.t) || Date.now(), level: e.level === "warn" ? "warn" : "error", text: String(e.text).slice(0, 2000) })).join("\\n") + "\\n");
+          }
+        } catch {}
+        res.statusCode = 204;
+        res.end();
+      });
+    });
+  },
+};
+
 const server = await createServer({
   root: ${JSON.stringify(appDir)},
-  plugins: [makoData],
+  plugins: [makoData, makoEyes],
   server: {
     host: "0.0.0.0",
     port: ${port},
@@ -670,6 +759,7 @@ const launching = new Map<string, Promise<DevPreview>>();
 
 export async function ensureDevServer(
   handle: WorktreeHandle,
+  options: { restart?: boolean } = {},
 ): Promise<DevPreview> {
   // Single-flight per (session, app): the workbench can ask for the dev
   // server from more than one place at once (mount effect + status poll +
@@ -679,7 +769,7 @@ export async function ensureDevServer(
   const key = `${boxCtx(handle).sessionKey}:${handle.appRoot}`;
   const inflight = launching.get(key);
   if (inflight) return inflight;
-  const run = ensureDevServerLaunch(handle).finally(() => {
+  const run = ensureDevServerLaunch(handle, options).finally(() => {
     launching.delete(key);
   });
   launching.set(key, run);
@@ -688,6 +778,7 @@ export async function ensureDevServer(
 
 async function ensureDevServerLaunch(
   handle: WorktreeHandle,
+  options: { restart?: boolean } = {},
 ): Promise<DevPreview> {
   const provider = getSandboxProvider();
   const ctx = await ensureBox(handle);
@@ -743,7 +834,20 @@ async function ensureDevServerLaunch(
       adopted = false;
     }
   }
-  const wasListening = state === "serving" || adopted;
+  // A requested RESTART is the one case where "already serving" must not
+  // short-circuit: the idempotent reuse is exactly what made the UI's
+  // Restart button a silent no-op (and kept an old-generation launcher —
+  // pre console-bridge, pre config change — alive forever). Reap this app's
+  // server and fall through to a cold launch, which also rewrites the
+  // launcher from current source.
+  if (options.restart && (state === "serving" || adopted)) {
+    logger.info("Apps v2 dev server restart requested; stopping the old one", {
+      appRoot: handle.appRoot,
+    });
+    await reapDevServerBySlug(provider, ctx, appSlug(handle));
+    adopted = false;
+  }
+  const wasListening = !options.restart && (state === "serving" || adopted);
   let evicted: string[] = [];
   if (!wasListening) {
     // Make room BEFORE launching: never let this box exceed the running cap.

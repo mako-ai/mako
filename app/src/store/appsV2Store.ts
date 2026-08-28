@@ -397,7 +397,11 @@ interface AppsV2Store {
   // see api/src/apps-v2/dev-server.service.ts). Starts (or reuses) a
   // persistent `vite dev` process and iframes it directly: HMR picks up
   // every subsequent file change with no rebuild step, unlike buildPreview.
-  startDevPreview: (workspaceId: string, appId: string) => Promise<void>;
+  startDevPreview: (
+    workspaceId: string,
+    appId: string,
+    opts?: { restart?: boolean },
+  ) => Promise<void>;
   setViewMode: (appId: string, mode: "code" | "preview") => void;
   clearError: () => void;
 }
@@ -1494,7 +1498,7 @@ export const useAppsV2Store = create<AppsV2Store>()(
       }
     },
 
-    startDevPreview: async (workspaceId, appId) => {
+    startDevPreview: async (workspaceId, appId, opts) => {
       // Optimistic reattach: if this app had a dev server last time, its URL
       // is almost certainly still valid (the sandbox sleeps rather than
       // dies), so show the iframe IMMEDIATELY and let the POST revalidate
@@ -1549,14 +1553,17 @@ export const useAppsV2Store = create<AppsV2Store>()(
         // finishes the job. The second request finds the right server already
         // listening and returns in milliseconds. Retrying anything else once
         // is harmless; the second failure is the one reported.
+        const restartBody = opts?.restart ? { restart: true } : undefined;
         let res = await api.POST(
           "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview",
           {
             params: { path: { workspaceId, id: appId } },
-            body: undefined,
+            body: restartBody,
           },
         );
         if (!res.response.ok) {
+          // The retry must NOT restart again — the first call already did;
+          // a second reap would kill the server it just booted.
           res = await api.POST(
             "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview",
             {

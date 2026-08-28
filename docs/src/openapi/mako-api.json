@@ -26522,7 +26522,12 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "properties": {}
+                "properties": {
+                  "restart": {
+                    "type": "boolean",
+                    "description": "Stop the running server first and boot a fresh one (new launcher, clean state). Without it a running server is reused."
+                  }
+                }
               }
             }
           }

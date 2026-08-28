@@ -51,7 +51,12 @@ import {
   writeFile,
 } from "../../apps-v2/worktree.service";
 import { materializeAppV2Binding } from "../../apps-v2/bindings.service";
-import { ensureDevServer } from "../../apps-v2/dev-server.service";
+import {
+  devConsolePath,
+  devLogPath,
+  ensureDevServer,
+} from "../../apps-v2/dev-server.service";
+import { browseApp } from "../../apps-v2/eyes.service";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import { loggers } from "../../logging";
 
@@ -477,6 +482,151 @@ export function createAppsV2Tools({
       },
     }),
 
+    app2_dev_log: tool({
+      description:
+        "Read the app's dev-server output (vite boot, compile errors, HMR " +
+        "messages) AND the browser runtime console (errors/warnings the " +
+        "live preview reported). The fastest way to see WHY an app is " +
+        "broken or blank. Needs a dev session (app2_open_app starts one).",
+      inputSchema: z.object({
+        appId: z.string(),
+        bytes: z
+          .number()
+          .int()
+          .min(500)
+          .max(60000)
+          .optional()
+          .describe("How much of the log tail to read (default 16000)."),
+      }),
+      execute: async ({ appId, bytes }) => {
+        const loaded = await loadProject(appId, { write: false });
+        if ("error" in loaded) return { success: false, error: loaded.error };
+        try {
+          const handle = await ensureActorWorktree(loaded.project);
+          const n = bytes ?? 16_000;
+          const out = await execInWorktree(
+            handle,
+            `tail -c ${n} ${JSON.stringify(devLogPath(handle))} 2>/dev/null; ` +
+              `printf '\\n===MAKO-CONSOLE===\\n'; ` +
+              `tail -c 12000 ${JSON.stringify(devConsolePath(handle))} 2>/dev/null`,
+            { timeoutMs: 30_000 },
+          );
+          const [rawLog = "", rawConsole = ""] =
+            out.stdout.split("===MAKO-CONSOLE===");
+          // The recording is a raw pty capture; ANSI escapes are noise here.
+          const ansi = new RegExp(
+            String.fromCharCode(27) + "\\[[0-9;?]*[A-Za-z]",
+            "g",
+          );
+          const devLog = rawLog.replace(ansi, "").replace(/\r/g, "");
+          const browserConsole = rawConsole
+            .split("\n")
+            .map(l => l.trim())
+            .filter(Boolean)
+            .map(l => {
+              try {
+                return JSON.parse(l) as unknown;
+              } catch {
+                return null;
+              }
+            })
+            .filter(Boolean)
+            .slice(-80);
+          return {
+            success: true,
+            devLog,
+            browserConsole,
+            hint:
+              browserConsole.length === 0
+                ? "No browser console events captured — either the app " +
+                  "logged no errors/warnings, or no live preview (workbench " +
+                  "iframe or app2_browse) has loaded it since the dev " +
+                  "session started. An empty file after the app rendered " +
+                  "in a preview means it is clean."
+                : undefined,
+          };
+        } catch (error) {
+          return { success: false, error: errorMessage(error) };
+        }
+      },
+    }),
+
+    app2_browse: tool({
+      description:
+        "Look at the running app with a real headless browser INSIDE its " +
+        "sandbox: navigate, click, type, evaluate JS, then capture a " +
+        "screenshot (you SEE it) plus console errors and failed requests. " +
+        "Use it after edits to verify what actually renders, and to debug " +
+        "blank screens. Needs a running dev session (app2_open_app). First " +
+        "use in a fresh sandbox installs the browser (~30-60s).",
+      inputSchema: z.object({
+        appId: z.string(),
+        steps: z
+          .array(
+            z.object({
+              action: z.enum(["navigate", "click", "type", "wait", "eval"]),
+              selector: z
+                .string()
+                .optional()
+                .describe("CSS selector (click/type)."),
+              path: z.string().optional().describe("Route path (navigate)."),
+              value: z.string().optional().describe("Text to type."),
+              expression: z
+                .string()
+                .optional()
+                .describe("JS to evaluate in the page (eval)."),
+              ms: z.number().int().max(5000).optional().describe("Wait ms."),
+            }),
+          )
+          .max(10)
+          .optional()
+          .describe("Actions before the capture; omit to just look at /."),
+        screenshot: z
+          .boolean()
+          .optional()
+          .describe("Capture a JPEG screenshot (default true)."),
+      }),
+      execute: async ({ appId, steps, screenshot }) => {
+        const loaded = await loadProject(appId, { write: false });
+        if ("error" in loaded) return { success: false, error: loaded.error };
+        try {
+          const handle = await ensureActorWorktree(loaded.project);
+          const result = await browseApp(handle, {
+            steps,
+            screenshot: screenshot !== false,
+          });
+          return { success: result.ok, ...result };
+        } catch (error) {
+          return { success: false, error: errorMessage(error) };
+        }
+      },
+      // The screenshot must reach the model as an IMAGE, not as 100KB of
+      // base64 prose: as text it is ~25k tokens of noise the model cannot
+      // see through; as media it is actual eyes.
+      toModelOutput: ({ output }) => {
+        const o = output as { screenshotBase64?: string } & Record<
+          string,
+          unknown
+        >;
+        if (o && typeof o === "object" && o.screenshotBase64) {
+          const { screenshotBase64, ...rest } = o;
+          return {
+            type: "content",
+            value: [
+              { type: "text", text: JSON.stringify(rest) },
+              {
+                type: "file-data",
+                data: screenshotBase64,
+                mediaType: "image/jpeg",
+                filename: "app-screenshot.jpg",
+              },
+            ],
+          };
+        }
+        return { type: "json", value: (o ?? null) as never };
+      },
+    }),
+
     app2_open_app: tool({
       description:
         "Open an Apps v2 app in the user's Mako UI — focuses its tab — and " +
@@ -491,8 +641,16 @@ export function createAppsV2Tools({
           .boolean()
           .optional()
           .describe("Also start the live dev session (default true)."),
+        restart: z
+          .boolean()
+          .optional()
+          .describe(
+            "Stop a running dev server first and boot a fresh one — use " +
+              "when the server is wedged or must pick up new launcher " +
+              "behavior.",
+          ),
       }),
-      execute: async ({ appId, dev }) => {
+      execute: async ({ appId, dev, restart }) => {
         const loaded = await loadProject(appId, { write: false });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
@@ -503,7 +661,9 @@ export function createAppsV2Tools({
             // The same launch the workbench button runs — this call IS the
             // user's click, relayed through their agent (§13.9: starts are
             // user-initiated; this is one).
-            const preview = await ensureDevServer(handle);
+            const preview = await ensureDevServer(handle, {
+              restart: restart === true,
+            });
             url = preview.url;
             evicted = preview.evicted;
           }

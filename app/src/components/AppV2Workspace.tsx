@@ -1049,7 +1049,13 @@ export default function AppV2Workspace({
                 // A dev session IS dev mode: without entering it, the live
                 // preview would run behind the published view, invisible.
                 setEditing(workspaceId, appId, true);
-                void startDevPreview(workspaceId, appId);
+                // When a server is already running this button says
+                // "Restart dev session" — and it must MEAN it. The
+                // idempotent ensure used to reuse the running server, so
+                // restart was a silent no-op (stale launcher included).
+                void startDevPreview(workspaceId, appId, {
+                  restart: devRunning,
+                });
               }}
             >
               {/* The label has to render STATE, not a fixed verb. It

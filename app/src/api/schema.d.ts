@@ -19333,7 +19333,10 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": Record<string, never>;
+                "application/json": {
+                    /** @description Stop the running server first and boot a fresh one (new launcher, clean state). Without it a running server is reused. */
+                    restart?: boolean;
+                };
             };
         };
         responses: {

@@ -1706,3 +1706,54 @@ push keeps every other tab's dots consistent throughout. One observation
 for the record: the file is the only truth the preview renders — when the
 model *claimed* an edit it had not made, the preview correctly kept showing
 v1 until a real edit landed.
+
+## §13.15 Agent eyes: build truth, runtime truth, pixel truth (2026-08-28)
+
+An agent debugging a web app needs three signals, and they live in three
+places: what VITE said (compile errors — the dev-server process), what the
+BROWSER said (exceptions, console, failed requests — a runtime executing the
+app), and what actually RENDERS (pixels, and the ability to click). Shipped
+as three layers, all inside the box — the only place all three exist
+same-origin, with no public URL, no tunnel, and no tenant JS on the API
+host (N1):
+
+- **`app2_dev_log`** — tails the dev session recording (vite boot, compile
+  errors, HMR activity; it IS the pty capture, ANSI stripped) plus the
+  runtime console file below. The cheapest signal per token.
+- **The console bridge** — the launcher's vite config gains a `makoEyes`
+  plugin: a client hook injected into index.html batches console.error/warn,
+  window errors and unhandled rejections to a same-origin endpoint, which
+  appends them to a capped JSONL in /tmp. Works identically for the
+  workbench iframe and the headless browser, because both are just pages of
+  the same origin. Applies to dev sessions launched after it shipped.
+- **`app2_browse`** — a real headless browser INSIDE the sandbox:
+  chrome-headless-shell + puppeteer-core, installed on first use into
+  /tmp/mako-eyes (~1 min, cached until recycle; the box's passwordless sudo
+  installs Chromium's missing shared libraries — the first rollout trusted
+  a marker file and shipped a browser that couldn't launch, so "installed"
+  now means `ldd` resolves clean). Each call is one short-lived browser:
+  navigate/click/type/eval steps, then a JPEG screenshot plus console,
+  page-error and failed-request capture. The screenshot reaches the model
+  as an IMAGE via the tool's `toModelOutput` (a 100KB base64 string as text
+  would be ~25k tokens of noise the model cannot see through).
+
+Verified through the chat panel: the agent looked at Live Reload Probe and
+described the pixels back — "a blue pill-shaped badge with white text that
+reads v2" — alongside the page's own vite client logs and "no errors, no
+failed requests". Deliberately NOT built: driving the user's browser
+(presence-dependent, focus-stealing, and the v2 preview iframe is
+cross-origin anyway) and resident in-box browsers (a 2 GiB box shared with
+up to three vite servers cannot afford one). The E2B template can pre-bake
+the browser + libraries later to cut the first-use minute.
+
+**Found while testing §13.15, fixed alongside it: "Restart dev session" was
+a silent no-op.** The button called the same idempotent ensure as Start,
+which reuses any listening server — so a wedged vite, or one running an
+old-generation launcher (pre console-bridge, pre config change), could
+never actually be restarted from the UI; the label lied. `restart: true`
+now rides the dev-preview POST (and `app2_open_app`), and the ensure treats
+it as the one case where "already serving" must not short-circuit: reap
+this app's server, cold-launch, rewrite the launcher from current source.
+The retry the client keeps for the takeover shape deliberately does NOT
+re-send restart — a second reap would kill the server the first call just
+booted.

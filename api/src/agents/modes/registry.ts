@@ -209,6 +209,8 @@ export const APP_V2_ONLY_TOOL_NAMES = new Set<string>([
   "app2_status",
   "app2_commit",
   "app2_open_app",
+  "app2_dev_log",
+  "app2_browse",
   "app2_materialize",
   "app2_list_branches",
   "app2_merge_to_main",
