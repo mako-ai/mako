@@ -220,6 +220,8 @@ export function WorkspaceSwitcher() {
             variant="outlined"
             value={newWorkspaceName}
             onChange={e => setNewWorkspaceName(e.target.value)}
+            // Mirrors the API's WORKSPACE_NAME_MAX (80).
+            inputProps={{ maxLength: 80 }}
             error={Boolean(createError)}
             helperText={createError}
             disabled={creating}

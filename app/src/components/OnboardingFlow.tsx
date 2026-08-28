@@ -494,6 +494,10 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
           placeholder="e.g., Acme Corp, Engineering Team, Personal"
           value={workspaceName}
           onChange={e => setWorkspaceName(e.target.value)}
+          // Mirrors the API's WORKSPACE_NAME_MAX: a name is a label, not a
+          // document — unbounded input here is how pasted prompts became
+          // workspace names.
+          inputProps={{ maxLength: 80 }}
           disabled={state === "creating" || acceptingToken !== null}
           onKeyDown={e => {
             if (e.key === "Enter" && workspaceName.trim()) {

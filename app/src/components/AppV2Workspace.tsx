@@ -648,7 +648,19 @@ function TerminalTabs({
               <IconButton
                 size="small"
                 onClick={() => {
-                  const id = String(nextId.current++);
+                  // Never mint an id the BOX already has a session for:
+                  // with a detached ghost "1" on screen, + used to create
+                  // id 1 — silently adopting the old shell (cwd, state)
+                  // while presenting it as fresh. Skip every id in use,
+                  // client-side or box-side.
+                  const used = new Set([
+                    ...shells,
+                    ...boxTerminals.filter(t => /^[0-9]+$/.test(t)),
+                  ]);
+                  let n = nextId.current;
+                  while (used.has(String(n))) n += 1;
+                  nextId.current = n + 1;
+                  const id = String(n);
                   freshIds.current.add(id);
                   setShells(prev => [...prev, id]);
                   setActive(id);

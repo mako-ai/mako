@@ -185,7 +185,19 @@ function FeatureFlagsCard() {
               <TableBody>
                 {visible.map(row => (
                   <TableRow key={row.id} hover>
-                    <TableCell>{row.name}</TableCell>
+                    <TableCell
+                      sx={{
+                        // Legacy names can be entire pasted prompts; never
+                        // let one row swallow the page.
+                        maxWidth: 520,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                      title={row.name}
+                    >
+                      {row.name}
+                    </TableCell>
                     <TableCell sx={{ color: "text.secondary" }}>
                       /{row.slug}
                     </TableCell>

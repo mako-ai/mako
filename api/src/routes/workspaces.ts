@@ -47,12 +47,38 @@ import {
 } from "../openapi/core";
 
 const MemberRole = z.enum(["admin", "member", "viewer"]);
+/**
+ * A workspace name is a LABEL, not a document. Unbounded free text pasted
+ * at onboarding (entire app prompts, SQL queries) poisoned every list that
+ * renders names — the super-admin flags page became unreadable. Collapse
+ * whitespace/control characters to single spaces, trim, and cap the length;
+ * the frontend mirrors the same limit.
+ */
+export const WORKSPACE_NAME_MAX = 80;
+const workspaceNameControlChars = new RegExp(
+  "[" + String.fromCharCode(0) + "-" + String.fromCharCode(31) + "\u007f]+",
+  "g",
+);
+const WorkspaceName = z
+  .string()
+  .transform(value =>
+    value.replace(workspaceNameControlChars, " ").replace(/\s+/g, " ").trim(),
+  )
+  .pipe(
+    z
+      .string()
+      .min(1, "Workspace name is required")
+      .max(
+        WORKSPACE_NAME_MAX,
+        `Workspace name must be at most ${WORKSPACE_NAME_MAX} characters`,
+      ),
+  );
 const CreateWorkspaceBody = jsonBody(
-  z.object({ name: z.string(), slug: z.string().optional() }),
+  z.object({ name: WorkspaceName, slug: z.string().optional() }),
 );
 const UpdateWorkspaceBody = jsonBody(
   z.object({
-    name: z.string().optional(),
+    name: WorkspaceName.optional(),
     settings: z.record(z.string(), z.any()).optional(),
   }),
   true,
