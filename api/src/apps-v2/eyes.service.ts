@@ -39,6 +39,8 @@ export interface EyesResult {
   consoleLogs?: string[];
   pageErrors?: string[];
   failedRequests?: string[];
+  /** Entries shed beyond the per-category caps, when any (flood signal). */
+  droppedBeyondCaps?: Record<string, number>;
   /** JPEG, base64 (no data: prefix). */
   screenshotBase64?: string;
 }
@@ -77,7 +79,11 @@ const consoleLogs = [];
 const pageErrors = [];
 const failedRequests = [];
 const stepResults = [];
-const cap = (arr, item, max) => { if (arr.length < max) arr.push(String(item).slice(0, 600)); };
+const droppedCounts = { consoleLogs: 0, pageErrors: 0, failedRequests: 0 };
+const cap = (arr, item, max, key) => {
+  if (arr.length < max) arr.push(String(item).slice(0, 600));
+  else if (key) droppedCounts[key] += 1;
+};
 
 try {
   const { default: puppeteer } = await import("puppeteer-core");
@@ -85,16 +91,24 @@ try {
     executablePath: findShell(),
     args: ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--hide-scrollbars"],
   });
+  // Watchdog: an eval that never returns (while(true){}) hangs page.evaluate
+  // forever; without this the outer exec timeout killed the RUNNER but left
+  // the browser tree orphaned in the box (verified: ~90MB per orphan). Fire
+  // before the exec deadline, close the browser, and say WHAT happened.
+  setTimeout(async () => {
+    try { await browser.close(); } catch {}
+    out({ ok: false, error: "browse timed out after 75s — a step never returned (infinite eval, hung navigation, or a frozen page). The browser was closed; the app and dev server are unaffected.", consoleLogs, pageErrors, failedRequests, stepResults });
+  }, 75000);
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
     page.setDefaultTimeout(8000);
     page.on("console", m => {
       const t = m.type();
-      cap(consoleLogs, "[" + t + "] " + m.text(), 120);
+      cap(consoleLogs, "[" + t + "] " + m.text(), 120, "consoleLogs");
     });
-    page.on("pageerror", e => cap(pageErrors, e && (e.stack || e.message) || e, 40));
-    page.on("requestfailed", r => cap(failedRequests, r.url() + " -> " + (r.failure() && r.failure().errorText), 40));
+    page.on("pageerror", e => cap(pageErrors, e && (e.stack || e.message) || e, 40, "pageErrors"));
+    page.on("requestfailed", r => cap(failedRequests, r.url() + " -> " + (r.failure() && r.failure().errorText), 40, "failedRequests"));
 
     const settle = (ms) => new Promise(r => setTimeout(r, ms));
     const goto = async (p) => {
@@ -142,7 +156,8 @@ try {
     if (wantShot) {
       screenshotBase64 = await page.screenshot({ type: "jpeg", quality: 55, encoding: "base64" });
     }
-    out({ ok: true, url: page.url(), stepResults, consoleLogs, pageErrors, failedRequests, screenshotBase64 });
+    const truncated = Object.fromEntries(Object.entries(droppedCounts).filter(e => e[1] > 0));
+    out({ ok: true, url: page.url(), stepResults, consoleLogs, pageErrors, failedRequests, ...(Object.keys(truncated).length ? { droppedBeyondCaps: truncated } : {}), screenshotBase64 });
   } finally {
     await browser.close().catch(() => {});
   }
@@ -278,7 +293,13 @@ export async function browseApp(
   });
   const result = await provider.exec(
     ctx,
-    `node ${RUNNER_PATH} '${args.replace(/'/g, String.raw`'\''`)}'`,
+    // The sweep first: any eyes browser older than 3 minutes is an orphan
+    // (a live browse lasts under 90s) — reap it before spending memory on a
+    // new one. Never a bare pkill: a concurrent browse would be collateral.
+    `for pid in $(pgrep -f chrome-headless-shell 2>/dev/null); do ` +
+      `t=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' '); ` +
+      `[ -n "$t" ] && [ "$t" -gt 180 ] && kill -9 "$pid" 2>/dev/null; done; ` +
+      `node ${RUNNER_PATH} '${args.replace(/'/g, String.raw`'\''`)}'`,
     { timeoutMs: 90_000 },
   );
   const line = result.stdout
@@ -289,7 +310,13 @@ export async function browseApp(
     return {
       ok: false,
       error:
-        "The in-box browser produced no result: " +
+        "The in-box browser produced no result" +
+        (result.timedOut
+          ? " (the browse exceeded its 90s budget — an eval that never " +
+            "returns, or a hung page; the stale browser is reaped on the " +
+            "next call)"
+          : "") +
+        ": " +
         (result.stderr || result.stdout).slice(-500),
     };
   }

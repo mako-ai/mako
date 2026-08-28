@@ -1757,3 +1757,36 @@ this app's server, cold-launch, rewrite the launcher from current source.
 The retry the client keeps for the takeover shape deliberately does NOT
 re-send restart — a second reap would kill the server the first call just
 booted.
+
+**Hard-tested (same day, adversarial matrix through the chat).** Rounds:
+module-level crash (agent reported "the app is broken" with blank-screen
+screenshots from BOTH origins and the exact error line); syntax error
+(triaged correctly: compile errors live in the dev log + module 500s +
+vite's overlay, browser pageErrors stay empty); failed `__data` fetch
+(surfaced in consoleLogs AND failedRequests); a step gauntlet where a
+missing selector failed its step without aborting the rest (SPA fallback
+confirmed); `eval` of `while(true){}` (bounded, dev server unharmed);
+5000-error console flood (every surface bounded); stop-the-server (clean
+"No dev server is running" → guided recovery via app2_open_app). The box
+agent's §13.9 tick-reaper was also caught working unprompted in production:
+it reaped the previous evening's two idle dev servers exactly on schedule.
+
+Three real defects the matrix flushed out, all fixed:
+
+1. **Orphaned browsers on timeout.** The exec deadline killed the runner
+   but left the chromium tree alive (~90MB each, verified). The runner now
+   carries a 75s watchdog that closes the browser and names the timeout
+   before the exec kill, and every browse first reaps eyes-browsers older
+   than 3 minutes.
+2. **Floods destroyed the bridge batch.** 50 entries x 2000-char texts
+   exceeded the endpoint's body cap, so the WHOLE batch was dropped —
+   silently, exactly when the console mattered most. Batches are now small
+   (40 x 500 chars), and truncation is loud at every layer:
+   `droppedBeyondCaps` on the browse result, a `[bridge] N earlier console
+   events dropped` marker in the console file, and a truncation marker when
+   the file itself is cycled.
+3. **Restart orphaned its own server from the registry.** The restart reap
+   ran AFTER the port allocation, deleting the app's registry entry that
+   nothing re-added — vite served happily while every discovery (browse,
+   dots, status) swore no server existed. The reap now runs before the
+   allocation, and a UI restart verifiably preserves the registration.

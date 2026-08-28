@@ -359,11 +359,13 @@ const CONSOLE_FILE = ${JSON.stringify(`/tmp/mako-console-${slug}.jsonl`)};
 const EYES_CLIENT = \`(() => {
   const q = [];
   let t = null;
+  let dropped = 0;
   const flush = () => {
     t = null;
     if (!q.length) return Promise.resolve();
     const batch = q.splice(0);
-    return fetch("/__mako/console", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(batch), keepalive: true }).catch(() => {});
+    const shed = dropped; dropped = 0;
+    return fetch("/__mako/console", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ entries: batch, dropped: shed }), keepalive: true }).catch(() => {});
   };
   // Deterministic flush for the headless browser: hidden pages throttle
   // timers, so the 500ms batch timer can fire only as the runner closes the
@@ -371,9 +373,9 @@ const EYES_CLIENT = \`(() => {
   window.__makoEyesFlush = flush;
   const push = (level, parts) => {
     try {
-      const text = parts.map(a => { try { return typeof a === "string" ? a : JSON.stringify(a); } catch { return String(a); } }).join(" ").slice(0, 2000);
+      const text = parts.map(a => { try { return typeof a === "string" ? a : JSON.stringify(a); } catch { return String(a); } }).join(" ").slice(0, 500);
       q.push({ t: Date.now(), level, text });
-      if (q.length > 50) q.splice(0, q.length - 50);
+      if (q.length > 40) { dropped += q.length - 40; q.splice(0, q.length - 40); }
       if (!t) t = setTimeout(flush, 500);
     } catch {}
   };
@@ -400,13 +402,17 @@ const makoEyes = {
       req.on("data", c => { body += c; if (body.length > 100000) req.destroy(); });
       req.on("end", () => {
         try {
-          const entries = JSON.parse(body);
-          if (Array.isArray(entries)) {
+          const parsed = JSON.parse(body);
+          const entries = Array.isArray(parsed) ? parsed : Array.isArray(parsed.entries) ? parsed.entries : [];
+          const shed = Array.isArray(parsed) ? 0 : Number(parsed.dropped) || 0;
+          if (entries.length) {
             // Capped, not unbounded: a render loop spamming console.error
             // must not fill the box's disk. Truncate-and-restart is fine —
             // this is a debugging buffer, not an archive.
-            try { if (existsSync(CONSOLE_FILE) && statSync(CONSOLE_FILE).size > 512000) writeFileSync(CONSOLE_FILE, ""); } catch {}
-            appendFileSync(CONSOLE_FILE, entries.slice(0, 100).map(e => JSON.stringify({ t: Number(e.t) || Date.now(), level: e.level === "warn" ? "warn" : "error", text: String(e.text).slice(0, 2000) })).join("\\n") + "\\n");
+            try { if (existsSync(CONSOLE_FILE) && statSync(CONSOLE_FILE).size > 512000) writeFileSync(CONSOLE_FILE, JSON.stringify({ t: Date.now(), level: "warn", text: "[bridge] console file exceeded 512KB and was truncated; earlier events lost" }) + "\\n"); } catch {}
+            const lines = entries.slice(0, 60).map(e => JSON.stringify({ t: Number(e.t) || Date.now(), level: e.level === "warn" ? "warn" : "error", text: String(e.text).slice(0, 500) }));
+            if (shed > 0) lines.push(JSON.stringify({ t: Date.now(), level: "warn", text: "[bridge] " + shed + " earlier console events dropped (flood) - only the most recent are kept" }));
+            appendFileSync(CONSOLE_FILE, lines.join("\\n") + "\\n");
           }
         } catch {}
         res.statusCode = 204;
@@ -786,6 +792,19 @@ async function ensureDevServerLaunch(
 
   await provider.keepAlive(ctx, DEV_SESSION_KEEPALIVE_MS);
 
+  // A requested RESTART must not be short-circuited by the idempotent
+  // reuse below — that made the UI's Restart button a silent no-op. And it
+  // must happen BEFORE the port allocation: the reap deletes this app's
+  // registry entry, so reaping after allocating orphaned the fresh server
+  // from the registry — every discovery (browse, dots, status) then swore
+  // no server existed while vite served happily.
+  if (options.restart) {
+    logger.info("Apps v2 dev server restart requested; stopping the old one", {
+      appRoot: handle.appRoot,
+    });
+    await reapDevServerBySlug(provider, ctx, appSlug(handle));
+  }
+
   const port = await devPort(handle, provider, ctx, { allocate: true });
   if (!port) throw new Error("Could not allocate a dev-server port");
   const logPath = devLogPath(handle);
@@ -834,20 +853,7 @@ async function ensureDevServerLaunch(
       adopted = false;
     }
   }
-  // A requested RESTART is the one case where "already serving" must not
-  // short-circuit: the idempotent reuse is exactly what made the UI's
-  // Restart button a silent no-op (and kept an old-generation launcher —
-  // pre console-bridge, pre config change — alive forever). Reap this app's
-  // server and fall through to a cold launch, which also rewrites the
-  // launcher from current source.
-  if (options.restart && (state === "serving" || adopted)) {
-    logger.info("Apps v2 dev server restart requested; stopping the old one", {
-      appRoot: handle.appRoot,
-    });
-    await reapDevServerBySlug(provider, ctx, appSlug(handle));
-    adopted = false;
-  }
-  const wasListening = !options.restart && (state === "serving" || adopted);
+  const wasListening = state === "serving" || adopted;
   let evicted: string[] = [];
   if (!wasListening) {
     // Make room BEFORE launching: never let this box exceed the running cap.
