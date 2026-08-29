@@ -36,6 +36,12 @@ const MAKO_AUTHOR_EMAIL = "bot@mako.ai";
 export interface GitAuthor {
   name: string;
   email: string;
+  /**
+   * Historical timestamp for migrated commits (v1 version history — §13.18).
+   * Applied to BOTH author and committer dates so imported history reads
+   * chronologically in every tool. Unset = now.
+   */
+  date?: Date;
 }
 
 export interface TreeEntry {
@@ -56,12 +62,18 @@ export interface CommitInfo {
 function authorEnv(author?: GitAuthor): Record<string, string> {
   const name = author?.name || MAKO_AUTHOR_NAME;
   const email = author?.email || MAKO_AUTHOR_EMAIL;
-  return {
+  const env: Record<string, string> = {
     GIT_AUTHOR_NAME: name,
     GIT_AUTHOR_EMAIL: email,
     GIT_COMMITTER_NAME: MAKO_AUTHOR_NAME,
     GIT_COMMITTER_EMAIL: MAKO_AUTHOR_EMAIL,
   };
+  if (author?.date) {
+    const iso = author.date.toISOString();
+    env.GIT_AUTHOR_DATE = iso;
+    env.GIT_COMMITTER_DATE = iso;
+  }
+  return env;
 }
 
 /** Absolute path of a workspace's bare repo. Id is validated as hex. */
@@ -157,6 +169,93 @@ export async function snapshotDirToTree(
     await runGit(["add", "-A", "--", "."], { cwd: workDir, env });
     const { stdout } = await runGit(["write-tree"], { cwd: workDir, env });
     return stdout.trim();
+  } finally {
+    await fs.rm(indexFile, { force: true });
+  }
+}
+
+/**
+ * Commit a new state of ONE subtree (`prefix`) on `branch`, leaving the rest
+ * of the head tree untouched — pure bare-repo plumbing, no clone. Built for
+ * replaying long histories (v1 version imports, §13.18): a throwaway index
+ * takes the head tree, the old `prefix` entries drop out, the work dir's
+ * snapshot grafts in at `prefix`, and the resulting tree is committed with
+ * the given author (including a historical date when one is set).
+ *
+ * Commits even when the tree is unchanged — a replayed version whose content
+ * equals its predecessor still happened (its message and author are the
+ * record), and dropping it would silently renumber history.
+ */
+export async function commitSubtreeOnBranch(
+  repoDir: string,
+  branch: string,
+  prefix: string,
+  workDir: string,
+  options: { message: string; author?: GitAuthor },
+): Promise<{ commitOid: string }> {
+  const safePrefix = assertSafeRelPath(prefix);
+  const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
+  if (!head) throw new Error(`Branch ${branch} is missing`);
+  const headTree = await treeOfCommit(repoDir, head);
+  const subtreeOid = await snapshotDirToTree(repoDir, workDir);
+
+  const indexFile = path.join(
+    os.tmpdir(),
+    `mako-apps-v2-subtree-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
+  // GIT_WORK_TREE is nominal: update-index/read-tree refuse to run "bare",
+  // but never touch the tree for cached-only operations — workDir serves.
+  const env = {
+    GIT_DIR: repoDir,
+    GIT_WORK_TREE: workDir,
+    GIT_INDEX_FILE: indexFile,
+  };
+  try {
+    await runGit(["read-tree", headTree], { env, cwd: workDir });
+    const { stdout: oldPaths } = await runGit(
+      [
+        "-C",
+        repoDir,
+        "ls-tree",
+        "-r",
+        "--name-only",
+        headTree,
+        "--",
+        safePrefix,
+      ],
+      { maxBufferBytes: 64 * 1024 * 1024 },
+    );
+    const paths = oldPaths.split("\n").filter(Boolean);
+    for (let i = 0; i < paths.length; i += 500) {
+      await runGit(
+        ["update-index", "--force-remove", "--", ...paths.slice(i, i + 500)],
+        { env, cwd: workDir },
+      );
+    }
+    await runGit(["read-tree", `--prefix=${safePrefix}/`, subtreeOid], {
+      env,
+      cwd: workDir,
+    });
+    const { stdout } = await runGit(["write-tree"], { env, cwd: workDir });
+    const treeOid = stdout.trim();
+    const commitOid = await commitTree(repoDir, {
+      treeOid,
+      parents: [head],
+      message: options.message,
+      author: options.author,
+    });
+    const applied = await updateRefCas(
+      repoDir,
+      `refs/heads/${branch}`,
+      commitOid,
+      head,
+    );
+    if (!applied) {
+      throw new Error(
+        `Branch ${branch} moved while replaying history — retry the migration`,
+      );
+    }
+    return { commitOid };
   } finally {
     await fs.rm(indexFile, { force: true });
   }

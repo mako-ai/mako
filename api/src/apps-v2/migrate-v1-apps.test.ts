@@ -162,6 +162,137 @@ describe("v1 → v2 migration", () => {
     expect(notes.contents).toContain("aggregate");
   }, 180_000);
 
+  it("replays every saved version as a git commit — author, date, message", async () => {
+    const { migrateV1App } = await import("./migrate-v1-apps");
+    const { repoDirFor } = await import("./repository.service");
+    const { runGit } = await import("./git");
+    const { EntityVersion } = await import("../database/workspace-schema");
+    const app = await makeV1App();
+
+    // A real user for author resolution (raw insert: user ids are strings).
+    await mongoose.connection.db
+      ?.collection("users")
+      .insertOne({
+        _id: "user-1" as never,
+        email: "dev@example.com",
+        name: "Dev One",
+      });
+
+    const base = {
+      workspaceId: app.workspaceId,
+      entityType: "app" as const,
+      entityId: app._id,
+    };
+    const snapshotOf = (marker: string) => ({
+      title: app.title,
+      template: app.template,
+      runtime: app.runtime,
+      entrypoint: app.entrypoint,
+      files: [
+        {
+          path: "src/App.tsx",
+          contents: `export default () => <b>${marker}</b>;\n`,
+        },
+      ],
+      dependencies: { react: "^18.2.0" },
+      dataBindings: [],
+    });
+    await EntityVersion.create({
+      ...base,
+      version: 1,
+      snapshot: snapshotOf("first"),
+      savedBy: "user-1",
+      savedByName: "System",
+      comment: "Backfilled initial version",
+      createdAt: new Date("2025-03-01T10:00:00Z"),
+    });
+    await EntityVersion.create({
+      ...base,
+      version: 2,
+      snapshot: snapshotOf("second"),
+      savedBy: "user-1",
+      savedByName: "dev@example.com",
+      comment: "Add the chart",
+      createdAt: new Date("2025-04-02T12:30:00Z"),
+    });
+    await EntityVersion.create({
+      ...base,
+      version: 3,
+      snapshot: snapshotOf("third"),
+      savedBy: "user-1",
+      savedByName: "dev@example.com",
+      comment: "",
+      createdAt: new Date("2025-05-03T09:15:00Z"),
+    });
+
+    const result = await migrateV1App(app, "legacy-history");
+    expect(result.versionCommits).toBe(3);
+    expect(result.versions).toBe(3);
+
+    const repoDir = repoDirFor(WS);
+    const { stdout } = await runGit([
+      "-C",
+      repoDir,
+      "log",
+      "--format=%H|%an|%ae|%aI|%cI|%s",
+      "--",
+      "apps/legacy-history",
+    ]);
+    const log = stdout.trim().split("\n");
+    // Newest first: final migration commit, v3 (blank comment → "v3"),
+    // v2, v1 (System → Mako), then the scaffold "Create app" commit.
+    expect(log).toHaveLength(5);
+    const rows = log.map(l => {
+      const [hash, ...rest] = l.split("|");
+      return { hash, rest: rest.join("|") };
+    });
+    expect(rows[0].rest).toMatch(
+      /^Mako\|bot@mako\.ai\|.*\|Migrate v1 app "Legacy Dashboard"/,
+    );
+    expect(rows[1].rest).toBe(
+      "Dev One|dev@example.com|2025-05-03T09:15:00Z|2025-05-03T09:15:00Z|v3",
+    );
+    expect(rows[2].rest).toBe(
+      "Dev One|dev@example.com|2025-04-02T12:30:00Z|2025-04-02T12:30:00Z|Add the chart",
+    );
+    expect(rows[3].rest).toBe(
+      "Mako|bot@mako.ai|2025-03-01T10:00:00Z|2025-03-01T10:00:00Z|Backfilled initial version",
+    );
+    expect(rows[4].rest).toMatch(/\|Create app "Legacy Dashboard"/);
+
+    // Each replayed commit carries that version's file state…
+    const atV2 = await runGit([
+      "-C",
+      repoDir,
+      "show",
+      `${rows[2].hash}:apps/legacy-history/src/App.tsx`,
+    ]);
+    expect(atV2.stdout).toContain("second");
+    // …and the scaffold chassis rides along in every version commit.
+    const viteAtV1 = await runGit([
+      "-C",
+      repoDir,
+      "show",
+      `${rows[3].hash}:apps/legacy-history/vite.config.ts`,
+    ]);
+    expect(viteAtV1.stdout.length).toBeGreaterThan(0);
+    // The final commit is the CURRENT doc state, not the last snapshot.
+    const finalApp = await runGit([
+      "-C",
+      repoDir,
+      "show",
+      `${rows[0].hash}:apps/legacy-history/src/App.tsx`,
+    ]);
+    expect(finalApp.stdout).toContain("v1");
+    const notes = await runGit([
+      "-C",
+      repoDir,
+      "show",
+      `${rows[0].hash}:apps/legacy-history/MIGRATION.md`,
+    ]);
+    expect(notes.stdout).toContain("3 saved v1 versions were replayed");
+  }, 180_000);
+
   it("is idempotent by overwrite: a second run replaces in place, no duplicates", async () => {
     const { migrateWorkspaceV1Apps } = await import("./migrate-v1-apps");
     const { MakoApp, AppProjectV2 } = await import(

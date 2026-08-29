@@ -1303,6 +1303,51 @@ deployed. Tests: `cloud-repo.service.test.ts` (file:// remotes, real git)
 covers the adoption matrix, the no-force guarantee, and the
 fast-forward-or-stand-still fetch.
 
+### 13.18 v1 version history replays as git commits (2026-08-29)
+
+**Decision.** The v1→v2 migration does not flatten an app into one commit.
+Every saved v1 version (`entity_versions`, entityType "app" — explicit
+checkpoints, not autosaves) becomes a git commit in `apps/<slug>`: the
+version's SAVER as the git author (email resolved from the users collection;
+the name is the email — user docs carry no display name), the version's
+`createdAt` as both author and committer date, and the version's own comment
+as the message (blank comment → `v<N>`; never an invented message). "System"
+versions (the initial-version backfill) are Mako's own writes and get the
+Mako author rather than impersonating anyone. After the replay, one final
+Mako-authored commit ("Migrate v1 app …") sets the CURRENT doc state —
+autosaves since the last checkpoint included, deletions included (the folder
+is replaced wholesale) — and MIGRATION.md records how many versions were
+replayed.
+
+**Mechanics.** Each snapshot is a complete file state, so each commit is
+that state grafted over the v2 scaffold (same rule as the final state: the
+v1 file wins collisions). Replaying hundreds of versions through
+`commitFilesOnBranch` would clone the workspace repo per commit, so
+`commitSubtreeOnBranch` (repository.service) does it in the bare repo: a
+throwaway index reads the head tree, the old `apps/<slug>` entries drop out,
+the version's snapshot grafts in via `read-tree --prefix`, and `commit-tree`
+writes with the historical author env (`GIT_AUTHOR_DATE` + matching
+`GIT_COMMITTER_DATE` — GitAuthor grew an optional `date`). Two traps the
+tests pin: index plumbing refuses to run "bare" (a nominal `GIT_WORK_TREE`
+is required even though cached-only ops never touch it), and a version whose
+content equals its predecessor still commits — its author and message are
+the record, and dropping it would renumber history. (Such no-diff commits
+live on `main` but are hidden by a path-filtered `git log -- apps/<slug>` —
+git's history simplification prunes TREESAME commits; count against
+`git rev-list` when auditing.)
+
+**Idempotency caveat.** Migration remains idempotent-by-overwrite (same
+deterministic slug, folder replaced, no duplicate rows) — but git history is
+append-only, so each re-run adds a delete/create/replay generation to the
+repo log. Fine while iterating on dev; the production run should be a
+single shot per workspace.
+
+Verified on the RealAdvisor dev workspace: 57 apps, 874 versions replayed
+(largest app 66), spot-checked logs show the real authors
+(jonas@, vadim@, guillaume.rouxel@, …), original timestamps back to the
+first checkpoints, and the users' own messages ("Fix renewal over-counting:
+open_invoices binding outputs raw UUIDs …") as commit subjects.
+
 ## 14. State of play and roadmap (2026-08-26)
 
 What exists now, what was decided in the 2026-08-26 planning round, and the

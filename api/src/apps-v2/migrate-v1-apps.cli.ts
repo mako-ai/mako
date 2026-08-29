@@ -51,14 +51,21 @@ async function main(): Promise<void> {
     reset,
   });
   for (const r of results) {
-    const marker = r.alreadyMigrated
-      ? "SKIP (already migrated)"
-      : execute
-        ? `MIGRATED -> apps/${r.slug}`
+    // Execute mode never skips — a stamped app is overwritten in place — so
+    // the marker reports what HAPPENED, with the stamp as an annotation.
+    const marker = execute
+      ? `MIGRATED -> apps/${r.slug}` +
+        (r.alreadyMigrated ? " (re-migrated, replaced in place)" : "")
+      : r.alreadyMigrated
+        ? "SKIP (already migrated — execute would replace it)"
         : "WOULD MIGRATE";
     console.log(`${marker}  ${r.title}  (${r.v1AppId})`);
     console.log(
-      `  files: ${r.fileCount}  bindings: ${r.bindings.migrated.length} migrated` +
+      `  files: ${r.fileCount}  versions: ${r.versions ?? 0}` +
+        (r.versionCommits != null
+          ? ` (${r.versionCommits} replayed as commits)`
+          : "") +
+        `  bindings: ${r.bindings.migrated.length} migrated` +
         (r.bindings.skipped.length
           ? `, ${r.bindings.skipped.length} NEED ATTENTION`
           : "") +

@@ -32,10 +32,15 @@
  * app-by-app work an agent can do in the v2 sandbox; the migrator's job is to
  * move the source faithfully into git and say what needs attention.
  */
-import { Types } from "mongoose";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import mongoose, { Types } from "mongoose";
 import {
   MakoApp,
   AppProjectV2,
+  EntityVersion,
+  type IEntityVersion,
   type IMakoApp,
   type IMakoAppDataBinding,
   type ResourceShareRole,
@@ -51,8 +56,12 @@ import {
   deleteProject,
   slugify,
 } from "./worktree.service";
-import { repoDirFor } from "./repository.service";
-import { queueMirrorPush } from "./cloud-repo.service";
+import {
+  commitSubtreeOnBranch,
+  repoDirFor,
+  type GitAuthor,
+} from "./repository.service";
+import { mirrorPushNow, queueMirrorPush } from "./cloud-repo.service";
 import { adoptBindingArtifact, readBindings } from "./bindings.service";
 
 const logger = loggers.api("apps-v2-migrate-v1");
@@ -63,6 +72,8 @@ export interface V1AppMigrationPlan {
   v1AppId: string;
   title: string;
   fileCount: number;
+  /** Saved v1 versions that replay as git commits (§13.18). */
+  versions?: number;
   bindings: {
     migrated: string[];
     skipped: Array<{ name: string; reason: string }>;
@@ -88,6 +99,8 @@ export interface V1AppMigrationPlan {
 export interface V1AppMigrationResult extends V1AppMigrationPlan {
   projectId?: string;
   slug?: string;
+  /** Git commits created from saved v1 versions (execute mode). */
+  versionCommits?: number;
 }
 
 /** A safe binding filename from a v1 binding's display name. */
@@ -147,7 +160,7 @@ function renderBindingFile(
   return `${lines.join("\n")}\n${binding.code.trim()}\n`;
 }
 
-function classifyBindings(app: IMakoApp): {
+function classifyBindings(app: V1AppContent): {
   files: Record<string, string>;
   migrated: string[];
   skipped: Array<{ name: string; reason: string; code?: string }>;
@@ -207,6 +220,117 @@ function classifyBindings(app: IMakoApp): {
   return { files, migrated, skipped, carried, liveAsScheduled, fileNames };
 }
 
+/**
+ * The subset of a v1 app that determines its files on disk — satisfied both
+ * by the live MakoApp document and by an EntityVersion snapshot, so one
+ * overlay builder serves the final state and every replayed version.
+ */
+interface V1AppContent {
+  files?: Array<{ path: string; contents: string }>;
+  dependencies?: Record<string, string>;
+  dataBindings?: IMakoAppDataBinding[];
+}
+
+/**
+ * Scaffold + v1 files + rendered bindings for one app state. The v1 file
+ * wins any collision with the scaffold — it IS the app.
+ */
+function buildAppTree(
+  content: V1AppContent,
+  scaffold: Record<string, string>,
+): {
+  tree: Record<string, string>;
+  bindings: ReturnType<typeof classifyBindings>;
+} {
+  const overlay: Record<string, string> = {};
+  for (const file of content.files ?? []) {
+    const rel = file.path.replace(/^\/+/, "");
+    if (!rel || rel.includes("..")) continue;
+    overlay[rel] = file.contents;
+  }
+  if (
+    !overlay["package.json"] &&
+    Object.keys(content.dependencies ?? {}).length
+  ) {
+    overlay["package.json"] = mergeDependencies(
+      scaffold["package.json"],
+      content.dependencies ?? {},
+    );
+  }
+  const bindings = classifyBindings(content);
+  Object.assign(overlay, bindings.files);
+  return { tree: { ...scaffold, ...overlay }, bindings };
+}
+
+/**
+ * Git authors for version savers. `savedBy` is a user id; the users
+ * collection gives the real email (looked up raw — user ids are plain
+ * strings). "System" versions (the initial-version backfill) are Mako's own
+ * writes and get the Mako author rather than impersonating anyone.
+ */
+async function resolveVersionAuthors(
+  versions: IEntityVersion[],
+): Promise<Map<string, { name: string; email: string }>> {
+  const ids = [...new Set(versions.map(v => v.savedBy).filter(Boolean))];
+  const byId = new Map<string, { name: string; email: string }>();
+  if (ids.length > 0) {
+    const col = mongoose.connection.db?.collection("users");
+    const docs = col
+      ? await col
+          .find({ _id: { $in: ids as unknown as Types.ObjectId[] } })
+          .project({ email: 1, name: 1 })
+          .toArray()
+      : [];
+    for (const doc of docs) {
+      const email = typeof doc.email === "string" ? doc.email : undefined;
+      if (!email) continue;
+      const name =
+        typeof doc.name === "string" && doc.name.trim() ? doc.name : email;
+      byId.set(String(doc._id), { name, email });
+    }
+  }
+  return byId;
+}
+
+function versionAuthor(
+  version: IEntityVersion,
+  byId: Map<string, { name: string; email: string }>,
+): GitAuthor {
+  if (version.savedByName === "System") {
+    // The backfill wrote these, not a person.
+    return { name: "Mako", email: "bot@mako.ai", date: version.createdAt };
+  }
+  const known = byId.get(version.savedBy);
+  if (known) return { ...known, date: version.createdAt };
+  const fromName =
+    version.savedByName && version.savedByName.includes("@")
+      ? version.savedByName
+      : undefined;
+  return {
+    name: version.savedByName || version.savedBy || "Unknown",
+    email: fromName ?? `${version.savedBy || "unknown"}@users.invalid`,
+    date: version.createdAt,
+  };
+}
+
+/** Materialize a file map into a directory (for subtree snapshots). */
+async function writeTreeToDir(
+  tree: Record<string, string>,
+  dir: string,
+): Promise<void> {
+  for (const [rel, contents] of Object.entries(tree)) {
+    const abs = path.join(dir, rel);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, contents, "utf8");
+  }
+}
+
+/** The version's own words, else its number — never an invented message. */
+function versionMessage(version: IEntityVersion): string {
+  const comment = (version.comment ?? "").trim();
+  return comment || `v${version.version}`;
+}
+
 /** Merge v1 dependency pins into the scaffold's package.json. */
 function mergeDependencies(
   scaffoldPackageJson: string,
@@ -230,6 +354,7 @@ function mergeDependencies(
 function migrationNotes(
   app: IMakoApp,
   skipped: Array<{ name: string; reason: string; code?: string }>,
+  versionsReplayed: number,
 ): string {
   const lines = [
     "# Migrated from Apps v1",
@@ -237,6 +362,13 @@ function migrationNotes(
     `Source app: ${app._id.toString()} ("${app.title}"), migrated ${new Date().toISOString()}.`,
     "",
     `The v1 runtime was "${app.runtime}" with entrypoint "${app.entrypoint}".`,
+    ...(versionsReplayed > 0
+      ? [
+          `${versionsReplayed} saved v1 version${versionsReplayed === 1 ? "" : "s"} were replayed as the git commits before this one,`,
+          "with their original authors, timestamps, and version comments.",
+          "",
+        ]
+      : []),
     "v2 apps are ordinary Vite projects: run `npm install && npm run build`",
     "in the sandbox and fix what it names before publishing. The app arrives",
     "UNPUBLISHED on purpose — a v1 published snapshot is a document, a v2",
@@ -336,31 +468,56 @@ export async function migrateV1App(
     title: app.title,
     description: app.description,
   });
-  const overlay: Record<string, string> = {};
-  for (const file of app.files ?? []) {
-    const rel = file.path.replace(/^\/+/, "");
-    if (!rel || rel.includes("..")) continue;
-    overlay[rel] = file.contents;
-  }
-  if (!overlay["package.json"] && Object.keys(app.dependencies ?? {}).length) {
-    overlay["package.json"] = mergeDependencies(
-      scaffold["package.json"],
-      app.dependencies,
-    );
-  }
-  const bindings = classifyBindings(app);
-  Object.assign(overlay, bindings.files);
-  overlay["MIGRATION.md"] = migrationNotes(app, bindings.skipped);
-
   const root = appRootFor(project);
+  const repoDir = repoDirFor(workspaceId);
+  const branch = project.defaultBranch || "main";
+
+  // §13.18: every saved v1 version becomes a git commit — original author,
+  // original timestamp, the version's own comment as the message — replayed
+  // oldest-first so `git log apps/<slug>` IS the app's recorded history.
+  // Each version snapshot is a complete file state, so each commit is that
+  // state grafted over the scaffold (same rule as the final state: the v1
+  // file wins).
+  const versions = await EntityVersion.find({
+    entityType: "app",
+    entityId: app._id,
+  }).sort({ version: 1 });
+  const authorsById = await resolveVersionAuthors(versions);
+  let versionCommits = 0;
+  for (const version of versions) {
+    const snap = version.snapshot as unknown as V1AppContent;
+    const { tree } = buildAppTree(snap, scaffold);
+    const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "mako-v1-replay-"));
+    try {
+      await writeTreeToDir(tree, workDir);
+      await commitSubtreeOnBranch(repoDir, branch, root, workDir, {
+        message: versionMessage(version),
+        author: versionAuthor(version, authorsById),
+      });
+      versionCommits += 1;
+    } finally {
+      await fs.rm(workDir, { recursive: true, force: true });
+    }
+  }
+
+  // The final commit is the app's CURRENT state (autosaves after the last
+  // checkpoint included), replacing the folder wholesale so files deleted
+  // since the last version disappear too. This one is the migration's own
+  // act, so it carries the Mako author and today's date.
+  const { tree: finalTree, bindings } = buildAppTree(app, scaffold);
+  finalTree["MIGRATION.md"] = migrationNotes(
+    app,
+    bindings.skipped,
+    versionCommits,
+  );
   const prefixed: Record<string, string> = {};
-  for (const [rel, contents] of Object.entries(overlay)) {
+  for (const [rel, contents] of Object.entries(finalTree)) {
     prefixed[`${root}/${rel}`] = contents;
   }
   await commitFilesOnBranch(
-    repoDirFor(workspaceId),
-    project.defaultBranch || "main",
-    { writes: prefixed },
+    repoDir,
+    branch,
+    { deletePrefixes: [root], writes: prefixed },
     { message: `Migrate v1 app "${app.title}" (${app._id.toString()})` },
   );
   queueMirrorPush(workspaceId);
@@ -439,10 +596,17 @@ export async function migrateV1App(
     projectId: project._id.toString(),
     slug: project.slug,
     files: plan.fileCount,
+    versionCommits,
     bindingsMigrated: bindings.migrated.length,
     bindingsSkipped: bindings.skipped.length,
   });
-  return { ...plan, projectId: project._id.toString(), slug: project.slug };
+  return {
+    ...plan,
+    versions: versions.length,
+    versionCommits,
+    projectId: project._id.toString(),
+    slug: project.slug,
+  };
 }
 
 /**
@@ -521,12 +685,33 @@ export async function migrateWorkspaceV1Apps(input: {
     ? await MakoApp.find({ workspaceId: new Types.ObjectId(input.workspaceId) })
     : apps;
   const slugs = deterministicSlugs(all);
+  // Version counts up front so a dry run already shows how much history
+  // each app will replay.
+  const versionCounts = new Map<string, number>();
+  const grouped = (await EntityVersion.aggregate([
+    {
+      $match: { entityType: "app", entityId: { $in: apps.map(a => a._id) } },
+    },
+    { $group: { _id: "$entityId", n: { $sum: 1 } } },
+  ])) as Array<{ _id: Types.ObjectId; n: number }>;
+  for (const row of grouped) versionCounts.set(String(row._id), row.n);
   const results: V1AppMigrationResult[] = [];
   for (const app of apps) {
     const slug = slugs.get(app._id.toString()) ?? slugify(app.title);
     results.push(
-      input.execute ? await migrateV1App(app, slug) : planV1AppMigration(app),
+      input.execute
+        ? await migrateV1App(app, slug)
+        : {
+            ...planV1AppMigration(app),
+            versions: versionCounts.get(app._id.toString()) ?? 0,
+          },
     );
+  }
+  // The per-app tail pushes are fire-and-forget; the operator CLI exits the
+  // process explicitly, which would cut the LAST app's trailing push. Await
+  // one final push so everything is on the mirror before the CLI reports.
+  if (input.execute && results.length > 0) {
+    await mirrorPushNow(input.workspaceId);
   }
   return results;
 }
