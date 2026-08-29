@@ -117,6 +117,23 @@ Skills (same knowledge as the in-product agent):
 Before writing app code: get_relevant_skills("build a Mako app") or resource mako://skills/apps.
 Optional: search_dashboards, web_search / fetch_url for public docs.`;
 
+/**
+ * Apps v2 steering appended to initialize instructions (§13.21). The base
+ * instructions describe the legacy v1 app loop; a workspace that has moved
+ * to git-backed apps needs the agent working in the app2_* toolset instead
+ * — and the two systems must never be mixed on one app.
+ */
+const APPS_V2_STEER = `
+
+THIS WORKSPACE USES APPS V2 (git-backed). For app work, IGNORE the v1 app loop above and use:
+app2_list_apps → app2_create_app → app2_write_file / app2_edit_file / app2_bash → app2_materialize (bindings are bindings/<name>.sql files) → verify with app2_open_app (starts the dev server, focuses the user's UI) + app2_dev_log (vite + browser console) + app2_browse (headless browser: click, navigate, screenshot the running app) → app2_commit → app2_merge_to_main (main is what publishes buildable state).
+create_app / app_write_file / app_save_version / run_app are the LEGACY v1 system — do not use them here, and never mix the two toolsets on one app.
+Before writing app code: resource mako://skills/apps-v2.`;
+
+const APPS_V2_HINT = `
+
+If asked to work on a git-backed Apps v2 app (folders under apps/ in the workspace repo), use the app2_* toolset (start with app2_list_apps); never mix it with the v1 app tools on one app.`;
+
 /** Defensive cap so a huge query result cannot blow up the JSON response. */
 const MAX_TOOL_RESULT_CHARS = 200_000;
 
@@ -124,6 +141,12 @@ const SKILL_URI_PREFIX = "mako://skills/";
 
 export interface MakoMcpContext {
   workspaceId: string;
+  /**
+   * Workspace is on Apps v2 (settings.appsV2Enabled). Steers initialize
+   * instructions to the app2_* loop instead of the legacy v1 app loop —
+   * tools for BOTH systems stay registered; this only changes guidance.
+   */
+  appsV2Enabled?: boolean;
   /** Acting user (the API key's creator). */
   userId?: string;
   /** Capabilities granted to the authenticated workspace API key. */
@@ -402,9 +425,11 @@ export function buildMakoMcpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       capabilities: { tools: {}, resources: {} },
-      instructions: context.acpDesktop
-        ? ACP_DESKTOP_SERVER_INSTRUCTIONS
-        : SERVER_INSTRUCTIONS,
+      instructions:
+        (context.acpDesktop
+          ? ACP_DESKTOP_SERVER_INSTRUCTIONS
+          : SERVER_INSTRUCTIONS) +
+        (context.appsV2Enabled ? APPS_V2_STEER : APPS_V2_HINT),
     },
   );
 

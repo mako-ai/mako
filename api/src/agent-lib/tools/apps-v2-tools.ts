@@ -1,5 +1,9 @@
 /**
- * Apps v2 agent tools (apps-v2.md §4.6) — experimental, flag-gated.
+ * Apps v2 agent tools (apps-v2.md §4.6).
+ *
+ * NOT flag-gated at this layer: `settings.appsV2Enabled` only hides the UI
+ * rail (status-probe route). Agents and MCP clients can drive Apps v2 in any
+ * workspace — deliberate, so external automation works ahead of UI rollout.
  *
  * This is the "real filesystem + real shell" tool contract that replaces the
  * ~15 bespoke v1 app tools:

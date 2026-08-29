@@ -126,6 +126,22 @@ claude -p "explore my mako data and summarize revenue" --allowedTools "mcp__mako
 
 To keep agent context lean, agents can pass `includeScreenshot: false` to `run_app` while iterating (status + errors only, ~100 bytes) and fetch one screenshot at the end.
 
+## Apps v2 (git-backed apps)
+
+Workspaces on Apps v2 get a second, filesystem-native toolset — the app is a
+folder in the workspace's git monorepo and the agent works like a developer
+in a checkout:
+
+1. `app2_list_apps` / `app2_create_app` — discover or scaffold (`apps/<slug>/`, a real Vite project).
+2. `app2_read_file` / `app2_write_file` / `app2_edit_file` / `app2_glob` / `app2_grep` — ordinary file work; `app2_bash` runs any shell command in the app's sandbox.
+3. `app2_materialize` — build a binding's parquet artifact (bindings are `bindings/<name>.sql` files with front matter, not documents).
+4. **Verify with real eyes** — `app2_open_app` starts the dev server (and focuses the app in the user's UI), `app2_dev_log` returns the boot/vite log plus browser-console output, and `app2_browse` drives a headless browser against the running dev server: click, navigate, and screenshot what a user would actually see. This replaces `run_app` for v2 apps.
+5. `app2_status` / `app2_commit` / `app2_merge_to_main` — commits are durability (`git push` semantics); merging to `main` is what publishes buildable state.
+
+Use `app2_list_apps` first: if the workspace has v2 apps (or you're asked to
+create one), stay in the `app2_*` loop and skip the v1 tools above; the two
+systems must not be mixed on one app.
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |

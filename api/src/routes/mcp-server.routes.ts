@@ -34,6 +34,7 @@ import { createMcpPreviewTools } from "../mcp/preview-tools";
 import { StatelessMcpTransport } from "../mcp/stateless-transport";
 import { ACP_MCP_CLIENT_ID } from "../auth/mcp-oauth.service";
 import type { AuthEnv } from "../openapi/core";
+import { Workspace } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { resolveAcpPlanGrants } from "../services/acp-plan-grant.service";
 
@@ -145,8 +146,14 @@ mcpProtocolRoutes.post(
             agentSessionId: c.get("mcpAgentSessionId"),
           })
         : undefined;
+    // Apps v2 steering for initialize instructions (§13.21): guidance only —
+    // both toolsets stay registered either way.
+    const wsDoc = await Workspace.findById(workspaceId)
+      .select("settings.appsV2Enabled")
+      .lean();
     const mcpContext = {
       workspaceId,
+      appsV2Enabled: wsDoc?.settings?.appsV2Enabled === true,
       userId: user ? String(user.id) : undefined,
       scopes,
       acpDesktop,
