@@ -175,7 +175,9 @@ export default function GitHubConnectionSection() {
           ? "Repository imported — its apps/ folders now appear as apps."
           : result.adoption === "seeded"
             ? "Repository connected — the workspace's existing apps were pushed into it."
-            : "Repository connected — it is now where this workspace's apps are stored.",
+            : result.adoption === "deferred"
+              ? "Repository linked, but mirroring is INACTIVE in this environment — preview and dev deployments never push to customer repos. It engages in production."
+              : "Repository connected — it is now where this workspace's apps are stored.",
       );
     } else {
       setError(result.error ?? "Failed to connect");
