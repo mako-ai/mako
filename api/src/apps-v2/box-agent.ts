@@ -236,6 +236,29 @@ function activeConns(port) {
   return count;
 }
 
+// Viewer truth, in order of honesty: the launcher's ws-client heartbeat
+// (only a real browser completes the HMR websocket handshake) when fresh,
+// else raw ESTABLISHED conns for old launchers — knowing E2B's ingress can
+// pin those open forever with no browser (16 idle peers observed), which
+// makes the fallback err on the side of never reaping.
+function viewerCount(slug, port) {
+  try {
+    const v = JSON.parse(
+      readFileSync("/tmp/mako-dev-" + slug + ".viewers", "utf8"),
+    );
+    if (
+      Date.now() - v.at < 30000 &&
+      typeof v.ws === "number" &&
+      v.ws >= 0
+    ) {
+      return v.ws;
+    }
+  } catch {
+    // No heartbeat: an old launcher; fall through.
+  }
+  return activeConns(port);
+}
+
 // Stop an idle dev server: kill the launcher (which is vite), drop its
 // session socket, and free its registry slot. A STOP, never a start.
 async function reap(slug) {
@@ -303,7 +326,7 @@ async function tick() {
       idleTicks.delete(s.slug);
       continue;
     }
-    const ticks = activeConns(s.port) > 0 ? 0 : (idleTicks.get(s.slug) ?? 0) + 1;
+    const ticks = viewerCount(s.slug, s.port) > 0 ? 0 : (idleTicks.get(s.slug) ?? 0) + 1;
     idleTicks.set(s.slug, ticks);
     if (ticks > IDLE_TICKS_MAX) {
       await reap(s.slug);

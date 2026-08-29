@@ -445,6 +445,23 @@ await server.listen();
 // time, URLs — so the boot log reads like the real thing, because it is.
 server.printUrls();
 console.log("mako dev server listening on ${port}");
+// Honest viewer signal for the box agent's idle reaper: E2B's ingress fleet
+// parks keep-alive TCP connections on this port with NO browser anywhere
+// (observed: 16 distinct peers, zero viewers), so an ESTABLISHED conn does
+// not mean "someone is watching". Only a real browser completes the HMR
+// websocket handshake — report those. ws:-1 = unknown (agent falls back).
+const viewersFile = "/tmp/mako-dev-${slug}.viewers";
+const reportViewers = () => {
+  let ws = -1;
+  try {
+    const c = server.ws && server.ws.clients;
+    if (c && typeof c.size === "number") ws = c.size;
+  } catch {}
+  try { writeFileSync(viewersFile, JSON.stringify({ ws, at: Date.now() })); } catch {}
+};
+reportViewers();
+const viewersTimer = setInterval(reportViewers, 10000);
+if (viewersTimer.unref) viewersTimer.unref();
 void tellMako("serving", 7, [1000, 3000, 8000, 15000, 30000, 60000]);
 // Watcher lifecycle in the boot log: "ready" proves the polling scan
 // finished (inotify is dead in this VM, so a silent watcher means frozen
