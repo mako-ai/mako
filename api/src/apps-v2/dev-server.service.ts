@@ -33,6 +33,7 @@ import {
   isMissingCwd,
   rehydrateBox,
   type WorktreeHandle,
+  sessionKeyFor,
 } from "./worktree.service";
 import { loggers } from "../logging";
 import { boxEnvPath } from "./box";
@@ -762,6 +763,34 @@ async function enforceRunningCap(
  * servers are left alone — each has its own port.
  */
 const launching = new Map<string, Promise<DevPreview>>();
+
+/**
+ * Release an app's dev-server registry slot after its session was killed
+ * out-of-band (leaving dev mode kills the pty tree, but the port registry is
+ * a file the kill never touches). Without this the dead entry retires its
+ * port FOREVER: allocation treats every registry value as taken
+ * (`used.has(p) → p++`), and the box agent never ticks idle time for a
+ * server it cannot probe alive — so nothing else cleans it either (§13.20).
+ *
+ * Addresses the box directly by session key, never ensureBox: cleaning a
+ * registry must not boot a machine, and a box that is gone took its
+ * registry with it (best effort, logged).
+ */
+export async function releaseDevServerSlot(
+  workspaceId: string,
+  userId: string,
+  slug: string | null,
+): Promise<void> {
+  if (!slug) return;
+  const provider = getSandboxProvider();
+  const ctx = { sessionKey: sessionKeyFor(workspaceId, userId) };
+  await reapDevServerBySlug(provider, ctx, slug).catch(error => {
+    logger.debug("Apps v2 dev-server release skipped (box unreachable?)", {
+      slug,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+}
 
 export async function ensureDevServer(
   handle: WorktreeHandle,

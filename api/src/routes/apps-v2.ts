@@ -109,6 +109,7 @@ import {
   ensureDevServer,
   isServingApp,
   discoverDevServers,
+  releaseDevServerSlot,
 } from "../apps-v2/dev-server.service";
 import { getBoxState, markBoxOffline } from "../apps-v2/box-state.service";
 import { getSandboxProvider } from "../apps-v2/sandbox/provider";
@@ -1724,6 +1725,14 @@ appsV2Routes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       await killAllTerminalSessions(
         loaded.project,
+        loaded.userId ?? "api-key",
+        loaded.project.slug ?? null,
+      );
+      // Free the dev-server port registration too — the kill stops the
+      // process, but a dead registry entry would retire its port forever
+      // (§13.20).
+      await releaseDevServerSlot(
+        loaded.project.workspaceId.toString(),
         loaded.userId ?? "api-key",
         loaded.project.slug ?? null,
       );
