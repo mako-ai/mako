@@ -280,6 +280,12 @@ let lastSentAt = 0;
 let failStreak = 0;
 let warnedEnv = false;
 const idleTicks = new Map();
+// Consecutive ticks each REGISTRY entry has had no live server. Feeds the
+// prune below, which frees slots left behind by Ctrl-C'd or crashed dev
+// servers — the stop ROUTE cleans its own path, but nothing else did, and a
+// dead entry retires its port forever (allocation treats every value as
+// taken).
+const deadRegTicks = new Map();
 
 async function tick() {
   const git = await gitState();
@@ -308,6 +314,57 @@ async function tick() {
   }
   for (const k of [...idleTicks.keys()]) {
     if (!servers.some(s => s.slug === k)) idleTicks.delete(k);
+  }
+
+  // Prune registry entries whose server is gone (Ctrl-C in the dev
+  // terminal, a crash). Generous patience on purpose: a BOOT also has a
+  // registry entry with no listening server while npm install runs, and its
+  // launcher process only appears at the end — so wait ~8 minutes AND
+  // require the launcher to be absent before dropping the slot. Worst case
+  // for a pathological >8min boot: its entry is re-orphaned, which the
+  // port-scan discovery still finds; a dead slot, in contrast, would leak
+  // its port until the box dies.
+  let reg = {};
+  try {
+    reg = JSON.parse(readFileSync(PORTS, "utf8"));
+  } catch {
+    reg = {};
+  }
+  let regChanged = false;
+  for (const key of Object.keys(reg)) {
+    const slug = key.replace(/^apps\\//, "");
+    if (!/^[A-Za-z0-9_-]+$/.test(slug)) continue;
+    if (servers.some(s => s.slug === slug)) {
+      deadRegTicks.delete(slug);
+      continue;
+    }
+    const t = (deadRegTicks.get(slug) ?? 0) + 1;
+    deadRegTicks.set(slug, t);
+    if (t < 240) continue;
+    let hasLauncher = true;
+    try {
+      await run("/bin/sh", [
+        "-c",
+        "pgrep -f mako-dev-" + slug + ".mjs >/dev/null",
+      ]);
+    } catch {
+      hasLauncher = false;
+    }
+    if (hasLauncher) continue;
+    delete reg[key];
+    regChanged = true;
+    deadRegTicks.delete(slug);
+    log("pruned dead registry entry " + slug);
+  }
+  if (regChanged) {
+    try {
+      writeFileSync(PORTS, JSON.stringify(reg));
+    } catch {
+      // Best effort; retried next tick.
+    }
+  }
+  for (const k of [...deadRegTicks.keys()]) {
+    if (!(("apps/" + k) in reg)) deadRegTicks.delete(k);
   }
   const snapshot = { source: "agent", devServers: alive, terminals: terminals() };
   if (process.env.E2B_SANDBOX_ID) snapshot.sandboxId = process.env.E2B_SANDBOX_ID;

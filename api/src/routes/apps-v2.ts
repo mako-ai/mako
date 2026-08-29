@@ -1522,7 +1522,7 @@ appsV2Routes.openapi(
         const logPath = devLogPath(handle);
         const install = await execInWorktree(
           handle,
-          `: > ${logPath}; set -o pipefail; ( [ -d node_modules ] || npm install --no-audit --no-fund ) 2>&1 | tee -a ${logPath}`,
+          `: > ${logPath}; printf '=== mako dev boot: cd ${handle.appRoot} && vite (Mako launcher: bindings + eyes + HMR host) ===\\n\\n' >> ${logPath}; set -o pipefail; ( [ -d node_modules ] || npm install --no-audit --no-fund ) 2>&1 | tee -a ${logPath}`,
           { timeoutMs: 300_000 },
         );
         if (install.exitCode !== 0) {

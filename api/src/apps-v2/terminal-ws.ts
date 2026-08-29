@@ -341,6 +341,20 @@ const TMUX_HISTORY_LINES = 5000;
 
 /** How much of the raw session recording a reattach replays. */
 const HIST_REPLAY_BYTES = 256 * 1024;
+/**
+ * Dev sessions replay far more: their recording is the WHOLE boot (npm
+ * install + vite startup), and cutting it to a screenful was the "I'm
+ * losing a bunch of output" complaint. Boots are bounded; 4MB covers them.
+ */
+const DEV_HIST_REPLAY_BYTES = 4 * 1024 * 1024;
+/**
+ * Generation marker the dev boot writes at the top of its recording. The
+ * replay slices at the LAST one so a reattach shows only the newest boot —
+ * including its install output, which script(1)'s own "Script started"
+ * banner (written when the dev SESSION starts, after the install tee)
+ * would otherwise cut off.
+ */
+const DEV_BOOT_MARKER = "=== mako dev boot:";
 
 /**
  * Strip sequences that would make a REPLAYING terminal talk back. The
@@ -370,19 +384,25 @@ const QUERY_SEQUENCES = new RegExp(
 async function sessionHistory(
   ctx: SandboxExecContext,
   histFile: string,
+  options: { dev?: boolean } = {},
 ): Promise<Buffer | null> {
   try {
+    const cap = options.dev ? DEV_HIST_REPLAY_BYTES : HIST_REPLAY_BYTES;
     const result = await getSandboxProvider().exec(
       ctx,
-      `tail -c ${HIST_REPLAY_BYTES} ${histFile} 2>/dev/null | base64`,
+      `tail -c ${cap} ${histFile} 2>/dev/null | base64`,
       { timeoutMs: 30_000 },
     );
     const raw = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
     if (raw.length === 0) return null;
     let recorded = raw.toString("binary");
     // The recording appends across boots; replaying several generations of
-    // the same session reads as chaos. Keep the newest one only.
-    const lastBanner = recorded.lastIndexOf("Script started on ");
+    // the same session reads as chaos. Keep the newest one only. Dev boots
+    // are delimited by our own marker (which precedes the install output);
+    // shells by script(1)'s banner.
+    const devMark = options.dev ? recorded.lastIndexOf(DEV_BOOT_MARKER) : -1;
+    const lastBanner =
+      devMark >= 0 ? devMark : recorded.lastIndexOf("Script started on ");
     if (lastBanner > 0) recorded = recorded.slice(lastBanner);
     const text = recorded
       .replace(QUERY_SEQUENCES, "")
@@ -429,7 +449,9 @@ function reattach(session: LiveTerminal, ws: WebSocket): void {
         // dtach: replay the tail of the session recording — history AND
         // the current prompt, byte-faithful, ending exactly where the live
         // stream picks up. Nothing repaints because nothing needs to.
-        const history = await sessionHistory(session.ctx, session.histFile);
+        const history = await sessionHistory(session.ctx, session.histFile, {
+          dev: session.histFile.includes("mako-hist-dev-"),
+        });
         if (history && ws.readyState === ws.OPEN) ws.send(history);
         if (!history && ws.readyState === ws.OPEN) {
           // Nothing recorded yet — a dev window waiting for its server, or
@@ -737,8 +759,9 @@ async function startSession(
         // does not exist yet has nothing to replay.
         const priorHistory = options.fresh
           ? null
-          : ((await sessionHistory(ctx, `/tmp/mako-hist-${termId}.raw`)) ??
-            (await tmuxHistory(ctx, `mako-${termId}`)));
+          : ((await sessionHistory(ctx, `/tmp/mako-hist-${termId}.raw`, {
+              dev: termId.startsWith("dev"),
+            })) ?? (await tmuxHistory(ctx, `mako-${termId}`)));
         if (priorHistory) {
           if (termId.startsWith("dev-")) {
             // Dev windows are ring-replay sessions: put the history IN the
