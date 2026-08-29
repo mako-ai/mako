@@ -1348,6 +1348,29 @@ Verified on the RealAdvisor dev workspace: 57 apps, 874 versions replayed
 first checkpoints, and the users' own messages ("Fix renewal over-counting:
 open_invoices binding outputs raw UUIDs …") as commit subjects.
 
+### 13.19 Published apps could never see their data (2026-08-29)
+
+Found by the migration test plan's publish-end-to-end case, not by code
+review. `serveDeploymentFile`'s `__data/<name>.parquet` branch read the key
+`apps-v2/<projectId>/<name>.parquet` — a scheme NOTHING writes: materialize
+keys artifacts `apps-v2/bindings/<connectionId>/<definitionHash>.parquet`
+(bindings.service header). Dev previews resolved correctly through
+`bindingArtifactKeyByName`, so every published app 404'd its data while its
+preview worked — the worst kind of gap, invisible until a real viewer.
+
+Fix: the published branch resolves by name through the binding definition,
+exactly as the preview route does, and additionally serves
+`__data/index.json` (binding names from `readBindings`) so the SDK's
+`useDuckDB` can register tables — the dev server wrote that file, published
+serving never did. Verified live: the migrated "MRR Analytics" app publishes
+and renders its full dataset (113k/133k-row bindings) in the consumer view.
+
+Related, from the same test: `adoptBindingArtifact` returning false (the
+artifact is absent from THIS environment's store — dev/preview clones carry
+prod keys) is now logged per binding instead of silently carrying nothing;
+the remedy in a rehearsal environment is one `materialize` call per binding
+(or APPS_V2_ARTIFACT_SOURCE_BUCKET hydration).
+
 ## 14. State of play and roadmap (2026-08-26)
 
 What exists now, what was decided in the 2026-08-26 planning round, and the

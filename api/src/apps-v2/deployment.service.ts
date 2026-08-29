@@ -22,6 +22,7 @@ import { Readable } from "node:stream";
 import fs from "node:fs/promises";
 import os from "node:os";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { bindingArtifactKeyByName, readBindings } from "./bindings.service";
 import { AppProjectV2, type IAppProjectV2 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { boxCtx, type WorktreeHandle } from "./worktree.service";
@@ -309,14 +310,36 @@ export async function serveDeploymentFile(input: {
   const { projectId, sha, assetPath } = input;
   const cache = input.private ? "private, no-cache" : "no-cache";
 
+  // The staged-binding list the SDK's useDuckDB registers tables from. The
+  // dev server writes this file next to its staged parquet; published serving
+  // derives it from the repo's bindings so published apps get tables too.
+  if (assetPath === "__data/index.json") {
+    const project = await AppProjectV2.findById(projectId);
+    const names = project
+      ? (await readBindings(project, "")).map(b => b.name)
+      : [];
+    return new Response(JSON.stringify(names), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "Cache-Control": cache },
+    });
+  }
+
   const dataMatch = assetPath.match(
     /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.parquet$/,
   );
   if (dataMatch) {
     const store = getDashboardArtifactStore();
-    const key = `apps-v2/${projectId}/${dataMatch[1]}.parquet`;
-    const stream = await store.openReadStream(key);
-    if (!stream) return null;
+    // Resolve by name through the binding's DEFINITION, exactly as the
+    // preview route does — artifacts are keyed
+    // `apps-v2/bindings/<connectionId>/<definitionHash>.parquet`. The old
+    // `apps-v2/<projectId>/<name>.parquet` key here was a scheme nothing
+    // writes: published apps could never see their data (§13.19).
+    const project = await AppProjectV2.findById(projectId);
+    const key = project
+      ? await bindingArtifactKeyByName(project, dataMatch[1], "")
+      : null;
+    const stream = key ? await store.openReadStream(key) : null;
+    if (!key || !stream) return null;
     const size = await store.getSize(key);
     return new Response(Readable.toWeb(stream as Readable) as ReadableStream, {
       status: 200,

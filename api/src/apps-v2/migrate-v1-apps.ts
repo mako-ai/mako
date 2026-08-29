@@ -555,7 +555,22 @@ export async function migrateV1App(
         rowCount: cache.rowCount,
         byteSize: cache.byteSize,
       });
-      if (ok) adopted.push(file);
+      if (ok) {
+        adopted.push(file);
+      } else {
+        // Not an error on principle — the artifact simply is not in THIS
+        // environment's store (a dev/preview clone carries prod keys). Say
+        // so instead of silently carrying nothing: the app needs a fresh
+        // materialize before its data renders.
+        logger.warn(
+          "v1 binding artifact not in this environment's store — not carried",
+          {
+            v1AppId: app._id.toString(),
+            binding: file,
+            fromKey: cache.parquetArtifactKey,
+          },
+        );
+      }
     } catch (error) {
       logger.warn("Could not carry a v1 binding artifact into v2", {
         v1AppId: app._id.toString(),
