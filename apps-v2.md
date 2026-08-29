@@ -1371,6 +1371,51 @@ prod keys) is now logged per binding instead of silently carrying nothing;
 the remedy in a rehearsal environment is one `materialize` call per binding
 (or APPS_V2_ARTIFACT_SOURCE_BUCKET hydration).
 
+### 13.20 Chaos on the box lifecycle (2026-08-29)
+
+Fault-injection round against a live box; every scenario driven through the
+real API/UI, verified in-box. Three real defects found, fixed, and verified.
+
+**Idle reaper vs. reality — DEFEATED, now fixed.** The reaper counted a
+"viewer" as an ESTABLISHED TCP connection to the dev port. Observed: E2B's
+ingress fleet parks keep-alive connections (16 distinct 10.12.0.x peers)
+against a server nobody had viewed for 20+ minutes — the idle clock never
+accrues and the server lives forever. The launcher now heartbeats its HMR
+websocket CLIENT count (only a real browser completes that handshake) to
+`/tmp/mako-dev-<slug>.viewers`; the agent prefers it when fresh. Verified
+both ways: ws:0 with a mounted-but-closed workbench, ws:1 the moment the
+preview iframe attaches. Raw conns remain the fallback for old launchers.
+Also learned: rolling a new agent restarts it and resets idle counters (by
+design — re-grants the grace window), so an agent deploy defers reaps.
+
+**Dev-port registry leak — fixed.** Leaving dev mode killed the pty tree
+but never touched the port registry; allocation treats every registry value
+as taken, so a dead entry retired its port forever (observed live: a stale
+slot 40+ minutes old). Fixes, both verified in-box: the leave-dev route now
+calls `releaseDevServerSlot` (port 5174 was reused by the very next boot),
+and the agent prunes entries with no live server AND no launcher process
+after ~8 minutes — patient because a BOOT also has a dead port while npm
+install runs, and pruning a boot would orphan its server.
+
+**Eviction under someone's feet — works as designed.** At the cap (3), a
+4th start evicted the lowest-port server (`evicted: ["live-reload-probe"]`
+returned to the caller), the freed port was reused, exactly 3 listeners
+remained, and the victim's running affordances dropped via box-state.
+Eviction deliberately ignores viewers — the cap is a resource guarantee.
+
+**Tunnel outage — non-event.** Killed cloudflared: the supervisor respawned
+it in ~5s, faster than the box's ~30s notify cadence — zero failed notifies.
+The slow path has natural evidence from the same day's logs: hours of http
+530 during real tunnel trouble ending in "reachable again after 395
+failures". The push pipeline self-heals from blips and extended outages.
+
+**Two clients, one box — works.** A second tab's Stop dev flipped the first
+tab to Start dev via the box-state push, no reload.
+
+Known cosmetic leftover: the dev boot banner can print twice when two
+dev-preview POSTs race the same cold boot (mount effect + status poll — the
+launch is single-flighted, the route's log-genesis section is not).
+
 ## 14. State of play and roadmap (2026-08-26)
 
 What exists now, what was decided in the 2026-08-26 planning round, and the
