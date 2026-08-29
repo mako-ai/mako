@@ -86,17 +86,11 @@ export class MyServiceConnector extends BaseConnector {
 
 ### 2. Register the Connector
 
-Add your connector to `api/src/connectors/registry.ts`:
-
-```typescript
-import { MyServiceConnector } from "./my-service";
-
-// ... existing registrations
-export const connectorRegistry = {
-  // ...
-  "my-service": MyServiceConnector,
-};
-```
+Nothing to edit in `registry.ts` — it auto-discovers connectors at boot by
+scanning `api/src/connectors/*` for a subdirectory containing a
+`connector.ts` (or `index.ts`) that exports a class ending in `Connector`.
+Dropping your connector directory in place (with the `index.ts` export below)
+is enough for it to register under the directory name as its `type`.
 
 ## Best Practices
 
