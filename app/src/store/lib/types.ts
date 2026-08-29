@@ -20,6 +20,9 @@ export type TabKind =
   | "app"
   | "app-file"
   | "app-binding"
+  | "app-v2"
+  | "app-v2-file"
+  | "app-v2-diff"
   | "plan"
   | "dbt-file"
   | "dbt-job"
@@ -43,6 +46,8 @@ export type SettingsSection =
   | "members"
   | "api-keys"
   | "appearance"
+  | "github"
+  | "sandbox"
   | "admin";
 
 /**
@@ -184,7 +189,9 @@ export type LeftPaneView =
   | "dashboards"
   | "apps"
   | "notebooks"
+  | "apps-v2"
   | "dbt"
+  | "source-control"
   | "settings";
 
 /**

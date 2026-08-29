@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useWorkspace } from "../../contexts/workspace-context";
 import {
   Box,
   IconButton,
@@ -71,6 +72,23 @@ export const ChatInputArea = React.memo(
     inputValueRef.current = input;
     const preEditDraftRef = useRef("");
     const prevEditingIdRef = useRef<string | null>(null);
+    // Onboarding hands the user's "what do you want to build?" answer to
+    // the composer through this key — their first prompt, where it belongs
+    // (users used to type it into the workspace-name field).
+    const { currentWorkspace } = useWorkspace();
+    useEffect(() => {
+      if (!currentWorkspace?.id) return;
+      try {
+        const key = `mako-chat-prefill:${currentWorkspace.id}`;
+        const draft = localStorage.getItem(key);
+        if (draft && !inputValueRef.current) {
+          localStorage.removeItem(key);
+          setInput(draft);
+        }
+      } catch {
+        // Best effort.
+      }
+    }, [currentWorkspace?.id]);
     useRenderCount("ChatInputArea", {
       isLoading,
       disabled,

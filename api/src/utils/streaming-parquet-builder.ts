@@ -340,8 +340,12 @@ export async function buildParquetFromBatches(
       await connection.run(`CREATE TABLE _data (_empty VARCHAR)`);
     }
 
+    // SNAPPY, not ZSTD: artifacts are read by arbitrary in-browser consumers
+    // (generated apps typically use plain hyparquet, which cannot decode ZSTD
+    // without an extra compressors bundle). Snappy is the parquet
+    // compatibility default every reader supports.
     await connection.run(
-      `COPY _data TO '${parquetPath.replace(/'/g, "''")}' (FORMAT PARQUET, COMPRESSION ZSTD)`,
+      `COPY _data TO '${parquetPath.replace(/'/g, "''")}' (FORMAT PARQUET, COMPRESSION SNAPPY)`,
     );
 
     const stat = await fsPromises.stat(parquetPath);

@@ -22,6 +22,7 @@ import {
 } from "@mui/material";
 import { Refresh as RefreshIcon } from "@mui/icons-material";
 import SettingsLayout from "./SettingsLayout";
+import { useWorkspace } from "../../contexts/workspace-context";
 
 interface AdminCuratedModel {
   id: string;
@@ -61,6 +62,162 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error(msg);
   }
   return (await res.json()) as T;
+}
+
+interface FlaggedWorkspace {
+  id: string;
+  name: string;
+  slug: string;
+  appsV2Enabled: boolean;
+}
+
+/** Per-workspace rollout switches. Apps v2 is the first; add rows as flags appear. */
+function FeatureFlagsCard() {
+  const { refreshWorkspaces } = useWorkspace();
+  const [rows, setRows] = useState<FlaggedWorkspace[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Thousands of workspaces: search, and show the flagged ones first so the
+  // rollout set is always visible without scrolling.
+  const [query, setQuery] = useState("");
+  const LIMIT = 50;
+  const visible = useMemo(() => {
+    if (!rows) return [];
+    const q = query.trim().toLowerCase();
+    const matches = q
+      ? rows.filter(
+          r =>
+            r.name.toLowerCase().includes(q) ||
+            r.slug.toLowerCase().includes(q) ||
+            r.id === q,
+        )
+      : rows;
+    return [...matches]
+      .sort((a, b) => Number(b.appsV2Enabled) - Number(a.appsV2Enabled))
+      .slice(0, LIMIT);
+  }, [rows, query]);
+
+  const load = useCallback(async () => {
+    try {
+      const data = await apiJson<{ workspaces: FlaggedWorkspace[] }>(
+        "/api/admin/workspaces/features",
+      );
+      setRows(data.workspaces);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load workspaces");
+    }
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const flip = useCallback(
+    async (row: FlaggedWorkspace, appsV2Enabled: boolean) => {
+      setBusy(row.id);
+      setError(null);
+      try {
+        await apiJson(`/api/admin/workspaces/${row.id}/features`, {
+          method: "PATCH",
+          body: JSON.stringify({ appsV2Enabled }),
+        });
+        setRows(
+          prev =>
+            prev?.map(r => (r.id === row.id ? { ...r, appsV2Enabled } : r)) ??
+            prev,
+        );
+        // The rail reads the flag from the loaded workspace object; refresh
+        // it so the icons follow without a reload.
+        void refreshWorkspaces();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not update");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [refreshWorkspaces],
+  );
+
+  return (
+    <Card variant="outlined" sx={{ mb: 3 }}>
+      <CardContent>
+        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
+          Feature flags
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          Per-workspace rollout. <strong>Apps v2</strong> turns on the
+          git-backed apps, the sandbox and Source Control for a workspace; off,
+          none of it is visible there.
+        </Typography>
+        {error && (
+          <Alert severity="error" onClose={() => setError(null)} sx={{ mb: 1 }}>
+            {error}
+          </Alert>
+        )}
+        {!rows ? (
+          <CircularProgress size={18} />
+        ) : (
+          <TableContainer>
+            <TextField
+              size="small"
+              fullWidth
+              placeholder={`Search ${rows.length} workspaces by name, slug or id…`}
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              sx={{ mb: 1 }}
+            />
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mb: 0.5 }}
+            >
+              {rows.filter(r => r.appsV2Enabled).length} enabled · showing{" "}
+              {visible.length}
+              {visible.length === LIMIT ? ` of the first ${LIMIT} matches` : ""}
+            </Typography>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Workspace</TableCell>
+                  <TableCell>Slug</TableCell>
+                  <TableCell align="right">Apps v2</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {visible.map(row => (
+                  <TableRow key={row.id} hover>
+                    <TableCell
+                      sx={{
+                        // Legacy names can be entire pasted prompts; never
+                        // let one row swallow the page.
+                        maxWidth: 520,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                      title={row.name}
+                    >
+                      {row.name}
+                    </TableCell>
+                    <TableCell sx={{ color: "text.secondary" }}>
+                      /{row.slug}
+                    </TableCell>
+                    <TableCell align="right">
+                      <Switch
+                        size="small"
+                        checked={row.appsV2Enabled}
+                        disabled={busy === row.id}
+                        onChange={e => void flip(row, e.target.checked)}
+                      />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 export default function SettingsAdmin() {
@@ -239,6 +396,7 @@ export default function SettingsAdmin() {
       description="Cross-workspace controls. Curate which AI models are offered to every workspace, and pick the platform defaults for free and paid tiers."
       maxWidth="full"
     >
+      <FeatureFlagsCard />
       <Card variant="outlined" sx={{ mb: 3 }}>
         <CardContent>
           <Box

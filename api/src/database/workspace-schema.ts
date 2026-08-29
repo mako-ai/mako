@@ -173,11 +173,55 @@ export interface IWorkspace extends Document {
      * Clamped to [1, APP_BINDING_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX].
      */
     appBindingRefreshConcurrency?: number;
+    /**
+     * Apps v2 (git-backed apps, sandbox, Source Control) for this workspace.
+     * Off by default; super-admins flip it per workspace for the incremental
+     * rollout (Settings › Super Admin › Feature flags).
+     */
+    appsV2Enabled?: boolean;
   };
   billing: IWorkspaceBilling;
   selfDirective?: string;
   apiKeys?: IWorkspaceApiKey[];
+  /**
+   * Connected GitHub repos — workspace-level infrastructure, not an apps-v2
+   * detail: apps (and later consoles, dbt projects) mount into these. Mako
+   * stores nothing in Mongo except these links: the repos themselves are the
+   * durable store. Layout inside a repo: `<makoRoot>/apps/<app>` for
+   * workspace content, `<makoRoot>/users/<userId>/apps/<app>` for personal.
+   * The model allows N repos; the product default is one.
+   */
+  workspaceRepos?: IWorkspaceRepoBinding[];
+  /** @deprecated pre-workspaceRepos single binding — migrated at read time. */
+  appsV2Repo?: IWorkspaceRepoBinding;
+  /**
+   * §10 monorepo, cloud tier: the ONE Mako-hosted mirror repo for this
+   * workspace (`<prefix>-<workspaceId>` under MAKO_CLOUD_GITHUB_ORG). Set
+   * after the first successful ensure+push; absent when the cloud app is
+   * not configured or the workspace is BYO-only.
+   */
+  appsV2CloudRepo?: { owner: string; repo: string };
 }
+
+export interface IWorkspaceRepoBinding {
+  provider: "github";
+  /** GitHub App installation granting repo access (omit for public repos). */
+  installationId?: number;
+  owner: string;
+  repo: string;
+  /** Default/main branch conversations fork from and publish merges into. */
+  defaultBranch: string;
+  /**
+   * The Mako root — the folder Mako owns in this repo ("" = repo root).
+   * Apps always live under `<subdirectory>/apps/<app>`.
+   */
+  subdirectory: string;
+  linkedBy?: string;
+  linkedAt?: Date;
+}
+
+/** @deprecated old name — repos are workspace-level, not apps-v2-scoped. */
+export type IAppsV2RepoBinding = IWorkspaceRepoBinding;
 
 /**
  * API Key interface for workspace authentication
@@ -1272,6 +1316,7 @@ Add any specific instructions for how the AI should interpret your data or respo
         default: 2,
         min: 1,
       },
+      appsV2Enabled: { type: Boolean, default: false },
     },
     billing: {
       stripeCustomerId: { type: String, default: null },
@@ -1305,6 +1350,49 @@ Add any specific instructions for how the AI should interpret your data or respo
       type: String,
       default: "",
       maxlength: 10000,
+    },
+    appsV2CloudRepo: {
+      type: new Schema(
+        {
+          owner: { type: String, required: true },
+          repo: { type: String, required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
+    workspaceRepos: {
+      type: [
+        new Schema(
+          {
+            provider: { type: String, enum: ["github"], default: "github" },
+            installationId: { type: Number },
+            owner: { type: String, required: true, trim: true },
+            repo: { type: String, required: true, trim: true },
+            defaultBranch: { type: String, required: true, default: "main" },
+            // Mako root ("" = repo root); apps live at <root>/apps/<app>.
+            subdirectory: { type: String, default: "" },
+            linkedBy: { type: String },
+            linkedAt: { type: Date },
+          },
+          { _id: false },
+        ),
+      ],
+      default: undefined,
+    },
+    appsV2Repo: {
+      type: {
+        provider: { type: String, enum: ["github"], default: "github" },
+        installationId: { type: Number },
+        owner: { type: String, required: true, trim: true },
+        repo: { type: String, required: true, trim: true },
+        defaultBranch: { type: String, required: true, default: "main" },
+        subdirectory: { type: String, default: "" },
+        linkedBy: { type: String },
+        linkedAt: { type: Date },
+      },
+      default: undefined,
+      _id: false,
     },
     apiKeys: [
       {
@@ -4264,6 +4352,13 @@ export interface IMakoApp extends Document {
   publicShare?: IPublicShare;
   owner_id?: string;
   createdBy: string;
+  /**
+   * Set when this app has been migrated to Apps v2 (see
+   * apps-v2/migrate-v1-apps.ts). The migrator skips stamped apps, so the
+   * migration is re-runnable; clearing the stamp (and deleting the v2
+   * folder) un-migrates.
+   */
+  migratedToV2ProjectId?: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -4387,6 +4482,7 @@ const MakoAppSchema = new Schema<IMakoApp>(
     publicShare: { type: PublicShareSchema, default: undefined },
     owner_id: { type: String, index: true },
     createdBy: { type: String, required: true },
+    migratedToV2ProjectId: { type: Schema.Types.ObjectId },
   },
   { timestamps: true },
 );
@@ -5599,4 +5695,166 @@ McpToolGrantSchema.index({ workspaceId: 1, userId: 1 });
 export const McpToolGrant = mongoose.model<IMcpToolGrant>(
   "McpToolGrant",
   McpToolGrantSchema,
+);
+
+// ---------------------------------------------------------------------------
+// Apps v2 (experimental, flag-gated — see apps-v2.md)
+//
+// Runs in PARALLEL with apps v1 (`MakoApp` above): new collections, no shared
+// fields, no migrations of existing data. Source files live in a Mako-managed
+// bare git repository per project (api/src/apps-v2/repository.service.ts);
+// these documents hold only control-plane metadata.
+// ---------------------------------------------------------------------------
+
+/**
+ * An Apps v2 project: control-plane record for one git-backed app.
+ * One bare repo per project (per-app ACLs make the repo the authorization
+ * boundary); source contents are never stored in Mongo.
+ */
+export interface IAppProjectV2 extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  title: string;
+  /**
+   * Folder name under `apps/` in the workspace repo (§10 monorepo). Kebab,
+   * immutable, unique per workspace. Optional only for pre-migration docs.
+   */
+  slug?: string;
+  description?: string;
+  /** Same Google-style ACL model as v1 apps (utils/resource-acl.ts). */
+  access: "private" | "workspace";
+  workspaceRole?: "viewer" | "editor";
+  sharedWith?: IResourceShareEntry[];
+  owner_id?: string;
+  createdBy: string;
+  defaultBranch: string;
+  /**
+   * Mako-hosted GitHub mirror (cloud tier): a private repo under the
+   * MAKO_CLOUD_GITHUB_ORG org that every commit is mirror-pushed to. Absent
+   * for projects created before cloud repos existed or when the cloud app is
+   * not configured. Auth comes from cloud-app-auth.ts (Mako's own app), NOT
+   * the per-workspace BYO installation.
+   */
+  cloudRepo?: { owner: string; repo: string };
+  /** Commit SHA of the last published deployment (§13.3). */
+  publishedSha?: string;
+  /** When publishedSha was last repointed (publish or rollback). */
+  publishedAt?: Date;
+  /**
+   * Anonymous read-only link to the PUBLISHED deployment, optionally password
+   * protected. Same primitive dashboards and v1 apps use, so the management
+   * routes and the /api/share/:token consumption side are shared verbatim.
+   */
+  publicShare?: IPublicShare;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const AppProjectV2Schema = new Schema<IAppProjectV2>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    title: { type: String, required: true, trim: true },
+    slug: { type: String, trim: true },
+    description: { type: String },
+    access: {
+      type: String,
+      enum: ["private", "workspace"],
+      default: "private",
+    },
+    workspaceRole: { type: String, enum: ["viewer", "editor"] },
+    sharedWith: { type: [ResourceShareEntrySchema], default: undefined },
+    owner_id: { type: String, index: true },
+    createdBy: { type: String, required: true },
+    defaultBranch: { type: String, default: "main" },
+    cloudRepo: {
+      type: new Schema(
+        {
+          owner: { type: String, required: true },
+          repo: { type: String, required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
+    publishedSha: { type: String },
+    publishedAt: { type: Date },
+    publicShare: { type: PublicShareSchema, default: undefined },
+  },
+  { collection: "app_projects_v2", timestamps: true },
+);
+
+AppProjectV2Schema.index({ workspaceId: 1, updatedAt: -1 });
+// Anonymous share lookup is by token alone, so it must be indexed and unique
+// across the collection — same shape as v1 apps and dashboards.
+AppProjectV2Schema.index(
+  { "publicShare.token": 1 },
+  { unique: true, sparse: true },
+);
+// §10 monorepo: one folder per app in the workspace repo. Sparse until the
+// workspace-monorepo migration backfills slugs on legacy docs.
+AppProjectV2Schema.index(
+  { workspaceId: 1, slug: 1 },
+  { unique: true, sparse: true },
+);
+
+export const AppProjectV2 = mongoose.model<IAppProjectV2>(
+  "AppProjectV2",
+  AppProjectV2Schema,
+);
+
+/**
+ * Which branch a person's sandbox is on. That is the whole record.
+ *
+ * It used to carry `baseSha`, `wipOid`, `revision` and `leaseEpoch` — a mirror
+ * of a shadow-commit ref that tracked uncommitted work, plus a fencing token
+ * to stop a stale sandbox clobbering it. All of that existed because the
+ * sandbox had no git remote, so the server had to model the working copy
+ * instead of letting the working copy be a working copy. The sandbox pushes
+ * now, so git holds the state and there is nothing left to mirror.
+ *
+ * Even the branch here is only a cache, for showing the right thing while the
+ * sandbox is asleep. When it is awake, the sandbox is authoritative: someone
+ * can type `git checkout` in the terminal, and that is a legitimate way to
+ * switch branches, not a state to correct.
+ */
+export interface IAppWorktreeV2 extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  /** @deprecated §10: worktrees are per (workspace, actor); unset on new docs. */
+  projectId?: Types.ObjectId;
+  userId: string;
+  /** Last known branch. The sandbox wins whenever it is running. */
+  branch: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const AppWorktreeV2Schema = new Schema<IAppWorktreeV2>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "AppProjectV2",
+    },
+    userId: { type: String, required: true },
+    branch: { type: String, required: true, default: "main" },
+  },
+  { collection: "app_worktrees_v2", timestamps: true },
+);
+
+// §10 monorepo: ONE worktree per (workspace, actor). The old per-project
+// unique index is dropped by the workspace-monorepo migration.
+AppWorktreeV2Schema.index({ workspaceId: 1, userId: 1 }, { unique: true });
+
+export const AppWorktreeV2 = mongoose.model<IAppWorktreeV2>(
+  "AppWorktreeV2",
+  AppWorktreeV2Schema,
 );

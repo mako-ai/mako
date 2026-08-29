@@ -24,6 +24,8 @@ import {
   hasPendingAgentReview,
 } from "./consoleStore";
 import { useAppStore } from "./appStore";
+import { useAppsV2Store, type AppsV2BoxState } from "./appsV2Store";
+import { focusAppsV2Tab } from "../apps-v2-runtime/shell";
 import { useDashboardStore } from "./dashboardStore";
 import { useDbtStore } from "./dbtStore";
 import { useNotebookStore } from "./notebookStore";
@@ -76,6 +78,18 @@ export type RealtimeEvent =
       updatedBy: string;
       clientId?: string;
       origin: "agent" | "save";
+    }
+  | {
+      type: "app-v2.updated";
+      appId: string;
+      updatedBy?: string;
+      origin:
+        | "commit"
+        | "merge"
+        | "discard"
+        | "checkout"
+        | "lifecycle"
+        | "push";
     }
   | {
       type: "dbt.file.updated";
@@ -139,6 +153,22 @@ export type RealtimeEvent =
     }
   | {
       type: "notebook.tree.updated";
+    }
+  // The (workspace, user) sandbox reported its own state, pushed from inside
+  // the box the moment it changed. Applied directly — no refetch.
+  | {
+      type: "app-v2.box-state";
+      userId: string;
+      state: AppsV2BoxState;
+    }
+  // An agent in this user's chat asked the UI to open an Apps v2 app tab
+  // (app2_open_app). Scoped to the requesting user.
+  | {
+      type: "app-v2.open-app";
+      userId: string;
+      appId: string;
+      slug?: string;
+      title?: string;
     };
 
 export type RealtimeStatus = "idle" | "connecting" | "open" | "reconnecting";
@@ -459,6 +489,42 @@ export const useRealtimeStore = create<RealtimeStore>()(
       })();
     };
 
+    // Apps v2 (git-backed): any durable change (agent turn, WIP flush, merge)
+    // pokes open windows; the store refetches from the API (git is the
+    // authority, so a refetch is always safe — openFile preserves dirty local
+    // edits and only refreshes clean buffers).
+    const handleAppV2Updated = (
+      event: Extract<RealtimeEvent, { type: "app-v2.updated" }>,
+    ) => {
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      const v2 = useAppsV2Store.getState();
+      // Explorer list (titles, new/deleted apps).
+      void v2.fetchApps(workspaceId);
+      if (event.origin === "lifecycle") return;
+      // §10 monorepo: appId "" = workspace-wide (a workspace worktree
+      // changed; it may span apps) — refresh every app this window has
+      // loaded. A non-empty appId scopes to that app as before.
+      const appIds = event.appId ? [event.appId] : Object.keys(v2.filesByApp);
+      for (const appId of appIds) {
+        // Only refresh heavier per-app state when this window has it loaded.
+        if (v2.filesByApp[appId]) {
+          void v2.fetchFiles(workspaceId, appId);
+          void v2.fetchStatus(workspaceId, appId);
+        }
+        if (v2.branchesByApp[appId]) {
+          void v2.fetchBranches(workspaceId, appId);
+        }
+        const selected = v2.selectedFile[appId];
+        if (selected) {
+          const entry = v2.fileContents[`${appId}\u0000${selected}`];
+          if (entry && !entry.dirty) {
+            void v2.openFile(workspaceId, appId, selected);
+          }
+        }
+      }
+    };
+
     // User-scoped dbt events (drafts, checkouts) carry forUserId: they only
     // concern the acting user's windows — a draft is invisible to everyone
     // else, so other users must not react (or even refetch).
@@ -641,6 +707,26 @@ export const useRealtimeStore = create<RealtimeStore>()(
       if (ws) void useNotebookTreeStore.getState().refresh(ws);
     };
 
+    const handleBoxState = (
+      event: Extract<RealtimeEvent, { type: "app-v2.box-state" }>,
+    ) => {
+      useAppsV2Store.getState().applyBoxState(event.userId, event.state);
+    };
+
+    const handleOpenAppV2 = (
+      event: Extract<RealtimeEvent, { type: "app-v2.open-app" }>,
+    ) => {
+      // The user's own agent asked the UI to show an app. Scoped to the
+      // requesting user — a teammate's agent must not steal this focus.
+      const me = get().currentUserId;
+      if (!me || event.userId !== me) return;
+      focusAppsV2Tab(
+        event.appId,
+        event.title ?? event.slug ?? "App",
+        event.slug,
+      );
+    };
+
     const handleEvent = (event: RealtimeEvent) => {
       switch (event.type) {
         case "console.updated":
@@ -648,6 +734,15 @@ export const useRealtimeStore = create<RealtimeStore>()(
           break;
         case "app.updated":
           handleAppUpdated(event);
+          break;
+        case "app-v2.updated":
+          handleAppV2Updated(event);
+          break;
+        case "app-v2.box-state":
+          handleBoxState(event);
+          break;
+        case "app-v2.open-app":
+          handleOpenAppV2(event);
           break;
         case "dashboard.updated":
           handleDashboardUpdated(event);

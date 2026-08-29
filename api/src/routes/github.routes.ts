@@ -13,7 +13,7 @@
 import { Hono, type Context } from "hono";
 import { createHmac, timingSafeEqual } from "crypto";
 
-import { isAllowedOrigin } from "../auth/oauth-proxy";
+import { getRequestOrigin, isAllowedOrigin } from "../auth/oauth-proxy";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { GitHubInstallation } from "../database/workspace-schema";
@@ -21,9 +21,13 @@ import { Types } from "mongoose";
 import {
   exchangeInstallUserToken,
   getInstallationMeta,
+  listUserInstallations,
   userControlsInstallation,
 } from "../integrations/github/app-auth";
-import { verifyInstallState } from "../integrations/github/install-state";
+import {
+  peekInstallState,
+  verifyInstallState,
+} from "../integrations/github/install-state";
 import {
   getGitHubAppWebhookSecret,
   isGitHubAppUserAuthConfigured,
@@ -31,10 +35,45 @@ import {
 import { handlePullRequestEvent, handlePushEvent } from "../dbt/dbt-ci.service";
 import { workspaceService } from "../services/workspace.service";
 import { loggers } from "../logging";
+import {
+  deployAppsForPush,
+  workspaceIdFromCloudRepo,
+} from "../apps-v2/deploy-on-push";
+import { ensureLocalRepo, fetchFromCloud } from "../apps-v2/cloud-repo.service";
+import { findWorkspaceIdByRepoBinding } from "../services/workspace-repos.service";
+import { repoDirFor } from "../apps-v2/repository.service";
 
 const logger = loggers.api("github");
 
 export const githubRoutes = new Hono();
+
+// Cross-environment relay — MUST run before auth. The GitHub App has a single
+// callback URL (production's), so installs started on localhost or a PR
+// preview land here without a session and would 401 before the handler even
+// runs. The state payload embeds the initiating environment's clientUrl; when
+// that names a DIFFERENT allowed Mako origin, bounce the entire callback
+// (installation_id, code, state) there. The receiving environment — the one
+// that actually minted the state — then performs the real verification
+// (signature with its own secret, session, admin role, install ownership) and
+// binds into its own database. Mirrors the login OAuth proxy (oauth-proxy.ts).
+// The relay itself grants nothing: a forged state just gets bounced to an
+// allowed origin whose verification then rejects it.
+githubRoutes.use("/setup", async (c, next) => {
+  if (c.req.query("relayed")) return next(); // never relay twice
+  const peeked = peekInstallState(c.req.query("state"));
+  if (!peeked?.clientUrl || !isAllowedOrigin(peeked.clientUrl)) return next();
+  const targetOrigin = new URL(peeked.clientUrl).origin;
+  if (targetOrigin === getRequestOrigin(c)) return next();
+  const target = new URL(`${targetOrigin}/api/github/setup`);
+  for (const [key, value] of Object.entries(c.req.query())) {
+    target.searchParams.set(key, value);
+  }
+  target.searchParams.set("relayed", "1");
+  logger.info("Relaying GitHub install callback to its origin", {
+    targetOrigin,
+  });
+  return c.redirect(target.toString());
+});
 
 // Auth only the interactive install callback. The webhook is unauthenticated
 // (GitHub calls it) and instead verified by HMAC signature below.
@@ -67,8 +106,13 @@ function verifySignature(
 
 interface PushPayload {
   ref?: string;
+  before?: string;
   after?: string;
-  repository?: { name?: string; owner?: { login?: string } };
+  repository?: {
+    name?: string;
+    owner?: { login?: string };
+    default_branch?: string;
+  };
   installation?: { id?: number };
 }
 
@@ -93,6 +137,48 @@ interface InstallationPayload {
  * pull_request (Slim CI), and installation (cleanup) events. Work is detached
  * so we ack within GitHub's delivery timeout.
  */
+/**
+ * Deploy any Apps v2 apps touched by a push to the workspace repo's default
+ * branch. No-op for repos that are not workspace repos.
+ */
+async function handleAppsV2Push(input: {
+  owner: string;
+  repo: string;
+  branch: string;
+  before?: string;
+  after?: string;
+  defaultBranch?: string;
+}): Promise<void> {
+  const { owner, repo, branch, before, after, defaultBranch } = input;
+  if (!after) return;
+  // Mako-cloud repos encode the workspace id in their name; CONNECTED repos
+  // (§13.17: the customer's own repo as the durable mirror) are matched
+  // through the workspace's binding.
+  const workspaceId =
+    workspaceIdFromCloudRepo(repo) ??
+    (await findWorkspaceIdByRepoBinding(owner, repo));
+  if (!workspaceId) return;
+  if (branch !== (defaultBranch || "main")) return;
+
+  // The bare repo is a cache; the commit arrived at GitHub, so pull it in
+  // before trying to build it — and on a fresh serverless instance the cache
+  // may not exist at all yet.
+  await ensureLocalRepo(workspaceId);
+  await fetchFromCloud(workspaceId, branch);
+  const deployed = await deployAppsForPush({
+    workspaceId,
+    repoDir: repoDirFor(workspaceId),
+    before,
+    after,
+  });
+  if (deployed.length > 0) {
+    logger.info("Deployed apps from a push to main", {
+      workspaceId,
+      apps: deployed,
+    });
+  }
+}
+
 githubRoutes.post("/webhook", async (c: Context) => {
   const secret = getGitHubAppWebhookSecret();
   if (!secret) {
@@ -125,11 +211,26 @@ githubRoutes.post("/webhook", async (c: Context) => {
         const name = p.repository?.name;
         const ref = p.ref ?? "";
         if (owner && name && ref.startsWith("refs/heads/")) {
+          const branch = ref.slice("refs/heads/".length);
           await handlePushEvent({
             owner,
             repo: name,
-            branch: ref.slice("refs/heads/".length),
+            branch,
             installationId: p.installation?.id,
+          });
+          // Apps v2: `main` is production, so putting a commit on it IS the
+          // act of deploying — whether that came from a local `git push`, a
+          // merge on GitHub, or the Publish button. Handled here because
+          // GitHub is the one point all of those converge on.
+          await handleAppsV2Push({
+            owner,
+            repo: name,
+            branch,
+            before: p.before,
+            after: p.after,
+            defaultBranch: p.repository?.default_branch,
+          }).catch(error => {
+            logger.error("Apps v2 deploy-on-push failed", { error });
           });
         }
       } else if (event === "pull_request") {
@@ -187,7 +288,7 @@ githubRoutes.get("/setup", async (c: AuthenticatedContext) => {
     // Not logged in (cookie missing) — send to login, then back to the app.
     return c.redirect(`${redirectBase}/login`);
   }
-  if (!installationIdRaw || !state) {
+  if (!state) {
     return c.redirect(`${redirectBase}/?transformGithub=error`);
   }
   const { workspaceId } = state;
@@ -202,6 +303,58 @@ githubRoutes.get("/setup", async (c: AuthenticatedContext) => {
   const isAdmin = await workspaceService.isAdmin(workspaceId, user.id);
   if (!isAdmin) {
     return c.redirect(`${redirectBase}/?transformGithub=forbidden`);
+  }
+
+  // Sync-existing flow: no installation_id means this is the callback of the
+  // user-authorization OAuth flow (github.com/login/oauth/authorize), not an
+  // install. GitHub never fires the install callback for an account where the
+  // app is ALREADY installed (its install page short-circuits to
+  // "Configure"), so this is the only way to bind such installations: use
+  // the code to list every installation the user controls and record the
+  // ones this workspace is missing. Ownership proof is inherent — the list
+  // comes from the user's own token.
+  const syncCode = c.req.query("code");
+  if (!installationIdRaw && syncCode) {
+    try {
+      const userToken = await exchangeInstallUserToken(syncCode);
+      const controlled = await listUserInstallations(userToken);
+      for (const inst of controlled) {
+        await GitHubInstallation.findOneAndUpdate(
+          {
+            workspaceId: new Types.ObjectId(workspaceId),
+            installationId: inst.id,
+          },
+          {
+            $set: {
+              accountLogin: inst.accountLogin,
+              accountType: inst.accountType,
+              repositorySelection: inst.repositorySelection,
+            },
+            $setOnInsert: { createdBy: user.id },
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true },
+        );
+      }
+      logger.info("GitHub installations synced from user authorization", {
+        workspaceId,
+        count: controlled.length,
+      });
+      // The sync runs in a popup the Settings page opened — don't load the
+      // whole SPA in it, just close it. Refocusing the opener triggers the
+      // Settings page's focus-refresh, which picks up the synced accounts.
+      return c.html(
+        `<!doctype html><html><body style="font-family:system-ui;padding:2rem;text-align:center">
+<p>GitHub accounts synced — you can close this window.</p>
+<script>window.close();</script>
+</body></html>`,
+      );
+    } catch (error) {
+      logger.error("Failed to sync GitHub installations", { error });
+      return c.redirect(`${redirectBase}/?transformGithub=error`);
+    }
+  }
+  if (!installationIdRaw) {
+    return c.redirect(`${redirectBase}/?transformGithub=error`);
   }
 
   const installationId = Number(installationIdRaw);
@@ -259,10 +412,23 @@ githubRoutes.get("/setup", async (c: AuthenticatedContext) => {
       },
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
+    // GitHub allows at most one live installation of this App per account, so
+    // any other record for the same workspace + account is provably stale —
+    // left behind by an uninstall/reinstall cycle whose webhook never reached
+    // this environment's database (webhooks fan out to one configured URL,
+    // not every dev/staging/preview deployment). Prune them here so
+    // reinstalling through the UI is a real fix, not just a second, visually
+    // identical entry in the account picker.
+    const { deletedCount } = await GitHubInstallation.deleteMany({
+      workspaceId: new Types.ObjectId(workspaceId),
+      accountLogin: meta.accountLogin,
+      installationId: { $ne: installationId },
+    });
     logger.info("GitHub App installation recorded", {
       workspaceId,
       installationId,
       setupAction,
+      staleInstallationsRemoved: deletedCount,
     });
   } catch (error) {
     logger.error("Failed to record GitHub installation", { error });

@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Snackbar } from "@mui/material";
 import { useUIStore } from "../store/uiStore";
 import {
   selectTabBySettingsSection,
@@ -6,6 +7,12 @@ import {
 } from "../store/consoleStore";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useAppStore } from "../store/appStore";
+import { useAppsV2Store } from "../store/appsV2Store";
+import {
+  closeAppsV2TabsFor,
+  focusAppsV2FileTab,
+  focusAppsV2Tab,
+} from "../apps-v2-runtime/shell";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { SECTION_LABELS, isSettingsSection } from "../pages/settings/sections";
@@ -45,6 +52,9 @@ import { appLocationFromHostSearch } from "../app-runtime/app-location";
  *    unnecessary re-renders.
  */
 export function UrlSync() {
+  // Dead-link feedback: a URL that no longer resolves (deleted app) used to
+  // silently rewrite to "/" — the page just "lost" what the user asked for.
+  const [deadLinkNotice, setDeadLinkNotice] = useState<string | null>(null);
   const { currentWorkspace } = useWorkspace();
   const { user } = useAuth();
   const loadConsole = useConsoleStore(state => state.loadConsole);
@@ -91,6 +101,21 @@ export function UrlSync() {
 
     const path = window.location.pathname;
 
+    // Reload vs deep link, and they deserve opposite answers. The URL follows
+    // the active TAB, so on a plain reload the handlers below would move the
+    // left pane to the tab's home view — silently overriding the persisted
+    // pane, which is how reloading with an app tab open bounced you off the
+    // Source Control panel (and, less visibly, off every other view). A
+    // reload keeps your workbench where it was; a link someone sent you still
+    // takes you to the thing.
+    const isReload =
+      (
+        performance.getEntriesByType(
+          "navigation",
+        )[0] as PerformanceNavigationTiming
+      )?.type === "reload";
+    const paneBeforeHydration = useUIStore.getState().leftPane;
+
     // Route patterns live in lib/tab-routing.ts next to the URL builders so
     // the two directions stay in sync (most specific matched first below).
     const consoleMatch = path.match(TAB_DEEP_LINK_PATTERNS.console);
@@ -104,6 +129,8 @@ export function UrlSync() {
     const appFileMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-file"]);
     const appBindingMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-binding"]);
     const appMatch = path.match(TAB_DEEP_LINK_PATTERNS.app);
+    const appV2FileMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-v2-file"]);
+    const appV2Match = path.match(TAB_DEEP_LINK_PATTERNS["app-v2"]);
     const dbtFileMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-file"]);
     const dbtJobMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-job"]);
     const dbtRunsMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-runs"]);
@@ -271,6 +298,55 @@ export function UrlSync() {
             focusAppTab(appId, app?.title || "App", appLocation);
           });
       }
+    } else if (appV2FileMatch) {
+      // /a2/:appId/file/:path — Apps v2 file editor
+      const appId = appV2FileMatch[1];
+      const filePath = decodePathSegments(appV2FileMatch[2]);
+      setLeftPane("apps-v2");
+      void useAppsV2Store
+        .getState()
+        .fetchApps(currentWorkspace.id)
+        .then(() => {
+          const app = useAppsV2Store
+            .getState()
+            .apps.find(a => a.id === appId || a.slug === appId);
+          if (!app) {
+            closeAppsV2TabsFor(appId);
+            window.history.replaceState(null, "", "/");
+            setDeadLinkNotice(
+              "That app link doesn't resolve anymore — the app may have been deleted or renamed.",
+            );
+            return;
+          }
+          focusAppsV2FileTab(app.id, filePath, app.slug);
+        });
+    } else if (appV2Match) {
+      // /a2/:appId — Apps v2 (git-backed, experimental)
+      const appId = appV2Match[1];
+      setLeftPane("apps-v2");
+      const store = useAppsV2Store.getState();
+      void store.fetchApps(currentWorkspace.id).then(() => {
+        // The path segment may be a slug (the app's folder in the repo) or a
+        // legacy Mongo id. Resolve either; the outgoing sync then rewrites the
+        // URL to the slug form, so old links upgrade themselves.
+        const app = useAppsV2Store
+          .getState()
+          .apps.find(a => a.id === appId || a.slug === appId);
+        if (!app) {
+          // The link points at an app that is gone, or lives in another
+          // workspace. Opening a tab anyway rendered the whole workspace view
+          // — breadcrumb, terminal, a live Publish button — around nothing,
+          // and reloading restored the same dead id, so the page looked
+          // permanently stuck. Clear it and fall back to the list instead.
+          closeAppsV2TabsFor(appId);
+          window.history.replaceState(null, "", "/");
+          setDeadLinkNotice(
+            "That app link doesn't resolve anymore — the app may have been deleted or renamed.",
+          );
+          return;
+        }
+        focusAppsV2Tab(app.id, app.title, app.slug);
+      });
     } else if (dbtFileMatch) {
       // /x/:projectId/file/:path
       const projectId = dbtFileMatch[1];
@@ -360,6 +436,12 @@ export function UrlSync() {
       setLeftPane("settings");
     }
 
+    if (isReload) {
+      // The tab handlers above still opened/focused the right tab; only the
+      // pane choice is restored.
+      setLeftPane(paneBeforeHydration);
+    }
+
     isHydrated.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentWorkspace, user]); // Only run when workspace is ready and user is authenticated
@@ -394,5 +476,14 @@ export function UrlSync() {
     }
   }, [activeTabPath, activeView, user]);
 
-  return null; // This component renders nothing
+  // Renders nothing except the dead-link notice.
+  return (
+    <Snackbar
+      open={deadLinkNotice !== null}
+      autoHideDuration={6000}
+      onClose={() => setDeadLinkNotice(null)}
+      message={deadLinkNotice ?? ""}
+      anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+    />
+  );
 }

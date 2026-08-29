@@ -4,6 +4,7 @@
  * Uses agent registry for multi-agent support
  */
 
+import { Types } from "mongoose";
 import { createRoute, z } from "@hono/zod-openapi";
 import { ObjectId } from "mongodb";
 import {
@@ -40,6 +41,7 @@ import {
 } from "../agent-lib/ai-models";
 import { getWorkspaceGatewayModelListings } from "../services/model-catalog.service";
 import {
+  AppWorktreeV2,
   Workspace,
   DatabaseConnection,
   Chat,
@@ -88,6 +90,7 @@ import {
 } from "../services/resumable-stream.service";
 import { hasAttachedClients } from "../services/realtime-presence.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
+import { commitAgentTurn } from "../apps-v2/worktree.service";
 import { reportPubSubFailure } from "../services/pubsub.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
@@ -707,10 +710,21 @@ agentRoutes.openapi(
       }
     }
 
+    // The caller's Apps v2 checkout branch, so the agent starts oriented
+    // instead of spending a tool call on `git status`. The doc is synced by
+    // every exec and checkout; a missing doc simply means "main".
+    const appsV2Worktree = await AppWorktreeV2.findOne(
+      { workspaceId: new Types.ObjectId(workspaceId), userId: actorId },
+      { branch: 1 },
+    )
+      .lean()
+      .catch(() => null);
+
     // Build agent context
     const agentContext: AgentContext = {
       workspaceId,
       chatId,
+      appsV2Branch: appsV2Worktree?.branch ?? undefined,
       activeView,
       activeExplorer,
       userId: actorId,
@@ -1218,6 +1232,27 @@ agentRoutes.openapi(
                   requestExecutionIds.clear();
                 }
                 const durationMs = Date.now() - startTime;
+
+                // Apps v2 (Cursor-cloud model): turn any WIP the agent
+                // accumulated on this conversation's app branches into one
+                // commit per turn. No-op unless the turn touched an Apps v2
+                // worktree; never throws.
+                if (!isAborted) {
+                  try {
+                    const lastUserText = [...allMessages]
+                      .reverse()
+                      .find(m => m.role === "user")
+                      ?.parts?.filter(
+                        (p): p is { type: "text"; text: string } =>
+                          (p as { type?: string }).type === "text",
+                      )
+                      .map(p => p.text)
+                      .join(" ");
+                    await commitAgentTurn(workspaceId, actorId, lastUserText);
+                  } catch (err) {
+                    logger.warn("Apps v2 turn commit failed", { error: err });
+                  }
+                }
 
                 // Extract detailed per-step usage from result.steps
                 let steps: Array<Record<string, unknown>> = [];

@@ -59,6 +59,8 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   const [state, setState] = useState<OnboardingState>("loading");
   const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
   const [workspaceName, setWorkspaceName] = useState("");
+  // The prompt users kept typing INTO the name field — given its own home.
+  const [buildIntent, setBuildIntent] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [acceptingToken, setAcceptingToken] = useState<string | null>(null);
   const [qualificationData, setQualificationData] =
@@ -184,6 +186,19 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       });
       setCreatedWorkspaceId(workspace.id);
 
+      // Their first prompt belongs in the chat, not in the workspace name —
+      // hand it to the composer, which prefills from this key on first load.
+      if (buildIntent.trim()) {
+        try {
+          localStorage.setItem(
+            `mako-chat-prefill:${workspace.id}`,
+            buildIntent.trim(),
+          );
+        } catch {
+          // Best effort.
+        }
+      }
+
       // Now save the real workspace ID (for page refresh resume)
       startOnboarding(workspace.id);
 
@@ -201,6 +216,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     }
   }, [
     workspaceName,
+    buildIntent,
     createWorkspaceForOnboarding,
     startOnboarding,
     completeOnboarding,
@@ -490,10 +506,14 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       <Stack spacing={2}>
         <TextField
           fullWidth
-          label="Workspace Name"
+          label="Workspace name"
           placeholder="e.g., Acme Corp, Engineering Team, Personal"
           value={workspaceName}
           onChange={e => setWorkspaceName(e.target.value)}
+          // Mirrors the API's WORKSPACE_NAME_MAX: a name is a label, not a
+          // document — unbounded input here is how pasted prompts became
+          // workspace names.
+          inputProps={{ maxLength: 80 }}
           disabled={state === "creating" || acceptingToken !== null}
           onKeyDown={e => {
             if (e.key === "Enter" && workspaceName.trim()) {
@@ -501,7 +521,18 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
             }
           }}
           autoFocus={!hasInvites}
-          helperText="You can always change this later in settings"
+          helperText="A short label for your team or company — you can change it later"
+        />
+        <TextField
+          fullWidth
+          multiline
+          minRows={2}
+          label="What do you want to build? (optional)"
+          placeholder="e.g., A dashboard of weekly sales by region from our Postgres"
+          value={buildIntent}
+          onChange={e => setBuildIntent(e.target.value)}
+          disabled={state === "creating" || acceptingToken !== null}
+          helperText="This becomes your first message to the AI after setup — describe it in as much detail as you like"
         />
         <Button
           variant={hasInvites ? "outlined" : "contained"}

@@ -12,6 +12,7 @@
  * API instance forwards events to its own connected SSE clients
  * (routes/realtime.ts).
  */
+import type { BoxState } from "../apps-v2/box-state.service";
 import {
   createPubSubPublisher,
   createPubSubSubscriber,
@@ -83,6 +84,22 @@ export type RealtimeEvent =
       updatedBy: string;
       clientId?: string;
       origin: "agent" | "save";
+    }
+  // Apps v2 (git-backed): any durable change — WIP flush, commit, merge,
+  // discard, create/delete — pokes open windows to refetch from the API.
+  | {
+      type: "app-v2.updated";
+      appId: string;
+      /** Worktree actor that made the change (user id or `chat:<chatId>`). */
+      updatedBy?: string;
+      /** Coarse reason, for client-side refetch scoping. */
+      origin:
+        | "commit"
+        | "merge"
+        | "discard"
+        | "checkout"
+        | "lifecycle"
+        | "push";
     }
   | {
       type: "dbt.file.updated";
@@ -166,6 +183,22 @@ export type RealtimeEvent =
   // Explorer tree changed (folder CRUD, move, create, delete).
   | {
       type: "notebook.tree.updated";
+    }
+  // The (workspace, user) sandbox reported its own state — branch, dirty
+  // files, dev servers — pushed from inside the box (apps-v2/box-state).
+  | {
+      type: "app-v2.box-state";
+      userId: string;
+      state: BoxState;
+    }
+  // An agent in this user's chat asked their UI to open an Apps v2 app tab
+  // (app2_open_app). Pure client-side effect, scoped to the requesting user.
+  | {
+      type: "app-v2.open-app";
+      userId: string;
+      appId: string;
+      slug?: string;
+      title?: string;
     };
 
 function channelFor(workspaceId: string): string {

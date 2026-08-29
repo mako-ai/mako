@@ -58,6 +58,34 @@ export function signInstallState(input: {
 }
 
 /**
+ * Read a state token's payload WITHOUT verifying its signature.
+ *
+ * Exists only for the cross-environment relay on /api/github/setup: the
+ * GitHub App has ONE callback URL, so installs started on localhost or a PR
+ * preview land on production, which cannot verify a state signed with a
+ * different SESSION_SECRET. The relay peeks at the embedded clientUrl and,
+ * when it names a DIFFERENT allowed Mako origin, bounces the whole callback
+ * there — where full verification (signature, session, admin role, install
+ * ownership) then runs. Never make an authorization decision from this.
+ */
+export function peekInstallState(
+  state: string | undefined,
+): InstallStatePayload | null {
+  if (!state) return null;
+  const dot = state.indexOf(".");
+  if (dot <= 0) return null;
+  try {
+    const payload = JSON.parse(
+      Buffer.from(state.slice(0, dot), "base64").toString("utf8"),
+    ) as InstallStatePayload;
+    if (!payload.workspaceId || typeof payload.exp !== "number") return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Verify a state token. Returns the payload only when the signature is valid
  * and the token has not expired; otherwise `null`.
  */

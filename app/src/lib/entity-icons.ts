@@ -17,6 +17,7 @@
 
 import {
   AppWindow,
+  AppWindowMac,
   ArrowLeftRight,
   BookOpen,
   Bot,
@@ -28,6 +29,8 @@ import {
   Database,
   FileCode,
   GitBranch,
+  Github,
+  Server,
   History,
   KeySquare,
   MessageCircleMore,
@@ -45,8 +48,10 @@ import {
   Terminal,
   Users,
   Wallet,
+  GitCompare,
   type LucideIcon,
 } from "lucide-react";
+import DbtIcon from "../components/icons/DbtIcon";
 import type {
   LeftPaneView,
   SettingsSection,
@@ -58,11 +63,16 @@ export const EXPLORER_ICONS = {
   databases: Database,
   consoles: SquareChevronRight,
   flows: ArrowLeftRight,
-  dbt: GitBranch,
+  // The dbt mark itself (the extension's activity-bar icon), not a generic
+  // git glyph — GitBranch now belongs to Source Control, where it means what
+  // it says.
+  dbt: DbtIcon,
+  "source-control": GitBranch,
   connectors: Plug,
   dashboards: ChartPie,
   apps: AppWindow,
   notebooks: Notebook,
+  "apps-v2": AppWindowMac,
   settings: Settings,
 } as const satisfies Record<LeftPaneView, LucideIcon>;
 
@@ -86,6 +96,9 @@ export const TAB_KIND_ICONS = {
   app: AppWindow,
   "app-file": FileCode,
   "app-binding": Database,
+  "app-v2": AppWindowMac,
+  "app-v2-file": FileCode,
+  "app-v2-diff": GitCompare,
   plan: ClipboardList,
   "dbt-file": FileCode,
   "dbt-job": CalendarClock,
@@ -111,5 +124,7 @@ export const SETTINGS_SECTION_ICONS = {
   members: Users,
   "api-keys": KeySquare,
   appearance: Palette,
+  github: Github,
+  sandbox: Server,
   admin: ShieldCheck,
 } as const satisfies Record<SettingsSection, LucideIcon>;

@@ -188,6 +188,17 @@ jobs:
       INNGEST_EVENT_KEY: ${{ secrets.INNGEST_BRANCH_EVENT_KEY || vars.INNGEST_EVENT_KEY }}
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_BRANCH_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+      # Apps v2 sandboxes (E2B Firecracker microVMs).
+      E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+      APPS_V2_SANDBOX_PROVIDER: e2b
+      APPS_V2_E2B_TEMPLATE: mako-apps-v2
+      # Apps v2 cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
+      # All previews share the staging DB, so they share the "staging" prefix:
+      # same workspace -> same repo regardless of which PR created it.
+      MAKO_CLOUD_GITHUB_ORG: ${{ vars.MAKO_CLOUD_GITHUB_ORG }}
+      MAKO_CLOUD_GITHUB_APP_ID: ${{ vars.MAKO_CLOUD_GITHUB_APP_ID }}
+      MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY }}
+      MAKO_CLOUD_REPO_PREFIX: staging
       TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
@@ -205,7 +216,6 @@ jobs:
       SENDGRID_VERIFICATION_TEMPLATE_ID: ${{ vars.SENDGRID_VERIFICATION_TEMPLATE_ID }}
       SESSION_DURATION: ${{ vars.SESSION_DURATION }}
       SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
-      VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
       VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
       DEMO_DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
       # Notebook GKE kernel plane — DEV cluster (mako-ai-dev), since previews
@@ -285,7 +295,6 @@ jobs:
           CLIENT_URL: ${{ env.CLIENT_URL }}
           NODE_ENV: production
           VITE_API_URL: ${{ env.VITE_API_URL }}
-          VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
           VITE_GTM_ID: ${{ env.VITE_GTM_ID }}
           VITE_BUILD_ID: ${{ needs.detect-changes.outputs.pr_sha || github.sha }}
 
@@ -606,6 +615,13 @@ jobs:
             --set-env-vars INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY} \
             --set-env-vars NODE_ENV=production \
             --set-env-vars AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY} \
+            --set-env-vars E2B_API_KEY=${E2B_API_KEY} \
+            --set-env-vars APPS_V2_SANDBOX_PROVIDER=${APPS_V2_SANDBOX_PROVIDER} \
+            --set-env-vars APPS_V2_E2B_TEMPLATE=${APPS_V2_E2B_TEMPLATE} \
+            --set-env-vars MAKO_CLOUD_GITHUB_ORG=${MAKO_CLOUD_GITHUB_ORG} \
+            --set-env-vars MAKO_CLOUD_GITHUB_APP_ID=${MAKO_CLOUD_GITHUB_APP_ID} \
+            --set-env-vars "^|^MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY=${MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY}" \
+            --set-env-vars MAKO_CLOUD_REPO_PREFIX=${MAKO_CLOUD_REPO_PREFIX} \
             --set-env-vars TAVILY_API_KEY=${TAVILY_API_KEY} \
             --set-env-vars LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY} \
             --set-env-vars LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY} \
@@ -852,6 +868,15 @@ jobs:
       INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+      # Apps v2 sandboxes (E2B Firecracker microVMs).
+      E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+      APPS_V2_SANDBOX_PROVIDER: e2b
+      APPS_V2_E2B_TEMPLATE: mako-apps-v2
+      # Apps v2 cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
+      MAKO_CLOUD_GITHUB_ORG: ${{ vars.MAKO_CLOUD_GITHUB_ORG }}
+      MAKO_CLOUD_GITHUB_APP_ID: ${{ vars.MAKO_CLOUD_GITHUB_APP_ID }}
+      MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY }}
+      MAKO_CLOUD_REPO_PREFIX: ws
       TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
@@ -869,7 +894,6 @@ jobs:
       SESSION_DURATION: ${{ vars.SESSION_DURATION }}
       SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
       VITE_API_URL: https://app.mako.ai/api
-      VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
       VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
       DEMO_DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
       # Notebook GKE kernel plane (see deploy/notebook-kernels).
@@ -945,7 +969,6 @@ jobs:
           CLIENT_URL: ${{ env.CLIENT_URL }}
           NODE_ENV: production
           VITE_API_URL: ${{ env.VITE_API_URL }}
-          VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
           VITE_GTM_ID: ${{ env.VITE_GTM_ID }}
           VITE_BUILD_ID: ${{ github.sha }}
 
@@ -1040,6 +1063,13 @@ jobs:
             --set-env-vars INNGEST_SERVE_PATH=/api/inngest \
             --set-env-vars NODE_ENV=production \
             --set-env-vars AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY} \
+            --set-env-vars E2B_API_KEY=${E2B_API_KEY} \
+            --set-env-vars APPS_V2_SANDBOX_PROVIDER=${APPS_V2_SANDBOX_PROVIDER} \
+            --set-env-vars APPS_V2_E2B_TEMPLATE=${APPS_V2_E2B_TEMPLATE} \
+            --set-env-vars MAKO_CLOUD_GITHUB_ORG=${MAKO_CLOUD_GITHUB_ORG} \
+            --set-env-vars MAKO_CLOUD_GITHUB_APP_ID=${MAKO_CLOUD_GITHUB_APP_ID} \
+            --set-env-vars "^|^MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY=${MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY}" \
+            --set-env-vars MAKO_CLOUD_REPO_PREFIX=${MAKO_CLOUD_REPO_PREFIX} \
             --set-env-vars TAVILY_API_KEY=${TAVILY_API_KEY} \
             --set-env-vars LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY} \
             --set-env-vars LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY} \

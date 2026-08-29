@@ -1,4 +1,4 @@
-import React, { useMemo, useCallback, useEffect } from "react";
+import React, { useMemo, useCallback, useEffect, useRef } from "react";
 import {
   Box,
   Typography,
@@ -32,6 +32,7 @@ import { useTheme } from "../contexts/ThemeContext";
 import { useIsMobile } from "../hooks/useIsMobile";
 import type { MakoChartSpec } from "../lib/chart-spec";
 import ResultsChart from "./ResultsChart";
+import VSScrollArea, { attachOverlayScrollbars } from "./VSScrollArea";
 import {
   onRenderDebug,
   useRenderCount,
@@ -619,6 +620,35 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
     columnCount: columns.length,
   });
 
+  // The DataGrid owns its scroller (.MuiDataGrid-virtualScroller), so the
+  // zero-gutter overlay attaches to that element in place — viewport-mode
+  // init, no DOM restructuring, virtualization keeps reading scrollTop from
+  // its own node. Retry briefly: the grid mounts its internals a frame or
+  // two after this effect first runs.
+  const gridAreaRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (viewMode !== "table" || !results) return;
+    let destroy: (() => void) | null = null;
+    let cancelled = false;
+    let attempts = 0;
+    const tryAttach = () => {
+      if (cancelled) return;
+      const scroller = gridAreaRef.current?.querySelector(
+        ".MuiDataGrid-virtualScroller",
+      );
+      if (scroller instanceof HTMLElement) {
+        destroy = attachOverlayScrollbars(scroller);
+      } else if (attempts++ < 20) {
+        requestAnimationFrame(tryAttach);
+      }
+    };
+    tryAttach();
+    return () => {
+      cancelled = true;
+      destroy?.();
+    };
+  }, [viewMode, results?.executedAt]);
+
   if (!results) {
     return (
       <Box
@@ -700,92 +730,92 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
 
   const cardRows = rows.slice(0, MOBILE_CARD_LIMIT);
   const cardsView = (
-    <Box
-      sx={{
-        height: "100%",
-        overflow: "auto",
-        p: 1,
-        display: "flex",
-        flexDirection: "column",
-        gap: 1,
-      }}
-    >
-      {cardRows.map((row, index) => {
-        const [titleCol, ...restCols] = dataColumns;
-        const titleRaw = titleCol ? row[titleCol.field] : undefined;
-        const title =
-          titleRaw === null || titleRaw === undefined || titleRaw === ""
-            ? `Row ${index + 1}`
-            : typeof titleRaw === "object"
-              ? JSON.stringify(titleRaw)
-              : String(titleRaw);
-        return (
-          <Box
-            key={row.id ?? index}
-            sx={{
-              border: 1,
-              borderColor: "divider",
-              borderRadius: 1,
-              p: 1.5,
-              backgroundColor: "background.paper",
-            }}
-          >
-            <Typography
-              variant="subtitle2"
+    <VSScrollArea style={{ height: "100%" }}>
+      <Box
+        sx={{
+          p: 1,
+          display: "flex",
+          flexDirection: "column",
+          gap: 1,
+        }}
+      >
+        {cardRows.map((row, index) => {
+          const [titleCol, ...restCols] = dataColumns;
+          const titleRaw = titleCol ? row[titleCol.field] : undefined;
+          const title =
+            titleRaw === null || titleRaw === undefined || titleRaw === ""
+              ? `Row ${index + 1}`
+              : typeof titleRaw === "object"
+                ? JSON.stringify(titleRaw)
+                : String(titleRaw);
+          return (
+            <Box
+              key={row.id ?? index}
               sx={{
-                fontWeight: 700,
-                mb: restCols.length ? 1 : 0,
-                wordBreak: "break-word",
+                border: 1,
+                borderColor: "divider",
+                borderRadius: 1,
+                p: 1.5,
+                backgroundColor: "background.paper",
               }}
             >
-              {title}
-            </Typography>
-            {restCols.length > 0 && (
-              <Box
+              <Typography
+                variant="subtitle2"
                 sx={{
-                  display: "grid",
-                  gridTemplateColumns: "minmax(0, 45%) 1fr",
-                  columnGap: 1.5,
-                  rowGap: 0.75,
-                  alignItems: "start",
+                  fontWeight: 700,
+                  mb: restCols.length ? 1 : 0,
+                  wordBreak: "break-word",
                 }}
               >
-                {restCols.map(col => (
-                  <React.Fragment key={col.field}>
-                    <Typography
-                      variant="caption"
-                      color="text.secondary"
-                      sx={{ wordBreak: "break-word", pt: 0.25 }}
-                    >
-                      {col.headerName ?? col.field}
-                    </Typography>
-                    <Box
-                      sx={{
-                        minWidth: 0,
-                        display: "flex",
-                        justifyContent: "flex-end",
-                      }}
-                    >
-                      {renderCardValue(row[col.field])}
-                    </Box>
-                  </React.Fragment>
-                ))}
-              </Box>
-            )}
-          </Box>
-        );
-      })}
-      {rows.length > MOBILE_CARD_LIMIT && (
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          sx={{ textAlign: "center", py: 1 }}
-        >
-          Showing the first {MOBILE_CARD_LIMIT} of {rows.length} rows — switch
-          to Table view to see all.
-        </Typography>
-      )}
-    </Box>
+                {title}
+              </Typography>
+              {restCols.length > 0 && (
+                <Box
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: "minmax(0, 45%) 1fr",
+                    columnGap: 1.5,
+                    rowGap: 0.75,
+                    alignItems: "start",
+                  }}
+                >
+                  {restCols.map(col => (
+                    <React.Fragment key={col.field}>
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ wordBreak: "break-word", pt: 0.25 }}
+                      >
+                        {col.headerName ?? col.field}
+                      </Typography>
+                      <Box
+                        sx={{
+                          minWidth: 0,
+                          display: "flex",
+                          justifyContent: "flex-end",
+                        }}
+                      >
+                        {renderCardValue(row[col.field])}
+                      </Box>
+                    </React.Fragment>
+                  ))}
+                </Box>
+              )}
+            </Box>
+          );
+        })}
+        {rows.length > MOBILE_CARD_LIMIT && (
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ textAlign: "center", py: 1 }}
+          >
+            Showing the first {MOBILE_CARD_LIMIT} of {rows.length} rows — switch
+            to Table view to see all.
+          </Typography>
+        )}
+      </Box>
+    </VSScrollArea>
   );
 
   // ── Mobile answer-first summary band ──────────────────────────────────
@@ -946,6 +976,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
 
       {/* Results content */}
       <Box
+        ref={gridAreaRef}
         sx={{
           flexGrow: 1,
           overflow: "hidden",

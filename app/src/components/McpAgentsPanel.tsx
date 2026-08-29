@@ -25,8 +25,8 @@ import {
   LinkOff as RevokeIcon,
 } from "@mui/icons-material";
 import { formatDistanceToNow } from "date-fns";
-import { api, unwrapBody } from "../api";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useMcpStore } from "../store/mcpStore";
 import {
   selectTabBySettingsSection,
   useConsoleStore,
@@ -311,6 +311,8 @@ export function McpConnectedAgents({
 }) {
   const { currentWorkspace, loading: workspaceLoading } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
+  const fetchMcpConnections = useMcpStore(s => s.fetchMcpConnections);
+  const revokeMcpConnection = useMcpStore(s => s.revokeMcpConnection);
   const [connections, setConnections] = useState<McpConnection[] | null>(null);
   const [canSeeAll, setCanSeeAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -318,11 +320,9 @@ export function McpConnectedAgents({
   const fetchConnections = useCallback(async () => {
     if (!workspaceId) return;
     try {
-      const response = unwrapBody(
-        await api.GET("/api/workspaces/{id}/mcp-connections", {
-          params: { path: { id: workspaceId } },
-        }),
-      ) as McpConnectionsResponse;
+      const response = (await fetchMcpConnections(
+        workspaceId,
+      )) as unknown as McpConnectionsResponse;
       setConnections(response.connections ?? []);
       setCanSeeAll(Boolean(response.canSeeAll));
       setError(null);
@@ -331,7 +331,7 @@ export function McpConnectedAgents({
         err instanceof Error ? err.message : "Failed to load connected agents",
       );
     }
-  }, [workspaceId]);
+  }, [workspaceId, fetchMcpConnections]);
 
   useEffect(() => {
     if (!workspaceLoading && workspaceId) {
@@ -350,13 +350,10 @@ export function McpConnectedAgents({
       return;
     }
     try {
-      unwrapBody(
-        await api.DELETE("/api/workspaces/{id}/mcp-connections/{clientId}", {
-          params: {
-            path: { id: workspaceId, clientId: connection.clientId },
-            query: { userId: connection.userId },
-          },
-        }),
+      await revokeMcpConnection(
+        workspaceId,
+        connection.clientId,
+        connection.userId,
       );
       onNotify("Agent disconnected", "success");
       void fetchConnections();

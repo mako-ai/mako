@@ -68,7 +68,6 @@ jobs:
       SESSION_DURATION: ${{ vars.SESSION_DURATION }}
       SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
       VITE_API_URL: https://app-canary.mako.ai/api
-      VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
       VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
       DEMO_DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
@@ -115,7 +114,6 @@ jobs:
         env:
           NODE_ENV: production
           VITE_API_URL: ${{ env.VITE_API_URL }}
-          VITE_MUI_LICENSE_KEY: ${{ env.VITE_MUI_LICENSE_KEY }}
           VITE_GTM_ID: ${{ env.VITE_GTM_ID }}
           VITE_BUILD_ID: ${{ github.sha }}
 

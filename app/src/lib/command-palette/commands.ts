@@ -28,6 +28,7 @@ import {
   useConsoleStore,
 } from "../../store/consoleStore";
 import type { LeftPaneView, SettingsSection } from "../../store/lib/types";
+import { useAppsV2Store } from "../../store/appsV2Store";
 import { useUIStore } from "../../store/uiStore";
 import { tabUrlPath } from "../tab-routing";
 import type { PaletteCommand } from "./types";
@@ -39,6 +40,7 @@ const EXPLORER_VIEWS: Array<{ view: LeftPaneView; label: string }> = [
   { view: "consoles", label: "Consoles" },
   { view: "dashboards", label: "Dashboards" },
   { view: "apps", label: "Apps" },
+  { view: "apps-v2", label: "Apps v2" },
   { view: "dbt", label: "Transforms" },
   { view: "flows", label: "Flows" },
   { view: "connectors", label: "Connectors" },
@@ -86,6 +88,10 @@ export function buildCommands(options: {
   });
 
   for (const { view, label } of EXPLORER_VIEWS) {
+    // Apps v2 is feature-gated; hide its palette entry while disabled.
+    if (view === "apps-v2" && useAppsV2Store.getState().enabled !== true) {
+      continue;
+    }
     commands.push({
       id: `view.explorer.${view}`,
       title: `Go to ${label}`,

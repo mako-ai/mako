@@ -14,13 +14,15 @@ import { CHAT_ICON as ChatIcon, EXPLORER_ICONS } from "../lib/entity-icons";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useAuth } from "../contexts/auth-context";
-import { startTransition, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useConnectorStore } from "../store/connectorStore";
 import { useFlowStore } from "../store/flowStore";
 import { useChatStore } from "../store/chatStore";
 import { useExplorerStore } from "../store/explorerStore";
+import { useAppsV2Store } from "../store/appsV2Store";
+import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent, resetIdentity } from "../lib/analytics";
 import { useIsMobile } from "../hooks/useIsMobile";
 
@@ -53,7 +55,9 @@ type NavigationView =
   | "dashboards"
   | "apps"
   | "notebooks"
+  | "apps-v2"
   | "dbt"
+  | "source-control"
   | "settings"
   | "views";
 
@@ -63,6 +67,13 @@ const topNavigationItems: {
   label: string;
 }[] = [
   { view: "databases", icon: EXPLORER_ICONS.databases, label: "Databases" },
+  // The workspace repository, VS Code style — second in the rail, the same
+  // neighbourhood VS Code keeps its SCM icon in.
+  {
+    view: "source-control",
+    icon: EXPLORER_ICONS["source-control"],
+    label: "Source Control",
+  },
   { view: "consoles", icon: EXPLORER_ICONS.consoles, label: "Consoles" },
   { view: "flows", icon: EXPLORER_ICONS.flows, label: "Flows" },
   { view: "dbt", icon: EXPLORER_ICONS.dbt, label: "Transforms" },
@@ -70,7 +81,56 @@ const topNavigationItems: {
   { view: "dashboards", icon: EXPLORER_ICONS.dashboards, label: "Dashboards" },
   { view: "apps", icon: EXPLORER_ICONS.apps, label: "Apps" },
   { view: "notebooks", icon: EXPLORER_ICONS.notebooks, label: "Notebooks" },
+  // Apps v2 (git-backed, experimental) — shown only when the server flag is
+  // on (useAppsV2Visible probes /apps-v2/status-probe per workspace).
+  { view: "apps-v2", icon: EXPLORER_ICONS["apps-v2"], label: "Apps v2" },
 ];
+
+/**
+ * Is the workspace checkout dirty? VS Code's SCM badge, reduced to a dot.
+ *
+ * Status is repo-wide (any app id reaches it), lives in the store so a
+ * commit made in the Source Control panel clears the dot instantly, and is
+ * refreshed here on a slow poll so the dot is honest even while no panel
+ * that fetches status is open. Reads come from the box when it is running
+ * and from the last commit when it is not — the poll never boots a machine.
+ */
+function useRepoDirty(enabled: boolean): boolean {
+  const { currentWorkspace } = useWorkspace();
+  const workspaceId = currentWorkspace?.id;
+  const appId = useAppsV2Store(state => state.apps[0]?.id);
+  const fetchStatus = useAppsV2Store(state => state.fetchStatus);
+  const dirty = useAppsV2Store(state =>
+    Object.values(state.statusByApp).some(
+      status => (status?.repoChanges?.length ?? 0) > 0,
+    ),
+  );
+  useEffect(() => {
+    if (!enabled || !workspaceId || !appId) return;
+    void fetchStatus(workspaceId, appId);
+    const timer = setInterval(
+      () => void fetchStatus(workspaceId, appId),
+      30_000,
+    );
+    return () => clearInterval(timer);
+  }, [enabled, workspaceId, appId, fetchStatus]);
+  return dirty;
+}
+
+/**
+ * Whether the Apps v2 and Source Control rail entries exist for this
+ * workspace. Read from the workspace object the app already loaded — a
+ * synchronous fact, like the workspace's name. It is deliberately NOT a
+ * network probe: rail icons are fixed chrome, and gating them on a request
+ * made them pop in a second late on every load and vanish outright when the
+ * request failed (a Mongo DNS blip took both icons with it). Whatever the
+ * explorer needs to load (repos, canCreate) loads on its own, behind the
+ * icon, not in front of it.
+ */
+function useAppsV2Visible(): boolean {
+  const { currentWorkspace } = useWorkspace();
+  return currentWorkspace?.settings?.appsV2Enabled === true;
+}
 
 const bottomNavigationItems: {
   view: NavigationView;
@@ -203,8 +263,13 @@ export function SidebarMobileExplorerNav() {
   const activeExplorer = useUIStore(selectActiveExplorer);
   const setLeftPane = useUIStore(state => state.setLeftPane);
   const openLeftPane = useUIStore(state => state.openLeftPane);
+  const appsV2Visible = useAppsV2Visible();
 
-  const items = [...topNavigationItems, ...bottomNavigationItems];
+  const items = [...topNavigationItems, ...bottomNavigationItems].filter(
+    item =>
+      (item.view !== "apps-v2" && item.view !== "source-control") ||
+      appsV2Visible,
+  );
 
   return (
     <Box
@@ -279,35 +344,16 @@ function Sidebar() {
   const openLeftPane = useUIStore(state => state.openLeftPane);
   const openRightPane = useUIStore(state => state.openRightPane);
   const isMobile = useIsMobile();
+  const appsV2Visible = useAppsV2Visible();
+  const repoDirty = useRepoDirty(appsV2Visible);
 
   const handleNavigation = (view: NavigationView) => {
     // Settings now behaves like any other explorer: clicking the cog opens
     // the SettingsExplorer panel in the left rail. A tab is only opened once
     // the user picks a specific sub-section from that panel.
-    if (
-      view === "databases" ||
-      view === "consoles" ||
-      view === "connectors" ||
-      view === "flows" ||
-      view === "dashboards" ||
-      view === "apps" ||
-      view === "notebooks" ||
-      view === "dbt" ||
-      view === "settings"
-    ) {
+    if (view !== "views") {
       startTransition(() => {
-        setLeftPane(
-          view as
-            | "databases"
-            | "consoles"
-            | "connectors"
-            | "flows"
-            | "dashboards"
-            | "apps"
-            | "notebooks"
-            | "dbt"
-            | "settings",
-        );
+        setLeftPane(view);
 
         if (!leftPaneOpen) {
           openLeftPane();
@@ -352,36 +398,64 @@ function Sidebar() {
             alignItems: "center",
           }}
         >
-          {topNavigationItems.map(item => {
-            const Icon = item.icon;
-            const isActive = activeExplorer === item.view;
+          {topNavigationItems
+            .filter(
+              item =>
+                (item.view !== "apps-v2" && item.view !== "source-control") ||
+                appsV2Visible,
+            )
+            .map(item => {
+              const Icon = item.icon;
+              const isActive = activeExplorer === item.view;
 
-            return (
-              <Tooltip key={item.view} title={item.label} placement="right">
-                <NavButton
-                  isActive={isActive}
-                  onClick={() => handleNavigation(item.view as NavigationView)}
-                  onMouseEnter={
-                    item.view === "dashboards"
-                      ? preloadDashboardsExplorer
-                      : undefined
-                  }
-                  onFocus={
-                    item.view === "dashboards"
-                      ? preloadDashboardsExplorer
-                      : undefined
-                  }
-                  onTouchStart={
-                    item.view === "dashboards"
-                      ? preloadDashboardsExplorer
-                      : undefined
-                  }
-                >
-                  <Icon size={24} strokeWidth={1.5} />
-                </NavButton>
-              </Tooltip>
-            );
-          })}
+              return (
+                <Tooltip key={item.view} title={item.label} placement="right">
+                  <NavButton
+                    isActive={isActive}
+                    onClick={() =>
+                      handleNavigation(item.view as NavigationView)
+                    }
+                    onMouseEnter={
+                      item.view === "dashboards"
+                        ? preloadDashboardsExplorer
+                        : undefined
+                    }
+                    onFocus={
+                      item.view === "dashboards"
+                        ? preloadDashboardsExplorer
+                        : undefined
+                    }
+                    onTouchStart={
+                      item.view === "dashboards"
+                        ? preloadDashboardsExplorer
+                        : undefined
+                    }
+                  >
+                    <Icon size={24} strokeWidth={1.5} />
+                    {item.view === "source-control" && repoDirty && (
+                      <Box
+                        component="span"
+                        aria-label="Uncommitted changes"
+                        sx={{
+                          position: "absolute",
+                          top: 6,
+                          right: 6,
+                          width: 8,
+                          height: 8,
+                          borderRadius: "50%",
+                          bgcolor: "error.main",
+                          // Ring in the rail background so the dot reads as
+                          // sitting ON the icon rather than touching it.
+                          boxShadow: theme =>
+                            `0 0 0 2px ${theme.palette.background.paper}`,
+                          pointerEvents: "none",
+                        }}
+                      />
+                    )}
+                  </NavButton>
+                </Tooltip>
+              );
+            })}
 
           {!rightPaneOpen && (
             <Tooltip title="Open Chat" placement="right">

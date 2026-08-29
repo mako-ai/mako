@@ -44,6 +44,10 @@ export const TAB_DEEP_LINK_PATTERNS = {
   app: /^\/a\/([a-zA-Z0-9-]+)\/?$/,
   "app-file": /^\/a\/([a-zA-Z0-9-]+)\/file\/(.+)$/,
   "app-binding": /^\/a\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9_-]+)/,
+  // Apps v2 (git-backed, experimental) — /a2 so it can't collide with /a.
+  "app-v2": /^\/a2\/([a-zA-Z0-9-]+)\/?$/,
+  "app-v2-file": /^\/a2\/([a-zA-Z0-9-]+)\/file\/(.+)$/,
+  "app-v2-diff": null,
   plan: /^\/p\/([a-zA-Z0-9-]+)/,
   settings: /^\/settings\/([a-z-]+)$/,
   // Legacy tab kind superseded by the settings "members" section.
@@ -118,6 +122,25 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
       const bindingId = tab.metadata?.bindingId as string | undefined;
       return appId && bindingId ? `/a/${appId}/data/${bindingId}` : null;
     }
+    case "app-v2": {
+      // Prefer the slug: it is the app's folder name in the workspace repo,
+      // which is what an app IS now. The id stays as the fallback for tabs
+      // opened before slugs were carried in metadata.
+      const appId = tab.metadata?.appV2Id as string | undefined;
+      const slug = tab.metadata?.appV2Slug as string | undefined;
+      const ref = slug || appId;
+      return ref ? `/a2/${ref}` : null;
+    }
+    case "app-v2-file": {
+      const appId = tab.metadata?.appV2Id as string | undefined;
+      const slug = tab.metadata?.appV2Slug as string | undefined;
+      const ref = slug || appId;
+      const path = tab.metadata?.path as string | undefined;
+      return ref && path ? `/a2/${ref}/file/${encodePathSegments(path)}` : null;
+    }
+    case "app-v2-diff":
+      // Diffs are transient views of the working copy: no deep link.
+      return null;
     case "plan": {
       const chatId = tab.metadata?.chatId as string | undefined;
       return chatId ? `/p/${chatId}` : null;

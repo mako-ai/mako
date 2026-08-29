@@ -12,6 +12,7 @@ import {
   type RegisterCredentials,
 } from "../lib/auth-client";
 import { identify, trackEvent } from "../lib/analytics";
+import { useAppsV2Store } from "../store/appsV2Store";
 import { isMakoDesktop } from "../lib/desktop";
 
 /**
@@ -70,6 +71,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     checkAuth();
   }, []);
+
+  // Sandbox pushes are per (workspace, user); the store filters by user.
+  useEffect(() => {
+    useAppsV2Store.getState().setCurrentUserId(user?.id ?? null);
+  }, [user?.id]);
 
   /**
    * Check if user is authenticated

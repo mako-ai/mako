@@ -88,6 +88,92 @@ pnpm cf:deploy             # Deploy to Cloudflare Workers
 pnpm preview-db:*          # Manage preview databases (create, destroy, list, seed)
 ```
 
+## Driving the app in a browser
+
+```bash
+./scripts/dev-browser.sh          # isolated, visible, logged-in browser
+```
+
+Two things this exists to prevent, both of which have actually bitten:
+
+- **Invisible runs.** `agent-browser` defaults to *headless*, and passing
+  `--headed` once is not enough — a later `open` can start a fresh session that
+  silently comes up headless. Verify with
+  `ps aux | grep agent-browser-chrome | grep -c headless` (0 = visible), never
+  by assuming the flag took.
+- **Agents fighting over one browser.** The daemon is machine-wide and every
+  caller defaults to the session named `default`, so two Claude sessions drive
+  the same Chrome: one navigates while the other screenshots, and tabs move
+  under you. The script keys a session name and a Chrome profile off the Claude
+  session id — stable within a session, unique between them.
+
+Export the three variables it prints in any shell issuing further
+`agent-browser` commands. Passing `--profile` to some commands and not others
+puts them in *different* sessions, which looks exactly like the browser
+ignoring your navigation.
+
+**Never run `agent-browser close --all`** — it is global and kills other
+agents' browsers. `agent-browser close` closes only your own.
+
+## Secrets (Google Secret Manager)
+
+`.env` is gitignored, so a value only exists on whichever laptop created it —
+that is how an E2B API key was already lost once. Secrets now live in Secret
+Manager (`mako-ai-dev` for local development, `mako-ai-prod` for production),
+one secret per variable so a single value can be rotated or granted.
+
+Onboarding a new developer is two commands:
+
+```bash
+gcloud auth login
+pnpm secrets:pull            # writes .env from mako-ai-dev
+```
+
+```bash
+pnpm secrets:push            # share local values (uploads as new versions)
+pnpm secrets:diff            # which names differ, local vs stored
+pnpm secrets:list            # what is stored (names only)
+pnpm secrets:pull --env prod # production values
+pnpm secrets:salvage-prod    # capture prod Cloud Run env into prod secrets
+```
+
+Any mutation takes `--dry-run`. No command ever prints a secret value — output
+is names and status only — so a run is safe to paste into a ticket. `pull`
+edits `.env` in place (keeping its comments) and backs up the previous file to
+`.env.bak`; with no `.env` at all it builds one from `.env.example`.
+Machine-specific variables (`APPS_V2_SANDBOX_PROVIDER`, `APPS_V2_GIT_ROOT`,
+`APPS_V2_SESSIONS_ROOT`, `NODE_ENV`) are deliberately never synced.
+
+## Apps v2: the sandbox is an ordinary clone
+
+There is one history (the bare repo per workspace) and one working copy: the
+sandbox, which is a normal git clone whose `origin` is Mako's own git-over-HTTP
+endpoint (`/api/apps-v2-git/<workspaceId>.git`, served by `git http-backend`,
+authorized by a workspace-scoped `mgt_` token in a credential helper). `git
+push`, `git pull` and `git checkout` in the terminal are just git — commits
+made anywhere in the box are pushed automatically, and the endpoint reacts to
+every push (cloud mirror sync + realtime UI refresh), so all push paths
+converge there.
+
+Reads come from the sandbox's working copy while it is running (uncommitted
+work included) and from the last commit when it is not (`status.offline`).
+Uncommitted work lives only in the box, like a laptop: pushed commits survive
+losing the machine, uncommitted edits do not.
+
+Two dev facts that bite: (1) a microVM cannot reach `localhost:8080`, so
+`pnpm dev` starts a cloudflared tunnel (`scripts/sandbox-tunnel.sh`) and writes
+`.env.tunnel` (`APPS_V2_GIT_ORIGIN_URL`) — without it sandboxes cannot clone,
+push, or post box-state events (terminals are unaffected: that path is
+API→E2B SDK, outbound). Run `pnpm sandbox:tunnel:setup` once per machine to
+get a NAMED tunnel with a stable hostname (`APPS_V2_TUNNEL_NAME`/`_HOSTNAME`
+in `.env`, never synced); without it the fallback is a supervised ephemeral
+`trycloudflare` URL that Cloudflare revokes over time. Full mechanics:
+`apps-v2.md` §13.12.
+(2) `APPS_V2_SANDBOX_PROVIDER=local` swaps the microVM for a directory on this
+machine (tests, or working without E2B credentials); it executes tenant
+commands in the API process, so it refuses to load when `NODE_ENV=production`,
+and it needs no tunnel.
+
 ## Configuration
 
 ### Environment Variables (.env)

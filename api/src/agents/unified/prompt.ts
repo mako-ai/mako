@@ -401,6 +401,15 @@ export function buildCurrentScreenContext(context: AgentContext): string {
   sections.push(...buildTabSummary(context));
   sections.push("");
 
+  if (context.appsV2Branch) {
+    // Orientation the agent would otherwise burn a tool call on: its Apps
+    // v2 checkout (shared with the user) and the branch it is on.
+    sections.push(
+      `Apps v2 checkout: on branch \`${context.appsV2Branch}\` (shared with the user; commits land here).`,
+    );
+    sections.push("");
+  }
+
   sections.push(...buildConsoleContext(context));
   sections.push("");
 

@@ -646,7 +646,9 @@ export async function executeAppAgentTool(
             ? {
                 error:
                   "No visible preview iframe for this app — open it with " +
-                  "open_app so the preview can build and report.",
+                  "open_app so the preview can build and report. (If this " +
+                  "is a git-backed Apps v2 project, these v1 tools cannot " +
+                  "see it at all — use app2_open_app and app2_browse.)",
               }
             : {}),
         };

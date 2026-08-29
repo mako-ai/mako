@@ -38,6 +38,8 @@ import {
   initLangfuseTracing,
   shutdownLangfuse,
 } from "./observability/langfuse";
+import { assertDevLoginSafeAtBoot } from "./auth/dev-login";
+import { attachAppsV2TerminalWs } from "./apps-v2/terminal-ws";
 
 // Resolve the root‐level .env file regardless of the runtime working directory
 const envPath = path.resolve(__dirname, "../../.env");
@@ -306,6 +308,11 @@ async function main(): Promise<void> {
     );
   }
 
+  // Refuse to start if the local-development login bypass is configured in a
+  // production environment. A misconfiguration here must be a loud crash, not
+  // a silently weakened login path.
+  assertDevLoginSafeAtBoot();
+
   const systemSkillRegistry = discoverSystemSkills();
   const missingSystemSkills = REQUIRED_SYSTEM_SKILLS.filter(
     name => !systemSkillRegistry.skills.has(name),
@@ -345,11 +352,15 @@ async function main(): Promise<void> {
     },
   });
 
-  // Start the server
-  serve({
+  const server = serve({
     fetch: app.fetch,
     port,
   });
+  // Hono handles ordinary HTTP; a WebSocket upgrade has to be caught on the
+  // raw server. This one carries the Apps v2 interactive terminal — bytes
+  // between a browser and a PTY in the sandbox. Nothing of the tenant's runs
+  // here; the API only moves them.
+  attachAppsV2TerminalWs(server);
 
   if (!process.env.AI_GATEWAY_API_KEY) {
     logger.error(

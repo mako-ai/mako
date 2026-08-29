@@ -63,6 +63,32 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     getSystemTheme,
   );
 
+  // VS Code-style scrollbar reveal: the thumb also appears WHILE an element
+  // is being scrolled (not only when the pointer happens to hover it), then
+  // fades. CSS cannot express "is scrolling", so one capture-phase listener
+  // tags the scrolling element and untags it shortly after the last event.
+  // The CSS half lives in MuiCssBaseline below.
+  useEffect(() => {
+    const timers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
+    const onScroll = (event: Event) => {
+      const el = event.target;
+      if (!(el instanceof Element)) return;
+      el.setAttribute("data-scrolling", "");
+      const prior = timers.get(el);
+      if (prior) clearTimeout(prior);
+      timers.set(
+        el,
+        setTimeout(() => el.removeAttribute("data-scrolling"), 800),
+      );
+    };
+    document.addEventListener("scroll", onScroll, {
+      capture: true,
+      passive: true,
+    });
+    return () =>
+      document.removeEventListener("scroll", onScroll, { capture: true });
+  }, []);
+
   // Listen for system theme changes
   useEffect(() => {
     if (typeof window !== "undefined" && window.matchMedia) {
@@ -434,8 +460,14 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       },
       MuiCssBaseline: {
         styleOverrides: (theme: any) => {
-          const thumbColor = alpha(theme.palette.text.primary, 0.1);
-          const thumbHoverColor = alpha(theme.palette.text.primary, 0.2);
+          // VS Code's overlay scrollbar, as CSS: transparent track, a flat
+          // square thumb that appears when you hover the container OR while
+          // it is scrolling (data-scrolling, set by the listener in
+          // ThemeProvider), and darkens under the pointer. Alphas match VS
+          // Code's defaults (~0.25 resting, ~0.5 engaged) — the previous
+          // 0.1 read as "the scrollbar is invisible".
+          const thumbColor = alpha(theme.palette.text.primary, 0.24);
+          const thumbHoverColor = alpha(theme.palette.text.primary, 0.5);
 
           return {
             // Default (not hovered) state: thumb invisible but space reserved to avoid layout shift
@@ -443,15 +475,19 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
               scrollbarColor: "transparent transparent",
               scrollbarWidth: "thin", // Keep width constant so layout doesn't move (Firefox)
             },
-            // When the element itself is hovered, show colored thumb (Firefox uses same width)
-            "*:hover": {
+            // When the element itself is hovered or scrolling, show the
+            // thumb (Firefox uses the same width)
+            "*:hover, *[data-scrolling]": {
               scrollbarColor: `${thumbColor} transparent`,
             },
             "*::-webkit-scrollbar": {
-              width: 8,
-              height: 8,
+              width: 10,
+              height: 10,
             },
             "*::-webkit-scrollbar-track": {
+              background: "transparent",
+            },
+            "*::-webkit-scrollbar-corner": {
               background: "transparent",
             },
             // Thumb hidden by default
@@ -459,16 +495,35 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
               borderRadius: 0,
               backgroundColor: "transparent",
               minHeight: 24,
+              backgroundClip: "padding-box",
+              border: "2px solid transparent",
             },
-            // Thumb when container is hovered
-            "*:hover::-webkit-scrollbar-thumb": {
-              backgroundColor: thumbColor,
-            },
+            // Thumb when container is hovered or scrolling
+            "*:hover::-webkit-scrollbar-thumb, *[data-scrolling]::-webkit-scrollbar-thumb":
+              {
+                backgroundColor: thumbColor,
+              },
             // Thumb when actively hovered/dragged
-            "*:hover::-webkit-scrollbar-thumb:hover, *:hover::-webkit-scrollbar-thumb:active":
+            "*::-webkit-scrollbar-thumb:hover, *::-webkit-scrollbar-thumb:active":
               {
                 backgroundColor: thumbHoverColor,
               },
+            // OverlayScrollbars skin (VSScrollArea): the true zero-gutter
+            // overlay used where content must reach the container's edge —
+            // file trees, result tables. Same colors as the native thumbs
+            // above so both kinds of scrollbar read as one design.
+            ".os-theme-mako": {
+              "--os-size": "10px",
+              "--os-padding-perpendicular": "2px",
+              "--os-padding-axis": "2px",
+              "--os-track-border-radius": "0",
+              "--os-handle-border-radius": "0",
+              "--os-handle-bg": thumbColor,
+              "--os-handle-bg-hover": thumbHoverColor,
+              "--os-handle-bg-active": thumbHoverColor,
+              "--os-handle-min-size": "24px",
+              "--os-handle-interactive-area-offset": "4px",
+            },
             // Link styling
             a: {
               color: theme.palette.primary.main,

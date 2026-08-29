@@ -817,6 +817,31 @@ export class DatabaseConnectionService {
       };
     }
 
+    // BigQuery paginates via native job page tokens, not offset batches, so it
+    // must never reach the offset-batch probe below (`prepareSqlBatchQuery`
+    // hard-throws for BigQuery). Probe its schema through the native dry-run
+    // directly — registry-independent, exactly like `executeStreamingQuery`
+    // special-cases BigQuery — so the probe works even where the driver
+    // registry is not populated. The dry-run never executes the query, so it
+    // is safe regardless of `readOnly`.
+    if (database.type === "bigquery" && typeof query === "string") {
+      const schema = await this.getBigQueryQuerySchema(database, query);
+      if (!schema.success) {
+        return { success: false, error: schema.error };
+      }
+      const fields = (schema.columns || []).map(column => ({
+        name: column.name,
+        type: column.type,
+      }));
+      if (fields.length === 0) {
+        return {
+          success: false,
+          error: "Unable to determine query schema for Arrow export",
+        };
+      }
+      return { success: true, fields };
+    }
+
     // Schema introspection (dry-run / describe / `LIMIT 0`) never mutates data,
     // so it is always used regardless of `readOnly`. Gating it on `readOnly`
     // (previously the case) forced every engine onto a `LIMIT 1` sample probe —
@@ -3299,8 +3324,8 @@ export class DatabaseConnectionService {
     try {
       // Execute the query content directly - much simpler and more reliable
       logger.debug("Evaluating MongoDB query");
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const db = dbProxy; // Make db available in eval context for evaluated queries
+      void db; // Referenced by eval(query) at runtime — invisible to tsc/eslint.
       const result = eval(query);
 
       logger.debug("Raw result info", {
@@ -3369,7 +3394,7 @@ export class DatabaseConnectionService {
       // Ensure the result can be safely serialized to JSON (avoid circular refs)
       const getCircularReplacer = () => {
         const seen = new WeakSet();
-        return (key: string, value: any) => {
+        return (_key: string, value: any) => {
           // Handle BigInt explicitly (convert to string)
           if (typeof value === "bigint") return value.toString();
 
@@ -3680,13 +3705,6 @@ export class DatabaseConnectionService {
             : "PostgreSQL connection failed",
       };
     }
-  }
-
-  private async createPostgreSQLConnection(
-    database: IDatabaseConnection,
-  ): Promise<PgPool> {
-    // Return the pool instead of a single client
-    return this.getPostgresPool(database);
   }
 
   private async executePostgreSQLQuery(

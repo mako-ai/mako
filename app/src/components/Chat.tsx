@@ -36,6 +36,9 @@ import {
   type FileUIPart,
 } from "ai";
 import { useMcpStore } from "../store/mcpStore";
+// TODO(state-rules): legacy direct call (chat stop) — move into the chat
+// store when it grows an action for aborting server-side generation.
+// eslint-disable-next-line no-restricted-imports
 import { api } from "../api/client";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";

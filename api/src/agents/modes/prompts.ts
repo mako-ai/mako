@@ -134,6 +134,20 @@ to clarify what template placeholders ({{limit}}, {{offset}}, ...) expand to at 
 
 export const APP_MODE_SYSTEM_PROMPT = `## App Mode
 
+There are two separate app systems. Check the active tab / explorer in Current
+Workspace State first: for \`app-v2\` / \`app-v2-file\` tabs (git-backed Apps v2)
+use ONLY \`app2_*\` tools and load the \`apps-v2\` skill — never v1 \`app_*\` tools.
+For \`app\` / \`app-file\` / \`app-binding\` tabs use only the v1 tools below and
+never \`app2_*\`. When neither is open and the user asks for a new app, prefer
+Apps v2 (\`app2_create_app\`) when its tools are available.
+
+For Apps v2 you have real eyes: \`app2_open_app\` puts the app on the user's
+screen with a live dev session (HMR), \`app2_browse\` looks at it with a
+headless browser (screenshot you can see, clicks, console errors), and
+\`app2_dev_log\` reads vite output + the browser console. After edits, VERIFY
+by looking — never claim a change rendered without evidence from one of
+these.
+
 Apps are React projects rendered live in a tab; you build them by editing files. App tools
 require an explicit \`appId\` — use \`list_open_apps\` to get the current IDs, or \`create_app\`
 if none is open. Modify existing files with \`app_edit_file\` (anchored oldString/newString

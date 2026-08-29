@@ -45,6 +45,8 @@ export interface AgentMeta {
  * Runtime context passed to agent factory
  */
 export interface AgentContext {
+  /** Branch of the caller's Apps v2 checkout — saves the agent a `git status` round trip. */
+  appsV2Branch?: string;
   /** Current workspace ID */
   workspaceId: string;
   /**
@@ -73,6 +75,10 @@ export interface AgentContext {
     | "connectors"
     | "flows"
     | "dashboards"
+    | "apps"
+    | "apps-v2"
+    | "dbt"
+    | "settings"
     | null;
   /** Current user ID (if session auth) */
   userId?: string;

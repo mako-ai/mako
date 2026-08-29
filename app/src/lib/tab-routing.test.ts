@@ -54,6 +54,22 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
     kind: "app-binding",
     metadata: { appId: "app-1", bindingId: "binding_1" },
   }),
+  "app-v2": baseTab({
+    kind: "app-v2",
+    metadata: { appV2Id: "66f000000000000000000001" },
+  }),
+  "app-v2-file": baseTab({
+    kind: "app-v2-file",
+    metadata: { appV2Id: "66f000000000000000000001", path: "src/App.tsx" },
+  }),
+  "app-v2-diff": baseTab({
+    kind: "app-v2-diff",
+    metadata: {
+      appV2Id: "66f000000000000000000001",
+      path: "apps/x/src/App.tsx",
+      mode: "working",
+    },
+  }),
   plan: baseTab({ kind: "plan", metadata: { chatId: "chat-1" } }),
   settings: baseTab({ kind: "settings", settingsSection: "models" }),
   members: baseTab({ kind: "members" }),
