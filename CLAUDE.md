@@ -115,6 +115,28 @@ ignoring your navigation.
 **Never run `agent-browser close --all`** — it is global and kills other
 agents' browsers. `agent-browser close` closes only your own.
 
+## Picking up from Claude Code on the Cloud
+
+The cloud environment starts with no `.env`. Bootstrap:
+
+1. `gcloud auth login --no-launch-browser` (paste the code back), then
+   `pnpm secrets:pull` — builds `.env` from the `mako-ai-dev` Secret Manager
+   project, comments preserved.
+2. Machine-local variables are deliberately never synced; set them per
+   environment: `APPS_V2_SANDBOX_PROVIDER=e2b` (E2B key IS synced),
+   `NODE_ENV=development`, and leave `APPS_V2_GIT_ROOT`/`APPS_V2_SESSIONS_ROOT`
+   unset for defaults. `GITHUB_DEV_TOKEN` and `APPS_V2_CONNECTED_REPO_PUSH`
+   are opt-in per machine — without them, mirror pushes to customer repos are
+   refused (safe default for a fresh environment).
+3. Sandboxes cannot reach the environment's localhost:8080, so `pnpm dev`
+   needs the cloudflared tunnel (`scripts/sandbox-tunnel.sh`); without a named
+   tunnel it supervises an ephemeral trycloudflare URL. Terminals work without
+   any tunnel (API→E2B is outbound).
+
+Alternatively, configure the env vars once in the cloud environment's settings
+UI — the names to carry over are exactly the assignments in `.env.example`
+plus the machine-local set above.
+
 ## Secrets (Google Secret Manager)
 
 `.env` is gitignored, so a value only exists on whichever laptop created it —

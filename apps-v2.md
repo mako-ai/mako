@@ -1998,3 +1998,94 @@ serving, red when the last start failed. (4) The publish chips act:
 "not published" publishes, "published · sha" opens the live app. (5) An
 open-in-new-tab button joins the preview refresh. (6) The terminal header
 echoes the active session's name instead of a generic caption.
+
+## §13.17 The connected repo IS the durable mirror (2026-08-29)
+
+`mako-ai-cloud` is reserved for workspaces that never connected GitHub. The
+moment a workspace binds a repo (RealAdvisor → `realadvisor/mako-workspace`),
+`resolveMirrorTarget` prefers the binding over `appsV2CloudRepo`, and every
+mirror push lands in the customer's own repo. Adoption on connect follows a
+matrix (fresh repo → seed; matching history → import; unrelated history →
+refuse), and pushes to a customer remote are NEVER forced: `refs/heads/*` and
+`refs/tags/*` go unforced, only `+refs/mako/*` may move. Divergence therefore
+stalls by design and is reconciled with a merge commit, not `--force`. Inbound,
+the GitHub webhook matches pushes by repo binding
+(`findWorkspaceIdByRepoBinding`) and fast-forwards the workspace bare repo —
+FF-or-stand-still, same doctrine. Dev machines opt in with
+`APPS_V2_CONNECTED_REPO_PUSH=allow` (never synced) because dev DBs are prod
+clones carrying real customer bindings.
+
+## §13.18 v1→v2 migration replays every version as a real commit (2026-08-29)
+
+`apps:migrate-v1` turns each `EntityVersion` snapshot into a git commit on the
+app's folder — original author, original timestamp, the version comment as the
+message (`commitSubtreeOnBranch`, bare-repo index plumbing). The v1 document
+stays in place, stamped `migratedToV2ProjectId`, so the migration is
+re-runnable (execute replaces the folder in place) and reversible (delete the
+folder, clear the stamp). Each folder carries a MIGRATION.md stating the
+source app id, the migration moment, and how many versions were replayed —
+which later became the audit's ground truth. `--rows-only` backfills ACL rows
+and stamps for apps whose folders already exist (used on prod after the repo
+was connected there too).
+
+## §13.19 Publish serves bindings; sharing materializes rows (2026-08-29)
+
+Published apps resolve `__data/<binding>` through the deployment's
+`bindingArtifactKeyByName`, so viewers read the parquet artifacts that were
+current at publish time. And because §13.6 says a row exists only when someone
+restricts, publishes, or shares, both publish and share now call
+`ensureProjectRow` first — publishing a folder-only app used to write state to
+a row that vanished on reload ("published · sha" then "not published").
+
+## §13.20 Box-lifecycle chaos round (2026-08-29)
+
+Three bugs found by deliberately killing boxes and racing dev servers, all
+fixed: (1) the dev-port registry leaked slots when a server died with its box
+(`releaseDevServerSlot` + agent-side pruning); (2) idle dev servers were
+reaped by lowest port instead of usage (viewer heartbeat via the launcher's
+ws-client, defeating E2B ingress keep-alives that made every server look
+watched); (3) a shell whose machine died now reconnects instead of eating the
+tab. Validated live: idle servers reaped at ~20min, the watched one survived.
+
+## §13.21 Cutover day: guards, the late-version heal, bulk publish, rip-out (2026-08-30)
+
+The dangerous state during a migration is two writable systems. The cutover
+sealed v1 in three moves, then removed it:
+
+**Guards (#815).** Mutating a stamped v1 app returns 423
+`{code: migrated_to_v2, v2ProjectId}` across routes and all agent tools;
+creating a v1 app in an appsV2-enabled workspace returns 409; serializers
+force `readOnly`; the v1 rail entry disappears for v2 workspaces and stale v1
+tabs render read-only with an "Open in Apps" banner.
+
+**The audit that mattered.** Comparing Mongo `entity_versions` against each
+folder's MIGRATION.md replay count exposed a blind window: the original
+57-app replay ran from a dev clone taken 2026-08-26, so 10 apps had 144
+versions (Aug 27–30) in prod Mongo but not in git. Timestamp-based audits
+LIED here twice — rows-only stamps are hash-derived ObjectIds (garbage
+timestamps), and `git log <path>` skips file-identical replay commits. The
+replay-count invariant is the only honest check. All 10 re-migrated in place
+from prod data; 58/58 clean.
+
+**Bulk publish.** All apps visible to the operator published via the real
+publish endpoint (merge → sandbox build → immutable deployment). 26/32
+succeeded; the 6 failures exposed §13.22.
+
+**Rip-out (#816).** v1 editor UI, CRUD routes, 21 server agent tools, client
+dispatch, deep links, MCP bridging, and the 20 dead capability definitions —
+gone. Deliberately kept: MakoApp documents, `entity_versions`, the migration
+CLI (127 workspaces still hold v1 docs and can be migrated later), and the
+whole public-share serving path — 45 v1 public links stay live, with their
+scheduled binding refreshes. Old persisted "apps" pane selections land on the
+Apps v2 explorer.
+
+## §13.22 Publish builds must trust npm's stamp, not a directory check (2026-08-30)
+
+`[ -d node_modules ] || npm install` failed two ways at once: a re-migration
+changed package.json (new `recharts` dep) but the sandbox kept the old tree,
+and a half-written tree from an interrupted install passed `-d` with no vite
+binary at all. The build now installs when `node_modules/.package-lock.json`
+is not newer than `package.json` — npm stamps that file on every install, so
+"stamp newer than manifest" is the real freshness fact (#817). Diagnosis
+order that found it: repo content (clean) → prod/GitHub divergence (none:
+same sha) → the sandbox's install heuristic.
