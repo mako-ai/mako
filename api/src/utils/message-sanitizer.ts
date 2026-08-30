@@ -231,3 +231,78 @@ export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
     return { ...msg, parts: sanitizedParts as UIMessage["parts"] };
   });
 }
+
+/**
+ * Shrink assistant TOOL outputs before persistence (§13.25). Found on prod:
+ * an app2_browse-heavy turn carries screenshots as base64 inside tool
+ * outputs; externalizeChatAttachments only covers user image `file` parts,
+ * so the stored messages array blew past MongoDB's 16 MB BSON limit and the
+ * WHOLE save threw — caught by a log-only catch, the entire turn vanished
+ * on reload while the agent's work (commits, publishes) survived. The
+ * screenshot's post-turn value is nil (the model already saw it), so it is
+ * dropped here; any other pathologically large output is truncated with a
+ * marker rather than sinking the save.
+ */
+const MAX_STORED_TOOL_OUTPUT_BYTES = 256 * 1024;
+
+export function sanitizeMessagesForPersistence(
+  messages: UIMessage[],
+): UIMessage[] {
+  return messages.map(message => {
+    if (message.role !== "assistant" || !Array.isArray(message.parts)) {
+      return message;
+    }
+    let changed = false;
+    const parts = message.parts.map(part => {
+      if (!isRecord(part) || typeof part.type !== "string") return part;
+      if (!part.type.startsWith("tool-")) return part;
+      const output = (part as { output?: unknown }).output;
+      if (!isRecord(output)) return part;
+      let next = output;
+      if (typeof next.screenshotBase64 === "string") {
+        const { screenshotBase64: _dropped, ...rest } = next;
+        next = { ...rest, screenshotOmitted: true };
+      }
+      const size = Buffer.byteLength(JSON.stringify(next), "utf8");
+      if (size > MAX_STORED_TOOL_OUTPUT_BYTES) {
+        next = {
+          truncatedForStorage: true,
+          originalBytes: size,
+          preview: JSON.stringify(next).slice(0, 4096),
+        };
+      }
+      if (next === output) return part;
+      changed = true;
+      return { ...part, output: next };
+    });
+    return changed
+      ? { ...message, parts: parts as typeof message.parts }
+      : message;
+  });
+}
+
+/**
+ * Last-resort shrink for a BSON-overflow retry: every tool output becomes a
+ * small preview. Losing tool payloads beats losing the conversation.
+ */
+export function stripToolOutputsForRetry(messages: UIMessage[]): UIMessage[] {
+  return messages.map(message => {
+    if (message.role !== "assistant" || !Array.isArray(message.parts)) {
+      return message;
+    }
+    const parts = message.parts.map(part => {
+      if (!isRecord(part) || typeof part.type !== "string") return part;
+      if (!part.type.startsWith("tool-")) return part;
+      const output = (part as { output?: unknown }).output;
+      if (output === undefined) return part;
+      return {
+        ...part,
+        output: {
+          truncatedForStorage: true,
+          preview: JSON.stringify(output ?? null).slice(0, 1024),
+        },
+      };
+    });
+    return { ...message, parts: parts as typeof message.parts };
+  });
+}

@@ -562,7 +562,9 @@ export function createAppsV2Tools({
         "screenshot (you SEE it) plus console errors and failed requests. " +
         "Use it after edits to verify what actually renders, and to debug " +
         "blank screens. Needs a running dev session (app2_open_app). First " +
-        "use in a fresh sandbox installs the browser (~30-60s).",
+        "use in a fresh sandbox installs the browser (~30-60s). If your " +
+        "model cannot read images, pass screenshot:false — pageText, " +
+        "console and failed requests still tell you what rendered.",
       inputSchema: z.object({
         appId: z.string(),
         steps: z

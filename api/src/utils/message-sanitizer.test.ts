@@ -12,7 +12,11 @@
  */
 import assert from "node:assert/strict";
 import { convertToModelMessages, type UIMessage } from "ai";
-import { sanitizeMessagesForModel } from "./message-sanitizer";
+import {
+  sanitizeMessagesForPersistence,
+  stripToolOutputsForRetry,
+  sanitizeMessagesForModel,
+} from "./message-sanitizer";
 
 type LoosePart = Record<string, unknown>;
 
@@ -192,3 +196,69 @@ async function main() {
 }
 
 void main();
+
+// ---- persistence sanitizers (§13.25) ----
+{
+  const big = "x".repeat(300 * 1024);
+  const messages = [
+    { id: "u1", role: "user", parts: [{ type: "text", text: "hi" }] },
+    {
+      id: "a1",
+      role: "assistant",
+      parts: [
+        { type: "text", text: "looking" },
+        {
+          type: "tool-app2_browse",
+          toolCallId: "t1",
+          state: "output-available",
+          input: {},
+          output: { ok: true, screenshotBase64: big, consoleLogs: ["a"] },
+        },
+        {
+          type: "tool-app2_dev_log",
+          toolCallId: "t2",
+          state: "output-available",
+          input: {},
+          output: { ok: true, log: big },
+        },
+      ],
+    },
+  ] as unknown as UIMessage[];
+  const out = sanitizeMessagesForPersistence(messages);
+  const parts = (
+    out[1] as { parts: Array<{ output?: Record<string, unknown> }> }
+  ).parts;
+  assert.ok(
+    !("screenshotBase64" in (parts[1].output ?? {})),
+    "screenshot dropped",
+  );
+  assert.equal(parts[1].output?.screenshotOmitted, true);
+  assert.deepEqual(parts[1].output?.consoleLogs, ["a"], "rest of output kept");
+  assert.equal(
+    parts[2].output?.truncatedForStorage,
+    true,
+    "oversized output truncated",
+  );
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(out), "utf8") < 64 * 1024,
+    "sanitized payload is small",
+  );
+  // user message untouched, original array unmutated
+  assert.equal((messages[1] as { parts: unknown[] }).parts.length, 3);
+  assert.equal(
+    (
+      (messages[1] as { parts: Array<{ output?: Record<string, unknown> }> })
+        .parts[1].output ?? {}
+    ).screenshotBase64,
+    big,
+    "input not mutated",
+  );
+
+  const stripped = stripToolOutputsForRetry(messages);
+  const sparts = (
+    stripped[1] as { parts: Array<{ output?: Record<string, unknown> }> }
+  ).parts;
+  assert.equal(sparts[1].output?.truncatedForStorage, true);
+  assert.ok(String(sparts[1].output?.preview).length <= 1024);
+  console.log("persistence sanitizer tests passed");
+}
