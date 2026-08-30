@@ -244,7 +244,14 @@ export async function buildApp(
     // `--loglevel=http` so the install streams progress into the log (npm is
     // near-silent when its stdout is a pipe), and `--foreground-scripts` so
     // lifecycle-script output shows too — the client is watching this live.
-    `set -o pipefail; ( [ -d node_modules ] || npm install --no-audit --no-fund --loglevel=http --foreground-scripts ) 2>&1 | tee -a ${log}`,
+    //
+    // Freshness, not existence: npm stamps node_modules/.package-lock.json on
+    // every install, so "stamp newer than package.json" means deps are
+    // current. A bare [ -d node_modules ] check kept serving a stale tree
+    // after a push changed package.json (the re-migrated apps failed to
+    // publish on missing new deps), and a half-written tree from a killed
+    // install passed the -d check with no vite binary at all.
+    `set -o pipefail; ( [ node_modules/.package-lock.json -nt package.json ] || npm install --no-audit --no-fund --loglevel=http --foreground-scripts ) 2>&1 | tee -a ${log}`,
     { timeoutMs: 300_000 },
   );
   if (install.exitCode !== 0) {
