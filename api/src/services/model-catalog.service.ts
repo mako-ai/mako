@@ -39,6 +39,7 @@ export interface CatalogModel {
   description: string;
   contextWindow: number | null;
   tags: string[];
+  knowledgeCutoff: string | null;
   /** Unix seconds the model was released (gateway `released`); null pre-upgrade. */
   releasedAt: number | null;
   /** Accepts image input (gateway modalities); null = unknown (old snapshot). */
@@ -78,6 +79,7 @@ export interface AdminCatalogModel {
   description: string;
   contextWindow: number | null;
   tags: string[];
+  knowledgeCutoff: string | null;
   releasedAt: number | null;
   imageInput: boolean | null;
   blendedCostPerM: number | null;
@@ -113,6 +115,8 @@ const GatewayPricingSchema = z
 
 const GatewayModelRawSchema = z.object({
   id: z.string(),
+  /** Knowledge cutoff (e.g. "2025-03-31"); present on ~160 models. */
+  knowledge: z.string().optional(),
   /** Model release date, unix seconds (the gateway sends it for all models). */
   released: z.number().optional(),
   /** Input/output modalities — the real vision signal ("image" in input). */
@@ -177,6 +181,8 @@ interface GatewayModelNormalized {
   provider: string;
   contextWindow: number | null;
   tags: string[];
+  /** Knowledge cutoff date string; null = gateway does not report it. */
+  knowledgeCutoff?: string | null;
   /** Unix seconds; null on pre-upgrade snapshots. */
   releasedAt?: number | null;
   /** modalities.input includes "image"; null = unknown (old snapshot). */
@@ -320,6 +326,10 @@ type GatewayModelRaw = z.infer<typeof GatewayModelRawSchema>;
  */
 async function persistLanguageSnapshot(
   entries: GatewayModelRaw[],
+  /** The UNVALIDATED gateway rows — persisted verbatim (§: raw snapshot) so
+   *  future field questions are queries against stored truth, not
+   *  re-implementation + refetch. ~1.5MB for 360 models; well under BSON. */
+  rawEntries?: unknown[],
 ): Promise<
   { models: number; pricedModels: number } | { skipped: true; reason: string }
 > {
@@ -338,6 +348,7 @@ async function persistLanguageSnapshot(
     contextWindow: raw.context_window ?? null,
     tags: raw.tags ?? [],
     releasedAt: raw.released ?? null,
+    knowledgeCutoff: raw.knowledge ?? null,
     imageInput: raw.modalities?.input
       ? raw.modalities.input.includes("image")
       : null,
@@ -367,6 +378,19 @@ async function persistLanguageSnapshot(
       { data: pricingDocs, fetchedAt: now, itemCount: pricingDocs.length },
       { upsert: true },
     ),
+    ...(rawEntries
+      ? [
+          ModelCatalogSnapshot.findOneAndUpdate(
+            { _id: "gateway-raw" },
+            {
+              data: rawEntries,
+              fetchedAt: now,
+              itemCount: rawEntries.length,
+            },
+            { upsert: true },
+          ),
+        ]
+      : []),
   ]);
 
   logger.info("Persisted gateway + pricing snapshots", {
@@ -413,7 +437,11 @@ export async function refreshGatewaySnapshot(): Promise<
     return { skipped: true, reason };
   }
 
-  return persistLanguageSnapshot(parsed.data.data);
+  const rawRows =
+    body && typeof body === "object"
+      ? ((body as { data?: unknown }).data as unknown[] | undefined)
+      : undefined;
+  return persistLanguageSnapshot(parsed.data.data, rawRows);
 }
 
 /**
@@ -463,7 +491,7 @@ export async function hardRefreshGatewaySnapshot(): Promise<
     });
   }
 
-  const result = await persistLanguageSnapshot(validEntries);
+  const result = await persistLanguageSnapshot(validEntries, rawData);
   if ("skipped" in result) return result;
   return { ...result, droppedEntries };
 }
@@ -689,6 +717,7 @@ function mergeCatalog(
 
     models.push({
       releasedAt: gm.releasedAt ?? null,
+      knowledgeCutoff: gm.knowledgeCutoff ?? null,
       imageInput: gm.imageInput ?? null,
       id: gm.id,
       provider: gm.provider,
@@ -1062,6 +1091,7 @@ export async function getAdminCatalogView(): Promise<AdminCatalogView> {
       contextWindow: gm.contextWindow,
       tags: gm.tags,
       releasedAt: gm.releasedAt ?? null,
+      knowledgeCutoff: gm.knowledgeCutoff ?? null,
       imageInput: gm.imageInput ?? null,
       blendedCostPerM,
       // Fail-closed: missing curation entry = hidden pro

@@ -33,6 +33,8 @@ interface AdminCuratedModel {
   blendedCostPerM: number | null;
   /** Unix seconds the model was released (gateway `released`). */
   releasedAt: number | null;
+  /** Knowledge cutoff date string (gateway `knowledge`). */
+  knowledgeCutoff: string | null;
   /** Accepts image input (gateway modalities). */
   imageInput: boolean | null;
   visible: boolean;
@@ -554,9 +556,9 @@ export default function SettingsAdmin() {
                 <TableHead>
                   <TableRow>
                     <TableCell>Model</TableCell>
-                    <TableCell sx={{ width: 120 }}>Provider</TableCell>
+                    <TableCell sx={{ width: 88 }}>Provider</TableCell>
                     <TableCell
-                      sx={{ width: 100, cursor: "pointer", userSelect: "none" }}
+                      sx={{ width: 92, cursor: "pointer", userSelect: "none" }}
                       onClick={() =>
                         setReleasedSort(s => (s === "desc" ? "asc" : "desc"))
                       }
@@ -569,20 +571,21 @@ export default function SettingsAdmin() {
                           ? "\u2191"
                           : ""}
                     </TableCell>
-                    <TableCell align="right" sx={{ width: 90 }}>
+                    <TableCell sx={{ width: 84 }}>Knowledge</TableCell>
+                    <TableCell align="right" sx={{ width: 68 }}>
                       $/M
                     </TableCell>
-                    <TableCell align="center" sx={{ width: 70 }}>
+                    <TableCell align="center" sx={{ width: 58 }}>
                       Visible
                     </TableCell>
-                    <TableCell sx={{ width: 90 }}>Tier</TableCell>
-                    <TableCell align="center" sx={{ width: 80 }}>
+                    <TableCell sx={{ width: 80 }}>Tier</TableCell>
+                    <TableCell align="center" sx={{ width: 66 }}>
                       Default&nbsp;paid
                     </TableCell>
-                    <TableCell align="center" sx={{ width: 80 }}>
+                    <TableCell align="center" sx={{ width: 66 }}>
                       Default&nbsp;free
                     </TableCell>
-                    <TableCell align="center" sx={{ width: 70 }}>
+                    <TableCell align="center" sx={{ width: 50 }}>
                       Fast
                     </TableCell>
                   </TableRow>
@@ -628,6 +631,19 @@ export default function SettingsAdmin() {
                                 .toISOString()
                                 .slice(0, 10)
                             : "\u2014"}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Typography
+                          variant="body2"
+                          noWrap
+                          color={
+                            m.knowledgeCutoff
+                              ? "text.secondary"
+                              : "text.disabled"
+                          }
+                        >
+                          {m.knowledgeCutoff ?? "\u2014"}
                         </Typography>
                       </TableCell>
                       <TableCell align="right">
