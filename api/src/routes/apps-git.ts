@@ -42,6 +42,12 @@ const logger = loggers.api("apps-git");
 export const appsGitRoutes = createRouter();
 
 const MOUNT = "/api/apps-git";
+/**
+ * Pre-rename mount, still served: every sandbox cloned before the
+ * apps-v2 → apps rename has this URL baked into its origin remote and
+ * credential helper. Delete once those boxes are recycled.
+ */
+const LEGACY_MOUNT = "/api/apps-v2-git";
 
 /** Nothing legitimate takes longer than this; a wedged CGI must not leak. */
 const BACKEND_TIMEOUT_MS = 10 * 60_000;
@@ -167,8 +173,9 @@ function unauthorized(): Response {
 
 /** `/api/apps-git/<workspaceId>.git/<rest>` -> its two parts. */
 function splitPath(fullPath: string): { repo: string; rest: string } | null {
-  if (!fullPath.startsWith(`${MOUNT}/`)) return null;
-  const tail = fullPath.slice(MOUNT.length + 1);
+  const mount = [MOUNT, LEGACY_MOUNT].find(m => fullPath.startsWith(`${m}/`));
+  if (!mount) return null;
+  const tail = fullPath.slice(mount.length + 1);
   const slash = tail.indexOf("/");
   if (slash === -1) return null;
   return { repo: tail.slice(0, slash), rest: tail.slice(slash) };
