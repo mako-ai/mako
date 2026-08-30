@@ -197,6 +197,17 @@ function MobileDrawerIdentity() {
   );
 }
 
+/**
+ * Cutover shim: v2 workspaces see the Apps v2 explorer wherever "apps"
+ * points. A component (not a hook in MainApp) because MainApp renders ABOVE
+ * WorkspaceProvider — the hook is only legal inside the provider subtree.
+ */
+function AppsExplorerCutover() {
+  const { currentWorkspace } = useWorkspace();
+  const appsV2On = currentWorkspace?.settings?.appsV2Enabled === true;
+  return appsV2On ? <AppsV2Explorer /> : <AppsExplorer />;
+}
+
 function MainApp() {
   const activeView = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
@@ -569,7 +580,7 @@ function MainApp() {
       case "dashboards":
         return <DashboardsExplorer />;
       case "apps":
-        return <AppsExplorer />;
+        return <AppsExplorerCutover />;
       case "notebooks":
         return <NotebooksExplorer />;
       case "apps-v2":

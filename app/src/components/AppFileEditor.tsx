@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import { Box, useTheme } from "@mui/material";
+import { Alert, Box, Button, useTheme } from "@mui/material";
 import MonacoEditor from "@monaco-editor/react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppStore } from "../store/appStore";
@@ -7,6 +7,7 @@ import {
   configureMonacoForJsx,
   languageForPath,
 } from "../app-runtime/monaco-jsx";
+import { focusAppsV2Tab } from "../apps-v2-runtime/shell";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
 import EntityLoadErrorState, {
   EntityLoadingState,
@@ -42,8 +43,11 @@ export default function AppFileEditor({
     if (!appEntity && workspaceId) void fetchApp(workspaceId, appId);
   }, [appEntity, workspaceId, appId, fetchApp]);
 
+  const migrated = !!appEntity?.migratedToV2ProjectId;
+
   const handleChange = useCallback(
     (value: string | undefined) => {
+      if (migrated) return; // stamped by the v2 migration — read-only
       writeFile(appId, path, value ?? "");
       if (saveTimer.current) clearTimeout(saveTimer.current);
       if (workspaceId) {
@@ -52,7 +56,7 @@ export default function AppFileEditor({
         }, 1200);
       }
     },
-    [appId, path, workspaceId, writeFile, persistApp],
+    [appId, path, workspaceId, writeFile, persistApp, migrated],
   );
 
   if (!appEntity) {
@@ -84,6 +88,28 @@ export default function AppFileEditor({
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <EntityBreadcrumbs tabId={tabId} />
+      {migrated && (
+        <Alert
+          severity="info"
+          sx={{ borderRadius: 0 }}
+          action={
+            <Button
+              color="inherit"
+              size="small"
+              onClick={() =>
+                focusAppsV2Tab(
+                  appEntity.migratedToV2ProjectId ?? "",
+                  appEntity.title,
+                )
+              }
+            >
+              Open in Apps
+            </Button>
+          }
+        >
+          This app moved to Apps v2 — this copy is read-only.
+        </Alert>
+      )}
       <Box sx={{ flex: 1, minHeight: 0 }}>
         <MonacoEditor
           height="100%"
@@ -98,6 +124,7 @@ export default function AppFileEditor({
             fontSize: 13,
             automaticLayout: true,
             scrollBeyondLastLine: false,
+            readOnly: migrated,
           }}
         />
       </Box>

@@ -68,6 +68,7 @@ import {
   DbtProject,
   SavedConsole,
   type IMakoApp,
+  Workspace,
 } from "../../database/workspace-schema";
 import {
   queueAppBindingMaterialization,
@@ -247,6 +248,17 @@ export function createServerAppTools({
     error: `You do not have write access to app ${appId}.`,
   });
 
+  /** V1 apps stamped by the Apps v2 migration are read-only in v1. */
+  const migratedBlock = (doc: IMakoApp) =>
+    doc.migratedToV2ProjectId
+      ? {
+          success: false,
+          error:
+            "This app was migrated to Apps v2 and is read-only in v1. " +
+            `Use the apps-v2 tools instead (v2 project ${doc.migratedToV2ProjectId.toString()}).`,
+        }
+      : null;
+
   const wrap = async <T>(
     label: string,
     fn: () => Promise<T>,
@@ -349,6 +361,10 @@ export function createServerAppTools({
     if (isLoadError(loaded)) return { success: false, ...loaded };
     const { doc } = loaded;
     if (!(await canWrite(doc))) return denied(input.appId);
+    {
+      const blocked = migratedBlock(doc);
+      if (blocked) return blocked;
+    }
     const binding = (doc.dataBindings ?? []).find(b => b.name === input.name);
     if (!binding) {
       return {
@@ -702,6 +718,18 @@ export function createServerAppTools({
       inputSchema: createAppSchema,
       execute: async ({ title, description }) =>
         wrap("create_app", async () => {
+          const wsFlag = (await Workspace.findById(workspaceId)
+            .select("settings.appsV2Enabled")
+            .lean()) as { settings?: { appsV2Enabled?: boolean } } | null;
+          if (wsFlag?.settings?.appsV2Enabled === true) {
+            return {
+              success: false,
+              error:
+                "This workspace uses Apps v2 — v1 create_app is disabled. " +
+                "Use the apps-v2 tools to create apps.",
+            };
+          }
+
           const scaffold = createAppScaffold(title || "Untitled App");
           const created = await MakoApp.create({
             workspaceId: new Types.ObjectId(workspaceId),
@@ -999,6 +1027,10 @@ export function createServerAppTools({
           const loaded = await loadApp(appId);
           if (isLoadError(loaded)) return { success: false, ...loaded };
           if (!(await canWrite(loaded.doc))) return denied(appId);
+          {
+            const blocked = migratedBlock(loaded.doc);
+            if (blocked) return blocked;
+          }
           const binding = (loaded.doc.dataBindings ?? []).find(
             b => b.name === name,
           );
@@ -1103,6 +1135,10 @@ export function createServerAppTools({
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const { doc } = loaded;
           if (!(await canWrite(doc))) return denied(appId);
+          {
+            const blocked = migratedBlock(doc);
+            if (blocked) return blocked;
+          }
           doc.files = normalizeAppFiles([
             ...(doc.files ?? []).filter(f => f.path !== path),
             { path, contents: contents ?? "" },
@@ -1134,6 +1170,10 @@ export function createServerAppTools({
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const { doc } = loaded;
           if (!(await canWrite(doc))) return denied(appId);
+          {
+            const blocked = migratedBlock(doc);
+            if (blocked) return blocked;
+          }
           const file = (doc.files ?? []).find(f => f.path === path);
           if (!file) {
             return {
@@ -1221,6 +1261,10 @@ export function createServerAppTools({
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const { doc } = loaded;
           if (!(await canWrite(doc))) return denied(appId);
+          {
+            const blocked = migratedBlock(doc);
+            if (blocked) return blocked;
+          }
           doc.files = (doc.files ?? []).filter(
             f => f.path !== path,
           ) as IMakoApp["files"];
@@ -1238,6 +1282,10 @@ export function createServerAppTools({
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const { doc } = loaded;
           if (!(await canWrite(doc))) return denied(appId);
+          {
+            const blocked = migratedBlock(doc);
+            if (blocked) return blocked;
+          }
           const file = (doc.files ?? []).find(f => f.path === from);
           if (!file) {
             return { success: false, error: `File not found: ${from}` };
@@ -1263,6 +1311,10 @@ export function createServerAppTools({
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const { doc } = loaded;
           if (!(await canWrite(doc))) return denied(appId);
+          {
+            const blocked = migratedBlock(doc);
+            if (blocked) return blocked;
+          }
           doc.dependencies = {
             ...(doc.dependencies ?? {}),
             [name]: depVersion || "latest",
@@ -1281,6 +1333,10 @@ export function createServerAppTools({
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const { doc } = loaded;
           if (!(await canWrite(doc))) return denied(appId);
+          {
+            const blocked = migratedBlock(doc);
+            if (blocked) return blocked;
+          }
           const next = { ...(doc.dependencies ?? {}) };
           delete next[name];
           doc.dependencies = next;
@@ -1306,6 +1362,10 @@ export function createServerAppTools({
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const { doc } = loaded;
           if (!(await canWrite(doc))) return denied(input.appId);
+          {
+            const blocked = migratedBlock(doc);
+            if (blocked) return blocked;
+          }
 
           // Resolve query fields from a saved console when provided;
           // explicit input fields always win.
@@ -1516,6 +1576,10 @@ export function createServerAppTools({
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const { doc } = loaded;
           if (!(await canWrite(doc))) return denied(appId);
+          {
+            const blocked = migratedBlock(doc);
+            if (blocked) return blocked;
+          }
           const exists = (doc.dataBindings ?? []).some(b => b.name === name);
           if (!exists) {
             return { success: false, error: `No data binding named "${name}"` };
@@ -1544,6 +1608,10 @@ export function createServerAppTools({
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const { doc } = loaded;
           if (!(await canWrite(doc))) return denied(appId);
+          {
+            const blocked = migratedBlock(doc);
+            if (blocked) return blocked;
+          }
           const snapshot = buildAppSnapshot(doc);
           const created = await createVersion({
             entityType: "app",
@@ -1582,6 +1650,10 @@ export function createServerAppTools({
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const { doc } = loaded;
           if (!(await canWrite(doc))) return denied(appId);
+          {
+            const blocked = migratedBlock(doc);
+            if (blocked) return blocked;
+          }
           const old = await getVersion(
             appId,
             "app",
