@@ -226,6 +226,13 @@ export const useUIStore = create<UIStore>()(
     })),
     {
       name: "ui-store",
+      // Pre-rename persisted pane selections ("apps-v2") land on the Apps
+      // explorer instead of falling through to the default pane.
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<UIStore>;
+        if ((p.leftPane as string) === "apps-v2") p.leftPane = "apps";
+        return { ...current, ...p };
+      },
       // Only persist navigation and workspace - not loading states or editor content
       partialize: state => ({
         leftPane: state.leftPane,
@@ -263,7 +270,6 @@ export type ActiveExplorer =
   | "dashboards"
   | "apps"
   | "notebooks"
-  | "apps-v2"
   | "dbt"
   | "source-control"
   | "settings"
@@ -281,7 +287,6 @@ const EXPLORER_VIEWS: ReadonlySet<LeftPaneView> = new Set([
   "dashboards",
   "apps",
   "notebooks",
-  "apps-v2",
   "dbt",
   "source-control",
   "settings",

@@ -1,14 +1,10 @@
 /**
- * Client-Side React App Tools
+ * LEGACY (pre-git) app tool schemas.
  *
- * Agentic file-editing tools for the React Apps feature (Lovable / v0 style).
- * Like the dashboard tools, these have no `execute` function, so the AI SDK
- * routes them to the browser via `onToolCall`, where `executeAppAgentTool`
- * applies them to the open app's virtual filesystem and refreshes the preview.
- *
- * The edit protocol is deliberately simple (whole-file writes, dependency
- * add/remove, data-binding create), mirroring dyad's `<dyad-write>` /
- * `<dyad-add-dependency>` approach.
+ * The Apps v1 system these drove was removed (apps.md §13.21); no server or
+ * client executes them any more. The schemas stay only so historical chat
+ * messages that carry these tool calls keep their typing (`MakoUITools`) and
+ * render. Do not register them with an executor.
  */
 
 import { tool } from "ai";
@@ -20,13 +16,12 @@ import {
   RUN_APP_MAX_VIEWPORT_PX,
 } from "./run-app";
 
-const appIdField = z.string().describe("App ID (from list_open_apps)");
+const appIdField = z.string().describe("Legacy (pre-git) app ID");
 
-// NOTE: the mutation tools below (write/delete/rename file, add/remove
-// dependency, create/delete data binding) execute SERVER-SIDE (mirroring the
-// console #475 pattern) — see api/src/agent-lib/tools/server-app-tools.ts. Their
-// schemas are exported here so the server tools and the app's tool cards share
-// a single source of truth. They are intentionally NOT in `clientAppTools`.
+// NOTE: the mutation-tool schemas below (write/delete/rename file, add/remove
+// dependency, create/delete data binding) belonged to the removed v1 server
+// executors. They are kept only so historical tool calls keep their typing;
+// they are intentionally NOT in `clientAppTools`.
 export const writeFileSchema = z.object({
   appId: appIdField,
   path: z
@@ -289,10 +284,8 @@ export const restoreAppVersionSchema = z.object({
     .describe("Optional note explaining why this version was restored."),
 });
 
-// Schemas for the server-executed app tools (registered with execute functions
-// in api/src/agent-lib/tools/server-app-tools.ts). Apps are fully
-// server-authoritative: list/create/read/inspect/materialize all run against
-// the MakoApp document so a headless / detached agent never needs a browser.
+// Schemas for the removed v1 server-executed app tools, kept for the typing
+// of historical tool calls. They ran against the MakoApp document.
 export const listAppsSchema = z.object({});
 
 export const createAppSchema = z.object({

@@ -174,17 +174,17 @@ export interface IWorkspace extends Document {
      */
     appBindingRefreshConcurrency?: number;
     /**
-     * Apps v2 (git-backed apps, sandbox, Source Control) for this workspace.
+     * Apps (git-backed apps, sandbox, Source Control) for this workspace.
      * Off by default; super-admins flip it per workspace for the incremental
      * rollout (Settings › Super Admin › Feature flags).
      */
-    appsV2Enabled?: boolean;
+    appsEnabled?: boolean;
   };
   billing: IWorkspaceBilling;
   selfDirective?: string;
   apiKeys?: IWorkspaceApiKey[];
   /**
-   * Connected GitHub repos — workspace-level infrastructure, not an apps-v2
+   * Connected GitHub repos — workspace-level infrastructure, not an apps
    * detail: apps (and later consoles, dbt projects) mount into these. Mako
    * stores nothing in Mongo except these links: the repos themselves are the
    * durable store. Layout inside a repo: `<makoRoot>/apps/<app>` for
@@ -193,14 +193,14 @@ export interface IWorkspace extends Document {
    */
   workspaceRepos?: IWorkspaceRepoBinding[];
   /** @deprecated pre-workspaceRepos single binding — migrated at read time. */
-  appsV2Repo?: IWorkspaceRepoBinding;
+  appsRepo?: IWorkspaceRepoBinding;
   /**
    * §10 monorepo, cloud tier: the ONE Mako-hosted mirror repo for this
    * workspace (`<prefix>-<workspaceId>` under MAKO_CLOUD_GITHUB_ORG). Set
    * after the first successful ensure+push; absent when the cloud app is
    * not configured or the workspace is BYO-only.
    */
-  appsV2CloudRepo?: { owner: string; repo: string };
+  appsCloudRepo?: { owner: string; repo: string };
 }
 
 export interface IWorkspaceRepoBinding {
@@ -220,8 +220,8 @@ export interface IWorkspaceRepoBinding {
   linkedAt?: Date;
 }
 
-/** @deprecated old name — repos are workspace-level, not apps-v2-scoped. */
-export type IAppsV2RepoBinding = IWorkspaceRepoBinding;
+/** @deprecated old name — repos are workspace-level, not apps-scoped. */
+export type IAppsRepoBinding = IWorkspaceRepoBinding;
 
 /**
  * API Key interface for workspace authentication
@@ -1327,7 +1327,7 @@ Add any specific instructions for how the AI should interpret your data or respo
         default: 2,
         min: 1,
       },
-      appsV2Enabled: { type: Boolean, default: false },
+      appsEnabled: { type: Boolean, default: false },
     },
     billing: {
       stripeCustomerId: { type: String, default: null },
@@ -1362,7 +1362,7 @@ Add any specific instructions for how the AI should interpret your data or respo
       default: "",
       maxlength: 10000,
     },
-    appsV2CloudRepo: {
+    appsCloudRepo: {
       type: new Schema(
         {
           owner: { type: String, required: true },
@@ -1391,7 +1391,7 @@ Add any specific instructions for how the AI should interpret your data or respo
       ],
       default: undefined,
     },
-    appsV2Repo: {
+    appsRepo: {
       type: {
         provider: { type: String, enum: ["github"], default: "github" },
         installationId: { type: Number },
@@ -4368,8 +4368,8 @@ export interface IMakoApp extends Document {
   owner_id?: string;
   createdBy: string;
   /**
-   * Set when this app has been migrated to Apps v2 (see
-   * apps-v2/migrate-v1-apps.ts). The migrator skips stamped apps, so the
+   * Set when this app has been migrated to Apps (see
+   * apps/migrate-v1-apps.ts). The migrator skips stamped apps, so the
    * migration is re-runnable; clearing the stamp (and deleting the v2
    * folder) un-migrates.
    */
@@ -5713,20 +5713,20 @@ export const McpToolGrant = mongoose.model<IMcpToolGrant>(
 );
 
 // ---------------------------------------------------------------------------
-// Apps v2 (experimental, flag-gated — see apps-v2.md)
+// Apps (git-backed — see apps.md)
 //
-// Runs in PARALLEL with apps v1 (`MakoApp` above): new collections, no shared
-// fields, no migrations of existing data. Source files live in a Mako-managed
-// bare git repository per project (api/src/apps-v2/repository.service.ts);
+// Separate from the retained legacy `MakoApp` documents above: new
+// collections, no shared fields. Source files live in a Mako-managed
+// bare git repository per project (api/src/apps/repository.service.ts);
 // these documents hold only control-plane metadata.
 // ---------------------------------------------------------------------------
 
 /**
- * An Apps v2 project: control-plane record for one git-backed app.
+ * An Apps project: control-plane record for one git-backed app.
  * One bare repo per project (per-app ACLs make the repo the authorization
  * boundary); source contents are never stored in Mongo.
  */
-export interface IAppProjectV2 extends Document {
+export interface IAppProject extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   title: string;
@@ -5765,7 +5765,7 @@ export interface IAppProjectV2 extends Document {
   updatedAt: Date;
 }
 
-const AppProjectV2Schema = new Schema<IAppProjectV2>(
+const AppProjectSchema = new Schema<IAppProject>(
   {
     workspaceId: {
       type: Schema.Types.ObjectId,
@@ -5799,26 +5799,26 @@ const AppProjectV2Schema = new Schema<IAppProjectV2>(
     publishedAt: { type: Date },
     publicShare: { type: PublicShareSchema, default: undefined },
   },
-  { collection: "app_projects_v2", timestamps: true },
+  { collection: "app_projects", timestamps: true },
 );
 
-AppProjectV2Schema.index({ workspaceId: 1, updatedAt: -1 });
+AppProjectSchema.index({ workspaceId: 1, updatedAt: -1 });
 // Anonymous share lookup is by token alone, so it must be indexed and unique
 // across the collection — same shape as v1 apps and dashboards.
-AppProjectV2Schema.index(
+AppProjectSchema.index(
   { "publicShare.token": 1 },
   { unique: true, sparse: true },
 );
 // §10 monorepo: one folder per app in the workspace repo. Sparse until the
 // workspace-monorepo migration backfills slugs on legacy docs.
-AppProjectV2Schema.index(
+AppProjectSchema.index(
   { workspaceId: 1, slug: 1 },
   { unique: true, sparse: true },
 );
 
-export const AppProjectV2 = mongoose.model<IAppProjectV2>(
-  "AppProjectV2",
-  AppProjectV2Schema,
+export const AppProject = mongoose.model<IAppProject>(
+  "AppProject",
+  AppProjectSchema,
 );
 
 /**
@@ -5836,7 +5836,7 @@ export const AppProjectV2 = mongoose.model<IAppProjectV2>(
  * can type `git checkout` in the terminal, and that is a legitimate way to
  * switch branches, not a state to correct.
  */
-export interface IAppWorktreeV2 extends Document {
+export interface IAppWorktree extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   /** @deprecated §10: worktrees are per (workspace, actor); unset on new docs. */
@@ -5848,7 +5848,7 @@ export interface IAppWorktreeV2 extends Document {
   updatedAt: Date;
 }
 
-const AppWorktreeV2Schema = new Schema<IAppWorktreeV2>(
+const AppWorktreeSchema = new Schema<IAppWorktree>(
   {
     workspaceId: {
       type: Schema.Types.ObjectId,
@@ -5857,19 +5857,19 @@ const AppWorktreeV2Schema = new Schema<IAppWorktreeV2>(
     },
     projectId: {
       type: Schema.Types.ObjectId,
-      ref: "AppProjectV2",
+      ref: "AppProject",
     },
     userId: { type: String, required: true },
     branch: { type: String, required: true, default: "main" },
   },
-  { collection: "app_worktrees_v2", timestamps: true },
+  { collection: "app_worktrees", timestamps: true },
 );
 
 // §10 monorepo: ONE worktree per (workspace, actor). The old per-project
 // unique index is dropped by the workspace-monorepo migration.
-AppWorktreeV2Schema.index({ workspaceId: 1, userId: 1 }, { unique: true });
+AppWorktreeSchema.index({ workspaceId: 1, userId: 1 }, { unique: true });
 
-export const AppWorktreeV2 = mongoose.model<IAppWorktreeV2>(
-  "AppWorktreeV2",
-  AppWorktreeV2Schema,
+export const AppWorktree = mongoose.model<IAppWorktree>(
+  "AppWorktree",
+  AppWorktreeSchema,
 );

@@ -619,7 +619,7 @@ export async function materializeAppBinding(input: {
         { new: true },
       );
       publishRealtimeEvent(workspaceId, {
-        type: "app.updated",
+        type: "legacy-app.updated",
         appId,
         version: bumped?.version ?? appDoc.version + 1,
         updatedBy: "system",

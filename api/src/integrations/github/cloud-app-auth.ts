@@ -1,7 +1,7 @@
 /**
  * Auth for the "Mako Cloud Storage" GitHub App — the Mako-OWNED app installed
  * exactly once, on Mako's own org (mako-ai-cloud), which holds the cloud-tier
- * apps-v2 repos (one private repo per app project).
+ * apps repos (one private repo per app project).
  *
  * Deliberately separate from app-auth.ts: that module authenticates the
  * customer-facing BYO App (mako-transforms*) whose installations live on

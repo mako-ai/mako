@@ -12,7 +12,7 @@
  * listed here are the repo-wide set — the same set a branch switch has to get
  * past, which the app-scoped view once hid.
  *
- * The apps-v2 API is addressed per app, but status/commit/history all operate
+ * The apps API is addressed per app, but status/commit/history all operate
  * on the workspace repo, so any app id works as a handle; the first one
  * serves. No apps yet means no repo to control.
  */
@@ -51,21 +51,18 @@ import {
   SquareArrowOutUpRight as OpenFileIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useAppsV2Store, type AppV2Change } from "../store/appsV2Store";
+import { useAppsStore, type AppChange } from "../store/appsStore";
 import {
   useConsoleStore,
   selectTabBySettingsSection,
 } from "../store/consoleStore";
 import { SECTION_LABELS } from "../pages/settings/sections";
-import {
-  focusAppsV2DiffTab,
-  focusAppsV2FileTab,
-} from "../apps-v2-runtime/shell";
+import { focusAppsDiffTab, focusAppsFileTab } from "../apps-runtime/shell";
 import VSScrollArea from "./VSScrollArea";
 
 /** VS Code's status letters, in VS Code's colors. */
 const STATUS_STYLE: Record<
-  AppV2Change["status"],
+  AppChange["status"],
   { letter: string; color: string }
 > = {
   modified: { letter: "M", color: "#e2c08d" },
@@ -170,7 +167,7 @@ function ChangeRow({
   onOpen,
   actions,
 }: {
-  change: AppV2Change;
+  change: AppChange;
   onOpen: () => void;
   actions: React.ReactNode;
 }) {
@@ -253,13 +250,13 @@ export default function SourceControlExplorer() {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
 
-  const apps = useAppsV2Store(s => s.apps);
-  const fetchApps = useAppsV2Store(s => s.fetchApps);
-  const statusByApp = useAppsV2Store(s => s.statusByApp);
-  const historyByApp = useAppsV2Store(s => s.repoHistoryByApp);
-  const fetchStatus = useAppsV2Store(s => s.fetchStatus);
-  const fetchHistory = useAppsV2Store(s => s.fetchHistory);
-  const commit = useAppsV2Store(s => s.commit);
+  const apps = useAppsStore(s => s.apps);
+  const fetchApps = useAppsStore(s => s.fetchApps);
+  const statusByApp = useAppsStore(s => s.statusByApp);
+  const historyByApp = useAppsStore(s => s.repoHistoryByApp);
+  const fetchStatus = useAppsStore(s => s.fetchStatus);
+  const fetchHistory = useAppsStore(s => s.fetchHistory);
+  const commit = useAppsStore(s => s.commit);
 
   // Any app id reaches the workspace repo; the first one is the handle.
   const appId = apps[0]?.id;
@@ -273,7 +270,7 @@ export default function SourceControlExplorer() {
     () => changes.filter(c => c.unstaged ?? !c.staged),
     [changes],
   );
-  const gitPaths = useAppsV2Store(s => s.gitPaths);
+  const gitPaths = useAppsStore(s => s.gitPaths);
   const [confirm, setConfirm] = useState<{
     title: string;
     body: string;
@@ -310,14 +307,14 @@ export default function SourceControlExplorer() {
     (path: string, mode: "working" | "index") => {
       if (!appId) return;
       const owner = ownerOf(path);
-      focusAppsV2DiffTab(owner?.app.id ?? appId, path, mode, owner?.app.slug);
+      focusAppsDiffTab(owner?.app.id ?? appId, path, mode, owner?.app.slug);
     },
     [appId, ownerOf],
   );
   const openFile = useCallback(
     (path: string) => {
       const owner = ownerOf(path);
-      if (owner) focusAppsV2FileTab(owner.app.id, owner.rel, owner.app.slug);
+      if (owner) focusAppsFileTab(owner.app.id, owner.rel, owner.app.slug);
     },
     [ownerOf],
   );
@@ -382,12 +379,12 @@ export default function SourceControlExplorer() {
   }, [workspaceId, appId, message, committing, commit, staged.length]);
 
   const branch = status?.branch ?? "…";
-  const branches = useAppsV2Store(s =>
+  const branches = useAppsStore(s =>
     appId ? s.branchesByApp[appId] : undefined,
   );
-  const fetchBranches = useAppsV2Store(s => s.fetchBranches);
-  const checkoutBranch = useAppsV2Store(s => s.checkoutBranch);
-  const mergeBranch = useAppsV2Store(s => s.mergeBranch);
+  const fetchBranches = useAppsStore(s => s.fetchBranches);
+  const checkoutBranch = useAppsStore(s => s.checkoutBranch);
+  const mergeBranch = useAppsStore(s => s.mergeBranch);
   const [merging, setMerging] = useState(false);
   // The current branch's entry in the listing — what "Merge into main" acts
   // on. Only offered for a non-default branch that is actually ahead.
@@ -672,7 +669,7 @@ export default function SourceControlExplorer() {
         {!appId ? (
           <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
             The workspace repository appears with its first app — create one in
-            Apps v2 and this panel takes over from there.
+            Apps and this panel takes over from there.
           </Typography>
         ) : (
           <>

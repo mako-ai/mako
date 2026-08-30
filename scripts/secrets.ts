@@ -43,6 +43,10 @@ const CONCURRENCY = 8;
  * would hand every developer someone else's local paths and toggles.
  */
 const LOCAL_ONLY = new Set([
+  "APPS_SANDBOX_PROVIDER",
+  "APPS_GIT_ROOT",
+  "APPS_SESSIONS_ROOT",
+  // Pre-rename names — keep excluded so stale .env entries never sync.
   "APPS_V2_SANDBOX_PROVIDER",
   "APPS_V2_GIT_ROOT",
   "APPS_V2_SESSIONS_ROOT",

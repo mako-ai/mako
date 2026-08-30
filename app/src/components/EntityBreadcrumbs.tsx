@@ -3,7 +3,7 @@ import { Box } from "@mui/material";
 import { ChevronRight as BreadcrumbChevronIcon } from "lucide-react";
 import { useConsoleStore } from "../store/consoleStore";
 import { useSchemaStore } from "../store/schemaStore";
-import { useAppsV2Store } from "../store/appsV2Store";
+import { useAppsStore } from "../store/appsStore";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useDbtStore } from "../store/dbtStore";
 import { useUIStore } from "../store/uiStore";
@@ -25,7 +25,7 @@ interface EntityContext {
   connectionName?: string;
   dashboardTitle?: string;
   dashboardDataSourceName?: string;
-  appV2Title?: string;
+  appTitle?: string;
   dbtProjectName?: string;
 }
 
@@ -87,17 +87,13 @@ function segmentsForTab(
         "Data sources",
         ctx.dashboardDataSourceName || tab.title,
       ]);
-    case "app-v2":
-      return plain(["Apps v2", ctx.appV2Title || tab.title]);
-    case "app-v2-file": {
+    case "app":
+      return plain(["Apps", ctx.appTitle || tab.title]);
+    case "app-file": {
       const path = (tab.metadata?.path as string | undefined) || "";
-      return plain([
-        "Apps v2",
-        ctx.appV2Title,
-        ...path.split("/").filter(Boolean),
-      ]);
+      return plain(["Apps", ctx.appTitle, ...path.split("/").filter(Boolean)]);
     }
-    case "app-v2-diff": {
+    case "app-diff": {
       const path = (tab.metadata?.path as string | undefined) || "";
       return plain(["Source Control", ...path.split("/").filter(Boolean)]);
     }
@@ -186,9 +182,9 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
     return connection?.displayName || connection?.name;
   });
 
-  const appV2Id = tab?.metadata?.appV2Id as string | undefined;
-  const appV2Title = useAppsV2Store(s =>
-    appV2Id ? s.apps.find(a => a.id === appV2Id)?.title : undefined,
+  const appId = tab?.metadata?.appId as string | undefined;
+  const appTitle = useAppsStore(s =>
+    appId ? s.apps.find(a => a.id === appId)?.title : undefined,
   );
 
   const dbtProjectId = tab?.metadata?.projectId as string | undefined;
@@ -223,7 +219,7 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
     connectionName,
     dashboardTitle,
     dashboardDataSourceName,
-    appV2Title,
+    appTitle,
     dbtProjectName,
   });
 

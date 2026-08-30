@@ -12,7 +12,7 @@
  * API instance forwards events to its own connected SSE clients
  * (routes/realtime.ts).
  */
-import type { BoxState } from "../apps-v2/box-state.service";
+import type { BoxState } from "../apps/box-state.service";
 import {
   createPubSubPublisher,
   createPubSubSubscriber,
@@ -72,23 +72,22 @@ export type RealtimeEvent =
       chatId: string;
       state: "streaming" | "idle";
     }
-  // Agent-driven mutation pokes for server-executed app/dbt/dashboard tools
-  // (the app/dbt/dashboard analogue of console.updated). Open tabs pull the
-  // authoritative document over normal HTTP when the carried version/path is
-  // newer than what they hold (poke-then-pull). `clientId` lets a tab suppress
-  // its own echoes; agent writes carry `agent:<chatId>`.
+  // Legacy (pre-git) MakoApp poke — emitted when a retained v1 public-share
+  // binding refresh bumps the document version. No current client consumes
+  // it (v1 tabs are gone); kept distinct so it can never be mistaken for a
+  // git-backed app.updated.
   | {
-      type: "app.updated";
+      type: "legacy-app.updated";
       appId: string;
       version: number;
       updatedBy: string;
       clientId?: string;
       origin: "agent" | "save";
     }
-  // Apps v2 (git-backed): any durable change — WIP flush, commit, merge,
+  // Apps (git-backed): any durable change — WIP flush, commit, merge,
   // discard, create/delete — pokes open windows to refetch from the API.
   | {
-      type: "app-v2.updated";
+      type: "app.updated";
       appId: string;
       /** Worktree actor that made the change (user id or `chat:<chatId>`). */
       updatedBy?: string;
@@ -185,16 +184,16 @@ export type RealtimeEvent =
       type: "notebook.tree.updated";
     }
   // The (workspace, user) sandbox reported its own state — branch, dirty
-  // files, dev servers — pushed from inside the box (apps-v2/box-state).
+  // files, dev servers — pushed from inside the box (apps/box-state).
   | {
-      type: "app-v2.box-state";
+      type: "app.box-state";
       userId: string;
       state: BoxState;
     }
-  // An agent in this user's chat asked their UI to open an Apps v2 app tab
-  // (app2_open_app). Pure client-side effect, scoped to the requesting user.
+  // An agent in this user's chat asked their UI to open an Apps app tab
+  // (app_open_app). Pure client-side effect, scoped to the requesting user.
   | {
-      type: "app-v2.open-app";
+      type: "app.open-app";
       userId: string;
       appId: string;
       slug?: string;

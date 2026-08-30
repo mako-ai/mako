@@ -4,7 +4,7 @@
  * Unlike the client notebook tools (which need the browser to run via
  * onToolCall), these have an `execute` and mutate the durable notebook directly
  * — via the notebook store (GCS) + kernel session — then poke the workspace so
- * open tabs pull the change. Mirrors server-app-tools / dbt server tools, and
+ * open tabs pull the change. Mirrors the dbt server tools, and
  * is what lets an agent run keep building a notebook after the tab closes.
  *
  * Spread AFTER `clientNotebookTools` in the unified factory so these win.

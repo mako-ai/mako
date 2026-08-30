@@ -227,8 +227,8 @@ const baseModeState = (loaded: string[] = []): ModeState => ({
     "edit_dbt_file",
     "dbt_run_model",
     "dbt_commit_and_push",
-    "app2_write_file",
-    "app2_commit",
+    "app_write_file",
+    "app_commit",
   ]);
   const withoutPlan: ModeState = {
     enabledModes: new Set(["transform", "app"]),
@@ -501,8 +501,8 @@ async function endToEnd() {
     `Unclassified agent tools (add to a mode's toolNames, CORE_ALWAYS_TOOL_NAMES, or DEFERRED_BUILTIN_TOOL_DOMAINS): ${unclassified.join(", ")}`,
   );
   const appModeTools = toolNamesForModes(new Set(["app"] as const));
-  assert.ok(appModeTools.has("app2_write_file"));
-  assert.ok(appModeTools.has("app2_browse"));
+  assert.ok(appModeTools.has("app_write_file"));
+  assert.ok(appModeTools.has("app_browse"));
   // Notebook cell CRUD fold: only the merged edit_notebook_cell stays in the
   // notebook working set; the add/delete aliases remain loadable.
   const notebookModeTools = toolNamesForModes(new Set(["notebook"] as const));

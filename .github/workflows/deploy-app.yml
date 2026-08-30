@@ -188,11 +188,14 @@ jobs:
       INNGEST_EVENT_KEY: ${{ secrets.INNGEST_BRANCH_EVENT_KEY || vars.INNGEST_EVENT_KEY }}
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_BRANCH_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
-      # Apps v2 sandboxes (E2B Firecracker microVMs).
+      # Apps sandboxes (E2B Firecracker microVMs).
       E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
-      APPS_V2_SANDBOX_PROVIDER: e2b
-      APPS_V2_E2B_TEMPLATE: mako-apps-v2
-      # Apps v2 cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
+      APPS_SANDBOX_PROVIDER: e2b
+      # External E2B template artifact — still published under its pre-rename
+      # alias. To retire it: `pnpm --filter api run apps:build-template` with
+      # E2B_TEMPLATE_ALIAS=mako-apps, then flip this value.
+      APPS_E2B_TEMPLATE: mako-apps-v2
+      # Apps cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
       # All previews share the staging DB, so they share the "staging" prefix:
       # same workspace -> same repo regardless of which PR created it.
       MAKO_CLOUD_GITHUB_ORG: ${{ vars.MAKO_CLOUD_GITHUB_ORG }}
@@ -616,8 +619,8 @@ jobs:
             --set-env-vars NODE_ENV=production \
             --set-env-vars AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY} \
             --set-env-vars E2B_API_KEY=${E2B_API_KEY} \
-            --set-env-vars APPS_V2_SANDBOX_PROVIDER=${APPS_V2_SANDBOX_PROVIDER} \
-            --set-env-vars APPS_V2_E2B_TEMPLATE=${APPS_V2_E2B_TEMPLATE} \
+            --set-env-vars APPS_SANDBOX_PROVIDER=${APPS_SANDBOX_PROVIDER} \
+            --set-env-vars APPS_E2B_TEMPLATE=${APPS_E2B_TEMPLATE} \
             --set-env-vars MAKO_CLOUD_GITHUB_ORG=${MAKO_CLOUD_GITHUB_ORG} \
             --set-env-vars MAKO_CLOUD_GITHUB_APP_ID=${MAKO_CLOUD_GITHUB_APP_ID} \
             --set-env-vars "^|^MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY=${MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY}" \
@@ -868,11 +871,14 @@ jobs:
       INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
-      # Apps v2 sandboxes (E2B Firecracker microVMs).
+      # Apps sandboxes (E2B Firecracker microVMs).
       E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
-      APPS_V2_SANDBOX_PROVIDER: e2b
-      APPS_V2_E2B_TEMPLATE: mako-apps-v2
-      # Apps v2 cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
+      APPS_SANDBOX_PROVIDER: e2b
+      # External E2B template artifact — still published under its pre-rename
+      # alias. To retire it: `pnpm --filter api run apps:build-template` with
+      # E2B_TEMPLATE_ALIAS=mako-apps, then flip this value.
+      APPS_E2B_TEMPLATE: mako-apps-v2
+      # Apps cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
       MAKO_CLOUD_GITHUB_ORG: ${{ vars.MAKO_CLOUD_GITHUB_ORG }}
       MAKO_CLOUD_GITHUB_APP_ID: ${{ vars.MAKO_CLOUD_GITHUB_APP_ID }}
       MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY }}
@@ -1064,8 +1070,8 @@ jobs:
             --set-env-vars NODE_ENV=production \
             --set-env-vars AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY} \
             --set-env-vars E2B_API_KEY=${E2B_API_KEY} \
-            --set-env-vars APPS_V2_SANDBOX_PROVIDER=${APPS_V2_SANDBOX_PROVIDER} \
-            --set-env-vars APPS_V2_E2B_TEMPLATE=${APPS_V2_E2B_TEMPLATE} \
+            --set-env-vars APPS_SANDBOX_PROVIDER=${APPS_SANDBOX_PROVIDER} \
+            --set-env-vars APPS_E2B_TEMPLATE=${APPS_E2B_TEMPLATE} \
             --set-env-vars MAKO_CLOUD_GITHUB_ORG=${MAKO_CLOUD_GITHUB_ORG} \
             --set-env-vars MAKO_CLOUD_GITHUB_APP_ID=${MAKO_CLOUD_GITHUB_APP_ID} \
             --set-env-vars "^|^MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY=${MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY}" \

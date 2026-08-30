@@ -73,8 +73,8 @@ const loadDashboardsExplorer = () => import("./components/DashboardsExplorer");
 const DashboardsExplorer = lazy(loadDashboardsExplorer);
 const loadNotebooksExplorer = () => import("./components/NotebooksExplorer");
 const NotebooksExplorer = lazy(loadNotebooksExplorer);
-const loadAppsV2Explorer = () => import("./components/AppsV2Explorer");
-const AppsV2Explorer = lazy(loadAppsV2Explorer);
+const loadAppsExplorer = () => import("./components/AppsExplorer");
+const AppsExplorer = lazy(loadAppsExplorer);
 const SourceControlExplorer = lazy(
   () => import("./components/SourceControlExplorer"),
 );
@@ -567,12 +567,9 @@ function MainApp() {
       case "dashboards":
         return <DashboardsExplorer />;
       case "apps":
-        // Sunset: v1 removed — old "apps" pane selections land on Apps v2.
-        return <AppsV2Explorer />;
+        return <AppsExplorer />;
       case "notebooks":
         return <NotebooksExplorer />;
-      case "apps-v2":
-        return <AppsV2Explorer />;
       case "source-control":
         return <SourceControlExplorer />;
       case "dbt":

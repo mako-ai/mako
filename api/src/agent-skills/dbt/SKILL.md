@@ -232,17 +232,17 @@ The full safe-iteration loop:
    `dbt_run_model` (defaults: the user's dev environment — dev itself when
    solo, personal `dbt_<user>` in teams (auto-provisioned on first build) —
    + defer to prod manifest).
-2. `app_set_preview` with `environment` set to the personal one — the app's
-   DRAFT preview now reads the freshly built schema. This is per-user view
-   state: other editors, the published app, and shared links keep reading
-   prod. Verify visually (screenshot) if useful.
+2. For a git-backed app, point the binding at the personal environment
+   (`dbt_project` front matter) and rebuild it with `app_materialize`; for a
+   legacy (pre-git) app, `app_set_preview` with `environment` set to the
+   personal one — the draft preview then reads the freshly built schema.
+   This is per-user view state: other editors, the published app, and
+   shared links keep reading prod. Verify visually (screenshot) if useful.
 3. Promote the dbt change: `dbt_commit_to_branch` → `dbt_open_pull_request` →
    (after review) `dbt_merge_pull_request`; then run the prod job via
    `dbt_run_job` — ONLY with explicit user confirmation.
-4. After the prod build succeeds, reset the preview
-   (`app_set_preview` with `environment: null`) and, if app code
-   changed, publish with `save_version` (`entityType: "app"`; over MCP:
-   `app_save_version`).
+4. After the prod build succeeds, reset the binding/preview to prod and,
+   if app code changed, ship it (`app_commit` → `app_merge_to_main`).
 
 ## Tier-3 references
 

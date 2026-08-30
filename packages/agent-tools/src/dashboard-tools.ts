@@ -42,10 +42,8 @@ const saveDashboardVersionSchema = z.object({
 });
 
 const versionEntityRefFields = {
-  entityType: z.enum(["app", "dashboard"]),
-  entityId: z
-    .string()
-    .describe("App ID (from list_open_apps) or dashboard ID (from list_open_dashboards)"),
+  entityType: z.enum(["dashboard"]),
+  entityId: z.string().describe("Dashboard ID (from list_open_dashboards)"),
 };
 
 const saveVersionSchema = z.object({

@@ -268,7 +268,7 @@ adminRoutes.openapi(
   }),
   async c => {
     const workspaces = await Workspace.find({})
-      .select("name slug settings.appsV2Enabled createdAt")
+      .select("name slug settings.appsEnabled createdAt")
       .sort({ name: 1 })
       .lean();
     return c.json(
@@ -278,7 +278,7 @@ adminRoutes.openapi(
           id: w._id.toString(),
           name: w.name,
           slug: w.slug,
-          appsV2Enabled: w.settings?.appsV2Enabled === true,
+          appsEnabled: w.settings?.appsEnabled === true,
         })),
       },
       200,
@@ -298,7 +298,7 @@ adminRoutes.openapi(
       body: {
         content: {
           "application/json": {
-            schema: z.object({ appsV2Enabled: z.boolean().optional() }),
+            schema: z.object({ appsEnabled: z.boolean().optional() }),
           },
         },
       },
@@ -309,15 +309,15 @@ adminRoutes.openapi(
     const { workspaceId } = c.req.valid("param");
     const body = c.req.valid("json");
     const $set: Record<string, unknown> = {};
-    if (typeof body.appsV2Enabled === "boolean") {
-      $set["settings.appsV2Enabled"] = body.appsV2Enabled;
+    if (typeof body.appsEnabled === "boolean") {
+      $set["settings.appsEnabled"] = body.appsEnabled;
     }
     const updated = await Workspace.findByIdAndUpdate(
       workspaceId,
       { $set },
       { new: true },
     )
-      .select("name slug settings.appsV2Enabled")
+      .select("name slug settings.appsEnabled")
       .lean();
     if (!updated) return c.json({ error: "Workspace not found" }, 404);
     logger.info("Admin changed workspace feature flags", {
@@ -331,7 +331,7 @@ adminRoutes.openapi(
           id: updated._id.toString(),
           name: updated.name,
           slug: updated.slug,
-          appsV2Enabled: updated.settings?.appsV2Enabled === true,
+          appsEnabled: updated.settings?.appsEnabled === true,
         },
       },
       200,

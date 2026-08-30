@@ -8,7 +8,7 @@ import {
 } from "@mako/agent-tools";
 import { createDbtServerTools } from "../../agent-lib/tools/dbt-tools";
 import { createNotebookServerTools } from "../../agent-lib/tools/server-notebook-tools";
-import { createAppsV2Tools } from "../../agent-lib/tools/apps-v2-tools";
+import { createAppsTools } from "../../agent-lib/tools/apps-tools";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import { createSkillTools } from "../../agent-lib/tools/skill-tools";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
@@ -59,8 +59,8 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     chatId: context.chatId,
     defaultNotebookId: context.notebookId,
   });
-  // Apps v2 (experimental, flag-gated) — empty object when disabled.
-  const appsV2Tools = createAppsV2Tools({
+  // Apps (experimental, flag-gated) — empty object when disabled.
+  const appsTools = createAppsTools({
     workspaceId,
     userId,
     supportsVision: context.modelSupportsVision,
@@ -91,7 +91,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     tools: {
       ...universalTools,
       ...clientDashboardTools,
-      ...appsV2Tools,
+      ...appsTools,
       ...clientDbtTools,
       ...dbtServerTools,
       ...clientDataSourceTools,

@@ -41,8 +41,8 @@ export interface Workspace {
     billingTier: "free" | "pro" | "enterprise";
     dashboardRefreshConcurrency?: number;
     appBindingRefreshConcurrency?: number;
-    /** Apps v2 rollout flag (Settings › Super Admin › Feature flags). */
-    appsV2Enabled?: boolean;
+    /** Apps rollout flag (Settings › Super Admin › Feature flags). */
+    appsEnabled?: boolean;
   };
   billing?: WorkspaceBilling;
 }

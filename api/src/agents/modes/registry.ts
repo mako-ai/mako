@@ -55,15 +55,6 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   delete_skill: "skills",
   list_skills: "skills",
   search_skills: "skills",
-  // Legacy full-file app read. Keep executable for compatibility, but the app
-  // Deprecated aliases of app_update_data_binding (which now takes
-  // materialization + materializationSchedule directly). Kept executable for
-  // external MCP clients; the in-product agent uses the merged tool.
-  app_set_binding_materialization: "apps",
-  // Deprecated aliases of app_set_preview (environment + viewport folded into
-  // one preview setter). Kept executable for old chats.
-  app_set_preview_environment: "apps",
-  app_set_preview_viewport: "apps",
   // Deprecated single-field alias of set_multiple_fields (which updates one
   // or many fields). Its FIELD_PATHS enum makes it one of the heaviest
   // schemas in the catalog, so it stays out of the flow working set.
@@ -92,10 +83,7 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   mongo_list_collections: "mongodb",
   mongo_inspect_collection: "mongodb",
   // Deprecated per-entity aliases of the generic save_version /
-  // restore_version pair (which takes an entityType + entityId ref). The
-  // app_* pair stays the MCP-facing surface (the generic pair is client-side).
-  app_save_version: "apps",
-  app_restore_version: "apps",
+  // restore_version pair (which takes an entityType + entityId ref).
   dashboard_save_version: "dashboards",
   dashboard_restore_version: "dashboards",
 };
@@ -187,37 +175,28 @@ const FLOW_MODE_TOOL_NAMES: string[] = [
   "inspect_table",
 ];
 
-/**
- * Tools that operate ONLY on Apps v2 (git-backed) projects. Kept as a set so
- * {@link isolateAppToolFamily} can prune the wrong family when the user is
- * clearly working in one of the two app systems (adopted from the parallel
- * apps-v2 branch): a v2 project id passed to a v1 tool (or vice versa) fails
- * confusingly, and models otherwise mix the suites.
- */
-export const APP_V2_ONLY_TOOL_NAMES = new Set<string>([
-  "app2_list_apps",
-  "app2_create_app",
-  "app2_bash",
-  "app2_read_file",
-  "app2_glob",
-  "app2_grep",
-  "app2_write_file",
-  "app2_edit_file",
-  "app2_status",
-  "app2_commit",
-  "app2_open_app",
-  "app2_dev_log",
-  "app2_browse",
-  "app2_materialize",
-  "app2_list_branches",
-  "app2_merge_to_main",
+/** Tools that operate on Apps (git-backed) projects. */
+export const APP_TOOL_NAMES = new Set<string>([
+  "app_list_apps",
+  "app_create_app",
+  "app_bash",
+  "app_read_file",
+  "app_glob",
+  "app_grep",
+  "app_write_file",
+  "app_edit_file",
+  "app_status",
+  "app_commit",
+  "app_open_app",
+  "app_dev_log",
+  "app_browse",
+  "app_materialize",
+  "app_list_branches",
+  "app_merge_to_main",
 ]);
 
 const APP_MODE_TOOL_NAMES: string[] = [
-  // Apps v2 (git-backed). Tool-family isolation picks v1 vs v2 per turn.
-  ...APP_V2_ONLY_TOOL_NAMES,
-  "save_version",
-  "restore_version",
+  ...APP_TOOL_NAMES,
   "browse_version_history",
   "get_version_snapshot",
   // Shared surface-scoped data-source primitives (apps + dashboards)
@@ -415,7 +394,7 @@ export function defaultExpertiseMode(
   if (view === "flow-editor" || tabKind === "flow-editor") return "flow";
   if (view === "app" || tabKind === "app") return "app";
   if (tabKind === "notebook") return "notebook";
-  if (tabKind === "app-v2" || tabKind === "app-v2-file") return "app";
+  if (tabKind === "app" || tabKind === "app-file") return "app";
   if (view === "dbt" || tabKind === "dbt-file" || tabKind === "dbt-job") {
     return "transform";
   }

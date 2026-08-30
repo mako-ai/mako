@@ -1,351 +1,153 @@
 ---
 name: apps
-description: Load when building, editing, or debugging Mako React apps — app files, npm dependencies, data bindings, the @mako/app-sdk hooks (useQuery / useDuckDB / useLocation / useSearchParams / navigate), URL state and shareable deep links, materialized Parquet/DuckDB bindings, and the live preview runtime.
+description: Load when building or editing a git-backed Apps app project.
 entities:
-  - app
+  - app project
   - apps
+  - app
   - react
   - react app
   - data binding
   - data bindings
-  - app-sdk
-  - usequery
-  - useduckdb
-  - uselocation
-  - usesearchparams
-  - navigate
-  - url state
-  - query params
-  - routing
-  - tabs
-  - deep link
-  - share link
-  - parquet
-  - preview
-  - theme
-  - dark mode
 ---
 
-Apps are React projects rendered live in a tab. You build them by editing files.
+# Apps workflow
 
-All app tools run server-side except the live preview: `list_open_apps`,
-`create_app`, `get_app_state`, `app_search`, `app_read_resource`, the
-file/dependency/binding edits, `materialize_binding`, and versioning all operate
-on the server document,
-so you can build and operate an app with no browser attached. `run_app` is the
-verify tool on every surface — it renders the app and returns status,
-build/runtime errors, and a screenshot (in a browser it rebuilds the live
-preview; headless MCP renders server-side); `open_app` just focuses a UI tab.
+An app is a git-backed Vite + React project; for an `app` or `app-file` tab,
+use the `app_*` tools described here.
 
-### Workflow
+## Working model
 
-1. Call `list_open_apps` to find the target app and its `appId`. If none exists,
-   use `create_app` (it scaffolds a React + TypeScript starter; in an attached
-   browser, call `open_app` afterward to focus its tab).
-2. Use `get_app_state` as a **manifest**: it returns metadata plus resource refs,
-   sizes, and versions, never full source or SQL. Large manifests paginate via
-   `nextResourceOffset`. Use `app_search` to locate relevant code, then
-   `app_read_resource({ appId, resource, startLine,
-   endLine })` for only the required range. Follow `nextStartLine` when needed;
-   use `startOffset`/`nextOffset` for oversized single lines. If search returns
-   `truncated`, continue with its `nextOffset`. Do not dump every resource.
-   `app_read_file` remains a deferred compatibility fallback for older flows;
-   new work should use the bounded resource reader.
-   (To verify the app actually renders — status, build/runtime errors, and a
-   screenshot — call `run_app`.)
-3. Modify existing files with `app_edit_file` — an anchored replacement: pass the
-   exact current text as `oldString` (must match exactly once — include a few
-   surrounding lines to disambiguate) and the replacement as `newString` (`""`
-   deletes it; set `replaceAll: true` for renames). Pass the
-   `expectedResourceVersion` returned by search/read so concurrent changes are
-   rejected instead of overwritten. Use `app_write_file` (COMPLETE contents)
-   only to create new files or fully rewrite one. The entrypoint defaults to
-   `src/App.tsx` (default export is rendered).
-4. Add libraries with `app_add_dependency` (e.g. d3, recharts, framer-motion) before
-   importing them. They resolve as ES modules at preview time.
-5. To use workspace data, create a binding with `app_create_data_binding` (validate the
-   query first using the SQL/Mongo inspection tools), then read it in code:
+- Every app is a real Vite + React + TypeScript project in a Mako-managed git
+  repository. There is a real filesystem, a real shell, and a real git remote:
+  the sandbox is an ordinary clone that fetches and pushes.
+- You work on THE USER'S branch (`user/<id>`), the same one they edit from the
+  UI and the terminal — a conversation is not a line of work, so it does not
+  get a branch of its own. Your accumulated changes are committed and pushed
+  automatically at the end of every turn; committed-and-pushed work survives
+  the sandbox dying, uncommitted work lives only in the working copy, exactly
+  as on a laptop.
+- The user merges their branch into `main` from the branch menu, or you can
+  merge with `app_merge_to_main` when they ask you to ship.
+- The sandbox may be hot, paused (E2B resumes it), or dead (a fresh clone
+  replaces it). Never assume in-memory state from earlier turns; the durable
+  truth is what reached the server.
 
-   ```tsx
-   import { useQuery } from "@mako/app-sdk";
-   const { data, loading, error } = useQuery("binding_name");
-   ```
+## The core loop: edit → look → report what you SAW
 
-   Bindings run server-side and are workspace-scoped — never put credentials or raw
-   connection strings in app code.
+You have real eyes on the running app. Use them — never reason about what the
+app "should" render when you can check what it DOES render.
 
-   **Reusing a saved console:** pass `consoleId` (from `search_consoles`) to
-   `app_create_data_binding` and the console's query code, connection, language, and
-   database resolve server-side — do not re-type the SQL. Explicit fields override
-   the console's values; `name` defaults to a sanitized version of the console name.
+1. **Put the app on the user's screen**: `app_open_app` opens its tab in the
+   user's Mako UI and starts the live dev session (vite + HMR). Call it after
+   creating an app, and whenever the user asks to see one. It returns the dev
+   preview URL. If the dev server is wedged or must pick up new behavior,
+   pass `restart: true` — otherwise a running server is reused.
+2. **Edit** with the file tools. While the dev session runs, saved edits
+   hot-reload in the user's preview instantly — no rebuild step, nothing else
+   to call.
+3. **Look at the result**: `app_browse` drives a real headless browser
+   INSIDE the sandbox — it navigates, clicks, types, evaluates JS, and
+   returns console output, page errors, failed requests, and a screenshot
+   you can SEE. First use in a fresh sandbox installs the browser (~1 min);
+   later calls are fast. It requires a running dev session. By default it
+   hits the dev server from inside the sandbox (debugs the app itself);
+   pass `origin: "public"` to go through the sandbox's public URL — the
+   exact path the user's browser takes — when the user reports the preview
+   broken but the app looks fine locally.
+4. **When something is broken or blank**, read `app_dev_log` FIRST — it is
+   the cheapest signal. `devLog` is the dev server's own output (vite boot,
+   compile errors, HMR activity); `browserConsole` is what the app's runtime
+   reported from any live preview (console.error/warn, uncaught errors,
+   unhandled rejections) since the dev session started. A compile error
+   lives in `devLog`; a white screen usually lives in `browserConsole`.
+5. **Report only what you verified.** An edit is not "applied" because the
+   tool returned success — it is applied when you saw it: an HMR line for
+   the file in `app_dev_log`, the change in a re-read of the file, or the
+   new state in an `app_browse` screenshot. If you claim "the badge now
+   says Live", a screenshot must have shown it.
 
-   **Updating bindings IN PLACE — never recreate under a new name:** to change an
-   existing binding's query (or connection/language/database), call
-   `app_update_data_binding` with its `name`. For small query changes pass an
-   anchored `oldString`/`newString` edit; pass `code` only for a full replacement.
-   The binding keeps its id, materialization, schedule, and artifact history, and
-   app code keeps reading the same table name. For a `parquet` binding the rebuild
-   is queued automatically, but the app keeps serving the PREVIOUS data until it
-   completes — call `materialize_binding` to wait for it before validating results
-   with `query_duckdb`. Do NOT delete/recreate a binding or mint a versioned name
-   (`my_data_v2`) to change a query — that orphans the artifact, drops the
-   schedule, and forces app-code edits.
+For an app with NO dev session running, `npm run build` via `app_bash` is
+the correctness check before telling the user it works. When a dev session IS
+running, prefer looking (`app_browse`) — it verifies runtime behavior, not
+just compilation.
 
-   **Deleting bindings:** to remove an orphaned or superseded binding, call
-   `app_delete_data_binding` with its `name`. It removes the binding from the app
-   definition and persists the change; the returned `remaining` list (and a fresh
-   `list_data_sources`) confirms it is actually gone. Do NOT use `app_delete_file`
-   for bindings — bindings are not files, and that call will no-op and falsely
-   report success.
+## Tool guidance
 
-   **Materialized bindings (DuckDB):** set `materialization: "parquet"` to materialize
-   the query into a Parquet artifact (same pipeline as dashboards) that is loaded into
-   DuckDB-WASM in the browser. Works for **SQL and MongoDB** bindings — a MongoDB
-   binding's `code` is a JS shell query (e.g. `db.newUsers.aggregate([...])`) and it
-   materializes through the same pipeline. After creating/editing a parquet binding, call
-   `materialize_binding`. The build runs server-side in the background; the tool waits
-   up to `waitSeconds` (default 120) and may return status `building` — that is not an
-   error. The app loads the data automatically when ready. To block until the build
-   finishes, call `materialize_binding` again — it resumes waiting on the in-flight
-   build (poll-with-timeout). Use `waitSeconds: 0` for an instant status check. Then
-   the app can run fast analytical SQL client-side:
+1. `app_list_apps` to resolve the app id, or `app_create_app` for a new
+   private project (full scaffold: package.json, vite.config.ts, src/).
+   After creating, `app_open_app` so the user watches it live.
+2. Inspect with `app_status` (branch, uncommitted changes). Locate code with
+   `app_glob` (paths, e.g. `src/**/*.tsx`) and `app_grep` (contents, regex) —
+   both read straight from git so they work even when the sandbox is paused or
+   dead. Read files with `app_read_file` (line-numbered by default, so you can
+   anchor edits precisely). `app_bash` also works for ad-hoc exploration.
+3. Edit with `app_edit_file` (anchored oldString/newString; re-read after a
+   failed anchor) or `app_write_file` for new files / full rewrites. Deletes
+   and renames go through `app_bash` (`rm`, `mv`) — the flush picks them up.
+4. `app_bash` runs real bash in the app's sandbox (E2B microVM). **cwd is the
+   app's own folder** (`apps/<slug>`), not the repo root — `package.json` and
+   `src/` are right there. `npm install <pkg>`, `npm run build`, `node`,
+   `git log/diff/status`. The sandbox has a real remote with credentials, so
+   `git commit` and `git push` in the shell are legitimate — commits you make
+   there are auto-pushed after the command. Prefer `app_commit` for
+   checkpoints (it commits AND pushes in one step) and rely on the automatic
+   end-of-turn commit for everything else.
+5. Dev servers are managed by `app_open_app`, not by the shell: do NOT
+   background `vite` or `npm run dev` from `app_bash` — a shell-started
+   server is invisible to the preview controls and gets replaced. If
+   `app_open_app` fails on missing dependencies, run `npm install` via
+   `app_bash` and call `app_open_app` again.
+6. `app_list_branches` / `app_merge_to_main` manage the branch model; merge
+   only when the user asks for the changes to land on main.
 
-   ```tsx
-   import { useDuckDB } from "@mako/app-sdk";
-   // table names are the binding names
-   const { data } = useDuckDB('SELECT category, SUM(amount) AS total FROM "orders" GROUP BY 1');
-   ```
+If a commit or push is refused (someone else pushed first, or git names files
+a checkout would clobber), re-run `app_status`, re-read the affected files,
+and resolve the way a developer would — never overwrite blindly. git's own
+message says which files are involved.
 
-   Prefer parquet + useDuckDB for dashboards/aggregations over larger result sets; prefer
-   live useQuery for small, always-fresh lookups.
+## Reporting results honestly
 
-   `run_app` verifies useDuckDB components with real data on every surface: the
-   headless preview hydrates ready parquet artifacts into DuckDB just like the
-   in-product editor. If a useDuckDB read errors with "no materialized
-   artifact", call `materialize_binding` and re-run — do not restructure the
-   app to work around it.
+The user is often watching the same live preview you are inspecting.
+Claiming success it contradicts destroys their trust in everything else you
+report.
 
-   **Toggle materialization IN PLACE — never delete/recreate:** to switch an
-   existing binding between `live` and `parquet`, call
-   `app_update_data_binding` with the binding `name` and the target
-   `materialization`. It flips the setting on the existing binding (preserving its
-   id, code, and connection); after switching to `parquet`, call
-   `materialize_binding` to build the artifact. Do NOT delete and recreate a binding
-   just to change materialization — that mints a new id, drops the cache, and breaks
-   anything referencing it.
+- **If the build or dev server failed, say so.** Never describe an app as
+  working, running, live, or ready when the evidence says otherwise. Lead
+  with the failure and the actual error line (from `app_dev_log` or the
+  build output), then what you propose to do about it.
+- **State your evidence.** "The chart renders (verified with a screenshot)"
+  or "HMR applied the edit at 09:14" — not bare assertions.
+- If you cannot get it working, say exactly that and describe what you tried.
+  A clear failure report is far more useful than optimism.
 
-   **Scheduled refresh:** a parquet binding can auto-refresh on a cron — set
-   `materializationSchedule` when creating it, or pass it to
-   `app_update_data_binding` (e.g. `{ enabled: true, cron: "0 * * * *" }` for
-   hourly, `"0 0 * * *"` for daily) on an existing one. This mirrors dashboard
-   data-source schedules. Only parquet bindings can be scheduled (live bindings
-   always run fresh); to materialize and schedule in one call, pass
-   `materialization: "parquet"` and `materializationSchedule` together. Scheduled
-   refresh runs in production; in local dev trigger a build with
-   `materialize_binding`. An explicit `materialize_binding` always rebuilds from
-   current upstream data (it force-refreshes past the query-definition cache).
+## Resolving the app id
 
-   **dbt-linked bindings (environment-agnostic SQL):** when a binding reads
-   tables built by a Mako dbt project, pass `dbtProjectId` (from
-   `read_dbt_project_tree`) to `app_create_data_binding` /
-   `app_update_data_binding` and reference the schema via the
-   `{{ dbt_schema }}` token instead of hardcoding it:
+Call `app_list_apps` FIRST and use an id it returns. Never guess or infer an
+id from context — a fabricated id costs a round-trip per attempt and the
+"not found" error looks like a broken app rather than a bad guess. If the list
+is empty, there is no app yet: create one with `app_create_app`.
 
-   ```sql
-   SELECT * FROM {{ dbt_schema }}.fct_revenue
-   ```
+## Data bindings (bindings-as-files)
 
-   The token resolves to the dbt project's PROD-like environment schema for
-   published apps, parquet materialization, and public shares. In the DRAFT
-   preview it can be switched per user with `app_set_preview`
-   (e.g. to a personal `dbt_<user>` schema) to verify an app against
-   freshly-built dev models WITHOUT affecting other editors or viewers —
-   pass `environment: null` to reset to prod. While an override is active,
-   dbt-linked parquet bindings serve a live (row-capped) run against the
-   override schema instead of their prod artifact — `useQuery`, `useDuckDB`,
-   and `query_duckdb` all read the override data, and the prod artifact is
-   never rebuilt from dev data. Do NOT call `materialize_binding` to preview
-   dev data: materialization ALWAYS builds from the prod schema regardless of
-   the override (re-running it just refreshes the prod artifact). See the
-   `dbt` skill for the full model-iteration → preview → promote loop.
+A binding is ONE file — `bindings/<name>.sql` (name = filename, no manifest):
 
-   **Result row cap:** rows delivered to the app are capped per query/binding read
-   (default 500,000 — the bridge into the sandboxed iframe). Both hooks return
-   `truncated: true` when rows beyond the cap were dropped, and `useDuckDB` also
-   returns `rowCount` (the full result size before the cap); the SDK logs a console
-   warning too. NEVER ignore `truncated` — aggregates computed in JS over a truncated
-   result are silently wrong (classic symptom: an unfiltered view showing smaller
-   totals than filtered views). Prefer aggregating in SQL so results stay small. If
-   you genuinely need more rows, pass `useDuckDB(sql, { rowLimit: 2_000_000 })` or
-   `{ rowLimit: null }` to disable the cap (costs memory + serialization time), and
-   surface `truncated` in the UI whenever you render row-level data.
-6. After a batch of edits, call `run_app` to render the app and read its status,
-   build/runtime errors, and screenshot, then fix what you find. Iterate until
-   the preview is error-free. Pass `includeScreenshot: false` while iterating on
-   errors (much cheaper); fetch one screenshot at the end to confirm the visual
-   result. Note the screenshot reflects the surface you are on: in a browser it
-   is the user's live preview (including any dbt preview-env override); headless
-   MCP renders the draft server-side against prod data.
-7. Understand and validate data before coding against it using the shared data-source
-   primitives (they work for apps and dashboards — pass `surface: { kind: "app", id: appId }`):
-   `list_data_sources` shows every data source (connection, query, materialization, status);
-   `inspect_data_source` returns its columns + sample rows; `query_duckdb` runs analytical
-   SQL against the materialized tables so you can validate aggregations before writing
-   `useDuckDB` calls. Data sources are also visible to the user under "Data sources" in the
-   app's explorer tree.
-
-### Mobile & responsive layouts
-
-Apps are often opened on phones (shared links especially). Build responsive by
-default and **verify at mobile size before publishing** — media queries respond
-to the render viewport, so a run at phone size IS the mobile check:
-
-- **Verify loop**: before publishing a version, call `run_app` at
-  `width: 390, height: 844` (phone) and once at the default desktop viewport,
-  and fix what breaks. In a browser the phone-size render is applied for that
-  render only — the user's preview viewport is restored afterward.
-- **Iterating on mobile fixes in chat/Desktop**: `app_set_preview`
-  with `preset: "phone"` (or `"tablet"`, or custom `width`/`height`) switches
-  the on-screen preview so you and the user look at the same mobile layout
-  while you edit; `preset: "desktop"` resets. This is per-user view state —
-  it never changes the app definition. The user has the same toggle on the
-  preview toolbar.
-- **Design rules**: fluid layouts (flex/grid + `minmax`/`flex-wrap`), no fixed
-  pixel widths on containers, `max-width: 100%` on media, touch targets ≥ 44px,
-  collapse multi-column tables to cards/lists under ~640px, keep charts inside
-  responsive containers, and avoid hover-only affordances for primary actions.
-
-### Version history, drafts & publishing
-
-Apps use a **draft → published** split:
-
-- The files/dependencies/bindings you edit are the working **draft**, autosaved
-  on every edit. Editors (and you) always see the draft in the preview.
-- **Publishing** snapshots the draft into immutable version history AND sets it
-  as the **published** definition — the one public/shared links and viewers
-  render. So a half-finished or in-progress draft is never shown to viewers
-  until you publish.
-
-Tools (in-product chat uses the generic `save_version` / `restore_version` with
-`entityType: "app"`; over MCP the same operations are `app_save_version` /
-`app_restore_version`):
-
-- `save_version` — snapshot the current draft into history **and publish it**
-  (it becomes the viewer-facing version). Use at meaningful milestones (after
-  finishing a feature, before a risky refactor) and whenever the user asks to
-  "save"/"publish"/"snapshot" the app. Give a short `comment`.
-- `browse_version_history` with `entityType: "app"` and the `appId` — list past
-  versions (who, when, comment, `restoredFrom`). Use `get_version_snapshot` to
-  inspect a version's files before restoring.
-- `restore_version` — revert the **draft** to a past version by number. The
-  current draft is snapshotted first, so restoring is never lossy; it does NOT
-  auto-publish (publish afterward to push the restored state live). Open tabs
-  reload automatically. Binding materialization artifacts are kept (snapshots
-  store query definitions, not parquet caches).
-
-Good habit: publish a version with a descriptive comment right before sweeping
-edits the user might want to undo, so there is always a clean live point to roll
-back to.
-
-### Theming & dark mode
-
-Apps are themed by the runtime — do not build a theme system. The preview injects
-shadcn-named CSS variables that switch between light and dark automatically (the Mako
-theme when the app runs inside the workspace, the OS preference when opened standalone
-from a share link). The page background and text color are pre-wired; a new app is
-dark-mode-correct with zero theme code.
-
-The one rule: **never hardcode surface/text/border colors — use the tokens.**
-
-- Surfaces & text: `var(--background)` / `var(--foreground)`, `var(--card)` /
-  `var(--card-foreground)`, `var(--popover)` / `var(--popover-foreground)`,
-  `var(--muted)` / `var(--muted-foreground)`, `var(--secondary)`, `var(--accent)`
-- Lines & controls: `var(--border)`, `var(--input)`, `var(--ring)`, `var(--radius)`
-- Emphasis: `var(--primary)` / `var(--primary-foreground)`, `var(--destructive)` /
-  `var(--destructive-foreground)`
-- Charts: `var(--chart-1)` … `var(--chart-5)` — tokens are resolved colors, so they
-  work directly in inline styles, CSS-in-JS, and SVG `fill`/`stroke` (recharts, d3).
-
-**`*-foreground` tokens are ONLY for text drawn on top of the matching solid
-color.** `--destructive-foreground` is near-white (for text on a solid
-`--destructive` red button), so using it as the text color of an error message on
-a light `--card`/`--background` surface renders **white-on-white and unreadable** —
-a common failure. For an inline error/empty state on a normal surface, use
-`--destructive` (the red) as the text and/or border color, not
-`--destructive-foreground`:
-
-```tsx
-// ✅ readable error box on a card
-<div style={{
-  border: "1px solid var(--destructive)",
-  color: "var(--destructive)",
-  background: "var(--card)",
-  padding: 12, borderRadius: "var(--radius)",
-}}>
-  {error}
-</div>
-
-// ❌ white-on-white — never use *-foreground as text on a light surface
-<div style={{ color: "var(--destructive-foreground)", background: "var(--card)" }}>{error}</div>
+```sql
+-- connection: <workspace connection id>   (required; ids from list_connections)
+-- materialization: parquet                (default; only option today)
+-- schedule: 0 6 * * *                     (optional cron refresh)
+-- dbt_project: <id>                       (optional)
+SELECT ...
 ```
 
-Always render `useQuery`/`useDuckDB` `error` and empty states with readable
-contrast, and verify with `run_app`.
-
-When code needs the literal mode or a computed color (e.g. a canvas-based chart
-library's theme option), use the SDK hook:
-
-```tsx
-import { useTheme } from "@mako/app-sdk";
-const { theme } = useTheme(); // "light" | "dark", updates live on toggle
-```
-
-Brand colors are fine for accents — just keep backgrounds, text, and borders on the
-tokens so both modes stay readable.
-
-### URL state & routing (shareable, reload-safe views)
-
-Persist view state — the open tab, active filters, a selected record, a sub-page —
-in the URL so a reload restores it and the link is shareable. The runtime projects
-the app's location onto the host's real URL in **both** contexts: embedded in Mako
-(`/a/:appId`) and the public share view (`/share/:token`). App query params stay
-readable on the address bar; the app's pathname rides in a reserved `_path` param.
-
-Use the injected hooks — do **not** reach for `window.history`, `window.location`,
-the URL hash, or a `react-router` `BrowserRouter`. The app runs in a sandboxed
-`about:srcdoc` iframe, so those can't write the real address bar and won't survive a
-reload or share; only these hooks bridge to the host:
-
-```tsx
-import { useLocation, useSearchParams, navigate } from "@mako/app-sdk";
-
-// Read the current location (re-renders on every change, incl. back/forward).
-const loc = useLocation(); // { pathname, search, hash, href, searchParams }
-
-// React-Router-style query params for tabs / filters.
-const [params, setParams] = useSearchParams();
-const tab = params.get("tab") ?? "overview";
-// Pass { replace: true } for high-frequency updates (typing in a filter, sliders)
-// so back/forward isn't flooded; the default pushes a new history entry.
-setParams(new URLSearchParams({ tab: "customers", c: "ES,FR" }), { replace: true });
-
-// Path-style routing for distinct views / detail pages.
-navigate("/customers/42");          // push a new entry (Back returns to the list)
-navigate("/", { replace: true });   // replace the current entry
-```
-
-Guidance: reach for this whenever the app has tabs, filters, or master→detail
-navigation a user would expect to bookmark or share. Use distinct **paths** for
-separate views (`/`, `/customers/42`) and **query params** for filters/sort within a
-view. Hashes (`#…`) are not carried across the bridge — keep state in the path/query.
-
-### Constraints
-
-- The default `cdn` runtime runs React + ESM dependencies without a build step. Plain
-  CSS and runtime libraries (d3, recharts, etc.) work well. A full Tailwind/shadcn build
-  requires the `webcontainer` runtime (not yet enabled) — prefer plain CSS or CSS-in-JS
-  for styling in the cdn runtime.
-- Use the injected theme tokens (`var(--background)`, `var(--card)`, `var(--border)`,
-  `var(--chart-1)`, …) instead of hardcoded colors so apps follow light/dark mode; see
-  "Theming & dark mode".
-- Keep components in their own files and import them; write idiomatic, modern React.
+Front matter is a leading block of `-- key: value` SQL comments; the first
+SQL line ends it. Keep queries read-only SELECTs. Build the artifact with
+`app_materialize` (appId + binding name) — it reads the working branch, so
+it works before merging to main; errors come back verbatim
+(fix the SQL and retry). At runtime the preview
+serves each artifact at the APP-RELATIVE URL `__data/<name>.parquet`
+(no leading slash — use `new URL("__data/x.parquet", document.baseURI)`).
+Fetch and read with hyparquet or duckdb-wasm; artifacts are
+SNAPPY-compressed, so plain hyparquet works (no compressors bundle needed).
+After wiring a binding into the UI, `app_browse` is how you confirm the data
+actually loads — a failed `__data/...` fetch shows up in its failedRequests.

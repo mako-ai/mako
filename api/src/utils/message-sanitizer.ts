@@ -234,7 +234,7 @@ export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
 
 /**
  * Shrink assistant TOOL outputs before persistence (§13.25). Found on prod:
- * an app2_browse-heavy turn carries screenshots as base64 inside tool
+ * an app_browse-heavy turn carries screenshots as base64 inside tool
  * outputs; externalizeChatAttachments only covers user image `file` parts,
  * so the stored messages array blew past MongoDB's 16 MB BSON limit and the
  * WHOLE save threw — caught by a log-only catch, the entire turn vanished

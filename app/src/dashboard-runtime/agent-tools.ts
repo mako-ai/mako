@@ -269,49 +269,26 @@ export async function executeDashboardAgentTool(
     }
   }
 
-  // Generic version tools: dispatch on entityType. Dashboards go through the
-  // local draft flows (the working draft lives in this tab); apps are
-  // server-authoritative (autosaved), so the REST endpoints via the version
-  // store are the full save/restore — open app tabs follow along through the
-  // server's realtime app.updated poke.
+  // Generic version tools: dashboards go through the local draft flows (the
+  // working draft lives in this tab). The v1 app leg is gone with Apps v1 —
+  // git-backed apps version through git itself, not entity_versions.
   if (toolName === "save_version" || toolName === "restore_version") {
     const entityType =
-      input.entityType === "app" || input.entityType === "dashboard"
-        ? input.entityType
-        : null;
+      input.entityType === "dashboard" ? input.entityType : null;
     const entityId = typeof input.entityId === "string" ? input.entityId : null;
     if (!entityType || !entityId) {
       return {
         success: false,
-        error: "entityType ('app' | 'dashboard') and entityId are required.",
+        error:
+          "entityType ('dashboard') and entityId are required. Apps are " +
+          "git-backed: use app_commit / app_merge_to_main instead.",
       };
     }
     const comment =
       typeof input.comment === "string" ? input.comment : undefined;
 
     if (toolName === "save_version") {
-      if (entityType === "dashboard") {
-        return saveDashboardVersionLeg(entityId, comment ?? "");
-      }
-      const workspaceId = getCurrentWorkspaceId();
-      if (!workspaceId) {
-        return { success: false, error: "No active workspace" };
-      }
-      const res = await useVersionStore
-        .getState()
-        .saveVersion(workspaceId, "app", entityId, comment);
-      if (!res.success) {
-        return {
-          success: false,
-          error: res.error || "Failed to save version",
-        };
-      }
-      return {
-        success: true,
-        version: res.version,
-        publishedVersion: res.version,
-        message: `Saved and published app version ${res.version}.`,
-      };
+      return saveDashboardVersionLeg(entityId, comment ?? "");
     }
 
     const version =
@@ -319,26 +296,7 @@ export async function executeDashboardAgentTool(
     if (!Number.isFinite(version)) {
       return { success: false, error: "version (number) is required" };
     }
-    if (entityType === "dashboard") {
-      return restoreDashboardVersionLeg(entityId, version, comment, signal);
-    }
-    const workspaceId = getCurrentWorkspaceId();
-    if (!workspaceId) {
-      return { success: false, error: "No active workspace" };
-    }
-    const res = await useVersionStore
-      .getState()
-      .restoreVersion(workspaceId, "app", entityId, version, comment);
-    if (!res.success) {
-      return { success: false, error: res.error || "Restore failed" };
-    }
-    return {
-      success: true,
-      restoredFrom: version,
-      message:
-        `Restored the app draft to version ${version}. This is not yet ` +
-        "published — save a version to push it live to viewers.",
-    };
+    return restoreDashboardVersionLeg(entityId, version, comment, signal);
   }
 
   // Deprecated aliases of restore_version / save_version (entityType:

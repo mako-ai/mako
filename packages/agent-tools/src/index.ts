@@ -63,10 +63,10 @@ export {
 } from "./dashboard-tools";
 export { clientFlowTools } from "./flow-tools";
 
+// Legacy (pre-git) app tool schemas — kept for historical chat typing only;
+// nothing registers them with an executor any more.
 export { clientAppTools } from "./app-tools";
 export {
-  // Schemas for the server-executed app mutation tools (registered with execute
-  // functions in api/src/agent-lib/tools/server-app-tools.ts).
   writeFileSchema,
   editFileSchema,
   deleteFileSchema,

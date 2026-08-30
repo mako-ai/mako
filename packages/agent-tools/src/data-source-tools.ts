@@ -24,7 +24,7 @@ const surfaceSchema = z
     id: z
       .string()
       .describe(
-        "App ID (from list_open_apps) or Dashboard ID (from list_open_dashboards)",
+        "App ID (from app_list_apps) or Dashboard ID (from list_open_dashboards)",
       ),
   })
   .describe("Target surface that owns the data source(s)");

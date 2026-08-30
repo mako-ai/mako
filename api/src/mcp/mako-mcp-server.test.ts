@@ -190,7 +190,7 @@ async function main() {
     assert.ok(result.capabilities.resources);
     assert.match(
       result.instructions ?? "",
-      /Verify with run_app/,
+      /Verify with app_open_app/,
       "initialize should ship the workflow instructions",
     );
   }
