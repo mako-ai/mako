@@ -808,3 +808,45 @@ describe("failure mid-flight", () => {
     expect(inBox.stdout.trim()).toBe(settled.doc.branch);
   }, 180_000);
 });
+
+describe("publishing a folder-only app (repo-imported, no row)", () => {
+  it("materializes the row so publishedSha actually persists", async () => {
+    const { initRepo, repoDirFor } = await import("./repository.service");
+    const { synthesizeProjectFromFolder, ensureProjectRow } = await import(
+      "./worktree.service"
+    );
+    const { setPublishedSha } = await import("./deployment.service");
+    const { AppProjectV2 } = await import("../database/workspace-schema");
+
+    // A workspace whose repo arrived by IMPORT (connected-repo adoption):
+    // the app exists as a folder, no AppProjectV2 row anywhere.
+    const ws2 = new Types.ObjectId().toString();
+    await initRepo(repoDirFor(ws2), {
+      "apps/pubfix/mako.json": JSON.stringify({ title: "Pub Fix" }),
+    });
+
+    const synth = await synthesizeProjectFromFolder(ws2, "pubfix");
+    expect(synth).not.toBeNull();
+    const sha = "a".repeat(40);
+
+    // The old failure mode: setPublishedSha on the synthesized shape is an
+    // updateOne against an _id no document has — a silent no-op.
+    await setPublishedSha(synth!, sha);
+    expect(await AppProjectV2.findOne({ _id: synth!._id })).toBeNull();
+
+    // Publish now materializes the row first (same DERIVED id), and the sha
+    // sticks.
+    const row = await ensureProjectRow(synth!, "publisher");
+    expect(row._id.toString()).toBe(synth!._id.toString());
+    expect(row.slug).toBe("pubfix");
+    expect(row.access).toBe("workspace");
+    await setPublishedSha(row, sha);
+    const reread = await AppProjectV2.findOne({ _id: synth!._id });
+    expect(reread?.publishedSha).toBe(sha);
+
+    // Idempotent: a second materialize returns the winner, sha intact.
+    const again = await ensureProjectRow(synth!, "someone-else");
+    expect(again._id.toString()).toBe(row._id.toString());
+    expect(again.publishedSha).toBe(sha);
+  }, 60_000);
+});

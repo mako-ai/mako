@@ -44,6 +44,7 @@ import {
   listWorkspaceRepos,
 } from "../services/workspace-repos.service";
 import {
+  ensureProjectRow,
   PUBLISH_ACTOR,
   WorktreeConflictError,
   autoCommitFileEdit,
@@ -54,7 +55,6 @@ import {
   createProject,
   defaultBranchSha,
   deleteProject,
-  derivedAppId,
   discardWorktree,
   ensureWorktree,
   execInWorktree,
@@ -1948,6 +1948,14 @@ appsV2Routes.openapi(
     try {
       const loaded = await loadProject(c, { write: true });
       if ("errorResponse" in loaded) return loaded.errorResponse;
+      // Publishing is one of the three acts that give a folder-only app a
+      // database row (§13.6) — without this, `setPublishedSha` below is an
+      // updateOne against an _id that does not exist: the response says
+      // published, nothing persists, and a reload shows "not published".
+      loaded.project = await ensureProjectRow(
+        loaded.project,
+        loaded.userId ?? "api-key",
+      );
       const body = c.req.valid("json") ?? {};
       const user = c.get("user");
       // Publishing means "ship MY work" — the branch the caller is actually
@@ -2229,17 +2237,7 @@ registerPublicShareRoutes(appsV2Routes, {
     // artifact key stays stable.
     const folder = await synthesizeProjectFromFolder(workspaceId, ref);
     if (!folder) return null;
-    return AppProjectV2.create({
-      _id: derivedAppId(workspaceId, ref),
-      workspaceId: new Types.ObjectId(workspaceId),
-      title: folder.title,
-      slug: ref,
-      description: folder.description,
-      access: "workspace",
-      createdBy: actingUserId(c) ?? "",
-      owner_id: actingUserId(c),
-      defaultBranch: "main",
-    });
+    return ensureProjectRow(folder, actingUserId(c) ?? "");
   },
   getTitle: doc => (doc as unknown as IAppProjectV2).title,
 });

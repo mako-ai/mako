@@ -2028,6 +2028,43 @@ export function derivedAppId(
 }
 
 /**
+ * Persist the row for a folder-only app, keeping the DERIVED id so every
+ * artifact key and worktree doc stays stable. The three row-creating acts
+ * (§13.6: restrict, publish, share) all converge here; everything else keeps
+ * reading the synthesized shape. Idempotent and race-safe: a concurrent
+ * create loses the unique-index race and re-reads the winner.
+ *
+ * Publishing NEEDS this: `setPublishedSha` is an updateOne by _id, which
+ * silently matches nothing for a synthesized project — the publish then
+ * "succeeds" without persisting anything, and a reload shows the app
+ * unpublished (found on prod with repo-imported apps, §13.22).
+ */
+export async function ensureProjectRow(
+  project: IAppProjectV2,
+  actorId: string,
+): Promise<IAppProjectV2> {
+  const existing = await AppProjectV2.findOne({ _id: project._id });
+  if (existing) return existing;
+  try {
+    return await AppProjectV2.create({
+      _id: project._id,
+      workspaceId: project.workspaceId,
+      title: project.title,
+      slug: project.slug,
+      description: project.description,
+      access: project.access ?? "workspace",
+      createdBy: project.createdBy || actorId,
+      owner_id: actorId,
+      defaultBranch: project.defaultBranch || DEFAULT_BRANCH,
+    });
+  } catch {
+    const winner = await AppProjectV2.findOne({ _id: project._id });
+    if (winner) return winner;
+    throw new Error("Could not persist the app's project row");
+  }
+}
+
+/**
  * An app that exists only as a folder, shaped like a project document so every
  * read path works unchanged. Never persisted — writing a row is what happens
  * when someone restricts, publishes, or shares the app, not when they open it.
