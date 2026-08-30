@@ -4448,6 +4448,26 @@ export interface paths {
         patch: operations["patch_api_workspaces_workspaceId_apps_v2_id_access"];
         trace?: never;
     };
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/eyes-shots/{shot}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A stored app2_browse screenshot
+         * @description Screenshots the agent's browse tool captured are stored as bucket objects (never as base64 in chat history, §13.26); this streams one back to anyone who can read the app.
+         */
+        get: operations["get_api_workspaces_workspaceId_apps_v2_id_eyes_shots_shot"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspaceId}/apps-v2/{id}/public-share": {
         parameters: {
             query?: never;
@@ -19936,6 +19956,48 @@ export interface operations {
                 };
             };
         };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_apps_v2_id_eyes_shots_shot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+                shot: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful response */
             "2XX": {

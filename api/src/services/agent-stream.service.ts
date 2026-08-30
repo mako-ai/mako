@@ -4,7 +4,13 @@
  * agent.routes.ts so the route file stays a thin spec + handler layer.
  */
 import { ObjectId } from "mongodb";
-import { UI_MESSAGE_STREAM_HEADERS } from "ai";
+import {
+  readUIMessageStream,
+  type UIMessage,
+  type UIMessageChunk,
+  UI_MESSAGE_STREAM_HEADERS,
+} from "ai";
+import { saveTurnCheckpoint } from "./agent-thread.service";
 import { Chat } from "../database/workspace-schema";
 import { workspaceService } from "./workspace.service";
 import {
@@ -344,4 +350,85 @@ export async function stopChatGeneration(
 
   logger.info("Chat generation stop requested", { chatId, stopped });
   return { kind: "stopped", stopped };
+}
+
+// ---------------------------------------------------------------------------
+// Turn checkpointing (§13.27)
+// ---------------------------------------------------------------------------
+
+/**
+ * Decode the SSE-encoded UIMessage stream ("data: {json}\n\n" events) back
+ * into UIMessageChunk objects. Pure; exported for tests. Unparseable events
+ * are skipped — checkpointing is best-effort and must never break the tee'd
+ * transport.
+ */
+export function createSseChunkDecoder(): TransformStream<
+  string | Uint8Array,
+  unknown
+> {
+  let buffer = "";
+  const decoder = new TextDecoder();
+  return new TransformStream({
+    transform(chunk, controller) {
+      buffer +=
+        typeof chunk === "string"
+          ? chunk
+          : decoder.decode(chunk, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop() ?? "";
+      for (const event of events) {
+        for (const line of event.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          try {
+            controller.enqueue(JSON.parse(payload));
+          } catch {
+            // Skip malformed frames.
+          }
+        }
+      }
+    },
+  });
+}
+
+const CHECKPOINT_INTERVAL_MS = 2_000;
+
+/**
+ * Consume a tee'd copy of the turn's SSE stream, reduce it to UIMessage
+ * snapshots via the AI SDK, and checkpoint the in-progress assistant message
+ * every couple of seconds. The final full save supersedes (and $unsets) the
+ * checkpoint; the activeStreamId filter in saveTurnCheckpoint kills any late
+ * trailing write.
+ */
+export async function trackTurnCheckpoints(input: {
+  chatId: string;
+  streamId: string;
+  sseStream: ReadableStream<string | Uint8Array>;
+}): Promise<void> {
+  const { chatId, streamId, sseStream } = input;
+  const chunks = sseStream.pipeThrough(
+    createSseChunkDecoder(),
+  ) as ReadableStream<UIMessageChunk>;
+  let lastWrite = 0;
+  let pending: UIMessage | null = null;
+  try {
+    for await (const snapshot of readUIMessageStream({ stream: chunks })) {
+      pending = snapshot;
+      const now = Date.now();
+      if (now - lastWrite >= CHECKPOINT_INTERVAL_MS) {
+        lastWrite = now;
+        await saveTurnCheckpoint(chatId, streamId, snapshot);
+        pending = null;
+      }
+    }
+    // One final checkpoint so a crash between the last interval and the
+    // finish loses nothing; finalization's $unset supersedes it shortly.
+    if (pending) await saveTurnCheckpoint(chatId, streamId, pending);
+  } catch (error) {
+    logger.warn("Turn checkpoint tracking ended with an error", {
+      chatId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
