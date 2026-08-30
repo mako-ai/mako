@@ -19,6 +19,7 @@ import {
   DbtProject,
   EntityVersion,
   type IMakoApp,
+  Workspace,
 } from "../database/workspace-schema";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
@@ -97,6 +98,7 @@ interface AppListItem {
   updatedAt: Date;
   createdAt: Date;
   readOnly?: boolean;
+  migratedToV2ProjectId?: string;
 }
 
 function toListItem(
@@ -113,7 +115,12 @@ function toListItem(
     fileCount: Array.isArray(doc.files) ? doc.files.length : 0,
     updatedAt: doc.updatedAt,
     createdAt: doc.createdAt,
-    readOnly: userId ? !canManage(doc, userId, memberRole) : undefined,
+    migratedToV2ProjectId: doc.migratedToV2ProjectId?.toString(),
+    readOnly: doc.migratedToV2ProjectId
+      ? true
+      : userId
+        ? !canManage(doc, userId, memberRole)
+        : undefined,
   };
 }
 
@@ -125,6 +132,20 @@ function serializePublicShare(doc: IMakoApp) {
     token: doc.publicShare.token,
     hasPassword: !!doc.publicShare.passwordHash,
     createdAt: doc.publicShare.createdAt,
+  };
+}
+
+/**
+ * 423 body for v1 apps stamped by the Apps v2 migration (§13 cutover):
+ * the stamped copy is read-only; edits belong in the v2 project.
+ */
+function migratedToV2Body(doc: IMakoApp) {
+  return {
+    success: false,
+    code: "migrated_to_v2",
+    error:
+      "This app was migrated to Apps v2 and is read-only here. Open it under Apps.",
+    v2ProjectId: doc.migratedToV2ProjectId?.toString(),
   };
 }
 
@@ -186,6 +207,7 @@ function serializeApp(doc: IMakoApp) {
     })),
     publicShare: serializePublicShare(doc),
     owner_id: doc.owner_id,
+    migratedToV2ProjectId: doc.migratedToV2ProjectId?.toString(),
     createdBy: doc.createdBy,
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
@@ -380,6 +402,24 @@ app.openapi(
       const userId = c.get("user")?.id ?? "system";
       const body = await c.req.json();
 
+      // Cutover guard: v2 workspaces create apps in Apps v2, not here.
+      // (Fetched directly — the auth middleware does not reliably set
+      // c.get("workspace") on this path.)
+      const wsForCreate = (await Workspace.findById(workspaceId)
+        .select("settings.appsV2Enabled")
+        .lean()) as { settings?: { appsV2Enabled?: boolean } } | null;
+      if (wsForCreate?.settings?.appsV2Enabled === true) {
+        return c.json(
+          {
+            success: false,
+            code: "apps_v2_workspace",
+            error:
+              "This workspace uses Apps v2 — create new apps there instead.",
+          },
+          409,
+        );
+      }
+
       const parsed = AppDefinitionSchema.safeParse(body);
       if (!parsed.success) {
         return c.json(
@@ -503,7 +543,8 @@ app.openapi(
       return c.json({
         success: true,
         app: serializeApp(doc),
-        readOnly: !canManage(doc, userId, memberRole),
+        readOnly:
+          !!doc.migratedToV2ProjectId || !canManage(doc, userId, memberRole),
       });
     } catch (error) {
       logger.error("Error fetching app", { error });
@@ -541,6 +582,9 @@ app.openapi(
       const memberRole = c.get("memberRole");
       if (!canManage(doc, userId, memberRole)) {
         return c.json({ success: false, error: "Access denied" }, 403);
+      }
+      if (doc.migratedToV2ProjectId) {
+        return c.json(migratedToV2Body(doc), 423);
       }
 
       const body = (await c.req.json()) as Record<string, unknown>;
@@ -754,6 +798,9 @@ app.openapi(
       if (!doc) return c.json({ success: false, error: "App not found" }, 404);
       if (!canManage(doc, userId, c.get("memberRole"))) {
         return c.json({ success: false, error: "Access denied" }, 403);
+      }
+      if (doc.migratedToV2ProjectId) {
+        return c.json(migratedToV2Body(doc), 423);
       }
 
       await doc.deleteOne();
@@ -1053,6 +1100,9 @@ app.openapi(
       if (!canManage(doc, userId, c.get("memberRole"))) {
         return c.json({ success: false, error: "Access denied" }, 403);
       }
+      if (doc.migratedToV2ProjectId) {
+        return c.json(migratedToV2Body(doc), 423);
+      }
 
       const body = (await c.req.json().catch(() => ({}))) as {
         comment?: string;
@@ -1120,6 +1170,9 @@ app.openapi(
       if (!doc) return c.json({ success: false, error: "App not found" }, 404);
       if (!canManage(doc, userId, c.get("memberRole"))) {
         return c.json({ success: false, error: "Access denied" }, 403);
+      }
+      if (doc.migratedToV2ProjectId) {
+        return c.json(migratedToV2Body(doc), 423);
       }
 
       const newSnapshot = buildAppSnapshot(doc) as unknown as Record<
@@ -1249,6 +1302,9 @@ app.openapi(
       if (!doc) return c.json({ success: false, error: "App not found" }, 404);
       if (!canManage(doc, userId, c.get("memberRole"))) {
         return c.json({ success: false, error: "Access denied" }, 403);
+      }
+      if (doc.migratedToV2ProjectId) {
+        return c.json(migratedToV2Body(doc), 423);
       }
       const old = await getVersion(
         id,

@@ -267,8 +267,9 @@ export function SidebarMobileExplorerNav() {
 
   const items = [...topNavigationItems, ...bottomNavigationItems].filter(
     item =>
-      (item.view !== "apps-v2" && item.view !== "source-control") ||
-      appsV2Visible,
+      ((item.view !== "apps-v2" && item.view !== "source-control") ||
+        appsV2Visible) &&
+      (item.view !== "apps" || !appsV2Visible),
   );
 
   return (
@@ -401,8 +402,9 @@ function Sidebar() {
           {topNavigationItems
             .filter(
               item =>
-                (item.view !== "apps-v2" && item.view !== "source-control") ||
-                appsV2Visible,
+                ((item.view !== "apps-v2" && item.view !== "source-control") ||
+                  appsV2Visible) &&
+                (item.view !== "apps" || !appsV2Visible),
             )
             .map(item => {
               const Icon = item.icon;
