@@ -4,7 +4,11 @@ import type { UIMessage } from "ai";
 import { Chat, SavedConsole } from "../database/workspace-schema";
 import type { AgentKind } from "../agent-lib";
 import { loggers } from "../logging";
-import { isModelReadyFilePart } from "../utils/message-sanitizer";
+import {
+  sanitizeMessagesForPersistence,
+  stripToolOutputsForRetry,
+  isModelReadyFilePart,
+} from "../utils/message-sanitizer";
 import {
   dedupeAssistantReasoning,
   dedupeAssistantStreamArtifacts,
@@ -697,9 +701,11 @@ export const saveChat = async (
   // inline-base64 approach could blow past MongoDB's 16 MB BSON limit, silently
   // failing the save so images "disappeared" on reload) and lets images be
   // fetched lazily. Best-effort: on failure the original part is kept inline.
-  let messagesToPersist = messages;
+  // Tool outputs first: drop screenshots and truncate pathological payloads
+  // BEFORE the size-sensitive steps below — see sanitizeMessagesForPersistence.
+  let messagesToPersist = sanitizeMessagesForPersistence(messages);
   try {
-    messagesToPersist = await externalizeChatAttachments(messages, {
+    messagesToPersist = await externalizeChatAttachments(messagesToPersist, {
       workspaceId,
       chatId,
       userId,
@@ -814,11 +820,36 @@ export const saveChat = async (
     };
   }
 
-  const result = await Chat.findOneAndUpdate(
-    { _id: new ObjectId(chatId) },
-    updateOp,
-    { upsert: true, new: true },
-  );
+  let result;
+  try {
+    result = await Chat.findOneAndUpdate(
+      { _id: new ObjectId(chatId) },
+      updateOp,
+      { upsert: true, new: true },
+    );
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (!/BSON|too large|larger than/i.test(msg)) throw error;
+    // The messages array outgrew Mongo's document limit despite the
+    // sanitizer. Retry once with every tool output reduced to a preview —
+    // losing payloads beats silently losing the whole conversation (§13.25).
+    logger.error(
+      "Chat save exceeded BSON limit; retrying with stripped tool outputs",
+      {
+        chatId,
+        error: msg,
+      },
+    );
+    (updateOp.$set as Record<string, unknown>).messages =
+      stripToolOutputsForRetry(artifactDedupe.messages).map(
+        convertUIMessageToStoredFormat,
+      );
+    result = await Chat.findOneAndUpdate(
+      { _id: new ObjectId(chatId) },
+      updateOp,
+      { upsert: true, new: true },
+    );
+  }
 
   return result;
 };

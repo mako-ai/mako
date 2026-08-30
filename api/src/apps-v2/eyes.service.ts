@@ -43,6 +43,8 @@ export interface EyesResult {
   droppedBeyondCaps?: Record<string, number>;
   /** JPEG, base64 (no data: prefix). */
   screenshotBase64?: string;
+  /** Rendered body text (capped) — real signal for models without vision. */
+  pageText?: string;
 }
 
 /**
@@ -152,12 +154,16 @@ try {
       await page.evaluate(() => (window.__makoEyesFlush ? window.__makoEyesFlush() : null));
     } catch {}
     await settle(400);
+    let pageText = "";
+    try {
+      pageText = String(await page.evaluate(() => (document.body && document.body.innerText) || "")).slice(0, 6000);
+    } catch {}
     let screenshotBase64;
     if (wantShot) {
       screenshotBase64 = await page.screenshot({ type: "jpeg", quality: 55, encoding: "base64" });
     }
     const truncated = Object.fromEntries(Object.entries(droppedCounts).filter(e => e[1] > 0));
-    out({ ok: true, url: page.url(), stepResults, consoleLogs, pageErrors, failedRequests, ...(Object.keys(truncated).length ? { droppedBeyondCaps: truncated } : {}), screenshotBase64 });
+    out({ ok: true, url: page.url(), pageText, stepResults, consoleLogs, pageErrors, failedRequests, ...(Object.keys(truncated).length ? { droppedBeyondCaps: truncated } : {}), screenshotBase64 });
   } finally {
     await browser.close().catch(() => {});
   }
