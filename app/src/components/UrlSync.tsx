@@ -92,9 +92,7 @@ export function UrlSync() {
     // Don't hydrate if not authenticated or no workspace
     if (isHydrated.current || !currentWorkspace || !user) return;
 
-    // Apps deep links moved from /a2/ to /a/ with the apps-v2 → apps rename;
-    // keep old bookmarks working by matching them as their new form.
-    const path = window.location.pathname.replace(/^\/a2\//, "/apps/");
+    const path = window.location.pathname;
 
     // Reload vs deep link, and they deserve opposite answers. The URL follows
     // the active TAB, so on a plain reload the handlers below would move the

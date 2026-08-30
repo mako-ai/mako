@@ -2052,23 +2052,6 @@ export const useConsoleStore = create<ConsoleStore>()(
                 if (tab.isSaved === undefined) {
                   tab.isSaved = !!tab.filePath;
                 }
-                // Tabs persisted before the apps-v2 → apps rename carry the
-                // old kind strings and metadata keys; map them forward so
-                // open app tabs survive the upgrade.
-                if (
-                  typeof tab.kind === "string" &&
-                  tab.kind.startsWith("app-v2")
-                ) {
-                  tab.kind = tab.kind.replace(/^app-v2/, "app");
-                }
-                if (tab.metadata?.appV2Id !== undefined) {
-                  tab.metadata.appId ??= tab.metadata.appV2Id;
-                  delete tab.metadata.appV2Id;
-                }
-                if (tab.metadata?.appV2Slug !== undefined) {
-                  tab.metadata.appSlug ??= tab.metadata.appV2Slug;
-                  delete tab.metadata.appV2Slug;
-                }
                 delete tab.initialContent;
                 delete tab.dbContentHash;
                 delete tab.savedConnectionId;

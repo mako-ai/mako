@@ -490,10 +490,7 @@ function TerminalTabs({
   const [shells, setShells] = useState<string[]>(() => {
     try {
       const saved = JSON.parse(
-        localStorage.getItem(`apps-shells:${appId}`) ??
-          // Pre-rename key, so open shells survive the upgrade.
-          localStorage.getItem(`apps-v2-shells:${appId}`) ??
-          "[]",
+        localStorage.getItem(`apps-shells:${appId}`) ?? "[]",
       ) as unknown;
       if (
         Array.isArray(saved) &&
@@ -519,9 +516,7 @@ function TerminalTabs({
       // waits for) a dev server, which must not happen on mount just because
       // it was focused last time. Restore a saved BASH tab only; the dev tab
       // is entered by an explicit click (apps.md §13.11).
-      const saved =
-        localStorage.getItem(`apps-term-active:${appId}`) ??
-        localStorage.getItem(`apps-v2-term-active:${appId}`);
+      const saved = localStorage.getItem(`apps-term-active:${appId}`);
       if (saved && /^[0-9]{1,6}$/.test(saved)) return saved;
     } catch {
       // Storage unavailable — default below.
