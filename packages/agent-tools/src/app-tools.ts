@@ -791,13 +791,6 @@ export const materializeBindingSchema = z.object({
 // iframe) and the live UI tabs, so they cannot run server-side. A headless
 // agent simply does not call them — it operates on `appId` directly.
 export const clientAppTools = {
-  open_app: tool({
-    description:
-      "Open a saved app by its ID into a tab in the UI and load its files. " +
-      "UI convenience for an attached browser; headless flows can skip this and " +
-      "pass the appId directly to other tools.",
-    inputSchema: z.object({ appId: z.string().describe("App ID to open") }),
-  }),
   run_app: tool({
     description:
       "Verify the app: rebuild and reload its LIVE PREVIEW, wait for it to " +
@@ -855,50 +848,6 @@ export const clientAppTools = {
             "personal environment), or null to reset to the prod default. " +
             "Omit to leave the environment unchanged.",
         ),
-    }),
-  }),
-  app_set_preview_environment: tool({
-    description:
-      "Deprecated alias of app_set_preview({ environment }) — switch which " +
-      "dbt environment the app's draft preview reads data from.",
-    inputSchema: z.object({
-      appId: appIdField,
-      environment: z
-        .string()
-        .nullable()
-        .describe(
-          "dbt environment name from the linked project (e.g. 'dev' or a " +
-            "personal environment), or null to reset to the prod default",
-        ),
-    }),
-  }),
-  app_set_preview_viewport: tool({
-    description:
-      "Deprecated alias of app_set_preview({ preset | width+height }) — " +
-      "switch the app's draft preview to a device viewport.",
-    inputSchema: z.object({
-      appId: appIdField,
-      preset: z
-        .enum(["phone", "tablet", "desktop"])
-        .optional()
-        .describe(
-          "Named viewport: phone 390x844, tablet 768x1024, desktop = clear " +
-            "the override (fill the pane). Ignored when width/height are set.",
-        ),
-      width: z
-        .number()
-        .int()
-        .min(RUN_APP_MIN_VIEWPORT_PX)
-        .max(RUN_APP_MAX_VIEWPORT_PX)
-        .optional()
-        .describe("Custom viewport width in px (with height)"),
-      height: z
-        .number()
-        .int()
-        .min(RUN_APP_MIN_VIEWPORT_PX)
-        .max(RUN_APP_MAX_VIEWPORT_PX)
-        .optional()
-        .describe("Custom viewport height in px (with width)"),
     }),
   }),
 };
