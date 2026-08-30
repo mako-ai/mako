@@ -83,8 +83,13 @@ export async function up(db: Db): Promise<void> {
     await db.collection(from).drop();
     for (const index of INDEXES[to] ?? []) {
       await db.collection(to).createIndex(index.keys, {
-        unique: index.unique,
-        sparse: index.sparse,
+        // Spread-only-when-set: passing `unique: undefined` reaches the
+        // server as `unique: null`, which Mongo rejects — this is exactly
+        // how the first prod run died halfway (app_projects renamed, index
+        // ensure failed, worktrees + flag rename never reached; restored by
+        // hand before this fix).
+        ...(index.unique ? { unique: true } : {}),
+        ...(index.sparse ? { sparse: true } : {}),
       });
     }
     log.info("Merged legacy collection into renamed one", { from, to });
