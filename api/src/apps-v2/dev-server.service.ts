@@ -462,6 +462,32 @@ const reportViewers = () => {
 reportViewers();
 const viewersTimer = setInterval(reportViewers, 10000);
 if (viewersTimer.unref) viewersTimer.unref();
+// Cull half-open HMR sockets: a laptop sleeping mid-session leaves its
+// websocket ESTABLISHED here for hours (observed: a dev server surviving
+// 3h with zero real viewers), and vite's client set never shrinks on its
+// own — so the viewer count above stays >=1 and the idle reaper never
+// fires. Ping every 20s; no pong for 60s = dead, terminate it.
+const lastPong = new WeakMap();
+const cullTimer = setInterval(() => {
+  try {
+    const clients = server.ws && server.ws.clients;
+    if (!clients) return;
+    for (const client of clients) {
+      const sock = (client && client.socket) || client;
+      if (!sock || typeof sock.ping !== "function") continue;
+      if (!lastPong.has(sock)) {
+        lastPong.set(sock, Date.now());
+        sock.on("pong", () => lastPong.set(sock, Date.now()));
+      }
+      if (Date.now() - lastPong.get(sock) > 60000) {
+        try { sock.terminate(); } catch {}
+      } else {
+        try { sock.ping(); } catch {}
+      }
+    }
+  } catch {}
+}, 20000);
+if (cullTimer.unref) cullTimer.unref();
 void tellMako("serving", 7, [1000, 3000, 8000, 15000, 30000, 60000]);
 // Watcher lifecycle in the boot log: "ready" proves the polling scan
 // finished (inotify is dead in this VM, so a silent watcher means frozen
