@@ -31,6 +31,10 @@ interface AdminCuratedModel {
   description: string;
   contextWindow: number | null;
   blendedCostPerM: number | null;
+  /** Unix seconds the model was released (gateway `released`). */
+  releasedAt: number | null;
+  /** Accepts image input (gateway modalities). */
+  imageInput: boolean | null;
   visible: boolean;
   tier: "free" | "pro";
 }
@@ -225,6 +229,7 @@ export default function SettingsAdmin() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [releasedSort, setReleasedSort] = useState<"desc" | "asc" | null>(null);
   const [hardRefreshing, setHardRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [refreshNotice, setRefreshNotice] = useState<string | null>(null);
@@ -550,6 +555,20 @@ export default function SettingsAdmin() {
                   <TableRow>
                     <TableCell>Model</TableCell>
                     <TableCell sx={{ width: 120 }}>Provider</TableCell>
+                    <TableCell
+                      sx={{ width: 100, cursor: "pointer", userSelect: "none" }}
+                      onClick={() =>
+                        setReleasedSort(s => (s === "desc" ? "asc" : "desc"))
+                      }
+                      title="Sort by release date"
+                    >
+                      Released{" "}
+                      {releasedSort === "desc"
+                        ? "\u2193"
+                        : releasedSort === "asc"
+                          ? "\u2191"
+                          : ""}
+                    </TableCell>
                     <TableCell align="right" sx={{ width: 90 }}>
                       $/M
                     </TableCell>
@@ -569,7 +588,14 @@ export default function SettingsAdmin() {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {filteredModels.map(m => (
+                  {(releasedSort
+                    ? [...filteredModels].sort((a, b) =>
+                        releasedSort === "desc"
+                          ? (b.releasedAt ?? 0) - (a.releasedAt ?? 0)
+                          : (a.releasedAt ?? 0) - (b.releasedAt ?? 0),
+                      )
+                    : filteredModels
+                  ).map(m => (
                     <TableRow key={m.id} hover>
                       <TableCell>
                         <Typography variant="body2" noWrap>
@@ -587,6 +613,21 @@ export default function SettingsAdmin() {
                       <TableCell>
                         <Typography variant="body2" noWrap>
                           {m.provider}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Typography
+                          variant="body2"
+                          noWrap
+                          color={
+                            m.releasedAt ? "text.primary" : "text.disabled"
+                          }
+                        >
+                          {m.releasedAt
+                            ? new Date(m.releasedAt * 1000)
+                                .toISOString()
+                                .slice(0, 10)
+                            : "\u2014"}
                         </Typography>
                       </TableCell>
                       <TableCell align="right">
