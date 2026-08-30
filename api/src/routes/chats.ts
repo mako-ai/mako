@@ -252,6 +252,23 @@ chatsRoutes.openapi(
 
       // Extract console IDs from modify_console tool calls in chat messages
       // These are consoles that the agent modified during this conversation
+      // §13.27: a turn that died mid-stream left its checkpoint behind
+      // (finalization clears both the checkpoint and activeStreamId on any
+      // normal finish). Age-gated so a LIVE turn — whose checkpoint updates
+      // every ~2s — is never duplicated under the client's resume replay.
+      const checkpoint = chat.turnCheckpoint;
+      if (
+        checkpoint?.message &&
+        chat.activeStreamId &&
+        checkpoint.streamId === chat.activeStreamId &&
+        Date.now() - new Date(checkpoint.at).getTime() > 120_000
+      ) {
+        chat.messages = [
+          ...(chat.messages || []),
+          checkpoint.message as (typeof chat.messages)[number],
+        ];
+      }
+
       const modifiedConsoleIds = extractModifiedConsoleIds(chat.messages || []);
 
       // Fetch the consoles that were modified (they should be saved as drafts)

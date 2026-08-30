@@ -2266,6 +2266,54 @@ appsV2Routes.openapi(
   },
 );
 
+appsV2Routes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/eyes-shots/{shot}",
+    tags: ["Apps v2"],
+    summary: "A stored app2_browse screenshot",
+    description:
+      "Screenshots the agent's browse tool captured are stored as bucket objects (never as base64 in chat history, \u00a713.26); this streams one back to anyone who can read the app.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam.extend({
+        shot: z
+          .string()
+          .regex(/^[a-z0-9]+\.jpg$/)
+          .openapi({ param: { name: "shot", in: "path" } }),
+      }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { shot } = c.req.valid("param");
+      const key = `apps-v2/eyes/${loaded.project._id.toString()}/${shot}`;
+      const store = getDashboardArtifactStore();
+      const stream = await store.openReadStream(key);
+      if (!stream) {
+        return c.json({ success: false, error: "Screenshot not found" }, 404);
+      }
+      const size = await store.getSize(key);
+      return new Response(
+        Readable.toWeb(stream as Readable) as ReadableStream,
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "image/jpeg",
+            ...(size !== null ? { "Content-Length": String(size) } : {}),
+            "Cache-Control": "private, max-age=31536000, immutable",
+          },
+        },
+      );
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
 appsV2Routes.get("/:id/live", serveLive);
 appsV2Routes.get("/:id/live/*", serveLive);
 

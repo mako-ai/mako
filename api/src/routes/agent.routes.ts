@@ -39,7 +39,10 @@ import {
   getDefaultModelId,
   getDefaultFreeModelId,
 } from "../agent-lib/ai-models";
-import { getWorkspaceGatewayModelListings } from "../services/model-catalog.service";
+import {
+  modelSupportsImageInput,
+  getWorkspaceGatewayModelListings,
+} from "../services/model-catalog.service";
 import {
   AppWorktreeV2,
   Workspace,
@@ -94,6 +97,7 @@ import { commitAgentTurn } from "../apps-v2/worktree.service";
 import { reportPubSubFailure } from "../services/pubsub.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
+  trackTurnCheckpoints,
   buildScreenshotVisionModelMessage,
   resumeChatStream,
   stopChatGeneration,
@@ -768,6 +772,15 @@ agentRoutes.openapi(
     let tools: ReturnType<typeof agentFactory>["tools"];
     let prepareStep: UnifiedModeRuntime["prepareStep"] | undefined;
 
+    // Vision capability for tool outputs (browse screenshots): resolved from
+    // the catalog BEFORE tool construction so toModelOutput can gate image
+    // parts for text-only models (§13.26). getModelById is memory-cached.
+    agentContext.modelSupportsVision = modelSupportsImageInput(
+      resolvedModelId,
+      ((await getModelById(resolvedModelId)) as { tags?: string[] } | undefined)
+        ?.tags,
+    );
+
     if (resolvedAgentId === "unified") {
       const runtime = buildUnifiedModeRuntime({
         context: agentContext,
@@ -1185,11 +1198,20 @@ agentRoutes.openapi(
 
               const streamId = new ObjectId().toString();
               turnStreamId = streamId;
+              // §13.27: a second consumer of the same SSE bytes checkpoints
+              // the in-progress assistant message every couple of seconds, so
+              // a process death mid-turn costs seconds of work, not the turn.
+              const [resumeBranch, checkpointBranch] = stream.tee();
+              void trackTurnCheckpoints({
+                chatId,
+                streamId,
+                sseStream: checkpointBranch,
+              });
               try {
                 registerActiveGeneration(chatId, streamId, turnAbortController);
                 await getResumableStreamContext().createNewResumableStream(
                   streamId,
-                  () => stream,
+                  () => resumeBranch,
                 );
                 await Chat.updateOne(
                   { _id: new ObjectId(chatId) },

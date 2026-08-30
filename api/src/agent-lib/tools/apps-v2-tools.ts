@@ -60,6 +60,7 @@ import {
   devLogPath,
   ensureDevServer,
 } from "../../apps-v2/dev-server.service";
+import { getDashboardArtifactStore } from "../../services/dashboard-artifact-store.service";
 import { browseApp } from "../../apps-v2/eyes.service";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import { loggers } from "../../logging";
@@ -69,6 +70,8 @@ const logger = loggers.agent();
 export interface AppsV2ToolsOptions {
   workspaceId: string;
   userId?: string;
+  /** Resolved model accepts image input; undefined = assume yes (external MCP). */
+  supportsVision?: boolean;
 }
 
 type LoadResult = { project: IAppProjectV2 } | { error: string };
@@ -76,6 +79,7 @@ type LoadResult = { project: IAppProjectV2 } | { error: string };
 export function createAppsV2Tools({
   workspaceId,
   userId,
+  supportsVision,
 }: AppsV2ToolsOptions): ToolSet {
   // A conversation is not a line of work.
   //
@@ -612,7 +616,27 @@ export function createAppsV2Tools({
             screenshot: screenshot !== false,
             origin,
           });
-          return { success: result.ok, ...result };
+          // Screenshots persist as bucket objects, never as stored base64:
+          // the URL survives in chat history (the persistence sanitizer
+          // drops the base64), and the serving route re-authorizes reads.
+          let screenshotUrl: string | undefined;
+          if (result.screenshotBase64) {
+            try {
+              const shotId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+              const key = `apps-v2/eyes/${loaded.project._id.toString()}/${shotId}.jpg`;
+              await getDashboardArtifactStore().putBuffer(
+                Buffer.from(result.screenshotBase64, "base64"),
+                key,
+                "image/jpeg",
+              );
+              screenshotUrl = `/api/workspaces/${workspaceId}/apps-v2/${loaded.project._id.toString()}/eyes-shots/${shotId}.jpg`;
+            } catch (uploadError) {
+              logger.warn("Could not store the browse screenshot", {
+                error: errorMessage(uploadError),
+              });
+            }
+          }
+          return { success: result.ok, ...result, screenshotUrl };
         } catch (error) {
           return { success: false, error: errorMessage(error) };
         }
@@ -625,6 +649,13 @@ export function createAppsV2Tools({
           string,
           unknown
         >;
+        // A text-only model receiving an image part loses the whole result
+        // (§13.26): vision-less models get text (pageText + screenshotUrl)
+        // only. undefined = assume vision (external MCP clients).
+        if (supportsVision === false && o && typeof o === "object") {
+          const { screenshotBase64: _omitted, ...rest } = o;
+          return { type: "json", value: rest as never };
+        }
         if (o && typeof o === "object" && o.screenshotBase64) {
           const { screenshotBase64, ...rest } = o;
           return {

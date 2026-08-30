@@ -768,6 +768,17 @@ export interface IChat extends Document {
   // reattach to via GET /api/agent/chat/:chatId/stream. Null when idle.
   activeStreamId?: string | null;
   /**
+   * Mid-turn checkpoint (§13.27): the in-progress assistant message,
+   * persisted every few seconds while a turn streams. Cleared by the final
+   * save; consumed at load time when the turn died without finishing
+   * (process crash, instance recycle) so the user keeps what was generated.
+   */
+  turnCheckpoint?: {
+    message: unknown;
+    at: Date;
+    streamId: string;
+  } | null;
+  /**
    * Local Agent ACP binding for chats that run Claude Code / Codex on the
    * user's machine. Lets History reopen + continue the same ACP session while
    * the Local Agent process is still alive. Absent for cloud (gateway) chats.
@@ -2124,6 +2135,10 @@ const ChatSchema = new Schema<IChat>(
     },
     activeStreamId: {
       type: String,
+      default: null,
+    },
+    turnCheckpoint: {
+      type: Schema.Types.Mixed,
       default: null,
     },
     localAcp: {

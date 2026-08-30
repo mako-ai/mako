@@ -47,6 +47,12 @@ export interface AgentMeta {
 export interface AgentContext {
   /** Branch of the caller's Apps v2 checkout — saves the agent a `git status` round trip. */
   appsV2Branch?: string;
+  /**
+   * Whether the resolved model accepts image input (model-catalog
+   * capability). Gates image parts in tool outputs (app2_browse screenshots)
+   * — a text-only model receiving an image part loses the whole tool result.
+   */
+  modelSupportsVision?: boolean;
   /** Current workspace ID */
   workspaceId: string;
   /**

@@ -1061,3 +1061,34 @@ export async function getAdminCatalogView(): Promise<AdminCatalogView> {
       : null,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Capabilities — the gateway supplies no modality metadata (every stored
+// model has tags: null as of 2026-08), so image-input support is resolved
+// from tags when they ever appear, else a family-pattern allowlist, else a
+// CONSERVATIVE false: wrongly stripping a screenshot degrades gracefully
+// (browse now always carries pageText), while sending an image part to a
+// text-only model breaks the whole turn ("output not usable", prod report).
+// ---------------------------------------------------------------------------
+const VISION_TAGS = new Set(["vision", "image", "image-input", "multimodal"]);
+const VISION_ID_PATTERNS: RegExp[] = [
+  /(^|\/)claude/i,
+  /gpt-4o/i,
+  /gpt-4\.1/i,
+  /gpt-5/i,
+  /(^|\/)o[34]\b/i,
+  /gemini/i,
+  /pixtral/i,
+  /llama-?3\.2.*vision/i,
+  /llama-?4/i,
+  /qwen.*-vl/i,
+  /grok-(2-vision|4)/i,
+];
+
+export function modelSupportsImageInput(
+  modelId: string,
+  tags?: readonly string[] | null,
+): boolean {
+  if (tags?.some(t => VISION_TAGS.has(t.toLowerCase()))) return true;
+  return VISION_ID_PATTERNS.some(re => re.test(modelId));
+}

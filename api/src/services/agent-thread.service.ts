@@ -781,6 +781,8 @@ export const saveChat = async (
     // binding so History reopen doesn't force a dead Claude/Codex session.
     // ACP PUT /chats/:id/messages re-$sets localAcp immediately after saveChat.
     $unset: {
+      // A finished turn's full save supersedes any mid-turn checkpoint.
+      turnCheckpoint: "",
       localAcp: "",
     },
     $setOnInsert: {
@@ -890,4 +892,38 @@ export const getConsolesByIds = async (
     databaseId: c.databaseId,
     databaseName: c.databaseName,
   }));
+};
+
+/**
+ * Mid-turn checkpoint (§13.27): persist the in-progress assistant message so
+ * a process death mid-turn costs seconds, not the turn. Filtered on
+ * activeStreamId so a late trailing write after finalization (which clears
+ * the pointer and $unsets the checkpoint) matches nothing instead of
+ * resurrecting a stale copy. Best-effort by design.
+ */
+export const saveTurnCheckpoint = async (
+  chatId: string,
+  streamId: string,
+  message: UIMessage,
+): Promise<void> => {
+  try {
+    const [sanitized] = sanitizeMessagesForPersistence([message]);
+    await Chat.updateOne(
+      { _id: chatId, activeStreamId: streamId },
+      {
+        $set: {
+          turnCheckpoint: {
+            message: convertUIMessageToStoredFormat(sanitized),
+            at: new Date(),
+            streamId,
+          },
+        },
+      },
+    );
+  } catch (error) {
+    logger.warn("Turn checkpoint write failed", {
+      chatId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 };
