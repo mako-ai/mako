@@ -6,7 +6,6 @@ import {
   useConsoleStore,
 } from "../store/consoleStore";
 import { useDashboardStore } from "../store/dashboardStore";
-import { useAppStore } from "../store/appStore";
 import { useAppsV2Store } from "../store/appsV2Store";
 import {
   closeAppsV2TabsFor,
@@ -16,11 +15,6 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { SECTION_LABELS, isSettingsSection } from "../pages/settings/sections";
-import {
-  focusAppBindingTab,
-  focusAppFileTab,
-  focusAppTab,
-} from "../app-runtime/shell";
 import {
   focusDbtConsoleTab,
   focusDbtFileTab,
@@ -36,7 +30,6 @@ import {
   decodePathSegments,
   tabUrlPath,
 } from "../lib/tab-routing";
-import { appLocationFromHostSearch } from "../app-runtime/app-location";
 
 /**
  * UrlSync component
@@ -126,9 +119,6 @@ export function UrlSync() {
     );
     const dashboardMatch = path.match(TAB_DEEP_LINK_PATTERNS.dashboard);
     const tableMatch = path.match(TAB_DEEP_LINK_PATTERNS["table-data"]);
-    const appFileMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-file"]);
-    const appBindingMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-binding"]);
-    const appMatch = path.match(TAB_DEEP_LINK_PATTERNS.app);
     const appV2FileMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-v2-file"]);
     const appV2Match = path.match(TAB_DEEP_LINK_PATTERNS["app-v2"]);
     const dbtFileMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-file"]);
@@ -259,44 +249,6 @@ export function UrlSync() {
           metadata: { schema, table },
         });
         setActiveTab(id);
-      }
-    } else if (appFileMatch) {
-      // /a/:appId/file/:path
-      const appId = appFileMatch[1];
-      const filePath = decodePathSegments(appFileMatch[2]);
-      setLeftPane("apps");
-      focusAppFileTab(appId, filePath);
-    } else if (appBindingMatch) {
-      // /a/:appId/data/:bindingId
-      const appId = appBindingMatch[1];
-      const bindingId = appBindingMatch[2];
-      setLeftPane("apps");
-
-      // Placeholder title — AppBindingEditor syncs the real name onto the
-      // tab once the app loads.
-      focusAppBindingTab(appId, bindingId, "Data source");
-    } else if (appMatch) {
-      // /a/:appId (+ the running app's own location: readable query params and
-      // its pathname carried in the reserved `_path` param).
-      const appId = appMatch[1];
-      setLeftPane("apps");
-
-      const appLocation = appLocationFromHostSearch(window.location.search);
-
-      const existingTab = Object.values(useConsoleStore.getState().tabs).find(
-        t => t.kind === "app" && t.metadata?.appId === appId,
-      );
-
-      if (existingTab) {
-        focusAppTab(appId, existingTab.title, appLocation);
-      } else {
-        // Fetch the app to get its title, then open the tab
-        useAppStore
-          .getState()
-          .fetchApp(currentWorkspace.id, appId)
-          .then(app => {
-            focusAppTab(appId, app?.title || "App", appLocation);
-          });
       }
     } else if (appV2FileMatch) {
       // /a2/:appId/file/:path — Apps v2 file editor

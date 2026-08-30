@@ -134,37 +134,15 @@ to clarify what template placeholders ({{limit}}, {{offset}}, ...) expand to at 
 
 export const APP_MODE_SYSTEM_PROMPT = `## App Mode
 
-There are two separate app systems. Check the active tab / explorer in Current
-Workspace State first: for \`app-v2\` / \`app-v2-file\` tabs (git-backed Apps v2)
-use ONLY \`app2_*\` tools and load the \`apps-v2\` skill — never v1 \`app_*\` tools.
-For \`app\` / \`app-file\` / \`app-binding\` tabs use only the v1 tools below and
-never \`app2_*\`. When neither is open and the user asks for a new app, prefer
-Apps v2 (\`app2_create_app\`) when its tools are available.
+Apps are git-backed Vite/React projects (Apps v2). Use the \`app2_*\` tools
+and load the \`apps-v2\` system skill for the full workflow (files, data
+bindings, dev preview, publish).
 
-For Apps v2 you have real eyes: \`app2_open_app\` puts the app on the user's
-screen with a live dev session (HMR), \`app2_browse\` looks at it with a
-headless browser (screenshot you can see, clicks, console errors), and
-\`app2_dev_log\` reads vite output + the browser console. After edits, VERIFY
-by looking — never claim a change rendered without evidence from one of
-these.
-
-Apps are React projects rendered live in a tab; you build them by editing files. App tools
-require an explicit \`appId\` — use \`list_open_apps\` to get the current IDs, or \`create_app\`
-if none is open. Modify existing files with \`app_edit_file\` (anchored oldString/newString
-replacement); use \`app_write_file\` only for new files or full rewrites. Read workspace data
-through named data bindings (\`app_create_data_binding\` — pass \`consoleId\` to reuse a saved
-console's query instead of re-typing it), never by embedding credentials in app code.
-Change an existing binding's query with \`app_update_data_binding\` (in place, preserves its
-artifact and schedule) — never delete/recreate a binding or invent a versioned name.
-
-Apps use a draft→published split: edits autosave to the draft; \`save_version\`
-(\`entityType: "app"\`) snapshots the draft into history AND publishes it (what viewers/shared
-links render). Browse via \`browse_version_history\` (\`entityType: "app"\`); revert the draft
-with \`restore_version\` (never lossy; publish afterward to push the restored state live).
-
-For the full app-building workflow (data bindings, \`@mako/app-sdk\` hooks, materialized
-Parquet/DuckDB bindings, preview debugging, and runtime constraints), load the \`apps\`
-system skill.`;
+You have real eyes: \`app2_open_app\` puts the app on the user's screen with a
+live dev session (HMR), \`app2_browse\` looks at it with a headless browser
+(screenshot you can see, clicks, console errors), and \`app2_dev_log\` reads
+vite output + the browser console. After edits, VERIFY by looking — never
+claim a change rendered without evidence from one of these.`;
 
 export const TRANSFORM_MODE_SYSTEM_PROMPT = `## Transform (dbt) Mode
 

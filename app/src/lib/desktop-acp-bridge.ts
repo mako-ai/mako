@@ -2,12 +2,7 @@
  * Polls Local Agent for mako-desktop MCP jobs and fulfills them in the
  * Desktop/web renderer (apps, consoles, HITL clarify/plan cards).
  */
-import {
-  summarizePreviewErrors,
-  type CapabilityGrant,
-} from "@mako/agent-tools";
-import { executeAppAgentTool } from "../app-runtime/agent-tools";
-import { useAppStore } from "../store/appStore";
+import { type CapabilityGrant } from "@mako/agent-tools";
 import { useConsoleStore } from "../store/consoleStore";
 import {
   useDesktopHitlStore,
@@ -73,42 +68,6 @@ async function executeImmediateJob(job: BridgeJob): Promise<unknown> {
   const appId = String(job.arguments.appId || "").trim();
   if (!appId) {
     throw new Error("appId is required");
-  }
-
-  if (job.tool === "get_preview_errors") {
-    // Legacy alias from pre-0.3 Local Agent builds. Read-only — never
-    // bumpPreview / rebuild the iframe (that blacks out the app preview
-    // and can remount Chat mid-turn).
-    return {
-      success: true,
-      appId,
-      errors: summarizePreviewErrors(
-        useAppStore.getState().previewErrors[appId],
-      ),
-    };
-  }
-
-  if (job.tool === "run_app") {
-    // rebuild: false = the executor skips the iframe rebuild and reports
-    // the current preview state (the old get_preview_errors behavior).
-    // Screenshots go inline in the envelope ONLY when this Local Agent
-    // build declared it emits MCP image content; otherwise skip capture so
-    // an older build never stringifies base64 into the model context.
-    return executeAppAgentTool(
-      "run_app",
-      {
-        appId,
-        rebuild: job.arguments.rebuild,
-        includeScreenshot: job.arguments.includeScreenshot,
-        timeoutMs: job.arguments.timeoutMs,
-        width: job.arguments.width,
-        height: job.arguments.height,
-      },
-      {
-        screenshotDelivery:
-          job.capabilities?.imageContent === true ? "inline" : "none",
-      },
-    );
   }
 
   throw new Error(`Unsupported desktop bridge tool: ${job.tool}`);

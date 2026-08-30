@@ -19,7 +19,6 @@ import { createDbtServerTools } from "../agent-lib/tools/dbt-tools";
 import { createMongoToolsV2 } from "../agent-lib/tools/mongodb-tools";
 import { createScheduleQueryTool } from "../agent-lib/tools/schedule-query-tool";
 import { createSelfDirectiveTools } from "../agent-lib/tools/self-directive-tool";
-import { createServerAppTools } from "../agent-lib/tools/server-app-tools";
 import { createServerConsoleTools } from "../agent-lib/tools/server-console-tools";
 import { createSkillTools } from "../agent-lib/tools/skill-tools";
 import { createSqlToolsV2 } from "../agent-lib/tools/sql-tools";
@@ -58,11 +57,6 @@ export function collectLiveAgentToolNames(): string[] {
   add(keysOf(clientScreenshotTools));
 
   // Server factories (with execute) — namespaced as the unified agent sees them.
-  const appTools = createServerAppTools({
-    workspaceId: INVENTORY_WORKSPACE_ID,
-  });
-  add(keysOf(appTools));
-
   const consoleTools = createServerConsoleTools({
     workspaceId: INVENTORY_WORKSPACE_ID,
   });

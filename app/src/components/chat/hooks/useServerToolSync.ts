@@ -3,10 +3,8 @@ import type { UseChatHelpers } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
 import { useConsoleStore } from "../../../store/consoleStore";
 import { useRealtimeStore } from "../../../store/realtimeStore";
-import { useAppStore } from "../../../store/appStore";
 import { useDbtStore } from "../../../store/dbtStore";
 import {
-  APP_SERVER_MUTATION_TOOLS,
   DBT_CHECKOUT_MUTATION_TOOLS,
   DBT_GIT_MUTATION_TOOLS,
   DBT_SERVER_MUTATION_TOOLS,
@@ -145,11 +143,10 @@ export function useServerToolSync({
             ? p.type.slice("tool-".length)
             : undefined;
       if (!toolName) continue;
-      const isAppEdit = APP_SERVER_MUTATION_TOOLS.has(toolName);
       const isDbtEdit = DBT_SERVER_MUTATION_TOOLS.has(toolName);
       const isDbtCheckoutMove = DBT_CHECKOUT_MUTATION_TOOLS.has(toolName);
       const isDbtGitMutation = DBT_GIT_MUTATION_TOOLS.has(toolName);
-      if (!isAppEdit && !isDbtEdit && !isDbtCheckoutMove && !isDbtGitMutation) {
+      if (!isDbtEdit && !isDbtCheckoutMove && !isDbtGitMutation) {
         continue;
       }
       if (
@@ -162,19 +159,7 @@ export function useServerToolSync({
       if (handledEntitySyncToolCallIdsRef.current.has(p.toolCallId)) continue;
       handledEntitySyncToolCallIdsRef.current.add(p.toolCallId);
 
-      if (isAppEdit) {
-        const appId = p.input?.appId;
-        // Only reconcile a tab that is actually open here (mirrors the
-        // realtime handler); fetchApp + bumpPreview rebuilds the preview.
-        if (appId && useAppStore.getState().openApps[appId]) {
-          void (async () => {
-            const fresh = await useAppStore
-              .getState()
-              .fetchApp(workspaceId, appId);
-            if (fresh) useAppStore.getState().bumpPreview(appId);
-          })();
-        }
-      } else if (isDbtEdit) {
+      if (isDbtEdit) {
         const projectId = p.input?.projectId;
         const path = p.input?.path;
         if (!projectId || !path) continue;

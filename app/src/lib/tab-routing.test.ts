@@ -44,16 +44,7 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
     databaseName: "mydb",
     metadata: { schema: "public", table: "users" },
   }),
-  app: baseTab({ kind: "app", metadata: { appId: "app-1" } }),
   notebook: baseTab({ kind: "notebook", metadata: { notebookId: "nb-1" } }),
-  "app-file": baseTab({
-    kind: "app-file",
-    metadata: { appId: "app-1", path: "src/App.tsx" },
-  }),
-  "app-binding": baseTab({
-    kind: "app-binding",
-    metadata: { appId: "app-1", bindingId: "binding_1" },
-  }),
   "app-v2": baseTab({
     kind: "app-v2",
     metadata: { appV2Id: "66f000000000000000000001" },
@@ -120,11 +111,6 @@ describe("tab-routing", () => {
     const dsUrl = tabUrlPath("t", FIXTURES["dashboard-data-source"]) as string;
     expect(dsUrl).not.toMatch(TAB_DEEP_LINK_PATTERNS.dashboard);
 
-    const fileUrl = tabUrlPath("t", FIXTURES["app-file"]) as string;
-    const bindingUrl = tabUrlPath("t", FIXTURES["app-binding"]) as string;
-    expect(fileUrl).not.toMatch(TAB_DEEP_LINK_PATTERNS.app);
-    expect(bindingUrl).not.toMatch(TAB_DEEP_LINK_PATTERNS.app);
-
     // /x/:id/file|job|runs must not be captured by the bare console pattern.
     const dbtFileUrl = tabUrlPath("t", FIXTURES["dbt-file"]) as string;
     const dbtJobUrl = tabUrlPath("t", FIXTURES["dbt-job"]) as string;
@@ -145,7 +131,6 @@ describe("tab-routing", () => {
     );
     expect(tabUrlPath("t", baseTab({ kind: "flow-editor" }))).toBeNull();
     expect(tabUrlPath("t", baseTab({ kind: "table-data" }))).toBeNull();
-    expect(tabUrlPath("t", baseTab({ kind: "app" }))).toBeNull();
   });
 
   it("encodes and decodes file paths with special characters", () => {
@@ -158,16 +143,5 @@ describe("tab-routing", () => {
   it("includes the database in table URLs as query params", () => {
     const url = tabUrlPath("t", FIXTURES["table-data"]) as string;
     expect(url).toBe("/t/651234567890abcdef1234/public/users?db=mydb");
-  });
-
-  it("projects a running app's sub-location onto its /a/:id URL", () => {
-    const tab = baseTab({
-      kind: "app",
-      metadata: { appId: "app-1", appLocation: "/customers/9?tab=open&c=ES" },
-    });
-    const url = tabUrlPath("t", tab) as string;
-    expect(url).toBe("/a/app-1?tab=open&c=ES&_path=%2Fcustomers%2F9");
-    // The pathname (what hydration matches on) still resolves to the bare app.
-    expect(url.split("?")[0]).toMatch(TAB_DEEP_LINK_PATTERNS.app);
   });
 });

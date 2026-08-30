@@ -47,9 +47,11 @@ vi.mock("../store/consoleStore", () => ({
   selectTabBySettingsSection: () => () => undefined,
 }));
 vi.mock("../store/uiStore", () => ({
-  useUIStore: (
-    selector: (s: { leftPane: string; setLeftPane: unknown }) => unknown,
-  ) => selector({ leftPane: "consoles", setLeftPane: h.setLeftPane }),
+  useUIStore: Object.assign(
+    (selector: (s: { leftPane: string; setLeftPane: unknown }) => unknown) =>
+      selector({ leftPane: "consoles", setLeftPane: h.setLeftPane }),
+    { getState: () => ({ leftPane: "consoles" }) },
+  ),
 }));
 vi.mock("../store/mcpStore", () => ({
   useMcpStore: {
@@ -62,15 +64,9 @@ vi.mock("../store/mcpStore", () => ({
 vi.mock("../store/dashboardStore", () => ({
   useDashboardStore: { getState: () => ({}) },
 }));
-vi.mock("../store/appStore", () => ({ useAppStore: { getState: () => ({}) } }));
 vi.mock("../store/dbtStore", () => ({ useDbtStore: { getState: () => ({}) } }));
 vi.mock("../dashboard-runtime/shell", () => ({
   focusDashboardDataSourceTab: vi.fn(),
-}));
-vi.mock("../app-runtime/shell", () => ({
-  focusAppBindingTab: vi.fn(),
-  focusAppFileTab: vi.fn(),
-  focusAppTab: vi.fn(),
 }));
 vi.mock("../dbt-runtime/shell", () => ({
   focusDbtConsoleTab: vi.fn(),

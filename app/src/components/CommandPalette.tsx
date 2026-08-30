@@ -21,7 +21,6 @@ import { useTheme as useAppTheme } from "../contexts/ThemeContext";
 import { buildCommands } from "../lib/command-palette/commands";
 import {
   consoleResultItems,
-  searchApps,
   searchDashboards,
   searchDbtProjects,
   searchFlows,
@@ -32,7 +31,6 @@ import {
   type PaletteItem,
   type PaletteRunContext,
 } from "../lib/command-palette/types";
-import { useAppStore } from "../store/appStore";
 import { useCommandPaletteStore } from "../store/commandPaletteStore";
 import { useDashboardTreeStore } from "../store/dashboardTreeStore";
 import { useDbtStore } from "../store/dbtStore";
@@ -102,7 +100,6 @@ export default function CommandPalette() {
     pointerRef.current = null;
     const swallow = () => undefined;
     void useDashboardTreeStore.getState().fetchTree(workspaceId).catch(swallow);
-    void useAppStore.getState().fetchList(workspaceId).catch(swallow);
     void useDbtStore.getState().fetchProjects(workspaceId).catch(swallow);
     void useFlowStore.getState().fetchFlows(workspaceId).catch(swallow);
   }, [open, workspaceId]);
@@ -148,7 +145,6 @@ export default function CommandPalette() {
         ? consoleResultItems(workspaceId, consoleResults)
         : []),
       ...searchDashboards(workspaceId, effectiveQuery),
-      ...searchApps(workspaceId, effectiveQuery),
       ...searchDbtProjects(effectiveQuery),
       ...searchFlows(workspaceId, effectiveQuery),
     ];

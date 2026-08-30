@@ -67,10 +67,7 @@ import ConnectorTab from "./ConnectorTab";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
 import DashboardCanvas from "./DashboardCanvas";
-import AppRenderer from "./AppRenderer";
 import NotebookRenderer from "./NotebookRenderer";
-import AppFileEditor from "./AppFileEditor";
-import AppBindingEditor from "./AppBindingEditor";
 import AppV2Workspace from "./AppV2Workspace";
 import AppV2FileEditor from "./AppV2FileEditor";
 import AppV2DiffTab from "./AppV2DiffTab";
@@ -693,10 +690,7 @@ function Editor({
 
   // Tabs whose editing surfaces are not usable on a phone; we show a dismissible
   // notice instead of the cramped desktop UI.
-  const DESKTOP_ONLY_KINDS = useMemo(
-    () => new Set(["flow-editor", "app", "app-file", "app-binding"]),
-    [],
-  );
+  const DESKTOP_ONLY_KINDS = useMemo(() => new Set(["flow-editor"]), []);
   const [dismissedDesktopOnly, setDismissedDesktopOnly] = useState<
     Record<string, boolean>
   >({});
@@ -2444,8 +2438,6 @@ function Editor({
             if (!activeTab) return null;
             const rendersOwnBreadcrumbs =
               activeTab.kind === "table-data" ||
-              activeTab.kind === "app-file" ||
-              activeTab.kind === "app-binding" ||
               activeTab.kind === "dashboard-data-source" ||
               activeTab.kind === "dbt-file" ||
               activeTab.kind === "dbt-runs";
@@ -2844,27 +2836,10 @@ function Editor({
                         });
                       }}
                     />
-                  ) : tab.kind === "app" ? (
-                    <AppRenderer
-                      appId={tab.metadata?.appId as string}
-                      tabId={tab.id}
-                    />
                   ) : tab.kind === "notebook" ? (
                     <NotebookRenderer
                       notebookId={tab.metadata?.notebookId as string}
                       tabId={tab.id}
-                    />
-                  ) : tab.kind === "app-file" ? (
-                    <AppFileEditor
-                      tabId={tab.id}
-                      appId={tab.metadata?.appId as string}
-                      path={tab.metadata?.path as string}
-                    />
-                  ) : tab.kind === "app-binding" ? (
-                    <AppBindingEditor
-                      tabId={tab.id}
-                      appId={tab.metadata?.appId as string}
-                      bindingId={tab.metadata?.bindingId as string}
                     />
                   ) : tab.kind === "app-v2" ? (
                     <AppV2Workspace

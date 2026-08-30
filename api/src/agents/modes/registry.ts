@@ -56,13 +56,10 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   list_skills: "skills",
   search_skills: "skills",
   // Legacy full-file app read. Keep executable for compatibility, but the app
-  // mode uses app_search + app_read_resource for bounded context.
-  app_read_file: "apps",
   // Deprecated aliases of app_update_data_binding (which now takes
   // materialization + materializationSchedule directly). Kept executable for
   // external MCP clients; the in-product agent uses the merged tool.
   app_set_binding_materialization: "apps",
-  app_set_binding_schedule: "apps",
   // Deprecated aliases of app_set_preview (environment + viewport folded into
   // one preview setter). Kept executable for old chats.
   app_set_preview_environment: "apps",
@@ -216,84 +213,13 @@ export const APP_V2_ONLY_TOOL_NAMES = new Set<string>([
   "app2_merge_to_main",
 ]);
 
-/** Tools that operate ONLY on Apps v1 (Mongo-document) apps. */
-export const APP_V1_ONLY_TOOL_NAMES = new Set<string>([
-  "list_open_apps",
-  "open_app",
-  "create_app",
-  "get_app_state",
-  "app_read_file",
-  "app_write_file",
-  "app_edit_file",
-  "app_delete_file",
-  "app_rename_file",
-  "app_add_dependency",
-  "app_remove_dependency",
-  "app_create_data_binding",
-  "app_update_data_binding",
-  "app_delete_data_binding",
-  "app_set_binding_materialization",
-  "app_set_binding_schedule",
-  "app_save_version",
-  "app_restore_version",
-  "materialize_binding",
-  "run_app",
-  "app_set_preview_environment",
-]);
-
-/**
- * When the user's focus unambiguously belongs to one app system (an app tab
- * of either kind, or one of the two app explorers), hide the OTHER system's
- * tools from the step so the model cannot cross the streams.
- */
-export function isolateAppToolFamily(
-  activeTools: string[],
-  tabKind: string | undefined,
-  activeExplorer?: AgentContext["activeExplorer"],
-): string[] {
-  const isAppV2Tab = tabKind === "app-v2" || tabKind === "app-v2-file";
-  const isAppV1Tab =
-    tabKind === "app" || tabKind === "app-file" || tabKind === "app-binding";
-  const excluded = isAppV2Tab
-    ? APP_V1_ONLY_TOOL_NAMES
-    : isAppV1Tab
-      ? APP_V2_ONLY_TOOL_NAMES
-      : activeExplorer === "apps-v2"
-        ? APP_V1_ONLY_TOOL_NAMES
-        : activeExplorer === "apps"
-          ? APP_V2_ONLY_TOOL_NAMES
-          : undefined;
-  return excluded
-    ? activeTools.filter(toolName => !excluded.has(toolName))
-    : activeTools;
-}
-
 const APP_MODE_TOOL_NAMES: string[] = [
   // Apps v2 (git-backed). Tool-family isolation picks v1 vs v2 per turn.
   ...APP_V2_ONLY_TOOL_NAMES,
-  // Client app tools
-  "list_open_apps",
-  "open_app",
-  "create_app",
-  "get_app_state",
-  "app_search",
-  "app_read_resource",
-  "app_write_file",
-  "app_edit_file",
-  "app_delete_file",
-  "app_rename_file",
-  "app_add_dependency",
-  "app_remove_dependency",
-  "app_create_data_binding",
-  "app_update_data_binding",
-  "app_delete_data_binding",
   "save_version",
   "restore_version",
   "browse_version_history",
   "get_version_snapshot",
-  "materialize_binding",
-  "run_app",
-  "app_set_preview",
   // Shared surface-scoped data-source primitives (apps + dashboards)
   "list_data_sources",
   "inspect_data_source",

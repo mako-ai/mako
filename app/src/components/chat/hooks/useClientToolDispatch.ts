@@ -12,13 +12,11 @@ import { useConsoleStore } from "../../../store/consoleStore";
 import { generateObjectId } from "../../../utils/objectId";
 import { executeConsoleAgentTool } from "../../../agent-runtime/console-agent-tools";
 import { executeDashboardAgentTool } from "../../../dashboard-runtime/agent-tools";
-import { executeAppAgentTool } from "../../../app-runtime/agent-tools";
 import { executeDbtAgentTool } from "../../../dbt-runtime/agent-tools";
 import { executeNotebookAgentTool } from "../../../notebook-runtime/agent-tools";
 import { executeDataSourceTool } from "../../../agent-runtime/data-source-tools";
 import {
   DASHBOARD_EXECUTOR_TOOL_NAMES,
-  APP_EXECUTOR_TOOL_NAMES,
   DBT_EXECUTOR_TOOL_NAMES,
   DATA_SOURCE_EXECUTOR_TOOL_NAMES,
   NOTEBOOK_EXECUTOR_TOOL_NAMES,
@@ -227,51 +225,6 @@ export function useClientToolDispatch({
                   dashboardError instanceof Error
                     ? dashboardError.message
                     : "Dashboard tool execution failed",
-              });
-            }
-          })();
-          return;
-        }
-
-        // --- React App tools (client-side) ---
-        if (APP_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
-          const activeAppTool = registerActiveClientToolCall(
-            toolName,
-            toolCall.toolCallId,
-          );
-
-          // Fire-and-forget, same rationale as dashboard tools above: never
-          // await client work inside onToolCall or the SSE finish chunk stalls.
-          void (async () => {
-            try {
-              const appToolOutput = await executeAppAgentTool(toolName, input, {
-                executionId: activeAppTool.executionId,
-                signal: activeAppTool.abortController.signal,
-              });
-
-              if (activeAppTool.abortController.signal.aborted) return;
-
-              void settleActiveClientToolCall(
-                toolName,
-                toolCall.toolCallId,
-                appToolOutput ?? {
-                  success: false,
-                  error: `App tool "${toolName}" did not return a result.`,
-                },
-              );
-            } catch (appError) {
-              if (
-                manualStopRequestedRef.current ||
-                activeAppTool.abortController.signal.aborted
-              ) {
-                return;
-              }
-              void settleActiveClientToolCall(toolName, toolCall.toolCallId, {
-                success: false,
-                error:
-                  appError instanceof Error
-                    ? appError.message
-                    : "App tool execution failed",
               });
             }
           })();
@@ -624,10 +577,7 @@ export function useClientToolDispatch({
             signal: AbortSignal;
           }) => Promise<Record<string, unknown> | null | undefined>)
         | null = null;
-      if (APP_EXECUTOR_TOOL_NAMES.has(name)) {
-        run = ({ executionId, signal }) =>
-          executeAppAgentTool(toolName, input, { executionId, signal });
-      } else if (DASHBOARD_EXECUTOR_TOOL_NAMES.has(name)) {
+      if (DASHBOARD_EXECUTOR_TOOL_NAMES.has(name)) {
         run = ({ executionId, signal }) =>
           executeDashboardAgentTool(toolName, input, {
             executionId,

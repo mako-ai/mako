@@ -7,10 +7,8 @@
  * converted to items here.
  */
 
-import { focusAppTab } from "../../app-runtime/shell";
 import { focusDashboardTab } from "../../dashboard-runtime/shell";
 import { focusDbtConsoleTab } from "../../dbt-runtime/shell";
-import { useAppStore } from "../../store/appStore";
 import type { ConsoleSearchResult } from "../../store/commandPaletteStore";
 import { useConsoleStore } from "../../store/consoleStore";
 import {
@@ -114,36 +112,6 @@ export function searchDashboards(
         icon: TAB_KIND_ICONS.dashboard,
         run: () => {
           focusDashboardTab(entry.id, entry.name);
-        },
-      },
-    });
-  }
-  return sorted(scored, 5);
-}
-
-export function searchApps(
-  workspaceId: string,
-  query: string,
-): PaletteEntityItem[] {
-  const state = useAppStore.getState();
-  const apps = [
-    ...(state.myApps[workspaceId] ?? []),
-    ...(state.workspaceApps[workspaceId] ?? []),
-  ];
-  const seen = new Set<string>();
-  const scored: Scored[] = [];
-  for (const app of apps) {
-    if (seen.has(app.id)) continue;
-    seen.add(app.id);
-    scored.push({
-      score: matchScore(query, app.name),
-      item: {
-        id: `app:${app.id}`,
-        title: app.name,
-        section: "Apps",
-        icon: TAB_KIND_ICONS.app,
-        run: () => {
-          focusAppTab(app.id, app.name);
         },
       },
     });

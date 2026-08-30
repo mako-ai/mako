@@ -26,7 +26,6 @@ const stores = vi.hoisted(() => {
     dbtState,
     consoleState: { tabs: {}, openConsoleFromServer: vi.fn() },
     realtimeState: { syncRevisions: vi.fn() },
-    appState: { openApps: {}, fetchApp: vi.fn(), bumpPreview: vi.fn() },
   };
 });
 
@@ -38,9 +37,6 @@ vi.mock("../../../store/consoleStore", () => ({
 }));
 vi.mock("../../../store/realtimeStore", () => ({
   useRealtimeStore: { getState: () => stores.realtimeState },
-}));
-vi.mock("../../../store/appStore", () => ({
-  useAppStore: { getState: () => stores.appState },
 }));
 
 import { useServerToolSync } from "./useServerToolSync";

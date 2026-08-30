@@ -23,7 +23,6 @@ import {
   hasBlockedDraftSave,
   hasPendingAgentReview,
 } from "./consoleStore";
-import { useAppStore } from "./appStore";
 import { useAppsV2Store, type AppsV2BoxState } from "./appsV2Store";
 import { focusAppsV2Tab } from "../apps-v2-runtime/shell";
 import { useDashboardStore } from "./dashboardStore";
@@ -460,35 +459,6 @@ export const useRealtimeStore = create<RealtimeStore>()(
       })();
     };
 
-    // Server-executed app mutation tools (issue #475 pattern for apps): pull the
-    // authoritative app over HTTP and rebuild its preview when an OPEN app's
-    // version advances. Echo-suppressed by clientId; agent writes carry
-    // `agent:<chatId>` so they are applied (this tab did not make the edit).
-    const handleAppUpdated = (
-      event: Extract<RealtimeEvent, { type: "app.updated" }>,
-    ) => {
-      if (event.clientId && event.clientId === realtimeClientId) return;
-      const workspaceId = get().workspaceId;
-      if (!workspaceId) return;
-      const appStore = useAppStore.getState();
-      const open = appStore.openApps[event.appId];
-      if (!open) {
-        // Not open in this window — but the app list may have changed (e.g. the
-        // agent created/edited an app server-side). Refresh the explorer so new
-        // apps appear without a manual reload (browser follows the server).
-        void appStore.fetchList(workspaceId);
-        return;
-      }
-      if ((open.version ?? 0) >= event.version) return; // stale / own echo
-      void (async () => {
-        const fresh = await useAppStore
-          .getState()
-          .fetchApp(workspaceId, event.appId);
-        // Rebuild the preview iframe so server-applied file edits render.
-        if (fresh) useAppStore.getState().bumpPreview(event.appId);
-      })();
-    };
-
     // Apps v2 (git-backed): any durable change (agent turn, WIP flush, merge)
     // pokes open windows; the store refetches from the API (git is the
     // authority, so a refetch is always safe — openFile preserves dirty local
@@ -733,7 +703,6 @@ export const useRealtimeStore = create<RealtimeStore>()(
           handleConsoleUpdated(event);
           break;
         case "app.updated":
-          handleAppUpdated(event);
           break;
         case "app-v2.updated":
           handleAppV2Updated(event);

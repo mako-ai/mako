@@ -35,7 +35,6 @@ import {
   missingInputConditionalGrant,
 } from "../agent-lib/capabilities/runtime";
 import { createHeadlessRunAppTool } from "./preview-tools";
-import { createServerAppTools } from "../agent-lib/tools/server-app-tools";
 import { createAppsV2Tools } from "../agent-lib/tools/apps-v2-tools";
 import { createSqlToolsV2 } from "../agent-lib/tools/sql-tools";
 import { createMongoToolsV2 } from "../agent-lib/tools/mongodb-tools";
@@ -181,13 +180,6 @@ export function buildMakoMcpCandidateTools(
   // id per exchange means no open browser tab suppresses these events, so
   // tabs live-reload on every MCP-driven mutation.
   const chatId = `mcp-${nanoid(10)}`;
-  const appTools = createServerAppTools({
-    workspaceId,
-    userId,
-    chatId,
-    queryAccess,
-  });
-
   const appsV2Tools = createAppsV2Tools({ workspaceId, userId });
 
   const consoleTools = createServerConsoleTools({
@@ -239,7 +231,6 @@ export function buildMakoMcpCandidateTools(
   const headlessRunApp = createHeadlessRunAppTool(context);
 
   return {
-    ...appTools,
     ...headlessRunApp,
     ...appsV2Tools,
     ...consoleTools,
