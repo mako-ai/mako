@@ -18,8 +18,6 @@ import {
   TextField,
   Avatar,
   Stack,
-  Select,
-  MenuItem,
 } from "@mui/material";
 import { X, RotateCcw } from "lucide-react";
 import Editor from "@monaco-editor/react";
@@ -44,25 +42,7 @@ interface VersionHistoryPanelProps {
 const LIST_WIDTH = 380;
 const PREVIEW_WIDTH = 640;
 
-interface AppSnapshotFile {
-  path: string;
-  contents: string;
-}
-
 /** Synthetic selector entries (after the real files) for app snapshots. */
-const APP_DEPS_KEY = "::dependencies";
-const APP_BINDINGS_KEY = "::dataBindings";
-
-function monacoLanguageForPath(path: string): string {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  if (ext === "ts" || ext === "tsx") return "typescript";
-  if (ext === "js" || ext === "jsx") return "javascript";
-  if (ext === "css" || ext === "scss") return "css";
-  if (ext === "html") return "html";
-  if (ext === "json") return "json";
-  if (ext === "md" || ext === "mdx") return "markdown";
-  return "plaintext";
-}
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr);
@@ -120,29 +100,12 @@ export function VersionHistoryPanel({
   const [restoreComment, setRestoreComment] = useState("");
   const [restoring, setRestoring] = useState(false);
   // For app snapshots: which file (or synthetic deps/bindings view) is shown.
-  const [appFilePath, setAppFilePath] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) {
       setSelectedVersion(null);
     }
   }, [open]);
-
-  // When an app version loads, default the preview to its entrypoint.
-  useEffect(() => {
-    if (entityType !== "app" || !selectedVersion) return;
-    const files =
-      (selectedVersion.snapshot.files as AppSnapshotFile[] | undefined) ?? [];
-    const entrypoint = selectedVersion.snapshot.entrypoint as
-      | string
-      | undefined;
-    const fallback = files[0]?.path ?? APP_DEPS_KEY;
-    setAppFilePath(
-      entrypoint && files.some(f => f.path === entrypoint)
-        ? entrypoint
-        : fallback,
-    );
-  }, [entityType, selectedVersion]);
 
   useEffect(() => {
     if (open && workspaceId && entityId) {
@@ -211,38 +174,12 @@ export function VersionHistoryPanel({
 
   const monacoTheme = effectiveMode === "dark" ? "vs-dark" : "light";
 
-  const appFiles: AppSnapshotFile[] =
-    entityType === "app" && selectedVersion
-      ? ((selectedVersion.snapshot.files as AppSnapshotFile[] | undefined) ??
-        [])
-      : [];
-
   let snapshotValue = "";
   let previewLanguage = "json";
   if (selectedVersion != null) {
     if (entityType === "console") {
       snapshotValue = (selectedVersion.snapshot.code as string) ?? "";
       previewLanguage = "sql";
-    } else if (entityType === "app") {
-      if (appFilePath === APP_DEPS_KEY) {
-        snapshotValue = JSON.stringify(
-          selectedVersion.snapshot.dependencies ?? {},
-          null,
-          2,
-        );
-        previewLanguage = "json";
-      } else if (appFilePath === APP_BINDINGS_KEY) {
-        snapshotValue = JSON.stringify(
-          selectedVersion.snapshot.dataBindings ?? [],
-          null,
-          2,
-        );
-        previewLanguage = "json";
-      } else {
-        const file = appFiles.find(f => f.path === appFilePath);
-        snapshotValue = file?.contents ?? "";
-        previewLanguage = monacoLanguageForPath(appFilePath ?? "");
-      }
     } else {
       snapshotValue = JSON.stringify(selectedVersion.snapshot ?? {}, null, 2);
       previewLanguage = "json";
@@ -333,41 +270,6 @@ export function VersionHistoryPanel({
               </Stack>
             </Box>
 
-            {entityType === "app" && !loadingDetail && (
-              <Box
-                sx={{
-                  px: 2,
-                  py: 1,
-                  borderBottom: 1,
-                  borderColor: "divider",
-                  flexShrink: 0,
-                }}
-              >
-                <Select
-                  size="small"
-                  fullWidth
-                  value={appFilePath ?? ""}
-                  onChange={e => setAppFilePath(e.target.value)}
-                  sx={{
-                    fontSize: "0.8rem",
-                    "& .MuiSelect-select": { py: 0.5 },
-                  }}
-                >
-                  {appFiles.map(f => (
-                    <MenuItem key={f.path} value={f.path}>
-                      {f.path}
-                    </MenuItem>
-                  ))}
-                  <MenuItem value={APP_DEPS_KEY}>
-                    · dependencies (JSON)
-                  </MenuItem>
-                  <MenuItem value={APP_BINDINGS_KEY}>
-                    · data bindings (JSON)
-                  </MenuItem>
-                </Select>
-              </Box>
-            )}
-
             <Box sx={{ flex: 1, minHeight: 0, position: "relative" }}>
               {loadingDetail ? (
                 <Box
@@ -450,9 +352,9 @@ export function VersionHistoryPanel({
         ) : !versions?.length ? (
           <Box sx={{ px: 2, py: 4, textAlign: "center" }}>
             <Typography variant="body2" color="text.secondary">
-              {entityType === "app"
-                ? "No published versions yet. Use \u201CPublish version\u201D to snapshot and publish the current draft."
-                : "No version history yet. Versions are created each time you save."}
+              {
+                "No version history yet. Versions are created each time you save."
+              }
             </Typography>
           </Box>
         ) : (
