@@ -45,6 +45,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useRealtimeStore } from "../store/realtimeStore";
 import { useAppsStore } from "../store/appsStore";
+import { useConsoleStore } from "../store/consoleStore";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { setIframeDragGuard } from "../lib/iframe-drag-guard";
 import { TerminalTypeAhead } from "../lib/terminal-type-ahead";
@@ -87,6 +88,41 @@ const TerminalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
     backgroundColor: theme.palette.primary.main,
   },
 }));
+
+const HIDDEN_PAUSE_MS = 10 * 60 * 1000;
+
+/**
+ * True once this document has been hidden for HIDDEN_PAUSE_MS straight.
+ * A tab left in the background holds its HMR iframe and pty websockets
+ * open indefinitely; those sockets read as "someone is watching" to the
+ * box's idle reaper AND as activity to E2B's 10-minute auto-pause — which
+ * is how a dev box billed hours of idle time. Pausing unmounts the dev
+ * preview and terminals (dtach keeps the sessions; they replay on return).
+ */
+function useHiddenPause(): boolean {
+  const [paused, setPaused] = useState(false);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onChange = () => {
+      if (document.visibilityState === "hidden") {
+        timer ??= setTimeout(() => setPaused(true), HIDDEN_PAUSE_MS);
+      } else {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        setPaused(false);
+      }
+    };
+    onChange();
+    document.addEventListener("visibilitychange", onChange);
+    return () => {
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onChange);
+    };
+  }, []);
+  return paused;
+}
 
 function TerminalPanel({
   appId,
@@ -450,6 +486,7 @@ function TerminalTabs({
   // reattaches to the same running shells (scrollback and all), VS Code
   // style. Only the tab LIST is persisted; which tab is active is not worth
   // remembering.
+  const hiddenPaused = useHiddenPause();
   const [shells, setShells] = useState<string[]>(() => {
     try {
       const saved = JSON.parse(
@@ -582,7 +619,7 @@ function TerminalTabs({
               display: active === "dev" ? "block" : "none",
             }}
           >
-            {slug && (devRunning || active === "dev") ? (
+            {!hiddenPaused && slug && (devRunning || active === "dev") ? (
               // The dev server runs in a dtach session named like any other
               // (mako-term-dev-<slug>) — this is a normal terminal attached
               // to it: colors, native scrollback, prefit history, and Ctrl-C
@@ -597,25 +634,26 @@ function TerminalTabs({
               />
             ) : null}
           </Box>
-          {shells.map((id, index) => (
-            <Box
-              key={id}
-              sx={{
-                flex: 1,
-                minHeight: 0,
-                display: active === id ? "block" : "none",
-              }}
-            >
-              <TerminalPanel
-                appId={appId}
-                workspaceId={workspaceId}
-                termId={id}
-                label={`bash ${index + 1}`}
-                fresh={freshIds.current.has(id)}
-                onSessionEnd={() => closeShell(id, { killRemote: false })}
-              />
-            </Box>
-          ))}
+          {!hiddenPaused &&
+            shells.map((id, index) => (
+              <Box
+                key={id}
+                sx={{
+                  flex: 1,
+                  minHeight: 0,
+                  display: active === id ? "block" : "none",
+                }}
+              >
+                <TerminalPanel
+                  appId={appId}
+                  workspaceId={workspaceId}
+                  termId={id}
+                  label={`bash ${index + 1}`}
+                  fresh={freshIds.current.has(id)}
+                  onSessionEnd={() => closeShell(id, { killRemote: false })}
+                />
+              </Box>
+            ))}
         </Box>
       </Panel>
       <SessionsResizeHandle />
@@ -927,6 +965,15 @@ export default function AppWorkspace({
   const runningDevApps = useAppsStore(s => s.runningDevApps);
   const devRunning = slug ? runningDevApps.includes(slug) : false;
   const viewUrl = useAppsStore(s => s.viewUrlByApp[appId]);
+  const hiddenPaused = useHiddenPause();
+  // Durable, session-authorized URL for the published app — for normal tabs.
+  // The token URL (viewUrl) exists ONLY for the sandboxed iframe, whose
+  // opaque origin cannot send cookies; tokens are short-lived and in-memory,
+  // so handing them to window.open produced "Preview expired" minutes later.
+  const liveUrl =
+    app?.publishedSha && workspaceId
+      ? `/api/workspaces/${workspaceId}/apps/${appId}/live/`
+      : undefined;
   const fetchViewUrl = useAppsStore(s => s.fetchViewUrl);
 
   // Derive the workbench view from BOX TRUTH, never localStorage. Auto-open
@@ -960,6 +1007,17 @@ export default function AppWorkspace({
       void fetchViewUrl(workspaceId, appId);
     }
   }, [editing, app?.publishedSha, workspaceId, appId, fetchViewUrl]);
+  // Older tabs were opened before slugs rode in tab metadata; heal them so
+  // the URL upgrades from /apps/<id> to /apps/<slug>.
+  useEffect(() => {
+    const slug = app?.slug;
+    if (!slug) return;
+    useConsoleStore.setState(state => {
+      const t = state.tabs[_tabId];
+      if (t?.metadata && !t.metadata.appSlug) t.metadata.appSlug = slug;
+    });
+  }, [app?.slug, _tabId]);
+
   const [terminalDragging, setTerminalDragging] = useState(false);
   useEffect(() => {
     if (!terminalDragging) return;
@@ -1069,8 +1127,8 @@ export default function AppWorkspace({
             // not published → this IS the call to action, publish.
             onClick={
               publishedSha
-                ? viewUrl
-                  ? () => window.open(viewUrl, "_blank", "noopener")
+                ? liveUrl
+                  ? () => window.open(liveUrl, "_blank", "noopener")
                   : undefined
                 : preview?.building
                   ? undefined
@@ -1156,9 +1214,9 @@ export default function AppWorkspace({
             <IconButton
               size="small"
               aria-label="Open the preview in a new tab"
-              disabled={!(editing ? preview?.url : viewUrl)}
+              disabled={!(editing ? preview?.url : liveUrl)}
               onClick={() => {
-                const url = editing ? preview?.url : viewUrl;
+                const url = editing ? preview?.url : liveUrl;
                 if (url) window.open(url, "_blank", "noopener");
               }}
             >
@@ -1291,6 +1349,12 @@ export default function AppWorkspace({
                 <code>&quot;.e2b.app&quot;</code>. Use{" "}
                 <strong>Restart dev session</strong> to let Mako run it, or add
                 that host to the app&apos;s <code>vite.config</code>.
+              </Alert>
+            ) : hiddenPaused ? (
+              <Alert severity="info" sx={{ m: 2 }}>
+                Preview paused after 10 minutes in the background — its sockets
+                are released so the sandbox can sleep. It resumes when you come
+                back.
               </Alert>
             ) : preview?.url ? (
               <iframe

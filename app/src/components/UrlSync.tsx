@@ -94,7 +94,7 @@ export function UrlSync() {
 
     // Apps deep links moved from /a2/ to /a/ with the apps-v2 → apps rename;
     // keep old bookmarks working by matching them as their new form.
-    const path = window.location.pathname.replace(/^\/a2\//, "/a/");
+    const path = window.location.pathname.replace(/^\/a2\//, "/apps/");
 
     // Reload vs deep link, and they deserve opposite answers. The URL follows
     // the active TAB, so on a plain reload the handlers below would move the

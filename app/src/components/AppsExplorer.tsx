@@ -335,17 +335,18 @@ export default function AppsExplorer() {
   const handleItemClick = useCallback(
     (node: ResourceTreeNode) => {
       const parsed = parseNodeId(node.id);
+      const slug = apps.find(a => a.id === parsed.appId)?.slug;
       if (parsed.kind === "app") {
-        focusAppsTab(parsed.appId, node.name);
+        focusAppsTab(parsed.appId, node.name, slug);
         // Warm the file tree so expanding is instant.
         if (workspaceId && !filesByApp[parsed.appId]) {
           void fetchFiles(workspaceId, parsed.appId);
         }
       } else if (parsed.kind === "file") {
-        focusAppsFileTab(parsed.appId, parsed.path);
+        focusAppsFileTab(parsed.appId, parsed.path, slug);
       }
     },
-    [workspaceId, filesByApp, fetchFiles, editingByApp],
+    [workspaceId, filesByApp, fetchFiles, editingByApp, apps],
   );
 
   const handleCreate = useCallback(async () => {
@@ -356,7 +357,7 @@ export default function AppsExplorer() {
     if (app) {
       setCreateOpen(false);
       setNewTitle("");
-      focusAppsTab(app.id, app.title);
+      focusAppsTab(app.id, app.title, app.slug);
     }
   }, [workspaceId, newTitle, createApp]);
 
