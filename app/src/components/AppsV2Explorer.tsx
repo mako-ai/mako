@@ -20,6 +20,8 @@ import {
   Typography,
 } from "@mui/material";
 import {
+  Globe as GlobeIcon,
+  User as UserIcon,
   Braces as JsonFileIcon,
   Database as BindingIcon,
   File as PlainFileIcon,
@@ -160,6 +162,7 @@ export default function AppsV2Explorer() {
   const fetchRunningDevApps = useAppsV2Store(s => s.fetchRunningDevApps);
   const filesTruncatedByApp = useAppsV2Store(s => s.filesTruncatedByApp);
   const fetchApps = useAppsV2Store(s => s.fetchApps);
+  const setAppAccess = useAppsV2Store(s => s.setAppAccess);
   const fetchFiles = useAppsV2Store(s => s.fetchFiles);
   const createApp = useAppsV2Store(s => s.createApp);
   const deleteApp = useAppsV2Store(s => s.deleteApp);
@@ -258,16 +261,61 @@ export default function AppsV2Explorer() {
         : undefined,
     }));
     // §10 monorepo: ONE repo per workspace — the repo is not a tree level.
-    // The rail lists apps directly (org/repo grouping died with N-repos).
+    // Two sections, IDENTICAL to the v1 rail ("My Apps" / "Workspace", split
+    // by access), so the v1->v2 cutover is invisible in the tree. Access is
+    // organization, not security (§11.5): builders with repo access see all
+    // folders either way.
+    const byId = new Map(apps.map(a => [a.id, a]));
+    const mine = appNodes.filter(
+      n => (byId.get(n.id)?.access ?? "workspace") !== "workspace",
+    );
+    const shared = appNodes.filter(
+      n => (byId.get(n.id)?.access ?? "workspace") === "workspace",
+    );
     return [
       {
-        key: "apps",
-        label: "Apps",
-        nodes: appNodes,
-        hideSectionHeader: true,
+        key: "my",
+        label: "My Apps",
+        icon: <UserIcon size={16} strokeWidth={1.5} />,
+        nodes: mine,
+        droppableId: "__section_my",
+        defaultAccess: "private" as const,
+      },
+      {
+        key: "workspace",
+        label: "Workspace",
+        icon: <GlobeIcon size={16} strokeWidth={1.5} />,
+        nodes: shared,
+        droppableId: "__section_workspace",
+        defaultAccess: "workspace" as const,
       },
     ];
   }, [apps, filesByApp]);
+
+  // Drag an app onto the other section (or any node inside it) to flip its
+  // sharing — the exact v1 gesture. Drops within the same section no-op.
+  const handleMoveNode = useCallback(
+    (nodeId: string, targetId: string | null, access?: string) => {
+      if (!workspaceId) return;
+      const parsed = parseNodeId(nodeId);
+      if (parsed.kind !== "app") return;
+      const accessOf = (appId: string) =>
+        (apps.find(a => a.id === appId)?.access ?? "workspace") === "workspace"
+          ? "workspace"
+          : "private";
+      let next: "private" | "workspace" | null =
+        access === "private" || access === "workspace" ? access : null;
+      if (!next && targetId) {
+        const target = parseNodeId(targetId);
+        if (target.kind === "app" || target.kind === "file") {
+          next = accessOf(target.appId);
+        }
+      }
+      if (!next || accessOf(parsed.appId) === next) return;
+      void setAppAccess(workspaceId, parsed.appId, next);
+    },
+    [workspaceId, apps, setAppAccess],
+  );
 
   const handleLoadChildren = useCallback(
     async (node: ResourceTreeNode) => {
@@ -437,6 +485,9 @@ export default function AppsV2Explorer() {
                   </Typography>
                 )}
                 <ResourceTree
+                  enableDragDrop
+                  onMoveItem={handleMoveNode}
+                  onMoveFolder={handleMoveNode}
                   sections={sections}
                   mode="sidebar"
                   searchQuery={searchQuery}

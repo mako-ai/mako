@@ -27581,6 +27581,106 @@
         "operationId": "post_api_workspaces_workspaceId_apps_v2_id_view_token"
       }
     },
+    "/api/workspaces/{workspaceId}/apps-v2/{id}/access": {
+      "patch": {
+        "tags": [
+          "Apps v2"
+        ],
+        "summary": "Set an app's sharing scope (My Apps <-> Workspace)",
+        "description": "The v1 rail's drag-between-sections, for v2: private = the owner's own list, workspace = everyone's. Folder-only apps get their row here (restricting is one of the three row-creating acts, §13.6).",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "access": {
+                    "type": "string",
+                    "enum": [
+                      "private",
+                      "workspace"
+                    ]
+                  }
+                },
+                "required": [
+                  "access"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "patch_api_workspaces_workspaceId_apps_v2_id_access"
+      }
+    },
     "/api/workspaces/{workspaceId}/apps-v2/{id}/public-share": {
       "post": {
         "tags": [
