@@ -89,6 +89,41 @@ const TerminalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
   },
 }));
 
+const HIDDEN_PAUSE_MS = 10 * 60 * 1000;
+
+/**
+ * True once this document has been hidden for HIDDEN_PAUSE_MS straight.
+ * A tab left in the background holds its HMR iframe and pty websockets
+ * open indefinitely; those sockets read as "someone is watching" to the
+ * box's idle reaper AND as activity to E2B's 10-minute auto-pause — which
+ * is how a dev box billed hours of idle time. Pausing unmounts the dev
+ * preview and terminals (dtach keeps the sessions; they replay on return).
+ */
+function useHiddenPause(): boolean {
+  const [paused, setPaused] = useState(false);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onChange = () => {
+      if (document.visibilityState === "hidden") {
+        timer ??= setTimeout(() => setPaused(true), HIDDEN_PAUSE_MS);
+      } else {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        setPaused(false);
+      }
+    };
+    onChange();
+    document.addEventListener("visibilitychange", onChange);
+    return () => {
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onChange);
+    };
+  }, []);
+  return paused;
+}
+
 function TerminalPanel({
   appId,
   workspaceId,
@@ -451,6 +486,7 @@ function TerminalTabs({
   // reattaches to the same running shells (scrollback and all), VS Code
   // style. Only the tab LIST is persisted; which tab is active is not worth
   // remembering.
+  const hiddenPaused = useHiddenPause();
   const [shells, setShells] = useState<string[]>(() => {
     try {
       const saved = JSON.parse(
@@ -578,7 +614,7 @@ function TerminalTabs({
               display: active === "dev" ? "block" : "none",
             }}
           >
-            {slug && (devRunning || active === "dev") ? (
+            {!hiddenPaused && slug && (devRunning || active === "dev") ? (
               // The dev server runs in a dtach session named like any other
               // (mako-term-dev-<slug>) — this is a normal terminal attached
               // to it: colors, native scrollback, prefit history, and Ctrl-C
@@ -593,25 +629,26 @@ function TerminalTabs({
               />
             ) : null}
           </Box>
-          {shells.map((id, index) => (
-            <Box
-              key={id}
-              sx={{
-                flex: 1,
-                minHeight: 0,
-                display: active === id ? "block" : "none",
-              }}
-            >
-              <TerminalPanel
-                appId={appId}
-                workspaceId={workspaceId}
-                termId={id}
-                label={`bash ${index + 1}`}
-                fresh={freshIds.current.has(id)}
-                onSessionEnd={() => closeShell(id, { killRemote: false })}
-              />
-            </Box>
-          ))}
+          {!hiddenPaused &&
+            shells.map((id, index) => (
+              <Box
+                key={id}
+                sx={{
+                  flex: 1,
+                  minHeight: 0,
+                  display: active === id ? "block" : "none",
+                }}
+              >
+                <TerminalPanel
+                  appId={appId}
+                  workspaceId={workspaceId}
+                  termId={id}
+                  label={`bash ${index + 1}`}
+                  fresh={freshIds.current.has(id)}
+                  onSessionEnd={() => closeShell(id, { killRemote: false })}
+                />
+              </Box>
+            ))}
         </Box>
       </Panel>
       <SessionsResizeHandle />
@@ -923,6 +960,7 @@ export default function AppV2Workspace({
   const runningDevApps = useAppsV2Store(s => s.runningDevApps);
   const devRunning = slug ? runningDevApps.includes(slug) : false;
   const viewUrl = useAppsV2Store(s => s.viewUrlByApp[appId]);
+  const hiddenPaused = useHiddenPause();
   // Durable, session-authorized URL for the published app — for normal tabs.
   // The token URL (viewUrl) exists ONLY for the sandboxed iframe, whose
   // opaque origin cannot send cookies; tokens are short-lived and in-memory,
@@ -1306,6 +1344,12 @@ export default function AppV2Workspace({
                 <code>&quot;.e2b.app&quot;</code>. Use{" "}
                 <strong>Restart dev session</strong> to let Mako run it, or add
                 that host to the app&apos;s <code>vite.config</code>.
+              </Alert>
+            ) : hiddenPaused ? (
+              <Alert severity="info" sx={{ m: 2 }}>
+                Preview paused after 10 minutes in the background — its sockets
+                are released so the sandbox can sleep. It resumes when you come
+                back.
               </Alert>
             ) : preview?.url ? (
               <iframe
