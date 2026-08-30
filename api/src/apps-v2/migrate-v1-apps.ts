@@ -50,6 +50,8 @@ import { loggers } from "../logging";
 import { APP_SDK_DEPENDENCY } from "./app-sdk-package";
 import { createAppsV2Scaffold } from "./scaffold";
 import {
+  listAppFolders,
+  derivedAppId,
   appRootFor,
   commitFilesOnBranch,
   createProject,
@@ -673,6 +675,77 @@ export async function clearWorkspaceV2Apps(workspaceId: string): Promise<{
   };
 }
 
+/**
+ * ROWS-ONLY backfill (§13.22) for workspaces whose repo arrived by
+ * connected-repo IMPORT: the git side is already correct, but the import
+ * writes no database rows — so formerly-private apps are workspace-visible,
+ * the v1 docs carry no migration stamp (the v1 scheduler keeps refreshing
+ * them), and publish/share had nothing to persist against until they
+ * materialize a row. This writes exactly what the full migration would have:
+ * the AppProjectV2 row under the DERIVED id (same id every folder-only code
+ * path synthesizes, so nothing moves) with the v1 ACL carried over, and the
+ * stamp on the v1 doc. No git writes, no artifact copies — fresh
+ * materializations rebuild data (the v2 scheduler handles scheduled
+ * bindings on its own).
+ */
+export async function backfillV1AppRow(
+  app: IMakoApp,
+  slug: string,
+): Promise<V1AppMigrationResult> {
+  const plan = planV1AppMigration(app);
+  const workspaceId = app.workspaceId.toString();
+  // Only back-fill apps whose folder actually exists in the (imported) repo:
+  // stamping a v1 app with no v2 counterpart would stop its v1 refreshes
+  // while nothing replaces them — a v1 app created AFTER the repo snapshot
+  // must stay fully v1 until a real migration run brings it over.
+  const folders = await listAppFolders(workspaceId);
+  if (!folders.some(f => f.slug === slug)) {
+    logger.warn("Rows-only backfill skipped: no folder for this app", {
+      v1AppId: app._id.toString(),
+      slug,
+    });
+    return { ...plan, slug, versions: 0, versionCommits: 0 };
+  }
+  const id = derivedAppId(workspaceId, slug);
+  const existing = await AppProjectV2.findOne({ _id: id });
+  if (!existing) {
+    try {
+      await AppProjectV2.create({
+        _id: id,
+        workspaceId: app.workspaceId,
+        title: app.title,
+        slug,
+        description: app.description,
+        access: plan.access,
+        workspaceRole: plan.workspaceRole,
+        sharedWith: plan.sharedWith ?? [],
+        createdBy: app.owner_id || app.createdBy || "system",
+        owner_id: app.owner_id || app.createdBy,
+        defaultBranch: "main",
+      });
+    } catch (error) {
+      // Unique-index race or slug collision with a hand-made app: adopt the
+      // occupant rather than fighting it; the stamp below still applies.
+      logger.warn("Rows-only backfill could not create the row", {
+        v1AppId: app._id.toString(),
+        slug,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  await MakoApp.updateOne(
+    { _id: app._id },
+    { $set: { migratedToV2ProjectId: id } },
+  );
+  return {
+    ...plan,
+    projectId: id.toString(),
+    slug,
+    versions: 0,
+    versionCommits: 0,
+  };
+}
+
 /** Migrate every v1 app in a workspace (or one app). */
 export async function migrateWorkspaceV1Apps(input: {
   workspaceId: string;
@@ -680,6 +753,8 @@ export async function migrateWorkspaceV1Apps(input: {
   execute: boolean;
   /** Wipe all existing v2 apps first (see clearWorkspaceV2Apps). */
   reset?: boolean;
+  /** §13.22: DB rows + stamps only — for repo-imported workspaces. */
+  rowsOnly?: boolean;
 }): Promise<V1AppMigrationResult[]> {
   if (input.execute && input.reset && !input.appId) {
     const cleared = await clearWorkspaceV2Apps(input.workspaceId);
@@ -715,7 +790,9 @@ export async function migrateWorkspaceV1Apps(input: {
     const slug = slugs.get(app._id.toString()) ?? slugify(app.title);
     results.push(
       input.execute
-        ? await migrateV1App(app, slug)
+        ? input.rowsOnly
+          ? await backfillV1AppRow(app, slug)
+          : await migrateV1App(app, slug)
         : {
             ...planV1AppMigration(app),
             versions: versionCounts.get(app._id.toString()) ?? 0,
