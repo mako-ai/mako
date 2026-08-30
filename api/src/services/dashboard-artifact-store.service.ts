@@ -618,9 +618,7 @@ export function getDashboardArtifactStore(): DashboardArtifactStore {
  * null, and callers read from the main store exactly as before.
  */
 export function getArtifactSourceStore(): DashboardArtifactStore | null {
-  const bucket =
-    process.env.APPS_ARTIFACT_SOURCE_BUCKET ||
-    process.env.APPS_V2_ARTIFACT_SOURCE_BUCKET; // pre-rename name
+  const bucket = process.env.APPS_ARTIFACT_SOURCE_BUCKET; // pre-rename name
   if (!bucket) return null;
   return new GcsDashboardArtifactStore(bucket);
 }

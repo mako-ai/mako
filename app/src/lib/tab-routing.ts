@@ -40,9 +40,9 @@ export const TAB_DEEP_LINK_PATTERNS = {
   dashboard: /^\/d\/([a-zA-Z0-9-]+)\/?$/,
   "dashboard-data-source": /^\/d\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9_-]+)/,
   "table-data": /^\/t\/([a-zA-Z0-9-]+)\/([^/]+)\/([^/]+)\/?$/,
-  // Apps live at /apps/:slug (folder name). /a2 stays accepted for old links.
-  app: /^\/(?:apps|a2)\/([a-zA-Z0-9-]+)\/?$/,
-  "app-file": /^\/(?:apps|a2)\/([a-zA-Z0-9-]+)\/file\/(.+)$/,
+  // Apps live at /apps/:slug (the folder name in the workspace repo).
+  app: /^\/apps\/([a-zA-Z0-9-]+)\/?$/,
+  "app-file": /^\/apps\/([a-zA-Z0-9-]+)\/file\/(.+)$/,
   "app-diff": null,
   plan: /^\/p\/([a-zA-Z0-9-]+)/,
   settings: /^\/settings\/([a-z-]+)$/,

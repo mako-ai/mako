@@ -51,11 +51,7 @@ const GITHUB_API = "https://api.github.com";
 
 /** Overridable so tests can point mirrors at file:// remotes. */
 function remoteBase(): string {
-  return (
-    process.env.APPS_GITHUB_REMOTE_BASE ||
-    process.env.APPS_V2_GITHUB_REMOTE_BASE || // pre-rename name
-    "https://github.com"
-  );
+  return process.env.APPS_GITHUB_REMOTE_BASE || "https://github.com";
 }
 
 function remoteUrl(owner: string, repo: string): string {

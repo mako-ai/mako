@@ -10,14 +10,8 @@ import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-/**
- * Read an env var under its current name, falling back to the pre-rename
- * `APPS_V2_*` name. Deployed environments and developer `.env` files were
- * provisioned under the old names; a rename must not silently un-configure
- * them.
- */
 function appsEnv(name: string): string | undefined {
-  return process.env[`APPS_${name}`] || process.env[`APPS_V2_${name}`];
+  return process.env[`APPS_${name}`];
 }
 
 /**

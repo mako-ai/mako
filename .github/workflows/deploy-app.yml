@@ -191,10 +191,7 @@ jobs:
       # Apps sandboxes (E2B Firecracker microVMs).
       E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
       APPS_SANDBOX_PROVIDER: e2b
-      # External E2B template artifact — still published under its pre-rename
-      # alias. To retire it: `pnpm --filter api run apps:build-template` with
-      # E2B_TEMPLATE_ALIAS=mako-apps, then flip this value.
-      APPS_E2B_TEMPLATE: mako-apps-v2
+      APPS_E2B_TEMPLATE: mako-apps
       # Apps cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
       # All previews share the staging DB, so they share the "staging" prefix:
       # same workspace -> same repo regardless of which PR created it.
@@ -874,10 +871,7 @@ jobs:
       # Apps sandboxes (E2B Firecracker microVMs).
       E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
       APPS_SANDBOX_PROVIDER: e2b
-      # External E2B template artifact — still published under its pre-rename
-      # alias. To retire it: `pnpm --filter api run apps:build-template` with
-      # E2B_TEMPLATE_ALIAS=mako-apps, then flip this value.
-      APPS_E2B_TEMPLATE: mako-apps-v2
+      APPS_E2B_TEMPLATE: mako-apps
       # Apps cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
       MAKO_CLOUD_GITHUB_ORG: ${{ vars.MAKO_CLOUD_GITHUB_ORG }}
       MAKO_CLOUD_GITHUB_APP_ID: ${{ vars.MAKO_CLOUD_GITHUB_APP_ID }}
