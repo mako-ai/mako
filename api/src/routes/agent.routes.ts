@@ -775,11 +775,8 @@ agentRoutes.openapi(
     // Vision capability for tool outputs (browse screenshots): resolved from
     // the catalog BEFORE tool construction so toModelOutput can gate image
     // parts for text-only models (§13.26). getModelById is memory-cached.
-    agentContext.modelSupportsVision = modelSupportsImageInput(
-      resolvedModelId,
-      ((await getModelById(resolvedModelId)) as { tags?: string[] } | undefined)
-        ?.tags,
-    );
+    agentContext.modelSupportsVision =
+      await modelSupportsImageInput(resolvedModelId);
 
     if (resolvedAgentId === "unified") {
       const runtime = buildUnifiedModeRuntime({

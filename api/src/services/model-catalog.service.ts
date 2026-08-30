@@ -39,6 +39,10 @@ export interface CatalogModel {
   description: string;
   contextWindow: number | null;
   tags: string[];
+  /** Unix seconds the model was released (gateway `released`); null pre-upgrade. */
+  releasedAt: number | null;
+  /** Accepts image input (gateway modalities); null = unknown (old snapshot). */
+  imageInput: boolean | null;
   supportsThinking: boolean;
   thinkingMode: AnthropicThinkingMode;
   thinkingBudgetTokens: number;
@@ -74,6 +78,8 @@ export interface AdminCatalogModel {
   description: string;
   contextWindow: number | null;
   tags: string[];
+  releasedAt: number | null;
+  imageInput: boolean | null;
   blendedCostPerM: number | null;
   visible: boolean;
   tier: "free" | "pro";
@@ -107,6 +113,16 @@ const GatewayPricingSchema = z
 
 const GatewayModelRawSchema = z.object({
   id: z.string(),
+  /** Model release date, unix seconds (the gateway sends it for all models). */
+  released: z.number().optional(),
+  /** Input/output modalities — the real vision signal ("image" in input). */
+  modalities: z
+    .object({
+      input: z.array(z.string()).optional(),
+      output: z.array(z.string()).optional(),
+    })
+    .passthrough()
+    .optional(),
   name: z.string().optional(),
   description: z.string().optional(),
   owned_by: z.string().optional(),
@@ -161,6 +177,10 @@ interface GatewayModelNormalized {
   provider: string;
   contextWindow: number | null;
   tags: string[];
+  /** Unix seconds; null on pre-upgrade snapshots. */
+  releasedAt?: number | null;
+  /** modalities.input includes "image"; null = unknown (old snapshot). */
+  imageInput?: boolean | null;
 }
 
 interface PricingEntry {
@@ -317,6 +337,10 @@ async function persistLanguageSnapshot(
     provider: raw.owned_by || raw.id.split("/")[0] || "unknown",
     contextWindow: raw.context_window ?? null,
     tags: raw.tags ?? [],
+    releasedAt: raw.released ?? null,
+    imageInput: raw.modalities?.input
+      ? raw.modalities.input.includes("image")
+      : null,
   }));
 
   const pricingDocs: PricingEntry[] = [];
@@ -664,6 +688,8 @@ function mergeCatalog(
     if (tier === "free") freeTierIds.add(gm.id);
 
     models.push({
+      releasedAt: gm.releasedAt ?? null,
+      imageInput: gm.imageInput ?? null,
       id: gm.id,
       provider: gm.provider,
       name: gm.name,
@@ -1035,6 +1061,8 @@ export async function getAdminCatalogView(): Promise<AdminCatalogView> {
       description: gm.description,
       contextWindow: gm.contextWindow,
       tags: gm.tags,
+      releasedAt: gm.releasedAt ?? null,
+      imageInput: gm.imageInput ?? null,
       blendedCostPerM,
       // Fail-closed: missing curation entry = hidden pro
       visible: cur?.visible ?? false,
@@ -1085,10 +1113,29 @@ const VISION_ID_PATTERNS: RegExp[] = [
   /grok-(2-vision|4)/i,
 ];
 
-export function modelSupportsImageInput(
+function visionByPattern(
   modelId: string,
   tags?: readonly string[] | null,
 ): boolean {
   if (tags?.some(t => VISION_TAGS.has(t.toLowerCase()))) return true;
   return VISION_ID_PATTERNS.some(re => re.test(modelId));
+}
+
+/**
+ * Catalog-first: the gateway reports modalities.input explicitly for every
+ * model, so a refreshed snapshot answers authoritatively. The pattern
+ * fallback only covers pre-upgrade snapshots and models missing from the
+ * catalog entirely.
+ */
+export async function modelSupportsImageInput(
+  modelId: string,
+): Promise<boolean> {
+  try {
+    const catalog = await getCatalogModels();
+    const entry = catalog.find(mm => mm.id === modelId);
+    if (entry?.imageInput != null) return entry.imageInput;
+    return visionByPattern(modelId, entry?.tags);
+  } catch {
+    return visionByPattern(modelId);
+  }
 }
