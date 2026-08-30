@@ -45,6 +45,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useRealtimeStore } from "../store/realtimeStore";
 import { useAppsV2Store } from "../store/appsV2Store";
+import { useConsoleStore } from "../store/consoleStore";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { setIframeDragGuard } from "../lib/iframe-drag-guard";
 import { TerminalTypeAhead } from "../lib/terminal-type-ahead";
@@ -922,6 +923,14 @@ export default function AppV2Workspace({
   const runningDevApps = useAppsV2Store(s => s.runningDevApps);
   const devRunning = slug ? runningDevApps.includes(slug) : false;
   const viewUrl = useAppsV2Store(s => s.viewUrlByApp[appId]);
+  // Durable, session-authorized URL for the published app — for normal tabs.
+  // The token URL (viewUrl) exists ONLY for the sandboxed iframe, whose
+  // opaque origin cannot send cookies; tokens are short-lived and in-memory,
+  // so handing them to window.open produced "Preview expired" minutes later.
+  const liveUrl =
+    app?.publishedSha && workspaceId
+      ? `/api/workspaces/${workspaceId}/apps-v2/${appId}/live/`
+      : undefined;
   const fetchViewUrl = useAppsV2Store(s => s.fetchViewUrl);
 
   // Derive the workbench view from BOX TRUTH, never localStorage. Auto-open
@@ -955,6 +964,17 @@ export default function AppV2Workspace({
       void fetchViewUrl(workspaceId, appId);
     }
   }, [editing, app?.publishedSha, workspaceId, appId, fetchViewUrl]);
+  // Older tabs were opened before slugs rode in tab metadata; heal them so
+  // the URL upgrades from /apps/<id> to /apps/<slug>.
+  useEffect(() => {
+    const slug = app?.slug;
+    if (!slug) return;
+    useConsoleStore.setState(state => {
+      const t = state.tabs[_tabId];
+      if (t?.metadata && !t.metadata.appV2Slug) t.metadata.appV2Slug = slug;
+    });
+  }, [app?.slug, _tabId]);
+
   const [terminalDragging, setTerminalDragging] = useState(false);
   useEffect(() => {
     if (!terminalDragging) return;
@@ -1064,8 +1084,8 @@ export default function AppV2Workspace({
             // not published → this IS the call to action, publish.
             onClick={
               publishedSha
-                ? viewUrl
-                  ? () => window.open(viewUrl, "_blank", "noopener")
+                ? liveUrl
+                  ? () => window.open(liveUrl, "_blank", "noopener")
                   : undefined
                 : preview?.building
                   ? undefined
@@ -1151,9 +1171,9 @@ export default function AppV2Workspace({
             <IconButton
               size="small"
               aria-label="Open the preview in a new tab"
-              disabled={!(editing ? preview?.url : viewUrl)}
+              disabled={!(editing ? preview?.url : liveUrl)}
               onClick={() => {
-                const url = editing ? preview?.url : viewUrl;
+                const url = editing ? preview?.url : liveUrl;
                 if (url) window.open(url, "_blank", "noopener");
               }}
             >

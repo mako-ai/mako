@@ -40,9 +40,9 @@ export const TAB_DEEP_LINK_PATTERNS = {
   dashboard: /^\/d\/([a-zA-Z0-9-]+)\/?$/,
   "dashboard-data-source": /^\/d\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9_-]+)/,
   "table-data": /^\/t\/([a-zA-Z0-9-]+)\/([^/]+)\/([^/]+)\/?$/,
-  // Apps v2 (git-backed, experimental) — /a2 so it can't collide with /a.
-  "app-v2": /^\/a2\/([a-zA-Z0-9-]+)\/?$/,
-  "app-v2-file": /^\/a2\/([a-zA-Z0-9-]+)\/file\/(.+)$/,
+  // Apps live at /apps/:slug (folder name). /a2 stays accepted for old links.
+  "app-v2": /^\/(?:apps|a2)\/([a-zA-Z0-9-]+)\/?$/,
+  "app-v2-file": /^\/(?:apps|a2)\/([a-zA-Z0-9-]+)\/file\/(.+)$/,
   "app-v2-diff": null,
   plan: /^\/p\/([a-zA-Z0-9-]+)/,
   settings: /^\/settings\/([a-z-]+)$/,
@@ -103,14 +103,16 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
       const appId = tab.metadata?.appV2Id as string | undefined;
       const slug = tab.metadata?.appV2Slug as string | undefined;
       const ref = slug || appId;
-      return ref ? `/a2/${ref}` : null;
+      return ref ? `/apps/${ref}` : null;
     }
     case "app-v2-file": {
       const appId = tab.metadata?.appV2Id as string | undefined;
       const slug = tab.metadata?.appV2Slug as string | undefined;
       const ref = slug || appId;
       const path = tab.metadata?.path as string | undefined;
-      return ref && path ? `/a2/${ref}/file/${encodePathSegments(path)}` : null;
+      return ref && path
+        ? `/apps/${ref}/file/${encodePathSegments(path)}`
+        : null;
     }
     case "app-v2-diff":
       // Diffs are transient views of the working copy: no deep link.
