@@ -17,12 +17,12 @@ import { Db } from "mongodb";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { loggers } from "../logging";
-import { appsV2ReposRoot } from "../apps-v2/config";
-import { workspaceRootGitignore } from "../apps-v2/box";
-import { commitFilesOnBranch } from "../apps-v2/worktree.service";
-import { resolveCommit } from "../apps-v2/repository.service";
-import { queueMirrorPush } from "../apps-v2/cloud-repo.service";
-import { runGit } from "../apps-v2/git";
+import { appsReposRoot } from "../apps/config";
+import { workspaceRootGitignore } from "../apps/box";
+import { commitFilesOnBranch } from "../apps/worktree.service";
+import { resolveCommit } from "../apps/repository.service";
+import { queueMirrorPush } from "../apps/cloud-repo.service";
+import { runGit } from "../apps/git";
 
 const log = loggers.migration();
 
@@ -30,7 +30,7 @@ export const description =
   "Apps v2: commit a root .gitignore into workspace repos that lack one";
 
 export async function up(_db: Db): Promise<void> {
-  const root = appsV2ReposRoot();
+  const root = appsReposRoot();
   const entries = await fs.readdir(root).catch(() => [] as string[]);
   for (const entry of entries) {
     if (!entry.endsWith(".git")) continue;

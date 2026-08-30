@@ -42,8 +42,6 @@ interface VersionHistoryPanelProps {
 const LIST_WIDTH = 380;
 const PREVIEW_WIDTH = 640;
 
-/** Synthetic selector entries (after the real files) for app snapshots. */
-
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr);
   const now = new Date();
@@ -99,7 +97,6 @@ export function VersionHistoryPanel({
   );
   const [restoreComment, setRestoreComment] = useState("");
   const [restoring, setRestoring] = useState(false);
-  // For app snapshots: which file (or synthetic deps/bindings view) is shown.
 
   useEffect(() => {
     if (!open) {
@@ -352,9 +349,7 @@ export function VersionHistoryPanel({
         ) : !versions?.length ? (
           <Box sx={{ px: 2, py: 4, textAlign: "center" }}>
             <Typography variant="body2" color="text.secondary">
-              {
-                "No version history yet. Versions are created each time you save."
-              }
+              No version history yet. Versions are created each time you save.
             </Typography>
           </Box>
         ) : (

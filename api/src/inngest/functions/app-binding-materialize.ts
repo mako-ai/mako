@@ -116,7 +116,7 @@ export const appBindingSchedulerFunction = inngest.createFunction(
   async ({ step }) => {
     const apps = (await step.run("find-stale-app-bindings", async () => {
       return MakoApp.find({
-        // An app migrated to Apps v2 has its schedules refreshed by the v2
+        // An app migrated to Apps has its schedules refreshed by the v2
         // scheduler (from `-- schedule:` front matter in git). Running both
         // would double every warehouse query for the same data.
         migratedToV2ProjectId: { $exists: false },

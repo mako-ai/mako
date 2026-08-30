@@ -8,13 +8,14 @@ import {
 export const createVersionHistoryTools = (workspaceId: string) => ({
   browse_version_history: tool({
     description:
-      "Browse the version history of a saved console, dashboard, or app. " +
+      "Browse the version history of a saved console, dashboard, or legacy " +
+      "(pre-git) app. " +
       "Returns a list of past versions with who saved them, when, and their commit comment. " +
-      "Use after search_consoles, search_dashboards, or list_open_apps to inspect change history, " +
+      "Use after search_consoles or search_dashboards to inspect change history, " +
       "understand who changed what, or help the user decide which version to restore " +
-      "(restore dashboards and apps with restore_version — over MCP, apps use " +
-      "app_restore_version; consoles restore via their own flows). " +
-      "Pass the entityId from a search result (for apps, the appId).",
+      "(restore dashboards with restore_version; consoles restore via their own " +
+      "flows; legacy app history is read-only — git-backed apps version through git). " +
+      "Pass the entityId from a search result.",
     inputSchema: z.object({
       entityType: z
         .enum(["console", "dashboard", "app"])

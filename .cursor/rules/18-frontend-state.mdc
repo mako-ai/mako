@@ -46,7 +46,7 @@ These rules exist so that can't happen again. They are not style preferences.
 
 ## 4. The client renders and requests; it never heals
 
-See apps-v2.md §13.9/§13.11. No `useEffect` — mount, reload, reconnect, restore —
+See apps.md §13.9/§13.11. No `useEffect` — mount, reload, reconnect, restore —
 may start a process. Starts happen on an explicit click. The system may STOP
 (reap, cap-evict); it may never auto-START.
 

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently \"pnpm --filter app run dev\" \"pnpm --filter api run dev\" \"pnpm dlx inngest-cli@latest dev\" \"./scripts/sandbox-tunnel.sh\"",
     "sandbox:tunnel": "./scripts/sandbox-tunnel.sh",
-    "apps:migrate-v1": "pnpm --filter api exec tsx src/apps-v2/migrate-v1-apps.cli.ts",
+    "apps:migrate-v1": "pnpm --filter api exec tsx src/apps/migrate-v1-apps.cli.ts",
     "dev:tunnel": "concurrently \"pnpm dev\" \"cloudflared tunnel --url http://localhost:5173 --no-tls-verify\"",
     "build": "pnpm run lint:fix:all && pnpm run build:ci",
     "build:ci": "pnpm --filter @mako/schemas run build && pnpm --filter @mako/agent-tools run build && pnpm run app:build && pnpm run api:build && node scripts/check-connector-agnosticism.js",

@@ -28,23 +28,8 @@ const define = (
 ): AppCapabilityDefinition => ({ domain: "app", ...definition });
 
 export const APP_CAPABILITIES = [
-  // ── Orientation / reads ─────────────────────────────────────────────────
-  // ── Files / dependencies ────────────────────────────────────────────────
-  // ── Data bindings / materialization ─────────────────────────────────────
-  // ── Versions ────────────────────────────────────────────────────────────
-  // ── Client-only UI effects ──────────────────────────────────────────────
-  define({
-    name: "open_app",
-    pack: "app-ui",
-    risk: "write",
-    requiredGrant: "artifact-write",
-    surfaces: IN_CHAT_ONLY_SURFACES,
-    resultKind: "ui-effect",
-    mcpExclusion: {
-      why: "client-only",
-      note: "UI tab focus only; MCP operates on appId directly.",
-    },
-  }),
+  // Legacy (pre-git) app authoring capabilities were removed with Apps v1;
+  // what remains serves the retained draft/publish preview surface.
   define({
     // One capability, one name, one result envelope (run-app.ts), three
     // adapters: Chat rebuilds the live iframe and self-captures a screenshot
@@ -82,36 +67,6 @@ export const APP_CAPABILITIES = [
     mcpExclusion: {
       why: "client-only",
       note: "Per-user browser preview state; headless agents pass width/height to run_app.",
-    },
-  }),
-  define({
-    // Deprecated alias of app_set_preview({ environment }); kept registered
-    // for old chats. Deferred out of the in-product working set (see
-    // DEFERRED_BUILTIN_TOOL_DOMAINS).
-    name: "app_set_preview_environment",
-    pack: "app-ui",
-    risk: "write",
-    requiredGrant: "artifact-write",
-    surfaces: IN_CHAT_ONLY_SURFACES,
-    resultKind: "ui-effect",
-    mcpExclusion: {
-      why: "client-only",
-      note: "Per-user browser preview state; headless agents use run_app / bindings directly.",
-    },
-  }),
-  define({
-    // Deprecated alias of app_set_preview({ preset | width+height }). Pure
-    // view state (which viewport the browser preview renders at) — the
-    // sticky sibling of run_app's ephemeral width/height. Mutates nothing
-    // durable, so read-risk; headless agents pass width/height to run_app.
-    name: "app_set_preview_viewport",
-    pack: "app-ui",
-    risk: "read",
-    surfaces: IN_CHAT_ONLY_SURFACES,
-    resultKind: "ui-effect",
-    mcpExclusion: {
-      why: "client-only",
-      note: "Per-user browser preview viewport; headless agents pass width/height to run_app.",
     },
   }),
 ] as const satisfies readonly AppCapabilityDefinition[];

@@ -321,18 +321,26 @@ All endpoints require authentication and workspace access. Agent-side CRUD is av
 
 ## Apps
 
-React apps built inside the workspace ([Apps](/apps/)). Private apps are owner-only — admins and API keys cannot access another member's private app.
+Git-backed React apps built inside the workspace ([Apps](/apps/)). Private apps are owner-only — admins and API keys cannot access another member's private app. The workspace repo itself is served over git HTTP at `/api/apps-git/:workspaceId.git` (scoped git token).
 
-| Method   | Endpoint                                                                | Description                                              |
-| -------- | ----------------------------------------------------------------------- | -------------------------------------------------------- |
-| `GET`    | `/api/workspaces/:wid/apps`                                             | List apps visible to the caller                          |
-| `POST`   | `/api/workspaces/:wid/apps`                                             | Create an app (scaffolds a React + TypeScript starter)   |
-| `GET`    | `/api/workspaces/:wid/apps/:id`                                         | Get an app (files, dependencies, data bindings)          |
-| `PUT`    | `/api/workspaces/:wid/apps/:id`                                         | Update an app (files, dependencies, bindings, access)    |
-| `DELETE` | `/api/workspaces/:wid/apps/:id`                                         | Delete an app                                            |
-| `POST`   | `/api/workspaces/:wid/apps/:id/bindings/:bid/materialize`               | Build/rebuild a binding's Parquet artifact (`{force}`)   |
-| `GET`    | `/api/workspaces/:wid/apps/:id/bindings/:bid/materialization`           | Poll a binding's materialization status                  |
-| `GET`    | `/api/workspaces/:wid/apps/:id/bindings/:bid/materialization/artifact`  | Stream the materialized Parquet artifact                 |
+| Method   | Endpoint                                                     | Description                                                |
+| -------- | ------------------------------------------------------------ | ---------------------------------------------------------- |
+| `GET`    | `/api/workspaces/:wid/apps`                                   | List app projects visible to the caller                    |
+| `POST`   | `/api/workspaces/:wid/apps`                                   | Create an app (scaffolds a Vite + React project)           |
+| `GET`    | `/api/workspaces/:wid/apps/:id`                               | Get an app project (metadata, branch, publish state)       |
+| `DELETE` | `/api/workspaces/:wid/apps/:id`                               | Delete an app                                              |
+| `GET`    | `/api/workspaces/:wid/apps/:id/files` / `…/file`              | List / read files on the working branch                    |
+| `PUT`    | `/api/workspaces/:wid/apps/:id/file`                          | Write a file to the working branch                         |
+| `POST`   | `/api/workspaces/:wid/apps/:id/exec`                          | Run a shell command in the app's sandbox                   |
+| `GET`    | `/api/workspaces/:wid/apps/:id/status` / `…/history` / `…/branches` | Working-tree status, commit history, branches        |
+| `POST`   | `/api/workspaces/:wid/apps/:id/commit` / `…/merge` / `…/checkout` / `…/discard` | Git operations on the working branch    |
+| `GET`    | `/api/workspaces/:wid/apps/:id/bindings`                      | List data bindings (`bindings/*.sql`)                      |
+| `POST`   | `/api/workspaces/:wid/apps/:id/bindings/:name/materialize`    | Build/rebuild a binding's Parquet artifact                 |
+| `GET`    | `/api/workspaces/:wid/apps/:id/bindings/:name/artifact`       | Stream the materialized Parquet artifact                   |
+| `POST`   | `/api/workspaces/:wid/apps/:id/publish` / `…/rollback`        | Build & publish a `main` commit / repoint the deployment   |
+| `POST`   | `/api/workspaces/:wid/apps/:id/preview` / `…/dev-preview`     | Published-build preview / live dev server preview          |
+| `POST`   | `/api/workspaces/:wid/apps/:id/public-share`                  | Manage the anonymous public link (also `PATCH`/`DELETE`)   |
+| `GET`    | `/api/workspaces/:wid/apps/:id/sandbox`                       | Sandbox status (also `POST …/sandbox/recycle`)             |
 
 ## Notebooks
 

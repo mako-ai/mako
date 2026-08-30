@@ -6,12 +6,12 @@ import {
   useConsoleStore,
 } from "../store/consoleStore";
 import { useDashboardStore } from "../store/dashboardStore";
-import { useAppsV2Store } from "../store/appsV2Store";
+import { useAppsStore } from "../store/appsStore";
 import {
-  closeAppsV2TabsFor,
-  focusAppsV2FileTab,
-  focusAppsV2Tab,
-} from "../apps-v2-runtime/shell";
+  closeAppsTabsFor,
+  focusAppsFileTab,
+  focusAppsTab,
+} from "../apps-runtime/shell";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { SECTION_LABELS, isSettingsSection } from "../pages/settings/sections";
@@ -92,7 +92,9 @@ export function UrlSync() {
     // Don't hydrate if not authenticated or no workspace
     if (isHydrated.current || !currentWorkspace || !user) return;
 
-    const path = window.location.pathname;
+    // Apps deep links moved from /a2/ to /a/ with the apps-v2 → apps rename;
+    // keep old bookmarks working by matching them as their new form.
+    const path = window.location.pathname.replace(/^\/a2\//, "/apps/");
 
     // Reload vs deep link, and they deserve opposite answers. The URL follows
     // the active TAB, so on a plain reload the handlers below would move the
@@ -119,8 +121,8 @@ export function UrlSync() {
     );
     const dashboardMatch = path.match(TAB_DEEP_LINK_PATTERNS.dashboard);
     const tableMatch = path.match(TAB_DEEP_LINK_PATTERNS["table-data"]);
-    const appV2FileMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-v2-file"]);
-    const appV2Match = path.match(TAB_DEEP_LINK_PATTERNS["app-v2"]);
+    const appFileMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-file"]);
+    const appMatch = path.match(TAB_DEEP_LINK_PATTERNS["app"]);
     const dbtFileMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-file"]);
     const dbtJobMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-job"]);
     const dbtRunsMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-runs"]);
@@ -250,38 +252,38 @@ export function UrlSync() {
         });
         setActiveTab(id);
       }
-    } else if (appV2FileMatch) {
-      // /a2/:appId/file/:path — Apps v2 file editor
-      const appId = appV2FileMatch[1];
-      const filePath = decodePathSegments(appV2FileMatch[2]);
-      setLeftPane("apps-v2");
-      void useAppsV2Store
+    } else if (appFileMatch) {
+      // /a/:appId/file/:path — Apps file editor
+      const appId = appFileMatch[1];
+      const filePath = decodePathSegments(appFileMatch[2]);
+      setLeftPane("apps");
+      void useAppsStore
         .getState()
         .fetchApps(currentWorkspace.id)
         .then(() => {
-          const app = useAppsV2Store
+          const app = useAppsStore
             .getState()
             .apps.find(a => a.id === appId || a.slug === appId);
           if (!app) {
-            closeAppsV2TabsFor(appId);
+            closeAppsTabsFor(appId);
             window.history.replaceState(null, "", "/");
             setDeadLinkNotice(
               "That app link doesn't resolve anymore — the app may have been deleted or renamed.",
             );
             return;
           }
-          focusAppsV2FileTab(app.id, filePath, app.slug);
+          focusAppsFileTab(app.id, filePath, app.slug);
         });
-    } else if (appV2Match) {
-      // /a2/:appId — Apps v2 (git-backed, experimental)
-      const appId = appV2Match[1];
-      setLeftPane("apps-v2");
-      const store = useAppsV2Store.getState();
+    } else if (appMatch) {
+      // /a/:appId — Apps (git-backed, experimental)
+      const appId = appMatch[1];
+      setLeftPane("apps");
+      const store = useAppsStore.getState();
       void store.fetchApps(currentWorkspace.id).then(() => {
         // The path segment may be a slug (the app's folder in the repo) or a
         // legacy Mongo id. Resolve either; the outgoing sync then rewrites the
         // URL to the slug form, so old links upgrade themselves.
-        const app = useAppsV2Store
+        const app = useAppsStore
           .getState()
           .apps.find(a => a.id === appId || a.slug === appId);
         if (!app) {
@@ -290,14 +292,14 @@ export function UrlSync() {
           // — breadcrumb, terminal, a live Publish button — around nothing,
           // and reloading restored the same dead id, so the page looked
           // permanently stuck. Clear it and fall back to the list instead.
-          closeAppsV2TabsFor(appId);
+          closeAppsTabsFor(appId);
           window.history.replaceState(null, "", "/");
           setDeadLinkNotice(
             "That app link doesn't resolve anymore — the app may have been deleted or renamed.",
           );
           return;
         }
-        focusAppsV2Tab(app.id, app.title, app.slug);
+        focusAppsTab(app.id, app.title, app.slug);
       });
     } else if (dbtFileMatch) {
       // /x/:projectId/file/:path

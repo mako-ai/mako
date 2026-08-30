@@ -45,18 +45,18 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
     metadata: { schema: "public", table: "users" },
   }),
   notebook: baseTab({ kind: "notebook", metadata: { notebookId: "nb-1" } }),
-  "app-v2": baseTab({
-    kind: "app-v2",
-    metadata: { appV2Id: "66f000000000000000000001" },
+  app: baseTab({
+    kind: "app",
+    metadata: { appId: "66f000000000000000000001" },
   }),
-  "app-v2-file": baseTab({
-    kind: "app-v2-file",
-    metadata: { appV2Id: "66f000000000000000000001", path: "src/App.tsx" },
+  "app-file": baseTab({
+    kind: "app-file",
+    metadata: { appId: "66f000000000000000000001", path: "src/App.tsx" },
   }),
-  "app-v2-diff": baseTab({
-    kind: "app-v2-diff",
+  "app-diff": baseTab({
+    kind: "app-diff",
     metadata: {
-      appV2Id: "66f000000000000000000001",
+      appId: "66f000000000000000000001",
       path: "apps/x/src/App.tsx",
       mode: "working",
     },

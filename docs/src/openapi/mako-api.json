@@ -22045,12 +22045,12 @@
         "operationId": "post_api_workspaces_workspaceId_notebooks_id_executions"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/status-probe": {
+    "/api/workspaces/{workspaceId}/apps/status-probe": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
-        "summary": "Apps v2 availability for this workspace",
+        "summary": "Apps availability for this workspace",
         "security": [
           {
             "cookieAuth": []
@@ -22111,13 +22111,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_status_probe"
+        "operationId": "get_api_workspaces_workspaceId_apps_status_probe"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/github-status": {
+    "/api/workspaces/{workspaceId}/apps/github-status": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "GitHub connectivity + current apps repo link",
         "security": [
@@ -22180,13 +22180,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_github_status"
+        "operationId": "get_api_workspaces_workspaceId_apps_github_status"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/github-sync-url": {
+    "/api/workspaces/{workspaceId}/apps/github-sync-url": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "URL that syncs the user's existing GitHub App installations",
         "description": "Starts GitHub's user-authorization OAuth flow. GitHub never fires the install callback for an account where the app is already installed, so already-installed accounts can only be (re)bound by authorizing and listing the installations the user controls.",
@@ -22250,13 +22250,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_github_sync_url"
+        "operationId": "get_api_workspaces_workspaceId_apps_github_sync_url"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/github-repos": {
+    "/api/workspaces/{workspaceId}/apps/github-repos": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Repos an installation can access (for the link picker)",
         "security": [
@@ -22330,13 +22330,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_github_repos"
+        "operationId": "get_api_workspaces_workspaceId_apps_github_repos"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/github-installations/{installationId}": {
+    "/api/workspaces/{workspaceId}/apps/github-installations/{installationId}": {
       "delete": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Forget a GitHub App installation binding for this workspace",
         "security": [
@@ -22410,13 +22410,13 @@
             }
           }
         },
-        "operationId": "delete_api_workspaces_workspaceId_apps_v2_github_installations_installationId"
+        "operationId": "delete_api_workspaces_workspaceId_apps_github_installations_installationId"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/link": {
+    "/api/workspaces/{workspaceId}/apps/link": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Link a GitHub repo for this workspace's apps",
         "security": [
@@ -22511,13 +22511,13 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_link"
+        "operationId": "post_api_workspaces_workspaceId_apps_link"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/unlink": {
+    "/api/workspaces/{workspaceId}/apps/unlink": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Disconnect a workspace repo",
         "security": [
@@ -22603,15 +22603,15 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_unlink"
+        "operationId": "post_api_workspaces_workspaceId_apps_unlink"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2": {
+    "/api/workspaces/{workspaceId}/apps": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
-        "summary": "List Apps v2 projects",
+        "summary": "List Apps projects",
         "security": [
           {
             "cookieAuth": []
@@ -22672,13 +22672,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2"
+        "operationId": "get_api_workspaces_workspaceId_apps"
       },
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
-        "summary": "Create an Apps v2 project",
+        "summary": "Create an Apps project",
         "description": "Creates the project record and its Mako-managed bare git repository seeded with a Vite + React scaffold.",
         "security": [
           {
@@ -22761,15 +22761,15 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2"
+        "operationId": "post_api_workspaces_workspaceId_apps"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}": {
+    "/api/workspaces/{workspaceId}/apps/{id}": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
-        "summary": "Get an Apps v2 project",
+        "summary": "Get an Apps project",
         "security": [
           {
             "cookieAuth": []
@@ -22838,13 +22838,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_id"
+        "operationId": "get_api_workspaces_workspaceId_apps_id"
       },
       "delete": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
-        "summary": "Delete an Apps v2 project (repo included)",
+        "summary": "Delete an Apps project (repo included)",
         "security": [
           {
             "cookieAuth": []
@@ -22913,13 +22913,13 @@
             }
           }
         },
-        "operationId": "delete_api_workspaces_workspaceId_apps_v2_id"
+        "operationId": "delete_api_workspaces_workspaceId_apps_id"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/files": {
+    "/api/workspaces/{workspaceId}/apps/{id}/files": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "List files (committed + uncommitted)",
         "description": "Lists the sandbox's working copy when it is running — so a file created in the terminal is simply there — and the last commit on the branch when it is not. Asking which is deliberately a question that does not start a sandbox: browsing must not boot a microVM.",
@@ -22999,13 +22999,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_files"
+        "operationId": "get_api_workspaces_workspaceId_apps_id_files"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/file": {
+    "/api/workspaces/{workspaceId}/apps/{id}/file": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Read a file at the actor's latest durable state",
         "security": [
@@ -23085,11 +23085,11 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_file"
+        "operationId": "get_api_workspaces_workspaceId_apps_id_file"
       },
       "put": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Write a file through the actor's worktree (flushes WIP ref)",
         "security": [
@@ -23182,13 +23182,13 @@
             }
           }
         },
-        "operationId": "put_api_workspaces_workspaceId_apps_v2_id_file"
+        "operationId": "put_api_workspaces_workspaceId_apps_id_file"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/exec": {
+    "/api/workspaces/{workspaceId}/apps/{id}/exec": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Run a shell command in the actor's sandbox session",
         "description": "Executes in the session working tree via the configured sandbox provider, then flushes the working tree to the durable WIP ref.",
@@ -23286,13 +23286,13 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_exec"
+        "operationId": "post_api_workspaces_workspaceId_apps_id_exec"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/status": {
+    "/api/workspaces/{workspaceId}/apps/{id}/status": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Worktree status (base, WIP, changed files)",
         "description": "Reads the sandbox's working copy when it is running — including uncommitted and shell-made changes — and the last commit on the branch when it is not (reported as `offline`). Never starts a sandbox.",
@@ -23372,13 +23372,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_status"
+        "operationId": "get_api_workspaces_workspaceId_apps_id_status"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/history": {
+    "/api/workspaces/{workspaceId}/apps/{id}/history": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Commit history of a branch (defaults to the default branch)",
         "security": [
@@ -23480,13 +23480,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_history"
+        "operationId": "get_api_workspaces_workspaceId_apps_id_history"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/commit": {
+    "/api/workspaces/{workspaceId}/apps/{id}/commit": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Commit the actor's WIP onto the branch (CAS)",
         "security": [
@@ -23578,13 +23578,13 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_commit"
+        "operationId": "post_api_workspaces_workspaceId_apps_id_commit"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/git/stage": {
+    "/api/workspaces/{workspaceId}/apps/{id}/git/stage": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Stage files for commit (git add)",
         "description": "Repo-relative paths. The box's fresh status is pushed to every open window right after, so the Source Control view updates at once.",
@@ -23680,13 +23680,13 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_git_stage"
+        "operationId": "post_api_workspaces_workspaceId_apps_id_git_stage"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/git/unstage": {
+    "/api/workspaces/{workspaceId}/apps/{id}/git/unstage": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Unstage files (git reset HEAD --)",
         "description": "Repo-relative paths. The box's fresh status is pushed to every open window right after, so the Source Control view updates at once.",
@@ -23782,13 +23782,13 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_git_unstage"
+        "operationId": "post_api_workspaces_workspaceId_apps_id_git_unstage"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/git/discard": {
+    "/api/workspaces/{workspaceId}/apps/{id}/git/discard": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Discard working-tree changes to files (checkout / clean)",
         "description": "Repo-relative paths. The box's fresh status is pushed to every open window right after, so the Source Control view updates at once.",
@@ -23884,13 +23884,13 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_git_discard"
+        "operationId": "post_api_workspaces_workspaceId_apps_id_git_discard"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/git/file-versions": {
+    "/api/workspaces/{workspaceId}/apps/{id}/git/file-versions": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "HEAD, index and working-tree contents of a repo path (for diffs)",
         "security": [
@@ -23971,13 +23971,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_git_file_versions"
+        "operationId": "get_api_workspaces_workspaceId_apps_id_git_file_versions"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/bindings": {
+    "/api/workspaces/{workspaceId}/apps/{id}/bindings": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "List the app's data bindings (front matter + build state)",
         "security": [
@@ -24048,13 +24048,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_bindings"
+        "operationId": "get_api_workspaces_workspaceId_apps_id_bindings"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/bindings/{name}/artifact": {
+    "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/artifact": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Stream a binding's materialized parquet artifact",
         "security": [
@@ -24133,13 +24133,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_bindings_name_artifact"
+        "operationId": "get_api_workspaces_workspaceId_apps_id_bindings_name_artifact"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/bindings/{name}/materialize": {
+    "/api/workspaces/{workspaceId}/apps/{id}/bindings/{name}/materialize": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Materialize a data binding (bindings-as-files) to parquet",
         "security": [
@@ -24218,13 +24218,13 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_bindings_name_materialize"
+        "operationId": "post_api_workspaces_workspaceId_apps_id_bindings_name_materialize"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/checkout": {
+    "/api/workspaces/{workspaceId}/apps/{id}/checkout": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Switch the caller's worktree to another branch (or create one)",
         "description": "The same thing `git checkout` (or `git checkout -b` with create) in the terminal does, offered as a button — and it goes through the sandbox, so both agree afterwards. Refuses with uncommitted work rather than choosing between carrying it across and discarding it.",
@@ -24319,13 +24319,13 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_checkout"
+        "operationId": "post_api_workspaces_workspaceId_apps_id_checkout"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/branches": {
+    "/api/workspaces/{workspaceId}/apps/{id}/branches": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "List branches",
         "security": [
@@ -24396,13 +24396,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_branches"
+        "operationId": "get_api_workspaces_workspaceId_apps_id_branches"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/merge": {
+    "/api/workspaces/{workspaceId}/apps/{id}/merge": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Merge a branch into main (fast-forward or merge commit)",
         "security": [
@@ -24491,13 +24491,13 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_merge"
+        "operationId": "post_api_workspaces_workspaceId_apps_id_merge"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/preview": {
+    "/api/workspaces/{workspaceId}/apps/{id}/preview": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Build the app in its session and mint a preview link",
         "description": "Runs `npm install` (when needed) and `npm run build` in the actor's sandbox session, then returns a short-lived token-gated URL serving the built dist/. The URL is cookie-free and meant for a sandboxed iframe.",
@@ -24580,16 +24580,16 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_preview"
+        "operationId": "post_api_workspaces_workspaceId_apps_id_preview"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview": {
+    "/api/workspaces/{workspaceId}/apps/{id}/dev-preview": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Start (or reuse) a live `vite dev` preview for this app",
-        "description": "Live dev preview (apps-v2.md §12.4). Runs `npm install` if needed, starts a persistent `vite dev` inside the app's sandbox, and returns the sandbox's own public origin for the browser to iframe — HMR rides that origin, so edits show up with no rebuild step and nothing of the tenant's runs on the API host.",
+        "description": "Live dev preview (apps.md §12.4). Runs `npm install` if needed, starts a persistent `vite dev` inside the app's sandbox, and returns the sandbox's own public origin for the browser to iframe — HMR rides that origin, so edits show up with no rebuild step and nothing of the tenant's runs on the API host.",
         "security": [
           {
             "cookieAuth": []
@@ -24674,13 +24674,13 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_dev_preview"
+        "operationId": "post_api_workspaces_workspaceId_apps_id_dev_preview"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-servers": {
+    "/api/workspaces/{workspaceId}/apps/{id}/dev-servers": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Slugs of apps with a live dev-server session",
         "description": "Discovery for the sidebar's running indicators: one cheap exec listing the dev-session sockets. Never creates a sandbox; empty when none is running.",
@@ -24752,13 +24752,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_dev_servers"
+        "operationId": "get_api_workspaces_workspaceId_apps_id_dev_servers"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/sandbox": {
+    "/api/workspaces/{workspaceId}/apps/{id}/sandbox": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "The workspace sandbox: identity, uptime, sessions, resources",
         "description": "One (workspace, user) has one sandbox; any app id reaches it. Stats come from one exec inside the box (with a 1s CPU sample). Never creates a sandbox: running=false when there is none.",
@@ -24830,13 +24830,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_sandbox"
+        "operationId": "get_api_workspaces_workspaceId_apps_id_sandbox"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/sandbox/recycle": {
+    "/api/workspaces/{workspaceId}/apps/{id}/sandbox/recycle": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Kill the workspace sandbox; the next touch builds a fresh one",
         "description": "Committed work is safe by design (it lives in the repo); uncommitted working-copy changes and running processes die with the machine — the same contract as losing a laptop.",
@@ -24908,13 +24908,13 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_sandbox_recycle"
+        "operationId": "post_api_workspaces_workspaceId_apps_id_sandbox_recycle"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/terminal-sessions": {
+    "/api/workspaces/{workspaceId}/apps/{id}/terminal-sessions": {
       "delete": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Kill ALL terminal sessions for this user's box",
         "description": "What leaving dev mode means: every bash shell and this app's dev session die (ptys, dtach sessions, recordings), so re-entering dev starts from one fresh terminal instead of reattaching old ones. Other apps' dev sessions are untouched. Idempotent.",
@@ -24986,13 +24986,13 @@
             }
           }
         },
-        "operationId": "delete_api_workspaces_workspaceId_apps_v2_id_terminal_sessions"
+        "operationId": "delete_api_workspaces_workspaceId_apps_id_terminal_sessions"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/terminal-sessions/{termId}": {
+    "/api/workspaces/{workspaceId}/apps/{id}/terminal-sessions/{termId}": {
       "delete": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Kill a terminal session — pty, dtach/tmux session, recording",
         "description": "What closing a terminal tab means: the remote counterpart dies too. Idempotent; a session that is already gone is a success.",
@@ -25073,13 +25073,13 @@
             }
           }
         },
-        "operationId": "delete_api_workspaces_workspaceId_apps_v2_id_terminal_sessions_termId"
+        "operationId": "delete_api_workspaces_workspaceId_apps_id_terminal_sessions_termId"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview/status": {
+    "/api/workspaces/{workspaceId}/apps/{id}/dev-preview/status": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Is the app's dev server session serving right now?",
         "description": "Cheap truth for the workbench: the session socket AND the port, not client-side state. Never starts a sandbox. Lets the UI notice a server stopped from inside its own terminal (Ctrl-C) and flip to the launch state.",
@@ -25151,13 +25151,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_dev_preview_status"
+        "operationId": "get_api_workspaces_workspaceId_apps_id_dev_preview_status"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/dev-preview/log": {
+    "/api/workspaces/{workspaceId}/apps/{id}/dev-preview/log": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Tail the dev-session boot log (npm install + vite output)",
         "description": "Returns the sandbox's real boot output from `offset` onward, plus the log's current size for the next poll. This is what the boot screen shows — the actual output, not a stand-in. Never starts a sandbox; with none running it returns an empty chunk.",
@@ -25242,13 +25242,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_dev_preview_log"
+        "operationId": "get_api_workspaces_workspaceId_apps_id_dev_preview_log"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/build/log": {
+    "/api/workspaces/{workspaceId}/apps/{id}/build/log": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Tail the publish/preview build log (npm install + build output)",
         "description": "Returns the sandbox's live build output from `offset` onward, plus the log's current size for the next poll — what the Publish button streams so you can watch the build run. Never starts a sandbox.",
@@ -25333,13 +25333,13 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_build_log"
+        "operationId": "get_api_workspaces_workspaceId_apps_id_build_log"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/discard": {
+    "/api/workspaces/{workspaceId}/apps/{id}/discard": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Discard all uncommitted work and re-base on branch head",
         "security": [
@@ -25410,13 +25410,13 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_discard"
+        "operationId": "post_api_workspaces_workspaceId_apps_id_discard"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/publish": {
+    "/api/workspaces/{workspaceId}/apps/{id}/publish": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Publish the app: merge to main, build, and deploy",
         "description": "Merges `branch` (defaulting to the caller's own branch) into main, builds from main in the sandbox, uploads the output as an immutable deployment keyed by commit sha, and points the app at it. A failed build leaves the previous deployment serving. Re-publishing an unchanged sha reuses the existing deployment instead of rebuilding.",
@@ -25503,13 +25503,13 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_publish"
+        "operationId": "post_api_workspaces_workspaceId_apps_id_publish"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/rollback": {
+    "/api/workspaces/{workspaceId}/apps/{id}/rollback": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Point the app at a previously published deployment",
         "description": "Deployments are immutable and addressed by commit sha, so rolling back is a repoint — no rebuild and no sandbox. The target sha must still have a stored deployment.",
@@ -25600,13 +25600,13 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_rollback"
+        "operationId": "post_api_workspaces_workspaceId_apps_id_rollback"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/view-token": {
+    "/api/workspaces/{workspaceId}/apps/{id}/view-token": {
       "post": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Mint a cookie-free token for the published app",
         "description": "Viewing a published app happens in a sandboxed, opaque-origin iframe, and ES modules are always fetched in CORS mode WITHOUT credentials — so a cookie-authorized URL 401s there however well it works in a normal tab, and the app renders nothing. This returns the same kind of short-lived token the build preview uses, authorized here by the caller's workspace access. It starts no sandbox: the bytes come from the deployment store.",
@@ -25678,13 +25678,13 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_view_token"
+        "operationId": "post_api_workspaces_workspaceId_apps_id_view_token"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/access": {
+    "/api/workspaces/{workspaceId}/apps/{id}/access": {
       "patch": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
         "summary": "Set an app's sharing scope (My Apps <-> Workspace)",
         "description": "The v1 rail's drag-between-sections, for v2: private = the owner's own list, workspace = everyone's. Folder-only apps get their row here (restricting is one of the three row-creating acts, §13.6).",
@@ -25778,15 +25778,15 @@
             }
           }
         },
-        "operationId": "patch_api_workspaces_workspaceId_apps_v2_id_access"
+        "operationId": "patch_api_workspaces_workspaceId_apps_id_access"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/eyes-shots/{shot}": {
+    "/api/workspaces/{workspaceId}/apps/{id}/eyes-shots/{shot}": {
       "get": {
         "tags": [
-          "Apps v2"
+          "Apps"
         ],
-        "summary": "A stored app2_browse screenshot",
+        "summary": "A stored app_browse screenshot",
         "description": "Screenshots the agent's browse tool captured are stored as bucket objects (never as base64 in chat history, §13.26); this streams one back to anyone who can read the app.",
         "security": [
           {
@@ -25865,10 +25865,10 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_eyes_shots_shot"
+        "operationId": "get_api_workspaces_workspaceId_apps_id_eyes_shots_shot"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/public-share": {
+    "/api/workspaces/{workspaceId}/apps/{id}/public-share": {
       "post": {
         "tags": [
           "Apps"
@@ -25957,7 +25957,7 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_apps_v2_id_public_share"
+        "operationId": "post_api_workspaces_workspaceId_apps_id_public_share"
       },
       "patch": {
         "tags": [
@@ -26059,7 +26059,7 @@
             }
           }
         },
-        "operationId": "patch_api_workspaces_workspaceId_apps_v2_id_public_share"
+        "operationId": "patch_api_workspaces_workspaceId_apps_id_public_share"
       },
       "delete": {
         "tags": [
@@ -26134,10 +26134,10 @@
             }
           }
         },
-        "operationId": "delete_api_workspaces_workspaceId_apps_v2_id_public_share"
+        "operationId": "delete_api_workspaces_workspaceId_apps_id_public_share"
       }
     },
-    "/api/workspaces/{workspaceId}/apps-v2/{id}/public-share/password": {
+    "/api/workspaces/{workspaceId}/apps/{id}/public-share/password": {
       "get": {
         "tags": [
           "Apps"
@@ -26211,7 +26211,7 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_apps_v2_id_public_share_password"
+        "operationId": "get_api_workspaces_workspaceId_apps_id_public_share_password"
       }
     },
     "/api/workspaces/{workspaceId}/data-sources/{resourceType}/{resourceId}": {
@@ -28547,7 +28547,7 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "appsV2Enabled": {
+                  "appsEnabled": {
                     "type": "boolean"
                   }
                 }

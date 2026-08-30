@@ -1,104 +1,71 @@
 ---
 title: Apps
-description: Build live React apps inside your workspace — AI-authored, with secure data bindings to your database connections and fast client-side analytics via DuckDB.
+description: Build live React apps inside your workspace — git-backed Vite projects with a real sandbox, secure data bindings to your database connections, and fast client-side analytics via DuckDB.
 ---
 
-Apps are React projects that run live inside a Mako tab. You (or the AI agent) build them by editing files — think Lovable or v0, but with first-class, credential-free access to your workspace's database connections.
+Apps are real Vite + React + TypeScript projects that live in your workspace's git repository and run in a per-user sandbox. You (or the AI agent) build them the way a developer does: edit files, run shell commands, commit, and merge — with first-class, credential-free access to your workspace's database connections.
 
 ## How It Works
 
-An app is three things:
+An app is a folder (`apps/<slug>/`) in the workspace monorepo:
 
-- **A virtual filesystem** — TypeScript/React source files. The entrypoint is `src/App.tsx` (its default export is rendered).
-- **An npm dependency manifest** — libraries like `d3`, `recharts`, or `framer-motion`, resolved as ES modules at preview time.
-- **Data bindings** — named queries against your workspace connections that the app reads at runtime.
+- **A real git repository** — Mako hosts the bare repo and serves it over git's own HTTP protocol; every commit is also mirror-pushed to a private GitHub repo (Mako-hosted, or your own connected repo).
+- **A real working copy** — each editor gets a sandbox (an isolated microVM) that is an ordinary git clone with a real filesystem, a real shell, and a real remote. Committed-and-pushed work survives the sandbox dying; uncommitted work lives only in the sandbox, exactly as on a laptop.
+- **Data bindings as files** — `bindings/<name>.sql` files that map a name to a query against one of your workspace connections.
 
-The default runtime is `cdn`: React plus ESM dependencies run directly in a sandboxed preview iframe with no build step. Plain CSS and CSS-in-JS work well; full Tailwind/shadcn builds require the `webcontainer` runtime, which is not yet enabled.
+You work on your own branch (`user/<id>`) — the same one the agent and the built-in terminal use — and merge to `main` from the branch menu. `main` is what publishes.
 
 ## Building Apps with the AI Agent
 
-Ask the agent to build an app and it scaffolds a React + TypeScript starter, opens it in a tab, and iterates: writing files, adding dependencies, creating data bindings, and reading build/runtime errors from the live preview until it renders clean. The agent can also screenshot the running preview to visually inspect what it built. This is the agent's [React App mode](/ai-agent/#expertise-modes).
+Ask the agent to build an app and it scaffolds a Vite + React starter, opens it live in a tab (vite dev server + hot reload), and iterates: editing files, running shell commands, materializing bindings, and reading the dev log and a real headless browser's view of the running app until it renders clean. Your accumulated changes are committed and pushed automatically at the end of every agent turn.
 
-You can edit everything yourself too — files open in the editor, and the Apps explorer shows the file tree, dependencies, and data sources.
+You can edit everything yourself too — files open in the editor, the Apps explorer shows the file tree, the terminal drops you into the app's folder in the sandbox, and Source Control shows branches, diffs, and history.
 
 ## Data Bindings
 
-Bindings are how apps reach workspace data. Each binding maps a name to a query (SQL, MongoDB, or JavaScript) against one of your connections. Queries execute server-side through Mako's scoped execute API — **the app code never sees credentials or connection strings**.
+Bindings are how apps reach workspace data. A binding is one file — `bindings/<name>.sql` — whose front matter is a leading block of `-- key: value` SQL comments:
 
-Two delivery modes:
+```sql
+-- connection: <workspace connection id>
+-- materialization: parquet
+-- schedule: 0 6 * * *
+SELECT category, amount, created_at FROM orders
+```
 
-| Mode | Behavior | Best for |
-| --- | --- | --- |
-| `live` | Query runs server-side on every read | Small, always-fresh lookups |
-| `parquet` | Query is materialized into a Parquet artifact (same pipeline as dashboards) and loaded into DuckDB-WASM in the browser | Dashboards and aggregations over larger result sets |
-
-Materialized bindings record a run history (row count, size, duration, errors) and can be rebuilt on demand. In the app code, read bindings through the injected `@mako/app-sdk`:
+Queries execute server-side through Mako's scoped execute API — **the app code never sees credentials or connection strings**. The query is materialized into a Parquet artifact (same pipeline as dashboards); at runtime the preview serves each artifact at the app-relative URL `__data/<name>.parquet`, ready for hyparquet or DuckDB-WASM. In app code, read bindings through `@mako/app-sdk` — a real package committed into the workspace repo:
 
 ```tsx
 import { useQuery, useDuckDB } from "@mako/app-sdk";
 
-// Live binding: fetches through the execute API
 const { data, loading, error } = useQuery("recent_orders");
 
-// Parquet binding: analytical SQL against DuckDB-WASM, table name = binding name
 const { data: totals } = useDuckDB(
   'SELECT category, SUM(amount) AS total FROM "orders" GROUP BY 1'
 );
 ```
 
-Data sources are visible under **Data sources** in the app's explorer tree, with a Live/Materialized mode control and materialization run history.
-
-### dbt-linked bindings
-
-A binding can be linked to a workspace [dbt project](/transforms/) — from the **dbt** selector in the binding editor toolbar, or via agent tools. Linking enables environment-agnostic SQL:
-
-- Use the `{{ dbt_schema }}` token instead of hardcoding a schema (e.g. `SELECT * FROM {{ dbt_schema }}.fct_orders`). It resolves to the linked project's target schema.
-- Linking plus the token unlocks the app preview's **environment switcher** — preview the app's data against any dbt environment you can use (personal environments included). The override is per-user view state for *your* preview only; published and shared viewers always read prod. A linked binding whose query is missing the token gets a warning chip, and the switcher stays hidden for it.
-- Materialized (parquet) bindings participate too: while a non-prod override is active they serve a live, row-capped run (artifacts always hold prod data). Switching back to prod reloads the artifact — and a binding that was never materialized is built automatically instead of erroring.
+A binding can pin a workspace [dbt project](/transforms/) via `-- dbt_project: <id>` front matter for environment-aware schemas.
 
 ## URL State & Routing
 
-Apps can keep view state — the active tab, applied filters, a selected record, a sub-page — in the URL, so a reload restores it and the link is shareable. This works both when the app is embedded in Mako (`/a/:appId`) and in the public share view (`/share/:token`).
-
-Because the app runs in a sandboxed `about:srcdoc` iframe, it can't write the real address bar directly. Reach for the injected `@mako/app-sdk` hooks instead of `window.history`, `window.location`, the URL hash, or a `react-router` `BrowserRouter` — those won't survive a reload or share:
+Apps can keep view state — the active tab, applied filters, a selected record, a sub-page — in the URL, so a reload restores it and the link is shareable. Reach for the `@mako/app-sdk` hooks rather than `window.history` directly, and they work both embedded in Mako (`/a/:app`) and in the public share view (`/share/:token`):
 
 ```tsx
 import { useLocation, useSearchParams, navigate } from "@mako/app-sdk";
 
-// Read the current location (re-renders on change, including Back/Forward).
-const loc = useLocation(); // { pathname, search, hash, href, searchParams }
-
-// React-Router-style query params for tabs / filters.
+const loc = useLocation();
 const [params, setParams] = useSearchParams();
-const tab = params.get("tab") ?? "overview";
-// Pass { replace: true } for high-frequency updates (typing, sliders) so
-// Back/Forward isn't flooded; the default pushes a new history entry.
-setParams(new URLSearchParams({ tab: "customers", c: "ES,FR" }), { replace: true });
-
-// Path-style routing for distinct views / detail pages.
-navigate("/customers/42");        // push (Back returns to the list)
-navigate("/", { replace: true }); // replace the current entry
+navigate("/customers/42");
 ```
 
-Use distinct **paths** for separate views (`/`, `/customers/42`) and **query params** for filters and sort within a view. The app's pathname rides on the host URL in a reserved `_path` param; query params stay readable on the address bar. Hashes (`#…`) are not carried across the bridge — keep state in the path or query.
+Use distinct **paths** for separate views and **query params** for filters and sort within a view.
 
-## Preview Viewport
+## Publishing & Sharing
 
-The draft preview can render at phone or tablet size so you can check responsive layouts without leaving the tab. Click the **viewport toggle** in the preview toolbar (monitor / phone / tablet icon) to cycle desktop (fill) → phone (390×844) → tablet (768×1024) → desktop. The iframe keeps its true CSS size so media queries render the real mobile layout; the pane scales it down to fit when needed.
-
-The choice is per-user view state (remembered per app, like the dbt environment switcher) — it never changes the app definition, and published/shared viewers are unaffected.
-
-The AI agent verifies mobile layouts the same way: it runs `run_app` with an explicit `width`/`height` (e.g. 390×844 for phone) and inspects the screenshot, or switches your on-screen preview with `app_set_preview` while iterating in chat.
-
-## Versioning & Publishing
-
-Apps autosave every edit, so what you (or the AI agent) work on is a **draft**. Every app starts with a v1 `App created` checkpoint (also its first published version), so version history is never empty. To create a further immutable checkpoint, **save a version** — this snapshots the current draft into version history *and* **publishes** it.
-
-- Public and shared links render the **published** version, never the live draft, so viewers never see a half-finished edit.
-- **Restoring** a past version reverts the draft (snapshotting the current draft first, so it's never lossy) but does **not** auto-publish — save a version afterward to push the restored state live.
-- Materialized binding caches are preserved across restore.
-
-See [Version History](/version-history/) for the REST endpoints, response shapes, and the agent tools (`browse_version_history`, `get_version_snapshot`).
+- The **dev preview** is your branch's working copy, live (vite + HMR) — visible to you while you build.
+- **Publishing** builds a commit on `main` into an immutable deployment; public and shared links serve the **published** build, never a draft, so viewers never see a half-finished edit.
+- **Rollback** repoints the published deployment at an earlier build.
+- History is git history: every commit, by person or agent, is browsable in Source Control.
 
 ## Access Control
 
@@ -107,10 +74,14 @@ Apps follow the same model as dashboards (see [Sharing & Collaborators](/dashboa
 - **`private`** (default): owner-only. Workspace admins and API keys cannot read or modify another member's private app.
 - **`workspace`**: visible and editable by any workspace member.
 
-The **Share** dialog also has a **Copy link** button that copies the workspace-internal URL (`/a/:appId`) for logged-in collaborators — the only way to grab the link from [Mako Desktop](/desktop/), whose shell has no address bar. The recipient still needs access (collaborator or `workspace` visibility) to open it.
+Public links (optionally password-protected) render the published deployment for anonymous viewers.
 
 ## Security Model
 
 - Binding queries are validated against the workspace's connections and run server-side with read-only enforcement on materialization SQL.
-- The preview runs in a sandboxed iframe; in-sandbox DuckDB SQL is gated to read-only `SELECT` / `WITH` and rows posted to the preview are capped.
-- App code receives query *results* only — never credentials.
+- The sandbox is an isolated microVM per workspace; app code and shell commands never run in Mako's API process.
+- The preview iframe is sandboxed; app code receives query *results* only — never credentials.
+
+## API Surface
+
+Apps are managed under `/api/workspaces/:wid/apps` (list/create/delete, files, exec, branches, commit/merge, bindings and materialization, publish/rollback, public share, sandbox lifecycle). The workspace repo itself is served over git HTTP at `/api/apps-git/:workspaceId.git`, authorized by a scoped workspace git token. See the OpenAPI spec for full schemas, and [MCP Server](/mcp-server/) for driving all of this headlessly with the `app_*` tools.

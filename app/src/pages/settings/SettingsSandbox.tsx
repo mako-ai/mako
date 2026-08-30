@@ -31,7 +31,7 @@ import {
   Trash2 as RecycleIcon,
 } from "lucide-react";
 import { useWorkspace } from "../../contexts/workspace-context";
-import { useAppsV2Store } from "../../store/appsV2Store";
+import { useAppsStore } from "../../store/appsStore";
 
 interface SandboxStats {
   running: boolean;
@@ -96,15 +96,15 @@ function UsageBar({
 export default function SettingsSandbox() {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
-  const apps = useAppsV2Store(s => s.apps);
-  const fetchApps = useAppsV2Store(s => s.fetchApps);
+  const apps = useAppsStore(s => s.apps);
+  const fetchApps = useAppsStore(s => s.fetchApps);
   // Pushed box liveness/identity — makes this panel coherent across browsers
   // without a poll: a recycle elsewhere flips us to "no sandbox" instantly.
-  const boxStatus = useAppsV2Store(s => s.boxStatus);
-  const boxSandboxId = useAppsV2Store(s => s.boxSandboxId);
-  const boxTerminals = useAppsV2Store(s => s.boxTerminals);
-  const fetchSandboxStats = useAppsV2Store(s => s.fetchSandboxStats);
-  const recycleSandbox = useAppsV2Store(s => s.recycleSandbox);
+  const boxStatus = useAppsStore(s => s.boxStatus);
+  const boxSandboxId = useAppsStore(s => s.boxSandboxId);
+  const boxTerminals = useAppsStore(s => s.boxTerminals);
+  const fetchSandboxStats = useAppsStore(s => s.fetchSandboxStats);
+  const recycleSandbox = useAppsStore(s => s.recycleSandbox);
   // The sandbox belongs to the (workspace, user) pair; any app id reaches it.
   const appId = apps[0]?.id;
 
@@ -132,7 +132,7 @@ export default function SettingsSandbox() {
       // least a second stale. If a recycle's offline push landed while this
       // was in flight, showing the dead machine as running — with a copyable
       // connect command — would stick until the next manual refresh.
-      if (useAppsV2Store.getState().boxStatus === "offline") return;
+      if (useAppsStore.getState().boxStatus === "offline") return;
       setStats(body);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not reach the sandbox");
@@ -211,7 +211,7 @@ export default function SettingsSandbox() {
 
       {!appId && (
         <Alert severity="info">
-          The sandbox appears with the first Apps v2 app in this workspace.
+          The sandbox appears with the first Apps app in this workspace.
         </Alert>
       )}
 

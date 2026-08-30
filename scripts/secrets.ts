@@ -43,18 +43,28 @@ const CONCURRENCY = 8;
  * would hand every developer someone else's local paths and toggles.
  */
 const LOCAL_ONLY = new Set([
+  "APPS_SANDBOX_PROVIDER",
+  "APPS_GIT_ROOT",
+  "APPS_SESSIONS_ROOT",
+  // Pre-rename names — keep excluded so stale .env entries never sync.
   "APPS_V2_SANDBOX_PROVIDER",
   "APPS_V2_GIT_ROOT",
   "APPS_V2_SESSIONS_ROOT",
+  "APPS_SANDBOX_PROVIDER",
+  "APPS_GIT_ROOT",
+  "APPS_SESSIONS_ROOT",
   "NODE_ENV",
   // The connected-repo push OPT-IN is per-machine by doctrine (§13.17):
   // dev DBs are prod clones carrying real customer bindings, so a synced
   // "allow" would arm mirror pushes on every machine that pulls .env.
   "APPS_V2_CONNECTED_REPO_PUSH",
+  "APPS_CONNECTED_REPO_PUSH",
   // A named tunnel is one machine's identity; its credentials live in that
   // machine's ~/.cloudflared and the hostname is useless anywhere else.
   "APPS_V2_TUNNEL_NAME",
   "APPS_V2_TUNNEL_HOSTNAME",
+  "APPS_TUNNEL_NAME",
+  "APPS_TUNNEL_HOSTNAME",
 ]);
 
 interface Assignment {

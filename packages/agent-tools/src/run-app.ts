@@ -55,7 +55,7 @@ const viewportPxField = (axis: "width" | "height") =>
     );
 
 export const runAppBaseSchema = z.object({
-  appId: z.string().describe("App ID (from list_open_apps)"),
+  appId: z.string().describe("Legacy (pre-git) app ID"),
   rebuild: z
     .boolean()
     .optional()

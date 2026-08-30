@@ -21,7 +21,7 @@ import { useConnectorStore } from "../store/connectorStore";
 import { useFlowStore } from "../store/flowStore";
 import { useChatStore } from "../store/chatStore";
 import { useExplorerStore } from "../store/explorerStore";
-import { useAppsV2Store } from "../store/appsV2Store";
+import { useAppsStore } from "../store/appsStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent, resetIdentity } from "../lib/analytics";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -54,7 +54,7 @@ type NavigationView =
   | "flows"
   | "dashboards"
   | "notebooks"
-  | "apps-v2"
+  | "apps"
   | "dbt"
   | "source-control"
   | "settings"
@@ -79,9 +79,9 @@ const topNavigationItems: {
   { view: "connectors", icon: EXPLORER_ICONS.connectors, label: "Connectors" },
   { view: "dashboards", icon: EXPLORER_ICONS.dashboards, label: "Dashboards" },
   { view: "notebooks", icon: EXPLORER_ICONS.notebooks, label: "Notebooks" },
-  // Apps v2 (git-backed, experimental) — shown only when the server flag is
-  // on (useAppsV2Visible probes /apps-v2/status-probe per workspace).
-  { view: "apps-v2", icon: EXPLORER_ICONS["apps-v2"], label: "Apps v2" },
+  // Apps (git-backed, experimental) — shown only when the server flag is
+  // on (useAppsVisible probes /apps/status-probe per workspace).
+  { view: "apps", icon: EXPLORER_ICONS["apps"], label: "Apps" },
 ];
 
 /**
@@ -96,9 +96,9 @@ const topNavigationItems: {
 function useRepoDirty(enabled: boolean): boolean {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
-  const appId = useAppsV2Store(state => state.apps[0]?.id);
-  const fetchStatus = useAppsV2Store(state => state.fetchStatus);
-  const dirty = useAppsV2Store(state =>
+  const appId = useAppsStore(state => state.apps[0]?.id);
+  const fetchStatus = useAppsStore(state => state.fetchStatus);
+  const dirty = useAppsStore(state =>
     Object.values(state.statusByApp).some(
       status => (status?.repoChanges?.length ?? 0) > 0,
     ),
@@ -116,7 +116,7 @@ function useRepoDirty(enabled: boolean): boolean {
 }
 
 /**
- * Whether the Apps v2 and Source Control rail entries exist for this
+ * Whether the Apps and Source Control rail entries exist for this
  * workspace. Read from the workspace object the app already loaded — a
  * synchronous fact, like the workspace's name. It is deliberately NOT a
  * network probe: rail icons are fixed chrome, and gating them on a request
@@ -125,9 +125,9 @@ function useRepoDirty(enabled: boolean): boolean {
  * explorer needs to load (repos, canCreate) loads on its own, behind the
  * icon, not in front of it.
  */
-function useAppsV2Visible(): boolean {
+function useAppsVisible(): boolean {
   const { currentWorkspace } = useWorkspace();
-  return currentWorkspace?.settings?.appsV2Enabled === true;
+  return currentWorkspace?.settings?.appsEnabled === true;
 }
 
 const bottomNavigationItems: {
@@ -261,12 +261,11 @@ export function SidebarMobileExplorerNav() {
   const activeExplorer = useUIStore(selectActiveExplorer);
   const setLeftPane = useUIStore(state => state.setLeftPane);
   const openLeftPane = useUIStore(state => state.openLeftPane);
-  const appsV2Visible = useAppsV2Visible();
+  const appsVisible = useAppsVisible();
 
   const items = [...topNavigationItems, ...bottomNavigationItems].filter(
     item =>
-      (item.view !== "apps-v2" && item.view !== "source-control") ||
-      appsV2Visible,
+      (item.view !== "apps" && item.view !== "source-control") || appsVisible,
   );
 
   return (
@@ -342,8 +341,8 @@ function Sidebar() {
   const openLeftPane = useUIStore(state => state.openLeftPane);
   const openRightPane = useUIStore(state => state.openRightPane);
   const isMobile = useIsMobile();
-  const appsV2Visible = useAppsV2Visible();
-  const repoDirty = useRepoDirty(appsV2Visible);
+  const appsVisible = useAppsVisible();
+  const repoDirty = useRepoDirty(appsVisible);
 
   const handleNavigation = (view: NavigationView) => {
     // Settings now behaves like any other explorer: clicking the cog opens
@@ -399,8 +398,8 @@ function Sidebar() {
           {topNavigationItems
             .filter(
               item =>
-                (item.view !== "apps-v2" && item.view !== "source-control") ||
-                appsV2Visible,
+                (item.view !== "apps" && item.view !== "source-control") ||
+                appsVisible,
             )
             .map(item => {
               const Icon = item.icon;

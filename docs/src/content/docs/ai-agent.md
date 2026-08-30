@@ -98,7 +98,7 @@ On a fresh request the default mode is picked from what you're looking at — a 
 | **Query** (default) | Build and run queries in consoles (SQL, MongoDB), funnels, reports, and analyses |
 | **Dashboard** | Create and edit dashboards, widgets, data sources, filters, and charts |
 | **Sync Flow** | Configure database-to-database sync flows, query templates, and schema mapping |
-| **React App** | Build [React apps](/apps/) wired to workspace data — edit files, add dependencies, create data bindings |
+| **React App** | Build [React apps](/apps/) wired to workspace data — edit files in a git-backed sandbox, run shell commands, create data bindings |
 | **Transforms** | Build and run [dbt transformations](/transforms/) — edit project files, compile, test, and run models against the warehouse |
 | **Notebook** | Build [notebooks](/notebooks/) — add SQL/Python/Markdown cells, run SQL against data sources and Python on the managed kernel, iterate on results |
 | **Explore** | Read-only investigation across connections, consoles, dashboards, and memory |

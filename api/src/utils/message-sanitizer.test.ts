@@ -208,14 +208,14 @@ void main();
       parts: [
         { type: "text", text: "looking" },
         {
-          type: "tool-app2_browse",
+          type: "tool-app_browse",
           toolCallId: "t1",
           state: "output-available",
           input: {},
           output: { ok: true, screenshotBase64: big, consoleLogs: ["a"] },
         },
         {
-          type: "tool-app2_dev_log",
+          type: "tool-app_dev_log",
           toolCallId: "t2",
           state: "output-available",
           input: {},

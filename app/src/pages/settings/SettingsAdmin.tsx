@@ -74,10 +74,10 @@ interface FlaggedWorkspace {
   id: string;
   name: string;
   slug: string;
-  appsV2Enabled: boolean;
+  appsEnabled: boolean;
 }
 
-/** Per-workspace rollout switches. Apps v2 is the first; add rows as flags appear. */
+/** Per-workspace rollout switches. Apps is the first; add rows as flags appear. */
 function FeatureFlagsCard() {
   const { refreshWorkspaces } = useWorkspace();
   const [rows, setRows] = useState<FlaggedWorkspace[] | null>(null);
@@ -99,7 +99,7 @@ function FeatureFlagsCard() {
         )
       : rows;
     return [...matches]
-      .sort((a, b) => Number(b.appsV2Enabled) - Number(a.appsV2Enabled))
+      .sort((a, b) => Number(b.appsEnabled) - Number(a.appsEnabled))
       .slice(0, LIMIT);
   }, [rows, query]);
 
@@ -118,17 +118,17 @@ function FeatureFlagsCard() {
   }, [load]);
 
   const flip = useCallback(
-    async (row: FlaggedWorkspace, appsV2Enabled: boolean) => {
+    async (row: FlaggedWorkspace, appsEnabled: boolean) => {
       setBusy(row.id);
       setError(null);
       try {
         await apiJson(`/api/admin/workspaces/${row.id}/features`, {
           method: "PATCH",
-          body: JSON.stringify({ appsV2Enabled }),
+          body: JSON.stringify({ appsEnabled }),
         });
         setRows(
           prev =>
-            prev?.map(r => (r.id === row.id ? { ...r, appsV2Enabled } : r)) ??
+            prev?.map(r => (r.id === row.id ? { ...r, appsEnabled } : r)) ??
             prev,
         );
         // The rail reads the flag from the loaded workspace object; refresh
@@ -150,9 +150,9 @@ function FeatureFlagsCard() {
           Feature flags
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-          Per-workspace rollout. <strong>Apps v2</strong> turns on the
-          git-backed apps, the sandbox and Source Control for a workspace; off,
-          none of it is visible there.
+          Per-workspace rollout. <strong>Apps</strong> turns on the git-backed
+          apps, the sandbox and Source Control for a workspace; off, none of it
+          is visible there.
         </Typography>
         {error && (
           <Alert severity="error" onClose={() => setError(null)} sx={{ mb: 1 }}>
@@ -176,7 +176,7 @@ function FeatureFlagsCard() {
               color="text.secondary"
               sx={{ display: "block", mb: 0.5 }}
             >
-              {rows.filter(r => r.appsV2Enabled).length} enabled · showing{" "}
+              {rows.filter(r => r.appsEnabled).length} enabled · showing{" "}
               {visible.length}
               {visible.length === LIMIT ? ` of the first ${LIMIT} matches` : ""}
             </Typography>
@@ -185,7 +185,7 @@ function FeatureFlagsCard() {
                 <TableRow>
                   <TableCell>Workspace</TableCell>
                   <TableCell>Slug</TableCell>
-                  <TableCell align="right">Apps v2</TableCell>
+                  <TableCell align="right">Apps</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -210,7 +210,7 @@ function FeatureFlagsCard() {
                     <TableCell align="right">
                       <Switch
                         size="small"
-                        checked={row.appsV2Enabled}
+                        checked={row.appsEnabled}
                         disabled={busy === row.id}
                         onChange={e => void flip(row, e.target.checked)}
                       />

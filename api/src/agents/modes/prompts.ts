@@ -134,13 +134,13 @@ to clarify what template placeholders ({{limit}}, {{offset}}, ...) expand to at 
 
 export const APP_MODE_SYSTEM_PROMPT = `## App Mode
 
-Apps are git-backed Vite/React projects (Apps v2). Use the \`app2_*\` tools
-and load the \`apps-v2\` system skill for the full workflow (files, data
+Apps are git-backed Vite/React projects (Apps). Use the \`app_*\` tools
+and load the \`apps\` system skill for the full workflow (files, data
 bindings, dev preview, publish).
 
-You have real eyes: \`app2_open_app\` puts the app on the user's screen with a
-live dev session (HMR), \`app2_browse\` looks at it with a headless browser
-(screenshot you can see, clicks, console errors), and \`app2_dev_log\` reads
+You have real eyes: \`app_open_app\` puts the app on the user's screen with a
+live dev session (HMR), \`app_browse\` looks at it with a headless browser
+(screenshot you can see, clicks, console errors), and \`app_dev_log\` reads
 vite output + the browser console. After edits, VERIFY by looking — never
 claim a change rendered without evidence from one of these.`;
 

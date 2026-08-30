@@ -44,7 +44,7 @@ import {
   getWorkspaceGatewayModelListings,
 } from "../services/model-catalog.service";
 import {
-  AppWorktreeV2,
+  AppWorktree,
   Workspace,
   DatabaseConnection,
   Chat,
@@ -93,7 +93,7 @@ import {
 } from "../services/resumable-stream.service";
 import { hasAttachedClients } from "../services/realtime-presence.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
-import { commitAgentTurn } from "../apps-v2/worktree.service";
+import { commitAgentTurn } from "../apps/worktree.service";
 import { reportPubSubFailure } from "../services/pubsub.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
@@ -714,10 +714,10 @@ agentRoutes.openapi(
       }
     }
 
-    // The caller's Apps v2 checkout branch, so the agent starts oriented
+    // The caller's Apps checkout branch, so the agent starts oriented
     // instead of spending a tool call on `git status`. The doc is synced by
     // every exec and checkout; a missing doc simply means "main".
-    const appsV2Worktree = await AppWorktreeV2.findOne(
+    const appsWorktree = await AppWorktree.findOne(
       { workspaceId: new Types.ObjectId(workspaceId), userId: actorId },
       { branch: 1 },
     )
@@ -728,7 +728,7 @@ agentRoutes.openapi(
     const agentContext: AgentContext = {
       workspaceId,
       chatId,
-      appsV2Branch: appsV2Worktree?.branch ?? undefined,
+      appsBranch: appsWorktree?.branch ?? undefined,
       activeView,
       activeExplorer,
       userId: actorId,
@@ -1252,9 +1252,9 @@ agentRoutes.openapi(
                 }
                 const durationMs = Date.now() - startTime;
 
-                // Apps v2 (Cursor-cloud model): turn any WIP the agent
+                // Apps (Cursor-cloud model): turn any WIP the agent
                 // accumulated on this conversation's app branches into one
-                // commit per turn. No-op unless the turn touched an Apps v2
+                // commit per turn. No-op unless the turn touched an Apps
                 // worktree; never throws.
                 if (!isAborted) {
                   try {
@@ -1269,7 +1269,7 @@ agentRoutes.openapi(
                       .join(" ");
                     await commitAgentTurn(workspaceId, actorId, lastUserText);
                   } catch (err) {
-                    logger.warn("Apps v2 turn commit failed", { error: err });
+                    logger.warn("Apps turn commit failed", { error: err });
                   }
                 }
 

@@ -45,11 +45,11 @@ export interface AgentMeta {
  * Runtime context passed to agent factory
  */
 export interface AgentContext {
-  /** Branch of the caller's Apps v2 checkout — saves the agent a `git status` round trip. */
-  appsV2Branch?: string;
+  /** Branch of the caller's Apps checkout — saves the agent a `git status` round trip. */
+  appsBranch?: string;
   /**
    * Whether the resolved model accepts image input (model-catalog
-   * capability). Gates image parts in tool outputs (app2_browse screenshots)
+   * capability). Gates image parts in tool outputs (app_browse screenshots)
    * — a text-only model receiving an image part loses the whole tool result.
    */
   modelSupportsVision?: boolean;
@@ -82,7 +82,6 @@ export interface AgentContext {
     | "flows"
     | "dashboards"
     | "apps"
-    | "apps-v2"
     | "dbt"
     | "settings"
     | null;

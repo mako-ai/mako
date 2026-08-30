@@ -49,12 +49,6 @@ interface VersionStoreState {
     comment?: string,
   ) => Promise<{ success: boolean; error?: string }>;
 
-  /**
-   * Create an explicit checkpoint of the entity's current state. Only apps use
-   * this today (consoles/dashboards version implicitly on save); the base path
-   * map gates which entity types support it.
-   */
-
   clearHistory: (entityId: string) => void;
 }
 

@@ -13,15 +13,15 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { loggers } from "../logging";
-import { appsV2ReposRoot } from "../apps-v2/config";
+import { appsReposRoot } from "../apps/config";
 import {
   APP_SDK_DEPENDENCY,
   APP_SDK_DIR,
   appSdkFiles,
-} from "../apps-v2/app-sdk-package";
-import { commitFilesOnBranch } from "../apps-v2/worktree.service";
-import { resolveCommit } from "../apps-v2/repository.service";
-import { queueMirrorPush } from "../apps-v2/cloud-repo.service";
+} from "../apps/app-sdk-package";
+import { commitFilesOnBranch } from "../apps/worktree.service";
+import { resolveCommit } from "../apps/repository.service";
+import { queueMirrorPush } from "../apps/cloud-repo.service";
 
 const log = loggers.migration();
 const execFileAsync = promisify(execFile);
@@ -47,7 +47,7 @@ async function show(repoDir: string, path_: string): Promise<string | null> {
 }
 
 export async function up(_db: Db): Promise<void> {
-  const root = appsV2ReposRoot();
+  const root = appsReposRoot();
   const entries = await fs.readdir(root).catch(() => [] as string[]);
   for (const entry of entries) {
     if (!entry.endsWith(".git")) continue;

@@ -21,7 +21,7 @@ import {
   appBindingMaterializeFunction,
   appBindingSchedulerFunction,
 } from "./functions/app-binding-materialize";
-import { appsV2BindingSchedulerFunction } from "./functions/apps-v2-binding-refresh";
+import { appsBindingSchedulerFunction } from "./functions/apps-binding-refresh";
 import { syncBackfillEntityFunction } from "./functions/sync-entity";
 import { cdcRepartitionFunction } from "./functions/cdc-repartition";
 import { usageReportingFunction } from "./functions/usage-reporting";
@@ -94,7 +94,7 @@ export function getFunctions() {
         cdcScheduledBackfillFunction,
         dashboardSchedulerFunction,
         appBindingSchedulerFunction,
-        appsV2BindingSchedulerFunction,
+        appsBindingSchedulerFunction,
         scheduledQuerySchedulerFunction,
         dbtSchedulerFunction,
       ];
@@ -145,7 +145,7 @@ export {
   cleanupAbandonedMaterializationRunsFunction,
   appBindingMaterializeFunction,
   appBindingSchedulerFunction,
-  appsV2BindingSchedulerFunction,
+  appsBindingSchedulerFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,

@@ -25,7 +25,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { loggers } from "../logging";
-import { appsV2ReposRoot } from "../apps-v2/config";
+import { appsReposRoot } from "../apps/config";
 
 const log = loggers.migration();
 const execFileAsync = promisify(execFile);
@@ -89,7 +89,7 @@ export async function up(db: Db): Promise<void> {
   // restored FROM the mirror on demand, and the next mirror push (forced,
   // --mirror) propagates these deletions — so cleaning the cache cleans the
   // mirror as a consequence, and a host with no cache has nothing to clean.
-  const root = appsV2ReposRoot();
+  const root = appsReposRoot();
   const entries = await fs.readdir(root).catch(() => [] as string[]);
   for (const entry of entries) {
     if (!entry.endsWith(".git")) continue;

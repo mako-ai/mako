@@ -127,12 +127,12 @@ describe("connect / list / disconnect", () => {
     expect((await getWorkspaceRepo(workspaceId))?.repo).toBe("a");
   });
 
-  it("falls back to the legacy appsV2Repo binding until migrated", async () => {
+  it("falls back to the legacy appsRepo binding until migrated", async () => {
     await Workspace.updateOne(
       { _id: new Types.ObjectId(workspaceId) },
       {
         $set: {
-          appsV2Repo: {
+          appsRepo: {
             provider: "github",
             owner: "legacy",
             repo: "old",
@@ -165,7 +165,7 @@ describe("connect / list / disconnect", () => {
       linkedBy: "u1",
     });
     const ws = await Workspace.findById(workspaceId).lean();
-    expect(ws?.appsV2Repo).toBeUndefined();
+    expect(ws?.appsRepo).toBeUndefined();
     expect(ws?.workspaceRepos).toHaveLength(1);
     expect(ws?.workspaceRepos?.[0].repo).toBe("new");
   });

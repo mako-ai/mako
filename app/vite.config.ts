@@ -63,7 +63,7 @@ export default defineConfig(({ mode }) => {
         "/api": {
           target: process.env.VITE_API_PROXY_TARGET || "http://localhost:8080",
           changeOrigin: true,
-          // The Apps v2 terminal is a WebSocket under /api. Without this the
+          // The Apps terminal is a WebSocket under /api. Without this the
           // upgrade request is served as plain HTTP and the socket closes
           // immediately — the terminal works in a deployed build and only
           // fails in local development, which is the worst way round.

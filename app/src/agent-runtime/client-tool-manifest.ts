@@ -461,9 +461,8 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "clock",
   },
-  // Full-server apps: list/create/read/inspect/materialize execute SERVER-SIDE
-  // (see api/src/agent-lib/tools/server-app-tools.ts). Entries kept for tool-card
-  // labels/icons. Only open_app and run_app remain browser-executed.
+  // Legacy (pre-git) app tools. The v1 server implementations are gone;
+  // entries are kept so historical chats still render labeled tool cards.
   list_open_apps: {
     domain: "app",
     execution: "server",
@@ -521,9 +520,8 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "eye",
   },
-  // App mutation tools execute SERVER-SIDE (issue #475 pattern; see
-  // api/src/agent-lib/tools/server-app-tools.ts). Open tabs follow along via
-  // the realtime channel (app.updated). Entries kept for tool-card UI.
+  // These names are shared by the git-backed app_* toolset, so the cards
+  // label both historical v1 calls and current server-side app edits.
   app_write_file: {
     domain: "app",
     execution: "server",
@@ -1427,10 +1425,6 @@ export const DASHBOARD_EXECUTOR_TOOL_NAMES = createToolNameSet(
 
 export const CONSOLE_EXECUTOR_TOOL_NAMES = createToolNameSet(
   entry => entry.execution === "client" && entry.clientExecutor === "console",
-);
-
-export const APP_EXECUTOR_TOOL_NAMES = createToolNameSet(
-  entry => entry.execution === "client" && entry.clientExecutor === "app",
 );
 
 export const DBT_EXECUTOR_TOOL_NAMES = createToolNameSet(

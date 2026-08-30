@@ -23,8 +23,8 @@ import {
   hasBlockedDraftSave,
   hasPendingAgentReview,
 } from "./consoleStore";
-import { useAppsV2Store, type AppsV2BoxState } from "./appsV2Store";
-import { focusAppsV2Tab } from "../apps-v2-runtime/shell";
+import { useAppsStore, type AppsBoxState } from "./appsStore";
+import { focusAppsTab } from "../apps-runtime/shell";
 import { useDashboardStore } from "./dashboardStore";
 import { useDbtStore } from "./dbtStore";
 import { useNotebookStore } from "./notebookStore";
@@ -72,14 +72,6 @@ export type RealtimeEvent =
   | { type: "chat.activity"; chatId: string; state: "streaming" | "idle" }
   | {
       type: "app.updated";
-      appId: string;
-      version: number;
-      updatedBy: string;
-      clientId?: string;
-      origin: "agent" | "save";
-    }
-  | {
-      type: "app-v2.updated";
       appId: string;
       updatedBy?: string;
       origin:
@@ -156,14 +148,14 @@ export type RealtimeEvent =
   // The (workspace, user) sandbox reported its own state, pushed from inside
   // the box the moment it changed. Applied directly — no refetch.
   | {
-      type: "app-v2.box-state";
+      type: "app.box-state";
       userId: string;
-      state: AppsV2BoxState;
+      state: AppsBoxState;
     }
-  // An agent in this user's chat asked the UI to open an Apps v2 app tab
-  // (app2_open_app). Scoped to the requesting user.
+  // An agent in this user's chat asked the UI to open an Apps app tab
+  // (app_open_app). Scoped to the requesting user.
   | {
-      type: "app-v2.open-app";
+      type: "app.open-app";
       userId: string;
       appId: string;
       slug?: string;
@@ -459,16 +451,16 @@ export const useRealtimeStore = create<RealtimeStore>()(
       })();
     };
 
-    // Apps v2 (git-backed): any durable change (agent turn, WIP flush, merge)
+    // Apps (git-backed): any durable change (agent turn, WIP flush, merge)
     // pokes open windows; the store refetches from the API (git is the
     // authority, so a refetch is always safe — openFile preserves dirty local
     // edits and only refreshes clean buffers).
-    const handleAppV2Updated = (
-      event: Extract<RealtimeEvent, { type: "app-v2.updated" }>,
+    const handleAppUpdated = (
+      event: Extract<RealtimeEvent, { type: "app.updated" }>,
     ) => {
       const workspaceId = get().workspaceId;
       if (!workspaceId) return;
-      const v2 = useAppsV2Store.getState();
+      const v2 = useAppsStore.getState();
       // Explorer list (titles, new/deleted apps).
       void v2.fetchApps(workspaceId);
       if (event.origin === "lifecycle") return;
@@ -678,23 +670,19 @@ export const useRealtimeStore = create<RealtimeStore>()(
     };
 
     const handleBoxState = (
-      event: Extract<RealtimeEvent, { type: "app-v2.box-state" }>,
+      event: Extract<RealtimeEvent, { type: "app.box-state" }>,
     ) => {
-      useAppsV2Store.getState().applyBoxState(event.userId, event.state);
+      useAppsStore.getState().applyBoxState(event.userId, event.state);
     };
 
-    const handleOpenAppV2 = (
-      event: Extract<RealtimeEvent, { type: "app-v2.open-app" }>,
+    const handleOpenApp = (
+      event: Extract<RealtimeEvent, { type: "app.open-app" }>,
     ) => {
       // The user's own agent asked the UI to show an app. Scoped to the
       // requesting user — a teammate's agent must not steal this focus.
       const me = get().currentUserId;
       if (!me || event.userId !== me) return;
-      focusAppsV2Tab(
-        event.appId,
-        event.title ?? event.slug ?? "App",
-        event.slug,
-      );
+      focusAppsTab(event.appId, event.title ?? event.slug ?? "App", event.slug);
     };
 
     const handleEvent = (event: RealtimeEvent) => {
@@ -703,15 +691,13 @@ export const useRealtimeStore = create<RealtimeStore>()(
           handleConsoleUpdated(event);
           break;
         case "app.updated":
+          handleAppUpdated(event);
           break;
-        case "app-v2.updated":
-          handleAppV2Updated(event);
-          break;
-        case "app-v2.box-state":
+        case "app.box-state":
           handleBoxState(event);
           break;
-        case "app-v2.open-app":
-          handleOpenAppV2(event);
+        case "app.open-app":
+          handleOpenApp(event);
           break;
         case "dashboard.updated":
           handleDashboardUpdated(event);

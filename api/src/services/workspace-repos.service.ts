@@ -6,7 +6,7 @@
  * personal content lives under `users/<userId>/…`. The storage field is
  * still the `workspaceRepos` array for back-compat, but the service refuses
  * to hold more than one binding — `getWorkspaceRepo` is the read API.
- * (Legacy `appsV2Repo` read-time fallback kept until the 2026-07-15
+ * (Legacy `appsRepo` read-time fallback kept until the 2026-07-15
  * migration has run everywhere.)
  */
 import { Types } from "mongoose";
@@ -38,11 +38,11 @@ export async function listWorkspaceRepos(
   workspaceId: string,
 ): Promise<IWorkspaceRepoBinding[]> {
   const ws = await Workspace.findById(workspaceId)
-    .select("workspaceRepos appsV2Repo")
+    .select("workspaceRepos appsRepo")
     .lean();
   if (ws?.workspaceRepos?.length) return ws.workspaceRepos;
-  // Pre-migration fallback: the old single apps-v2 binding.
-  const legacy = ws?.appsV2Repo as IWorkspaceRepoBinding | undefined;
+  // Pre-migration fallback: the old single apps binding.
+  const legacy = ws?.appsRepo as IWorkspaceRepoBinding | undefined;
   return legacy ? [legacy] : [];
 }
 
@@ -108,7 +108,7 @@ export async function connectWorkspaceRepo(
   const next = [binding];
   await Workspace.updateOne(
     { _id: new Types.ObjectId(input.workspaceId) },
-    { $set: { workspaceRepos: next }, $unset: { appsV2Repo: "" } },
+    { $set: { workspaceRepos: next }, $unset: { appsRepo: "" } },
   );
   logger.info("Workspace repo connected", {
     workspaceId: input.workspaceId,
@@ -129,7 +129,7 @@ export async function disconnectWorkspaceRepo(
   const next = existing.filter(r => !(r.owner === owner && r.repo === repo));
   await Workspace.updateOne(
     { _id: new Types.ObjectId(workspaceId) },
-    { $set: { workspaceRepos: next }, $unset: { appsV2Repo: "" } },
+    { $set: { workspaceRepos: next }, $unset: { appsRepo: "" } },
   );
   logger.info("Workspace repo disconnected", { workspaceId, owner, repo });
 }
@@ -146,8 +146,8 @@ export async function findWorkspaceIdByRepoBinding(
   const ws = await Workspace.findOne({
     $or: [
       { workspaceRepos: { $elemMatch: { owner, repo } } },
-      // Pre-migration fallback: the old single apps-v2 binding.
-      { "appsV2Repo.owner": owner, "appsV2Repo.repo": repo },
+      // Pre-migration fallback: the old single apps binding.
+      { "appsRepo.owner": owner, "appsRepo.repo": repo },
     ],
   })
     .select("_id")

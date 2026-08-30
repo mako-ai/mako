@@ -269,11 +269,9 @@ export async function executeDashboardAgentTool(
     }
   }
 
-  // Generic version tools: dispatch on entityType. Dashboards go through the
-  // local draft flows (the working draft lives in this tab); apps are
-  // server-authoritative (autosaved), so the REST endpoints via the version
-  // store are the full save/restore — open app tabs follow along through the
-  // server's realtime app.updated poke.
+  // Generic version tools: dashboards go through the local draft flows (the
+  // working draft lives in this tab). The v1 app leg is gone with Apps v1 —
+  // git-backed apps version through git itself, not entity_versions.
   if (toolName === "save_version" || toolName === "restore_version") {
     const entityType =
       input.entityType === "dashboard" ? input.entityType : null;
@@ -281,7 +279,9 @@ export async function executeDashboardAgentTool(
     if (!entityType || !entityId) {
       return {
         success: false,
-        error: "entityType ('dashboard') and entityId are required.",
+        error:
+          "entityType ('dashboard') and entityId are required. Apps are " +
+          "git-backed: use app_commit / app_merge_to_main instead.",
       };
     }
     const comment =

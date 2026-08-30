@@ -35,7 +35,7 @@ import {
   missingInputConditionalGrant,
 } from "../agent-lib/capabilities/runtime";
 import { createHeadlessRunAppTool } from "./preview-tools";
-import { createAppsV2Tools } from "../agent-lib/tools/apps-v2-tools";
+import { createAppsTools } from "../agent-lib/tools/apps-tools";
 import { createSqlToolsV2 } from "../agent-lib/tools/sql-tools";
 import { createMongoToolsV2 } from "../agent-lib/tools/mongodb-tools";
 import { createUniversalTools } from "../agent-lib/tools/universal-tools";
@@ -78,14 +78,14 @@ const SERVER_VERSION = "0.1.0";
  * costs the client tokens on every session — but a compact workflow guide
  * saves far more by avoiding failed exploratory round-trips.
  */
-const SERVER_INSTRUCTIONS = `Mako builds data apps (React + data bindings) inside one workspace.
+const SERVER_INSTRUCTIONS = `Mako builds data apps (git-backed React projects + data bindings) inside one workspace.
 
 Typical loop:
 1. Discover data: list_connections, then list_databases / list_tables / inspect_table (they dispatch on connection type — SQL or MongoDB).
 2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
-3. create_app → app_write_file / app_edit_file → app_create_data_binding (bind the validated query; pass consoleId to seed from a console).
-4. Verify with run_app after edits (server-side headless render). Pass includeScreenshot: false when you only need status/errors — it is much cheaper than the screenshot. Pass width/height (e.g. 390x844) to verify the mobile layout before publishing.
-5. app_save_version to snapshot/publish.
+3. app_list_apps → app_create_app → app_write_file / app_edit_file / app_bash → app_materialize (bindings are bindings/<name>.sql files with the validated query).
+4. Verify with app_open_app (starts the dev server, focuses the user's UI) + app_dev_log (vite + browser console) + app_browse (headless browser: click, navigate, screenshot the running app).
+5. app_commit → app_merge_to_main (main is what publishes buildable state).
 
 dbt: read_dbt_project_tree → read/edit files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run). Check dbt_git_status before finishing — edits are working-tree drafts until committed. Warehouse-mutating runs (dbt_run_model, dbt_run_job) appear only when the API key has the warehouse:write scope; Git mutations (dbt_commit_to_branch, branches, PRs) only with git:write.
 
@@ -102,12 +102,12 @@ const ACP_DESKTOP_SERVER_INSTRUCTIONS = `Mako builds data apps (React + data bin
 Typical loop:
 1. Discover data: list_connections, then list_databases / list_tables / inspect_table (they dispatch on connection type — SQL or MongoDB).
 2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
-3. create_app → app_write_file / app_edit_file → app_create_data_binding (bind the validated query; pass consoleId to seed from a console).
+3. app_list_apps → app_create_app → app_write_file / app_edit_file / app_bash → app_materialize (bindings are bindings/<name>.sql files with the validated query).
 4. For dbt work: read_dbt_project_tree → read/edit files → validate asynchronously, then poll dbt_get_run. For large or destructive work (warehouse runs, Git mutations, schedules), prefer proposing a plan via mako-desktop submit_plan before acting.
-5. Desktop opens/refreshes the app tab automatically. Do NOT create_preview_token, render_app, or paste /preview/… URLs. Verify with mako-desktop run_app: status, iframe errors, and a screenshot of the live tab (rebuild: false polls without rebuilding; includeScreenshot: false is much cheaper). For consoles use open_console / create_console; for notebooks use create_notebook / cell tools.
+5. app_open_app opens/refreshes the app tab in Desktop. Do NOT create_preview_token or paste /preview/… URLs. Verify with app_dev_log (vite + browser console) and app_browse (headless browser inside the sandbox). For consoles use open_console / create_console; for notebooks use create_notebook / cell tools.
 6. Interactive UX: mako-desktop ask_clarifying_questions / submit_plan (docked Chat cards) — never ask as plain text.
 7. Durable memory: read_self_directive / update_self_directive only. Do NOT write .claude/**/MEMORY.md or other local Claude memory files.
-8. app_save_version to snapshot/publish.
+8. app_commit → app_merge_to_main when the user asks to ship.
 
 Skills (same knowledge as the in-product agent):
 - list_skills → compact index (workspace + system).
@@ -116,23 +116,6 @@ Skills (same knowledge as the in-product agent):
 Before writing app code: get_relevant_skills("build a Mako app") or resource mako://skills/apps.
 Optional: search_dashboards, web_search / fetch_url for public docs.`;
 
-/**
- * Apps v2 steering appended to initialize instructions (§13.21). The base
- * instructions describe the legacy v1 app loop; a workspace that has moved
- * to git-backed apps needs the agent working in the app2_* toolset instead
- * — and the two systems must never be mixed on one app.
- */
-const APPS_V2_STEER = `
-
-THIS WORKSPACE USES APPS V2 (git-backed). For app work, IGNORE the v1 app loop above and use:
-app2_list_apps → app2_create_app → app2_write_file / app2_edit_file / app2_bash → app2_materialize (bindings are bindings/<name>.sql files) → verify with app2_open_app (starts the dev server, focuses the user's UI) + app2_dev_log (vite + browser console) + app2_browse (headless browser: click, navigate, screenshot the running app) → app2_commit → app2_merge_to_main (main is what publishes buildable state).
-create_app / app_write_file / app_save_version / run_app are the LEGACY v1 system — do not use them here, and never mix the two toolsets on one app.
-Before writing app code: resource mako://skills/apps-v2.`;
-
-const APPS_V2_HINT = `
-
-If asked to work on a git-backed Apps v2 app (folders under apps/ in the workspace repo), use the app2_* toolset (start with app2_list_apps); never mix it with the v1 app tools on one app.`;
-
 /** Defensive cap so a huge query result cannot blow up the JSON response. */
 const MAX_TOOL_RESULT_CHARS = 200_000;
 
@@ -140,12 +123,6 @@ const SKILL_URI_PREFIX = "mako://skills/";
 
 export interface MakoMcpContext {
   workspaceId: string;
-  /**
-   * Workspace is on Apps v2 (settings.appsV2Enabled). Steers initialize
-   * instructions to the app2_* loop instead of the legacy v1 app loop —
-   * tools for BOTH systems stay registered; this only changes guidance.
-   */
-  appsV2Enabled?: boolean;
   /** Acting user (the API key's creator). */
   userId?: string;
   /** Capabilities granted to the authenticated workspace API key. */
@@ -180,7 +157,7 @@ export function buildMakoMcpCandidateTools(
   // id per exchange means no open browser tab suppresses these events, so
   // tabs live-reload on every MCP-driven mutation.
   const chatId = `mcp-${nanoid(10)}`;
-  const appsV2Tools = createAppsV2Tools({ workspaceId, userId });
+  const appsTools = createAppsTools({ workspaceId, userId });
 
   const consoleTools = createServerConsoleTools({
     workspaceId,
@@ -232,7 +209,7 @@ export function buildMakoMcpCandidateTools(
 
   return {
     ...headlessRunApp,
-    ...appsV2Tools,
+    ...appsTools,
     ...consoleTools,
     ...dashboardTools,
     ...notebookTools,
@@ -416,11 +393,9 @@ export function buildMakoMcpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       capabilities: { tools: {}, resources: {} },
-      instructions:
-        (context.acpDesktop
-          ? ACP_DESKTOP_SERVER_INSTRUCTIONS
-          : SERVER_INSTRUCTIONS) +
-        (context.appsV2Enabled ? APPS_V2_STEER : APPS_V2_HINT),
+      instructions: context.acpDesktop
+        ? ACP_DESKTOP_SERVER_INSTRUCTIONS
+        : SERVER_INSTRUCTIONS,
     },
   );
 

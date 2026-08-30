@@ -22,7 +22,7 @@
 # curl with --resolve, which tests DNS-revocation AND origin reachability
 # without touching the poisoned cache.
 #
-# Not needed with APPS_V2_SANDBOX_PROVIDER=local, where "the sandbox" is this
+# Not needed with APPS_SANDBOX_PROVIDER=local, where "the sandbox" is this
 # machine and BASE_URL is already correct — so it exits quietly.
 set -uo pipefail
 
@@ -30,7 +30,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${ROOT}/.env.tunnel"
 PORT="${WEB_API_PORT:-8080}"
 
-if grep -qE '^APPS_V2_SANDBOX_PROVIDER=local' "${ROOT}/.env" 2>/dev/null; then
+if grep -qE '^APPS_(V2_)?SANDBOX_PROVIDER=local' "${ROOT}/.env" 2>/dev/null; then
   echo "sandbox-tunnel: local sandbox provider — no tunnel needed"
   : > "$OUT"
   exit 0
@@ -39,7 +39,7 @@ fi
 if ! command -v cloudflared >/dev/null 2>&1; then
   echo "sandbox-tunnel: cloudflared not found." >&2
   echo "  Sandboxes will not be able to clone or push (git remote unreachable)." >&2
-  echo "  Install it (brew install cloudflared), or set APPS_V2_SANDBOX_PROVIDER=local." >&2
+  echo "  Install it (brew install cloudflared), or set APPS_SANDBOX_PROVIDER=local." >&2
   : > "$OUT"
   exit 0
 fi
@@ -74,8 +74,11 @@ healthy() {
 # PROCESS: if cloudflared dies, restart it; the hostname stays put.
 # --------------------------------------------------------------------------
 env_val() { grep -E "^$1=" "${ROOT}/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'\'' '; }
-TUNNEL_NAME="$(env_val APPS_V2_TUNNEL_NAME)"
-TUNNEL_HOST="$(env_val APPS_V2_TUNNEL_HOSTNAME)"
+TUNNEL_NAME="$(env_val APPS_TUNNEL_NAME)"
+TUNNEL_HOST="$(env_val APPS_TUNNEL_HOSTNAME)"
+# Pre-rename variable names, still present in older .env files.
+[ -z "$TUNNEL_NAME" ] && TUNNEL_NAME="$(env_val APPS_V2_TUNNEL_NAME)"
+[ -z "$TUNNEL_HOST" ] && TUNNEL_HOST="$(env_val APPS_V2_TUNNEL_HOSTNAME)"
 
 if [ -n "$TUNNEL_NAME" ] && [ -n "$TUNNEL_HOST" ]; then
   url="https://${TUNNEL_HOST}"
@@ -90,7 +93,7 @@ if [ -n "$TUNNEL_NAME" ] && [ -n "$TUNNEL_HOST" ]; then
       healthy "$url" && break
       sleep 2
     done
-    printf 'APPS_V2_GIT_ORIGIN_URL=%s\n' "$url" >"$OUT"
+    printf 'APPS_GIT_ORIGIN_URL=%s\n' "$url" >"$OUT"
     echo "sandbox-tunnel: sandboxes will reach this API at ${url}"
     wait "$CF_PID"
     echo "sandbox-tunnel: named tunnel exited; restarting (${TUNNEL_HOST} unchanged)" >&2
@@ -137,7 +140,7 @@ while true; do
     continue
   fi
 
-  printf 'APPS_V2_GIT_ORIGIN_URL=%s\n' "$url" >"$OUT"
+  printf 'APPS_GIT_ORIGIN_URL=%s\n' "$url" >"$OUT"
   echo "sandbox-tunnel: sandboxes will reach this API at ${url}"
 
   # Supervise: respawn when it stops answering (revoked hostname, dropped edge

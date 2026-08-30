@@ -23,7 +23,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { loggers } from "../logging";
-import { appsV2ReposRoot } from "../apps-v2/config";
+import { appsReposRoot } from "../apps/config";
 import {
   getMakoCloudOrg,
   getMakoCloudRepoPrefix,
@@ -82,14 +82,12 @@ export async function up(db: Db): Promise<void> {
     log.info("No apps-v2 projects; nothing to consolidate");
   }
 
-  const reposRoot = appsV2ReposRoot();
+  const reposRoot = appsReposRoot();
   const cloudReady = isMakoCloudConfigured() && Boolean(getMakoCloudOrg());
 
   for (const wsIdRaw of workspaceIds) {
     const workspaceId = wsIdRaw.toString();
-    const wsProjects = await projects
-      .find({ workspaceId: wsIdRaw })
-      .toArray();
+    const wsProjects = await projects.find({ workspaceId: wsIdRaw }).toArray();
 
     // 1. Slugs (deduped within the workspace).
     const taken = new Set<string>();

@@ -25,11 +25,17 @@ import {
   getSystemSkillFullText,
 } from "../agent-lib/skills/system-skills";
 import {
+  AppProject,
   Dashboard,
-  MakoApp,
   SavedConsole,
   Skill,
 } from "../database/workspace-schema";
+import {
+  DEFAULT_BRANCH,
+  listTree,
+  repoDirFor,
+  repoExists,
+} from "../apps/repository.service";
 import { searchSkills } from "../services/skills.service";
 import { loggers } from "../logging";
 import type { BridgeableTool, MakoMcpContext } from "./mako-mcp-server";
@@ -91,14 +97,14 @@ async function searchWorkspaceApps(
   query: string,
 ): Promise<SearchResultDoc[]> {
   const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const apps = await MakoApp.find({
+  const apps = await AppProject.find({
     workspaceId: new Types.ObjectId(workspaceId),
     $or: [
       { title: { $regex: escaped, $options: "i" } },
       { description: { $regex: escaped, $options: "i" } },
     ],
   })
-    .select("title description updatedAt")
+    .select("title description slug updatedAt")
     .sort({ updatedAt: -1 })
     .limit(RESULTS_PER_KIND)
     .lean();
@@ -106,7 +112,7 @@ async function searchWorkspaceApps(
     id: `app:${app._id.toString()}`,
     title: `App: ${app.title}`,
     text: app.description || "Mako data app.",
-    url: resourceUrl("app", app._id.toString()),
+    url: resourceUrl("app", app.slug || app._id.toString()),
   }));
 }
 
@@ -283,24 +289,34 @@ async function fetchAppDoc(
   workspaceId: string,
   id: string,
 ): Promise<FetchedDoc | null> {
-  const app = await MakoApp.findOne({
+  const app = await AppProject.findOne({
     _id: requireObjectId("app", id),
     workspaceId: new Types.ObjectId(workspaceId),
   })
-    .select("title description entrypoint files.path dataBindings")
+    .select("title description slug defaultBranch publishedSha")
     .lean();
   if (!app) return null;
-  const files = (app.files ?? []).map(f => `- ${f.path}`);
-  const bindings = (app.dataBindings ?? []).map(b =>
-    [`### ${b.name} (${b.language})`, b.code ? `\`\`\`\n${b.code}\n\`\`\`` : ""]
-      .filter(Boolean)
-      .join("\n"),
-  );
+  // The project's files live in the workspace git repo, not in Mongo; list
+  // them from the default branch so the doc reflects what is actually there.
+  let files: string[] = [];
+  try {
+    const repoDir = repoDirFor(workspaceId);
+    if (app.slug && (await repoExists(repoDir))) {
+      const prefix = `apps/${app.slug}/`;
+      files = (await listTree(repoDir, app.defaultBranch || DEFAULT_BRANCH))
+        .filter(entry => entry.path.startsWith(prefix))
+        .map(entry => `- ${entry.path.slice(prefix.length)}`);
+    }
+  } catch {
+    // Repo unreadable — metadata alone is still a useful doc.
+  }
   const text = [
     app.description || "",
-    `Entrypoint: ${app.entrypoint}`,
+    `Git-backed app project (folder apps/${app.slug ?? "?"} on branch ${app.defaultBranch || DEFAULT_BRANCH}).`,
+    app.publishedSha
+      ? `Published at commit ${app.publishedSha}.`
+      : "Not published yet.",
     files.length ? `## Files\n${files.join("\n")}` : "",
-    bindings.length ? `## Data bindings\n${bindings.join("\n\n")}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -308,8 +324,8 @@ async function fetchAppDoc(
     id: `app:${id}`,
     title: app.title,
     text: truncate(text),
-    url: resourceUrl("app", id),
-    metadata: { kind: "app", fileCount: app.files?.length ?? 0 },
+    url: resourceUrl("app", app.slug || id),
+    metadata: { kind: "app", fileCount: files.length },
   };
 }
 

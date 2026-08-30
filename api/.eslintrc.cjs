@@ -17,7 +17,7 @@ module.exports = {
     '.eslintrc.cjs',
     'vitest.config.ts',
     'vitest.destinations.config.ts',
-    'vitest.apps-v2.config.ts',
+    'vitest.apps.config.ts',
     'node_modules',
     'scripts',
   ],

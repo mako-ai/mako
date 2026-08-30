@@ -12,7 +12,7 @@ import {
   type RegisterCredentials,
 } from "../lib/auth-client";
 import { identify, trackEvent } from "../lib/analytics";
-import { useAppsV2Store } from "../store/appsV2Store";
+import { useAppsStore } from "../store/appsStore";
 import { isMakoDesktop } from "../lib/desktop";
 
 /**
@@ -74,7 +74,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Sandbox pushes are per (workspace, user); the store filters by user.
   useEffect(() => {
-    useAppsV2Store.getState().setCurrentUserId(user?.id ?? null);
+    useAppsStore.getState().setCurrentUserId(user?.id ?? null);
   }, [user?.id]);
 
   /**

@@ -20,7 +20,7 @@ export interface AppEntity {
   /** EntityVersion number last published (draft/published split). */
   publishedVersion?: number;
   publishedAt?: string;
-  /** Set when the Apps v2 migration stamped this app — read-only in v1. */
+  /** Set when the Apps migration stamped this app — read-only in v1. */
   migratedToV2ProjectId?: string;
   /** Server-computed: viewer cannot modify this app. */
   readOnly?: boolean;

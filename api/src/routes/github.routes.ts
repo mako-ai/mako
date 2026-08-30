@@ -38,10 +38,10 @@ import { loggers } from "../logging";
 import {
   deployAppsForPush,
   workspaceIdFromCloudRepo,
-} from "../apps-v2/deploy-on-push";
-import { ensureLocalRepo, fetchFromCloud } from "../apps-v2/cloud-repo.service";
+} from "../apps/deploy-on-push";
+import { ensureLocalRepo, fetchFromCloud } from "../apps/cloud-repo.service";
 import { findWorkspaceIdByRepoBinding } from "../services/workspace-repos.service";
-import { repoDirFor } from "../apps-v2/repository.service";
+import { repoDirFor } from "../apps/repository.service";
 
 const logger = loggers.api("github");
 
@@ -138,10 +138,10 @@ interface InstallationPayload {
  * so we ack within GitHub's delivery timeout.
  */
 /**
- * Deploy any Apps v2 apps touched by a push to the workspace repo's default
+ * Deploy any Apps apps touched by a push to the workspace repo's default
  * branch. No-op for repos that are not workspace repos.
  */
-async function handleAppsV2Push(input: {
+async function handleAppsPush(input: {
   owner: string;
   repo: string;
   branch: string;
@@ -218,11 +218,11 @@ githubRoutes.post("/webhook", async (c: Context) => {
             branch,
             installationId: p.installation?.id,
           });
-          // Apps v2: `main` is production, so putting a commit on it IS the
+          // Apps: `main` is production, so putting a commit on it IS the
           // act of deploying — whether that came from a local `git push`, a
           // merge on GitHub, or the Publish button. Handled here because
           // GitHub is the one point all of those converge on.
-          await handleAppsV2Push({
+          await handleAppsPush({
             owner,
             repo: name,
             branch,
@@ -230,7 +230,7 @@ githubRoutes.post("/webhook", async (c: Context) => {
             after: p.after,
             defaultBranch: p.repository?.default_branch,
           }).catch(error => {
-            logger.error("Apps v2 deploy-on-push failed", { error });
+            logger.error("Apps deploy-on-push failed", { error });
           });
         }
       } else if (event === "pull_request") {

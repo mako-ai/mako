@@ -23,10 +23,10 @@ import { OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
   Dashboard,
   MakoApp,
-  AppProjectV2,
+  AppProject,
   type IDashboard,
   type IMakoApp,
-  type IAppProjectV2,
+  type IAppProject,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import {
@@ -41,8 +41,8 @@ import {
   queueAppBindingMaterialization,
 } from "../services/app-binding-materialization.service";
 import { executePublicAppLiveBinding } from "../services/public-live-query.service";
-import { bindingArtifactKeyByName } from "../apps-v2/bindings.service";
-import { serveDeploymentFile } from "../apps-v2/deployment.service";
+import { bindingArtifactKeyByName } from "../apps/bindings.service";
+import { serveDeploymentFile } from "../apps/deployment.service";
 
 const logger = loggers.api("public-share");
 
@@ -71,8 +71,10 @@ const UNLOCK_WINDOW_MS = 15 * 60 * 1000;
 
 type SharedResource =
   | { type: "dashboard"; doc: IDashboard }
-  | { type: "app"; doc: IMakoApp }
-  | { type: "app-v2"; doc: IAppProjectV2 };
+  // "legacy-app" serves retained v1 MakoApp shares (apps.md §13.21: 45 live
+  // public links); "app" is a git-backed app's built deployment.
+  | { type: "legacy-app"; doc: IMakoApp }
+  | { type: "app"; doc: IAppProject };
 
 async function findByToken(token: string): Promise<SharedResource | null> {
   // Tokens are readable slugs (possibly short) or legacy random strings.
@@ -87,14 +89,14 @@ async function findByToken(token: string): Promise<SharedResource | null> {
     "publicShare.token": token,
     "publicShare.enabled": true,
   });
-  if (makoApp) return { type: "app", doc: makoApp };
-  // Apps v2 shares the same publicShare primitive; what differs is what gets
+  if (makoApp) return { type: "legacy-app", doc: makoApp };
+  // Apps shares the same publicShare primitive; what differs is what gets
   // served — a built deployment rather than a JSON definition (§13).
-  const appV2 = await AppProjectV2.findOne({
+  const app = await AppProject.findOne({
     "publicShare.token": token,
     "publicShare.enabled": true,
   });
-  if (appV2) return { type: "app-v2", doc: appV2 };
+  if (app) return { type: "app", doc: app };
   return null;
 }
 
@@ -429,14 +431,14 @@ app.openapi(
       const gate = requireUnlock(c, token, resource);
       if (gate) return gate;
 
-      if (resource.type === "app-v2") {
+      if (resource.type === "app") {
         // A v2 app is a built bundle, not a definition the client renders:
         // its content is served as files from /api/share/:token/app/*.
         return c.json(
           {
             success: true,
             data: {
-              kind: "app-v2" as const,
+              kind: "app" as const,
               title: resource.doc.title,
               published: Boolean(resource.doc.publishedSha),
               entry: `/api/share/${token}/app/`,
@@ -515,7 +517,7 @@ app.openapi(
         artifactKey = status.artifactKey;
         revision = status.artifactRevision;
         rowCount = status.rowCount;
-      } else if (resource.type === "app-v2") {
+      } else if (resource.type === "app") {
         artifactKey = await bindingArtifactKeyByName(
           resource.doc,
           artifactId,
@@ -586,7 +588,7 @@ app.openapi(
       if (!resource) {
         return c.json({ success: false, error: "Share link not found" }, 404);
       }
-      if (resource.type !== "app") {
+      if (resource.type !== "legacy-app") {
         return c.json(
           { success: false, error: "Live queries are only supported for apps" },
           400,
@@ -645,7 +647,7 @@ app.openapi(
       }
       const gate = requireUnlock(c, token, resource);
       if (gate) return gate;
-      if (resource.type === "app") {
+      if (resource.type === "legacy-app") {
         const appDoc = resource.doc;
         if (
           !appDoc.dataBindings.some(
@@ -761,7 +763,7 @@ app.openapi(
         queued = queueResult.queued;
         alreadyRunning = !queueResult.queued;
         dataSourceIds = queueResult.dataSourceIds;
-      } else if (resource.type === "app-v2") {
+      } else if (resource.type === "app") {
         // §13.4.2: scheduled/anonymous refresh of v2 bindings is not built.
         return c.json(
           {
@@ -805,7 +807,7 @@ app.openapi(
 );
 
 /**
- * Serve a shared Apps v2 deployment's files (§13).
+ * Serve a shared Apps deployment's files (§13).
  *
  * Anonymous and token-gated, behind the same password unlock as every other
  * share route. Only ever reads the app's PUBLISHED deployment out of the
@@ -814,10 +816,10 @@ app.openapi(
  * `__data/<name>.parquet` resolves to the app's materialized binding, so a
  * shared app keeps its data without the viewer touching a warehouse.
  */
-async function serveSharedAppV2(c: Context): Promise<Response> {
+async function serveSharedApp(c: Context): Promise<Response> {
   const token = c.req.param("token");
   const resource = await findByToken(token);
-  if (!resource || resource.type !== "app-v2") {
+  if (!resource || resource.type !== "app") {
     return c.json({ success: false, error: "Share link not found" }, 404);
   }
   const gate = requireUnlock(c, token, resource);
@@ -846,7 +848,7 @@ async function serveSharedAppV2(c: Context): Promise<Response> {
   return response ?? c.json({ success: false, error: "Not found" }, 404);
 }
 
-app.get("/:token/app", serveSharedAppV2);
-app.get("/:token/app/*", serveSharedAppV2);
+app.get("/:token/app", serveSharedApp);
+app.get("/:token/app/*", serveSharedApp);
 
 export const publicShareRoutes = app;

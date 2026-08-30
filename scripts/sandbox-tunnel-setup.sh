@@ -7,7 +7,7 @@
 # has a permanent hostname: set it up once, and .env.tunnel never changes again.
 #
 # Run once per machine:  pnpm sandbox:tunnel:setup
-# Then `pnpm dev` picks it up automatically (the runner reads APPS_V2_TUNNEL_*
+# Then `pnpm dev` picks it up automatically (the runner reads APPS_TUNNEL_*
 # from .env). Nothing to commit — the credentials and .env entries are local.
 set -euo pipefail
 
@@ -17,8 +17,8 @@ ENV_FILE="${ROOT}/.env"
 # Name is per-developer (mirrors the existing close-dev-<user> convention).
 # Override the hostname to control the ZONE — it must be a zone your cloudflared
 # cert is authorized for (e.g. realadvisor.com), not necessarily mako.ai.
-NAME="${1:-apps-v2-dev-$(whoami)}"
-HOST="${2:-apps-v2-dev-$(whoami).realadvisor.com}"
+NAME="${1:-apps-dev-$(whoami)}"
+HOST="${2:-apps-dev-$(whoami).realadvisor.com}"
 
 if ! command -v cloudflared >/dev/null 2>&1; then
   echo "cloudflared not found — install it (brew install cloudflared)." >&2
@@ -55,11 +55,11 @@ upsert() {
   fi
 }
 touch "${ENV_FILE}"
-upsert APPS_V2_TUNNEL_NAME "${NAME}"
-upsert APPS_V2_TUNNEL_HOSTNAME "${HOST}"
+upsert APPS_TUNNEL_NAME "${NAME}"
+upsert APPS_TUNNEL_HOSTNAME "${HOST}"
 
 echo
 echo "Done. .env now points the dev tunnel at the stable hostname:"
-echo "  APPS_V2_TUNNEL_NAME=${NAME}"
-echo "  APPS_V2_TUNNEL_HOSTNAME=${HOST}"
+echo "  APPS_TUNNEL_NAME=${NAME}"
+echo "  APPS_TUNNEL_HOSTNAME=${HOST}"
 echo "Restart \`pnpm dev\` (or the sandbox-tunnel process) and it will use it."

@@ -35,9 +35,9 @@ export default function SettingsExplorer() {
     state.setActiveTab(id);
   };
 
-  const appsV2 = currentWorkspace?.settings?.appsV2Enabled === true;
+  const apps = currentWorkspace?.settings?.appsEnabled === true;
   const sections = SECTION_ORDER.filter(
-    s => (s !== "admin" || isSuperAdmin) && (s !== "sandbox" || appsV2),
+    s => (s !== "admin" || isSuperAdmin) && (s !== "sandbox" || apps),
   );
 
   return (

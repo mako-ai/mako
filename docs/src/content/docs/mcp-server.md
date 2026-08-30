@@ -89,9 +89,9 @@ The server ships usage instructions with the handshake, so agents discover this 
 
 1. **Discover** — `list_connections`, then `list_databases` / `list_tables` / `inspect_table` (schemas + sample rows; they dispatch on connection type, SQL or MongoDB). `search_consoles` / `search_dashboards` find existing workspace work. Skills: `list_skills` (index), `get_relevant_skills` (ranked bodies for your task — same retrieval as the in-product agent), then `load_skill` / `read_skill_resource` as needed.
 2. **Validate queries** — `sql_execute_query` (read-only, short exploration timeout). Slow warehouse? `create_console` → `run_console` → `check_query_status` for long-running queries.
-3. **Build apps** — `create_app`, `app_write_file` / `app_edit_file`, `app_create_data_binding` (bind the validated query), version history and restore.
-4. **Verify visually** — `run_app` renders the draft server-side and returns status, errors, filtered console output, and a screenshot (same tool name the in-product and Desktop agents use; `render_app` remains as a deprecated alias). Pass `width`/`height` (e.g. 390×844) to verify the mobile layout — media queries respond to the render viewport, so a phone-size render IS the mobile check. The render runs the app's real data layer: `useQuery` bindings execute live against the draft, and materialized (`parquet`) bindings hydrate their artifact into DuckDB so `useDuckDB` components render populated — run `materialize_binding` first if the artifact isn't built yet. `create_preview_token` mints a short-lived, login-free preview URL to share or open yourself.
-5. **Publish** — `app_save_version`.
+3. **Build apps** — `app_list_apps` / `app_create_app` to discover or scaffold (`apps/<slug>/`, a real Vite project), then `app_write_file` / `app_edit_file` / `app_bash` for ordinary file and shell work, and `app_materialize` to build a binding's parquet artifact (bindings are `bindings/<name>.sql` files with the validated query).
+4. **Verify with real eyes** — `app_open_app` starts the dev server (and focuses the app in the user's UI), `app_dev_log` returns the boot/vite log plus browser-console output, and `app_browse` drives a headless browser against the running dev server: click, navigate, and screenshot what a user would actually see.
+5. **Publish** — `app_commit` (durability, `git push` semantics) and `app_merge_to_main` (`main` is what publishes buildable state).
 6. **Dashboards** — `search_dashboards` finds existing dashboards and `update_data_source_query` edits them in place: rewrite a source query (replace/patch/append), toggle live vs. materialized (`parquet`), and set the dashboard-level cron refresh schedule (`materializationSchedule`). Server writes bump the dashboard version, push a `dashboard.updated` realtime poke to open tabs, and queue a Parquet rebuild when the definition changes (schedule-only changes don't). Widget/layout editing stays in-product — those tools are client-only.
 7. **dbt** — `read_dbt_project_tree` and the dbt file tools author models headlessly; `dbt_parse` / `dbt_compile_model` / `dbt_show` validate them asynchronously (start a run, poll `dbt_get_run`). Warehouse-mutating runs (`dbt_run_model`, `dbt_run_job`, plus `dbt_cancel_run`) only appear for API keys carrying the opt-in `warehouse:write` scope — see the security model below.
 8. **dbt Git** — `dbt_git_status` / `dbt_list_branches` / `dbt_compare_branches` / `dbt_list_pull_requests` are always available, so a headless agent can see that its edits are uncommitted working-tree drafts instead of leaving them stranded on the tracked branch. Git mutations (`dbt_commit_to_branch`, `dbt_commit_and_push`, branch create/switch/delete, PR open/update/merge/close, `dbt_sync_from_repo`) require the opt-in `git:write` scope.
@@ -124,22 +124,21 @@ Non-interactive runs (`claude -p …`) don't show permission dialogs — allowli
 claude -p "explore my mako data and summarize revenue" --allowedTools "mcp__mako"
 ```
 
-To keep agent context lean, agents can pass `includeScreenshot: false` to `run_app` while iterating (status + errors only, ~100 bytes) and fetch one screenshot at the end.
+To keep agent context lean, agents can pass `includeScreenshot: false` to `app_browse` while iterating and fetch one screenshot at the end.
 
-## Apps v2 (git-backed apps)
+## Apps toolset
 
-Workspaces on Apps v2 get a second, filesystem-native toolset — the app is a
-folder in the workspace's git monorepo and the agent works like a developer
-in a checkout:
+The app is a folder in the workspace's git monorepo and the agent works like
+a developer in a checkout:
 
-1. `app2_list_apps` / `app2_create_app` — discover or scaffold (`apps/<slug>/`, a real Vite project).
-2. `app2_read_file` / `app2_write_file` / `app2_edit_file` / `app2_glob` / `app2_grep` — ordinary file work; `app2_bash` runs any shell command in the app's sandbox.
-3. `app2_materialize` — build a binding's parquet artifact (bindings are `bindings/<name>.sql` files with front matter, not documents).
-4. **Verify with real eyes** — `app2_open_app` starts the dev server (and focuses the app in the user's UI), `app2_dev_log` returns the boot/vite log plus browser-console output, and `app2_browse` drives a headless browser against the running dev server: click, navigate, and screenshot what a user would actually see. This replaces `run_app` for v2 apps.
-5. `app2_status` / `app2_commit` / `app2_merge_to_main` — commits are durability (`git push` semantics); merging to `main` is what publishes buildable state.
+1. `app_list_apps` / `app_create_app` — discover or scaffold (`apps/<slug>/`, a real Vite project).
+2. `app_read_file` / `app_write_file` / `app_edit_file` / `app_glob` / `app_grep` — ordinary file work; `app_bash` runs any shell command in the app's sandbox.
+3. `app_materialize` — build a binding's parquet artifact (bindings are `bindings/<name>.sql` files with front matter, not documents).
+4. **Verify with real eyes** — `app_open_app` starts the dev server (and focuses the app in the user's UI), `app_dev_log` returns the boot/vite log plus browser-console output, and `app_browse` drives a headless browser against the running dev server: click, navigate, and screenshot what a user would actually see.
+5. `app_status` / `app_commit` / `app_merge_to_main` — commits are durability (`git push` semantics); merging to `main` is what publishes buildable state.
 
-Use `app2_list_apps` first: if the workspace has v2 apps (or you're asked to
-create one), stay in the `app2_*` loop and skip the v1 tools above; the two
+Use `app_list_apps` first: if the workspace has v2 apps (or you're asked to
+create one), stay in the `app_*` loop and skip the v1 tools above; the two
 systems must not be mixed on one app.
 
 ## Troubleshooting

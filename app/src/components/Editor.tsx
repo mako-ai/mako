@@ -68,10 +68,10 @@ import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
 import DashboardCanvas from "./DashboardCanvas";
 import NotebookRenderer from "./NotebookRenderer";
-import AppV2Workspace from "./AppV2Workspace";
-import AppV2FileEditor from "./AppV2FileEditor";
-import AppV2DiffTab from "./AppV2DiffTab";
-import AppV2BindingEditor from "./AppV2BindingEditor";
+import AppWorkspace from "./AppWorkspace";
+import AppFileEditor from "./AppFileEditor";
+import AppDiffTab from "./AppDiffTab";
+import AppBindingEditor from "./AppBindingEditor";
 import PlanDocumentTab from "./PlanDocumentTab";
 import DbtFileEditor from "./DbtFileEditor";
 import DbtJobView from "./DbtJobView";
@@ -2841,32 +2841,32 @@ function Editor({
                       notebookId={tab.metadata?.notebookId as string}
                       tabId={tab.id}
                     />
-                  ) : tab.kind === "app-v2" ? (
-                    <AppV2Workspace
+                  ) : tab.kind === "app" ? (
+                    <AppWorkspace
                       tabId={tab.id}
-                      appId={tab.metadata?.appV2Id as string}
+                      appId={tab.metadata?.appId as string}
                     />
-                  ) : tab.kind === "app-v2-file" &&
+                  ) : tab.kind === "app-file" &&
                     /^bindings\/[^/]+\.sql$/.test(
                       (tab.metadata?.path as string) ?? "",
                     ) ? (
-                    <AppV2BindingEditor
+                    <AppBindingEditor
                       tabId={tab.id}
-                      appId={tab.metadata?.appV2Id as string}
+                      appId={tab.metadata?.appId as string}
                       path={tab.metadata?.path as string}
                     />
-                  ) : tab.kind === "app-v2-diff" ? (
-                    <AppV2DiffTab
-                      appId={tab.metadata?.appV2Id as string}
+                  ) : tab.kind === "app-diff" ? (
+                    <AppDiffTab
+                      appId={tab.metadata?.appId as string}
                       path={tab.metadata?.path as string}
                       mode={
                         (tab.metadata?.mode as "working" | "index") ?? "working"
                       }
                     />
-                  ) : tab.kind === "app-v2-file" ? (
-                    <AppV2FileEditor
+                  ) : tab.kind === "app-file" ? (
+                    <AppFileEditor
                       tabId={tab.id}
-                      appId={tab.metadata?.appV2Id as string}
+                      appId={tab.metadata?.appId as string}
                       path={tab.metadata?.path as string}
                     />
                   ) : tab.kind === "plan" ? (

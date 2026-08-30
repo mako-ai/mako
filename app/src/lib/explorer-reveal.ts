@@ -35,7 +35,6 @@ export type RevealExplorer =
   | "consoles"
   | "dashboards"
   | "apps"
-  | "apps-v2"
   | "connectors"
   | "flows"
   | "dbt"
@@ -79,16 +78,16 @@ export function tabRevealTarget(
           }
         : null;
     }
-    case "app-v2": {
-      // Apps v2 explorer app rows are keyed by the project id.
-      const appId = meta.appV2Id as string | undefined;
-      return appId ? { explorer: "apps-v2", nodeId: appId } : null;
+    case "app": {
+      // Apps explorer app rows are keyed by the project id.
+      const appId = meta.appId as string | undefined;
+      return appId ? { explorer: "apps", nodeId: appId } : null;
     }
-    case "app-v2-file": {
-      const appId = meta.appV2Id as string | undefined;
+    case "app-file": {
+      const appId = meta.appId as string | undefined;
       const path = meta.path as string | undefined;
       return appId && path
-        ? { explorer: "apps-v2", nodeId: `${appId}${APP_FILE_SEP}${path}` }
+        ? { explorer: "apps", nodeId: `${appId}${APP_FILE_SEP}${path}` }
         : null;
     }
     case "connectors": {
@@ -137,7 +136,7 @@ export function tabRevealTarget(
       const projectId = meta.projectId as string | undefined;
       return projectId ? { explorer: "dbt", nodeId: projectId } : null;
     }
-    case "app-v2-diff":
+    case "app-diff":
       // A transient diff view; nothing in an explorer corresponds to it.
       return null;
     default: {

@@ -71,7 +71,7 @@ WORKDIR /app
 
 # Install build tools needed for native modules (+ venv for the dbt runner).
 # This layer is stable and should stay cached across app deploys.
-# `git` is required by Apps v2: the API keeps a local clone of each linked
+# `git` is required by Apps: the API keeps a local clone of each linked
 # GitHub repo as an ephemeral read cache for the file explorer (the sandbox
 # does its own in-VM git for pushing). node:20-slim ships without git, so the
 # missing binary surfaced as `spawn git ENOENT` on app creation.

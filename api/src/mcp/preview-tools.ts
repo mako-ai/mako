@@ -106,9 +106,7 @@ async function executeHeadlessRender(
     .lean();
   if (!app) {
     return summarizeRunAppResult(
-      failed(
-        `App ${appId} not found. Use list_open_apps to see available apps.`,
-      ),
+      failed(`App ${appId} not found (legacy pre-git apps only).`),
     );
   }
 
@@ -211,14 +209,15 @@ export function createMcpPreviewTools(context: MakoMcpContext) {
   return {
     create_preview_token: tool({
       description:
-        "Mint a signed, short-lived URL that renders the app's current DRAFT " +
-        "in a browser without any login — for HEADLESS agents only (no Mako " +
-        "Desktop/Chat UI). If the user is already in Mako Desktop Chat, do " +
-        "NOT call this: the Desktop app tab shows the live preview after " +
-        "create_app / app_write_file. Never paste preview URLs into Chat for " +
-        "Desktop users. The page can only read this one app and run its " +
-        "stored data bindings; it cannot modify anything. Never share the " +
-        "URL: anyone holding it sees the draft and its data until expiry.",
+        "Mint a signed, short-lived URL that renders a LEGACY (pre-git) " +
+        "app's current draft in a browser without any login — for HEADLESS " +
+        "agents only (no Mako Desktop/Chat UI). If the user is already in " +
+        "Mako Desktop Chat, do NOT call this: the Desktop app tab shows the " +
+        "live preview. Never paste preview URLs into Chat for Desktop " +
+        "users. Git-backed apps preview through app_open_app instead. The " +
+        "page can only read this one app and run its stored data bindings; " +
+        "it cannot modify anything. Never share the URL: anyone holding it " +
+        "sees the draft and its data until expiry.",
       inputSchema: createPreviewTokenSchema,
       execute: async ({ appId, ttlSeconds }) => {
         if (!Types.ObjectId.isValid(appId)) {
@@ -233,7 +232,7 @@ export function createMcpPreviewTools(context: MakoMcpContext) {
         if (!app) {
           return {
             success: false,
-            error: `App ${appId} not found. Use list_open_apps to see available apps.`,
+            error: `App ${appId} not found (legacy pre-git apps only).`,
           };
         }
         const { token, expiresAt } = mintAppPreviewToken({

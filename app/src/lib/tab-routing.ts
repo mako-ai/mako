@@ -41,9 +41,9 @@ export const TAB_DEEP_LINK_PATTERNS = {
   "dashboard-data-source": /^\/d\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9_-]+)/,
   "table-data": /^\/t\/([a-zA-Z0-9-]+)\/([^/]+)\/([^/]+)\/?$/,
   // Apps live at /apps/:slug (folder name). /a2 stays accepted for old links.
-  "app-v2": /^\/(?:apps|a2)\/([a-zA-Z0-9-]+)\/?$/,
-  "app-v2-file": /^\/(?:apps|a2)\/([a-zA-Z0-9-]+)\/file\/(.+)$/,
-  "app-v2-diff": null,
+  app: /^\/(?:apps|a2)\/([a-zA-Z0-9-]+)\/?$/,
+  "app-file": /^\/(?:apps|a2)\/([a-zA-Z0-9-]+)\/file\/(.+)$/,
+  "app-diff": null,
   plan: /^\/p\/([a-zA-Z0-9-]+)/,
   settings: /^\/settings\/([a-z-]+)$/,
   // Legacy tab kind superseded by the settings "members" section.
@@ -96,25 +96,25 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
         `/${encodeURIComponent(table)}${query ? `?${query}` : ""}`
       );
     }
-    case "app-v2": {
+    case "app": {
       // Prefer the slug: it is the app's folder name in the workspace repo,
       // which is what an app IS now. The id stays as the fallback for tabs
       // opened before slugs were carried in metadata.
-      const appId = tab.metadata?.appV2Id as string | undefined;
-      const slug = tab.metadata?.appV2Slug as string | undefined;
+      const appId = tab.metadata?.appId as string | undefined;
+      const slug = tab.metadata?.appSlug as string | undefined;
       const ref = slug || appId;
       return ref ? `/apps/${ref}` : null;
     }
-    case "app-v2-file": {
-      const appId = tab.metadata?.appV2Id as string | undefined;
-      const slug = tab.metadata?.appV2Slug as string | undefined;
+    case "app-file": {
+      const appId = tab.metadata?.appId as string | undefined;
+      const slug = tab.metadata?.appSlug as string | undefined;
       const ref = slug || appId;
       const path = tab.metadata?.path as string | undefined;
       return ref && path
         ? `/apps/${ref}/file/${encodePathSegments(path)}`
         : null;
     }
-    case "app-v2-diff":
+    case "app-diff":
       // Diffs are transient views of the working copy: no deep link.
       return null;
     case "plan": {

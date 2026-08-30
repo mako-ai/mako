@@ -36,12 +36,12 @@ import { ExternalLink, Github, Plus, Unplug } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import {
-  useAppsV2Store,
-  type AppV2GithubInstallation,
-  type AppV2GithubRepo,
-} from "../store/appsV2Store";
+  useAppsStore,
+  type AppGithubInstallation,
+  type AppGithubRepo,
+} from "../store/appsStore";
 
-function installationSettingsUrl(inst: AppV2GithubInstallation): string {
+function installationSettingsUrl(inst: AppGithubInstallation): string {
   const base =
     inst.accountType === "Organization"
       ? `https://github.com/organizations/${inst.accountLogin}/settings/installations`
@@ -67,28 +67,26 @@ export default function GitHubConnectionSection() {
   const workspaceId = currentWorkspace?.id;
   const isAdmin = useIsWorkspaceAdmin();
 
-  const repos = useAppsV2Store(s => s.repos);
-  const fetchGithubStatus = useAppsV2Store(s => s.fetchGithubStatus);
-  const fetchGithubRepos = useAppsV2Store(s => s.fetchGithubRepos);
-  const getGitHubInstallUrl = useAppsV2Store(s => s.getGitHubInstallUrl);
-  const getGitHubSyncUrl = useAppsV2Store(s => s.getGitHubSyncUrl);
-  const connectRepo = useAppsV2Store(s => s.connectRepo);
-  const disconnectRepo = useAppsV2Store(s => s.disconnectRepo);
-  const disconnectGithubInstallation = useAppsV2Store(
+  const repos = useAppsStore(s => s.repos);
+  const fetchGithubStatus = useAppsStore(s => s.fetchGithubStatus);
+  const fetchGithubRepos = useAppsStore(s => s.fetchGithubRepos);
+  const getGitHubInstallUrl = useAppsStore(s => s.getGitHubInstallUrl);
+  const getGitHubSyncUrl = useAppsStore(s => s.getGitHubSyncUrl);
+  const connectRepo = useAppsStore(s => s.connectRepo);
+  const disconnectRepo = useAppsStore(s => s.disconnectRepo);
+  const disconnectGithubInstallation = useAppsStore(
     s => s.disconnectGithubInstallation,
   );
 
-  const [installations, setInstallations] = useState<AppV2GithubInstallation[]>(
+  const [installations, setInstallations] = useState<AppGithubInstallation[]>(
     [],
   );
   const [appSlug, setAppSlug] = useState<string | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
   const [installationId, setInstallationId] = useState<number | "">("");
-  const [pickerRepos, setPickerRepos] = useState<AppV2GithubRepo[]>([]);
-  const [selectedRepo, setSelectedRepo] = useState<AppV2GithubRepo | null>(
-    null,
-  );
+  const [pickerRepos, setPickerRepos] = useState<AppGithubRepo[]>([]);
+  const [selectedRepo, setSelectedRepo] = useState<AppGithubRepo | null>(null);
   const [makoRoot, setMakoRoot] = useState("/");
   const [reposLoading, setReposLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -200,7 +198,7 @@ export default function GitHubConnectionSection() {
   );
 
   const handleForgetInstallation = useCallback(
-    async (inst: AppV2GithubInstallation) => {
+    async (inst: AppGithubInstallation) => {
       if (!workspaceId) return;
       if (
         !window.confirm(

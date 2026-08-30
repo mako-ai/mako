@@ -16,7 +16,6 @@
  */
 
 import {
-  AppWindow,
   AppWindowMac,
   ArrowLeftRight,
   BookOpen,
@@ -70,9 +69,8 @@ export const EXPLORER_ICONS = {
   "source-control": GitBranch,
   connectors: Plug,
   dashboards: ChartPie,
-  apps: AppWindow,
+  apps: AppWindowMac,
   notebooks: Notebook,
-  "apps-v2": AppWindowMac,
   settings: Settings,
 } as const satisfies Record<LeftPaneView, LucideIcon>;
 
@@ -93,9 +91,9 @@ export const TAB_KIND_ICONS = {
   dashboard: ChartPie,
   "dashboard-data-source": Database,
   "table-data": Table,
-  "app-v2": AppWindowMac,
-  "app-v2-file": FileCode,
-  "app-v2-diff": GitCompare,
+  app: AppWindowMac,
+  "app-file": FileCode,
+  "app-diff": GitCompare,
   plan: ClipboardList,
   "dbt-file": FileCode,
   "dbt-job": CalendarClock,
