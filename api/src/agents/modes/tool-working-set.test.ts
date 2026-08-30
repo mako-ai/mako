@@ -227,11 +227,8 @@ const baseModeState = (loaded: string[] = []): ModeState => ({
     "edit_dbt_file",
     "dbt_run_model",
     "dbt_commit_and_push",
-    "app_write_file",
-    // Carries the schedule-write gate as an input-conditional grant since the
-    // app_set_binding_schedule fold (that name is now a deferred alias).
-    "app_update_data_binding",
-    "materialize_binding",
+    "app2_write_file",
+    "app2_commit",
   ]);
   const withoutPlan: ModeState = {
     enabledModes: new Set(["transform", "app"]),
@@ -559,22 +556,8 @@ async function endToEnd() {
     `Unclassified agent tools (add to a mode's toolNames, CORE_ALWAYS_TOOL_NAMES, or DEFERRED_BUILTIN_TOOL_DOMAINS): ${unclassified.join(", ")}`,
   );
   const appModeTools = toolNamesForModes(new Set(["app"] as const));
-  assert.ok(appModeTools.has("app_search"));
-  assert.ok(appModeTools.has("app_read_resource"));
-  assert.equal(
-    appModeTools.has("app_read_file"),
-    false,
-    "legacy app_read_file should stay out of the normal app working set",
-  );
-  assert.ok(
-    DEFERRED_BUILTIN_TOOL_NAMES.includes("app_read_file"),
-    "legacy app_read_file should remain loadable for compatibility",
-  );
-  assert.equal(
-    Object.hasOwn(runtime.tools, "app_get_data_binding"),
-    false,
-    "redundant app_get_data_binding should not be registered",
-  );
+  assert.ok(appModeTools.has("app2_write_file"));
+  assert.ok(appModeTools.has("app2_browse"));
   // Notebook cell CRUD fold: only the merged edit_notebook_cell stays in the
   // notebook working set; the add/delete aliases remain loadable.
   const notebookModeTools = toolNamesForModes(new Set(["notebook"] as const));

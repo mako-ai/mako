@@ -16,7 +16,7 @@
  * upgrade and slots in behind the same `AppEntity` model + message bridge.
  */
 
-import type { AppEntity } from "../store/appStore";
+import type { AppEntity } from "./app-entity";
 
 const ESM_HOST = "https://esm.sh";
 const REACT_VERSION = "18.2.0";

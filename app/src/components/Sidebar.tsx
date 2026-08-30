@@ -53,7 +53,6 @@ type NavigationView =
   | "connectors"
   | "flows"
   | "dashboards"
-  | "apps"
   | "notebooks"
   | "apps-v2"
   | "dbt"
@@ -79,7 +78,6 @@ const topNavigationItems: {
   { view: "dbt", icon: EXPLORER_ICONS.dbt, label: "Transforms" },
   { view: "connectors", icon: EXPLORER_ICONS.connectors, label: "Connectors" },
   { view: "dashboards", icon: EXPLORER_ICONS.dashboards, label: "Dashboards" },
-  { view: "apps", icon: EXPLORER_ICONS.apps, label: "Apps" },
   { view: "notebooks", icon: EXPLORER_ICONS.notebooks, label: "Notebooks" },
   // Apps v2 (git-backed, experimental) — shown only when the server flag is
   // on (useAppsV2Visible probes /apps-v2/status-probe per workspace).
@@ -267,9 +265,8 @@ export function SidebarMobileExplorerNav() {
 
   const items = [...topNavigationItems, ...bottomNavigationItems].filter(
     item =>
-      ((item.view !== "apps-v2" && item.view !== "source-control") ||
-        appsV2Visible) &&
-      (item.view !== "apps" || !appsV2Visible),
+      (item.view !== "apps-v2" && item.view !== "source-control") ||
+      appsV2Visible,
   );
 
   return (
@@ -402,9 +399,8 @@ function Sidebar() {
           {topNavigationItems
             .filter(
               item =>
-                ((item.view !== "apps-v2" && item.view !== "source-control") ||
-                  appsV2Visible) &&
-                (item.view !== "apps" || !appsV2Visible),
+                (item.view !== "apps-v2" && item.view !== "source-control") ||
+                appsV2Visible,
             )
             .map(item => {
               const Icon = item.icon;

@@ -19,7 +19,6 @@ import type { ConsoleTab, TabKind } from "../store/lib/types";
 // binding: "<appId>::binding::<bindingId>".
 export const APP_FILE_SEP = "::file::";
 export const APP_DIR_SEP = "::dir::";
-export const APP_BINDING_SEP = "::binding::";
 export const DASHBOARD_DATA_SOURCE_SEP = "::dashboard-data-source::";
 
 // dbt (Transforms) ResourceTree node-id encoding (kept in sync with
@@ -78,24 +77,6 @@ export function tabRevealTarget(
             explorer: "dashboards",
             nodeId: `${dashboardId}${DASHBOARD_DATA_SOURCE_SEP}${dataSourceId}`,
           }
-        : null;
-    }
-    case "app": {
-      const appId = meta.appId as string | undefined;
-      return appId ? { explorer: "apps", nodeId: appId } : null;
-    }
-    case "app-file": {
-      const appId = meta.appId as string | undefined;
-      const path = meta.path as string | undefined;
-      return appId && path
-        ? { explorer: "apps", nodeId: `${appId}${APP_FILE_SEP}${path}` }
-        : null;
-    }
-    case "app-binding": {
-      const appId = meta.appId as string | undefined;
-      const bindingId = meta.bindingId as string | undefined;
-      return appId && bindingId
-        ? { explorer: "apps", nodeId: `${appId}${APP_BINDING_SEP}${bindingId}` }
         : null;
     }
     case "app-v2": {

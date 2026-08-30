@@ -3,7 +3,6 @@ import { Box } from "@mui/material";
 import { ChevronRight as BreadcrumbChevronIcon } from "lucide-react";
 import { useConsoleStore } from "../store/consoleStore";
 import { useSchemaStore } from "../store/schemaStore";
-import { useAppStore } from "../store/appStore";
 import { useAppsV2Store } from "../store/appsV2Store";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useDbtStore } from "../store/dbtStore";
@@ -26,8 +25,6 @@ interface EntityContext {
   connectionName?: string;
   dashboardTitle?: string;
   dashboardDataSourceName?: string;
-  appTitle?: string;
-  appBindingName?: string;
   appV2Title?: string;
   dbtProjectName?: string;
 }
@@ -89,23 +86,6 @@ function segmentsForTab(
         ctx.dashboardTitle,
         "Data sources",
         ctx.dashboardDataSourceName || tab.title,
-      ]);
-    case "app":
-      return plain(["Apps", ctx.appTitle || tab.title]);
-    case "app-file": {
-      const path = (tab.metadata?.path as string | undefined) || "";
-      return plain([
-        "Apps",
-        ctx.appTitle || tab.title,
-        ...path.split("/").filter(Boolean),
-      ]);
-    }
-    case "app-binding":
-      return plain([
-        "Apps",
-        ctx.appTitle,
-        "Data sources",
-        ctx.appBindingName || tab.title,
       ]);
     case "app-v2":
       return plain(["Apps v2", ctx.appV2Title || tab.title]);
@@ -206,19 +186,9 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
     return connection?.displayName || connection?.name;
   });
 
-  const appId = tab?.metadata?.appId as string | undefined;
-  const bindingId = tab?.metadata?.bindingId as string | undefined;
-  const appTitle = useAppStore(s =>
-    appId ? s.openApps[appId]?.title : undefined,
-  );
   const appV2Id = tab?.metadata?.appV2Id as string | undefined;
   const appV2Title = useAppsV2Store(s =>
     appV2Id ? s.apps.find(a => a.id === appV2Id)?.title : undefined,
-  );
-  const appBindingName = useAppStore(s =>
-    appId && bindingId
-      ? s.openApps[appId]?.dataBindings.find(b => b.id === bindingId)?.name
-      : undefined,
   );
 
   const dbtProjectId = tab?.metadata?.projectId as string | undefined;
@@ -253,8 +223,6 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
     connectionName,
     dashboardTitle,
     dashboardDataSourceName,
-    appTitle,
-    appBindingName,
     appV2Title,
     dbtProjectName,
   });

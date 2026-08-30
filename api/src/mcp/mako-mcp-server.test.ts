@@ -279,32 +279,7 @@ async function main() {
         `${readOnlyTool} should be annotated read-only for a query:read key`,
       );
     }
-    assert.equal(
-      byName.get("app_write_file")?.annotations?.readOnlyHint,
-      false,
-    );
-    assert.equal(
-      byName.get("app_write_file")?.annotations?.destructiveHint,
-      false,
-    );
-    assert.equal(
-      byName.get("app_delete_file")?.annotations?.destructiveHint,
-      true,
-    );
     for (const expected of [
-      "create_app",
-      "get_app_state",
-      "app_search",
-      "app_read_resource",
-      "app_read_file",
-      "app_write_file",
-      "app_edit_file",
-      "app_add_dependency",
-      "app_create_data_binding",
-      "app_update_data_binding",
-      "materialize_binding",
-      "app_save_version",
-      "app_restore_version",
       "list_connections",
       "list_databases",
       "list_tables",
@@ -639,7 +614,7 @@ async function main() {
     // Sanity: gaps summary is non-empty and includes the security exclusion.
     const gaps = summarizeBridgeGaps();
     assert.ok(gaps.some(g => g.why === "security"));
-    assert.ok(mcpExposedToolNames().includes("create_app"));
+    assert.ok(mcpExposedToolNames().includes("create_console"));
   }
 
   // 3c. Desktop ACP warehouse execution: plan-grant gating is DISABLED
@@ -750,7 +725,7 @@ async function main() {
         jsonrpc: "2.0",
         id: "schedule-external",
         method: "tools/call",
-        params: { name: "app_set_binding_schedule", arguments: { appId: 42 } },
+        params: { name: "create_console", arguments: { appId: 42 } },
       },
     ]);
     assert.match(
@@ -768,7 +743,7 @@ async function main() {
           id: "schedule-acp-ungated",
           method: "tools/call",
           params: {
-            name: "app_set_binding_schedule",
+            name: "create_console",
             arguments: { appId: 42 },
           },
         },
@@ -973,7 +948,7 @@ async function main() {
         jsonrpc: "2.0",
         id: 6,
         method: "tools/call",
-        params: { name: "app_write_file", arguments: { appId: 42 } },
+        params: { name: "create_console", arguments: { appId: 42 } },
       },
     ]);
     const result = res.result as {

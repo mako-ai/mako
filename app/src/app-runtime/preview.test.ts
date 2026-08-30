@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import vm from "node:vm";
 import { buildPreviewHtml } from "./preview";
-import type { AppEntity } from "../store/appStore";
+import type { AppEntity } from "./app-entity";
 
 const app = {
   _id: "app1",

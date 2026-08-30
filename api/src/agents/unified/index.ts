@@ -2,13 +2,11 @@ import type { AgentConfig, AgentContext, AgentMeta } from "../types";
 import { createUniversalTools } from "../../agent-lib/tools/universal-tools";
 import {
   clientDashboardTools,
-  clientAppTools,
   clientDbtTools,
   clientDataSourceTools,
   clientNotebookTools,
 } from "@mako/agent-tools";
 import { createDbtServerTools } from "../../agent-lib/tools/dbt-tools";
-import { createServerAppTools } from "../../agent-lib/tools/server-app-tools";
 import { createNotebookServerTools } from "../../agent-lib/tools/server-notebook-tools";
 import { createAppsV2Tools } from "../../agent-lib/tools/apps-v2-tools";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
@@ -55,11 +53,6 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     chatId: context.chatId,
   });
   const webTools = createWebTools(context.toolExecutionContext);
-  const serverAppTools = createServerAppTools({
-    workspaceId,
-    userId,
-    chatId: context.chatId,
-  });
   const serverNotebookTools = createNotebookServerTools({
     workspaceId,
     userId,
@@ -98,8 +91,6 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     tools: {
       ...universalTools,
       ...clientDashboardTools,
-      ...clientAppTools,
-      ...serverAppTools,
       ...appsV2Tools,
       ...clientDbtTools,
       ...dbtServerTools,

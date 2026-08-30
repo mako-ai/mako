@@ -30,7 +30,7 @@ const PUBLIC_SHARE_BASE = {
  * public links with optional password (dashboards + apps).
  */
 
-export type ShareResourceType = "dashboard" | "console" | "app";
+export type ShareResourceType = "dashboard" | "console";
 export type ShareRole = "viewer" | "editor";
 export type ShareAccess = "private" | "workspace";
 
@@ -92,7 +92,6 @@ export function buildPublicShareUrl(
 const RESOURCE_URL_PREFIX: Record<ShareResourceType, string> = {
   dashboard: "d",
   console: "c",
-  app: "a",
 };
 
 /**

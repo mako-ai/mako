@@ -10,13 +10,12 @@ import {
 const TAB_PATTERN_FOR_RESOURCE: Record<ShareResourceType, RegExp> = {
   dashboard: TAB_DEEP_LINK_PATTERNS.dashboard,
   console: TAB_DEEP_LINK_PATTERNS.console,
-  app: TAB_DEEP_LINK_PATTERNS.app,
 };
 
 describe("buildWorkspaceResourceUrl", () => {
   it("builds an absolute URL from the current origin", () => {
-    expect(buildWorkspaceResourceUrl("app", "app-123")).toBe(
-      `${window.location.origin}/a/app-123`,
+    expect(buildWorkspaceResourceUrl("dashboard", "dash-123")).toBe(
+      `${window.location.origin}/d/dash-123`,
     );
   });
 

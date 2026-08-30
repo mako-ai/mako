@@ -43,7 +43,6 @@ import {
   resolveExpertiseModeId,
   DEFERRED_BUILTIN_TOOL_DOMAINS,
   builtinToolInventoryGroups,
-  isolateAppToolFamily,
 } from "./registry";
 import {
   BASE_SYSTEM_PROMPT,
@@ -554,15 +553,11 @@ export function buildUnifiedModeRuntime(params: {
     buildToolInventoryBlock(catalog, modeState.enabledModes);
 
   const prepareStep = () => ({
-    activeTools: isolateAppToolFamily(
-      computeActiveTools(
-        modeState,
-        allToolNames,
-        mcpAllowlist,
-        workingSetOptions,
-      ),
-      tabKind,
-      context.activeExplorer,
+    activeTools: computeActiveTools(
+      modeState,
+      allToolNames,
+      mcpAllowlist,
+      workingSetOptions,
     ),
     system: buildModeSystem(context, modeState, inventoryFor()),
   });

@@ -32,7 +32,6 @@ import {
 } from "./persist-local-acp-chat";
 import { useAcpStore } from "../store/acpStore";
 import type { AcpProviderId } from "./acp-types";
-import { maybeFocusAppFromAcpTool } from "./acp-app-focus";
 import { maybeFocusConsoleFromAcpTool } from "./acp-console-focus";
 import { maybeFocusNotebookFromAcpTool } from "./acp-notebook-focus";
 import { buildAcpUiContextBlock, getAcpDbtFocus } from "./acp-ui-context";
@@ -509,7 +508,6 @@ export async function runLocalAcpChatTurn(
             patchAssistantParts(parts => upsertAcpToolPart(parts, update));
             // Focus side-effects must not tear down the SSE listener / turn.
             try {
-              maybeFocusAppFromAcpTool(workspaceId, update);
               maybeFocusConsoleFromAcpTool(workspaceId, update);
               maybeFocusNotebookFromAcpTool(workspaceId, update);
             } catch {

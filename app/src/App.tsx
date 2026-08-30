@@ -71,8 +71,6 @@ import { FlowsExplorer } from "./components/FlowsExplorer";
 import SettingsExplorer from "./components/SettingsExplorer";
 const loadDashboardsExplorer = () => import("./components/DashboardsExplorer");
 const DashboardsExplorer = lazy(loadDashboardsExplorer);
-const loadAppsExplorer = () => import("./components/AppsExplorer");
-const AppsExplorer = lazy(loadAppsExplorer);
 const loadNotebooksExplorer = () => import("./components/NotebooksExplorer");
 const NotebooksExplorer = lazy(loadNotebooksExplorer);
 const loadAppsV2Explorer = () => import("./components/AppsV2Explorer");
@@ -195,17 +193,6 @@ function MobileDrawerIdentity() {
       )}
     </Box>
   );
-}
-
-/**
- * Cutover shim: v2 workspaces see the Apps v2 explorer wherever "apps"
- * points. A component (not a hook in MainApp) because MainApp renders ABOVE
- * WorkspaceProvider — the hook is only legal inside the provider subtree.
- */
-function AppsExplorerCutover() {
-  const { currentWorkspace } = useWorkspace();
-  const appsV2On = currentWorkspace?.settings?.appsV2Enabled === true;
-  return appsV2On ? <AppsV2Explorer /> : <AppsExplorer />;
 }
 
 function MainApp() {
@@ -580,7 +567,8 @@ function MainApp() {
       case "dashboards":
         return <DashboardsExplorer />;
       case "apps":
-        return <AppsExplorerCutover />;
+        // Sunset: v1 removed — old "apps" pane selections land on Apps v2.
+        return <AppsV2Explorer />;
       case "notebooks":
         return <NotebooksExplorer />;
       case "apps-v2":

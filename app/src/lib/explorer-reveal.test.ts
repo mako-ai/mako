@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  APP_BINDING_SEP,
-  APP_FILE_SEP,
-  DASHBOARD_DATA_SOURCE_SEP,
-  tabRevealTarget,
-} from "./explorer-reveal";
+import { DASHBOARD_DATA_SOURCE_SEP, tabRevealTarget } from "./explorer-reveal";
 import type { ConsoleTab } from "../store/lib/types";
 
 function makeTab(overrides: Partial<ConsoleTab>): ConsoleTab {
@@ -51,28 +46,6 @@ describe("tabRevealTarget", () => {
     });
   });
 
-  it("maps apps, app files and bindings using the shared separators", () => {
-    expect(
-      tabRevealTarget(makeTab({ kind: "app", metadata: { appId: "a1" } })),
-    ).toEqual({ explorer: "apps", nodeId: "a1" });
-    expect(
-      tabRevealTarget(
-        makeTab({
-          kind: "app-file",
-          metadata: { appId: "a1", path: "src/App.tsx" },
-        }),
-      ),
-    ).toEqual({ explorer: "apps", nodeId: `a1${APP_FILE_SEP}src/App.tsx` });
-    expect(
-      tabRevealTarget(
-        makeTab({
-          kind: "app-binding",
-          metadata: { appId: "a1", bindingId: "b1" },
-        }),
-      ),
-    ).toEqual({ explorer: "apps", nodeId: `a1${APP_BINDING_SEP}b1` });
-  });
-
   it("maps connectors by their content id", () => {
     expect(
       tabRevealTarget(makeTab({ kind: "connectors", content: "conn-1" })),
@@ -103,7 +76,6 @@ describe("tabRevealTarget", () => {
   });
 
   it("returns null when required metadata is missing", () => {
-    expect(tabRevealTarget(makeTab({ kind: "app", metadata: {} }))).toBeNull();
     expect(
       tabRevealTarget(makeTab({ kind: "dashboard", metadata: {} })),
     ).toBeNull();

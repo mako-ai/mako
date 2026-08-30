@@ -2,7 +2,6 @@
  * Compact "what's on screen" block prepended to Local ACP prompts so Claude
  * Code / Codex match native Chat's request-context awareness.
  */
-import { summarizePreviewErrors } from "@mako/agent-tools";
 import {
   buildChatRequestBody,
   type ChatActiveView,
@@ -10,7 +9,6 @@ import {
 import { useConsoleStore } from "../store/consoleStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
-import { useAppStore } from "../store/appStore";
 
 const MAX_CONTEXT_CHARS = 6_000;
 const DBT_TAB_KINDS = new Set([
@@ -72,8 +70,6 @@ export function buildAcpUiContextBlock(args: {
     activeView = "flow-editor";
   } else if (activeTab?.kind === "console" || !activeTab?.kind) {
     activeView = "console";
-  } else if (activeTab?.kind === "app") {
-    activeView = "console";
   }
 
   const pinnedDashboardId =
@@ -103,15 +99,6 @@ export function buildAcpUiContextBlock(args: {
     workspaceConnections,
     pinnedDashboardId,
   });
-
-  const appStore = useAppStore.getState();
-  const openApps = Object.entries(appStore.openApps).map(([appId, app]) => ({
-    appId,
-    title: app.title,
-    isActive: appStore.activeAppId === appId,
-    // Clip before the outer 6k wall so one fat stack dump can't dominate.
-    previewErrors: summarizePreviewErrors(appStore.previewErrors[appId]),
-  }));
 
   const lines: string[] = [
     "[Mako Desktop UI context — the user can see this in the app window]",
@@ -145,10 +132,6 @@ export function buildAcpUiContextBlock(args: {
       contentTruncated: c.contentTruncated,
     }));
     lines.push(`openConsoles: ${JSON.stringify(consoles)}`);
-  }
-
-  if (openApps.length > 0) {
-    lines.push(`openApps: ${JSON.stringify(openApps)}`);
   }
 
   if (body.activeDashboardContext) {
