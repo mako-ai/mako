@@ -463,8 +463,15 @@ second write path and ties save latency to sandbox liveness; ship
 pull-on-poke first, add write-through only if rebase noise shows up.
 
 **Block D — content moves into the repo (staged, each shippable alone).**
-- D1 `skills/`: workspace skills as `skills/<name>/SKILL.md`; agent skill
-  discovery reads the repo (system skills stay in the API image).
+- D1 `skills/`: BUILT — workspace skills live as `skills/<name>/SKILL.md`
+  (system-skill frontmatter format; system skills stay in the API image).
+  Git is the source of truth: `save_skill`, the settings UI and pushes all
+  converge on the folder; the Mongo `skills` collection remains the DERIVED
+  retrieval index (embeddings, $text, useCount), resynced after every push
+  (`workspace-skills.service.ts`). New repos seed from the workspace starter
+  template (`workspace-template.ts`: AGENTS.md, skills/README, a suppressed
+  example skill); the `workspace_skills_to_git` migration adopted existing
+  workspaces.
 - D2 `consoles/`: `consoles/<name>.sql` with the SAME front-matter convention
   as bindings (`-- connection:` etc.); `savedconsoles` migrates via script,
   then becomes read-only fallback → deleted. DECISION recorded: consoles in
@@ -766,8 +773,8 @@ The substrate is largely built. The local developer surface is close to zero.
 | Local Claude Code / Codex over ACP, auto-wired to Mako MCP with a generated system prompt (`packages/local-agent/src/acp/mako-system-append.ts`) | ✅ built — **the sleeper asset; §11.8 step 1 is mostly a retargeting of this**                                                                                             |
 | Merge a branch into `main` (`POST /{id}/merge`)                                                                                                  | ✅ built                                                                                                                                                                   |
 | **Deploy on merge to `main`**                                                                                                                    | ❌ `publishedSha` is exposed on reads and **never written**; no pipeline. Previews are token-gated sandbox builds, not durable deployments                                 |
-| **Repo-resident agent instructions** (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`)                                                                     | ❌ `api/src/apps-v2/scaffold.ts` writes only `package.json`, `mako.json`, `index.html`, `vite.config.ts`, `tsconfig.json`. A fresh clone tells `claude` nothing about Mako |
-| **Skills in the repo** (§10 Block D1)                                                                                                            | ❌ system skills live in the API image (`api/src/agent-skills/`)                                                                                                           |
+| **Repo-resident agent instructions** (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`)                                                                     | 🟡 partial — the workspace template seeds a root `AGENTS.md` (+ `CLAUDE.md` pointer) into every repo; per-app instructions and `.mcp.json` still missing                    |
+| **Skills in the repo** (§10 Block D1)                                                                                                            | ✅ built — workspace skills are `skills/<name>/SKILL.md`, Mongo is the derived index; system skills stay in the API image (`api/src/agent-skills/`)                        |
 | **`mako` CLI / npm package**                                                                                                                     | ❌ does not exist. The `mako-agent` bin in `packages/local-agent` is the local-database daemon + ACP bridge — a different product                                          |
 | **App SDK for data access from a local checkout**                                                                                                | ❌ no `@mako/app-sdk` package exists, though §5 and §6 Phase 3 both assume one                                                                                             |
 | Consoles in the repo (§10 Block D2)                                                                                                              | ❌ still Mongo `SavedConsole`                                                                                                                                              |

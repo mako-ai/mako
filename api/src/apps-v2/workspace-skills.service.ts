@@ -1,0 +1,340 @@
+/**
+ * Workspace skills in the workspace repo (apps-v2.md §10 Block D1).
+ *
+ * Git is the source of truth for a workspace's skills: every skill is
+ * `skills/<name>/SKILL.md` on main, and every write path — the agent's
+ * `save_skill`, the settings UI, a `git push` from a terminal or laptop
+ * clone — converges on that folder. The Mongo `skills` collection stays as a
+ * DERIVED retrieval index (embeddings, $text, useCount telemetry), the same
+ * division apps use ("the folder is the identity, the row is metadata",
+ * §13.6): `syncSkillsIndexFromRepo` reconciles it from the repo after every
+ * push, and the in-product write paths update it inline after committing.
+ *
+ * Adoption: workspaces predate this layout, so `skills/README.md` on main is
+ * the marker that a workspace's skills live in git. Until it exists, Mongo
+ * rows may exist that git has never seen — the first in-product skill write
+ * adopts them all in one commit, and the sync never deletes rows for a repo
+ * that has not adopted. The workspace_skills_to_git migration performs the
+ * same adoption for every existing workspace.
+ */
+import { Types } from "mongoose";
+import { Skill, type ISkill } from "../database/workspace-schema";
+import {
+  embedText,
+  getEmbeddingModelName,
+  isEmbeddingAvailable,
+} from "../services/embedding.service";
+import { extractEntities } from "../agent-lib/entity-extraction";
+import { loggers } from "../logging";
+import { queueMirrorPush } from "./cloud-repo.service";
+import {
+  DEFAULT_BRANCH,
+  readBlob,
+  globTree,
+  repoDirFor,
+  repoExists,
+  resolveCommit,
+  type GitAuthor,
+} from "./repository.service";
+import {
+  parseSkillFile,
+  serializeSkillFile,
+  skillFilePath,
+  skillNameFromPath,
+  SKILL_FILE_GLOB,
+  SKILL_NAME_RE,
+  SKILLS_README_PATH,
+  type WorkspaceSkillFile,
+} from "./skill-files";
+import { workspaceTemplateFiles } from "./workspace-template";
+import { commitFilesOnBranch, ensureWorkspaceRepo } from "./worktree.service";
+
+const logger = loggers.api("apps-v2");
+
+/** Mirrors skills.service's MAX_SKILLS_PER_WORKSPACE — bounds the index. */
+const MAX_SYNCED_SKILLS = 200;
+
+const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
+
+async function readRepoFile(
+  repoDir: string,
+  relPath: string,
+): Promise<string | null> {
+  try {
+    const blob = await readBlob(repoDir, MAIN, relPath);
+    return blob.isBinary ? null : blob.contents;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether this repo's skills folder has been adopted (see module doc). */
+async function skillsAdopted(repoDir: string): Promise<boolean> {
+  return (await readRepoFile(repoDir, SKILLS_README_PATH)) !== null;
+}
+
+/** Every parseable skill file on main. Missing repo/branch → empty. */
+export async function listSkillFilesFromRepo(
+  workspaceId: string,
+): Promise<WorkspaceSkillFile[]> {
+  const repoDir = repoDirFor(workspaceId);
+  if (!(await repoExists(repoDir))) return [];
+  if (!(await resolveCommit(repoDir, MAIN))) return [];
+  const paths = await globTree(repoDir, MAIN, SKILL_FILE_GLOB, 1000);
+  const out: WorkspaceSkillFile[] = [];
+  for (const path of paths.sort()) {
+    const name = skillNameFromPath(path);
+    if (!name) {
+      logger.warn("Skipping skill file with invalid name", {
+        workspaceId,
+        path,
+      });
+      continue;
+    }
+    const raw = await readRepoFile(repoDir, path);
+    const parsed = raw === null ? null : parseSkillFile(name, raw);
+    if (!parsed) {
+      logger.warn("Skipping unparseable skill file", { workspaceId, path });
+      continue;
+    }
+    out.push(parsed);
+  }
+  return out;
+}
+
+/**
+ * The writes that bring a repo's starter docs level — only paths it is
+ * missing, so a repo that predates the template gains AGENTS.md and
+ * skills/README.md without its README or anything else being touched.
+ */
+export async function missingTemplateWrites(
+  repoDir: string,
+): Promise<Record<string, string>> {
+  const writes: Record<string, string> = {};
+  for (const [path, contents] of Object.entries(workspaceTemplateFiles())) {
+    if (path === "README.md") continue; // never overwrite, never re-add
+    if ((await readRepoFile(repoDir, path)) === null) writes[path] = contents;
+  }
+  return writes;
+}
+
+/**
+ * Commit one skill save onto main. On a repo that has not adopted yet, the
+ * same commit adopts: the caller's snapshot of the workspace's Mongo skills
+ * (`loadAdoptable`, called lazily — only that first commit needs the bodies)
+ * and the missing starter docs ride along, so no Mongo-only skill can be
+ * orphaned by the sync afterwards.
+ */
+export async function commitSkillSave(
+  workspaceId: string,
+  skill: WorkspaceSkillFile,
+  options: {
+    author?: GitAuthor;
+    loadAdoptable?: () => Promise<WorkspaceSkillFile[]>;
+  } = {},
+): Promise<void> {
+  const repoDir = await ensureWorkspaceRepo(workspaceId, options.author);
+  const writes: Record<string, string> = {};
+  let message = `Save skill "${skill.name}"`;
+  if (!(await skillsAdopted(repoDir))) {
+    Object.assign(writes, await missingTemplateWrites(repoDir));
+    for (const existing of (await options.loadAdoptable?.()) ?? []) {
+      if (existing.name === skill.name) continue;
+      const path = skillFilePath(existing.name);
+      if ((await readRepoFile(repoDir, path)) === null) {
+        writes[path] = serializeSkillFile(existing);
+      }
+    }
+    message = `Adopt workspace skills into git; save skill "${skill.name}"`;
+  }
+  writes[skillFilePath(skill.name)] = serializeSkillFile(skill);
+  await commitFilesOnBranch(
+    repoDir,
+    DEFAULT_BRANCH,
+    { writes },
+    { message, author: options.author },
+  );
+  queueMirrorPush(workspaceId);
+}
+
+/**
+ * Commit a skill deletion. No-op (returns false) when the repo or the file
+ * does not exist — a Mongo-only skill on an unadopted workspace has nothing
+ * to delete in git.
+ */
+export async function commitSkillDelete(
+  workspaceId: string,
+  name: string,
+  author?: GitAuthor,
+): Promise<boolean> {
+  if (!SKILL_NAME_RE.test(name)) return false;
+  const repoDir = repoDirFor(workspaceId);
+  if (!(await repoExists(repoDir))) return false;
+  const path = skillFilePath(name);
+  if ((await readRepoFile(repoDir, path)) === null) return false;
+  await commitFilesOnBranch(
+    repoDir,
+    DEFAULT_BRANCH,
+    { deletePrefixes: [`skills/${name}`] },
+    { message: `Delete skill "${name}"`, author },
+  );
+  queueMirrorPush(workspaceId);
+  return true;
+}
+
+/**
+ * Commit a suppressed-flag flip by rewriting the file's frontmatter. No-op
+ * when the file is not in git yet (unadopted workspace).
+ */
+export async function commitSkillSuppressed(
+  workspaceId: string,
+  name: string,
+  suppressed: boolean,
+  author?: GitAuthor,
+): Promise<boolean> {
+  if (!SKILL_NAME_RE.test(name)) return false;
+  const repoDir = repoDirFor(workspaceId);
+  if (!(await repoExists(repoDir))) return false;
+  const path = skillFilePath(name);
+  const raw = await readRepoFile(repoDir, path);
+  const parsed = raw === null ? null : parseSkillFile(name, raw);
+  if (!parsed) return false;
+  if (parsed.suppressed === suppressed) return true;
+  await commitFilesOnBranch(
+    repoDir,
+    DEFAULT_BRANCH,
+    { writes: { [path]: serializeSkillFile({ ...parsed, suppressed }) } },
+    {
+      message: `${suppressed ? "Suppress" : "Unsuppress"} skill "${name}"`,
+      author,
+    },
+  );
+  queueMirrorPush(workspaceId);
+  return true;
+}
+
+function sameEntities(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const bs = new Set(b);
+  return a.every(e => bs.has(e));
+}
+
+/** Declared (file) entities ∪ extracted — same union saveSkill computes. */
+function indexEntities(skill: WorkspaceSkillFile): string[] {
+  const extracted = extractEntities(`${skill.loadWhen}\n${skill.body}`);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of [...skill.entities, ...extracted]) {
+    const norm = raw.toLowerCase().trim();
+    if (norm.length < 2 || seen.has(norm)) continue;
+    seen.add(norm);
+    out.push(norm);
+  }
+  return out;
+}
+
+async function embeddingFor(
+  loadWhen: string,
+): Promise<{ embedding?: number[]; model?: string }> {
+  if (!isEmbeddingAvailable()) return {};
+  try {
+    const embedding = await embedText(loadWhen);
+    if (!embedding) return {};
+    return { embedding, model: getEmbeddingModelName() ?? undefined };
+  } catch (error) {
+    logger.warn("Skill embedding failed during index sync", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return {};
+  }
+}
+
+/**
+ * Reconcile the Mongo retrieval index with the repo's skills/ folder —
+ * called after every push to the git endpoint (worktree.service
+ * notifyRepoPushed) so a skill edited in a terminal or a laptop clone is in
+ * the agent's index by its next turn.
+ *
+ * Deliberately conservative: it never touches an unadopted repo (Mongo may
+ * hold skills git has never seen), it preserves telemetry (useCount,
+ * lastUsedAt) and createdBy on update, and it re-embeds only when the
+ * trigger text actually changed.
+ */
+export async function syncSkillsIndexFromRepo(
+  workspaceId: string,
+  userId?: string,
+): Promise<void> {
+  const repoDir = repoDirFor(workspaceId);
+  if (!(await repoExists(repoDir))) return;
+  if (!(await skillsAdopted(repoDir))) return;
+
+  let files = await listSkillFilesFromRepo(workspaceId);
+  if (files.length > MAX_SYNCED_SKILLS) {
+    logger.warn(
+      "Workspace has more skill files than the index cap; truncating",
+      {
+        workspaceId,
+        fileCount: files.length,
+        cap: MAX_SYNCED_SKILLS,
+      },
+    );
+    files = files.slice(0, MAX_SYNCED_SKILLS);
+  }
+
+  const wsObjectId = new Types.ObjectId(workspaceId);
+  const rows = (await Skill.find({ workspaceId: wsObjectId })) as ISkill[];
+  const rowByName = new Map(rows.map(r => [r.name, r]));
+  const fileNames = new Set(files.map(f => f.name));
+
+  for (const file of files) {
+    const entities = indexEntities(file);
+    const row = rowByName.get(file.name);
+    if (!row) {
+      const { embedding, model } = await embeddingFor(file.loadWhen);
+      await Skill.create({
+        workspaceId: wsObjectId,
+        name: file.name,
+        loadWhen: file.loadWhen,
+        body: file.body,
+        entities,
+        loadWhenEmbedding: embedding,
+        embeddingModel: model,
+        scopeType: "workspace",
+        createdBy: userId && userId.length > 0 ? userId : "agent",
+        suppressed: file.suppressed,
+        useCount: 0,
+      });
+      continue;
+    }
+    const unchanged =
+      row.loadWhen === file.loadWhen &&
+      row.body === file.body &&
+      row.suppressed === file.suppressed &&
+      sameEntities(row.entities ?? [], entities);
+    if (unchanged) continue;
+    if (row.body !== file.body) {
+      row.previousBody = row.body;
+      row.previousUpdatedAt = row.updatedAt;
+    }
+    if (row.loadWhen !== file.loadWhen) {
+      const { embedding, model } = await embeddingFor(file.loadWhen);
+      if (embedding) {
+        row.loadWhenEmbedding = embedding;
+        row.embeddingModel = model;
+      }
+    }
+    row.loadWhen = file.loadWhen;
+    row.body = file.body;
+    row.entities = entities;
+    row.suppressed = file.suppressed;
+    await row.save();
+  }
+
+  const stale = rows.filter(r => !fileNames.has(r.name));
+  if (stale.length > 0) {
+    await Skill.deleteMany({
+      workspaceId: wsObjectId,
+      _id: { $in: stale.map(r => r._id) },
+    });
+  }
+}

@@ -54,7 +54,6 @@ import {
   cloneIntoBox,
   configureBoxRemote,
   sh,
-  workspaceRootGitignore,
   boxGitPaths,
   boxFileVersions,
   boxPorcelain,
@@ -93,7 +92,7 @@ import {
   type GrepMatch,
   type TreeEntry,
 } from "./repository.service";
-import { appSdkFiles } from "./app-sdk-package";
+import { workspaceSeedFiles } from "./workspace-template";
 import { createAppsV2Scaffold } from "./scaffold";
 import {
   ensureDurableRepo,
@@ -115,6 +114,26 @@ async function repoFor(project: IAppProjectV2): Promise<string> {
 async function repoForWorkspace(workspaceId: string): Promise<string> {
   await ensureLocalRepo(workspaceId);
   return repoDirFor(workspaceId);
+}
+
+/**
+ * The workspace repo, created (with the starter template — AGENTS.md,
+ * skills/, app SDK, .gitignore) when it does not exist yet. Repos are
+ * provisioned lazily by whichever content type arrives first: app creation
+ * and skill writes both come through here.
+ */
+export async function ensureWorkspaceRepo(
+  workspaceId: string,
+  author?: GitAuthor,
+): Promise<string> {
+  const repoDir = await repoForWorkspace(workspaceId);
+  if (!(await repoExists(repoDir))) {
+    await initRepo(repoDir, workspaceSeedFiles(), {
+      message: "Initialize workspace repository",
+      author,
+    });
+  }
+  return repoDir;
 }
 
 /** Repo-relative folder an app's content lives under (§10: apps/<slug>). */
@@ -167,6 +186,18 @@ export function notifyRepoPushed(workspaceId: string, userId: string): void {
   pokeAppV2(workspaceId, null, "push", userId);
   // Another box on the same branch is now behind; let it pull on next touch.
   invalidatePullThrottle();
+  // skills/ is repo content but retrieval reads the Mongo index — reconcile
+  // it after every push so a skill edited in a terminal or laptop clone is
+  // live next turn. Dynamic import: workspace-skills.service imports this
+  // module, and a static import back would be a cycle.
+  void import("./workspace-skills.service")
+    .then(m => m.syncSkillsIndexFromRepo(workspaceId, userId))
+    .catch(error => {
+      logger.warn("Skills index sync after push failed", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
 }
 
 // The sandbox HAS a remote, and a credential for it — see box.ts. Two things
@@ -605,12 +636,6 @@ export async function commitFilesOnBranch(
   );
 }
 
-const WORKSPACE_README = `# Mako workspace
-
-Managed by Mako. Apps live under apps/<name>; consoles, skills and dbt
-content will join as sibling folders (apps-v2.md §10).
-`;
-
 export async function createProject(input: {
   workspaceId: string;
   title: string;
@@ -640,27 +665,9 @@ export async function createProject(input: {
 
   // §10 monorepo: ensure the ONE workspace repo, then commit the scaffold
   // under apps/<slug>/ onto main.
-  const repoDir = await repoForWorkspace(input.workspaceId);
+  const repoDir = await ensureWorkspaceRepo(input.workspaceId, input.author);
   let scaffoldCommit: { commitOid: string; previousHead: string } | null = null;
   try {
-    if (!(await repoExists(repoDir))) {
-      await initRepo(
-        repoDir,
-        {
-          "README.md": WORKSPACE_README,
-          // The @mako/app-sdk package, so `import { useQuery } from
-          // "@mako/app-sdk"` resolves in every app via a file: dependency —
-          // in vite dev, in npm run build, and in a laptop clone alike.
-          ...appSdkFiles(),
-          // The root .gitignore is the guarantee that EVERY app — scaffolded,
-          // hand-built by an agent, or pushed from a laptop — ignores what
-          // must never be committed. Per-app .gitignores and the sandbox's
-          // info/exclude are refinements; this is the one that is versioned.
-          ".gitignore": workspaceRootGitignore(),
-        },
-        { message: "Initialize workspace repository", author: input.author },
-      );
-    }
     const scaffold = createAppsV2Scaffold({
       title: project.title,
       description: input.description,
