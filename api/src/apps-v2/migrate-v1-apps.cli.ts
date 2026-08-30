@@ -31,6 +31,7 @@ async function main(): Promise<void> {
   const appId = arg("app");
   const execute = process.argv.includes("--execute");
   const reset = process.argv.includes("--reset");
+  const rowsOnly = process.argv.includes("--rows-only");
   if (!workspaceId) {
     throw new Error(
       "Usage: migrate-v1-apps --workspace <id> [--app <id>] [--execute]",
@@ -49,12 +50,15 @@ async function main(): Promise<void> {
     appId,
     execute,
     reset,
+    rowsOnly,
   });
   for (const r of results) {
     // Execute mode never skips — a stamped app is overwritten in place — so
     // the marker reports what HAPPENED, with the stamp as an annotation.
     const marker = execute
-      ? `MIGRATED -> apps/${r.slug}` +
+      ? (rowsOnly
+          ? `ROW-BACKFILLED -> apps/${r.slug}`
+          : `MIGRATED -> apps/${r.slug}`) +
         (r.alreadyMigrated ? " (re-migrated, replaced in place)" : "")
       : r.alreadyMigrated
         ? "SKIP (already migrated — execute would replace it)"

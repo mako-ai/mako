@@ -170,13 +170,11 @@ describe("v1 → v2 migration", () => {
     const app = await makeV1App();
 
     // A real user for author resolution (raw insert: user ids are strings).
-    await mongoose.connection.db
-      ?.collection("users")
-      .insertOne({
-        _id: "user-1" as never,
-        email: "dev@example.com",
-        name: "Dev One",
-      });
+    await mongoose.connection.db?.collection("users").insertOne({
+      _id: "user-1" as never,
+      email: "dev@example.com",
+      name: "Dev One",
+    });
 
     const base = {
       workspaceId: app.workspaceId,
@@ -328,6 +326,70 @@ describe("v1 → v2 migration", () => {
     const stamped = await MakoApp.findById(app._id);
     expect(stamped?.migratedToV2ProjectId?.toString()).toBe(mine.projectId);
   }, 180_000);
+
+  it("rows-only backfill carries the ACL and stamps, writes no git", async () => {
+    const { migrateWorkspaceV1Apps } = await import("./migrate-v1-apps");
+    const { derivedAppId } = await import("./worktree.service");
+    const { MakoApp, AppProjectV2 } = await import(
+      "../database/workspace-schema"
+    );
+    const { initRepo, repoDirFor } = await import("./repository.service");
+    const ws3 = new Types.ObjectId().toString();
+    // The imported repo already holds the folder — that is the premise of a
+    // rows-only backfill (and the folder guard skips apps without one).
+    await initRepo(repoDirFor(ws3), {
+      "apps/imported-private/mako.json": JSON.stringify({
+        title: "Imported Private",
+      }),
+    });
+    await MakoApp.create({
+      workspaceId: new Types.ObjectId(ws3),
+      title: "Imported Private",
+      template: "react",
+      runtime: "cdn",
+      entrypoint: "App.tsx",
+      files: [{ path: "a.ts", contents: "1\n" }],
+      dependencies: {},
+      dataBindings: [],
+      version: 1,
+      access: "private",
+      createdBy: "owner-1",
+    });
+
+    const results = await migrateWorkspaceV1Apps({
+      workspaceId: ws3,
+      execute: true,
+      rowsOnly: true,
+    });
+    expect(results).toHaveLength(1);
+    const slug = results[0].slug!;
+    const row = await AppProjectV2.findOne({
+      _id: derivedAppId(ws3, slug),
+    });
+    // The row exists under the DERIVED id with the v1 ACL carried over…
+    expect(row).not.toBeNull();
+    expect(row?.access).toBe("private");
+    expect(row?.createdBy).toBe("owner-1");
+    // …the v1 doc is stamped (v1 scheduler dedup + future guards key off it)…
+    const stamped = await MakoApp.findOne({
+      workspaceId: new Types.ObjectId(ws3),
+    });
+    expect(stamped?.migratedToV2ProjectId?.toString()).toBe(
+      row?._id.toString(),
+    );
+    // …and re-running is idempotent.
+    const again = await migrateWorkspaceV1Apps({
+      workspaceId: ws3,
+      execute: true,
+      rowsOnly: true,
+    });
+    expect(again[0].projectId).toBe(results[0].projectId);
+    expect(
+      await AppProjectV2.countDocuments({
+        workspaceId: new Types.ObjectId(ws3),
+      }),
+    ).toBe(1);
+  }, 60_000);
 
   it("dry run writes nothing", async () => {
     const { migrateWorkspaceV1Apps } = await import("./migrate-v1-apps");
