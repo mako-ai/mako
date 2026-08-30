@@ -21,7 +21,11 @@ import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
-import { canReadResource, canWriteResource } from "../utils/resource-acl";
+import {
+  canManageSharing,
+  canReadResource,
+  canWriteResource,
+} from "../utils/resource-acl";
 import {
   getGitHubAppClientId,
   getGitHubAppSlug,
@@ -2200,6 +2204,62 @@ appsV2Routes.openapi(
         },
         200,
       );
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsV2Routes.openapi(
+  createRoute({
+    method: "patch",
+    path: "/{id}/access",
+    tags: ["Apps v2"],
+    summary: "Set an app's sharing scope (My Apps <-> Workspace)",
+    description:
+      "The v1 rail's drag-between-sections, for v2: private = the owner's own list, workspace = everyone's. Folder-only apps get their row here (restricting is one of the three row-creating acts, §13.6).",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({ access: z.enum(["private", "workspace"]) }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { access } = c.req.valid("json");
+      const userId = loaded.userId;
+      const role = await memberRoleFor(
+        loaded.project.workspaceId.toString(),
+        userId,
+      );
+      // Same gate as v1: the owner always; a workspace admin only for
+      // non-private apps (admins must not discover-or-toggle private ones).
+      if (!canManageSharing(loaded.project, userId, role)) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "Only the owner (or an admin, for workspace apps) can change sharing",
+          },
+          403,
+        );
+      }
+      const project = await ensureProjectRow(
+        loaded.project,
+        userId ?? "api-key",
+      );
+      await AppProjectV2.updateOne({ _id: project._id }, { $set: { access } });
+      return c.json({ success: true as const, access }, 200);
     } catch (error) {
       return handleError(c, error);
     }

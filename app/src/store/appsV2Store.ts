@@ -28,6 +28,8 @@ export interface AppV2Meta {
   /** Commit sha currently deployed, if the app has ever been published. */
   publishedSha?: string;
   publishedAt?: string;
+  /** Sharing scope: private = owner's "My Apps", workspace = everyone's. */
+  access?: "private" | "workspace";
 }
 
 export interface AppV2FileEntry {
@@ -258,6 +260,12 @@ interface AppsV2Store {
     installationId: number,
   ) => Promise<{ ok: boolean; error?: string }>;
   fetchApps: (workspaceId: string) => Promise<void>;
+  /** Drag between rail sections: flip private <-> workspace. */
+  setAppAccess: (
+    workspaceId: string,
+    appId: string,
+    access: "private" | "workspace",
+  ) => Promise<void>;
   createApp: (
     workspaceId: string,
     title: string,
@@ -670,6 +678,24 @@ export const useAppsV2Store = create<AppsV2Store>()(
             s.error = message(e, "Failed to load apps");
           }
         });
+      }
+    },
+
+    setAppAccess: async (workspaceId, appId, access) => {
+      // Optimistic: the row moves sections immediately; server truth on error.
+      set(s => {
+        const app = s.apps.find(a => a.id === appId);
+        if (app) app.access = access;
+      });
+      try {
+        unwrapBody(
+          await api.PATCH("/api/workspaces/{workspaceId}/apps-v2/{id}/access", {
+            params: { path: { workspaceId, id: appId } },
+            body: { access },
+          }),
+        );
+      } catch {
+        void get().fetchApps(workspaceId);
       }
     },
 
