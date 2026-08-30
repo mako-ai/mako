@@ -90,6 +90,9 @@ export function useSearchParams(): [
 export function navigate(to: string, opts?: { replace?: boolean }): void;
 `;
 
+const THEME_CSS_JSON =
+  '":root {\\n  color-scheme: light;\\n  --background: hsl(0 0% 100%);\\n  --foreground: hsl(240 10% 3.9%);\\n  --card: hsl(0 0% 100%);\\n  --card-foreground: hsl(240 10% 3.9%);\\n  --popover: hsl(0 0% 100%);\\n  --popover-foreground: hsl(240 10% 3.9%);\\n  --primary: hsl(240 5.9% 10%);\\n  --primary-foreground: hsl(0 0% 98%);\\n  --secondary: hsl(240 4.8% 95.9%);\\n  --secondary-foreground: hsl(240 5.9% 10%);\\n  --muted: hsl(240 4.8% 95.9%);\\n  --muted-foreground: hsl(240 3.8% 46.1%);\\n  --accent: hsl(240 4.8% 95.9%);\\n  --accent-foreground: hsl(240 5.9% 10%);\\n  --destructive: hsl(0 84.2% 60.2%);\\n  --destructive-foreground: hsl(0 0% 98%);\\n  --border: hsl(240 5.9% 90%);\\n  --input: hsl(240 5.9% 90%);\\n  --ring: hsl(240 5.9% 10%);\\n  --chart-1: hsl(12 76% 61%);\\n  --chart-2: hsl(173 58% 39%);\\n  --chart-3: hsl(197 37% 24%);\\n  --chart-4: hsl(43 74% 66%);\\n  --chart-5: hsl(27 87% 67%);\\n  --radius: 0.5rem;\\n}\\n:root.dark {\\n  color-scheme: dark;\\n  --background: hsl(240 10% 3.9%);\\n  --foreground: hsl(0 0% 98%);\\n  --card: hsl(240 10% 3.9%);\\n  --card-foreground: hsl(0 0% 98%);\\n  --popover: hsl(240 10% 3.9%);\\n  --popover-foreground: hsl(0 0% 98%);\\n  --primary: hsl(0 0% 98%);\\n  --primary-foreground: hsl(240 5.9% 10%);\\n  --secondary: hsl(240 3.7% 15.9%);\\n  --secondary-foreground: hsl(0 0% 98%);\\n  --muted: hsl(240 3.7% 15.9%);\\n  --muted-foreground: hsl(240 5% 64.9%);\\n  --accent: hsl(240 3.7% 15.9%);\\n  --accent-foreground: hsl(0 0% 98%);\\n  --destructive: hsl(0 62.8% 30.6%);\\n  --destructive-foreground: hsl(0 0% 98%);\\n  --border: hsl(240 3.7% 15.9%);\\n  --input: hsl(240 3.7% 15.9%);\\n  --ring: hsl(240 4.9% 83.9%);\\n  --chart-1: hsl(220 70% 50%);\\n  --chart-2: hsl(160 60% 45%);\\n  --chart-3: hsl(30 80% 55%);\\n  --chart-4: hsl(280 65% 60%);\\n  --chart-5: hsl(340 75% 55%);\\n}\\n@media (prefers-color-scheme: dark) {\\n  :root:not(.light) {\\n    color-scheme: dark;\\n    --background: hsl(240 10% 3.9%);\\n    --foreground: hsl(0 0% 98%);\\n    --card: hsl(240 10% 3.9%);\\n    --card-foreground: hsl(0 0% 98%);\\n    --popover: hsl(240 10% 3.9%);\\n    --popover-foreground: hsl(0 0% 98%);\\n    --primary: hsl(0 0% 98%);\\n    --primary-foreground: hsl(240 5.9% 10%);\\n    --secondary: hsl(240 3.7% 15.9%);\\n    --secondary-foreground: hsl(0 0% 98%);\\n    --muted: hsl(240 3.7% 15.9%);\\n    --muted-foreground: hsl(240 5% 64.9%);\\n    --accent: hsl(240 3.7% 15.9%);\\n    --accent-foreground: hsl(0 0% 98%);\\n    --destructive: hsl(0 62.8% 30.6%);\\n    --destructive-foreground: hsl(0 0% 98%);\\n    --border: hsl(240 3.7% 15.9%);\\n    --input: hsl(240 3.7% 15.9%);\\n    --ring: hsl(240 4.9% 83.9%);\\n    --chart-1: hsl(220 70% 50%);\\n    --chart-2: hsl(160 60% 45%);\\n    --chart-3: hsl(30 80% 55%);\\n    --chart-4: hsl(280 65% 60%);\\n    --chart-5: hsl(340 75% 55%);\\n  }\\n}\\nbody { background: var(--background); color: var(--foreground); }"';
+
 const INDEX_JS = `// @mako/app-sdk — see package.json. Plain ESM on purpose: no build step.
 import * as React from "react";
 
@@ -310,6 +313,31 @@ export function useSearchParams() {
     navigate(window.location.pathname + (qs ? "?" + qs : ""), opts);
   };
   return [loc.searchParams, setSearchParams];
+}
+
+// ---------------------------------------------------------------------------
+// Theme tokens — the same shadcn-style palette the v1 runtime injected around
+// every app (app/src/app-runtime/preview.ts THEME_TOKENS_CSS). The v1 skill
+// taught agents to write var(--background) / var(--border) / var(--chart-N)
+// directly, so migrated apps DEPEND on these names existing; without them a
+// v2 build renders with no backgrounds or borders at all. The SDK restores
+// the contract wherever it loads: prepended to <head> so any app stylesheet
+// overrides it, keyed by id so double-imports no-op, dark on :root.dark (the
+// v1 toggle) plus the system preference for standalone.
+// ---------------------------------------------------------------------------
+const MAKO_THEME_TOKENS_CSS = ${THEME_CSS_JSON};
+if (
+  typeof document !== "undefined" &&
+  !document.getElementById("mako-theme-tokens")
+) {
+  const el = document.createElement("style");
+  el.id = "mako-theme-tokens";
+  el.textContent = MAKO_THEME_TOKENS_CSS;
+  if (document.head.firstChild) {
+    document.head.insertBefore(el, document.head.firstChild);
+  } else {
+    document.head.appendChild(el);
+  }
 }
 
 // ---------------------------------------------------------------------------
