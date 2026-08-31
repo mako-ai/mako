@@ -54,7 +54,7 @@ export default function SettingsPrompt() {
   return (
     <SettingsLayout
       title="Custom Prompt"
-      description="Customize the AI assistant's behavior by adding context about your business, data relationships, and common query patterns."
+      description="Customize the AI assistant's behavior by adding context about your business, data relationships, and common query patterns. Saved as PROMPT.md in your workspace repository — versioned, diffable, and editable from any clone."
     >
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>

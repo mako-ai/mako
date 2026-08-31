@@ -67,7 +67,7 @@ export class RepoRequiredError extends Error {
   readonly code = "github_required";
   constructor() {
     super(
-      "Connect a GitHub repository first (Settings → GitHub). Mako keeps your apps and consoles in your own repo.",
+      "Connect a GitHub repository first (Settings → GitHub). Mako keeps your workspace content — apps, consoles, dbt, prompt — in your own repo.",
     );
     this.name = "RepoRequiredError";
   }

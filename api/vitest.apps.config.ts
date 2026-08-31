@@ -17,6 +17,7 @@ export default defineConfig({
     include: [
       "src/apps/worktree.service.test.ts",
       "src/apps/workspace-repo.test.ts",
+      "src/apps/workspace-prompt.test.ts",
       "src/apps/bindings.service.test.ts",
       "src/apps/cloud-repo.service.test.ts",
       "src/apps/adversarial.test.ts",

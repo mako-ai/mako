@@ -2764,3 +2764,31 @@ repo), jobs + runs collections and Inngest functions (executor edits only:
 CI arms removed), environments + personal schemas, artifact + cache keys
 (projectId-stable, so warm dirs and parse caches survive), lineage,
 `{{ dbt_schema }}` bindings.
+
+## 21. PROMPT.md: the workspace custom prompt is a repo file (2026-09-01)
+
+The RevOps context prompt lived in `workspace.settings.customPrompt` — a
+markdown blob edited in a settings textarea with no history, no review, no
+diff, invisible to clones and sandboxes. Now it is `PROMPT.md` at the
+workspace repo root: git history, the Source Control diff surface, editable
+from any clone, composing with the other repo-resident instructions
+(`.makorules`, `skills/`, AGENTS.md documents it — template v9).
+
+Mechanics: `api/src/apps/workspace-prompt.ts` (read at main; commit via
+`commitBlobsOnBranch`, empty content deletes the file; default-branch pinned
+per branch-policy rule 2 — every agent turn reads it, so it is workspace
+config, not per-session content). Readers (`custom-prompt` GET, agent turn
+assembly) prefer the file and fall back to the legacy Mongo field, which
+survives ONLY for repo-less workspaces; edits require the repo (§17, 412 +
+CTA like consoles). Migration writes PROMPT.md for repo-holding workspaces
+(external file wins if one exists), pushes the mirror, and unsets the Mongo
+field.
+
+Post-mortem folded in: the dbt cutover's draft salvage silently no-opped on
+the deploy runner because that migration never connected mongoose —
+`getWorkspaceRepo` buffered 10s, timed out, and `resolveMirrorTarget`
+swallowed it into "no repo" (the four 10-second-spaced warnings in the
+deploy log were the buffering timeouts; the rehearsal masked it because the
+scratch repo short-circuited before any Mongo read). The prompt migration
+carries the mongoose connect with a comment saying never to remove it, and
+the salvage was recovered by pushing the rehearsal's identical branches.

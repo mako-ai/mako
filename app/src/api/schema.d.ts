@@ -10807,6 +10807,20 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description Connect a GitHub repository first (the prompt lives in the workspace repo). */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        success: false;
+                        error: string;
+                        code: string;
+                    };
+                };
+            };
             /** @description Failed to update custom prompt */
             500: {
                 headers: {
@@ -10922,6 +10936,20 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Connect a GitHub repository first (the prompt lives in the workspace repo). */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        success: false;
+                        error: string;
+                        code: string;
+                    };
                 };
             };
             /** @description Failed to reset custom prompt */
