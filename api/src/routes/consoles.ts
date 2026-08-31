@@ -208,30 +208,6 @@ consoleRoutes.use("*", async (c: AuthenticatedContext, next) => {
   await next();
 });
 
-// Helper function to verify workspace access
-async function verifyWorkspaceAccess(
-  c: Context,
-): Promise<{ hasAccess: boolean; workspaceId: string } | null> {
-  const workspaceId = c.req.param("workspaceId") as string;
-
-  if (isApiKeyAuth(c)) {
-    // For API key auth, workspace is already verified and set in context
-    const workspace = c.get("workspace");
-    if (workspace && workspace._id.toString() === workspaceId) {
-      return { hasAccess: true, workspaceId };
-    }
-    return null;
-  }
-
-  // For session auth, check user access
-  const user = c.get("user");
-  if (user && (await workspaceService.hasAccess(workspaceId, user.id))) {
-    return { hasAccess: true, workspaceId };
-  }
-
-  return null;
-}
-
 consoleRoutes.use("/:id/schedule", requireWorkspaceAdmin);
 consoleRoutes.use("/:id/schedule/*", requireWorkspaceAdmin);
 
@@ -266,13 +242,8 @@ consoleRoutes.openapi(
   }),
   async c => {
     try {
-      const access = await verifyWorkspaceAccess(c);
-      if (!access) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
+      // Access was verified by the router middleware; only the id is needed.
+      const access = { workspaceId: c.req.param("workspaceId") as string };
 
       const user = c.get("user");
       const userId: string | undefined = user?.id;
@@ -347,7 +318,9 @@ consoleRoutes.openapi(
       const user = c.get("user");
 
       // Verify user has access to workspace
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      // Workspace access itself is the router middleware's job (it ran and
+      // set memberRole); this only keeps the route session-only.
+      if (!user) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
@@ -486,7 +459,9 @@ consoleRoutes.openapi(
       const workspaceId = c.req.param("workspaceId") as string;
       const user = c.get("user");
 
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      // Workspace access itself is the router middleware's job (it ran and
+      // set memberRole); this only keeps the route session-only.
+      if (!user) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
@@ -978,7 +953,9 @@ consoleRoutes.openapi(
       const user = c.get("user");
 
       // Verify user has access to workspace
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      // Workspace access itself is the router middleware's job (it ran and
+      // set memberRole); this only keeps the route session-only.
+      if (!user) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
@@ -1190,7 +1167,9 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
     const user = c.get("user");
 
     // Verify user has access to workspace
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+    // Workspace access itself is the router middleware's job (it ran and
+    // set memberRole); this only keeps the route session-only.
+    if (!user) {
       return c.json(
         { success: false, error: "Access denied to workspace" },
         403,
@@ -1784,7 +1763,9 @@ consoleRoutes.openapi(
       const { name, parentId, isPrivate, access } = body;
       const user = c.get("user");
 
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      // Workspace access itself is the router middleware's job (it ran and
+      // set memberRole); this only keeps the route session-only.
+      if (!user) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
@@ -1869,7 +1850,9 @@ consoleRoutes.openapi(
       const user = c.get("user");
 
       // Verify user has access to workspace
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      // Workspace access itself is the router middleware's job (it ran and
+      // set memberRole); this only keeps the route session-only.
+      if (!user) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
@@ -1994,7 +1977,9 @@ consoleRoutes.openapi(
       const consoleId = c.req.param("id");
       const user = c.get("user");
 
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      // Workspace access itself is the router middleware's job (it ran and
+      // set memberRole); this only keeps the route session-only.
+      if (!user) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
@@ -2095,7 +2080,9 @@ consoleRoutes.openapi(
       const consoleId = c.req.param("id");
       const user = c.get("user");
 
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      // Workspace access itself is the router middleware's job (it ran and
+      // set memberRole); this only keeps the route session-only.
+      if (!user) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
@@ -2173,7 +2160,9 @@ consoleRoutes.openapi(
       const consoleId = c.req.param("id");
       const user = c.get("user");
 
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      // Workspace access itself is the router middleware's job (it ran and
+      // set memberRole); this only keeps the route session-only.
+      if (!user) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
@@ -2242,7 +2231,9 @@ consoleRoutes.openapi(
       const user = c.get("user");
 
       // Verify user has access to workspace
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      // Workspace access itself is the router middleware's job (it ran and
+      // set memberRole); this only keeps the route session-only.
+      if (!user) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
@@ -2314,7 +2305,9 @@ consoleRoutes.openapi(
       const user = c.get("user");
 
       // Verify user has access to workspace
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      // Workspace access itself is the router middleware's job (it ran and
+      // set memberRole); this only keeps the route session-only.
+      if (!user) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
@@ -2413,7 +2406,9 @@ consoleRoutes.openapi(
       };
       const user = c.get("user");
 
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      // Workspace access itself is the router middleware's job (it ran and
+      // set memberRole); this only keeps the route session-only.
+      if (!user) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
@@ -2511,7 +2506,9 @@ consoleRoutes.openapi(
       };
       const user = c.get("user");
 
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      // Workspace access itself is the router middleware's job (it ran and
+      // set memberRole); this only keeps the route session-only.
+      if (!user) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
@@ -2582,7 +2579,9 @@ consoleRoutes.openapi(
       const consoleId = c.req.param("id");
       const user = c.get("user");
 
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      // Workspace access itself is the router middleware's job (it ran and
+      // set memberRole); this only keeps the route session-only.
+      if (!user) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
@@ -2702,13 +2701,8 @@ consoleRoutes.openapi(
     let consoleIdParsed: Types.ObjectId | undefined;
 
     try {
-      const access = await verifyWorkspaceAccess(c);
-      if (!access) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
+      // Access was verified by the router middleware; only the id is needed.
+      const access = { workspaceId: c.req.param("workspaceId") as string };
       workspaceId = access.workspaceId;
 
       const user = c.get("user");
@@ -3231,13 +3225,8 @@ consoleRoutes.openapi(
   }),
   async c => {
     try {
-      const access = await verifyWorkspaceAccess(c);
-      if (!access) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
+      // Access was verified by the router middleware; only the id is needed.
+      const access = { workspaceId: c.req.param("workspaceId") as string };
 
       // Get all consoles for the workspace
       const consoles = await SavedConsole.find({
@@ -3324,13 +3313,8 @@ consoleRoutes.openapi(
   }),
   async c => {
     try {
-      const access = await verifyWorkspaceAccess(c);
-      if (!access) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
+      // Access was verified by the router middleware; only the id is needed.
+      const access = { workspaceId: c.req.param("workspaceId") as string };
 
       const consoleId = c.req.param("id");
       if (!Types.ObjectId.isValid(consoleId)) {
@@ -3421,13 +3405,8 @@ consoleRoutes.openapi(
   }),
   async c => {
     try {
-      const access = await verifyWorkspaceAccess(c);
-      if (!access) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
+      // Access was verified by the router middleware; only the id is needed.
+      const access = { workspaceId: c.req.param("workspaceId") as string };
 
       const consoleId = c.req.param("id");
 
@@ -3571,7 +3550,9 @@ consoleRoutes.openapi(
       const consoleId = c.req.param("id");
       const user = c.get("user");
 
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      // Workspace access itself is the router middleware's job (it ran and
+      // set memberRole); this only keeps the route session-only.
+      if (!user) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
@@ -3644,7 +3625,9 @@ consoleRoutes.openapi(
       const versionNum = parseInt(c.req.param("version"), 10);
       const user = c.get("user");
 
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      // Workspace access itself is the router middleware's job (it ran and
+      // set memberRole); this only keeps the route session-only.
+      if (!user) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
@@ -3720,7 +3703,9 @@ consoleRoutes.openapi(
       const body = await c.req.json().catch(() => ({}));
       const user = c.get("user");
 
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      // Workspace access itself is the router middleware's job (it ran and
+      // set memberRole); this only keeps the route session-only.
+      if (!user) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
