@@ -21,7 +21,10 @@ import {
   appBindingMaterializeFunction,
   appBindingSchedulerFunction,
 } from "./functions/app-binding-materialize";
-import { appsBindingSchedulerFunction } from "./functions/apps-binding-refresh";
+import {
+  appsBindingMaterializeFunction,
+  appsBindingSchedulerFunction,
+} from "./functions/apps-binding-refresh";
 import { syncBackfillEntityFunction } from "./functions/sync-entity";
 import { cdcRepartitionFunction } from "./functions/cdc-repartition";
 import { usageReportingFunction } from "./functions/usage-reporting";
@@ -52,6 +55,7 @@ const baseFunctions = [
   dashboardRefreshFunction,
   cleanupAbandonedMaterializationRunsFunction,
   appBindingMaterializeFunction,
+  appsBindingMaterializeFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,
@@ -144,6 +148,7 @@ export {
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,
   appBindingMaterializeFunction,
+  appsBindingMaterializeFunction,
   appBindingSchedulerFunction,
   appsBindingSchedulerFunction,
   usageReportingFunction,
