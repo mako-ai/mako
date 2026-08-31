@@ -127,12 +127,6 @@ export interface IWorkspace extends Document {
      * workspace. Clamped to [1, DASHBOARD_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX].
      */
     dashboardRefreshConcurrency?: number;
-    /**
-     * Apps (git-backed apps, sandbox, Source Control) for this workspace.
-     * Off by default; super-admins flip it per workspace for the incremental
-     * rollout (Settings › Super Admin › Feature flags).
-     */
-    appsEnabled?: boolean;
   };
   billing: IWorkspaceBilling;
   selfDirective?: string;
@@ -1284,7 +1278,6 @@ Add any specific instructions for how the AI should interpret your data or respo
         default: 2,
         min: 1,
       },
-      appsEnabled: { type: Boolean, default: false },
     },
     billing: {
       stripeCustomerId: { type: String, default: null },

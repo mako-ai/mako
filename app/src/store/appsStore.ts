@@ -6,7 +6,7 @@
  * private WIP refs), so everything here renders identically whether the
  * app's sandbox session is warm or was rebuilt after eviction.
  *
- * Feature-gated: `enabled` is probed once per workspace via /status-probe and
+ * Repo linkage is probed once per workspace via /status-probe and
  * drives the sidebar rail icon; every route except the probe 404s while the
  * server flag is off.
  */
@@ -182,8 +182,6 @@ export interface AppGithubInstallation {
 }
 
 interface AppsStore {
-  /** undefined = probe pending; false = hidden; true = show the rail. */
-  enabled: boolean | undefined;
   /**
    * Whether app creation works: a repo is connected OR the server has
    * Mako-hosted cloud storage configured (instant start, no GitHub setup).
@@ -484,7 +482,6 @@ const fileKey = (appId: string, path: string) => `${appId}\u0000${path}`;
 export const useAppsStore = create<AppsStore>()(
   persist(
     immer((set, get) => ({
-      enabled: undefined,
       canCreate: undefined,
       repos: [],
       apps: [],
@@ -518,20 +515,15 @@ export const useAppsStore = create<AppsStore>()(
               params: { path: { workspaceId } },
             }),
           ) as {
-            enabled?: boolean;
             canCreate?: boolean;
             repos?: AppRepoBinding[];
           };
           set(s => {
-            s.enabled = Boolean(body?.enabled);
             s.canCreate = Boolean(body?.canCreate);
             s.repos = body?.repos ?? [];
           });
         } catch {
-          // Older backend without the route (or transient failure): hide.
-          set(s => {
-            s.enabled = false;
-          });
+          // Transient failure: keep whatever linkage state we had.
         }
       },
 
