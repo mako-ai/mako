@@ -1,4 +1,5 @@
 import { createRoute, z } from "@hono/zod-openapi";
+import { findInWorkspace } from "./lib/load-resource";
 import {
   Flow,
   CdcChangeEvent,
@@ -46,6 +47,9 @@ import {
   validateSyncConfig,
   type IncrementalCapabilities,
 } from "@mako/schemas";
+
+/** `findOne({ _id, workspaceId })` for flows — was written inline sixteen times. */
+const findFlow = findInWorkspace(Flow);
 
 const logger = loggers.inngest("flow");
 
@@ -1095,10 +1099,7 @@ flowRoutes.openapi(
       const workspaceId = c.req.param("workspaceId") as string;
       const flowId = c.req.param("flowId") as string;
 
-      const flow = await Flow.findOne({
-        _id: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const flow = await findFlow(workspaceId, flowId);
 
       if (!flow) {
         return c.json({ success: false, error: "Flow not found" }, 404);
@@ -1165,10 +1166,7 @@ flowRoutes.openapi(
       const body = await c.req.json();
 
       // Find and validate flow
-      const flow = await Flow.findOne({
-        _id: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const flow = await findFlow(workspaceId, flowId);
 
       if (!flow) {
         return c.json({ success: false, error: "Flow not found" }, 404);
@@ -1590,10 +1588,7 @@ flowRoutes.openapi(
       const workspaceId = c.req.param("workspaceId");
       const flowId = c.req.param("flowId");
 
-      const flow = await Flow.findOne({
-        _id: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const flow = await findFlow(workspaceId, flowId);
 
       if (!flow) {
         return c.json({ success: false, error: "Flow not found" }, 404);
@@ -1731,10 +1726,7 @@ flowRoutes.openapi(
       const workspaceId = c.req.param("workspaceId") as string;
       const flowId = c.req.param("flowId") as string;
 
-      const flow = await Flow.findOne({
-        _id: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const flow = await findFlow(workspaceId, flowId);
 
       if (!flow) {
         return c.json({ success: false, error: "Flow not found" }, 404);
@@ -1831,10 +1823,7 @@ flowRoutes.openapi(
         );
       }
 
-      const flow = await Flow.findOne({
-        _id: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const flow = await findFlow(workspaceId, flowId);
       if (!flow) {
         return c.json({ success: false, error: "Flow not found" }, 404);
       }
@@ -1950,10 +1939,7 @@ flowRoutes.openapi(
         }
       }
 
-      const flow = await Flow.findOne({
-        _id: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const flow = await findFlow(workspaceId, flowId);
       if (!flow) {
         return c.json({ success: false, error: "Flow not found" }, 404);
       }
@@ -2156,10 +2142,7 @@ flowRoutes.openapi(
         return c.json({ success: false, error: "entity is required" }, 400);
       }
 
-      const flow = await Flow.findOne({
-        _id: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const flow = await findFlow(workspaceId, flowId);
       if (!flow) {
         return c.json({ success: false, error: "Flow not found" }, 404);
       }
@@ -2873,10 +2856,7 @@ flowRoutes.openapi(
 
       const body = await c.req.json().catch(() => ({}));
 
-      const flow = await Flow.findOne({
-        _id: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const flow = await findFlow(workspaceId, flowId);
       if (!flow) {
         return c.json({ success: false, error: "Flow not found" }, 404);
       }
@@ -4152,10 +4132,7 @@ flowRoutes.openapi(
       const flowId = c.req.param("flowId");
 
       // Verify flow exists and belongs to workspace
-      const flow = await Flow.findOne({
-        _id: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const flow = await findFlow(workspaceId, flowId);
 
       if (!flow) {
         return c.json({ success: false, error: "Flow not found" }, 404);
@@ -4228,10 +4205,7 @@ flowRoutes.openapi(
       const { executionId } = body;
 
       // Verify flow exists and belongs to workspace
-      const flow = await Flow.findOne({
-        _id: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const flow = await findFlow(workspaceId, flowId);
 
       if (!flow) {
         return c.json({ success: false, error: "Flow not found" }, 404);
@@ -4322,10 +4296,7 @@ flowRoutes.openapi(
       const offset = parseInt(c.req.query("offset") || "0");
 
       // Verify flow exists and belongs to workspace
-      const flow = await Flow.findOne({
-        _id: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
+      const flow = await findFlow(workspaceId, flowId);
 
       if (!flow) {
         return c.json({ success: false, error: "Flow not found" }, 404);

@@ -7,6 +7,7 @@
  */
 
 import { Hono } from "hono";
+import { workspaceResourceLoader } from "./lib/load-resource";
 import { Readable } from "stream";
 import { Types } from "mongoose";
 import { z } from "zod";
@@ -483,22 +484,7 @@ dbtRoutes.post("/projects", async (c: AuthenticatedContext) => {
   }
 });
 
-async function findProject(c: AuthenticatedContext) {
-  const workspaceId = c.req.param("workspaceId");
-  const projectId = c.req.param("projectId");
-  if (
-    !workspaceId ||
-    !Types.ObjectId.isValid(workspaceId) ||
-    !projectId ||
-    !Types.ObjectId.isValid(projectId)
-  ) {
-    return null;
-  }
-  return DbtProject.findOne({
-    _id: new Types.ObjectId(projectId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
-}
+const findProject = workspaceResourceLoader(DbtProject, "projectId");
 
 dbtRoutes.get("/projects/:projectId", async (c: AuthenticatedContext) => {
   try {
