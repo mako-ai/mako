@@ -3859,8 +3859,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * What one commit changed in this app
-         * @description The commit's parent and the app-relative files it added, modified, deleted or renamed. Read from the repository — starts no sandbox.
+         * What one commit changed (in this app, or repo-wide)
+         * @description The commit's parent and the files it added, modified, deleted or renamed — app-relative by default, repo-relative with scope=repo (the Source Control graph). Read from the repository — starts no sandbox.
          */
         get: operations["get_api_workspaces_workspaceId_apps_id_git_commit"];
         put?: never;
@@ -18071,6 +18071,7 @@ export interface operations {
         parameters: {
             query: {
                 sha: string;
+                scope?: "app" | "repo";
             };
             header?: never;
             path: {

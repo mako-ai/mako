@@ -49,9 +49,17 @@ import {
   RefreshCw as RefreshIcon,
   RotateCcw as DiscardIcon,
   SquareArrowOutUpRight as OpenFileIcon,
+  Copy as CopyIcon,
+  FileDiff as DiffIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useAppsStore, type AppChange } from "../store/appsStore";
+import {
+  useAppsStore,
+  type AppChange,
+  type AppCommit,
+  type AppCommitFile,
+} from "../store/appsStore";
+import { CommitRow } from "./CommitRow";
 import {
   useConsoleStore,
   selectTabBySettingsSection,
@@ -432,6 +440,46 @@ export default function SourceControlExplorer() {
   );
 
   const commits = useMemo(() => history ?? [], [history]);
+
+  // Graph rows are the SAME CommitRow the app History popover uses — with
+  // repo-wide changed files, since the graph is the whole repository.
+  const fetchCommitFiles = useAppsStore(s => s.fetchCommitFiles);
+  const commitFilesByApp = useAppsStore(s => s.commitFilesByApp);
+  const graphFiles = useMemo(() => {
+    const byKey = appId ? (commitFilesByApp[appId] ?? {}) : {};
+    const out: Record<string, AppCommitFile[]> = {};
+    for (const [key, files] of Object.entries(byKey)) {
+      if (key.startsWith("repo:")) out[key.slice(5)] = files;
+    }
+    return out;
+  }, [commitFilesByApp, appId]);
+  const [graphExpanded, setGraphExpanded] = useState<string | null>(null);
+  const [graphMenu, setGraphMenu] = useState<{
+    anchor: HTMLElement;
+    commit: AppCommit;
+  } | null>(null);
+  const toggleGraphCommit = useCallback(
+    (oid: string) => {
+      const next = graphExpanded === oid ? null : oid;
+      setGraphExpanded(next);
+      if (next && workspaceId && appId) {
+        void fetchCommitFiles(workspaceId, appId, next, "repo");
+      }
+    },
+    [graphExpanded, fetchCommitFiles, workspaceId, appId],
+  );
+  // A repo path opens as the owning app's commit diff; files outside any
+  // app (a root README) are listed but not openable.
+  const openRepoFileDiff = useCallback(
+    (oid: string) => (file: AppCommitFile) => {
+      const m = file.path.match(/^apps\/([^/]+)\/(.+)$/);
+      if (!m) return;
+      const app = apps.find(a => a.slug === m[1]);
+      if (!app) return;
+      focusAppsDiffTab(app.id, m[2], "commit", app.slug, oid);
+    },
+    [apps],
+  );
 
   if (!workspaceId) return null;
 
@@ -889,80 +937,80 @@ export default function SourceControlExplorer() {
                   </Typography>
                 )}
                 {commits.map((entry, index) => (
-                  <Box
+                  <CommitRow
                     key={entry.oid}
-                    title={`${entry.oid.slice(0, 8)} — ${entry.author}`}
-                    sx={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 1,
-                      px: 1.5,
-                      py: 0.4,
-                      minWidth: 0,
-                      overflow: "hidden",
-                      "&:hover": { bgcolor: "action.hover" },
-                    }}
-                  >
-                    {/* The rail dot; VS Code rings the newest commit. */}
-                    <Box
-                      sx={{
-                        width: 9,
-                        height: 9,
-                        borderRadius: "50%",
-                        flexShrink: 0,
-                        bgcolor: index === 0 ? "transparent" : "primary.main",
-                        border: index === 0 ? 2 : 0,
-                        borderColor: "primary.main",
-                      }}
-                    />
-                    {/* Subject owns the row; the author yields. VS Code does
-                      the same — with both fighting for the same pixels the
-                      subject collapsed to two letters in a narrow rail while
-                      an email address took the line. */}
-                    <Box
-                      component="span"
-                      sx={{
-                        flex: 1,
-                        minWidth: 40,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        fontSize: 13,
-                      }}
-                    >
-                      {entry.subject}
-                    </Box>
-                    <Box
-                      component="span"
-                      sx={{
-                        color: "text.disabled",
-                        fontSize: 11.5,
-                        flexShrink: 1,
-                        minWidth: 0,
-                        maxWidth: "35%",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {entry.author}
-                    </Box>
-                    {index === 0 && (
-                      <Chip
-                        icon={<BranchIcon size={11} />}
-                        label={branch}
-                        size="small"
-                        color="primary"
+                    commit={entry}
+                    dense
+                    timeFormat="relative"
+                    expanded={graphExpanded === entry.oid}
+                    onToggle={() => toggleGraphCommit(entry.oid)}
+                    files={graphFiles[entry.oid]}
+                    onFileClick={openRepoFileDiff(entry.oid)}
+                    onMenu={anchor => setGraphMenu({ anchor, commit: entry })}
+                    leading={
+                      // The rail dot; VS Code rings the newest commit.
+                      <Box
                         sx={{
-                          ml: "auto",
-                          height: 18,
-                          fontSize: "0.66rem",
+                          width: 9,
+                          height: 9,
+                          mt: 0.6,
+                          borderRadius: "50%",
                           flexShrink: 0,
+                          bgcolor: index === 0 ? "transparent" : "primary.main",
+                          border: index === 0 ? 2 : 0,
+                          borderColor: "primary.main",
                         }}
                       />
-                    )}
-                  </Box>
+                    }
+                    chips={
+                      index === 0 ? (
+                        <Chip
+                          icon={<BranchIcon size={11} />}
+                          label={branch}
+                          size="small"
+                          color="primary"
+                          sx={{
+                            height: 18,
+                            fontSize: "0.66rem",
+                            flexShrink: 0,
+                          }}
+                        />
+                      ) : undefined
+                    }
+                  />
                 ))}
+                <Menu
+                  anchorEl={graphMenu?.anchor ?? null}
+                  open={Boolean(graphMenu)}
+                  onClose={() => setGraphMenu(null)}
+                >
+                  <MenuItem
+                    onClick={() => {
+                      if (graphMenu) toggleGraphCommit(graphMenu.commit.oid);
+                      setGraphMenu(null);
+                    }}
+                  >
+                    <ListItemIcon>
+                      <DiffIcon size={16} />
+                    </ListItemIcon>
+                    <ListItemText>View changes</ListItemText>
+                  </MenuItem>
+                  <MenuItem
+                    onClick={() => {
+                      if (graphMenu) {
+                        void navigator.clipboard?.writeText(
+                          graphMenu.commit.oid,
+                        );
+                      }
+                      setGraphMenu(null);
+                    }}
+                  >
+                    <ListItemIcon>
+                      <CopyIcon size={16} />
+                    </ListItemIcon>
+                    <ListItemText>Copy commit SHA</ListItemText>
+                  </MenuItem>
+                </Menu>
               </Box>
             </Section>
           </>
