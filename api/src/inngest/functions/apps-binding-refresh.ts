@@ -27,6 +27,7 @@ import {
   materializeAppBinding,
   readBindings,
   type AppBinding,
+  type AppBindingStateDoc,
 } from "../../apps/bindings.service";
 import { isDashboardMaterializationDue } from "../../services/dashboard-materialization-schedule.service";
 
@@ -46,14 +47,19 @@ interface MaterializeEventData {
  * Due = the binding's cron has a run after its last ATTEMPT (not its last
  * success): a binding whose query is broken would otherwise be due on every
  * tick and re-run its failing warehouse query every 15 minutes forever.
+ *
+ * `history` is NEWEST FIRST (recordBindingRun pushes at position 0), so the
+ * last attempt is `history[0]`. Reading `history.at(-1)` here — the OLDEST
+ * run — made every binding look overdue on every tick: all 173 scheduled
+ * bindings re-ran their warehouse queries every 15 minutes.
  */
-async function isBindingDue(
-  projectId: string,
-  binding: AppBinding,
-): Promise<boolean> {
+export function isBindingDueAt(
+  binding: Pick<AppBinding, "schedule" | "timezone">,
+  state: AppBindingStateDoc | null,
+  now = new Date(),
+): boolean {
   if (!binding.schedule) return false;
-  const state = await getBindingState(projectId, binding.name);
-  const lastAttempt = state?.history?.at(-1)?.at ?? null;
+  const lastAttempt = state?.history?.[0]?.at ?? null;
   return isDashboardMaterializationDue({
     schedule: {
       enabled: true,
@@ -61,7 +67,19 @@ async function isBindingDue(
       timezone: binding.timezone,
     },
     lastRefreshedAt: lastAttempt ?? state?.lastMaterializedAt ?? null,
+    now,
   });
+}
+
+async function isBindingDue(
+  projectId: string,
+  binding: AppBinding,
+): Promise<boolean> {
+  if (!binding.schedule) return false;
+  return isBindingDueAt(
+    binding,
+    await getBindingState(projectId, binding.name),
+  );
 }
 
 export const appsBindingSchedulerFunction = inngest.createFunction(
