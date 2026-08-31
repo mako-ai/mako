@@ -105,6 +105,9 @@
     "api/**/*.ts": [
       "eslint --fix --report-unused-disable-directives",
       "prettier --write"
+    ],
+    "{api/src/routes/**/*.ts,api/src/openapi/**/*.ts,packages/schemas/src/**,packages/agent-tools/src/**}": [
+      "bash -c 'pnpm run openapi:sync && git add docs/src/openapi/mako-api.json app/src/api/schema.d.ts'"
     ]
   },
   "devDependencies": {

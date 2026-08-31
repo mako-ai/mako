@@ -17,6 +17,12 @@ CI is stricter than the `husky` pre-commit hook. Always run the package's full l
 
 For cross-package changes, `pnpm run lint:all` covers `app` + `api` + connector-agnosticism.
 
+If you touched `api/src/routes/**`, `packages/schemas/**`, or
+`packages/agent-tools/**`: `pnpm run openapi:sync` and commit the regenerated
+`docs/src/openapi/mako-api.json` + `app/src/api/schema.d.ts` (the hook stages
+them for you when those files are in the commit). A stale committed spec fails
+the "OpenAPI contract + drift check" on EVERY subsequent PR, not just yours.
+
 ## Why the pre-commit hook is not enough
 
 - `lint-staged` only runs on staged files, not the full package.

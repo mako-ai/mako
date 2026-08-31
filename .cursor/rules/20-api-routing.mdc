@@ -5,6 +5,7 @@ description: API routing, middleware, and services conventions
 
 # API Routing & Services
 
+- **OpenAPI contract is committed and CI-diffed.** Any change to routes (add, remove, rename, schema change) — or to `packages/schemas` / `packages/agent-tools` — MUST be followed by `pnpm run openapi:sync`, committing the regenerated `docs/src/openapi/mako-api.json` and `app/src/api/schema.d.ts` in the same commit. The pre-commit hook does this automatically for staged route/schema files (~3s); CI's "OpenAPI contract + drift check" fails every PR while the committed spec is stale — including PRs that never touched routes, because they inherit the drift from master. Never merge a PR red on that check.
 - Routes live under [api/src/routes/](mdc:api/src/routes/) and should export handlers; avoid business logic in route files.
 - Shared logic should reside under [api/src/services/](mdc:api/src/services/).
 - Auth middleware: see [api/src/auth/unified-auth.middleware.ts](mdc:api/src/auth/unified-auth.middleware.ts) and [api/src/auth/auth.middleware.ts](mdc:api/src/auth/auth.middleware.ts).
