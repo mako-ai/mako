@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveMakoContext } from "@makoai/app-sdk/vite";
+import { HOSTED_API_URL } from "@makoai/app-sdk/credentials";
 
-export const HOSTED_API_URL = "https://app.mako.ai";
+export { HOSTED_API_URL };
 
 /** Nearest ancestor holding .mako/workspace.json or .git, else null. */
 export function findRepoRoot(start = process.cwd()) {

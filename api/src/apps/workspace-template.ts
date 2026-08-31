@@ -31,7 +31,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 7;
+export const WORKSPACE_TEMPLATE_VERSION = 8;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -80,6 +80,10 @@ paste:
 2. \`npx @makoai/cli login\` (or \`mako login\` once installed) in this checkout —
    the same sign-in, kept in \`~/.mako/credentials.json\` for \`vite dev\`.
 
+That is ALL a fresh clone needs: the hosted \`https://app.mako.ai\` is the
+built-in default everywhere (\`.mcp.json\`, the vite data plugin, the CLI) —
+no \`.env\`, no key, no URL to configure.
+
 Headless / CI instead: create a workspace API key in Mako (**Workspace
 Settings → API Keys**, scopes \`mcp\` + \`query:read\`) and put it in a
 \`.env\` at the repo root (gitignored): \`MAKO_API_KEY=revops_…\` — the FULL
@@ -89,6 +93,8 @@ An API key, when present, is used instead of the login everywhere.
 
 Self-hosted Mako: set \`MAKO_API_URL\` (\`.env\`, exported — \`.envrc\` does it
 for direnv users) so \`.mcp.json\` and the dev server point at your host.
+Beware: a stale \`MAKO_API_URL\` or \`MAKO_API_KEY\` in \`.env\` overrides the
+login everywhere — if data stops loading, check \`.env\` first.
 
 ## How to work here
 
@@ -123,7 +129,9 @@ from the Mako API with your login (or the key in \`.env\`); a binding that was n
 materialized is built on first request. Results are cached under
 \`node_modules/.mako-data/\` for 5 minutes (\`?refresh\` bypasses).
 
-No key → the app runs and every binding answers 503 with a hint. An app whose
+Not signed in (and no key) → the app still runs, and every \`useQuery\` /
+\`useDuckDB\` surfaces a "not connected: run \`npx @makoai/cli login\`" error
+instead of data. An app whose
 \`vite.config.ts\` predates the plugin: add
 \`import { makoData } from "@makoai/app-sdk/vite";\` and \`makoData()\` to
 \`plugins\`.
