@@ -43,8 +43,8 @@ export const appsDeployFunction = inngest.createFunction(
       { key: "event.data.workspaceId + '/' + event.data.slug", limit: 1 },
     ],
     retries: 2,
+    triggers: { event: APPS_DEPLOY_EVENT },
   },
-  { event: APPS_DEPLOY_EVENT },
   async ({ event, step }) => {
     const data = event.data as AppsDeployEventData;
     const result = await step.run("deploy", () =>
@@ -59,8 +59,8 @@ export const appsDeployReconcileFunction = inngest.createFunction(
   {
     id: "apps-deploy-reconcile",
     name: "Apps: reconcile published apps with main",
+    triggers: { cron: "17 * * * *" },
   },
-  { cron: "17 * * * *" },
   async ({ step }) => {
     const published = (await step.run("list-published", async () =>
       AppProject.find({ publishedSha: { $ne: null } })

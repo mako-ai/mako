@@ -1,4 +1,5 @@
 import { inngest } from "./client";
+import type { InngestFunction } from "inngest";
 import {
   flowFunction,
   flowSchedulerFunction,
@@ -78,7 +79,7 @@ const allWebhookFunctions = [
  * Build the function list lazily so it reads env vars AFTER dotenv.config() runs.
  * Cached after first call.
  */
-let _functions: typeof baseFunctions | null = null;
+let _functions: InngestFunction.Like[] | null = null;
 export function getFunctions() {
   if (_functions) return _functions;
 

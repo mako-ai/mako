@@ -40,8 +40,8 @@ export const dashboardRefreshFunction = inngest.createFunction(
       },
     ],
     retries: 2,
+    triggers: { event: "dashboard.refresh" },
   },
-  { event: "dashboard.refresh" },
   async ({ event, step }) => {
     const {
       dashboardId,
@@ -131,8 +131,8 @@ export const dashboardSchedulerFunction = inngest.createFunction(
   {
     id: "scheduled-dashboard-refresh",
     name: "Scheduled Dashboard Refresh",
+    triggers: { cron: "* * * * *" },
   },
-  { cron: "* * * * *" },
   async ({ step }) => {
     const dashboards = (await step.run("find-stale-dashboards", async () => {
       return Dashboard.find({
@@ -226,8 +226,8 @@ export const cleanupAbandonedMaterializationRunsFunction =
     {
       id: "cleanup-abandoned-materialization-runs",
       name: "Cleanup Abandoned Materialization Runs",
+      triggers: { cron: "*/5 * * * *" },
     },
-    { cron: "*/5 * * * *" },
     async ({ step }) => {
       const abandonedCount = await step.run(
         "mark-stale-runs-abandoned",

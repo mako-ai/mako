@@ -40,8 +40,9 @@ export const usageReportingFunction = inngest.createFunction(
   {
     id: "billing/usage-reporting",
     name: "Report LLM usage to Stripe meters",
+    triggers: { cron: "0 * * * *" },
   },
-  { cron: "0 * * * *" }, // every hour
+  // every hour
   async ({ step }) => {
     if (!isBillingEnabled()) {
       return { skipped: true, reason: "Billing is not enabled" };

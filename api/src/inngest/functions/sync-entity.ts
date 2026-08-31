@@ -132,8 +132,8 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         if: "async.data.flowId == event.data.flowId",
       },
     ],
+    triggers: { event: "flow/sync-backfill-entity" },
   },
-  { event: "flow/sync-backfill-entity" },
   async ({ event, step, logger }): Promise<SyncBackfillEntityResult> => {
     const data = event.data as SyncBackfillEntityPayload;
     const {

@@ -24,7 +24,7 @@ type ParquetWasmModule = {
     };
   };
   writeParquet(table: unknown, writerProperties: unknown): Uint8Array;
-  initSync(module: BufferSource | WebAssembly.Module): unknown;
+  initSync(module: ArrayBufferView | ArrayBuffer | WebAssembly.Module): unknown;
 };
 
 const importParquetWasm = new Function(

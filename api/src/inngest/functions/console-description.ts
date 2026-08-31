@@ -28,8 +28,8 @@ export const consoleDescriptionFunction = inngest.createFunction(
     },
     concurrency: [{ key: "event.data.workspaceId", limit: 3 }],
     retries: 2,
+    triggers: { event: CONSOLE_DESCRIPTION_EVENT },
   },
-  { event: CONSOLE_DESCRIPTION_EVENT },
   async ({ event, step }) => {
     const data = event.data as ConsoleDescriptionEventData;
     const outcome = await step.run("derive", () =>

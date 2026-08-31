@@ -151,8 +151,8 @@ export const webhookRetryFunction = inngest.createFunction(
   {
     id: "webhook-retry-failed",
     name: "Retry Failed Webhook Events",
+    triggers: { cron: "*/30 * * * *" },
   },
-  { cron: "*/30 * * * *" },
   async ({ step, logger }) => {
     const result = await step.run("retry-failed-events", async () => {
       const failedEvents = await WebhookEvent.find({
@@ -386,8 +386,8 @@ export const cdcMaterializeFunction = inngest.createFunction(
       key: "event.data.flowId + ':' + event.data.entity",
       mode: "skip",
     },
+    triggers: { event: "cdc/materialize" },
   },
-  { event: "cdc/materialize" },
   async ({ event, step, logger }) => {
     return runCdcMaterialization({
       eventData: event.data,
@@ -817,8 +817,8 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
     id: "cdc-materialize-scheduler",
     name: "CDC Ingest + Materialize Scheduler",
     concurrency: { limit: 1 },
+    triggers: { cron: "*/5 * * * *" },
   },
-  { cron: "*/5 * * * *" },
   async ({ step, logger }) => {
     const ingestResult = (await step.run("ingest-pending-webhooks", () =>
       ingestPendingWebhookEvents(logger),

@@ -189,8 +189,8 @@ export const dbtRunExecutorFunction = inngest.createFunction(
         if: "async.data.runId == event.data.runId",
       },
     ],
+    triggers: { event: "dbt/run.requested" },
   },
-  { event: "dbt/run.requested" },
   async ({ event, step }) => {
     const data = event.data as DbtRunRequestedEvent;
     const runObjectId = new Types.ObjectId(data.runId);
@@ -664,8 +664,8 @@ export const dbtRunCancelFunction = inngest.createFunction(
     id: "dbt-run-cancel-finalizer",
     name: "Finalize cancelled dbt Run",
     retries: 1,
+    triggers: { event: "dbt/run.cancel" },
   },
-  { event: "dbt/run.cancel" },
   async ({ event, step }) => {
     const { runId, cancelledBy } = event.data as {
       runId: string;
@@ -683,8 +683,8 @@ export const dbtSchedulerFunction = inngest.createFunction(
   {
     id: "dbt-job-scheduler",
     name: "Run Scheduled dbt Jobs",
+    triggers: { cron: "*/1 * * * *" },
   },
-  { cron: "*/1 * * * *" },
   async ({ step }) => {
     const now = new Date();
 
@@ -794,8 +794,8 @@ export const dbtRunSweeperFunction = inngest.createFunction(
   {
     id: "dbt-run-sweeper",
     name: "Cleanup Abandoned dbt Runs",
+    triggers: { cron: "*/5 * * * *" },
   },
-  { cron: "*/5 * * * *" },
   async ({ step }) => {
     const swept = await step.run("sweep-abandoned-dbt-runs", async () => {
       const now = Date.now();

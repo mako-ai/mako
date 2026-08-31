@@ -1,6 +1,9 @@
 import { inngest } from "../client";
 import { loggers } from "../../logging";
-import type { FlowRunTerminalEventData } from "../../services/flow-run-notification.types";
+import type {
+  FlowRunTerminalEventData,
+  NotificationDeliverJobData,
+} from "../../services/flow-run-notification.types";
 import {
   deliverNotificationJob,
   fanOutTerminalRunNotifications,
@@ -13,8 +16,8 @@ export const flowRunTerminalFanoutFunction = inngest.createFunction(
     id: "flow-run-notification-fanout",
     name: "Flow run notification fan-out",
     retries: 3,
+    triggers: { event: "flow.run.terminal" },
   },
-  { event: "flow.run.terminal" },
   async ({ event, step }) => {
     const data = event.data as FlowRunTerminalEventData;
     await step.run("fan-out-rules", async () => {
@@ -36,11 +39,11 @@ export const notificationDeliverFunction = inngest.createFunction(
     id: "notification-deliver",
     name: "Deliver notification",
     retries: 5,
+    triggers: { event: "notification/deliver" },
   },
-  { event: "notification/deliver" },
   async ({ event, step }) => {
     await step.run("deliver", async () => {
-      await deliverNotificationJob(event.data);
+      await deliverNotificationJob(event.data as NotificationDeliverJobData);
     });
   },
 );

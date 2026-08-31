@@ -86,8 +86,8 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
   {
     id: "scheduled-apps-binding-refresh",
     name: "Scheduled Apps Binding Refresh",
+    triggers: { cron: "*/15 * * * *" },
   },
-  { cron: "*/15 * * * *" },
   async ({ step }) => {
     // `slug` is not optional here: readBindings locates the app's files at
     // `apps/<slug>/…` (appRootFor), and without it the lookup falls back to
@@ -169,8 +169,8 @@ export const appsBindingMaterializeFunction = inngest.createFunction(
     // the next due check backs off from it; retrying here would re-run a
     // broken warehouse query for nothing.
     retries: 0,
+    triggers: { event: APPS_BINDING_MATERIALIZE_EVENT },
   },
-  { event: APPS_BINDING_MATERIALIZE_EVENT },
   async ({ event, step }) => {
     const { projectId, binding: name } = event.data as MaterializeEventData;
     return step.run("materialize", async () => {

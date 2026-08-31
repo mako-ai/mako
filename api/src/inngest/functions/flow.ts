@@ -410,8 +410,8 @@ export const flowFunction = inngest.createFunction(
         if: "async.data.flowId == event.data.flowId",
       },
     ],
+    triggers: { event: "flow.execute" },
   },
-  { event: "flow.execute" },
   async ({ event, step, logger }) => {
     const {
       flowId,
@@ -1995,8 +1995,9 @@ export const flowSchedulerFunction = inngest.createFunction(
   {
     id: "scheduled-flow",
     name: "Run Scheduled Flows",
+    triggers: { cron: "*/5 * * * *" },
   },
-  { cron: "*/5 * * * *" }, // Run every 5 minutes to check for flows to execute
+  // Run every 5 minutes to check for flows to execute
   async ({ step, logger }) => {
     const scheduleLogger = getSyncLogger("scheduler");
 
@@ -2135,8 +2136,8 @@ export const cdcScheduledBackfillFunction = inngest.createFunction(
   {
     id: "cdc-scheduled-backfill",
     name: "Run Scheduled CDC Backfills",
+    triggers: { cron: "*/5 * * * *" },
   },
-  { cron: "*/5 * * * *" },
   async ({ step, logger }) => {
     const flows = (await step.run(
       "fetch-backfill-scheduled-flows",
@@ -2233,8 +2234,8 @@ export const manualFlowFunction = inngest.createFunction(
   {
     id: "manual-flow",
     name: "Manual Flow Trigger",
+    triggers: { event: "flow.manual" },
   },
-  { event: "flow.manual" },
   async ({ event, step }) => {
     const { flowId } = event.data;
 
@@ -2257,8 +2258,8 @@ export const cancelFlowFunction = inngest.createFunction(
   {
     id: "cancel-flow",
     name: "Cancel Running Flow",
+    triggers: { event: "flow.cancel" },
   },
-  { event: "flow.cancel" },
   async ({ event, logger }) => {
     const { flowId, executionId } = event.data;
 
@@ -2319,8 +2320,8 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
   {
     id: "cleanup-abandoned-flows",
     name: "Cleanup Abandoned Flows",
+    triggers: { cron: "*/5 * * * *" },
   },
-  { cron: "*/5 * * * *" },
   async ({ step, logger }) => {
     const result = await step.run("cleanup-abandoned-flows", async () => {
       const db = Flow.db;
