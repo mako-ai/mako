@@ -404,21 +404,28 @@ Keep this list current: it is the hand-off.
       Published packages show it from their next release.
 - [ ] **Directory listings — what is still missing** (Anthropic Software
       Directory policy, also useful for Cursor/OpenAI):
-      - [ ] Website legal pages: mako-marketing PR #47 adds /privacy, /terms,
-            /about, /security, /support, /.well-known/security.txt. Fill
-            `website/lib/company.ts` (registered entity, address, venue),
-            have counsel read Terms, merge.
+      - [x] Website legal pages LIVE (mako-marketing #47): mako.ai/privacy,
+            /terms, /about, /security, /support, /.well-known/security.txt.
+            Entity: RealAdvisor SA, Plan-les-Ouates, CHE-373.280.297. Counsel
+            review of the Terms still advisable.
       - [ ] Mailboxes `support@`, `privacy@`, `security@`, `legal@mako.ai`
             (Google Workspace aliases) — "verified contact information".
-      - [ ] A **test account with sample data** for reviewers: a demo
-            workspace (DEMO_DATABASE_URL exists) with a read-only API key
-            or a reviewer login.
+      - [x] **Reviewer test account** (2026-08-31): prod user
+            `joan+mako-reviewer@realadvisor.com` (email/password — password in
+            the owner's 1Password), workspace "Mako Demo (reviewers)"
+            (`6a958b6c18445523a079e8c3`, slug mako-demo-reviewers) with the
+            Chinook demo Postgres attached, plus a read-only `mcp,query:read`
+            API key named "Anthropic directory reviewer". Verified: OAuth-free
+            key path answers `list_connections` and a Chinook query.
       - [ ] Three working examples — the MCP docs page has them; link them
             in the submission.
       - [x] Tool annotations: `title` added next to readOnlyHint /
             destructiveHint (PR #868); names ≤ 26 chars.
+      - [x] Plugin repo for directories that want one: github.com/mako-ai/mako-plugin
+            (Agent Plugins spec: plugin.json, mcp.json, .mcp.json, skill, Cursor rule).
       - [ ] Submit: Anthropic (partner form via the Software Directory
-            policy page), Cursor directory PR, OpenAI connector review.
+            policy page), Cursor (cursor.directory/plugins/new → paste the
+            plugin repo URL, GitHub sign-in), OpenAI connector review.
 - [ ] **Decide**: hide/rename the sandbox-shaped `app_*` file tools for MCP
       clients that identify as a local checkout; `skills/<name>/SKILL.md`
       in workspace repos (§10 Block D1); fetch-before-write for every
