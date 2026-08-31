@@ -171,6 +171,38 @@ function testGroupsEntityIsAvailable() {
   );
 }
 
+function testCallWebhookEventsIncludeUpdated() {
+  const connector = createConnector();
+
+  // Regression: `activity.call updated` was missing from the subscription
+  // list, so manually-logged calls (source "External") kept duration 0 forever
+  // and recordings never attached — while created/answered/completed flowed.
+  assert.deepEqual(connector.getWebhookEventsForEntities(["activities:Call"]), [
+    "activity.call.created",
+    "activity.call.updated",
+    "activity.call.deleted",
+    "activity.call.answered",
+    "activity.call.completed",
+  ]);
+  assert.deepEqual(connector.getWebhookEventMapping("activity.call.updated"), {
+    entity: "activities:Call",
+    operation: "upsert",
+  });
+}
+
+function testTaskCompletedWebhookEventsIncludeUpdated() {
+  const connector = createConnector();
+
+  assert.deepEqual(
+    connector.getWebhookEventsForEntities(["activities:TaskCompleted"]),
+    [
+      "activity.task_completed.created",
+      "activity.task_completed.updated",
+      "activity.task_completed.deleted",
+    ],
+  );
+}
+
 function testGroupWebhookEventsAreScopedToGroups() {
   const connector = createConnector();
 
@@ -597,6 +629,8 @@ async function main() {
   testWebhookChangeIdUsesNestedEventId();
   testWebhookChangeIdFallbackIncludesSourceTs();
   testGroupsEntityIsAvailable();
+  testCallWebhookEventsIncludeUpdated();
+  testTaskCompletedWebhookEventsIncludeUpdated();
   testGroupWebhookEventsAreScopedToGroups();
   testGroupWebhookEventsAreMapped();
   await testGroupSchemaResolves();

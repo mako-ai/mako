@@ -94,6 +94,11 @@ const CLOSE_SUPPORTED_WEBHOOK_SELECTORS: CloseWebhookSelector[] = [
   { object_type: "opportunity", action: "updated" },
   { object_type: "opportunity", action: "deleted" },
   { object_type: "activity.call", action: "created" },
+  // `updated` is how manually-logged calls (source "External") get their real
+  // duration (created with duration 0, then updated on save), and how native
+  // calls get recording_url/has_recording after the recording lands. Without
+  // this selector those fields freeze at their creation values.
+  { object_type: "activity.call", action: "updated" },
   { object_type: "activity.call", action: "deleted" },
   { object_type: "activity.call", action: "answered" },
   { object_type: "activity.call", action: "completed" },
@@ -125,6 +130,7 @@ const CLOSE_SUPPORTED_WEBHOOK_SELECTORS: CloseWebhookSelector[] = [
   { object_type: "activity.opportunity_status_change", action: "updated" },
   { object_type: "activity.opportunity_status_change", action: "deleted" },
   { object_type: "activity.task_completed", action: "created" },
+  { object_type: "activity.task_completed", action: "updated" },
   { object_type: "activity.task_completed", action: "deleted" },
   { object_type: "activity.custom_activity", action: "created" },
   { object_type: "activity.custom_activity", action: "updated" },
