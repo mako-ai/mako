@@ -1,5 +1,5 @@
 import { Db, ObjectId } from "mongodb";
-import * as crypto from "crypto";
+import { decryptEncrypted } from "../services/crypto.service";
 import * as dotenv from "dotenv";
 import { syncConnectorRegistry } from "./connector-registry";
 import { databaseConnectionService } from "../services/database-connection.service";
@@ -254,22 +254,8 @@ class DatabaseDataSourceManager {
     if (!encryptedString || !encryptedString.includes(":")) {
       return encryptedString; // Not encrypted
     }
-
     try {
-      const textParts = encryptedString.split(":");
-      const iv = Buffer.from(textParts[0], "hex");
-      const encryptedText = Buffer.from(textParts.slice(1).join(":"), "hex");
-
-      const decipher = crypto.createDecipheriv(
-        "aes-256-cbc",
-        Buffer.from(this.getEncryptionKey(), "hex"),
-        iv,
-      );
-
-      let decrypted = decipher.update(encryptedText);
-      decrypted = Buffer.concat([decrypted, decipher.final()]);
-
-      return decrypted.toString();
+      return decryptEncrypted(encryptedString);
     } catch (error) {
       logger.error("Decryption failed", { error });
       // Don't return the original string if decryption fails - throw error

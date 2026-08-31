@@ -1,5 +1,5 @@
 import { Db, ObjectId } from "mongodb";
-import * as crypto from "crypto";
+import { decryptEncrypted } from "../services/crypto.service";
 import * as dotenv from "dotenv";
 import { databaseConnectionService } from "../services/database-connection.service";
 
@@ -106,32 +106,7 @@ export class DatabaseDestinationManager {
   }
 
   private decryptString(encryptedString: string): string {
-    // Get encryption key from environment
-    const encryptionKey = process.env.ENCRYPTION_KEY;
-    if (!encryptionKey) {
-      throw new Error("ENCRYPTION_KEY environment variable is not set");
-    }
-
-    // Parse the encrypted string (format: iv:encrypted_data)
-    const textParts = encryptedString.split(":");
-    if (textParts.length !== 2) {
-      throw new Error("Invalid encrypted string format");
-    }
-
-    const iv = Buffer.from(textParts[0], "hex");
-    const encryptedText = Buffer.from(textParts[1], "hex");
-
-    // Decrypt using AES-256-CBC
-    const decipher = crypto.createDecipheriv(
-      "aes-256-cbc",
-      Buffer.from(encryptionKey, "hex"),
-      iv,
-    );
-
-    let decrypted = decipher.update(encryptedText);
-    decrypted = Buffer.concat([decrypted, decipher.final()]);
-
-    return decrypted.toString();
+    return decryptEncrypted(encryptedString);
   }
 }
 

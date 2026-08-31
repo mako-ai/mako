@@ -1,57 +1,16 @@
 import mongoose, { Schema, Document, Types } from "mongoose";
 import { v4 as uuidv4 } from "uuid";
-import * as crypto from "crypto";
+import { encryptString, decryptString } from "../services/crypto.service";
 import { loggers } from "../logging";
 import {
   WORKSPACE_API_KEY_SCOPES,
   type WorkspaceApiKeyScope,
 } from "../auth/api-key-scopes";
 
-// Encryption helper functions
-let _encryptionKey: string | null = null;
-
-function getEncryptionKey(): string {
-  if (!_encryptionKey) {
-    const key = process.env.ENCRYPTION_KEY;
-    if (!key) {
-      throw new Error("ENCRYPTION_KEY environment variable is not set");
-    }
-    _encryptionKey = key;
-  }
-  return _encryptionKey;
-}
-
-const IV_LENGTH = 16;
-
-export function encrypt(text: string): string {
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv(
-    "aes-256-cbc",
-    Buffer.from(getEncryptionKey(), "hex"),
-    iv,
-  );
-  let encrypted = cipher.update(text);
-  encrypted = Buffer.concat([encrypted, cipher.final()]);
-  return iv.toString("hex") + ":" + encrypted.toString("hex");
-}
-
-export function decrypt(text: string): string {
-  const textParts = text.split(":");
-  const ivHex = textParts.shift();
-  if (!ivHex) {
-    throw new Error("Invalid encrypted text format: missing IV");
-  }
-  const iv = Buffer.from(ivHex, "hex");
-  const encryptedText = Buffer.from(textParts.join(":"), "hex");
-  const decipher = crypto.createDecipheriv(
-    "aes-256-cbc",
-    Buffer.from(getEncryptionKey(), "hex"),
-    iv,
-  );
-  let decrypted = decipher.update(encryptedText);
-  decrypted = Buffer.concat([decrypted, decipher.final()]);
-  return decrypted.toString();
-}
+// Encryption: ONE implementation, in services/crypto.service. These names
+// are kept for the many callers that import them from here.
+export const encrypt = encryptString;
+export const decrypt = decryptString;
 
 function encryptObject(obj: any): any {
   const encrypted: any = {};
