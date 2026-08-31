@@ -50,6 +50,11 @@ import {
 } from "../../apps/worktree.service";
 import { materializeAppBinding } from "../../apps/bindings.service";
 import {
+  DEFAULT_BRANCH,
+  repoDirFor,
+  resolveCommit,
+} from "../../apps/repository.service";
+import {
   devConsolePath,
   devLogPath,
   ensureDevServer,
@@ -469,7 +474,8 @@ export function createAppsTools({
 
     app_status: tool({
       description:
-        "Show an Apps worktree's durable status: base commit, WIP snapshot, changed files vs base, and whether the branch has moved.",
+        "Show an Apps worktree's durable status: base commit, WIP snapshot, changed files vs base, and whether the branch has moved. " +
+        "This is the SANDBOX's git state, not what is deployed — for the live app's published commit, use app_publish_status.",
       inputSchema: z.object({ appId: z.string() }),
       execute: async ({ appId }) => {
         const loaded = await loadProject(appId, { write: false });
@@ -477,6 +483,42 @@ export function createAppsTools({
         try {
           const status = await worktreeStatus(loaded.project, actorId);
           return { success: true, status };
+        } catch (error) {
+          return { success: false, error: errorMessage(error) };
+        }
+      },
+    }),
+
+    app_publish_status: tool({
+      description:
+        "What is LIVE for this app: the published deployment's commit sha vs the tip of the default branch. " +
+        "A push to the default branch builds and publishes automatically; when the branch is ahead of the published sha, " +
+        "the newest commits are still building or the build failed (app_dev_log / the Mako UI header have the build output). " +
+        "For the sandbox worktree's own git state, use app_status.",
+      inputSchema: z.object({ appId: z.string() }),
+      execute: async ({ appId }) => {
+        const loaded = await loadProject(appId, { write: false });
+        if ("error" in loaded) return { success: false, error: loaded.error };
+        try {
+          const project = loaded.project;
+          const branch = project.defaultBranch || DEFAULT_BRANCH;
+          const branchSha = await resolveCommit(
+            repoDirFor(project.workspaceId.toString()),
+            `refs/heads/${branch}`,
+          );
+          const publishedSha = project.publishedSha ?? null;
+          return {
+            success: true,
+            status: {
+              published: !!publishedSha,
+              publishedSha,
+              publishedAt: project.publishedAt ?? null,
+              branch,
+              branchSha,
+              upToDate:
+                !!publishedSha && !!branchSha && publishedSha === branchSha,
+            },
+          };
         } catch (error) {
           return { success: false, error: errorMessage(error) };
         }

@@ -3,6 +3,7 @@ import { parseArgs } from "./args.js";
 import { loadContext } from "./context.js";
 import { login } from "./login.js";
 import { dev } from "./dev.js";
+import { status } from "./status.js";
 
 const HELP = `mako — Mako from your terminal
 
@@ -10,6 +11,7 @@ const HELP = `mako — Mako from your terminal
   mako logout                                     forget the stored credential for this host/workspace
   mako whoami                                     show which host/workspace you are signed in to
   mako dev     [<app>] [--port <n>] [--open]      run apps/<app> locally with real data
+  mako status  [<app>]                            what is LIVE: published commit vs the tip of main
 
 Run inside a workspace checkout; the host comes from --api-url, MAKO_API_URL,
 the repo's .env, or defaults to https://app.mako.ai. An API key in .env
@@ -43,6 +45,8 @@ export async function main(argv, io = { log: console.log }) {
     }
     case "dev":
       return dev(ctx, positional, flags, io);
+    case "status":
+      return status(ctx, positional, io);
     default:
       io.log(`unknown command "${command}"\n\n${HELP}`);
       return 2;
