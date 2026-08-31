@@ -96,8 +96,8 @@ export function searchDashboards(
 ): PaletteEntityItem[] {
   const state = useDashboardTreeStore.getState();
   const entries = [
-    ...flattenDashboards(state.myDashboards[workspaceId] ?? []),
-    ...flattenDashboards(state.workspaceDashboards[workspaceId] ?? []),
+    ...flattenDashboards(state.myItems[workspaceId] ?? []),
+    ...flattenDashboards(state.workspaceItems[workspaceId] ?? []),
   ];
   const seen = new Set<string>();
   const scored: Scored[] = [];
