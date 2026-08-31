@@ -30,6 +30,12 @@ export interface AppMeta {
   publishedAt?: string;
   /** Sharing scope: private = owner's "My Apps", workspace = everyone's. */
   access?: "private" | "workspace";
+  /**
+   * The user who owns the sharing state (API field name, as stored). A
+   * private app whose owner is not the viewer was shared with them
+   * personally — the sidebar's "Shared with me" section.
+   */
+  owner_id?: string;
 }
 
 export interface AppFileEntry {

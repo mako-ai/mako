@@ -21,6 +21,7 @@ import {
 } from "@mui/material";
 import {
   Globe as GlobeIcon,
+  Users as SharedIcon,
   User as UserIcon,
   Braces as JsonFileIcon,
   Database as BindingIcon,
@@ -41,6 +42,7 @@ import {
 } from "../store/consoleStore";
 import { SECTION_LABELS } from "../pages/settings/sections";
 import { useAppsStore, type AppFileEntry } from "../store/appsStore";
+import { useAuth } from "../contexts/auth-context";
 import { focusAppsFileTab, focusAppsTab } from "../apps-runtime/shell";
 import {
   useExplorerRevealStore,
@@ -150,6 +152,8 @@ export default function AppsExplorer() {
   const workspaceId = currentWorkspace?.id;
 
   const apps = useAppsStore(s => s.apps);
+  const { user } = useAuth();
+  const userId = user?.id;
   const loading = useAppsStore(s => s.appsLoading);
   const error = useAppsStore(s => s.error);
   const clearError = useAppsStore(s => s.clearError);
@@ -261,17 +265,26 @@ export default function AppsExplorer() {
         : undefined,
     }));
     // §10 monorepo: ONE repo per workspace — the repo is not a tree level.
-    // Two sections ("My Apps" / "Workspace", split by access), kept identical
-    // across the v1->v2 cutover so it was invisible in the tree. Access is
-    // organization, not security (§11.5): builders with repo access see all
-    // folders either way.
+    // Three sections. "My Apps" and "Workspace" split by access, kept from
+    // the v1 rail; "Shared with me" is the private apps someone ELSE
+    // restricted and then shared with you personally — splitting by access
+    // alone filed those under "My Apps", next to apps you own, which read as
+    // "mine" while they were Vadim's. Access is organization, not security
+    // (§11.5): builders with repo access see all folders either way.
     const byId = new Map(apps.map(a => [a.id, a]));
+    const isWorkspace = (id: string) =>
+      (byId.get(id)?.access ?? "workspace") === "workspace";
+    // No owner recorded (a row older than owner tracking) counts as yours —
+    // the old behaviour, so nothing silently moves out of "My Apps".
+    const isSharedWithMe = (id: string) => {
+      const owner = byId.get(id)?.owner_id;
+      return !isWorkspace(id) && !!owner && !!userId && owner !== userId;
+    };
     const mine = appNodes.filter(
-      n => (byId.get(n.id)?.access ?? "workspace") !== "workspace",
+      n => !isWorkspace(n.id) && !isSharedWithMe(n.id),
     );
-    const shared = appNodes.filter(
-      n => (byId.get(n.id)?.access ?? "workspace") === "workspace",
-    );
+    const sharedWithMe = appNodes.filter(n => isSharedWithMe(n.id));
+    const shared = appNodes.filter(n => isWorkspace(n.id));
     return [
       {
         key: "my",
@@ -281,6 +294,18 @@ export default function AppsExplorer() {
         droppableId: "__section_my",
         defaultAccess: "private" as const,
       },
+      // Not a drop target: only the owner can change these apps' sharing, so
+      // there is nothing a drop here could legitimately do.
+      ...(sharedWithMe.length > 0
+        ? [
+            {
+              key: "shared-with-me",
+              label: "Shared with me",
+              icon: <SharedIcon size={16} strokeWidth={1.5} />,
+              nodes: sharedWithMe,
+            },
+          ]
+        : []),
       {
         key: "workspace",
         label: "Workspace",
@@ -290,7 +315,7 @@ export default function AppsExplorer() {
         defaultAccess: "workspace" as const,
       },
     ];
-  }, [apps, filesByApp]);
+  }, [apps, filesByApp, userId]);
 
   // Drag an app onto the other section (or any node inside it) to flip its
   // sharing. Drops within the same section no-op.
@@ -299,6 +324,17 @@ export default function AppsExplorer() {
       if (!workspaceId) return;
       const parsed = parseNodeId(nodeId);
       if (parsed.kind !== "app") return;
+      // Someone else's private app, shared with you: the API refuses to
+      // change its sharing for anyone but the owner, so don't ask.
+      const dragged = apps.find(a => a.id === parsed.appId);
+      if (
+        dragged?.access === "private" &&
+        dragged.owner_id &&
+        userId &&
+        dragged.owner_id !== userId
+      ) {
+        return;
+      }
       const accessOf = (appId: string) =>
         (apps.find(a => a.id === appId)?.access ?? "workspace") === "workspace"
           ? "workspace"
@@ -314,7 +350,7 @@ export default function AppsExplorer() {
       if (!next || accessOf(parsed.appId) === next) return;
       void setAppAccess(workspaceId, parsed.appId, next);
     },
-    [workspaceId, apps, setAppAccess],
+    [workspaceId, apps, setAppAccess, userId],
   );
 
   const handleLoadChildren = useCallback(
