@@ -129,6 +129,7 @@ import {
   readBindings,
 } from "../apps/bindings.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
 const logger = loggers.api("apps");
@@ -1235,14 +1236,21 @@ appsRoutes.openapi(
     method: "get",
     path: "/{id}/bindings/{name}/artifact",
     tags: ["Apps"],
-    summary: "Stream a binding's materialized parquet artifact",
+    summary: "Serve a binding's materialized parquet artifact",
+    description:
+      "Redirects to a short-lived signed bucket URL when the artifact " +
+      "store supports it (the browser downloads directly from the bucket); " +
+      "streams the bytes otherwise. Follow redirects.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam.extend({
         name: z.string().openapi({ param: { name: "name", in: "path" } }),
       }),
     },
-    responses: OPEN_RESPONSES,
+    responses: {
+      ...OPEN_RESPONSES,
+      302: { description: "Redirect to a short-lived signed artifact URL" },
+    },
   }),
   async c => {
     try {
@@ -1252,31 +1260,23 @@ appsRoutes.openapi(
       if (!/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(name)) {
         return c.json({ success: false, error: "Invalid binding name" }, 400);
       }
-      const store = getDashboardArtifactStore();
       const key = await bindingArtifactKeyByName(
         loaded.project,
         name,
         loaded.userId ?? "",
       );
-      const stream = key ? await store.openReadStream(key) : null;
-      if (!key || !stream) {
+      const response = key
+        ? await serveParquetArtifact(getDashboardArtifactStore(), key, {
+            cacheControl: "no-store",
+          })
+        : null;
+      if (!response) {
         return c.json(
           { success: false, error: `Binding "${name}" is not materialized` },
           404,
         );
       }
-      const size = await store.getSize(key);
-      return new Response(
-        Readable.toWeb(stream as Readable) as ReadableStream,
-        {
-          status: 200,
-          headers: {
-            "Content-Type": "application/vnd.apache.parquet",
-            ...(size !== null ? { "Content-Length": String(size) } : {}),
-            "Cache-Control": "no-store",
-          },
-        },
-      );
+      return response;
     } catch (error) {
       return handleError(c, error);
     }

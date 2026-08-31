@@ -3824,7 +3824,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Stream a binding's materialized parquet artifact */
+        /**
+         * Serve a binding's materialized parquet artifact
+         * @description Redirects to a short-lived signed bucket URL when the artifact store supports it (the browser downloads directly from the bucket); streams the bytes otherwise. Follow redirects.
+         */
         get: operations["get_api_workspaces_workspaceId_apps_id_bindings_name_artifact"];
         put?: never;
         post?: never;
@@ -17996,6 +17999,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Redirect to a short-lived signed artifact URL */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Successful response */
             "2XX": {
                 headers: {

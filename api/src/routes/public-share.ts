@@ -43,6 +43,7 @@ import {
 import { executePublicAppLiveBinding } from "../services/public-live-query.service";
 import { bindingArtifactKeyByName } from "../apps/bindings.service";
 import { serveDeploymentFile } from "../apps/deployment.service";
+import { serveParquetArtifact } from "../services/artifact-delivery.service";
 
 const logger = loggers.api("public-share");
 
@@ -523,6 +524,20 @@ app.openapi(
           artifactId,
           "",
         );
+        // App bindings have no revision to pin caching to, so nothing is
+        // lost by handing the browser a signed bucket URL instead of a
+        // proxied stream. Dashboard/notebook artifacts below keep streaming:
+        // their `rev`-addressed responses are immutable-cacheable, which a
+        // per-request signed URL would break.
+        if (artifactKey) {
+          const redirected = await serveParquetArtifact(
+            getDashboardArtifactStore(),
+            artifactKey,
+            { cacheControl: "private, no-store" },
+          );
+          if (redirected) return redirected;
+          return c.json({ success: false, error: "Artifact not found" }, 404);
+        }
       } else {
         const info = getBindingArtifactInfo(resource.doc, artifactId);
         if (info) {

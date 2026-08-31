@@ -22,6 +22,7 @@ import { Readable } from "node:stream";
 import fs from "node:fs/promises";
 import os from "node:os";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import { bindingArtifactKeyByName, readBindings } from "./bindings.service";
 import { AppProject, type IAppProject } from "../database/workspace-schema";
 import { loggers } from "../logging";
@@ -375,17 +376,9 @@ export async function serveDeploymentFile(input: {
     const key = project
       ? await bindingArtifactKeyByName(project, dataMatch[1], "", sha)
       : null;
-    const stream = key ? await store.openReadStream(key) : null;
-    if (!key || !stream) return null;
-    const size = await store.getSize(key);
-    return new Response(Readable.toWeb(stream as Readable) as ReadableStream, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/vnd.apache.parquet",
-        ...(size !== null ? { "Content-Length": String(size) } : {}),
-        // Parquet readers need the length to find the footer.
-        "Cache-Control": input.private ? "private, no-store" : "no-store",
-      },
+    if (!key) return null;
+    return await serveParquetArtifact(store, key, {
+      cacheControl: input.private ? "private, no-store" : "no-store",
     });
   }
 

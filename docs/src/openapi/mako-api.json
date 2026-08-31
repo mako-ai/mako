@@ -24065,7 +24065,8 @@
         "tags": [
           "Apps"
         ],
-        "summary": "Stream a binding's materialized parquet artifact",
+        "summary": "Serve a binding's materialized parquet artifact",
+        "description": "Redirects to a short-lived signed bucket URL when the artifact store supports it (the browser downloads directly from the bucket); streams the bytes otherwise. Follow redirects.",
         "security": [
           {
             "cookieAuth": []
@@ -24101,6 +24102,9 @@
           }
         ],
         "responses": {
+          "302": {
+            "description": "Redirect to a short-lived signed artifact URL"
+          },
           "2XX": {
             "description": "Successful response",
             "content": {
