@@ -13,20 +13,22 @@ connectors/
 ├── base/
 │   └── BaseConnector.ts     # Abstract base class for all connectors
 ├── stripe/
-│   ├── connector.ts         # Stripe connector implementation
-│   ├── index.ts             # Module exports
-│   └── icon.svg             # Stripe connector icon
 ├── close/
-│   ├── connector.ts         # Close CRM connector implementation
-│   ├── index.ts             # Module exports
-│   └── icon.svg             # Close connector icon
+├── claap/
+├── calendly/
+├── pandadoc/
+├── wise/
+├── posthog/
 ├── graphql/
-│   ├── connector.ts         # Generic GraphQL API connector implementation
-│   ├── index.ts             # Module exports
-│   └── icon.svg             # GraphQL connector icon
+├── bigquery/
+├── rest/
 ├── registry.ts              # Runtime connector discovery for the API server
 └── README.md               # This file
 ```
+
+Each connector directory follows the same shape: `connector.ts` (implementation),
+`index.ts` (exports the `XxxConnector` class), `icon.svg`, and usually
+`connector.test.ts` + `schema.ts` for typed entity schemas.
 
 ## Creating a New Connector
 
@@ -102,23 +104,25 @@ All sensitive configuration data (API keys, passwords, etc.) is encrypted before
 
 ## Available Connectors
 
+See the [SaaS Connectors](/connectors/) docs page for the full, up-to-date
+table of connectors and entities. Summary:
+
 ### Stripe
 
 - Syncs payment data from Stripe
-- Supported entities: customers, subscriptions, charges, invoices, products, plans
+- Supported entities: customers, subscriptions, disputes, charges, invoices, products, prices, plans, payment intents
 - Required config: `api_key`
+- Supports backfill and CDC webhooks (auto-provisioning)
 
 ### Close
 
 - Syncs CRM data from Close
-- Supported entities: leads, opportunities, activities, contacts, users, custom_fields
+- Supported entities: leads, opportunities, activities (10+ sub-types), contacts, users, custom_fields
 - Required config: `api_key`
 
-### GraphQL
+### Claap, Calendly, PandaDoc
 
-- Generic GraphQL API connector
-- Supports custom queries with offset or cursor pagination
-- Required config: `endpoint`, `queries`
+- Fixed-entity connectors with backfill + CDC webhook support (auto-provisioned where the provider allows it)
 
 ### Wise
 
@@ -127,6 +131,17 @@ All sensitive configuration data (API keys, passwords, etc.) is encrypted before
 - Required config: `api_key` (personal API token); optional `profile_id`, `api_base_url` (sandbox)
 - Webhooks verified with Wise's RSA-SHA256 public keys; provisioning is manual (personal tokens can't create subscriptions — register the webhook URL in the Wise Developer Hub)
 
+### PostHog
+
+- Hybrid connector: built-in REST entities (surveys, survey_responses, feature_flags, experiments, annotations) plus dynamic HogQL query entities configured on the Flow
+- Required config: `project_id`, `api_key`
+
+### GraphQL
+
+- Generic GraphQL API connector
+- Supports custom queries with offset or cursor pagination
+- Required config: `endpoint`, `queries` (configured on the Flow, not the connector)
+
 ## Future Connectors
 
 The architecture supports easy addition of new connectors such as:
@@ -134,7 +149,6 @@ The architecture supports easy addition of new connectors such as:
 - Salesforce
 - HubSpot
 - PostgreSQL/MySQL (direct database connections)
-- REST APIs
 - Webhooks
 - CSV imports
 
