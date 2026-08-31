@@ -1,0 +1,18 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+  "name": "ai.mako/mako",
+  "title": "Mako",
+  "description": "Explore your company's databases, validate SQL, and build and publish data apps in your Mako workspace — read-only by default, OAuth sign-in, your own AI subscription.",
+  "version": "1.0.0",
+  "websiteUrl": "https://mako.ai",
+  "repository": {
+    "url": "https://github.com/mako-ai/mako",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://app.mako.ai/api/mcp"
+    }
+  ]
+}

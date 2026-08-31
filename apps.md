@@ -2195,10 +2195,12 @@ Refresh is **monotonic on `templateVersion`**: a repo only moves forward, so a
 dev API and a prod API on different versions sharing one connected repo (this
 workspace) cannot ping-pong. It runs from repo init and, throttled to once an
 hour per process, off the apps list route — any workspace someone looks at
-gets and stays current. It also upgrades an app's `vite.config.ts` to the
-current scaffold **only when the file is byte-identical to a scaffold we
-wrote** (58 of 59 were); a config anyone touched is theirs, and `AGENTS.md`
-gives the one-line by-hand path. A test pins a fingerprint of the managed
+gets and stays current. A refresh writes **nothing under `apps/`**: the
+first one upgraded 58 scaffold-identical `vite.config.ts` files in one commit
+and prod dutifully rebuilt every published app for a dev-only change
+(§15.4). New apps get `makoData()` from the scaffold; `AGENTS.md` gives the
+one-line by-hand path for older ones.
+A test pins a fingerprint of the managed
 content so changing it without bumping the version fails CI.
 
 **`@mako/app-sdk/vite`** — `makoData()`, a dependency-free Vite plugin in the
@@ -2274,10 +2276,39 @@ It also found two things worth more than the chart:
   `main` for them. A push touching many apps should hand the loop to an
   Inngest function — durable and resumable — and answer the webhook at once.
 
-### 15.5 Still open
+### 15.5 Second pass: no key to paste, and the SDK becomes a real package (2026-08-31, later)
 
-`mako login` (device flow writing `~/.mako/credentials`) to replace the paste-
-a-key step; hiding or renaming the box-shaped `app_*` tools for a client that
+Three follow-ups from the review of the first pass, plus one correction.
+
+- **The refresh writes nothing under `apps/`.** See §15.2; the correction
+  that keeps a template bump from fanning rebuilds out to prod.
+- **`@mako/app-sdk` is a real workspace package** (`packages/app-sdk`, plain
+  ESM + `.d.ts`, `node --test`, publishable) instead of a 600-line template
+  literal. `app-sdk-package.ts` vendors its files from disk — the API build
+  copies them to `dist/app-sdk`, the same trick system skills use — so the
+  bytes in a workspace repo are the bytes on npm. Publishing is a
+  `pnpm publish` away once we own the `@mako` scope (nothing is under it
+  today; `mako` and `mako-cli` unscoped are taken by strangers, and the
+  Python SDK's `mako` collides with the Mako templating engine on PyPI).
+- **`mako login` / `mako dev`** (`packages/cli`, `@mako/cli`, dependency-free
+  beyond the SDK). `login` is the OAuth 2.1 sign-in every MCP client already
+  performs against Mako — PKCE, loopback redirect (RFC 8252, which the
+  authorization server already allowed), dynamic client registration —
+  stored in `~/.mako/credentials.json` keyed by host and workspace, refreshed
+  on demand by the shared `@mako/app-sdk/credentials` module. The Vite plugin
+  reads it when there is no API key. So the template is now **OAuth-first**
+  (v2): `.mcp.json` carries no `Authorization` header and the agent signs in
+  through its own browser prompt; the API key path remains for CI. To make
+  that work, OAuth tokens get the same narrow allowlist scoped keys got —
+  the three read-only binding routes — with the token validated *before* the
+  path check.
+- **`server.json`** at the repository root describes the hosted remote for
+  the MCP Registry (`ai.mako/mako`, streamable HTTP). Submitting it (and the
+  Anthropic and Cursor directories) is a release step, not code.
+
+### 15.6 Still open
+
+hiding or renaming the box-shaped `app_*` tools for a client that
 declares itself a local checkout; `skills/<name>/SKILL.md` in the repo for
 workspace-authored skills (§10 Block D1) — system skills stay behind MCP;
 converging the box launcher on `makoData`; and a decision on whether the

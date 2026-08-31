@@ -26,13 +26,12 @@ import { createHash } from "node:crypto";
 import { loggers } from "../logging";
 import { appSdkFiles } from "./app-sdk-package";
 import { workspaceRootGitignore } from "./box";
-import { LEGACY_VITE_CONFIGS, currentViteConfig } from "./scaffold";
-import { listTree, readBlob, resolveCommit } from "./repository.service";
+import { readBlob, resolveCommit } from "./repository.service";
 import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 1;
+export const WORKSPACE_TEMPLATE_VERSION = 2;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -64,19 +63,25 @@ of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
 
 ## Credentials (once per machine)
 
-Create a workspace API key in Mako: **Workspace Settings → API Keys**
-(scopes \`mcp\` + \`query:read\`, the defaults), then put it in a
-\`.env\` at the repo root (gitignored):
+Two things need to reach Mako: your coding agent (over MCP) and the app's
+local dev server (for data). Both sign in with your Mako account — no key to
+paste:
 
-\`\`\`sh
-MAKO_API_URL=${HOSTED_MAKO_URL}   # your Mako host
-MAKO_API_KEY=revops_…            # the FULL key, shown once at creation
-\`\`\`
+1. \`claude\` (or Cursor / Codex) → the \`mako\` MCP server in \`.mcp.json\`
+   opens a browser sign-in on first use: pick this workspace, approve
+   (read-only). Claude Code: type \`/mcp\` if it does not prompt.
+2. \`npx @mako/cli login\` (or \`mako login\` once installed) in this checkout —
+   the same sign-in, kept in \`~/.mako/credentials.json\` for \`vite dev\`.
 
-Export it before starting your agent — \`.mcp.json\` expands
-\`\${MAKO_API_KEY}\` from the environment, not from the file:
-\`set -a; . ./.env; set +a\` — or \`direnv allow\` (the \`.envrc\` here loads
-\`.env\`). Then \`claude\` / \`codex\` / Cursor see the \`mako\` MCP server.
+Headless / CI instead: create a workspace API key in Mako (**Workspace
+Settings → API Keys**, scopes \`mcp\` + \`query:read\`) and put it in a
+\`.env\` at the repo root (gitignored): \`MAKO_API_KEY=revops_…\` — the FULL
+key shown once at creation. Then \`claude mcp add --transport http mako
+$MAKO_API_URL/api/mcp --header "Authorization: Bearer $MAKO_API_KEY"\`.
+An API key, when present, is used instead of the login everywhere.
+
+Self-hosted Mako: set \`MAKO_API_URL\` (\`.env\`, exported — \`.envrc\` does it
+for direnv users) so \`.mcp.json\` and the dev server point at your host.
 
 ## How to work here
 
@@ -107,7 +112,7 @@ Each app's \`vite.config.ts\` includes \`makoData()\` from
 \`@mako/app-sdk/vite\`. During \`vite dev\` it answers
 \`__data/index.json\` (the app's \`bindings/*.sql\`) and
 \`__data/<name>.parquet\` by streaming the binding's materialized artifact
-from the Mako API with the key in \`.env\`; a binding that was never
+from the Mako API with your login (or the key in \`.env\`); a binding that was never
 materialized is built on first request. Results are cached under
 \`node_modules/.mako-data/\` for 5 minutes (\`?refresh\` bypasses).
 
@@ -154,7 +159,6 @@ const MCP_JSON = `${JSON.stringify(
       mako: {
         type: "http",
         url: `\${MAKO_API_URL:-${HOSTED_MAKO_URL}}/api/mcp`,
-        headers: { Authorization: "Bearer ${MAKO_API_KEY}" },
       },
     },
   },
@@ -280,22 +284,12 @@ export async function planTemplateRefresh(
     if ((await readAt(repoDir, ref, rel)) === null) writes[rel] = contents;
   }
 
-  // Apps still on a scaffold-written vite.config.ts get the data plugin. A
-  // config anyone has edited is left alone (AGENTS.md covers the by-hand path).
-  const entries = await listTree(repoDir, ref).catch(() => []);
-  const target = currentViteConfig();
-  for (const entry of entries) {
-    const match = /^apps\/[^/]+\/vite\.config\.ts$/.exec(entry.path);
-    if (!match) continue;
-    const existing = await readAt(repoDir, ref, entry.path);
-    if (
-      existing !== null &&
-      existing !== target &&
-      LEGACY_VITE_CONFIGS.includes(existing)
-    ) {
-      writes[entry.path] = target;
-    }
-  }
+  // Deliberately NOTHING under apps/: a refresh must never touch an app
+  // folder, because prod rebuilds every published app whose folder changed on
+  // main (deploy-on-push). The first refresh upgraded 58 vite configs in one
+  // commit and fanned 38 rebuilds out to prod for a dev-only change (§15.4).
+  // New apps get makoData() from the scaffold; AGENTS.md gives the one-line
+  // by-hand path for older ones.
 
   // Never rewrite a file to what it already is.
   for (const [rel, contents] of Object.entries(writes)) {

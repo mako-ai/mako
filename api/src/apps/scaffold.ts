@@ -265,35 +265,3 @@ or edit it from Mako chat.
 `,
   };
 }
-
-/**
- * Every `vite.config.ts` a previous scaffold (or the v1→v2 migration) wrote,
- * byte for byte. The workspace-template refresh upgrades an app's config to
- * the current scaffold ONLY when it still equals one of these — a config the
- * user has touched is theirs, and AGENTS.md tells the agent how to add the
- * plugin by hand.
- */
-export const LEGACY_VITE_CONFIGS: readonly string[] = [
-  `import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-
-export default defineConfig({
-  plugins: [react()],
-  // Relative asset URLs so builds work under any hosting prefix
-  // (including Mako's token-scoped preview paths).
-  base: "./",
-  server: {
-    // The preview reaches the dev server on the sandbox's public origin
-    // (<port>-<sandbox>.e2b.app). Without this, a \`vite\` started from the
-    // terminal answers "Blocked request. This host is not allowed."
-    host: true,
-    allowedHosts: [".e2b.app"],
-  },
-});
-`,
-];
-
-/** The `vite.config.ts` the current scaffold writes. */
-export function currentViteConfig(): string {
-  return createAppsScaffold({ title: "x" })["vite.config.ts"];
-}

@@ -8,7 +8,7 @@ import {
 
 // When this fails you changed a managed file: bump WORKSPACE_TEMPLATE_VERSION
 // and paste the new fingerprint. The bump is what moves existing repos.
-const PINNED = { version: 1, fingerprint: "722405cf72d22c21" };
+const PINNED = { version: 2, fingerprint: "b43e6b8412016629" };
 assert.equal(WORKSPACE_TEMPLATE_VERSION, PINNED.version);
 assert.equal(
   templateFingerprint(),
@@ -24,13 +24,16 @@ assert.equal(
   "${MAKO_API_URL:-https://app.mako.ai}/api/mcp",
 );
 assert.equal(
-  mcp.mcpServers.mako.headers.Authorization,
-  "Bearer ${MAKO_API_KEY}",
+  mcp.mcpServers.mako.headers,
+  undefined,
+  "OAuth-first: no header, clients sign in",
 );
 assert.equal(files["CLAUDE.md"].trim(), "@AGENTS.md");
 assert.match(files["AGENTS.md"], /managed by Mako/);
 assert.match(files["AGENTS.md"], /app_write_file[\s\S]*not on this checkout/);
 assert.match(files["AGENTS.md"], /update_self_directive/);
+assert.match(files["AGENTS.md"], /mako login/);
+assert.ok(files["packages/app-sdk/credentials.js"].includes("getAccessToken"));
 const stamp = JSON.parse(files[".mako/workspace.json"]);
 assert.deepEqual(stamp, {
   workspaceId: "6846e6a01b05af0948070582",

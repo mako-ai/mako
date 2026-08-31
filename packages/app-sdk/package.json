@@ -1,0 +1,54 @@
+{
+  "name": "@mako/app-sdk",
+  "version": "2.1.0",
+  "description": "Mako app SDK: data bindings (useQuery/useDuckDB), URL state, theme.",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mako-ai/mako.git",
+    "directory": "packages/app-sdk"
+  },
+  "homepage": "https://docs.mako.ai/mcp-server/",
+  "keywords": [
+    "mako",
+    "data-apps",
+    "duckdb",
+    "parquet",
+    "vite-plugin"
+  ],
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./vite": {
+      "types": "./vite.d.ts",
+      "default": "./vite.js"
+    },
+    "./credentials": {
+      "types": "./credentials.d.ts",
+      "default": "./credentials.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "vite.js",
+    "vite.d.ts",
+    "credentials.js",
+    "credentials.d.ts",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

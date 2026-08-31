@@ -131,29 +131,33 @@ To keep agent context lean, agents can pass `includeScreenshot: false` to `app_b
 Every workspace repo carries a small template Mako keeps current: `AGENTS.md`
 (imported by `CLAUDE.md`) telling your agent what the repo is and how to work
 in it, `.mcp.json` wiring the `mako` MCP server, `.envrc` for direnv, and the
-vendored `@mako/app-sdk`. So the whole setup is:
+vendored `@mako/app-sdk`. The whole setup, no key to paste:
 
 ```bash
 git clone <your workspace repo> && cd <repo>
-# Workspace Settings → API Keys → create (scopes mcp + query:read), then:
-printf 'MAKO_API_URL=https://your-mako-host\nMAKO_API_KEY=revops_…\n' > .env
-set -a; . ./.env; set +a      # or: direnv allow
-claude                        # approve the project's mako MCP server once
+claude                 # the mako MCP server prompts a browser sign-in (read-only)
+npx @mako/cli login    # same sign-in for the app dev server, kept in ~/.mako/credentials.json
+npx @mako/cli dev <app>   # or: cd apps/<app> && npm install && npm run dev
 ```
 
-`.mcp.json` expands `${MAKO_API_URL:-https://app.mako.ai}` and
-`${MAKO_API_KEY}` from the environment — not from the file, hence the export.
-
-Inside an app, `npm install && npm run dev` renders with **real data**: the
-scaffold's `vite.config.ts` includes `makoData()` from `@mako/app-sdk/vite`,
-which serves `__data/<binding>.parquet` by streaming the binding's
-materialized artifact from your Mako host with the key in `.env` (a binding
-that was never materialized is built on first request; results are cached for
-five minutes under `node_modules/.mako-data/`, `?refresh` bypasses). This is
-the one place a scoped key is accepted outside `/api/mcp`: a `query:read` key
-may call the three read-only binding routes (`GET …/bindings`,
+The app renders with **real data**: the scaffold's `vite.config.ts` includes
+`makoData()` from `@mako/app-sdk/vite`, which serves `__data/<binding>.parquet`
+by streaming the binding's materialized artifact from your Mako host with that
+login (a binding that was never materialized is built on first request;
+results are cached for five minutes under `node_modules/.mako-data/`,
+`?refresh` bypasses). This is the one place MCP credentials — OAuth tokens and
+scoped keys alike — are accepted outside `/api/mcp`: with `query:read` they may
+call the three read-only binding routes (`GET …/bindings`,
 `GET …/bindings/<name>/artifact`, `POST …/bindings/<name>/materialize`) and
 nothing else.
+
+Headless / CI: put a workspace API key in the repo's gitignored `.env`
+(`MAKO_API_KEY=revops_…`, scopes `mcp` + `query:read`) and register the server
+with the header (`claude mcp add --transport http mako
+$MAKO_API_URL/api/mcp --header "Authorization: Bearer $MAKO_API_KEY"`); the
+dev server picks the key up automatically. Self-hosted: `MAKO_API_URL` in
+`.env`, exported (`.envrc` does it for direnv users) — `.mcp.json` expands
+`${MAKO_API_URL:-https://app.mako.ai}`.
 
 Two things `AGENTS.md` tells the agent that are easy to get wrong:
 
@@ -163,6 +167,9 @@ Two things `AGENTS.md` tells the agent that are easy to get wrong:
 - Push to deploy. `main` is production; a commit on `main` — from your
   terminal, a merged PR, or the Publish button — is what builds and serves the
   app.
+
+The hosted server is described for MCP directories in `server.json` at the
+repository root (`ai.mako/mako`, streamable HTTP at `https://app.mako.ai/api/mcp`).
 
 ## Apps toolset
 
