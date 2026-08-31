@@ -98,6 +98,7 @@ import {
 } from "./repository.service";
 import { initialWorkspaceFiles } from "./workspace-template";
 import { syncConsolesIndexFromRepo } from "./workspace-consoles.service";
+import { syncSkillsIndexFromRepo } from "./workspace-skills.service";
 import { createAppsScaffold } from "./scaffold";
 import {
   ensureCommitLocally,
@@ -176,6 +177,13 @@ export function notifyRepoPushed(workspaceId: string, userId: string): void {
   // agent's search) by the next turn (apps.md §16.3).
   void syncConsolesIndexFromRepo(workspaceId, userId).catch(error => {
     logger.warn("Console index sync after push failed", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+  // Same doctrine for skills/ (apps.md §10 Block D1).
+  void syncSkillsIndexFromRepo(workspaceId, userId).catch(error => {
+    logger.warn("Skills index sync after push failed", {
       workspaceId,
       error: error instanceof Error ? error.message : String(error),
     });

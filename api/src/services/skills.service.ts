@@ -12,6 +12,13 @@
 import { Types } from "mongoose";
 import { Skill, type ISkill } from "../database/workspace-schema";
 import {
+  commitSkillDelete,
+  commitSkillSave,
+  commitSkillSuppressed,
+} from "../apps/workspace-skills.service";
+import { authorForUser } from "../apps/workspace-consoles.service";
+import type { GitAuthor } from "../apps/repository.service";
+import {
   embedText,
   getEmbeddingModelName,
   isEmbeddingAvailable,
@@ -125,6 +132,18 @@ function unionEntities(
   return out;
 }
 
+/**
+ * Git author for a skill commit. `actorId` is a user id or the literal
+ * "agent"; a lookup miss (agent, deleted user) falls back to the Mako bot
+ * identity inside the git layer.
+ */
+async function skillCommitAuthor(
+  actorId: string | undefined,
+): Promise<GitAuthor | undefined> {
+  if (!actorId || actorId === "agent") return undefined;
+  return authorForUser(actorId);
+}
+
 async function computeEmbedding(text: string): Promise<{
   embedding: number[] | null;
   model: string | null;
@@ -180,7 +199,49 @@ export async function saveSkill(
         error: `Workspace has hit the ${MAX_SKILLS_PER_WORKSPACE} skill limit. Delete or merge skills before adding more.`,
       };
     }
+  }
 
+  // Git first — skills/<name>/SKILL.md on main is the source of truth; the
+  // Mongo write below is the derived index (apps.md §10 Block D1). On a
+  // workspace whose skills have not been adopted into git yet, this commit
+  // adopts every existing row too.
+  try {
+    const loadAdoptable = async () =>
+      (
+        (await Skill.find({ workspaceId: new Types.ObjectId(workspaceId) })
+          .select("name loadWhen body entities suppressed")
+          .lean()) as Array<
+          Pick<ISkill, "name" | "loadWhen" | "body" | "entities" | "suppressed">
+        >
+      ).map(s => ({
+        name: s.name,
+        loadWhen: s.loadWhen,
+        entities: s.entities ?? [],
+        suppressed: !!s.suppressed,
+        body: s.body,
+      }));
+    await commitSkillSave(
+      workspaceId,
+      {
+        name,
+        loadWhen,
+        // The file carries the author-DECLARED entities; the Mongo row below
+        // carries the declared ∪ extracted union the retrieval uses.
+        entities: unionEntities(input.entities, []),
+        suppressed: !!existing?.suppressed,
+        body,
+      },
+      { author: await skillCommitAuthor(createdBy), loadAdoptable },
+    );
+  } catch (error) {
+    logger.error("Skill save: git commit failed", { workspaceId, error });
+    return {
+      success: false,
+      error: `Could not commit the skill to the workspace repository: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  if (!existing) {
     const created = await Skill.create({
       workspaceId: new Types.ObjectId(workspaceId),
       name,
@@ -236,15 +297,30 @@ export async function skillExists(
 export async function deleteSkill(
   workspaceId: string,
   name: string,
+  actorId?: string,
 ): Promise<
   { success: true; deleted: boolean } | { success: false; error: string }
 > {
   if (!name || name.trim().length === 0) {
     return { success: false, error: "name is required" };
   }
+  const trimmed = name.trim();
+  try {
+    await commitSkillDelete(
+      workspaceId,
+      trimmed,
+      await skillCommitAuthor(actorId),
+    );
+  } catch (error) {
+    logger.error("Skill delete: git commit failed", { workspaceId, error });
+    return {
+      success: false,
+      error: `Could not commit the deletion to the workspace repository: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
   const res = await Skill.deleteOne({
     workspaceId: new Types.ObjectId(workspaceId),
-    name: name.trim(),
+    name: trimmed,
   });
   return { success: true, deleted: res.deletedCount > 0 };
 }
@@ -773,26 +849,42 @@ export async function toggleSkillSuppressed(
   workspaceId: string,
   id: string,
   suppressed: boolean,
+  actorId?: string,
 ): Promise<boolean> {
   if (!Types.ObjectId.isValid(id)) return false;
-  const res = await Skill.updateOne(
-    {
-      _id: new Types.ObjectId(id),
-      workspaceId: new Types.ObjectId(workspaceId),
-    },
-    { $set: { suppressed } },
+  const doc = await Skill.findOne({
+    _id: new Types.ObjectId(id),
+    workspaceId: new Types.ObjectId(workspaceId),
+  }).select("name");
+  if (!doc) return false;
+  // Suppression is frontmatter, so it commits like any other skill edit; a
+  // skill not adopted into git yet flips only its Mongo row (no-op there).
+  await commitSkillSuppressed(
+    workspaceId,
+    doc.name,
+    suppressed,
+    await skillCommitAuthor(actorId),
   );
+  const res = await Skill.updateOne({ _id: doc._id }, { $set: { suppressed } });
   return res.matchedCount > 0;
 }
 
 export async function deleteSkillById(
   workspaceId: string,
   id: string,
+  actorId?: string,
 ): Promise<boolean> {
   if (!Types.ObjectId.isValid(id)) return false;
-  const res = await Skill.deleteOne({
+  const doc = await Skill.findOne({
     _id: new Types.ObjectId(id),
     workspaceId: new Types.ObjectId(workspaceId),
-  });
+  }).select("name");
+  if (!doc) return false;
+  await commitSkillDelete(
+    workspaceId,
+    doc.name,
+    await skillCommitAuthor(actorId),
+  );
+  const res = await Skill.deleteOne({ _id: doc._id });
   return res.deletedCount > 0;
 }

@@ -283,7 +283,12 @@ skillsRoutes.openapi(
       };
       const suppressed =
         typeof body.suppressed === "boolean" ? body.suppressed : true;
-      const ok = await toggleSkillSuppressed(workspaceId, id, suppressed);
+      const ok = await toggleSkillSuppressed(
+        workspaceId,
+        id,
+        suppressed,
+        c.get("user")?.id,
+      );
       if (!ok) {
         return c.json({ success: false, error: "Skill not found" }, 404);
       }
@@ -324,7 +329,7 @@ skillsRoutes.openapi(
           400,
         );
       }
-      const ok = await deleteSkillById(workspaceId, id);
+      const ok = await deleteSkillById(workspaceId, id, c.get("user")?.id);
       if (!ok) {
         return c.json({ success: false, error: "Skill not found" }, 404);
       }

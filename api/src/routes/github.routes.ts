@@ -40,6 +40,7 @@ import { ensureLocalRepo, fetchFromCloud } from "../apps/cloud-repo.service";
 import { findWorkspaceIdByRepoBinding } from "../services/workspace-repos.service";
 import { repoDirFor } from "../apps/repository.service";
 import { syncConsolesIndexFromRepo } from "../apps/workspace-consoles.service";
+import { syncSkillsIndexFromRepo } from "../apps/workspace-skills.service";
 
 const logger = loggers.api("github");
 
@@ -164,6 +165,12 @@ async function handleAppsPush(input: {
   // before anyone opens the app (apps.md §16.3).
   void syncConsolesIndexFromRepo(workspaceId).catch(error => {
     logger.warn("Console index sync after GitHub push failed", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+  void syncSkillsIndexFromRepo(workspaceId).catch(error => {
+    logger.warn("Skills index sync after GitHub push failed", {
       workspaceId,
       error: error instanceof Error ? error.message : String(error),
     });
