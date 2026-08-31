@@ -363,14 +363,19 @@ Keep this list current: it is the hand-off.
 
 ### Todo — needs an account, a secret, or a decision
 
-- [ ] **npm scope `@mako`.** Nothing is published under it; check whether the
-      org name is free/ours (`npm org ls mako` from an owner account) and
-      claim it. Fallback names if not: `@mako-ai/app-sdk`, `@mako-ai/cli`
-      (update `packages/*/package.json`, `APP_SDK_DEPENDENCY`, AGENTS.md,
-      docs). Unscoped `mako` / `mako-cli` are taken by strangers.
-- [ ] **Publish** `@makoai/app-sdk` 2.2.0 and `@makoai/cli` 0.1.0
-      (`pnpm --filter @makoai/app-sdk publish`, then cli). Add a release
-      workflow so a version bump publishes from CI (`NPM_TOKEN` secret).
+- [x] **npm scope** — `@mako` and `@mako-ai` are squatted by inactive users;
+      org **`makoai`** created 2026-08-31 (owner: spingwun). A name dispute
+      for `mako`/`mako-ai` can be filed with support@npmjs.com (draft in the
+      session notes); if it succeeds, republish under the new scope and keep
+      `@makoai/*` as aliases.
+- [x] **Published** `@makoai/app-sdk@2.2.0` and `@makoai/cli@0.1.0`
+      (2026-08-31, by hand with web 2FA). Future releases: bump the version,
+      push a tag `app-sdk-vX.Y.Z` / `cli-vX.Y.Z` → `.github/workflows/publish-npm.yml`
+      publishes with **trusted publishing** (OIDC, provenance). Requires the
+      trusted-publisher connection on each package page (GitHub Actions ·
+      mako-ai/mako · publish-npm.yml) — set for app-sdk; do the same for cli.
+      Existing workspace apps keep importing `@mako/app-sdk` (npm links the
+      vendored folder under the dependency key); new apps get `@makoai/app-sdk`.
 - [ ] **Publish `mako-ai` to PyPI** (`packages/mako-sdk-py`; pyproject is
       ready; needs a PyPI token). Its suite has 4 PRE-EXISTING failures in
       `test_sources.ReadTest` (the fake transport does not stub
