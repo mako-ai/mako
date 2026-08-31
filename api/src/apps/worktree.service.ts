@@ -2055,22 +2055,56 @@ export interface AppFolder {
  * clone: who may see the app, what sha is deployed, and a share token with its
  * password hash. Those are server state ABOUT an app, not the app.
  */
+/**
+ * The folder list, memoized per (workspace, main commit). A list is a pure
+ * function of the tree at `main`, so the cache key is the commit: one cheap
+ * `rev-parse` per request, and the git work below runs once per push per
+ * API instance instead of once per sidebar open. Bounded: one entry per
+ * workspace, replaced when main moves.
+ */
+const appFoldersCache = new Map<
+  string,
+  { sha: string; folders: AppFolder[] }
+>();
+
 export async function listAppFolders(
   workspaceId: string,
 ): Promise<AppFolder[]> {
   const repoDir = await repoForWorkspace(workspaceId);
-  const entries = await listTree(repoDir, DEFAULT_BRANCH).catch(() => []);
-  const manifests = entries.filter(e =>
-    /^apps\/[^/]+\/mako\.json$/.test(e.path),
-  );
+  const sha = await resolveCommit(repoDir, DEFAULT_BRANCH);
+  if (!sha) return [];
+  const cached = appFoldersCache.get(workspaceId);
+  if (cached && cached.sha === sha) return cached.folders;
 
-  const folders: AppFolder[] = [];
-  for (const entry of manifests) {
-    const slug = entry.path.split("/")[1];
+  // Only the first level under apps/ — NOT `ls-tree -r` over the whole
+  // monorepo, which listed every file of every app (lockfiles included) to
+  // find 58 manifests.
+  let slugs: string[] = [];
+  try {
+    const { stdout } = await runGit([
+      "-C",
+      repoDir,
+      "ls-tree",
+      "-z",
+      "--name-only",
+      `${DEFAULT_BRANCH}:apps`,
+    ]);
+    slugs = stdout.split("\0").filter(Boolean);
+  } catch {
+    // No apps/ directory yet: an empty workspace, not an error.
+  }
+
+  const readFolder = async (slug: string): Promise<AppFolder | null> => {
+    let blob;
+    try {
+      blob = await readBlob(repoDir, DEFAULT_BRANCH, `apps/${slug}/mako.json`);
+    } catch {
+      // Not an app folder (no manifest) — e.g. a stray file under apps/.
+      return null;
+    }
     let title = slug;
     let description: string | undefined;
     try {
-      const blob = await readBlob(repoDir, DEFAULT_BRANCH, entry.path);
       const manifest = JSON.parse(blob.contents) as {
         title?: unknown;
         description?: unknown;
@@ -2082,13 +2116,23 @@ export async function listAppFolders(
         description = manifest.description;
       }
     } catch {
-      // An unreadable or malformed manifest must not hide the app: the folder
-      // is the app, and a broken mako.json is something the user needs to SEE
-      // in order to fix.
+      // A malformed manifest must not hide the app: the folder is the app,
+      // and a broken mako.json is something the user needs to SEE to fix.
     }
-    folders.push({ slug, title, description });
+    return { slug, title, description };
+  };
+
+  // Manifests are read in parallel, a few at a time — one git process each,
+  // so a bounded fan-out rather than 58 subprocesses at once.
+  const folders: AppFolder[] = [];
+  const CHUNK = 8;
+  for (let i = 0; i < slugs.length; i += CHUNK) {
+    const part = await Promise.all(slugs.slice(i, i + CHUNK).map(readFolder));
+    for (const f of part) if (f) folders.push(f);
   }
-  return folders.sort((a, b) => a.slug.localeCompare(b.slug));
+  folders.sort((a, b) => a.slug.localeCompare(b.slug));
+  appFoldersCache.set(workspaceId, { sha, folders });
+  return folders;
 }
 
 /**
