@@ -14,8 +14,8 @@ export const modelCatalogRefreshFunction = inngest.createFunction(
     id: "system/model-catalog-refresh",
     name: "Refresh AI model catalog snapshots",
     retries: 2,
+    triggers: { cron: "15 * * * *" },
   },
-  { cron: "15 * * * *" },
   async ({ step }) => {
     const gateway = await step.run("fetch-gateway", async () => {
       return refreshGatewaySnapshot();

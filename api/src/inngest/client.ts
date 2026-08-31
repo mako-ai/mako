@@ -10,4 +10,8 @@ export const inngest = new Inngest({
   ...(inngestEnv ? { env: inngestEnv } : {}),
   name: "Mako Sync",
   logger: new LogTapeInngestLogger(["inngest"]),
+  // v4 defaults to cloud mode (v3 defaulted to dev). Local dev talks to the
+  // Inngest Dev Server; deployed environments run cloud mode with
+  // INNGEST_SIGNING_KEY from the environment.
+  isDev: process.env.NODE_ENV !== "production",
 });

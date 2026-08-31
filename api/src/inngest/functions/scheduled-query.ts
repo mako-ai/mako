@@ -31,8 +31,8 @@ export const scheduledQuerySchedulerFunction = inngest.createFunction(
   {
     id: "scheduled-query-scheduler",
     name: "Run Scheduled Queries",
+    triggers: { cron: "*/1 * * * *" },
   },
-  { cron: "*/1 * * * *" },
   async ({ step }) => {
     const now = new Date();
 
@@ -83,8 +83,8 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
       key: "event.data.consoleId",
       limit: 1,
     },
+    triggers: { event: "scheduled_query/execute" },
   },
-  { event: "scheduled_query/execute" },
   async ({ event, step }) => {
     const workspaceId = String(event.data.workspaceId);
     const consoleId = String(event.data.consoleId);

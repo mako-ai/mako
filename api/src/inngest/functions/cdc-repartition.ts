@@ -39,8 +39,9 @@ export const cdcRepartitionFunction = inngest.createFunction(
     concurrency: [{ scope: "fn", key: "event.data.flowId", limit: 1 }],
     singleton: { key: "event.data.flowId", mode: "skip" },
     onFailure: async ({ event }) => {
-      const data = ((event as { data?: { event?: { data?: RepartitionEventData } } })
-        ?.data?.event?.data ?? {}) as Partial<RepartitionEventData>;
+      const data = ((
+        event as { data?: { event?: { data?: RepartitionEventData } } }
+      )?.data?.event?.data ?? {}) as Partial<RepartitionEventData>;
       if (data.workspaceId && data.flowId) {
         await cdcBackfillService.recoverRepartition(
           data.workspaceId,
@@ -52,8 +53,8 @@ export const cdcRepartitionFunction = inngest.createFunction(
         { flowId: data.flowId },
       );
     },
+    triggers: { event: "cdc/repartition" },
   },
-  { event: "cdc/repartition" },
   async ({ event, step }) => {
     const { workspaceId, flowId, deleteDestination } =
       event.data as RepartitionEventData;

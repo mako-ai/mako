@@ -24,7 +24,10 @@ type ParquetWasmModule = {
     };
   };
   writeParquet(table: unknown, writerProperties: unknown): Uint8Array;
-  initSync(module: BufferSource | WebAssembly.Module): unknown;
+  // Wasm module bytes or an instantiated module; typed loosely because the
+  // ambient BufferSource/WebAssembly names come and go with @types/node
+  // resolution shuffles (this broke the CI build once).
+  initSync(module: unknown): unknown;
 };
 
 const importParquetWasm = new Function(
