@@ -3589,6 +3589,14 @@ consoleRoutes.openapi(
       if (!consoleDoc) {
         return c.json({ success: false, error: "Console not found" }, 404);
       }
+      // A version IS the console's content at a point in time: the same
+      // read gate as the console itself (owner / collaborator / workspace
+      // access), not just workspace membership — otherwise a private
+      // console's history was readable by any member. 404, not 403, so a
+      // private console's existence is not revealed (as the list does).
+      if (!ConsoleManager.canRead(consoleDoc, user.id, c.get("memberRole"))) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
 
       const limit = Math.min(
         parseInt(c.req.query("limit") ?? "50", 10) || 50,
@@ -3655,6 +3663,14 @@ consoleRoutes.openapi(
         workspaceId: new Types.ObjectId(workspaceId),
       });
       if (!consoleDoc) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+      // A version IS the console's content at a point in time: the same
+      // read gate as the console itself (owner / collaborator / workspace
+      // access), not just workspace membership — otherwise a private
+      // console's history was readable by any member. 404, not 403, so a
+      // private console's existence is not revealed (as the list does).
+      if (!ConsoleManager.canRead(consoleDoc, user.id, c.get("memberRole"))) {
         return c.json({ success: false, error: "Console not found" }, 404);
       }
 
