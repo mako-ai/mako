@@ -10403,6 +10403,35 @@
               }
             }
           },
+          "412": {
+            "description": "Connect a GitHub repository first (the prompt lives in the workspace repo).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "error",
+                    "code"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Failed to update custom prompt",
             "content": {
@@ -10603,6 +10632,35 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Connect a GitHub repository first (the prompt lives in the workspace repo).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "error",
+                    "code"
+                  ]
                 }
               }
             }

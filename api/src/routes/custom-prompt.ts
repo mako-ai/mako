@@ -12,6 +12,11 @@ import {
   jsonContent,
 } from "../openapi/core";
 import { prepareAgentTurnGuidance } from "../services/agent-turn-preparation.service";
+import { RepoRequiredError } from "../apps/config";
+import {
+  commitWorkspacePrompt,
+  readWorkspacePromptFile,
+} from "../apps/workspace-prompt";
 
 const logger = loggers.workspace();
 
@@ -134,7 +139,12 @@ customPromptRoutes.openapi(
       }
 
       // Return the custom prompt from workspace settings, or default if not set
-      const content = workspace.settings.customPrompt || DEFAULT_CUSTOM_PROMPT;
+      // The prompt lives in the workspace repo (PROMPT.md, apps.md §21);
+      // the Mongo field is the pre-migration fallback for repo-less
+      // workspaces.
+      const content =
+        (await readWorkspacePromptFile(workspaceId)) ??
+        (workspace.settings.customPrompt || DEFAULT_CUSTOM_PROMPT);
       const selfDirective =
         typeof workspace.selfDirective === "string"
           ? workspace.selfDirective
@@ -249,6 +259,14 @@ customPromptRoutes.openapi(
       ),
       400: errorJson("Invalid request"),
       404: errorJson("Workspace not found"),
+      412: jsonContent(
+        z.object({
+          success: z.literal(false),
+          error: z.string(),
+          code: z.string(),
+        }),
+        "Connect a GitHub repository first (the prompt lives in the workspace repo).",
+      ),
       500: errorJson("Failed to update custom prompt"),
     },
   }),
@@ -264,18 +282,19 @@ customPromptRoutes.openapi(
         );
       }
 
-      const workspace = await Workspace.findByIdAndUpdate(
-        workspaceId,
-        {
-          "settings.customPrompt": content,
-          updatedAt: new Date(),
-        },
-        { new: true },
-      );
-
+      const workspace = await Workspace.findById(workspaceId).select("_id");
       if (!workspace) {
         return c.json({ success: false, error: "Workspace not found" }, 404);
       }
+
+      // A save is a commit of PROMPT.md on the workspace repo's default
+      // branch. The legacy Mongo field is cleared so it can never shadow
+      // the file for readers still falling back to it.
+      await commitWorkspacePrompt(workspaceId, content, c.get("user")?.id);
+      await Workspace.updateOne(
+        { _id: workspace._id },
+        { $unset: { "settings.customPrompt": "" } },
+      );
 
       return c.json(
         {
@@ -285,6 +304,16 @@ customPromptRoutes.openapi(
         200,
       );
     } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json(
+          {
+            success: false as const,
+            error: error.message,
+            code: error.code as string,
+          },
+          412,
+        );
+      }
       logger.error("Error updating custom prompt", { error });
       return c.json(
         {
@@ -321,6 +350,14 @@ customPromptRoutes.openapi(
       400: errorJson("Invalid workspace ID"),
       404: errorJson("Workspace not found"),
       500: errorJson("Failed to reset custom prompt"),
+      412: jsonContent(
+        z.object({
+          success: z.literal(false),
+          error: z.string(),
+          code: z.string(),
+        }),
+        "Connect a GitHub repository first (the prompt lives in the workspace repo).",
+      ),
     },
   }),
   async c => {
@@ -334,18 +371,20 @@ customPromptRoutes.openapi(
         );
       }
 
-      const workspace = await Workspace.findByIdAndUpdate(
-        workspaceId,
-        {
-          "settings.customPrompt": DEFAULT_CUSTOM_PROMPT,
-          updatedAt: new Date(),
-        },
-        { new: true },
-      );
-
+      const workspace = await Workspace.findById(workspaceId).select("_id");
       if (!workspace) {
         return c.json({ success: false, error: "Workspace not found" }, 404);
       }
+
+      await commitWorkspacePrompt(
+        workspaceId,
+        DEFAULT_CUSTOM_PROMPT,
+        c.get("user")?.id,
+      );
+      await Workspace.updateOne(
+        { _id: workspace._id },
+        { $unset: { "settings.customPrompt": "" } },
+      );
 
       return c.json(
         {
@@ -356,6 +395,16 @@ customPromptRoutes.openapi(
         200,
       );
     } catch (error) {
+      if (error instanceof RepoRequiredError) {
+        return c.json(
+          {
+            success: false as const,
+            error: error.message,
+            code: error.code as string,
+          },
+          412,
+        );
+      }
       logger.error("Error resetting custom prompt", { error });
       return c.json(
         {

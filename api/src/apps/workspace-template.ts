@@ -31,7 +31,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 8;
+export const WORKSPACE_TEMPLATE_VERSION = 9;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -65,6 +65,11 @@ of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
 - \`skills/<name>/SKILL.md\` — workspace-taught agent skills (YAML
   frontmatter: \`description\` is the retrieval trigger; then the playbook).
   A commit here is in the agent's retrieval index by its next turn.
+- \`dbt/\` — the workspace dbt project (\`dbt_project.yml\` at its root).
+  Edits through Mako are commits; jobs and deploys build \`main\`.
+- \`PROMPT.md\` — the workspace's custom agent prompt (business context,
+  conventions). Every agent turn reads it from \`main\`; edit and commit it
+  like any file.
 - \`.mako/workspace.json\` — workspace id + template version (managed).
 - \`.mcp.json\` — the \`mako\` MCP server for your agent (managed).
 
