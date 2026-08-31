@@ -16,7 +16,7 @@ import { syncConnectorRegistry } from "../../sync/connector-registry";
 import { databaseDataSourceManager } from "../../sync/database-data-source-manager";
 import { Types } from "mongoose";
 import * as os from "os";
-import { CronExpressionParser } from "cron-parser";
+import { isCronDue } from "../../services/cron-due";
 import { getExecutionLogger, getSyncLogger } from "../logging";
 import { loggers } from "../../logging";
 import {
@@ -2027,7 +2027,6 @@ export const flowSchedulerFunction = inngest.createFunction(
     for (const flow of flows) {
       const shouldRun = await step.run(`check-flow-${flow._id}`, async () => {
         try {
-          const flowDisplayName = await getFlowDisplayName(flow);
           const flowLogger = getSyncLogger(`scheduler.${flow._id}`);
 
           // Safety check: skip flows without a poll cron (a webhook flow
@@ -2046,106 +2045,20 @@ export const flowSchedulerFunction = inngest.createFunction(
             return false;
           }
 
-          flowLogger.debug("Checking flow", {
-            flowId: flow._id.toString(),
-            flowName: flowDisplayName,
-            cronExpression: flow.schedule.cron,
-            timezone: flow.schedule.timezone || "UTC",
-            currentTime: now.toISOString(),
-          });
-
-          // Convert lastRunAt to Date if needed
-          const lastRunDate = flow.lastRunAt ? new Date(flow.lastRunAt) : null;
-
-          flowLogger.debug("Flow last run information", {
-            flowId: flow._id.toString(),
-            lastRunAt: lastRunDate ? lastRunDate.toISOString() : "Never",
-            lastRunAtRaw: flow.lastRunAt,
-            lastRunAtType: typeof flow.lastRunAt,
-          });
-
-          // Parse cron expression with timezone
-          const options = {
-            currentDate: now,
-            tz: flow.schedule.timezone || "UTC",
-          };
-
-          const interval = CronExpressionParser.parse(
-            flow.schedule.cron,
-            options,
-          );
-          const nextRun = interval.next().toDate();
-
-          // Try to get previous run time as well
-          let prevRun: Date | null = null;
-          try {
-            const prevInterval = CronExpressionParser.parse(
-              flow.schedule.cron,
-              options,
-            );
-            prevRun = prevInterval.prev().toDate();
-          } catch {
-            // Might fail if there's no previous occurrence
+          // Due = the schedule has an occurrence after the last run that has
+          // already passed (never ran → due). This replaces three hand-rolled
+          // heuristics ("original", "alternative", "missed run") that were
+          // equivalent to exactly this predicate.
+          if (
+            !isCronDue({
+              cron: flow.schedule.cron,
+              timezone: flow.schedule.timezone || "UTC",
+              lastRunAt: flow.lastRunAt ? new Date(flow.lastRunAt) : null,
+              now,
+            })
+          ) {
+            return false;
           }
-
-          flowLogger.debug("Flow schedule analysis", {
-            flowId: flow._id.toString(),
-            nextRun: nextRun.toISOString(),
-            previousScheduledRun: prevRun ? prevRun.toISOString() : null,
-            nextRunTimestamp: nextRun.getTime(),
-            currentTimestamp: now.getTime(),
-            timeUntilNextRun: nextRun.getTime() - now.getTime(),
-          });
-
-          // Check if the flow should have run since the last execution
-          const lastRun = lastRunDate || new Date(0);
-
-          // Check if we missed any scheduled runs
-          let missedRun = false;
-          if (prevRun && lastRun < prevRun && prevRun <= now) {
-            missedRun = true;
-            flowLogger.warn("Missed scheduled run", {
-              flowId: flow._id.toString(),
-              missedRunTime: prevRun.toISOString(),
-            });
-          }
-
-          // Alternative logic: Check if enough time has passed since last run
-          // based on the cron schedule
-          let alternativeShouldRun = false;
-          if (lastRun.getTime() > 0) {
-            // Parse from last run time to see when next run should have been
-            const intervalFromLastRun = CronExpressionParser.parse(
-              flow.schedule.cron,
-              {
-                currentDate: lastRun,
-                tz: flow.schedule.timezone || "UTC",
-              },
-            );
-            const nextRunFromLastRun = intervalFromLastRun.next().toDate();
-            alternativeShouldRun = nextRunFromLastRun <= now;
-
-            flowLogger.debug("Alternative schedule check", {
-              flowId: flow._id.toString(),
-              nextRunFromLastRun: nextRunFromLastRun.toISOString(),
-              shouldHaveRunByNow: alternativeShouldRun,
-            });
-          }
-
-          // Original logic (likely always false since nextRun is future)
-          const shouldExecute = nextRun <= now && lastRun < nextRun;
-
-          flowLogger.debug("Schedule execution decision", {
-            flowId: flow._id.toString(),
-            nextRunIsInPast: nextRun <= now,
-            lastRunBeforeNextRun: lastRun < nextRun,
-            shouldExecuteOriginalLogic: shouldExecute,
-            shouldExecuteAlternativeLogic: alternativeShouldRun,
-            shouldExecuteMissedRun: missedRun,
-          });
-
-          // Use the alternative logic instead
-          if (!(alternativeShouldRun || missedRun)) return false;
 
           // Skip dispatch if a previous execution is still running —
           // prevents pending event pile-up when flows take longer than
@@ -2270,19 +2183,14 @@ export const cdcScheduledBackfillFunction = inngest.createFunction(
             return false;
           }
 
-          const tz = schedule?.timezone || "UTC";
-          const lastRun = schedule?.lastRunAt
-            ? new Date(schedule.lastRunAt)
-            : new Date(0);
-
-          const nextRunFromLast = CronExpressionParser.parse(cron, {
-            currentDate: lastRun,
-            tz,
-          })
-            .next()
-            .toDate();
-
-          return nextRunFromLast <= now;
+          return isCronDue({
+            cron,
+            timezone: schedule?.timezone,
+            lastRunAt: schedule?.lastRunAt
+              ? new Date(schedule.lastRunAt)
+              : null,
+            now,
+          });
         } catch (error) {
           backfillLogger.error("Failed to evaluate CDC backfill schedule", {
             flowId,
