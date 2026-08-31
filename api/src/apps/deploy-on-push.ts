@@ -16,6 +16,7 @@ import { loggers } from "../logging";
 import { runGit } from "./git";
 import {
   PUBLISH_ACTOR,
+  checkoutInBox,
   ensureWorktree,
   execInWorktree,
   listAppFolders,
@@ -123,6 +124,14 @@ export async function deployOneApp(
     await setPublishedSha(project as IAppProject, sha);
     return { slug, sha, outcome: "already-built" };
   }
+  // Build THIS commit. The publish route pins the box the same way, and for
+  // the same reason: ensureBox catches a box up with a throttled pull
+  // (60s), so a push soon after another one rebuilt the PREVIOUS state and
+  // stored it under this sha — the app then served a build nobody made,
+  // while the UI reported the new commit as live. Observed on three
+  // consecutive pushes to one app, each deployment holding the content of
+  // the push before it.
+  await checkoutInBox(handle, sha);
   const build = await buildApp(handle, execInWorktree);
   if (!build.ok) throw new Error(build.output);
   await deployBuild(project as IAppProject, sha, handle);
