@@ -351,8 +351,9 @@ export async function serveDeploymentFile(input: {
   // derives it from the repo's bindings so published apps get tables too.
   if (assetPath === "__data/index.json") {
     const project = await AppProject.findById(projectId);
+    // AT the deployed commit — see readSource's `at`.
     const names = project
-      ? (await readBindings(project, "")).map(b => b.name)
+      ? (await readBindings(project, "", sha)).map(b => b.name)
       : [];
     return new Response(JSON.stringify(names), {
       status: 200,
@@ -372,7 +373,7 @@ export async function serveDeploymentFile(input: {
     // writes: published apps could never see their data (§13.19).
     const project = await AppProject.findById(projectId);
     const key = project
-      ? await bindingArtifactKeyByName(project, dataMatch[1], "")
+      ? await bindingArtifactKeyByName(project, dataMatch[1], "", sha)
       : null;
     const stream = key ? await store.openReadStream(key) : null;
     if (!key || !stream) return null;

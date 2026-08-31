@@ -56,13 +56,17 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
         let due = false;
         try {
           const state = await getBindingState(projectId, binding.name);
+          // The last ATTEMPT, not the last success: a binding whose query is
+          // broken would otherwise be due on every tick and re-run its
+          // failing warehouse query every 15 minutes forever.
+          const lastAttempt = state?.history?.at(-1)?.at ?? null;
           due = isDashboardMaterializationDue({
             schedule: {
               enabled: true,
               cron: binding.schedule,
               timezone: binding.timezone,
             },
-            lastRefreshedAt: state?.lastMaterializedAt ?? null,
+            lastRefreshedAt: lastAttempt ?? state?.lastMaterializedAt ?? null,
           });
         } catch (error) {
           log.warn("Invalid binding schedule", {
@@ -73,9 +77,29 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
           continue;
         }
         if (!due) continue;
-        await step.run(`materialize-${projectId}-${binding.name}`, () =>
-          materializeAppBinding(project as never, binding.name, "scheduler"),
-        );
+        // One binding's failure must not abort the run: a thrown step fails
+        // the whole function, every binding after it in the list is skipped,
+        // and the next tick starts over from the top and hits the same one.
+        // materializeAppBinding already records the error in the binding's
+        // state (and the backoff above keys on it); here it only needs to be
+        // logged and stepped over.
+        await step.run(`materialize-${projectId}-${binding.name}`, async () => {
+          try {
+            await materializeAppBinding(
+              project as never,
+              binding.name,
+              "scheduler",
+            );
+            return { ok: true };
+          } catch (error) {
+            log.warn("Scheduled binding materialization failed", {
+              projectId,
+              binding: binding.name,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return { ok: false };
+          }
+        });
         triggered++;
       }
     }

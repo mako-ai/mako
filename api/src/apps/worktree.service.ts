@@ -933,11 +933,19 @@ export async function execInWorktree(
 async function readSource(
   project: IAppProject,
   userId: string | undefined,
+  at?: string,
 ): Promise<
   | { kind: "box"; ctx: SandboxExecContext; handle: WorktreeHandle }
   | { kind: "repo"; repoDir: string; ref: string }
 > {
   const repoDir = await repoFor(project);
+  // A pinned commit reads exactly that commit — no box, no actor branch.
+  // Published serving needs this: the deployed build was made from
+  // `publishedSha`, and its data bindings must be the ones AT that commit,
+  // not whatever main says today. Resolving them from main meant an edit to
+  // a binding on main changed its content-addressed artifact key under the
+  // live app, whose tables then 404'd until someone republished.
+  if (at) return { kind: "repo", repoDir, ref: at };
   const branchRef = `refs/heads/${project.defaultBranch || DEFAULT_BRANCH}`;
   if (!userId) return { kind: "repo", repoDir, ref: branchRef };
 
@@ -1043,6 +1051,8 @@ export async function readFile(
   project: IAppProject,
   relPath: string,
   userId?: string,
+  /** Read at this commit instead of the actor's view (see readSource). */
+  at?: string,
 ): Promise<{
   path: string;
   contents: string;
@@ -1050,7 +1060,7 @@ export async function readFile(
   size: number;
 }> {
   const safe = assertSafeRelPath(relPath);
-  const source = await readSource(project, userId);
+  const source = await readSource(project, userId, at);
   if (source.kind === "box") {
     const blob = await boxReadFile(source.ctx, appPath(project, safe));
     return { path: safe, ...blob };
@@ -1093,8 +1103,10 @@ export async function globFiles(
   glob: string,
   userId?: string,
   limit?: number,
+  /** Read at this commit instead of the actor's view (see readSource). */
+  at?: string,
 ): Promise<string[]> {
-  const source = await readSource(project, userId);
+  const source = await readSource(project, userId, at);
   const root = appRootFor(project);
   const matched =
     source.kind === "box"
