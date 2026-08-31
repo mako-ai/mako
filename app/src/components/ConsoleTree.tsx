@@ -25,8 +25,8 @@ import {
   useConsoleTreeStore,
   type ConsoleEntry,
 } from "../store/consoleTreeStore";
+import { useResourceTreeExplorer } from "../hooks/useResourceTreeExplorer";
 import ResourceTree, {
-  type CreatedFolderResult,
   type ResourceTreeNode,
   type ResourceTreeRef,
   type ResourceTreeSection,
@@ -135,16 +135,15 @@ function ConsoleTreeInner(
     return byConnection;
   }, [connections, dbTypes]);
 
-  const myConsolesMap = useConsoleTreeStore(state => state.myConsoles);
-  const sharedWithWorkspaceMap = useConsoleTreeStore(
-    state => state.sharedWithWorkspace,
+  // The console tree is preloaded by workspace-context; a sidebar or picker
+  // mounting must not refetch it.
+  const tree = useResourceTreeExplorer(
+    useConsoleTreeStore,
+    currentWorkspace?.id,
+    { autoFetch: false },
   );
-  const moveConsole = useConsoleTreeStore(state => state.moveConsole);
-  const moveFolder = useConsoleTreeStore(state => state.moveFolder);
-  const renameItem = useConsoleTreeStore(state => state.renameItem);
+  const { myItems: myConsoles, workspaceItems: sharedWithWorkspace } = tree;
   const deleteItem = useConsoleTreeStore(state => state.deleteItem);
-  const createFolder = useConsoleTreeStore(state => state.createFolder);
-  const resortItem = useConsoleTreeStore(state => state.resortItem);
 
   const activeTabId = useConsoleStore(state => state.activeTabId);
 
@@ -209,13 +208,6 @@ function ConsoleTreeInner(
     [mode, storeExpandFolder],
   );
 
-  const myConsoles = currentWorkspace
-    ? myConsolesMap[currentWorkspace.id] || []
-    : [];
-  const sharedWithWorkspace = currentWorkspace
-    ? sharedWithWorkspaceMap[currentWorkspace.id] || []
-    : [];
-
   const isOwner = useCallback(
     (item: ConsoleEntry) => item.owner_id === user?.id,
     [user?.id],
@@ -272,40 +264,9 @@ function ConsoleTreeInner(
     [onLocationChange],
   );
 
-  const handleMoveItem = useCallback(
-    (itemId: string, targetFolderId: string | null, access?: string) => {
-      if (!currentWorkspace) return;
-      void moveConsole(
-        currentWorkspace.id,
-        itemId,
-        targetFolderId,
-        (access as "private" | "workspace" | undefined) ?? undefined,
-      );
-    },
-    [currentWorkspace, moveConsole],
-  );
-
-  const handleMoveFolder = useCallback(
-    (folderId: string, parentId: string | null, access?: string) => {
-      if (!currentWorkspace) return;
-      void moveFolder(
-        currentWorkspace.id,
-        folderId,
-        parentId,
-        (access as "private" | "workspace" | undefined) ?? undefined,
-      );
-    },
-    [currentWorkspace, moveFolder],
-  );
-
-  const handleRenameItem = useCallback(
-    (id: string, name: string, isDirectory: boolean) => {
-      if (!currentWorkspace) return;
-      void renameItem(currentWorkspace.id, id, name, isDirectory);
-    },
-    [currentWorkspace, renameItem],
-  );
-
+  // Delete is the one handler the hook's confirm-dialog flow does not cover:
+  // the sidebar hands it to the explorer (confirm for folders, soft delete
+  // with undo for consoles); the picker deletes outright.
   const handleDeleteItem = useCallback(
     async (node: ResourceTreeNode) => {
       if (!currentWorkspace) return;
@@ -320,7 +281,6 @@ function ConsoleTreeInner(
         return;
       }
 
-      if (!consoleNode.id) return;
       await deleteItem(
         currentWorkspace.id,
         consoleNode.id,
@@ -330,34 +290,20 @@ function ConsoleTreeInner(
     [currentWorkspace, deleteItem, mode, onDeleteRequest, onSoftDelete],
   );
 
-  const handleCreateFolder = useCallback(
-    async (
-      parentId: string | null,
-      access?: string,
-    ): Promise<CreatedFolderResult | null> => {
-      if (!currentWorkspace) return null;
-      return createFolder(
-        currentWorkspace.id,
-        "New Folder",
-        parentId,
-        (access as "private" | "workspace" | undefined) ?? undefined,
-      );
-    },
-    [createFolder, currentWorkspace],
-  );
-
+  // Not `tree.sections`: console sections carry no header icon and are only
+  // drop targets when drag-and-drop is on (the picker turns it off).
   const sections = [
     {
       key: "my",
       label: "My Consoles",
-      nodes: myConsoles as ResourceTreeNode[],
+      nodes: myConsoles,
       droppableId: enableDragDrop ? "__section_my" : undefined,
       defaultAccess: "private" as const,
     },
     {
       key: "workspace",
       label: "Workspace",
-      nodes: sharedWithWorkspace as ResourceTreeNode[],
+      nodes: sharedWithWorkspace,
       droppableId: enableDragDrop ? "__section_workspace" : undefined,
       defaultAccess: "workspace" as const,
     },
@@ -399,13 +345,6 @@ function ConsoleTreeInner(
     (node: ResourceTreeNode) => onMoveRequest?.(node as ConsoleEntry),
     [onMoveRequest],
   );
-  const handleResortItem = useCallback(
-    (id: string) => {
-      if (!currentWorkspace) return;
-      resortItem(currentWorkspace.id, id);
-    },
-    [currentWorkspace, resortItem],
-  );
   const handleCanManageItem = useCallback(
     (node: ResourceTreeNode) => canManage(node as ConsoleEntry),
     [canManage],
@@ -445,16 +384,12 @@ function ConsoleTreeInner(
       selectedSectionKey={selectedSectionKey}
       initialFolderId={initialFolderId}
       initialSectionKey={initialSection}
-      onMoveItem={handleMoveItem}
-      onMoveFolder={handleMoveFolder}
-      onRenameItem={handleRenameItem}
+      {...tree.treeHandlers}
       onDeleteItem={handleDeleteItem}
       onDuplicateItem={handleDuplicateItem}
-      onCreateFolder={handleCreateFolder}
       onInfoRequest={handleInfoRequest}
       onFolderInfoRequest={handleFolderInfoRequest}
       onMoveRequest={handleMoveRequest}
-      onResortItem={handleResortItem}
       onUndo={onUndo}
       isFolderExpanded={isFolderExpandedLocal}
       onToggleFolder={toggleFolder}

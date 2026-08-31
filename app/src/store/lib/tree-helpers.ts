@@ -4,7 +4,7 @@
  * Every helper expects a node interface with at least:
  *   { id?: string; name: string; isDirectory: boolean; children?: T[] }
  *
- * Used by both consoleTreeStore and dashboardTreeStore.
+ * Used by createResourceTreeStore and the resource stores built on it.
  */
 
 export interface ManagedTreeNode {

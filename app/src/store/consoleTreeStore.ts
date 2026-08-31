@@ -1,25 +1,21 @@
-import { create } from "zustand";
-import { immer } from "zustand/middleware/immer";
-import { apiClient } from "../lib/api-client";
 import { api, unwrapBody } from "../api";
 import {
-  findById,
+  createResourceTreeStore,
+  type ResourceTreeEntry,
+  type TreeAccessLevel,
+} from "./lib/createResourceTreeStore";
+import {
   findParentArray,
   findTargetArray,
   insertAlphabetically,
-  insertAtTop,
   removeById,
 } from "./lib/tree-helpers";
 
-export type ConsoleAccessLevel = "private" | "workspace";
+export type ConsoleAccessLevel = TreeAccessLevel;
 
-export interface ConsoleEntry {
-  name: string;
-  path: string;
-  isDirectory: boolean;
+export interface ConsoleEntry extends ResourceTreeEntry {
   children?: ConsoleEntry[];
   content?: string;
-  id?: string;
   folderId?: string;
   connectionId?: string;
   databaseId?: string;
@@ -29,82 +25,7 @@ export interface ConsoleEntry {
   isPrivate?: boolean;
   lastExecutedAt?: Date;
   executionCount?: number;
-  access?: ConsoleAccessLevel;
-  owner_id?: string;
-  createdAt?: string;
 }
-
-/** Get both section arrays for a workspace */
-const allSections = (state: TreeState, wid: string): ConsoleEntry[][] => [
-  state.myConsoles[wid] || [],
-  state.sharedWithWorkspace[wid] || [],
-];
-
-/** Find a node across all three sections */
-const findInAnySectionMut = (
-  state: TreeState,
-  wid: string,
-  id: string,
-): ConsoleEntry | null => {
-  for (const section of allSections(state, wid)) {
-    const found = findById(section, id);
-    if (found) return found;
-  }
-  return null;
-};
-
-/** Remove a node from whichever section contains it */
-const removeFromAnySection = (
-  state: TreeState,
-  wid: string,
-  id: string,
-): ConsoleEntry | null => {
-  for (const section of allSections(state, wid)) {
-    const removed = removeById(section, id);
-    if (removed) return removed;
-  }
-  return null;
-};
-
-/** Insert into the children of a target folder, or at root of a section */
-const insertIntoFolder = (
-  state: TreeState,
-  wid: string,
-  entry: ConsoleEntry,
-  targetFolderId: string | null,
-  targetSection: "my" | "workspace",
-  placement: "alphabetical" | "top" = "alphabetical",
-): void => {
-  const sectionKey =
-    targetSection === "my" ? "myConsoles" : "sharedWithWorkspace";
-  const sectionArr = state[sectionKey][wid] || [];
-  state[sectionKey][wid] = sectionArr;
-  const insert = placement === "top" ? insertAtTop : insertAlphabetically;
-
-  if (targetFolderId) {
-    const folder = findById(sectionArr, targetFolderId);
-    if (folder && folder.isDirectory) {
-      if (!folder.children) folder.children = [];
-      insert(folder.children, entry);
-      return;
-    }
-  }
-  insert(sectionArr, entry);
-};
-
-/** Determine which section a folder ID belongs to */
-const sectionOfFolder = (
-  state: TreeState,
-  wid: string,
-  folderId: string,
-): "my" | "workspace" => {
-  if (findById(state.sharedWithWorkspace[wid] || [], folderId)) {
-    return "workspace";
-  }
-  return "my";
-};
-
-// ── Store ──
 
 export interface ConsoleSearchResult {
   id: string;
@@ -117,49 +38,16 @@ export interface ConsoleSearchResult {
   score: number;
 }
 
-interface TreeState {
-  myConsoles: Record<string, ConsoleEntry[]>;
-  sharedWithWorkspace: Record<string, ConsoleEntry[]>;
-  trees: Record<string, ConsoleEntry[]>;
-  loading: Record<string, boolean>;
-  error: Record<string, string | null>;
-
+/** What consoles need beyond the shared tree slice. */
+export interface ConsoleTreeExtra {
   searchQuery: string;
   searchResults: ConsoleSearchResult[];
   searchLoading: boolean;
-
-  fetchTree: (workspaceId: string) => Promise<ConsoleEntry[]>;
-  refresh: (workspaceId: string) => Promise<ConsoleEntry[]>;
-  init: (workspaceId: string) => Promise<void>;
-  setTree: (workspaceId: string, tree: ConsoleEntry[]) => void;
-  addConsole: (workspaceId: string, path: string, id: string) => void;
+  /** Server-side search (matches descriptions the tree filter cannot see). */
   searchConsoles: (workspaceId: string, query: string) => Promise<void>;
   clearSearch: () => void;
-
-  moveConsole: (
-    workspaceId: string,
-    consoleId: string,
-    folderId: string | null,
-    access?: ConsoleAccessLevel,
-  ) => Promise<boolean>;
-  moveFolder: (
-    workspaceId: string,
-    folderId: string,
-    parentId: string | null,
-    access?: ConsoleAccessLevel,
-  ) => Promise<boolean>;
-  createFolder: (
-    workspaceId: string,
-    name: string,
-    parentId?: string | null,
-    access?: ConsoleAccessLevel,
-  ) => Promise<{ id: string; name: string } | null>;
-  renameItem: (
-    workspaceId: string,
-    itemId: string,
-    newName: string,
-    isDirectory: boolean,
-  ) => Promise<boolean>;
+  /** Place a just-saved console at `path` in "My consoles" (no request). */
+  addConsole: (workspaceId: string, path: string, id: string) => void;
   /**
    * Surgically rename a tree node by id from a REMOTE signal (agent edit or
    * another window) — in place, WITHOUT an API call and WITHOUT a full
@@ -172,33 +60,113 @@ interface TreeState {
     itemId: string,
     newName: string,
   ) => void;
-  deleteItem: (
-    workspaceId: string,
-    itemId: string,
-    isDirectory: boolean,
-  ) => Promise<boolean>;
-  resortItem: (workspaceId: string, itemId: string) => void;
   duplicateConsole: (
     workspaceId: string,
     consoleId: string,
   ) => Promise<{ id: string; name: string } | null>;
+  /** Undo a soft delete; refetches the tree on success. */
   restoreConsole: (workspaceId: string, consoleId: string) => Promise<boolean>;
-  updateAccess: (
-    workspaceId: string,
-    itemId: string,
-    isDirectory: boolean,
-    access: ConsoleAccessLevel,
-  ) => Promise<boolean>;
 }
 
-export const useConsoleTreeStore = create<TreeState>()(
-  immer((set, _get) => ({
-    myConsoles: {},
-    sharedWithWorkspace: {},
-    trees: {},
-    loading: {},
-    error: {},
+const base = "/api/workspaces/{workspaceId}/consoles" as const;
 
+/**
+ * The console API answers `{ success: false }` with a 200; the factory's
+ * refresh-on-failure path is driven by thrown errors, so surface it as one.
+ */
+const ok = <R extends { success?: boolean }>(res: R): R => {
+  if (!res.success) throw new Error("Request failed");
+  return res;
+};
+
+/** The consoles tree: entry type + endpoints + console-only extras. */
+export const useConsoleTreeStore = createResourceTreeStore<
+  ConsoleEntry,
+  ConsoleTreeExtra
+>({
+  resourceName: "console",
+  endpoints: {
+    fetch: async workspaceId => {
+      const data = unwrapBody(
+        await api.GET(base, { params: { path: { workspaceId } } }),
+      ) as {
+        tree?: ConsoleEntry[];
+        myConsoles?: ConsoleEntry[];
+        sharedWithWorkspace?: ConsoleEntry[];
+      };
+      return {
+        my: data.myConsoles ?? data.tree ?? [],
+        workspace: data.sharedWithWorkspace ?? [],
+      };
+    },
+    moveItem: async (workspaceId, id, folderId, access) =>
+      ok(
+        unwrapBody(
+          await api.PATCH(`${base}/{id}/move`, {
+            params: { path: { workspaceId, id } },
+            body: { folderId, access },
+          }),
+        ) as { success: boolean },
+      ),
+    moveFolder: async (workspaceId, id, parentId, access) =>
+      ok(
+        unwrapBody(
+          await api.PATCH(`${base}/folders/{id}/move`, {
+            params: { path: { workspaceId, id } },
+            body: { parentId, access },
+          }),
+        ) as { success: boolean },
+      ),
+    createFolder: async (workspaceId, name, parentId, access) =>
+      ok(
+        unwrapBody(
+          await api.POST(`${base}/folders`, {
+            params: { path: { workspaceId } },
+            body: {
+              name,
+              parentId: parentId || undefined,
+              isPrivate: access !== "workspace",
+              access,
+            },
+          }),
+        ) as { success: boolean; data?: { id: string; name: string } },
+      ).data,
+    renameItem: async (workspaceId, id, name) =>
+      ok(
+        unwrapBody(
+          await api.PATCH(`${base}/{id}/rename`, {
+            params: { path: { workspaceId, id } },
+            body: { name },
+          }),
+        ) as { success: boolean },
+      ),
+    renameFolder: async (workspaceId, id, name) =>
+      ok(
+        unwrapBody(
+          await api.PATCH(`${base}/folders/{id}/rename`, {
+            params: { path: { workspaceId, id } },
+            body: { name },
+          }),
+        ) as { success: boolean },
+      ),
+    deleteItem: async (workspaceId, id) =>
+      ok(
+        unwrapBody(
+          await api.DELETE(`${base}/{id}`, {
+            params: { path: { workspaceId, id } },
+          }),
+        ) as { success: boolean },
+      ),
+    deleteFolder: async (workspaceId, id) =>
+      ok(
+        unwrapBody(
+          await api.DELETE(`${base}/folders/{id}`, {
+            params: { path: { workspaceId, id } },
+          }),
+        ) as { success: boolean },
+      ),
+  },
+  extend: (set, get, helpers) => ({
     searchQuery: "",
     searchResults: [],
     searchLoading: false,
@@ -210,12 +178,10 @@ export const useConsoleTreeStore = create<TreeState>()(
       });
       try {
         const data = unwrapBody(
-          await api.GET("/api/workspaces/{workspaceId}/consoles/search", {
+          await api.GET(`${base}/search`, {
             params: { path: { workspaceId }, query: { q: query } },
           }),
-        ) as {
-          results: ConsoleSearchResult[];
-        };
+        ) as { results: ConsoleSearchResult[] };
         set(state => {
           state.searchResults = data.results || [];
           state.searchLoading = false;
@@ -236,70 +202,13 @@ export const useConsoleTreeStore = create<TreeState>()(
       });
     },
 
-    fetchTree: async workspaceId => {
-      set(state => {
-        state.loading[workspaceId] = true;
-        state.error[workspaceId] = null;
-      });
-      try {
-        const data = unwrapBody(
-          await api.GET("/api/workspaces/{workspaceId}/consoles", {
-            params: { path: { workspaceId } },
-          }),
-        ) as {
-          success: boolean;
-          tree?: ConsoleEntry[];
-          myConsoles?: ConsoleEntry[];
-          sharedWithWorkspace?: ConsoleEntry[];
-        };
-
-        const myTree = data.myConsoles ?? data.tree ?? [];
-        const sharedWithWorkspaceTree = data.sharedWithWorkspace ?? [];
-
-        set(state => {
-          state.myConsoles[workspaceId] = myTree;
-          state.sharedWithWorkspace[workspaceId] = sharedWithWorkspaceTree;
-          state.trees[workspaceId] = myTree;
-        });
-        return myTree;
-      } catch (err: any) {
-        console.error("Failed to fetch console tree", err);
-        set(state => {
-          state.error[workspaceId] = err?.message || "Failed to fetch";
-        });
-        return [];
-      } finally {
-        set(state => {
-          delete state.loading[workspaceId];
-        });
-      }
-    },
-
-    refresh: async workspaceId => {
-      return await _get().fetchTree(workspaceId);
-    },
-
-    init: async workspaceId => {
-      if (!_get().trees[workspaceId]) {
-        await _get().fetchTree(workspaceId);
-      }
-    },
-
-    setTree: (workspaceId, tree) => {
-      set(state => {
-        state.trees[workspaceId] = tree;
-        state.myConsoles[workspaceId] = tree;
-      });
-    },
-
     addConsole: (workspaceId, path, id) => {
       set(state => {
-        const tree = state.myConsoles[workspaceId] || [];
+        const tree = state.myItems[workspaceId] || [];
         const segments = path.split("/").filter(Boolean);
         const fileName = segments[segments.length - 1];
         const folderSegments = segments.slice(0, -1);
         const existing = removeById(tree, id);
-        const targetArray = findTargetArray(tree, folderSegments);
         const newConsole: ConsoleEntry = {
           ...(existing || {}),
           name: fileName,
@@ -307,198 +216,15 @@ export const useConsoleTreeStore = create<TreeState>()(
           isDirectory: false,
           id,
         };
-        const destination = targetArray || tree;
+        const destination = findTargetArray(tree, folderSegments) || tree;
         insertAlphabetically(destination, newConsole);
-        state.myConsoles[workspaceId] = tree;
-        state.trees[workspaceId] = tree;
+        state.myItems[workspaceId] = tree;
       });
-    },
-
-    // ── Optimistic mutations ──
-
-    moveConsole: async (workspaceId, consoleId, folderId, access) => {
-      set(state => {
-        const entry = removeFromAnySection(state, workspaceId, consoleId);
-        if (!entry) return;
-        if (access) entry.access = access;
-        const targetSection = access
-          ? access === "workspace"
-            ? "workspace"
-            : "my"
-          : folderId
-            ? sectionOfFolder(state, workspaceId, folderId)
-            : "my";
-        insertIntoFolder(state, workspaceId, entry, folderId, targetSection);
-      });
-      try {
-        const body: Record<string, unknown> = { folderId };
-        if (access) body.access = access;
-        const res = unwrapBody(
-          await api.PATCH("/api/workspaces/{workspaceId}/consoles/{id}/move", {
-            params: { path: { workspaceId, id: consoleId } },
-            body,
-          }),
-        ) as { success: boolean };
-        if (!res.success) {
-          await _get().refresh(workspaceId);
-        }
-        return res.success;
-      } catch {
-        await _get().refresh(workspaceId);
-        return false;
-      }
-    },
-
-    moveFolder: async (workspaceId, folderId, parentId, access) => {
-      set(state => {
-        const entry = removeFromAnySection(state, workspaceId, folderId);
-        if (!entry) return;
-        if (access) entry.access = access;
-        const targetSection = access
-          ? access === "workspace"
-            ? "workspace"
-            : "my"
-          : parentId
-            ? sectionOfFolder(state, workspaceId, parentId)
-            : "my";
-        insertIntoFolder(state, workspaceId, entry, parentId, targetSection);
-      });
-      try {
-        const body: Record<string, unknown> = { parentId };
-        if (access) body.access = access;
-        const res = unwrapBody(
-          await api.PATCH(
-            "/api/workspaces/{workspaceId}/consoles/folders/{id}/move",
-            { params: { path: { workspaceId, id: folderId } }, body },
-          ),
-        ) as { success: boolean };
-        if (!res.success) {
-          await _get().refresh(workspaceId);
-        }
-        return res.success;
-      } catch {
-        await _get().refresh(workspaceId);
-        return false;
-      }
-    },
-
-    createFolder: async (workspaceId, name, parentId, access) => {
-      // Resolve access: if not specified, inherit from the section the parent lives in
-      let resolvedAccess = access || "private";
-      if (!access && parentId) {
-        const parentSection = sectionOfFolder(_get(), workspaceId, parentId);
-        if (parentSection === "workspace") {
-          resolvedAccess = "workspace";
-        }
-      }
-
-      const tempId = `temp-${Date.now()}`;
-      const targetSection =
-        resolvedAccess === "workspace"
-          ? "workspace"
-          : parentId
-            ? sectionOfFolder(_get(), workspaceId, parentId)
-            : "my";
-
-      set(state => {
-        const newFolder: ConsoleEntry = {
-          name,
-          path: name,
-          isDirectory: true,
-          children: [],
-          id: tempId,
-          access: resolvedAccess,
-        };
-        insertIntoFolder(
-          state,
-          workspaceId,
-          newFolder,
-          parentId ?? null,
-          targetSection,
-          "top",
-        );
-      });
-
-      try {
-        const res = unwrapBody(
-          await api.POST("/api/workspaces/{workspaceId}/consoles/folders", {
-            params: { path: { workspaceId } },
-            body: {
-              name,
-              parentId: parentId || undefined,
-              isPrivate: resolvedAccess !== "workspace",
-              access: resolvedAccess,
-            },
-          }),
-        ) as {
-          success: boolean;
-          data?: { id: string; name: string };
-        };
-        if (res.success && res.data) {
-          const newId = res.data.id;
-          set(state => {
-            const node = findInAnySectionMut(state, workspaceId, tempId);
-            if (node) node.id = newId;
-          });
-          return { id: res.data.id, name: res.data.name };
-        }
-        await _get().refresh(workspaceId);
-        return null;
-      } catch {
-        await _get().refresh(workspaceId);
-        return null;
-      }
-    },
-
-    renameItem: async (workspaceId, itemId, newName, isDirectory) => {
-      set(state => {
-        const parent = (() => {
-          for (const section of allSections(state, workspaceId)) {
-            const found = findParentArray(section, itemId);
-            if (found) return found;
-          }
-          return null;
-        })();
-        if (parent) {
-          const idx = parent.findIndex(n => n.id === itemId);
-          if (idx !== -1) {
-            const [node] = parent.splice(idx, 1);
-            node.name = newName;
-            insertAlphabetically(parent, node);
-          }
-        }
-      });
-      try {
-        const res = unwrapBody(
-          isDirectory
-            ? await api.PATCH(
-                "/api/workspaces/{workspaceId}/consoles/folders/{id}/rename",
-                {
-                  params: { path: { workspaceId, id: itemId } },
-                  body: { name: newName },
-                },
-              )
-            : await api.PATCH(
-                "/api/workspaces/{workspaceId}/consoles/{id}/rename",
-                {
-                  params: { path: { workspaceId, id: itemId } },
-                  body: { name: newName },
-                },
-              ),
-        ) as { success: boolean };
-        if (!res.success) {
-          await _get().refresh(workspaceId);
-        }
-        return res.success;
-      } catch {
-        await _get().refresh(workspaceId);
-        return false;
-      }
     },
 
     applyRemoteRename: (workspaceId, itemId, newName) => {
       set(state => {
-        for (const section of allSections(state, workspaceId)) {
+        for (const section of helpers.allSections(state, workspaceId)) {
           const parent = findParentArray(section, itemId);
           if (!parent) continue;
           const idx = parent.findIndex(n => n.id === itemId);
@@ -515,85 +241,41 @@ export const useConsoleTreeStore = create<TreeState>()(
       });
     },
 
-    deleteItem: async (workspaceId, itemId, isDirectory) => {
-      // Optimistic: remove from local tree
-      set(state => {
-        removeFromAnySection(state, workspaceId, itemId);
-      });
-      try {
-        const res = unwrapBody(
-          isDirectory
-            ? await api.DELETE(
-                "/api/workspaces/{workspaceId}/consoles/folders/{id}",
-                { params: { path: { workspaceId, id: itemId } } },
-              )
-            : await api.DELETE("/api/workspaces/{workspaceId}/consoles/{id}", {
-                params: { path: { workspaceId, id: itemId } },
-              }),
-        ) as { success: boolean };
-        if (!res.success) {
-          await _get().refresh(workspaceId);
-        }
-        return res.success;
-      } catch {
-        await _get().refresh(workspaceId);
-        return false;
-      }
-    },
-
-    resortItem: (workspaceId, itemId) => {
-      set(state => {
-        const parent = (() => {
-          for (const section of allSections(state, workspaceId)) {
-            const found = findParentArray(section, itemId);
-            if (found) return found;
-          }
-          return null;
-        })();
-        if (parent) {
-          const idx = parent.findIndex(n => n.id === itemId);
-          if (idx !== -1) {
-            const [node] = parent.splice(idx, 1);
-            insertAlphabetically(parent, node);
-          }
-        }
-      });
-    },
-
     duplicateConsole: async (workspaceId, consoleId) => {
       try {
         const res = unwrapBody(
-          await api.POST(
-            "/api/workspaces/{workspaceId}/consoles/{id}/duplicate",
-            { params: { path: { workspaceId, id: consoleId } } },
-          ),
+          await api.POST(`${base}/{id}/duplicate`, {
+            params: { path: { workspaceId, id: consoleId } },
+          }),
         ) as {
           success: boolean;
           data?: { id: string; name: string; folderId?: string };
         };
-        if (res.success && res.data) {
-          const newConsole = res.data;
-          set(state => {
-            const original = findInAnySectionMut(state, workspaceId, consoleId);
-            if (!original) return;
-            const copy: ConsoleEntry = {
-              ...original,
-              id: newConsole.id,
-              name: newConsole.name,
-              isDirectory: false,
-            };
-            // Find which section/folder the original is in
-            for (const section of allSections(state, workspaceId)) {
-              const parent = findParentArray(section, consoleId);
-              if (parent) {
-                insertAlphabetically(parent, copy);
-                return;
-              }
+        if (!res.success || !res.data) return null;
+        const created = res.data;
+        set(state => {
+          const original = helpers.findInAnySection(
+            state,
+            workspaceId,
+            consoleId,
+          );
+          if (!original) return;
+          const copy: ConsoleEntry = {
+            ...original,
+            id: created.id,
+            name: created.name,
+            isDirectory: false,
+          };
+          // The copy lands next to the original, whichever section/folder.
+          for (const section of helpers.allSections(state, workspaceId)) {
+            const parent = findParentArray(section, consoleId);
+            if (parent) {
+              insertAlphabetically(parent, copy);
+              return;
             }
-          });
-          return { id: res.data.id, name: res.data.name };
-        }
-        return null;
+          }
+        });
+        return { id: created.id, name: created.name };
       } catch {
         return null;
       }
@@ -602,46 +284,15 @@ export const useConsoleTreeStore = create<TreeState>()(
     restoreConsole: async (workspaceId, consoleId) => {
       try {
         const res = unwrapBody(
-          await api.PATCH(
-            "/api/workspaces/{workspaceId}/consoles/{id}/restore",
-            { params: { path: { workspaceId, id: consoleId } } },
-          ),
+          await api.PATCH(`${base}/{id}/restore`, {
+            params: { path: { workspaceId, id: consoleId } },
+          }),
         ) as { success: boolean };
-        if (res.success) {
-          await _get().refresh(workspaceId);
-        }
+        if (res.success) await get().refresh(workspaceId);
         return res.success;
       } catch {
         return false;
       }
     },
-
-    updateAccess: async (workspaceId, itemId, isDirectory, access) => {
-      set(state => {
-        const entry = removeFromAnySection(state, workspaceId, itemId);
-        if (!entry) return;
-        entry.access = access;
-        const sectionKey =
-          access === "workspace" ? "sharedWithWorkspace" : "myConsoles";
-        const arr = state[sectionKey][workspaceId] || [];
-        state[sectionKey][workspaceId] = arr;
-        insertAlphabetically(arr, entry);
-      });
-      try {
-        const endpoint = isDirectory
-          ? `/workspaces/${workspaceId}/consoles/folders/${itemId}/share`
-          : `/workspaces/${workspaceId}/consoles/${itemId}/share`;
-        const res = await apiClient.post<{ success: boolean }>(endpoint, {
-          access,
-        });
-        if (!res.success) {
-          await _get().refresh(workspaceId);
-        }
-        return res.success;
-      } catch {
-        await _get().refresh(workspaceId);
-        return false;
-      }
-    },
-  })),
-);
+  }),
+});

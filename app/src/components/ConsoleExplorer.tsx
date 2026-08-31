@@ -3,7 +3,6 @@ import {
   forwardRef,
   useImperativeHandle,
   useRef,
-  useEffect,
   useCallback,
 } from "react";
 import {
@@ -34,6 +33,7 @@ import {
 import { useConsoleStore } from "../store/consoleStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
 import { filterTree } from "../store/lib/tree-helpers";
+import { useResourceTreeExplorer } from "../hooks/useResourceTreeExplorer";
 import FileExplorerDialog from "./FileExplorerDialog";
 import ConsoleInfoModal from "./ConsoleInfoModal";
 import FolderInfoModal from "./FolderInfoModal";
@@ -64,9 +64,20 @@ function ConsoleExplorer(
   const { onConsoleSelect } = props;
   const { currentWorkspace } = useWorkspace();
 
-  const loadingMap = useConsoleTreeStore(state => state.loading);
-  const refreshTree = useConsoleTreeStore(state => state.refresh);
-  const moveConsole = useConsoleTreeStore(state => state.moveConsole);
+  // The console tree is preloaded by workspace-context (so it is ready for
+  // optimistic addConsole calls before this explorer mounts) — no autoFetch.
+  const tree = useResourceTreeExplorer(
+    useConsoleTreeStore,
+    currentWorkspace?.id,
+    { autoFetch: false },
+  );
+  const {
+    myItems: myConsoles,
+    workspaceItems: sharedWithWorkspace,
+    loading,
+    error,
+  } = tree;
+  const moveConsole = useConsoleTreeStore(state => state.moveItem);
   const moveFolder = useConsoleTreeStore(state => state.moveFolder);
   const deleteItem = useConsoleTreeStore(state => state.deleteItem);
   const searchConsoles = useConsoleTreeStore(state => state.searchConsoles);
@@ -76,23 +87,9 @@ function ConsoleExplorer(
   const updateTabFilePath = useConsoleStore(state => state.updateFilePath);
   const updateTabTitle = useConsoleStore(state => state.updateTitle);
   const updateTabAccess = useConsoleStore(state => state.updateAccess);
-  const myConsolesMap = useConsoleTreeStore(state => state.myConsoles);
-  const sharedWithWorkspaceMap = useConsoleTreeStore(
-    state => state.sharedWithWorkspace,
-  );
-
-  const myConsoles = currentWorkspace
-    ? myConsolesMap[currentWorkspace.id] || []
-    : [];
-  const sharedWithWorkspace = currentWorkspace
-    ? sharedWithWorkspaceMap[currentWorkspace.id] || []
-    : [];
-  const loading = currentWorkspace ? !!loadingMap[currentWorkspace.id] : false;
-  const error = currentWorkspace ? _errorFor(currentWorkspace.id) : null;
 
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [explorerDialogOpen, setExplorerDialogOpen] = useState(false);
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState<ConsoleEntry | null>(null);
   const [infoModalOpen, setInfoModalOpen] = useState(false);
   const [infoConsoleId, setInfoConsoleId] = useState<string>("");
@@ -108,7 +105,7 @@ function ConsoleExplorer(
   const collectIds = (nodes: ConsoleEntry[]): Set<string> => {
     const ids = new Set<string>();
     for (const node of nodes) {
-      if (node.id) ids.add(node.id);
+      ids.add(node.id);
       if (node.isDirectory && node.children) {
         for (const id of collectIds(node.children)) ids.add(id);
       }
@@ -116,25 +113,11 @@ function ConsoleExplorer(
     return ids;
   };
 
-  function _errorFor(wid: string) {
-    const map = useConsoleTreeStore.getState().error;
-    return map[wid] || null;
-  }
-
-  const fetchConsoleEntries = async () => {
-    if (!currentWorkspace) return;
-    await refreshTree(currentWorkspace.id);
-  };
-
   useImperativeHandle(ref, () => ({
     refresh: () => {
-      fetchConsoleEntries();
+      void tree.refresh();
     },
   }));
-
-  useEffect(() => {
-    // Tree store handles its own initial load
-  }, [currentWorkspace]);
 
   const handleSearchChange = useCallback(
     (value: string) => {
@@ -424,11 +407,6 @@ function ConsoleExplorer(
     setFolderInfoOpen(true);
   };
 
-  const handleDeleteRequest = (item: ConsoleEntry) => {
-    setSelectedItem(item);
-    setDeleteDialogOpen(true);
-  };
-
   const handleSoftDelete = async (item: ConsoleEntry) => {
     if (!currentWorkspace || !item.id) return;
     const itemId = item.id;
@@ -455,17 +433,6 @@ function ConsoleExplorer(
         setUndoStack(prev => prev.slice(0, -1));
       }
     }
-  };
-
-  const handleDeleteConfirm = async () => {
-    if (!currentWorkspace || !selectedItem?.id) return;
-    await deleteItem(
-      currentWorkspace.id,
-      selectedItem.id,
-      selectedItem.isDirectory,
-    );
-    setDeleteDialogOpen(false);
-    setSelectedItem(null);
   };
 
   const treeRef = useRef<import("./ConsoleTree").ConsoleTreeRef | null>(null);
@@ -500,7 +467,7 @@ function ConsoleExplorer(
         </IconButton>
       </Tooltip>
       <Tooltip title="Refresh">
-        <IconButton onClick={fetchConsoleEntries} size="small">
+        <IconButton onClick={() => void tree.refresh()} size="small">
           <RefreshIcon size={20} strokeWidth={2} />
         </IconButton>
       </Tooltip>
@@ -562,7 +529,7 @@ function ConsoleExplorer(
                 onMoveRequest={handleMoveTo}
                 onInfoRequest={handleGetInfo}
                 onFolderInfoRequest={handleFolderInfo}
-                onDeleteRequest={handleDeleteRequest}
+                onDeleteRequest={tree.requestDelete}
                 onSoftDelete={handleSoftDelete}
                 onDuplicate={handleDuplicate}
                 onUndo={handleUndo}
@@ -644,17 +611,17 @@ function ConsoleExplorer(
       </Menu>
 
       <ConfirmDialog
-        open={deleteDialogOpen}
-        title={`Delete ${selectedItem?.isDirectory ? "Folder" : "Console"}`}
+        open={!!tree.deleteTarget}
+        title={`Delete ${tree.deleteTarget?.isDirectory ? "Folder" : "Console"}`}
         body={`${
-          selectedItem?.isDirectory
+          tree.deleteTarget?.isDirectory
             ? "This will permanently delete the folder and all its contents (subfolders and consoles)."
             : "This will permanently delete the console."
-        } Are you sure you want to delete "${selectedItem?.name}"?`}
+        } Are you sure you want to delete "${tree.deleteTarget?.name}"?`}
         confirmLabel="Delete"
         destructive
-        onConfirm={() => void handleDeleteConfirm()}
-        onCancel={() => setDeleteDialogOpen(false)}
+        onConfirm={() => void tree.confirmDelete()}
+        onCancel={tree.cancelDelete}
       />
 
       <ConsoleInfoModal

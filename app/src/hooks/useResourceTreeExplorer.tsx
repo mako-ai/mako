@@ -10,7 +10,6 @@
  * dialogs) on top of this hook.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { StoreApi, UseBoundStore } from "zustand";
 import { Globe as GlobeIcon, User as UserIcon } from "lucide-react";
 import type {
   ResourceTreeEntry,
@@ -22,11 +21,19 @@ import type {
   ResourceTreeSection,
 } from "../components/ResourceTree";
 
-const EMPTY: ResourceTreeNode[] = [];
+const EMPTY: never[] = [];
 
-type TreeStore<T extends ResourceTreeEntry> = UseBoundStore<
-  StoreApi<ResourceTreeState<T>>
->;
+/**
+ * What the hook needs from a bound store: the selector call and `setState`.
+ * Structural (not `UseBoundStore<StoreApi<…>>`) so a store extended past
+ * ResourceTreeState — consoles add search / duplicate / restore — still fits.
+ */
+interface TreeStore<T extends ResourceTreeEntry> {
+  <U>(selector: (state: ResourceTreeState<T>) => U): U;
+  setState: (
+    updater: (state: ResourceTreeState<T>) => Partial<ResourceTreeState<T>>,
+  ) => void;
+}
 
 export function useResourceTreeExplorer<T extends ResourceTreeEntry>(
   store: TreeStore<T>,
@@ -38,23 +45,26 @@ export function useResourceTreeExplorer<T extends ResourceTreeEntry>(
      * are items). Default: the node's own `isDirectory`.
      */
     isFolder?: (id: string, isDirectory: boolean) => boolean;
+    /**
+     * Fetch the tree whenever the workspace changes (default). Consoles opt
+     * out: workspace-context preloads their tree so it is ready before the
+     * explorer mounts, and the save/move picker must not refetch on open.
+     */
+    autoFetch?: boolean;
   } = {},
 ) {
+  const { autoFetch = true } = options;
   const isFolderOption = options.isFolder;
   const isFolder = useMemo(
     () => isFolderOption ?? ((_id: string, d: boolean) => d),
     [isFolderOption],
   );
 
-  const myItems = store(s =>
-    workspaceId
-      ? ((s.myItems[workspaceId] as ResourceTreeNode[]) ?? EMPTY)
-      : EMPTY,
+  const myItems: T[] = store(s =>
+    workspaceId ? (s.myItems[workspaceId] ?? EMPTY) : EMPTY,
   );
-  const workspaceItems = store(s =>
-    workspaceId
-      ? ((s.workspaceItems[workspaceId] as ResourceTreeNode[]) ?? EMPTY)
-      : EMPTY,
+  const workspaceItems: T[] = store(s =>
+    workspaceId ? (s.workspaceItems[workspaceId] ?? EMPTY) : EMPTY,
   );
   const loading = store(s => (workspaceId ? !!s.loading[workspaceId] : false));
   const error = store(s => (workspaceId ? s.error[workspaceId] || null : null));
@@ -67,8 +77,8 @@ export function useResourceTreeExplorer<T extends ResourceTreeEntry>(
   const resortItem = store(s => s.resortItem);
 
   useEffect(() => {
-    if (workspaceId) void fetchTree(workspaceId);
-  }, [workspaceId, fetchTree]);
+    if (autoFetch && workspaceId) void fetchTree(workspaceId);
+  }, [autoFetch, workspaceId, fetchTree]);
 
   const refresh = useCallback(async () => {
     if (workspaceId) await fetchTree(workspaceId);
@@ -179,7 +189,7 @@ export function useResourceTreeExplorer<T extends ResourceTreeEntry>(
         key: "my",
         label: labels.my,
         icon: <UserIcon size={16} strokeWidth={1.5} />,
-        nodes: mapNodes(myItems),
+        nodes: mapNodes(myItems as ResourceTreeNode[]),
         droppableId: "__section_my",
         defaultAccess: "private" as const,
       },
@@ -187,7 +197,7 @@ export function useResourceTreeExplorer<T extends ResourceTreeEntry>(
         key: "workspace",
         label: labels.workspace ?? "Workspace",
         icon: <GlobeIcon size={16} strokeWidth={1.5} />,
-        nodes: mapNodes(workspaceItems),
+        nodes: mapNodes(workspaceItems as ResourceTreeNode[]),
         droppableId: "__section_workspace",
         defaultAccess: "workspace" as const,
       },

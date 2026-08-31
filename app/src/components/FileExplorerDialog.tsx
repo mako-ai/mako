@@ -67,9 +67,9 @@ export default function FileExplorerDialog({
   isDirectory = false,
 }: FileExplorerDialogProps) {
   const { currentWorkspace } = useWorkspace();
-  const myConsolesMap = useConsoleTreeStore(state => state.myConsoles);
+  const myConsolesMap = useConsoleTreeStore(state => state.myItems);
   const sharedWithWorkspaceMap = useConsoleTreeStore(
-    state => state.sharedWithWorkspace,
+    state => state.workspaceItems,
   );
 
   const [consoleName, setConsoleName] = useState(defaultName);
