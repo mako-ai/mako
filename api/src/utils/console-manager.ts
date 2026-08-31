@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import { sortTreeNodes } from "./folder-tree";
 import * as path from "path";
 import { Types } from "mongoose";
 import {
@@ -337,19 +338,7 @@ export class ConsoleManager {
       }
     }
 
-    const sortNodes = (nodes: ConsoleFile[]) => {
-      nodes.sort((a, b) => {
-        if (a.isDirectory && !b.isDirectory) return -1;
-        if (!a.isDirectory && b.isDirectory) return 1;
-        return a.name.localeCompare(b.name);
-      });
-      for (const node of nodes) {
-        if (node.isDirectory && node.children) {
-          sortNodes(node.children);
-        }
-      }
-    };
-    sortNodes(rootItems);
+    sortTreeNodes(rootItems);
 
     return rootItems;
   }
