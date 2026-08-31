@@ -8,7 +8,8 @@
  */
 
 import { useDbtStore } from "../store/dbtStore";
-import { focusDbtFileTab, getCurrentWorkspaceId } from "./shell";
+import { getCurrentWorkspaceId } from "../store/uiStore";
+import { focusDbtFileTab } from "./shell";
 
 type ToolResult = Record<string, unknown>;
 

@@ -24,7 +24,6 @@ import {
   ContentCopy as CopyIcon,
   LinkOff as RevokeIcon,
 } from "@mui/icons-material";
-import { formatDistanceToNow } from "date-fns";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useMcpStore } from "../store/mcpStore";
 import {
@@ -32,6 +31,7 @@ import {
   useConsoleStore,
 } from "../store/consoleStore";
 import { SECTION_LABELS } from "../pages/settings/sections";
+import { formatRelativeTime } from "../utils/relative-time";
 
 const MCP_STARTER_PROMPT =
   "Using the mako tools, explore my data and build an app showing revenue " +
@@ -425,17 +425,13 @@ export function McpConnectedAgents({
                   )}
                   <TableCell>
                     <Typography variant="body2" color="text.secondary">
-                      {formatDistanceToNow(new Date(connection.connectedAt), {
-                        addSuffix: true,
-                      })}
+                      {formatRelativeTime(connection.connectedAt)}
                     </Typography>
                   </TableCell>
                   <TableCell>
                     <Typography variant="body2" color="text.secondary">
                       {connection.lastUsedAt
-                        ? formatDistanceToNow(new Date(connection.lastUsedAt), {
-                            addSuffix: true,
-                          })
+                        ? formatRelativeTime(connection.lastUsedAt)
                         : "Never"}
                     </Typography>
                   </TableCell>

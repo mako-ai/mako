@@ -18,22 +18,11 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { formatDistanceToNow } from "date-fns";
 import { History, RotateCcw, X } from "lucide-react";
 
 import { useNotebookStore, type NotebookVersion } from "../store/notebookStore";
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatWhen(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "unknown";
-  return `${formatDistanceToNow(date, { addSuffix: true })}`;
-}
+import { formatBytes } from "../utils/format";
+import { formatRelativeTime } from "../utils/relative-time";
 
 interface NotebookHistoryDrawerProps {
   open: boolean;
@@ -154,7 +143,7 @@ export default function NotebookHistoryDrawer({
                 }
               >
                 <ListItemText
-                  primary={formatWhen(v.createdAt)}
+                  primary={formatRelativeTime(v.createdAt) ?? "unknown"}
                   secondary={formatBytes(v.size)}
                   primaryTypographyProps={{ variant: "body2" }}
                   secondaryTypographyProps={{ variant: "caption" }}

@@ -1,10 +1,6 @@
 import { useConsoleStore } from "../store/consoleStore";
 import { useUIStore } from "../store/uiStore";
 
-export function getCurrentWorkspaceId(): string | null {
-  return useUIStore.getState().currentWorkspaceId ?? null;
-}
-
 export function focusDashboardTab(dashboardId: string, title: string): string {
   const tabId = useConsoleStore
     .getState()

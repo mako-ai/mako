@@ -67,6 +67,7 @@ import {
 import { SECTION_LABELS } from "../pages/settings/sections";
 import { focusAppsDiffTab, focusAppsFileTab } from "../apps-runtime/shell";
 import VSScrollArea from "./VSScrollArea";
+import { basename, dirname } from "../utils/path";
 
 /** VS Code's status letters, in VS Code's colors. */
 const STATUS_STYLE: Record<
@@ -179,9 +180,8 @@ function ChangeRow({
   onOpen: () => void;
   actions: React.ReactNode;
 }) {
-  const slash = change.path.lastIndexOf("/");
-  const name = slash === -1 ? change.path : change.path.slice(slash + 1);
-  const dir = slash === -1 ? "" : change.path.slice(0, slash);
+  const name = basename(change.path);
+  const dir = dirname(change.path);
   const style = STATUS_STYLE[change.status];
   return (
     <Box
@@ -894,7 +894,7 @@ export default function SourceControlExplorer() {
                             title="Discard changes"
                             onClick={() =>
                               setConfirm({
-                                title: `Discard changes to ${change.path.split("/").pop()}?`,
+                                title: `Discard changes to ${basename(change.path)}?`,
                                 body:
                                   change.status === "added"
                                     ? "This deletes the file. It cannot be undone."

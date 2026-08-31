@@ -33,7 +33,6 @@ import {
   Visibility as VisibilityIcon,
   VisibilityOff as VisibilityOffIcon,
 } from "@mui/icons-material";
-import { formatDistanceToNow } from "date-fns";
 import { useWorkspace } from "../contexts/workspace-context";
 import {
   selectTabBySettingsSection,
@@ -43,6 +42,7 @@ import { SECTION_LABELS } from "../pages/settings/sections";
 import { trackEvent } from "../lib/analytics";
 import { useApiKeyStore } from "../store/apiKeyStore";
 import type { ApiKeyCreateResponse } from "../lib/api-types";
+import { formatRelativeTime } from "../utils/relative-time";
 
 const MCP_STARTER_PROMPT =
   "Using the mako tools, explore my data and build an app showing revenue " +
@@ -488,16 +488,10 @@ export function ApiKeyManager() {
                       </Tooltip>
                     )}
                   </TableCell>
-                  <TableCell>
-                    {formatDistanceToNow(new Date(key.createdAt), {
-                      addSuffix: true,
-                    })}
-                  </TableCell>
+                  <TableCell>{formatRelativeTime(key.createdAt)}</TableCell>
                   <TableCell>
                     {key.lastUsedAt
-                      ? formatDistanceToNow(new Date(key.lastUsedAt), {
-                          addSuffix: true,
-                        })
+                      ? formatRelativeTime(key.lastUsedAt)
                       : "Never"}
                   </TableCell>
                   <TableCell align="right">

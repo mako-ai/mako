@@ -22,7 +22,8 @@ import {
 } from "../agent-runtime/client-tool-manifest";
 import { resolveDataSourceCodeEdit } from "@mako/agent-tools";
 import { captureScreenshot } from "../agent-runtime/screenshot-agent-tools";
-import { focusDashboardTab, getCurrentWorkspaceId } from "./shell";
+import { getCurrentWorkspaceId } from "../store/uiStore";
+import { focusDashboardTab } from "./shell";
 import {
   validateCrossFilterWidgetSql,
   validateDuckDBQuery,

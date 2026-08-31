@@ -47,6 +47,8 @@ import { focusDbtFileTab } from "../dbt-runtime/shell";
 import { envBadgeColor } from "../lib/dbt-env";
 import { formatRowsAffected, formatStepDuration } from "../lib/dbt-step-format";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { formatDuration } from "../utils/format";
+import { formatRelativeTimeCompact } from "../utils/relative-time";
 
 const ARTIFACT_LABELS: Record<DbtArtifactKind, string> = {
   manifest: "manifest.json",
@@ -79,25 +81,6 @@ function statusColor(status: DbtRunItem["status"]): string {
     default:
       return "text.secondary";
   }
-}
-
-function formatDuration(ms?: number): string {
-  if (ms === undefined || ms === null) return "—";
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = ms / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
-}
-
-function relativeTime(iso?: string): string {
-  if (!iso) return "—";
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const minutes = Math.floor(diffMs / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
 }
 
 function absoluteTime(iso?: string): string {
@@ -552,7 +535,7 @@ export default function DbtRunHistory({
                   color="text.secondary"
                   sx={{ flex: 1 }}
                 >
-                  {relativeTime(run.createdAt)}
+                  {formatRelativeTimeCompact(run.createdAt)}
                 </Typography>
                 {run.ci ? (
                   <Typography
@@ -682,7 +665,9 @@ export default function DbtRunHistory({
               (selectedRun ?? selectedRunListItem)?.createdAt,
             )}
           >
-            {relativeTime((selectedRun ?? selectedRunListItem)?.createdAt)}
+            {formatRelativeTimeCompact(
+              (selectedRun ?? selectedRunListItem)?.createdAt,
+            )}
           </Typography>
           <Typography
             variant="caption"
@@ -717,7 +702,7 @@ export default function DbtRunHistory({
             >
               cancelled by {selectedDetail.cancelledBy}
               {selectedDetail.cancelledAt
-                ? ` · ${relativeTime(selectedDetail.cancelledAt)}`
+                ? ` · ${formatRelativeTimeCompact(selectedDetail.cancelledAt)}`
                 : ""}
             </Typography>
           )}

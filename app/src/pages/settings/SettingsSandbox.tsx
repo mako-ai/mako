@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { useWorkspace } from "../../contexts/workspace-context";
 import { useAppsStore } from "../../store/appsStore";
+import { formatBytes } from "../../utils/format";
 
 interface SandboxStats {
   running: boolean;
@@ -47,12 +48,6 @@ interface SandboxStats {
   diskUsed?: number;
   sessions?: number;
   connectCommand?: string;
-}
-
-function formatBytes(n: number): string {
-  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GiB`;
-  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(0)} MiB`;
-  return `${n} B`;
 }
 
 function formatUptime(sec: number): string {

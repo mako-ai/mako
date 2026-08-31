@@ -18,13 +18,14 @@ import {
   Clock as ClockIcon,
   GitBranch as EnvIcon,
 } from "lucide-react";
-import { formatDistanceToNow } from "date-fns";
 import {
   countDbtSteps,
   type DbtCommandInvocation,
 } from "../lib/dbt-command-history";
 import { formatRowsAffected, formatStepDuration } from "../lib/dbt-step-format";
 import type { DbtRunLogLine, DbtStepResult } from "../store/dbtStore";
+import { formatDuration } from "../utils/format";
+import { formatRelativeTime } from "../utils/relative-time";
 
 function statusColor(status: DbtCommandInvocation["status"]): string {
   return status === "error"
@@ -41,11 +42,6 @@ function StatusIcon({ status }: { status: DbtCommandInvocation["status"] }) {
   ) : (
     <OkIcon size={14} color="var(--mui-palette-success-main)" />
   );
-}
-
-function formatDuration(ms: number | undefined): string {
-  if (ms === undefined) return "";
-  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
 function LogLines({ logs }: { logs: DbtRunLogLine[] }) {
@@ -242,7 +238,7 @@ function InvocationDetail({ entry }: { entry: DbtCommandInvocation }) {
       >
         <ClockIcon size={14} />
         <Typography variant="body2">
-          {formatDistanceToNow(new Date(entry.startedAt), { addSuffix: true })}
+          {formatRelativeTime(entry.startedAt)}
           {entry.durationMs !== undefined
             ? ` · ${formatDuration(entry.durationMs)}`
             : ""}
