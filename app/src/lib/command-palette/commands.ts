@@ -28,7 +28,6 @@ import {
   useConsoleStore,
 } from "../../store/consoleStore";
 import type { LeftPaneView, SettingsSection } from "../../store/lib/types";
-import { useAppsStore } from "../../store/appsStore";
 import { useUIStore } from "../../store/uiStore";
 import { tabUrlPath } from "../tab-routing";
 import type { PaletteCommand } from "./types";
@@ -87,10 +86,6 @@ export function buildCommands(options: {
   });
 
   for (const { view, label } of EXPLORER_VIEWS) {
-    // Apps is feature-gated; hide its palette entry while disabled.
-    if (view === "apps" && useAppsStore.getState().enabled !== true) {
-      continue;
-    }
     commands.push({
       id: `view.explorer.${view}`,
       title: `Go to ${label}`,

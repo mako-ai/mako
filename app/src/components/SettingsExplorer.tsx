@@ -8,12 +8,10 @@ import {
 import { SETTINGS_SECTION_ICONS } from "../lib/entity-icons";
 import type { SettingsSection } from "../store/lib/types";
 import { SECTION_LABELS, SECTION_ORDER } from "../pages/settings/sections";
-import { useWorkspace } from "../contexts/workspace-context";
 
 export default function SettingsExplorer() {
   const { user } = useAuth();
   const isSuperAdmin = Boolean(user?.isSuperAdmin);
-  const { currentWorkspace } = useWorkspace();
 
   const activeTab = useConsoleStore(state =>
     state.activeTabId ? state.tabs[state.activeTabId] : null,
@@ -35,10 +33,7 @@ export default function SettingsExplorer() {
     state.setActiveTab(id);
   };
 
-  const apps = currentWorkspace?.settings?.appsEnabled === true;
-  const sections = SECTION_ORDER.filter(
-    s => (s !== "admin" || isSuperAdmin) && (s !== "sandbox" || apps),
-  );
+  const sections = SECTION_ORDER.filter(s => s !== "admin" || isSuperAdmin);
 
   return (
     <ExplorerShell title="Settings">

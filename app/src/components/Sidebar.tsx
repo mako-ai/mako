@@ -79,8 +79,6 @@ const topNavigationItems: {
   { view: "connectors", icon: EXPLORER_ICONS.connectors, label: "Connectors" },
   { view: "dashboards", icon: EXPLORER_ICONS.dashboards, label: "Dashboards" },
   { view: "notebooks", icon: EXPLORER_ICONS.notebooks, label: "Notebooks" },
-  // Apps (git-backed, experimental) — shown only when the server flag is
-  // on (useAppsVisible probes /apps/status-probe per workspace).
   { view: "apps", icon: EXPLORER_ICONS["apps"], label: "Apps" },
 ];
 
@@ -93,7 +91,7 @@ const topNavigationItems: {
  * that fetches status is open. Reads come from the box when it is running
  * and from the last commit when it is not — the poll never boots a machine.
  */
-function useRepoDirty(enabled: boolean): boolean {
+function useRepoDirty(): boolean {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
   const fetchStatus = useRepoStore(state => state.fetchStatus);
@@ -103,27 +101,12 @@ function useRepoDirty(enabled: boolean): boolean {
       : false,
   );
   useEffect(() => {
-    if (!enabled || !workspaceId) return;
+    if (!workspaceId) return;
     void fetchStatus(workspaceId);
     const timer = setInterval(() => void fetchStatus(workspaceId), 30_000);
     return () => clearInterval(timer);
-  }, [enabled, workspaceId, fetchStatus]);
+  }, [workspaceId, fetchStatus]);
   return dirty;
-}
-
-/**
- * Whether the Apps and Source Control rail entries exist for this
- * workspace. Read from the workspace object the app already loaded — a
- * synchronous fact, like the workspace's name. It is deliberately NOT a
- * network probe: rail icons are fixed chrome, and gating them on a request
- * made them pop in a second late on every load and vanish outright when the
- * request failed (a Mongo DNS blip took both icons with it). Whatever the
- * explorer needs to load (repos, canCreate) loads on its own, behind the
- * icon, not in front of it.
- */
-function useAppsVisible(): boolean {
-  const { currentWorkspace } = useWorkspace();
-  return currentWorkspace?.settings?.appsEnabled === true;
 }
 
 const bottomNavigationItems: {
@@ -257,12 +240,7 @@ export function SidebarMobileExplorerNav() {
   const activeExplorer = useUIStore(selectActiveExplorer);
   const setLeftPane = useUIStore(state => state.setLeftPane);
   const openLeftPane = useUIStore(state => state.openLeftPane);
-  const appsVisible = useAppsVisible();
-
-  const items = [...topNavigationItems, ...bottomNavigationItems].filter(
-    item =>
-      (item.view !== "apps" && item.view !== "source-control") || appsVisible,
-  );
+  const items = [...topNavigationItems, ...bottomNavigationItems];
 
   return (
     <Box
@@ -337,8 +315,7 @@ function Sidebar() {
   const openLeftPane = useUIStore(state => state.openLeftPane);
   const openRightPane = useUIStore(state => state.openRightPane);
   const isMobile = useIsMobile();
-  const appsVisible = useAppsVisible();
-  const repoDirty = useRepoDirty(appsVisible);
+  const repoDirty = useRepoDirty();
 
   const handleNavigation = (view: NavigationView) => {
     // Settings now behaves like any other explorer: clicking the cog opens
@@ -391,64 +368,56 @@ function Sidebar() {
             alignItems: "center",
           }}
         >
-          {topNavigationItems
-            .filter(
-              item =>
-                (item.view !== "apps" && item.view !== "source-control") ||
-                appsVisible,
-            )
-            .map(item => {
-              const Icon = item.icon;
-              const isActive = activeExplorer === item.view;
+          {topNavigationItems.map(item => {
+            const Icon = item.icon;
+            const isActive = activeExplorer === item.view;
 
-              return (
-                <Tooltip key={item.view} title={item.label} placement="right">
-                  <NavButton
-                    isActive={isActive}
-                    onClick={() =>
-                      handleNavigation(item.view as NavigationView)
-                    }
-                    onMouseEnter={
-                      item.view === "dashboards"
-                        ? preloadDashboardsExplorer
-                        : undefined
-                    }
-                    onFocus={
-                      item.view === "dashboards"
-                        ? preloadDashboardsExplorer
-                        : undefined
-                    }
-                    onTouchStart={
-                      item.view === "dashboards"
-                        ? preloadDashboardsExplorer
-                        : undefined
-                    }
-                  >
-                    <Icon size={24} strokeWidth={1.5} />
-                    {item.view === "source-control" && repoDirty && (
-                      <Box
-                        component="span"
-                        aria-label="Uncommitted changes"
-                        sx={{
-                          position: "absolute",
-                          top: 6,
-                          right: 6,
-                          width: 8,
-                          height: 8,
-                          borderRadius: "50%",
-                          bgcolor: "error.main",
-                          // Ring in the rail background so the dot reads as
-                          // sitting ON the icon rather than touching it.
-                          boxShadow: theme =>
-                            `0 0 0 2px ${theme.palette.background.paper}`,
-                          pointerEvents: "none",
-                        }}
-                      />
-                    )}
-                  </NavButton>
-                </Tooltip>
-              );
-            })}
+            return (
+              <Tooltip key={item.view} title={item.label} placement="right">
+                <NavButton
+                  isActive={isActive}
+                  onClick={() => handleNavigation(item.view as NavigationView)}
+                  onMouseEnter={
+                    item.view === "dashboards"
+                      ? preloadDashboardsExplorer
+                      : undefined
+                  }
+                  onFocus={
+                    item.view === "dashboards"
+                      ? preloadDashboardsExplorer
+                      : undefined
+                  }
+                  onTouchStart={
+                    item.view === "dashboards"
+                      ? preloadDashboardsExplorer
+                      : undefined
+                  }
+                >
+                  <Icon size={24} strokeWidth={1.5} />
+                  {item.view === "source-control" && repoDirty && (
+                    <Box
+                      component="span"
+                      aria-label="Uncommitted changes"
+                      sx={{
+                        position: "absolute",
+                        top: 6,
+                        right: 6,
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        bgcolor: "error.main",
+                        // Ring in the rail background so the dot reads as
+                        // sitting ON the icon rather than touching it.
+                        boxShadow: theme =>
+                          `0 0 0 2px ${theme.palette.background.paper}`,
+                        pointerEvents: "none",
+                      }}
+                    />
+                  )}
+                </NavButton>
+              </Tooltip>
+            );
+          })}
 
           {!rightPaneOpen && (
             <Tooltip title="Open Chat" placement="right">

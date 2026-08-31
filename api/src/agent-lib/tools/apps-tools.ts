@@ -1,9 +1,8 @@
 /**
  * Apps agent tools (apps.md §4.6).
  *
- * NOT flag-gated at this layer: `settings.appsEnabled` only hides the UI
- * rail (status-probe route). Agents and MCP clients can drive Apps in any
- * workspace — deliberate, so external automation works ahead of UI rollout.
+ * Not feature-flagged: apps is always available. Agents and MCP clients can
+ * drive Apps in any workspace.
  *
  * The "real filesystem + real shell" tool contract:
  *

@@ -15,7 +15,6 @@ import { Types } from "mongoose";
 import {
   AppProject,
   GitHubInstallation,
-  Workspace,
   type IAppProject,
 } from "../database/workspace-schema";
 import { loggers, enrichContextWithWorkspace } from "../logging";
@@ -316,17 +315,12 @@ appsRoutes.openapi(
   }),
   async c => {
     const { workspaceId } = c.req.valid("param");
-    // The rollout flag, per workspace (Settings › Super Admin › Feature
-    // flags). Off = the rail entry and everything behind it stay hidden.
-    const workspace = await Workspace.findById(workspaceId)
-      .select("settings.appsEnabled")
-      .lean();
-    const enabled = workspace?.settings?.appsEnabled === true;
-    const repos = enabled ? await listWorkspaceRepos(workspaceId) : [];
+    // Apps is not feature-flagged (the v1→v2 rollout flag is gone): the
+    // probe reports repo linkage, which is the only real precondition.
+    const repos = await listWorkspaceRepos(workspaceId);
     return c.json(
       {
         success: true as const,
-        enabled,
         linked: repos.length > 0,
         // Production requires the workspace's own repo (apps.md §17); dev
         // and previews work local-only.
