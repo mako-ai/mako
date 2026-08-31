@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
-  "name": "ai.mako/mako",
+  "name": "io.github.mako-ai/mako",
   "title": "Mako",
   "description": "Explore your databases, validate SQL, and build & publish data apps in your Mako workspace.",
   "version": "1.0.0",
