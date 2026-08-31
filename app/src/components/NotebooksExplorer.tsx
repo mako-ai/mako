@@ -1,20 +1,11 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ChangeEvent,
-} from "react";
+import { useCallback, useRef, type ChangeEvent } from "react";
 import { IconButton, Tooltip } from "@mui/material";
 import {
   Download,
-  Globe as GlobeIcon,
   Notebook as NotebookIcon,
   Plus,
   RefreshCw as RefreshIcon,
   Upload,
-  User as UserIcon,
 } from "lucide-react";
 
 import ExplorerShell from "./ExplorerShell";
@@ -28,6 +19,7 @@ import {
 } from "../store/explorerRevealStore";
 import { useNotebookStore } from "../store/notebookStore";
 import { useNotebookTreeStore } from "../store/notebookTreeStore";
+import { useResourceTreeExplorer } from "../hooks/useResourceTreeExplorer";
 import { focusNotebookTab } from "../notebook-runtime/shell";
 import {
   blocksFromIpynb,
@@ -37,31 +29,17 @@ import {
 } from "../notebook-runtime/ipynb";
 import { ConfirmDialog } from "./ConfirmDialog";
 
-const EMPTY_TREE: ResourceTreeNode[] = [];
-
 export default function NotebooksExplorer() {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
 
-  const myNotebooks = useNotebookTreeStore(
-    s => (workspaceId && s.myItems[workspaceId]) || EMPTY_TREE,
-  );
-  const workspaceNotebooks = useNotebookTreeStore(
-    s => (workspaceId && s.workspaceItems[workspaceId]) || EMPTY_TREE,
-  );
-  const loading = useNotebookTreeStore(s =>
-    workspaceId ? !!s.loading[workspaceId] : false,
-  );
-  const error = useNotebookTreeStore(s =>
-    workspaceId ? s.error[workspaceId] || null : null,
-  );
-  const fetchTree = useNotebookTreeStore(s => s.fetchTree);
-  const moveItem = useNotebookTreeStore(s => s.moveItem);
-  const moveFolder = useNotebookTreeStore(s => s.moveFolder);
-  const createFolder = useNotebookTreeStore(s => s.createFolder);
-  const renameItem = useNotebookTreeStore(s => s.renameItem);
-  const deleteItem = useNotebookTreeStore(s => s.deleteItem);
-  const resortItem = useNotebookTreeStore(s => s.resortItem);
+  const tree = useResourceTreeExplorer(useNotebookTreeStore, workspaceId);
+  const {
+    myItems: myNotebooks,
+    workspaceItems: workspaceNotebooks,
+    loading,
+    fetchTree,
+  } = tree;
 
   const createNotebook = useNotebookStore(s => s.createNotebook);
   const getNotebook = useNotebookStore(s => s.getNotebook);
@@ -82,20 +60,7 @@ export default function NotebooksExplorer() {
 
   const { activeTabId, tabs } = useConsoleStore();
 
-  const [deleteTarget, setDeleteTarget] = useState<ResourceTreeNode | null>(
-    null,
-  );
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (workspaceId) {
-      void fetchTree(workspaceId);
-    }
-  }, [workspaceId, fetchTree]);
-
-  const handleRefresh = useCallback(async () => {
-    if (workspaceId) await fetchTree(workspaceId);
-  }, [workspaceId, fetchTree]);
 
   const handleCreate = useCallback(async () => {
     const doc = await createNotebook();
@@ -168,96 +133,7 @@ export default function NotebooksExplorer() {
     [getNotebook],
   );
 
-  const handleMoveItem = useCallback(
-    (itemId: string, targetFolderId: string | null, access?: string) => {
-      if (!workspaceId) return;
-      void moveItem(
-        workspaceId,
-        itemId,
-        targetFolderId,
-        (access as "private" | "workspace") || undefined,
-      );
-    },
-    [workspaceId, moveItem],
-  );
-
-  const handleMoveFolder = useCallback(
-    (folderId: string, parentId: string | null, access?: string) => {
-      if (!workspaceId) return;
-      void moveFolder(
-        workspaceId,
-        folderId,
-        parentId,
-        (access as "private" | "workspace") || undefined,
-      );
-    },
-    [workspaceId, moveFolder],
-  );
-
-  const handleRenameItem = useCallback(
-    (itemId: string, name: string, isDirectory: boolean) => {
-      if (!workspaceId) return;
-      void renameItem(workspaceId, itemId, name, isDirectory);
-    },
-    [workspaceId, renameItem],
-  );
-
-  const handleDeleteItem = useCallback((node: ResourceTreeNode) => {
-    setDeleteTarget(node);
-  }, []);
-
-  const handleDeleteConfirm = useCallback(async () => {
-    if (!deleteTarget || !workspaceId) return;
-    await deleteItem(workspaceId, deleteTarget.id, deleteTarget.isDirectory);
-    setDeleteTarget(null);
-  }, [deleteTarget, workspaceId, deleteItem]);
-
-  const handleCreateFolder = useCallback(
-    async (
-      parentId: string | null,
-      access?: string,
-    ): Promise<{ id: string; name: string } | null> => {
-      if (!workspaceId) return null;
-      const id = await createFolder(
-        workspaceId,
-        "New Folder",
-        parentId,
-        (access as "private" | "workspace") || undefined,
-      );
-      return id ? { id, name: "New Folder" } : null;
-    },
-    [workspaceId, createFolder],
-  );
-
-  const handleResortItem = useCallback(
-    (itemId: string) => {
-      if (!workspaceId) return;
-      resortItem(workspaceId, itemId);
-    },
-    [workspaceId, resortItem],
-  );
-
-  const sectionsDef = useMemo(
-    () => [
-      {
-        key: "my",
-        label: "My Notebooks",
-        icon: <UserIcon size={16} strokeWidth={1.5} />,
-        nodes: myNotebooks as ResourceTreeNode[],
-        droppableId: "__section_my",
-        defaultAccess: "private" as const,
-      },
-      {
-        key: "workspace",
-        label: "Workspace",
-        icon: <GlobeIcon size={16} strokeWidth={1.5} />,
-        nodes: workspaceNotebooks as ResourceTreeNode[],
-        droppableId: "__section_workspace",
-        defaultAccess: "workspace" as const,
-      },
-    ],
-    [myNotebooks, workspaceNotebooks],
-  );
+  const sectionsDef = tree.sections({ my: "My Notebooks" });
 
   const activeNotebookTabId = (() => {
     if (!activeTabId) return null;
@@ -306,7 +182,7 @@ export default function NotebooksExplorer() {
       <Tooltip title="Refresh">
         <IconButton
           size="small"
-          onClick={() => void handleRefresh()}
+          onClick={() => void tree.refresh()}
           disabled={loading}
         >
           <RefreshIcon size={20} strokeWidth={2} />
@@ -315,23 +191,14 @@ export default function NotebooksExplorer() {
     </>
   );
 
-  const isInitialLoading =
-    loading && myNotebooks.length === 0 && workspaceNotebooks.length === 0;
-
   return (
     <>
       <ExplorerShell
         title="Notebooks"
         searchPlaceholder="Search notebooks..."
-        loading={isInitialLoading}
-        error={error}
-        onErrorClose={() => {
-          if (workspaceId) {
-            useNotebookTreeStore.setState(state => {
-              state.error[workspaceId] = null;
-            });
-          }
-        }}
+        loading={tree.isInitialLoading}
+        error={tree.error}
+        onErrorClose={tree.clearError}
         actions={actions}
       >
         {({ searchQuery }) => (
@@ -349,13 +216,8 @@ export default function NotebooksExplorer() {
             enableDelete
             enableNewFolder
             onItemClick={handleItemClick}
-            onMoveItem={handleMoveItem}
-            onMoveFolder={handleMoveFolder}
-            onRenameItem={handleRenameItem}
-            onDeleteItem={handleDeleteItem}
+            {...tree.treeHandlers}
             onDuplicateItem={handleDuplicate}
-            onCreateFolder={handleCreateFolder}
-            onResortItem={handleResortItem}
             isFolderExpanded={isNotebookFolderExpanded}
             onToggleFolder={toggleNotebookFolder}
             onExpandFolder={expandNotebookFolder}
@@ -365,17 +227,17 @@ export default function NotebooksExplorer() {
       </ExplorerShell>
 
       <ConfirmDialog
-        open={!!deleteTarget}
-        title={`Delete ${deleteTarget?.isDirectory ? "Folder" : "Notebook"}?`}
+        open={!!tree.deleteTarget}
+        title={`Delete ${tree.deleteTarget?.isDirectory ? "Folder" : "Notebook"}?`}
         body={
-          deleteTarget?.isDirectory
-            ? `"${deleteTarget.name}" and its subfolders will be deleted. Notebooks inside will move to the root level.`
-            : `"${deleteTarget?.name}" will be permanently deleted. This cannot be undone.`
+          tree.deleteTarget?.isDirectory
+            ? `"${tree.deleteTarget.name}" and its subfolders will be deleted. Notebooks inside will move to the root level.`
+            : `"${tree.deleteTarget?.name}" will be permanently deleted. This cannot be undone.`
         }
         confirmLabel="Delete"
         destructive
-        onConfirm={() => void handleDeleteConfirm()}
-        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => void tree.confirmDelete()}
+        onCancel={tree.cancelDelete}
       />
 
       <input
