@@ -115,5 +115,5 @@
     "typescript": "^5.8.3",
     "vitest": "^2.1.9"
   },
-  "license": "Apache-2.0"
+  "license": "MIT"
 }
