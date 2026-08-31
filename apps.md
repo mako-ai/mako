@@ -2263,6 +2263,17 @@ It also found two things worth more than the chart:
   back to general dataviz knowledge and the SDK's theme tokens. A charting
   reference belongs in `api/src/agent-skills/apps/`.
 
+- **Deploy-on-push for many apps dies with the request.** The template
+  commit touched 58 app folders; prod republished 13 published apps in
+  alphabetical order and stopped at 09:05:30Z, about four and a half minutes
+  after the webhook. The loop catches per-app failures, so an exception does
+  not explain it; the work runs *detached* from the webhook response
+  (`github.routes.ts`), which on Cloud Run is where background CPU gets
+  throttled away. Harmless this time (the other 25 serve their previous
+  build, and the change was dev-only config), but `publishedSha` now lags
+  `main` for them. A push touching many apps should hand the loop to an
+  Inngest function — durable and resumable — and answer the webhook at once.
+
 ### 15.5 Still open
 
 `mako login` (device flow writing `~/.mako/credentials`) to replace the paste-
