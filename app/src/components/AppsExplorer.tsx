@@ -34,6 +34,7 @@ import {
   Github as LinkIcon,
   RefreshCw as RefreshIcon,
   Trash2 as DeleteIcon,
+  UserPlus as ShareMenuIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import {
@@ -43,6 +44,8 @@ import {
 import { SECTION_LABELS } from "../pages/settings/sections";
 import { useAppsStore, type AppFileEntry } from "../store/appsStore";
 import { useAuth } from "../contexts/auth-context";
+import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
+import ShareDialog from "./ShareDialog";
 import { focusAppsFileTab, focusAppsTab } from "../apps-runtime/shell";
 import {
   useExplorerRevealStore,
@@ -224,6 +227,8 @@ export default function AppsExplorer() {
     [expandedFolders],
   );
   const [createOpen, setCreateOpen] = useState(false);
+  const [shareAppId, setShareAppId] = useState<string | null>(null);
+  const isWorkspaceAdmin = useIsWorkspaceAdmin();
   const [newTitle, setNewTitle] = useState("");
   const [creating, setCreating] = useState(false);
 
@@ -427,6 +432,18 @@ export default function AppsExplorer() {
       if (parsed.kind !== "app") return null;
       return [
         <MenuItem
+          key="share"
+          onClick={() => {
+            helpers.closeMenu();
+            setShareAppId(parsed.appId);
+          }}
+        >
+          <ListItemIcon>
+            <ShareMenuIcon size={16} />
+          </ListItemIcon>
+          Share…
+        </MenuItem>,
+        <MenuItem
           key="delete"
           onClick={() => {
             helpers.closeMenu();
@@ -442,6 +459,8 @@ export default function AppsExplorer() {
     },
     [handleDelete],
   );
+
+  const shareApp = shareAppId ? apps.find(a => a.id === shareAppId) : null;
 
   const actions = (
     <>
@@ -643,6 +662,37 @@ export default function AppsExplorer() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {shareApp && (
+        <ShareDialog
+          open={!!shareAppId}
+          onClose={() => setShareAppId(null)}
+          resourceType="app"
+          resourceId={shareApp.id}
+          resourceName={shareApp.title}
+          ownerId={shareApp.owner_id}
+          access={shareApp.access ?? "workspace"}
+          workspaceRole={shareApp.workspaceRole ?? "viewer"}
+          canManage={
+            !shareApp.owner_id ||
+            shareApp.owner_id === userId ||
+            isWorkspaceAdmin
+          }
+          onSharingChanged={changes => {
+            useAppsStore.setState(s => {
+              const app = s.apps.find(a => a.id === shareApp.id);
+              if (!app) return;
+              if (changes.access) app.access = changes.access;
+              if (changes.workspaceRole) {
+                app.workspaceRole = changes.workspaceRole;
+              }
+            });
+            // A folder-only app gets its row (and a real id) on first share;
+            // the list is the only place that learns about it.
+            if (workspaceId) void fetchApps(workspaceId);
+          }}
+        />
+      )}
     </>
   );
 }

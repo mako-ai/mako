@@ -10,6 +10,7 @@ import {
 const TAB_PATTERN_FOR_RESOURCE: Record<ShareResourceType, RegExp> = {
   dashboard: TAB_DEEP_LINK_PATTERNS.dashboard,
   console: TAB_DEEP_LINK_PATTERNS.console,
+  app: TAB_DEEP_LINK_PATTERNS.app,
 };
 
 describe("buildWorkspaceResourceUrl", () => {

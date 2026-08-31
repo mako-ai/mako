@@ -71,12 +71,15 @@ export interface ShareDialogProps {
 const RESOURCE_LABEL: Record<ShareResourceType, string> = {
   dashboard: "dashboard",
   console: "console",
+  app: "app",
 };
 
 /** Public links are only available where snapshot data exists. */
 const SUPPORTS_PUBLIC: Record<ShareResourceType, boolean> = {
   dashboard: true,
   console: false,
+  // A published app is served from its immutable deployment.
+  app: true,
 };
 
 // Stable fallback so the Zustand selector never returns a fresh `[]` per call
