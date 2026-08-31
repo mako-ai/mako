@@ -97,8 +97,9 @@ export const appsDeployReconcileFunction = inngest.createFunction(
           !head ||
           !project.publishedSha ||
           head === project.publishedSha
-        )
+        ) {
           continue;
+        }
         try {
           if (
             await appFolderChanged(
