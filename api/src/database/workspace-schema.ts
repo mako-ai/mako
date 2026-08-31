@@ -4052,7 +4052,7 @@ export const Connector = mongoose.model<IConnector>(
  * EntityVersion — immutable append-only version snapshots for consoles and dashboards.
  * Every explicit save creates a new version record; history is never rewritten.
  */
-export type VersionableEntityType = "console" | "dashboard" | "dbt-file";
+export type VersionableEntityType = "console" | "dashboard";
 
 export interface IEntityVersion extends Document {
   _id: Types.ObjectId;
@@ -4077,7 +4077,7 @@ const EntityVersionSchema = new Schema<IEntityVersion>(
     },
     entityType: {
       type: String,
-      enum: ["console", "dashboard", "dbt-file"],
+      enum: ["console", "dashboard"],
       required: true,
     },
     entityId: {
@@ -4359,32 +4359,6 @@ export interface IDbtEnvironment {
   ownerUserId?: string;
 }
 
-/**
- * Optional binding of a dbt project to a Git repository. When present, the
- * project's files are imported/synced from this repo. Mongo (DbtFile) stays
- * the canonical source the runner materializes from; this binding records
- * where those files came from and lets us sync/commit against the remote.
- */
-export interface IDbtRepoBinding {
-  provider: "github";
-  /** GitHub App installation id granting access to the repo (omit for public). */
-  installationId?: number;
-  /** Repo owner (org or user login). */
-  owner: string;
-  /** Repo name. */
-  repo: string;
-  /** Branch tracked for import/sync, e.g. "main". */
-  branch: string;
-  /**
-   * Optional sub-directory inside the repo holding the dbt project (when
-   * dbt_project.yml is not at the repo root). POSIX, no leading/trailing slash.
-   */
-  subdirectory?: string;
-  /** Commit SHA of the last successful import/sync. */
-  lastSyncedSha?: string;
-  lastSyncedAt?: Date;
-}
-
 export interface IDbtProject extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
@@ -4407,28 +4381,6 @@ export interface IDbtProject extends Document {
    * the state artifact for --defer / state:modified+ (Slim CI, later phase).
    */
   lastProdManifestKey?: string;
-  /** Git repository this project is imported/synced from (optional). */
-  repo?: IDbtRepoBinding;
-  /**
-   * Branches that refuse direct commits from Mako (dbt Cloud "read-only"
-   * main). Changes reach these branches only through a pull request
-   * (commit-to-branch → open PR → merge). New GitHub imports default this to
-   * the repo's default branch; existing projects migrated to [] (opt-in).
-   */
-  protectedBranches?: string[];
-  /**
-   * Pull-request CI config. When enabled, an opened/updated PR from the
-   * tracked branch triggers `dbt build --select state:modified+` (deferring to
-   * the prod manifest) and posts a GitHub commit status — like a dbt Cloud CI
-   * job. Off by default so connecting a repo never silently runs warehouse jobs.
-   */
-  ci?: {
-    enabled: boolean;
-    /** Environment (schema/connection) CI builds run against. */
-    environment?: string;
-    /** Defer unselected refs to the last prod manifest (Slim CI). Default true. */
-    deferToProduction?: boolean;
-  };
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
@@ -4450,20 +4402,6 @@ const DbtEnvironmentSchema = new Schema<IDbtEnvironment>(
   { _id: false },
 );
 
-const DbtRepoBindingSchema = new Schema<IDbtRepoBinding>(
-  {
-    provider: { type: String, enum: ["github"], default: "github" },
-    installationId: { type: Number },
-    owner: { type: String, required: true, trim: true },
-    repo: { type: String, required: true, trim: true },
-    branch: { type: String, required: true, trim: true, default: "main" },
-    subdirectory: { type: String, trim: true },
-    lastSyncedSha: { type: String },
-    lastSyncedAt: { type: Date },
-  },
-  { _id: false },
-);
-
 const DbtProjectSchema = new Schema<IDbtProject>(
   {
     workspaceId: {
@@ -4477,19 +4415,6 @@ const DbtProjectSchema = new Schema<IDbtProject>(
     defaultEnvironment: { type: String, default: "dev" },
     prodEnvironment: { type: String },
     lastProdManifestKey: { type: String },
-    repo: { type: DbtRepoBindingSchema },
-    protectedBranches: { type: [String], default: undefined },
-    ci: {
-      type: new Schema(
-        {
-          enabled: { type: Boolean, default: false },
-          environment: { type: String },
-          deferToProduction: { type: Boolean, default: true },
-        },
-        { _id: false },
-      ),
-      required: false,
-    },
     createdBy: { type: String, required: true },
   },
   { collection: "dbt_projects", timestamps: true },
@@ -4502,167 +4427,6 @@ export const DbtProject = mongoose.model<IDbtProject>(
   "DbtProject",
   DbtProjectSchema,
 );
-
-export interface IDbtFile extends Document {
-  _id: Types.ObjectId;
-  workspaceId: Types.ObjectId;
-  projectId: Types.ObjectId;
-  /**
-   * Branch this row belongs to (repo-bound projects). A repo project keeps
-   * one COMMITTED base tree per checked-out branch: content always mirrors
-   * the branch head, uncommitted work lives in per-user DbtFileDraft
-   * overlays. Blank (non-repo) projects leave this unset — their DbtFile
-   * rows remain the single shared working tree.
-   */
-  branch?: string;
-  /** POSIX path relative to project root, e.g. "models/staging/stg_x.sql". */
-  path: string;
-  content: string;
-  updatedBy: string;
-  is_deleted: boolean;
-  /**
-   * Git blob SHA of this file at the last import/sync/push. Per-user git
-   * status diffs a draft's blob SHA against this without re-fetching GitHub.
-   */
-  repoBlobSha?: string;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-const DbtFileSchema = new Schema<IDbtFile>(
-  {
-    workspaceId: {
-      type: Schema.Types.ObjectId,
-      ref: "Workspace",
-      required: true,
-    },
-    projectId: {
-      type: Schema.Types.ObjectId,
-      ref: "DbtProject",
-      required: true,
-    },
-    branch: { type: String, trim: true },
-    path: { type: String, required: true, trim: true },
-    content: { type: String, default: "" },
-    updatedBy: { type: String, required: true },
-    is_deleted: { type: Boolean, default: false },
-    repoBlobSha: { type: String },
-  },
-  { collection: "dbt_files", timestamps: true },
-);
-
-// One row per (project, branch, path). Blank projects store branch: null,
-// which the unique index treats as a value, so their single tree stays unique.
-DbtFileSchema.index({ projectId: 1, branch: 1, path: 1 }, { unique: true });
-DbtFileSchema.index({ workspaceId: 1, projectId: 1, is_deleted: 1 });
-
-export const DbtFile = mongoose.model<IDbtFile>("DbtFile", DbtFileSchema);
-
-/**
- * Per-user, per-branch uncommitted edit to a dbt file (the draft overlay).
- * Reads for a user merge draft-over-base: other workspace members never see a
- * draft, so collaborators only observe committed changes — like separate git
- * working trees. Drafts are keyed to the branch they were made on, so
- * switching branches leaves each branch's uncommitted work exactly where it
- * was (git-worktree semantics: no carrying dirty state onto another branch's
- * base). Drafts are cleared when committed.
- */
-export interface IDbtFileDraft extends Document {
-  _id: Types.ObjectId;
-  workspaceId: Types.ObjectId;
-  projectId: Types.ObjectId;
-  /** Owning user id (or "agent" for agent edits outside a user session). */
-  userId: string;
-  /** Branch the draft was made on (drafts only exist for repo projects). */
-  branch: string;
-  path: string;
-  content: string;
-  /** Pending deletion of the base file (a staged `git rm`). */
-  is_deleted: boolean;
-  /** Blob SHA of the base content the draft started from (informational). */
-  baseBlobSha?: string;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-const DbtFileDraftSchema = new Schema<IDbtFileDraft>(
-  {
-    workspaceId: {
-      type: Schema.Types.ObjectId,
-      ref: "Workspace",
-      required: true,
-    },
-    projectId: {
-      type: Schema.Types.ObjectId,
-      ref: "DbtProject",
-      required: true,
-    },
-    userId: { type: String, required: true },
-    branch: { type: String, required: true },
-    path: { type: String, required: true, trim: true },
-    content: { type: String, default: "" },
-    is_deleted: { type: Boolean, default: false },
-    baseBlobSha: { type: String },
-  },
-  { collection: "dbt_file_drafts", timestamps: true },
-);
-
-// One draft per (project, user, branch, path): each branch keeps its own
-// uncommitted overlay per user.
-DbtFileDraftSchema.index(
-  { projectId: 1, userId: 1, branch: 1, path: 1 },
-  { unique: true },
-);
-DbtFileDraftSchema.index({ workspaceId: 1, projectId: 1, userId: 1 });
-// Branch-wide draft ops (relocate on PR merge, drop on branch delete).
-DbtFileDraftSchema.index({ projectId: 1, branch: 1 });
-
-export const DbtFileDraft = mongoose.model<IDbtFileDraft>(
-  "DbtFileDraft",
-  DbtFileDraftSchema,
-);
-
-/**
- * Per-user branch pointer for a repo-bound dbt project (dbt Cloud-style
- * per-developer checkout). Absence of a row means the user implicitly tracks
- * the project default branch (`project.repo.branch`). Two users on the same
- * project can work on different branches simultaneously.
- */
-export interface IDbtCheckout extends Document {
-  _id: Types.ObjectId;
-  workspaceId: Types.ObjectId;
-  projectId: Types.ObjectId;
-  userId: string;
-  branch: string;
-  /** Commit SHA this user's branch base tree was last synced/pushed at. */
-  lastSyncedSha?: string;
-  lastSyncedAt?: Date;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-const DbtCheckoutSchema = new Schema<IDbtCheckout>(
-  {
-    workspaceId: {
-      type: Schema.Types.ObjectId,
-      ref: "Workspace",
-      required: true,
-    },
-    projectId: {
-      type: Schema.Types.ObjectId,
-      ref: "DbtProject",
-      required: true,
-    },
-    userId: { type: String, required: true },
-    branch: { type: String, required: true, trim: true },
-    lastSyncedSha: { type: String },
-    lastSyncedAt: { type: Date },
-  },
-  { collection: "dbt_checkouts", timestamps: true },
-);
-
-DbtCheckoutSchema.index({ projectId: 1, userId: 1 }, { unique: true });
-DbtCheckoutSchema.index({ projectId: 1, branch: 1 });
 
 /**
  * Per-user DEVELOPMENT environment choice for a dbt project — which
@@ -4712,11 +4476,6 @@ DbtEnvPreferenceSchema.index({ projectId: 1, userId: 1 }, { unique: true });
 export const DbtEnvPreference = mongoose.model<IDbtEnvPreference>(
   "DbtEnvPreference",
   DbtEnvPreferenceSchema,
-);
-
-export const DbtCheckout = mongoose.model<IDbtCheckout>(
-  "DbtCheckout",
-  DbtCheckoutSchema,
 );
 
 /**

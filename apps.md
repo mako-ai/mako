@@ -2694,3 +2694,73 @@ Next on this axis (not started): agent-on-a-branch — commitAgentTurn keyed
 by actor commits to the branch the person is on; the review-flow convention
 (agent works its own branch, human merges) is §14.2's "staged group" item
 and becomes cheap once dbt normalizes branch-per-line-of-work.
+
+## 20. dbt lives in the workspace repo: Block D3 executed (2026-09-01)
+
+The last content kind leaves Mongo. What made this a one-PR cut instead of
+the 5-phase plan: ONE workspace uses the feature (three users, spoken to
+daily) and 24h of downtime was acceptable — so every coexistence mechanism
+(dual-write, derived index, GitHub-API read paths with truncation handling,
+reanchoring self-healing) was deleted from the plan rather than built.
+
+### 20.1 The model
+
+`dbt/` is a folder of the ONE workspace repo. The working tree IS the
+caller's session branch (branch-policy.ts, `commitBranchFor("dbt")`):
+
+- **Reads** (explorer tree, file reads, agent tools, `.makorules`, runner
+  materialization) come from the local bare repo at the session branch —
+  `listTree`/`readBlob`, plus a new `readBlobsBatch` (`cat-file --batch`,
+  one git process for a ~2000-file tree instead of 2000 spawns).
+- **Writes** are commits: `dbt-working-tree.service.ts` was rewritten from
+  553 lines of draft-overlay machinery to ~290 lines over
+  `commitBlobsOnBranch`, keeping its exported API (`listWorkingFiles`,
+  `readWorkingFile`, `writeWorkingFile`, …) so routes/tools/rules barely
+  changed. A session branch whose ref vanished forks back off main, like
+  ensureWorktree.
+- **Jobs and deploys build `main`** — the tracked-branch concept collapsed
+  into the default branch. Merge-to-main is the deploy, exactly dbt Cloud's
+  model with the rail as the IDE. The ad-hoc prod guard
+  (`assertAdhocDbtRunAllowed`) is now UNIVERSAL (the repo-less exemption is
+  meaningless when every project is the repo).
+- **One dbt project per workspace**, enforced at create; scaffold commits
+  `dbt/` onto the creator's session branch (skipped if `dbt/dbt_project.yml`
+  already exists — the external-import path).
+
+### 20.2 What died
+
+The entire parallel-git universe: `dbt_files` (committed base tree per
+branch), `dbt_file_drafts` (per-user overlay), `dbt_checkouts` (per-user
+branch pointer), `IDbtRepoBinding` + `protectedBranches` + `ci` on the
+project, `dbt-github-git.service` (~1100 lines of Git-Data-API commits, the
+mirror-stall hazard), `dbt-github-sync.service`, `dbt-ci.service` (PR CI was
+never enabled in prod — verified before deleting), `dbt-commit-message.service`,
+15 git routes + 5 github routes + import-github + sync, 16 git agent tools
+(+ their capability packs `dbt-git-read`/`dbt-git-write`, MCP/bridge
+entries, prompt sections, the dbt-git-workflow skill rewritten), the
+`dbt.git.updated`/`dbt.checkout.updated` realtime channels, `dbt-file`
+entity versions, and the branch-scoped-draft migrations' runtime footprint.
+The GitHub webhook now feeds only the apps deploy + index sync.
+
+### 20.3 Migration + cutover
+
+Migration `2026-09-01-000000_dbt_into_workspace_repo`: SALVAGES the 52
+uncommitted drafts first — each (user, branch) group becomes a commit on
+`dbt-drafts/<user>/<branch>` in the workspace repo (fail-closed: any salvage
+failure aborts before anything drops) — then drops the three collections,
+deletes dbt-file entity versions, unsets repo/protectedBranches/ci.
+
+The file import is a supervised runbook step, deliberately not the
+migration: `git subtree add --prefix=dbt realadvisor/dbt@main` into
+realadvisor/mako-workspace (full history preserved), then archive the old
+repo. Until the subtree lands, the merged code is dormant-safe: reads
+return an empty tree, runs fail with "no dbt/dbt_project.yml", nothing
+crashes.
+
+### 20.4 Unchanged
+
+Runner/warm dirs/adapters/profiles (still generated, never read from the
+repo), jobs + runs collections and Inngest functions (executor edits only:
+CI arms removed), environments + personal schemas, artifact + cache keys
+(projectId-stable, so warm dirs and parse caches survive), lineage,
+`{{ dbt_schema }}` bindings.

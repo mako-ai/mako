@@ -113,11 +113,6 @@ describe("client tool manifest contracts", () => {
         name: "analytics",
       }),
     ).toBe('Creating dbt project "analytics"');
-    expect(
-      getAgentToolManifestEntry("dbt_open_pull_request")?.getLabel({
-        title: "Add orders mart",
-      }),
-    ).toBe("Opening PR: Add orders mart");
   });
 
   it("registers web tools for chat tool cards", () => {

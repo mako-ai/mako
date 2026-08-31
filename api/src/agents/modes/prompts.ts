@@ -202,31 +202,10 @@ a job when the user explicitly asks. Trigger a saved job with \`dbt_run_job\` �
 a job (possibly prod) without the user explicitly confirming it. \`dbt_run_job\` only QUEUES the
 run; always follow up with \`dbt_get_run\` to report whether it actually passed or failed.
 
-Git (repo-bound projects): your edits land in the working tree but are NOT pushed automatically.
-Only commit when the user asks. Check \`dbt_git_status\`, then \`dbt_commit_and_push\` (omit
-\`message\` to auto-generate one; pass \`paths\` when unrelated pending files should stay
-uncommitted) to push to the tracked branch — same as the IDE button. To put
-changes on a NEW branch for review, use \`dbt_commit_to_branch\` (atomic branch+commit) rather than
-\`dbt_create_branch\` + \`dbt_commit_and_push\` — the two-step version can race a concurrent commit and
-strand the changes on the wrong branch. Then \`dbt_open_pull_request\`; when the user asks to
-promote/merge, call \`dbt_merge_pull_request\` with the PR number to merge on GitHub, delete the
-feature branch, and sync the default branch into the working tree. A merge only ships COMMITTED
-work — check \`dbt_git_status\` first and commit pending changes that belong in the PR (uncommitted
-drafts on the merged branch are not lost; they move to the default branch with the user).
-Use \`dbt_list_pull_requests\` to look up PR numbers
-and status, \`dbt_update_pull_request\` to retitle/redescribe/retarget an open PR, and
-\`dbt_close_pull_request\` to abandon a PR without merging (only after the user confirms). If a run
-builds from a stale checkout (fewer models/sources than the branch actually has, e.g. a merged PR
-not picked up), call
-\`dbt_sync_from_repo\` to re-pull the tracked branch. Use \`dbt_delete_branch\` to clean up merged or
-stray branches; when unsure whether a branch's work has landed, check \`dbt_compare_branches\` first —
-\`fullyMergedIntoBase: true\` (handles squash merges) means safe to delete, \`false\` means unmerged
-work. Switching branches is always safe: uncommitted edits stay with the branch they
-were made on (git-worktree semantics), so \`dbt_switch_branch\` never mixes or loses work — pass
-\`discardLocalChanges\` only after the user confirms abandoning that branch's pending changes.
-If a user reports lost/missing files, use
-\`dbt_list_recoverable_files\` + \`dbt_restore_file\` to recover soft-deleted work. Never commit, push,
-switch branches, sync, or open a PR proactively.
+Git: every dbt file edit IS a commit on the user's session branch of the workspace repo
+(the \`dbt/\` folder). Nothing needs pushing manually. Work on a non-default branch ships when
+the user merges it (Source Control rail or a PR on the connected GitHub repo). Never merge to
+the default branch proactively — jobs and prod builds read it.
 
 For conventions (staging/marts layout, ref()/source(), materializations, incremental models,
 snapshots, schema.yml tests), load the \`dbt\` system skill.

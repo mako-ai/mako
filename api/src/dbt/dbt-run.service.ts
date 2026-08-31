@@ -220,7 +220,7 @@ export async function triggerDbtRun(params: {
     _id: new Types.ObjectId(params.projectId),
     workspaceId: new Types.ObjectId(params.workspaceId),
   })
-    .select("environments defaultEnvironment prodEnvironment repo")
+    .select("workspaceId environments defaultEnvironment prodEnvironment")
     .lean();
 
   // Ad-hoc (non-job, non-CI) runs on repo-connected projects build a
@@ -234,15 +234,14 @@ export async function triggerDbtRun(params: {
   }
 
   // Display-only provenance: which git branch this run's source tree comes
-  // from. Working-tree runs (workingTreeUserId) record that user's checkout;
-  // explicit-branch runs (CI) record it directly; everything else (jobs,
-  // deploys) builds the committed tracked branch.
-  const sourceBranch = !project?.repo
-    ? undefined
-    : (params.gitBranch ??
-      (params.workingTreeUserId
-        ? await getCheckoutBranch(project, params.workingTreeUserId)
-        : project.repo.branch));
+  // from. Working-tree runs (workingTreeUserId) record that user's session
+  // branch; explicit-branch runs record it directly; everything else (jobs,
+  // deploys) builds the default branch of the workspace repo.
+  const sourceBranch =
+    params.gitBranch ??
+    (project
+      ? await getCheckoutBranch(project, params.workingTreeUserId)
+      : undefined);
 
   if (params.skipIfActive && params.jobId) {
     const active = await DbtRun.findOne({

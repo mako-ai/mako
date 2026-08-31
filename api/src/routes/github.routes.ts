@@ -32,7 +32,6 @@ import {
   getGitHubAppWebhookSecret,
   isGitHubAppUserAuthConfigured,
 } from "../integrations/github/config";
-import { handlePullRequestEvent, handlePushEvent } from "../dbt/dbt-ci.service";
 import { workspaceService } from "../services/workspace.service";
 import { loggers } from "../logging";
 import { deployAppsForPush } from "../apps/deploy-on-push";
@@ -115,25 +114,14 @@ interface PushPayload {
   installation?: { id?: number };
 }
 
-interface PullRequestPayload {
-  action?: string;
-  number?: number;
-  pull_request?: {
-    head?: { ref?: string; sha?: string };
-    base?: { ref?: string };
-  };
-  repository?: { name?: string; owner?: { login?: string } };
-  installation?: { id?: number };
-}
-
 interface InstallationPayload {
   action?: string;
   installation?: { id?: number };
 }
 
 /**
- * GitHub App webhook. Verified by HMAC; routes push (continuous sync),
- * pull_request (Slim CI), and installation (cleanup) events. Work is detached
+ * GitHub App webhook. Verified by HMAC; routes push (apps deploy + index
+ * sync) and installation (cleanup) events. Work is detached
  * so we ack within GitHub's delivery timeout.
  */
 /**
@@ -223,12 +211,6 @@ githubRoutes.post("/webhook", async (c: Context) => {
         const ref = p.ref ?? "";
         if (owner && name && ref.startsWith("refs/heads/")) {
           const branch = ref.slice("refs/heads/".length);
-          await handlePushEvent({
-            owner,
-            repo: name,
-            branch,
-            installationId: p.installation?.id,
-          });
           // Apps: `main` is production, so putting a commit on it IS the
           // act of deploying — whether that came from a local `git push`, a
           // merge on GitHub, or the Publish button. Handled here because
@@ -242,23 +224,6 @@ githubRoutes.post("/webhook", async (c: Context) => {
             defaultBranch: p.repository?.default_branch,
           }).catch(error => {
             logger.error("Apps deploy-on-push failed", { error });
-          });
-        }
-      } else if (event === "pull_request") {
-        const p = payload as PullRequestPayload;
-        const owner = p.repository?.owner?.login;
-        const name = p.repository?.name;
-        const head = p.pull_request?.head;
-        if (owner && name && p.number && head?.ref && head?.sha) {
-          await handlePullRequestEvent({
-            action: p.action ?? "",
-            number: p.number,
-            headRef: head.ref,
-            headSha: head.sha,
-            baseRef: p.pull_request?.base?.ref ?? "",
-            owner,
-            repo: name,
-            installationId: p.installation?.id,
           });
         }
       } else if (event === "installation") {

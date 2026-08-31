@@ -1,11 +1,10 @@
 /**
- * New dbt project drawer — blank project or GitHub import (replaces centered modal).
+ * New dbt project drawer — creates a blank project (replaces centered modal).
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Box,
   Button,
-  CircularProgress,
   Drawer,
   FormControl,
   IconButton,
@@ -13,30 +12,20 @@ import {
   MenuItem,
   Select,
   TextField,
-  ToggleButton,
-  ToggleButtonGroup,
   Typography,
 } from "@mui/material";
-import {
-  Github as GithubIcon,
-  Plus as PlusIcon,
-  X as CloseIcon,
-} from "lucide-react";
+import { Plus as PlusIcon, X as CloseIcon } from "lucide-react";
 import { DEFAULT_DBT_VERSION } from "../lib/dbt-versions";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
 import { useExplorerStore } from "../store/explorerStore";
 import { useDbtStore } from "../store/dbtStore";
 import type { Connection } from "../store/schemaStore";
-import DbtGitHubImportSection, {
-  type GitHubImportSelection,
-} from "./DbtGitHubImportSection";
 import DbtVersionSelect from "./DbtVersionSelect";
 
 const DRAWER_WIDTH = 540;
 
 interface DbtProjectCreateDrawerProps {
   open: boolean;
-  mode: "blank" | "github";
   workspaceId: string;
   connections: Connection[];
   onClose: () => void;
@@ -44,47 +33,36 @@ interface DbtProjectCreateDrawerProps {
 
 export default function DbtProjectCreateDrawer({
   open,
-  mode: initialMode,
   workspaceId,
   connections,
   onClose,
 }: DbtProjectCreateDrawerProps) {
   const createProject = useDbtStore(s => s.createProject);
-  const importProjectFromGitHub = useDbtStore(s => s.importProjectFromGitHub);
   const fetchFiles = useDbtStore(s => s.fetchFiles);
   const fetchJobs = useDbtStore(s => s.fetchJobs);
   const expandDbtFolder = useExplorerStore(s => s.expandDbtFolder);
 
-  const [createMode, setCreateMode] = useState<"blank" | "github">("blank");
   const [name, setName] = useState("");
-  const [nameTouched, setNameTouched] = useState(false);
   const [dbtVersion, setDbtVersion] = useState(DEFAULT_DBT_VERSION);
   const [connectionId, setConnectionId] = useState("");
   const [devSchema, setDevSchema] = useState("dbt_dev");
   const [prodSchema, setProdSchema] = useState("dbt_prod");
   const [creating, setCreating] = useState(false);
-  const [ghSelection, setGhSelection] = useState<GitHubImportSelection | null>(
-    null,
-  );
   const [error, setError] = useState<string | null>(null);
 
   const resetForm = useCallback(() => {
-    setCreateMode("blank");
     setName("");
-    setNameTouched(false);
     setDbtVersion(DEFAULT_DBT_VERSION);
     setConnectionId(connections[0]?.id ?? "");
     setDevSchema("dbt_dev");
     setProdSchema("dbt_prod");
-    setGhSelection(null);
     setError(null);
   }, [connections]);
 
   useEffect(() => {
     if (!open) return;
     resetForm();
-    setCreateMode(initialMode);
-  }, [open, initialMode, resetForm]);
+  }, [open, resetForm]);
 
   useEffect(() => {
     if (open && connectionId === "" && connections[0]?.id) {
@@ -128,15 +106,6 @@ export default function DbtProjectCreateDrawer({
     [workspaceId, fetchFiles, fetchJobs, expandDbtFolder, handleClose],
   );
 
-  const handleSuggestProjectName = useCallback(
-    (suggested: string) => {
-      if (!nameTouched && suggested) {
-        setName(suggested);
-      }
-    },
-    [nameTouched],
-  );
-
   const handleCreateBlank = useCallback(async () => {
     if (!name.trim() || !connectionId) return;
     setCreating(true);
@@ -165,50 +134,7 @@ export default function DbtProjectCreateDrawer({
     afterCreated,
   ]);
 
-  const handleImportGitHub = useCallback(async () => {
-    if (!name.trim() || !connectionId || !ghSelection?.ready) return;
-    if (!ghSelection.hasDbtProjectYml) {
-      setError("dbt_project.yml not found — fix the subdirectory or branch");
-      return;
-    }
-    setCreating(true);
-    setError(null);
-    const created = await importProjectFromGitHub(workspaceId, {
-      name: name.trim(),
-      dbtVersion,
-      environments,
-      defaultEnvironment: "dev",
-      repo: {
-        owner: ghSelection.owner,
-        repo: ghSelection.repo,
-        branch: ghSelection.branch,
-        subdirectory: ghSelection.subdirectory,
-        installationId: ghSelection.installationId,
-      },
-    });
-    setCreating(false);
-    if (created) {
-      await afterCreated(created._id);
-    } else {
-      setError(useDbtStore.getState().error.projects ?? "Import failed");
-    }
-  }, [
-    workspaceId,
-    name,
-    connectionId,
-    dbtVersion,
-    environments,
-    ghSelection,
-    importProjectFromGitHub,
-    afterCreated,
-  ]);
-
   const canSubmitBlank = name.trim() && connectionId;
-  const canSubmitGitHub =
-    canSubmitBlank &&
-    ghSelection?.ready &&
-    ghSelection.hasDbtProjectYml &&
-    !creating;
 
   return (
     <Drawer
@@ -251,45 +177,13 @@ export default function DbtProjectCreateDrawer({
       </Box>
 
       <Box sx={{ flex: 1, overflow: "auto", px: 2, py: 2 }}>
-        <ToggleButtonGroup
-          value={createMode}
-          exclusive
-          size="small"
-          fullWidth
-          onChange={(_, value) => {
-            if (value) setCreateMode(value);
-          }}
-          sx={{ mb: 2 }}
-        >
-          <ToggleButton value="blank">Blank project</ToggleButton>
-          <ToggleButton value="github">
-            <GithubIcon
-              size={15}
-              strokeWidth={1.75}
-              style={{ marginRight: 6 }}
-            />
-            Import from GitHub
-          </ToggleButton>
-        </ToggleButtonGroup>
-
-        {createMode === "github" && (
-          <DbtGitHubImportSection
-            workspaceId={workspaceId}
-            onSelectionChange={setGhSelection}
-            onSuggestProjectName={handleSuggestProjectName}
-          />
-        )}
-
         <TextField
-          autoFocus={createMode === "blank"}
+          autoFocus
           fullWidth
           size="small"
           label="Project name"
           value={name}
-          onChange={e => {
-            setNameTouched(true);
-            setName(e.target.value);
-          }}
+          onChange={e => setName(e.target.value)}
           sx={{ mb: 2 }}
         />
 
@@ -378,30 +272,13 @@ export default function DbtProjectCreateDrawer({
         <Button size="small" onClick={handleClose} disabled={creating}>
           Cancel
         </Button>
-        {createMode === "github" ? (
-          <Button
-            size="small"
-            onClick={() => void handleImportGitHub()}
-            startIcon={
-              creating ? (
-                <CircularProgress size={14} />
-              ) : (
-                <GithubIcon size={15} strokeWidth={1.75} />
-              )
-            }
-            disabled={!canSubmitGitHub}
-          >
-            {creating ? "Importing…" : "Import project"}
-          </Button>
-        ) : (
-          <Button
-            size="small"
-            onClick={() => void handleCreateBlank()}
-            disabled={creating || !canSubmitBlank}
-          >
-            {creating ? "Creating…" : "Create project"}
-          </Button>
-        )}
+        <Button
+          size="small"
+          onClick={() => void handleCreateBlank()}
+          disabled={creating || !canSubmitBlank}
+        >
+          {creating ? "Creating…" : "Create project"}
+        </Button>
       </Box>
     </Drawer>
   );

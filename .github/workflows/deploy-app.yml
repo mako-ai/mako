@@ -1135,6 +1135,10 @@ jobs:
           GITHUB_APP_ID: ${{ vars.MAKO_GITHUB_APP_ID }}
           GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_GITHUB_APP_PRIVATE_KEY }}
           DASHBOARD_ARTIFACT_STORE: gcs
+          # The dbt draft salvage (2026-09-01 migration) pushes branches to
+          # the customer mirror; without the connected-tier flag the push
+          # silently no-ops and the salvage dies with the runner's clone.
+          APPS_REQUIRE_CONNECTED_REPO: "true"
         run: pnpm run migrate
 
       - name: Sync Inngest app

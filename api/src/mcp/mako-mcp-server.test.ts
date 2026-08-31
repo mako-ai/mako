@@ -320,19 +320,11 @@ async function main() {
       "modify_dbt_file",
       "delete_dbt_file",
       "dbt_get_run",
-      "dbt_list_recoverable_files",
-      "dbt_restore_file",
       // Async validation runs (queue + poll dbt_get_run) — read-risk, so
       // they bridge for every query:read key: author AND validate headlessly.
       "dbt_parse",
       "dbt_compile_model",
       "dbt_show",
-      // Git reads bridge unconditionally so headless agents can see that
-      // their edits are uncommitted working-tree drafts.
-      "dbt_git_status",
-      "dbt_list_branches",
-      "dbt_compare_branches",
-      "dbt_list_pull_requests",
     ]) {
       assert.ok(names.has(expected), `missing tool: ${expected}`);
     }
@@ -402,23 +394,18 @@ async function main() {
         `${warehouseGatedTool} must stay hidden without warehouse:write`,
       );
     }
-    // Git mutations require the explicit git:write scope.
-    for (const gitGatedTool of [
-      "dbt_sync_from_repo",
+    // dbt git tools are GONE (apps.md §20): the workspace repo is the git
+    // surface; nothing dbt-git-shaped may reappear over MCP.
+    for (const goneTool of [
+      "dbt_git_status",
       "dbt_commit_and_push",
       "dbt_commit_to_branch",
-      "dbt_create_branch",
-      "dbt_switch_branch",
-      "dbt_delete_branch",
       "dbt_open_pull_request",
-      "dbt_merge_pull_request",
-      "dbt_update_pull_request",
-      "dbt_close_pull_request",
     ]) {
       assert.equal(
-        names.has(gitGatedTool),
+        names.has(goneTool),
         false,
-        `${gitGatedTool} must stay hidden without git:write`,
+        `${goneTool} was deleted with Block D3 and must not be exposed`,
       );
     }
   }
@@ -492,60 +479,33 @@ async function main() {
     );
   }
 
-  // 3a2. git:write opt-in: Git mutations appear (risk-annotated) and
-  //      authorize, independently of warehouse:write.
+  // 3a2. git:write is a legacy scope (dbt git tools died with apps.md §20):
+  //      it must surface NOTHING dbt-git-shaped, and imply no other scope.
   {
     const [res] = await exchange(
       [{ jsonrpc: "2.0", id: "git-list", method: "tools/list" }],
       ["mcp", "query:read", "git:write"],
     );
-    const { tools } = res.result as {
-      tools: {
-        name: string;
-        annotations?: { destructiveHint?: boolean; readOnlyHint?: boolean };
-      }[];
-    };
-    const byName = new Map(tools.map(tool => [tool.name, tool]));
-    for (const gitTool of [
+    const { tools } = res.result as { tools: { name: string }[] };
+    const byName = new Set(tools.map(tool => tool.name));
+    for (const goneTool of [
       "dbt_commit_to_branch",
       "dbt_create_branch",
       "dbt_open_pull_request",
       "dbt_switch_branch",
       "dbt_merge_pull_request",
+      "dbt_git_status",
     ]) {
-      assert.ok(byName.has(gitTool), `${gitTool} must appear with git:write`);
+      assert.equal(
+        byName.has(goneTool),
+        false,
+        `${goneTool} was deleted with Block D3`,
+      );
     }
-    assert.equal(
-      byName.get("dbt_switch_branch")?.annotations?.destructiveHint,
-      true,
-    );
-    assert.equal(
-      byName.get("dbt_commit_to_branch")?.annotations?.destructiveHint,
-      false,
-    );
-    // git:write alone does not surface warehouse runs.
     assert.equal(
       byName.has("dbt_run_model"),
       false,
       "git:write must not imply warehouse:write",
-    );
-    assert.equal(byName.get("dbt_git_status")?.annotations?.readOnlyHint, true);
-
-    const [gatedCall] = await exchange(
-      [
-        {
-          jsonrpc: "2.0",
-          id: "git-call-scoped",
-          method: "tools/call",
-          params: { name: "dbt_commit_to_branch", arguments: {} },
-        },
-      ],
-      ["mcp", "query:read", "git:write"],
-    );
-    assert.match(
-      (gatedCall.result as { content: { text: string }[] }).content[0].text,
-      /Invalid arguments/,
-      "git:write key reaches dbt_commit_to_branch",
     );
   }
 

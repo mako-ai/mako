@@ -37,9 +37,8 @@ import {
   resolveDevEnvironmentForUser,
   setUserDevEnvPreference,
 } from "./dbt-environments.service";
-import { setCheckoutBranch } from "./dbt-working-tree.service";
 import {
-  DbtCheckout,
+  AppWorktree,
   DbtEnvPreference,
   DbtJob,
   DbtProject,
@@ -67,7 +66,7 @@ beforeEach(async () => {
     DbtProject.deleteMany({}),
     DbtRun.deleteMany({}),
     DbtJob.deleteMany({}),
-    DbtCheckout.deleteMany({}),
+    AppWorktree.deleteMany({}),
     DbtEnvPreference.deleteMany({}),
   ]);
 });
@@ -89,16 +88,13 @@ function envs() {
   ];
 }
 
-async function seedProject(opts: { repo?: boolean } = {}) {
+async function seedProject() {
   return DbtProject.create({
     workspaceId: WS,
     name: `p-${new Types.ObjectId().toString()}`,
     environments: envs(),
     defaultEnvironment: "dev",
     createdBy: "u1",
-    ...(opts.repo === false
-      ? {}
-      : { repo: { owner: "acme", repo: "analytics", branch: "main" } }),
   });
 }
 
@@ -164,35 +160,40 @@ describe("triggerDbtRun protected-environment guard", () => {
     expect(sendMock).toHaveBeenCalledTimes(1);
   });
 
-  it("exempts projects without a repo binding", async () => {
-    const project = await seedProject({ repo: false });
-    const run = await triggerDbtRun({
-      ...adhocParams(project._id.toString(), "prod"),
-      workingTreeUserId: undefined,
-    });
-    expect(run.status).toBe("queued");
+  it("applies to every project — the guard is universal now (apps.md §20)", async () => {
+    const project = await seedProject();
+    await expect(
+      triggerDbtRun({
+        ...adhocParams(project._id.toString(), "prod"),
+        workingTreeUserId: undefined,
+      }),
+    ).rejects.toBeInstanceOf(DbtProtectedEnvironmentError);
   });
 });
 
 describe("sourceBranch provenance stamping", () => {
   it("working-tree runs record the caller's checkout branch", async () => {
     const project = await seedProject();
-    // Implicit checkout (no row) → tracked branch.
+    // Implicit session (no row) → default branch.
     const tracked = await triggerDbtRun(
       adhocParams(project._id.toString(), "dev"),
     );
     expect(tracked.sourceBranch).toBe("main");
     expect(tracked.workingTreeUserId).toBe("u1");
 
-    // Explicit checkout → that branch.
-    await setCheckoutBranch(project, "u1", "feat/leads-rollup");
+    // Explicit session branch → that branch.
+    await AppWorktree.create({
+      workspaceId: WS,
+      userId: "u1",
+      branch: "feat/leads-rollup",
+    });
     const feature = await triggerDbtRun(
       adhocParams(project._id.toString(), "dev"),
     );
     expect(feature.sourceBranch).toBe("feat/leads-rollup");
   });
 
-  it("job runs record the committed tracked branch (no working tree)", async () => {
+  it("job runs record the default branch (no working tree)", async () => {
     const project = await seedProject();
     const job = await DbtJob.create({
       workspaceId: WS,
@@ -213,25 +214,18 @@ describe("sourceBranch provenance stamping", () => {
     expect(run.workingTreeUserId).toBeUndefined();
   });
 
-  it("explicit gitBranch (CI) wins and repo-less projects stay unstamped", async () => {
+  it("an explicit gitBranch wins over the session branch", async () => {
     const repoProject = await seedProject();
-    const ci = await triggerDbtRun({
+    const explicit = await triggerDbtRun({
       workspaceId: WS.toString(),
       projectId: repoProject._id.toString(),
       environment: "dev",
       commands: ["build"],
-      trigger: "ci",
-      triggeredBy: "ci-webhook",
+      trigger: "agent",
+      triggeredBy: "agent",
       gitBranch: "pr-head-branch",
     });
-    expect(ci.sourceBranch).toBe("pr-head-branch");
-
-    const blank = await seedProject({ repo: false });
-    const run = await triggerDbtRun({
-      ...adhocParams(blank._id.toString(), "dev"),
-      workingTreeUserId: undefined,
-    });
-    expect(run.sourceBranch).toBeUndefined();
+    expect(explicit.sourceBranch).toBe("pr-head-branch");
   });
 });
 

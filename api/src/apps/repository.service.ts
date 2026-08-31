@@ -604,6 +604,61 @@ export async function readBlob(
   };
 }
 
+/**
+ * Read MANY blobs at a ref in one git process (`cat-file --batch`), for
+ * materializing whole trees (a dbt run reads ~2000 files; a spawn per file
+ * would take tens of seconds, this takes one). Missing paths are simply
+ * absent from the result. Binary blobs are returned as raw Buffers alongside
+ * text so callers decide the encoding.
+ */
+export async function readBlobsBatch(
+  repoDir: string,
+  refOrOid: string,
+  relPaths: string[],
+): Promise<Map<string, Buffer>> {
+  const out = new Map<string, Buffer>();
+  if (relPaths.length === 0) return out;
+  const safe = relPaths.map(assertSafeRelPath);
+  const { spawn } = await import("node:child_process");
+  const child = spawn("git", ["-C", repoDir, "cat-file", "--batch"], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const chunks: Buffer[] = [];
+  child.stdout.on("data", (c: Buffer) => chunks.push(c));
+  const errChunks: Buffer[] = [];
+  child.stderr.on("data", (c: Buffer) => errChunks.push(c));
+  const done = new Promise<number>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", code => resolve(code ?? -1));
+  });
+  child.stdin.on("error", () => undefined);
+  child.stdin.end(safe.map(p => `${refOrOid}:${p}\n`).join(""));
+  const code = await done;
+  if (code !== 0) {
+    throw new Error(
+      `git cat-file --batch failed: ${Buffer.concat(errChunks).toString("utf8").slice(0, 500)}`,
+    );
+  }
+  // Records: "<oid> <type> <size>\n<size bytes>\n" or "<input> missing\n",
+  // in input order — pair them back up positionally.
+  let buf = Buffer.concat(chunks);
+  for (const relPath of safe) {
+    const nl = buf.indexOf(0x0a);
+    if (nl === -1) break;
+    const header = buf.subarray(0, nl).toString("utf8");
+    buf = buf.subarray(nl + 1);
+    if (header.endsWith(" missing")) continue;
+    const parts = header.split(" ");
+    const size = Number(parts[2] ?? NaN);
+    if (!Number.isFinite(size)) {
+      throw new Error(`Unexpected cat-file header: ${header.slice(0, 100)}`);
+    }
+    out.set(relPath, buf.subarray(0, size));
+    buf = buf.subarray(size + 1); // skip trailing newline
+  }
+  return out;
+}
+
 /** Commit history of a ref. */
 export async function log(
   repoDir: string,

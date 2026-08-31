@@ -220,13 +220,12 @@ const baseModeState = (loaded: string[] = []): ModeState => ({
 // --- grant-gated tools STAY in the working set (schemas reach the provider) ---
 // Hiding them desynced the system-prompt inventory ("active, schemas
 // provided") from the provider tool list, and models snapped intended calls
-// onto a similarly named available tool (dbt_run_model → dbt_list_pull_requests).
+// onto a similarly named available tool.
 // The grant is enforced when the tool executes instead.
 {
   const all = new Set([
     "edit_dbt_file",
     "dbt_run_model",
-    "dbt_commit_and_push",
     "app_write_file",
     "app_commit",
   ]);
@@ -259,8 +258,7 @@ async function grantEnforcement() {
   const tools = enforceCapabilityGrantsAtExecution(
     {
       dbt_run_model: fakeTool("dbt_run_model"),
-      dbt_commit_and_push: fakeTool("dbt_commit_and_push"),
-      dbt_git_status: fakeTool("dbt_git_status"),
+      read_dbt_file: fakeTool("read_dbt_file"),
       edit_dbt_file: fakeTool("edit_dbt_file"),
     } as ToolSet,
     () => grants,
@@ -281,23 +279,16 @@ async function grantEnforcement() {
   assert.ok(denied.error?.includes("warehouse-write"));
   assert.ok(denied.error?.includes("submit_plan"), "error names the recovery");
 
-  const deniedGit = (await run("dbt_commit_and_push")) as { success: boolean };
-  assert.equal(deniedGit.success, false, "git-write denied without grant");
-
   // Grant-free reads and artifact-write edits run untouched.
-  await run("dbt_git_status");
+  await run("read_dbt_file");
   await run("edit_dbt_file");
-  assert.deepEqual(calls, ["dbt_git_status", "edit_dbt_file"]);
+  assert.deepEqual(calls, ["read_dbt_file", "edit_dbt_file"]);
 
   // Acquiring the grant unlocks execution (grants read live per call).
   grants.add("warehouse-write");
   const allowed = (await run("dbt_run_model")) as { success: boolean };
   assert.equal(allowed.success, true, "held grant executes");
-  const stillDenied = (await run("dbt_commit_and_push")) as {
-    success: boolean;
-  };
-  assert.equal(stillDenied.success, false, "unheld git-write still denied");
-  assert.deepEqual(calls, ["dbt_git_status", "edit_dbt_file", "dbt_run_model"]);
+  assert.deepEqual(calls, ["read_dbt_file", "edit_dbt_file", "dbt_run_model"]);
 }
 
 // --- policy: plan-grant gating is DISABLED in native Chat pending review ------

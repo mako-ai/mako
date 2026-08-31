@@ -36,8 +36,6 @@ import {
 import {
   ArrowLeft as BackIcon,
   ChevronRight as ChevronIcon,
-  ExternalLink as ExternalLinkIcon,
-  Lock as LockIcon,
   Pencil as EditIcon,
   Plus as PlusIcon,
   Settings as SettingsIcon,
@@ -83,11 +81,6 @@ function envBadge(envName: string, project: DbtProjectItem): string {
     return "PROD";
   }
   return "General";
-}
-
-function formatSha(sha?: string): string {
-  if (!sha) return "—";
-  return sha.length > 8 ? sha.slice(0, 8) : sha;
 }
 
 function defaultNewEnvironment(
@@ -193,7 +186,6 @@ export default function DbtProjectSettingsDrawer({
   const { user } = useAuth();
   const projects = useDbtStore(s => s.projects);
   const updateProject = useDbtStore(s => s.updateProject);
-  const listBranches = useDbtStore(s => s.listBranches);
   const ensurePersonalEnvironment = useDbtStore(
     s => s.ensurePersonalEnvironment,
   );
@@ -217,17 +209,6 @@ export default function DbtProjectSettingsDrawer({
   // else the project default).
   const [editProdEnv, setEditProdEnv] = useState("");
   const [editEnvs, setEditEnvs] = useState<DbtEnvironment[]>([]);
-  // Branch protection (repo-bound projects): edits apply immediately (each
-  // add/remove PATCHes the project) — independent of the drawer's Edit mode.
-  const [newProtectedBranch, setNewProtectedBranch] = useState("");
-  const [savingProtection, setSavingProtection] = useState(false);
-  // Tracked branch (what deploy/job runs build): applies immediately, like
-  // branch protection. Remote branches populate the picker.
-  const [remoteBranches, setRemoteBranches] = useState<string[]>([]);
-  const [savingTrackedBranch, setSavingTrackedBranch] = useState(false);
-  const [trackedBranchError, setTrackedBranchError] = useState<string | null>(
-    null,
-  );
   // Per-environment variable rows, parallel to editEnvs (same index). Kept as
   // an ordered array (not a record) so typing keys never reorders or collides.
   const [editVarRows, setEditVarRows] = useState<
@@ -285,34 +266,6 @@ export default function DbtProjectSettingsDrawer({
     setIsEditing(false);
     setSaveError(null);
   }, [project, resetFromProject]);
-
-  const isRepoBound = project?.repo != null;
-
-  useEffect(() => {
-    if (!open || !projectId || !isRepoBound) return;
-    setTrackedBranchError(null);
-    void listBranches(workspaceId, projectId).then(result => {
-      if (result) setRemoteBranches(result.branches);
-    });
-  }, [open, projectId, workspaceId, isRepoBound, listBranches]);
-
-  const handleTrackedBranchChange = useCallback(
-    async (branch: string) => {
-      if (!project || !projectId || branch === project.repo?.branch) return;
-      setSavingTrackedBranch(true);
-      setTrackedBranchError(null);
-      const updated = await updateProject(workspaceId, projectId, {
-        repoBranch: branch,
-      });
-      if (!updated) {
-        setTrackedBranchError(
-          useDbtStore.getState().error.projects ?? "Failed to update branch",
-        );
-      }
-      setSavingTrackedBranch(false);
-    },
-    [project, projectId, workspaceId, updateProject],
-  );
 
   const selectedEnv = useMemo(() => {
     if (!selectedEnvName) return null;
@@ -622,31 +575,6 @@ export default function DbtProjectSettingsDrawer({
     selectedEnvName,
   ]);
 
-  const setProtectedBranches = useCallback(
-    async (branches: string[]) => {
-      if (!workspaceId || !projectId) return;
-      setSavingProtection(true);
-      await updateProject(workspaceId, projectId, {
-        protectedBranches: branches,
-      });
-      setSavingProtection(false);
-    },
-    [workspaceId, projectId, updateProject],
-  );
-
-  const handleAddProtectedBranch = useCallback(() => {
-    if (!project) return;
-    const branch = newProtectedBranch.trim();
-    if (!branch) return;
-    const current = project.protectedBranches ?? [];
-    if (current.includes(branch)) {
-      setNewProtectedBranch("");
-      return;
-    }
-    setNewProtectedBranch("");
-    void setProtectedBranches([...current, branch]);
-  }, [project, newProtectedBranch, setProtectedBranches]);
-
   const devConnectionName = project
     ? connectionLabel(
         project.environments.find(e => e.name === project.defaultEnvironment)
@@ -656,10 +584,6 @@ export default function DbtProjectSettingsDrawer({
         connections,
       )
     : "—";
-
-  const repoUrl = project?.repo
-    ? `https://github.com/${project.repo.owner}/${project.repo.repo}`
-    : undefined;
 
   const headerTitle = selectedEnvName ? selectedEnvName : "Project settings";
 
@@ -896,9 +820,6 @@ export default function DbtProjectSettingsDrawer({
             {project && !selectedEnvName && (
               <Typography variant="caption" color="text.secondary" noWrap>
                 {project.name}
-                {project.repo
-                  ? ` · ${project.repo.branch} · ${project.repo.owner}/${project.repo.repo}`
-                  : ""}
               </Typography>
             )}
             {project && selectedEnvName && (
@@ -1092,19 +1013,6 @@ export default function DbtProjectSettingsDrawer({
             <SettingsSection title="Overview">
               <ReadOnlyField label="Project name" value={project.name} />
               <ReadOnlyField
-                label="Project subdirectory"
-                value={project.repo?.subdirectory?.trim() || "—"}
-              />
-              {project.repo ? (
-                <ReadOnlyField
-                  label="Repository"
-                  value={`${project.repo.owner}/${project.repo.repo}`}
-                  href={repoUrl}
-                />
-              ) : (
-                <ReadOnlyField label="Repository" value="Not connected" />
-              )}
-              <ReadOnlyField
                 label="Development connection"
                 value={devConnectionName}
               />
@@ -1284,154 +1192,6 @@ export default function DbtProjectSettingsDrawer({
                 prod, staging, or personal dev schemas.
               </Typography>
             </SettingsSection>
-
-            {isRepoBound && project.repo && (
-              <SettingsSection title="Git">
-                <Box sx={{ mb: 1.5 }}>
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    display="block"
-                  >
-                    Branch
-                  </Typography>
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    display="block"
-                    sx={{ mb: 0.5 }}
-                  >
-                    Deploy jobs, CI, and syncs build this branch. Your editor
-                    checkout is independent (Version control panel).
-                  </Typography>
-                  <Select
-                    size="small"
-                    value={project.repo.branch}
-                    disabled={savingTrackedBranch}
-                    onChange={e =>
-                      void handleTrackedBranchChange(e.target.value)
-                    }
-                    sx={{ minWidth: 260, maxWidth: "100%" }}
-                  >
-                    {[...new Set([project.repo.branch, ...remoteBranches])].map(
-                      branch => (
-                        <MenuItem key={branch} value={branch}>
-                          {branch}
-                        </MenuItem>
-                      ),
-                    )}
-                  </Select>
-                  {trackedBranchError && (
-                    <Typography
-                      variant="caption"
-                      color="error"
-                      display="block"
-                      sx={{ mt: 0.5 }}
-                    >
-                      {trackedBranchError}
-                    </Typography>
-                  )}
-                </Box>
-                <ReadOnlyField
-                  label="Last synced"
-                  value={
-                    project.repo.lastSyncedSha
-                      ? `${formatSha(project.repo.lastSyncedSha)}${
-                          project.repo.lastSyncedAt
-                            ? ` · ${new Date(
-                                project.repo.lastSyncedAt,
-                              ).toLocaleString()}`
-                            : ""
-                        }`
-                      : "—"
-                  }
-                />
-                <Link
-                  href={repoUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  variant="body2"
-                  sx={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 0.5,
-                  }}
-                >
-                  Open on GitHub
-                  <ExternalLinkIcon size={14} />
-                </Link>
-
-                <Box sx={{ mt: 2 }}>
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    display="block"
-                    sx={{ fontWeight: 600 }}
-                  >
-                    Protected branches
-                  </Typography>
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    display="block"
-                    sx={{ mb: 1 }}
-                  >
-                    Direct commits to these branches are blocked in Mako —
-                    changes go through a new branch and a pull request. Enable
-                    matching branch protection on GitHub too for full coverage.
-                  </Typography>
-                  <Box
-                    sx={{
-                      display: "flex",
-                      flexWrap: "wrap",
-                      gap: 0.5,
-                      mb: 1,
-                    }}
-                  >
-                    {(project.protectedBranches ?? []).length === 0 && (
-                      <Typography variant="body2" color="text.secondary">
-                        No protected branches.
-                      </Typography>
-                    )}
-                    {(project.protectedBranches ?? []).map(branch => (
-                      <Chip
-                        key={branch}
-                        size="small"
-                        icon={<LockIcon size={12} />}
-                        label={branch}
-                        disabled={savingProtection}
-                        onDelete={() =>
-                          void setProtectedBranches(
-                            (project.protectedBranches ?? []).filter(
-                              b => b !== branch,
-                            ),
-                          )
-                        }
-                      />
-                    ))}
-                  </Box>
-                  <Box sx={{ display: "flex", gap: 1 }}>
-                    <TextField
-                      size="small"
-                      placeholder={project.repo.branch}
-                      value={newProtectedBranch}
-                      onChange={e => setNewProtectedBranch(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === "Enter") handleAddProtectedBranch();
-                      }}
-                      sx={{ flex: 1 }}
-                    />
-                    <Button
-                      size="small"
-                      disabled={savingProtection || !newProtectedBranch.trim()}
-                      onClick={handleAddProtectedBranch}
-                    >
-                      Protect
-                    </Button>
-                  </Box>
-                </Box>
-              </SettingsSection>
-            )}
           </>
         )}
 

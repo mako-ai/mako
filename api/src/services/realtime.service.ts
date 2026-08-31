@@ -103,27 +103,6 @@ export type RealtimeEvent =
        */
       forUserId?: string;
     }
-  // Git surface changed for a dbt project: commit/push, sync/pull, PR merge,
-  // or a restore. Clients refetch git status + the file tree (poke-then-pull).
-  | {
-      type: "dbt.git.updated";
-      projectId: string;
-      updatedBy: string;
-      clientId?: string;
-      /** Set when only this user's working tree changed (e.g. their commit). */
-      forUserId?: string;
-    }
-  // A user's checkout moved (branch create/switch/delete). Per-user by
-  // definition — only the acting user's windows refresh their branch state.
-  | {
-      type: "dbt.checkout.updated";
-      projectId: string;
-      branch: string;
-      forUserId: string;
-      updatedBy: string;
-      clientId?: string;
-    }
-  // Job list changed (create/update/delete) — clients refetch jobs.
   | { type: "dbt.job.updated"; projectId: string; clientId?: string }
   // A run was created/cancelled/retried — clients refetch run lists.
   | {

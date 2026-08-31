@@ -1,25 +1,31 @@
 /**
  * Turn-level .makorules resolution: hinted project > sole workspace project >
- * nothing. Runs against an ephemeral Mongo so the DbtProject lookups are real.
+ * nothing. Runs against an ephemeral Mongo (project lookups) plus a bare
+ * workspace repo (the rules file lives in git — apps.md §20).
  */
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
 import { resolveDbtRulesBlockForTurn } from "./dbt-rules-turn.service";
-import {
-  DbtFile,
-  DbtFileDraft,
-  DbtProject,
-} from "../database/workspace-schema";
+import { DbtProject } from "../database/workspace-schema";
+import { seedDbtGitTree } from "./test-support/git-tree";
 
 let mongo: MongoMemoryServer;
+let tmpRoot: string;
 const WS = new Types.ObjectId();
 const OTHER_WS = new Types.ObjectId();
 const CONN = new Types.ObjectId();
 const USER = "u1";
 
 beforeAll(async () => {
+  tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "dbt-rules-turn-test-"));
+  process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
+  process.env.APPS_SANDBOX_PROVIDER = "local";
+  delete process.env.APPS_REQUIRE_CONNECTED_REPO;
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 }, 120_000);
@@ -27,14 +33,12 @@ beforeAll(async () => {
 afterAll(async () => {
   await mongoose.disconnect();
   await mongo.stop();
+  await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
-  await Promise.all([
-    DbtFile.deleteMany({}),
-    DbtFileDraft.deleteMany({}),
-    DbtProject.deleteMany({}),
-  ]);
+  await DbtProject.deleteMany({});
+  await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
 });
 
 async function seedProject(name: string, workspaceId = WS, rules?: string) {
@@ -53,13 +57,7 @@ async function seedProject(name: string, workspaceId = WS, rules?: string) {
     createdBy: "tester",
   });
   if (rules !== undefined) {
-    await DbtFile.create({
-      workspaceId,
-      projectId: project._id,
-      path: ".makorules.md",
-      content: rules,
-      updatedBy: "tester",
-    });
+    await seedDbtGitTree(workspaceId, { ".makorules.md": rules });
   }
   return project._id.toString();
 }

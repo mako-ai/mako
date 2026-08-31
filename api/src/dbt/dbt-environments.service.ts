@@ -78,27 +78,23 @@ export class DbtProtectedEnvironmentError extends Error {
 }
 
 /**
- * Guard for ad-hoc (working-tree) runs on repo-connected projects: they build
- * the CALLER's checkout + uncommitted drafts, so letting one write into the
- * prod-like environment would deploy unreviewed code and bypass the
- * protected-branch → PR → job pipeline. Jobs and CI are the only paths that
- * build the prod-like environment (they always build a committed tree).
+ * Guard for ad-hoc runs: they build the CALLER's session branch, so letting
+ * one write into the prod-like environment would deploy a personal branch
+ * and bypass the merge-to-main → job pipeline. Jobs are the only path that
+ * builds the prod-like environment (they build the default branch).
  *
  * Read-only commands (parse / compile / show / test without
- * --store-failures) stay allowed against any environment, and projects
- * without a repo binding are exempt (jobs and ad-hoc runs there build the
- * same shared tree, so there is nothing to bypass).
+ * --store-failures) stay allowed against any environment.
  */
 export function assertAdhocDbtRunAllowed(
-  project: ProjectEnvFields & { repo?: { branch?: string } | null },
+  project: ProjectEnvFields,
   environmentName: string,
   commands: ParsedDbtCommand[],
 ): void {
-  if (!project.repo) return;
   if (!commands.some(isWarehouseWriteCommand)) return;
   const prodLike = resolveProdLikeEnvironmentName(project);
   if (environmentName !== prodLike) return;
-  throw new DbtProtectedEnvironmentError(prodLike, project.repo.branch);
+  throw new DbtProtectedEnvironmentError(prodLike, "main");
 }
 
 /** The acting user's personal environment on this project, if provisioned. */

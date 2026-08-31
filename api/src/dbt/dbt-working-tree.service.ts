@@ -1,28 +1,45 @@
 /**
- * Per-user, per-branch dbt working trees.
+ * The dbt working tree IS the workspace repo (apps.md §20, Block D3).
  *
- * Repo-bound projects keep one COMMITTED base tree per checked-out branch in
- * DbtFile (content mirrors the branch head) and a per-user, per-branch draft
- * overlay in DbtFileDraft. A user's working tree is draft-over-base for the
- * branch their DbtCheckout points at, so uncommitted work is only ever
- * visible to its author — collaborators see changes when they are committed,
- * like separate git clones. Drafts are keyed to the branch they were made
- * on, so switching branches leaves each branch's uncommitted work exactly
- * where it was (git-worktree semantics) — a user can iterate on several
- * branches without their dirty state mixing across bases.
+ * dbt project files live under `dbt/` in the ONE workspace repo, on the
+ * actor's session branch — the same pointer the Source Control rail and
+ * `git checkout` in an apps terminal move (branch-policy.ts). There is no
+ * Mongo file mirror, no per-user draft overlay, and no per-project checkout
+ * any more: a save is a commit on your branch (invisible to teammates on
+ * other branches, exactly like separate clones), jobs and deploys build the
+ * default branch, and history/diffs are ordinary git served by the shared
+ * Source Control surface.
  *
- * Blank (non-repo) projects keep the original shared model: DbtFile rows with
- * no `branch` are the single working tree every member edits directly.
+ * Paths in and out of this module stay PROJECT-RELATIVE (`models/foo.sql`);
+ * the `dbt/` prefix is applied here and only here.
  */
 
-import { Types } from "mongoose";
+import type { IDbtProject } from "../database/workspace-schema";
+import { RepoRequiredError, appsRequireConnectedRepo } from "../apps/config";
+import { ZERO_OID } from "../apps/git";
+import { commitBranchFor } from "../apps/branch-policy";
+import { authorForUser } from "../apps/workspace-consoles.service";
 import {
-  DbtCheckout,
-  DbtFile,
-  DbtFileDraft,
-  type IDbtProject,
-} from "../database/workspace-schema";
-import { gitBlobSha } from "../integrations/github/git-blob";
+  queueMirrorPush,
+  resolveMirrorTarget,
+} from "../apps/cloud-repo.service";
+import { repoForWorkspace } from "../apps/worktree.service";
+import {
+  DEFAULT_BRANCH,
+  commitBlobsOnBranch,
+  listTree,
+  readBlob,
+  readBlobsBatch,
+  repoExists,
+  resolveCommit,
+  updateRefCas,
+} from "../apps/repository.service";
+
+/** Repo-relative root of the dbt project inside the workspace repo. */
+export const DBT_ROOT = "dbt";
+
+/** Per-file cap (matches the PUT /files content limit). */
+const MAX_FILE_BYTES = 1_000_000;
 
 export interface WorkingFileMeta {
   path: string;
@@ -34,520 +51,253 @@ export interface WorkingFile extends WorkingFileMeta {
   content: string;
 }
 
-export function isRepoProject(project: IDbtProject): boolean {
-  return Boolean(project.repo);
+export interface WriteWorkingFileResult {
+  /** Commit that recorded the write (undefined when content was identical). */
+  commitOid?: string;
+}
+
+function repoPath(path: string): string {
+  return `${DBT_ROOT}/${path}`;
+}
+
+function projectPathOf(repoRelative: string): string | null {
+  return repoRelative.startsWith(`${DBT_ROOT}/`)
+    ? repoRelative.slice(DBT_ROOT.length + 1)
+    : null;
+}
+
+function assertSafeDbtPath(path: string): string {
+  if (
+    !path ||
+    path.startsWith("/") ||
+    path.split("/").some(seg => seg === ".." || seg === "" || seg === ".git")
+  ) {
+    throw new Error(`Unsafe dbt path: ${path}`);
+  }
+  return path;
 }
 
 /**
- * Branch the user's checkout points at. Falls back to the project default
- * branch when the user never switched (implicit checkout). Undefined for
- * blank projects (no git surface).
+ * Branch this user's dbt reads and writes address: the actor's SESSION
+ * branch (shared with apps/Source Control). No user → the default branch
+ * (jobs, deploys, CI).
  */
 export async function getCheckoutBranch(
-  project: Pick<IDbtProject, "_id" | "repo">,
+  project: Pick<IDbtProject, "workspaceId">,
   userId: string | undefined,
-): Promise<string | undefined> {
-  if (!project.repo) return undefined;
-  if (!userId) return project.repo.branch;
-  const checkout = await DbtCheckout.findOne({
-    projectId: project._id,
-    userId,
-  })
-    .select("branch")
-    .lean();
-  return checkout?.branch ?? project.repo.branch;
+): Promise<string> {
+  if (!userId) return DEFAULT_BRANCH;
+  return commitBranchFor("dbt", project.workspaceId.toString(), userId);
 }
 
-/** Point the user's checkout at a branch (upsert). */
-export async function setCheckoutBranch(
-  project: IDbtProject,
-  userId: string,
+async function repoDirIfExists(
+  project: Pick<IDbtProject, "workspaceId">,
+): Promise<string | null> {
+  const repoDir = await repoForWorkspace(project.workspaceId.toString());
+  return (await repoExists(repoDir)) ? repoDir : null;
+}
+
+async function resolveBranchOrDefault(
+  repoDir: string,
   branch: string,
-  sync?: { lastSyncedSha?: string },
-): Promise<void> {
-  await DbtCheckout.updateOne(
-    { projectId: project._id, userId },
-    {
-      $set: {
-        workspaceId: project.workspaceId,
-        branch,
-        ...(sync?.lastSyncedSha
-          ? { lastSyncedSha: sync.lastSyncedSha, lastSyncedAt: new Date() }
-          : {}),
-      },
-    },
-    { upsert: true },
-  ).exec();
+): Promise<string> {
+  // A session branch that only ever existed in a dead sandbox may be gone;
+  // reads fall back to the default branch rather than showing nothing.
+  const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
+  return head ? branch : DEFAULT_BRANCH;
 }
 
-/** Base-tree filter for a repo project branch (blank projects: branch null). */
-export function baseTreeFilter(
-  project: IDbtProject,
-  branch: string | undefined,
-): Record<string, unknown> {
-  return branch
-    ? { projectId: project._id, branch }
-    : { projectId: project._id, branch: { $in: [null, undefined] } };
-}
-
-/** True when the base tree for a branch has been materialized into Mongo. */
-export async function branchBaseTreeExists(
-  project: IDbtProject,
-  branch: string,
-): Promise<boolean> {
-  const row = await DbtFile.exists({ projectId: project._id, branch });
-  return Boolean(row);
-}
-
-/**
- * Clone the committed base tree of one branch to another (branch create /
- * atomic promote fork point — content is identical, so no GitHub round-trip).
- * No-op when the target branch already has a base tree.
- */
-export async function cloneBranchBaseTree(
-  project: IDbtProject,
-  fromBranch: string,
-  toBranch: string,
-): Promise<void> {
-  if (await branchBaseTreeExists(project, toBranch)) return;
-  const rows = await DbtFile.find({
-    projectId: project._id,
-    branch: fromBranch,
-    is_deleted: { $ne: true },
-  })
-    .select("path content updatedBy repoBlobSha")
-    .lean();
-  if (rows.length === 0) return;
-  await DbtFile.insertMany(
-    rows.map(row => ({
-      workspaceId: project.workspaceId,
-      projectId: project._id,
-      branch: toBranch,
-      path: row.path,
-      content: row.content ?? "",
-      updatedBy: row.updatedBy,
-      repoBlobSha: row.repoBlobSha,
-    })),
-    { ordered: false },
-  );
-}
-
-/** Drop a branch's base tree (after the remote branch was deleted). */
-export async function deleteBranchBaseTree(
-  project: IDbtProject,
-  branch: string,
-): Promise<void> {
-  await DbtFile.deleteMany({ projectId: project._id, branch }).exec();
-}
-
-interface BaseRowLean {
-  path: string;
-  content?: string;
-  is_deleted?: boolean;
-  repoBlobSha?: string;
-  updatedAt?: Date;
-  updatedBy?: string;
-}
-
-interface DraftLean {
-  path: string;
-  content?: string;
-  is_deleted?: boolean;
-  updatedAt?: Date;
-}
-
-async function loadBaseRows(
-  project: IDbtProject,
-  branch: string | undefined,
-): Promise<BaseRowLean[]> {
-  return DbtFile.find({
-    ...baseTreeFilter(project, branch),
-    is_deleted: { $ne: true },
-  })
-    .select("path content repoBlobSha updatedAt updatedBy")
-    .lean();
-}
-
-async function loadDrafts(
-  project: IDbtProject,
-  userId: string,
-  branch: string | undefined,
-): Promise<DraftLean[]> {
-  if (!branch) return [];
-  return DbtFileDraft.find({ projectId: project._id, userId, branch })
-    .select("path content is_deleted updatedAt")
-    .lean();
-}
-
-/**
- * List the paths of a user's working tree: committed base of their checkout
- * branch, overlaid with their drafts (added files appear, draft-deleted files
- * disappear). Blank projects list the shared tree.
- */
+/** List the dbt tree at the user's session branch. */
 export async function listWorkingFiles(
   project: IDbtProject,
   userId: string,
 ): Promise<WorkingFileMeta[]> {
-  if (!project.repo) {
-    return loadBaseRows(project, undefined);
-  }
-  const branch = await getCheckoutBranch(project, userId);
-  const [baseRows, drafts] = await Promise.all([
-    loadBaseRows(project, branch),
-    loadDrafts(project, userId, branch),
-  ]);
-  const merged = new Map<string, WorkingFileMeta>();
-  for (const row of baseRows) {
-    merged.set(row.path, {
-      path: row.path,
-      updatedAt: row.updatedAt,
-      updatedBy: row.updatedBy,
-    });
-  }
-  for (const draft of drafts) {
-    if (draft.is_deleted) {
-      merged.delete(draft.path);
-    } else {
-      merged.set(draft.path, {
-        path: draft.path,
-        updatedAt: draft.updatedAt,
-        updatedBy: userId,
-      });
-    }
-  }
-  return [...merged.values()].sort((a, b) => a.path.localeCompare(b.path));
+  const repoDir = await repoDirIfExists(project);
+  if (!repoDir) return [];
+  const branch = await resolveBranchOrDefault(
+    repoDir,
+    await getCheckoutBranch(project, userId),
+  );
+  const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
+  if (!head) return [];
+  const entries = await listTree(repoDir, head);
+  return entries
+    .map(e => projectPathOf(e.path))
+    .filter((p): p is string => p !== null)
+    .sort((a, b) => a.localeCompare(b))
+    .map(path => ({ path }));
 }
 
-/** Read one file from the user's working tree (draft wins over base). */
+/** Read one file from the user's session branch. */
 export async function readWorkingFile(
   project: IDbtProject,
   userId: string,
   path: string,
 ): Promise<WorkingFile | null> {
-  const branch = project.repo
-    ? await getCheckoutBranch(project, userId)
-    : undefined;
-  if (project.repo && branch) {
-    const draft = await DbtFileDraft.findOne({
-      projectId: project._id,
-      userId,
-      branch,
-      path,
-    }).lean();
-    if (draft) {
-      if (draft.is_deleted) return null;
-      return {
-        path,
-        content: draft.content ?? "",
-        updatedAt: draft.updatedAt,
-        updatedBy: userId,
-      };
-    }
+  assertSafeDbtPath(path);
+  const repoDir = await repoDirIfExists(project);
+  if (!repoDir) return null;
+  const branch = await resolveBranchOrDefault(
+    repoDir,
+    await getCheckoutBranch(project, userId),
+  );
+  try {
+    const blob = await readBlob(
+      repoDir,
+      `refs/heads/${branch}`,
+      repoPath(path),
+    );
+    if (blob.isBinary) return null;
+    return { path, content: blob.contents };
+  } catch {
+    return null;
   }
-  const base = await DbtFile.findOne({
-    ...baseTreeFilter(project, branch),
-    path,
-    is_deleted: { $ne: true },
-  }).lean();
-  if (!base) return null;
-  return {
-    path,
-    content: base.content ?? "",
-    updatedAt: base.updatedAt,
-    updatedBy: base.updatedBy,
-  };
-}
-
-export interface WriteWorkingFileResult {
-  /** Id used for entity-version snapshots (draft or shared file doc). */
-  versionEntityId: Types.ObjectId;
 }
 
 /**
- * Write to the user's working tree. Repo projects write a draft overlay
- * (invisible to other users); blank projects write the shared DbtFile row.
- * A draft whose content matches the committed base is dropped (a no-diff
- * buffer is not a pending change), mirroring `git status`.
+ * Commit a mutation to the dbt tree on the actor's session branch and queue
+ * the mirror push. The one write path for saves, deletes and renames.
  */
+async function commitDbtMutation(
+  project: IDbtProject,
+  userId: string,
+  mutation: { writes?: Record<string, string>; deletes?: string[] },
+  message: string,
+): Promise<WriteWorkingFileResult> {
+  const workspaceId = project.workspaceId.toString();
+  // Production: the workspace's own repo is the only durable store (§17).
+  if (appsRequireConnectedRepo() && !(await resolveMirrorTarget(workspaceId))) {
+    throw new RepoRequiredError();
+  }
+  const repoDir = await repoForWorkspace(workspaceId);
+  if (!(await repoExists(repoDir))) throw new RepoRequiredError();
+  const branch = await getCheckoutBranch(project, userId);
+  // A remembered session branch whose ref is gone (deleted from another
+  // checkout) forks back off the default branch head, like ensureWorktree.
+  if (!(await resolveCommit(repoDir, `refs/heads/${branch}`))) {
+    const mainHead = await resolveCommit(
+      repoDir,
+      `refs/heads/${DEFAULT_BRANCH}`,
+    );
+    if (!mainHead) throw new RepoRequiredError();
+    await updateRefCas(repoDir, `refs/heads/${branch}`, mainHead, ZERO_OID);
+  }
+  const author = await authorForUser(userId);
+  const result = await commitBlobsOnBranch(
+    repoDir,
+    branch,
+    {
+      writes: Object.fromEntries(
+        Object.entries(mutation.writes ?? {}).map(([p, c]) => [repoPath(p), c]),
+      ),
+      deletes: (mutation.deletes ?? []).map(repoPath),
+    },
+    { message, author },
+  );
+  if (!result.unchanged) queueMirrorPush(workspaceId);
+  return { commitOid: result.unchanged ? undefined : result.commitOid };
+}
+
+/** Commit a batch of files in one commit (scaffold, imports). */
+export async function commitDbtFiles(
+  project: IDbtProject,
+  userId: string,
+  writes: Record<string, string>,
+  message: string,
+): Promise<WriteWorkingFileResult> {
+  for (const path of Object.keys(writes)) assertSafeDbtPath(path);
+  return commitDbtMutation(project, userId, { writes }, message);
+}
+
+/** Write a file: a commit on the session branch (no-op when identical). */
 export async function writeWorkingFile(
   project: IDbtProject,
   userId: string,
   path: string,
   content: string,
 ): Promise<WriteWorkingFileResult> {
-  if (!project.repo) {
-    const file = await DbtFile.findOneAndUpdate(
-      { projectId: project._id, path },
-      {
-        $set: {
-          content,
-          updatedBy: userId,
-          is_deleted: false,
-          workspaceId: project.workspaceId,
-        },
-      },
-      { upsert: true, new: true, setDefaultsOnInsert: true },
-    );
-    return { versionEntityId: file._id };
-  }
-
-  const branch = (await getCheckoutBranch(project, userId)) as string;
-  const base = await DbtFile.findOne({
-    ...baseTreeFilter(project, branch),
-    path,
-    is_deleted: { $ne: true },
-  })
-    .select("content repoBlobSha")
-    .lean();
-
-  if (base && (base.content ?? "") === content) {
-    // Reverted to the committed content — no pending change to keep.
-    const existing = await DbtFileDraft.findOneAndDelete({
-      projectId: project._id,
-      userId,
-      branch,
-      path,
-    });
-    return { versionEntityId: existing?._id ?? new Types.ObjectId() };
-  }
-
-  const draft = await DbtFileDraft.findOneAndUpdate(
-    { projectId: project._id, userId, branch, path },
-    {
-      $set: {
-        content,
-        is_deleted: false,
-        workspaceId: project.workspaceId,
-      },
-      $setOnInsert: {
-        baseBlobSha: base?.repoBlobSha ?? gitBlobSha(base?.content ?? ""),
-      },
-    },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+  assertSafeDbtPath(path);
+  return commitDbtMutation(
+    project,
+    userId,
+    { writes: { [path]: content } },
+    `dbt: edit ${path}`,
   );
-  return { versionEntityId: draft._id };
 }
 
-/**
- * Delete a file from the user's working tree. For repo projects a base file
- * becomes a pending draft deletion (staged `git rm`); a draft-only file just
- * drops the draft. Returns false when the path does not exist.
- */
+/** Delete a file: a commit on the session branch. False when absent. */
 export async function deleteWorkingFile(
   project: IDbtProject,
   userId: string,
   path: string,
 ): Promise<boolean> {
-  if (!project.repo) {
-    const result = await DbtFile.updateOne(
-      { projectId: project._id, path },
-      { $set: { is_deleted: true, updatedBy: userId } },
-    );
-    return result.matchedCount > 0;
-  }
-
-  const branch = (await getCheckoutBranch(project, userId)) as string;
-  const [base, draft] = await Promise.all([
-    DbtFile.exists({
-      ...baseTreeFilter(project, branch),
-      path,
-      is_deleted: { $ne: true },
-    }),
-    DbtFileDraft.findOne({ projectId: project._id, userId, branch, path })
-      .select("is_deleted")
-      .lean(),
-  ]);
-
-  if (base) {
-    await DbtFileDraft.updateOne(
-      { projectId: project._id, userId, branch, path },
-      {
-        $set: {
-          content: "",
-          is_deleted: true,
-          workspaceId: project.workspaceId,
-        },
-      },
-      { upsert: true },
-    ).exec();
-    return true;
-  }
-  if (draft && !draft.is_deleted) {
-    // Draft-only file (added, never committed): removing it needs no pending
-    // deletion — just discard the draft.
-    await DbtFileDraft.deleteOne({
-      projectId: project._id,
-      userId,
-      branch,
-      path,
-    }).exec();
-    return true;
-  }
-  return false;
+  assertSafeDbtPath(path);
+  const existing = await readWorkingFile(project, userId, path);
+  if (!existing) return false;
+  await commitDbtMutation(
+    project,
+    userId,
+    { deletes: [path] },
+    `dbt: delete ${path}`,
+  );
+  return true;
 }
 
-/**
- * Rename within the user's working tree. Repo projects express the rename as
- * draft ops (delete old path + add new path); blank projects move the shared
- * row. Returns an error string on conflicts, null on success.
- */
+/** Rename: one commit carrying the delete and the add. */
 export async function renameWorkingFile(
   project: IDbtProject,
   userId: string,
   from: string,
   to: string,
 ): Promise<string | null> {
-  if (!project.repo) {
-    const existing = await DbtFile.findOne({
-      projectId: project._id,
-      path: to,
-      is_deleted: { $ne: true },
-    });
-    if (existing) return `"${to}" already exists`;
-    await DbtFile.deleteOne({ projectId: project._id, path: to });
-    const result = await DbtFile.updateOne(
-      { projectId: project._id, path: from, is_deleted: { $ne: true } },
-      { $set: { path: to, updatedBy: userId } },
-    );
-    return result.matchedCount === 0 ? "File not found" : null;
-  }
-
+  assertSafeDbtPath(from);
+  assertSafeDbtPath(to);
   const [source, target] = await Promise.all([
     readWorkingFile(project, userId, from),
     readWorkingFile(project, userId, to),
   ]);
   if (!source) return "File not found";
   if (target) return `"${to}" already exists`;
-  await writeWorkingFile(project, userId, to, source.content);
-  await deleteWorkingFile(project, userId, from);
+  await commitDbtMutation(
+    project,
+    userId,
+    { writes: { [to]: source.content }, deletes: [from] },
+    `dbt: rename ${from} -> ${to}`,
+  );
   return null;
 }
 
 /**
- * Discard a user's drafts on one branch (`git checkout -- .` on that
- * branch). Drafts the user stashed on other branches are untouched.
- */
-export async function discardUserDrafts(
-  project: IDbtProject,
-  userId: string,
-  branch: string,
-): Promise<number> {
-  const result = await DbtFileDraft.deleteMany({
-    projectId: project._id,
-    userId,
-    branch,
-  }).exec();
-  return result.deletedCount ?? 0;
-}
-
-/**
- * Re-key a user's drafts from one branch to another (an atomic promote moves
- * the dirty tree onto the just-created branch). Orphaned same-path drafts
- * already keyed to the target (relics of a deleted branch with the same
- * name) are dropped so the unique index can't reject the move.
- */
-export async function moveUserDrafts(
-  project: IDbtProject,
-  userId: string,
-  fromBranch: string,
-  toBranch: string,
-): Promise<void> {
-  const moving = await DbtFileDraft.find({
-    projectId: project._id,
-    userId,
-    branch: fromBranch,
-  })
-    .select("path")
-    .lean();
-  if (moving.length === 0) return;
-  await DbtFileDraft.deleteMany({
-    projectId: project._id,
-    userId,
-    branch: toBranch,
-    path: { $in: moving.map(d => d.path) },
-  }).exec();
-  await DbtFileDraft.updateMany(
-    { projectId: project._id, userId, branch: fromBranch },
-    { $set: { branch: toBranch } },
-  ).exec();
-}
-
-/**
- * Re-key EVERY user's drafts from one branch to another (a merged-and-deleted
- * PR head: users stranded on the branch move to the default branch, and their
- * uncommitted work must move with them instead of orphaning). On a same-path
- * collision the moved draft wins — it is the user's latest work on the
- * branch that just merged.
- */
-export async function moveBranchDrafts(
-  project: IDbtProject,
-  fromBranch: string,
-  toBranch: string,
-): Promise<void> {
-  const moving = await DbtFileDraft.find({
-    projectId: project._id,
-    branch: fromBranch,
-  })
-    .select("userId path")
-    .lean();
-  if (moving.length === 0) return;
-  await DbtFileDraft.deleteMany({
-    projectId: project._id,
-    branch: toBranch,
-    $or: moving.map(d => ({ userId: d.userId, path: d.path })),
-  }).exec();
-  await DbtFileDraft.updateMany(
-    { projectId: project._id, branch: fromBranch },
-    { $set: { branch: toBranch } },
-  ).exec();
-}
-
-/** Drop every user's drafts on a branch (the branch itself was deleted). */
-export async function deleteBranchDrafts(
-  project: IDbtProject,
-  branch: string,
-): Promise<number> {
-  const result = await DbtFileDraft.deleteMany({
-    projectId: project._id,
-    branch,
-  }).exec();
-  return result.deletedCount ?? 0;
-}
-
-/**
- * Full file contents of a working tree, for materializing dbt runs:
- *  - `userId` set → that user's overlay on their checkout branch (IDE/agent
- *    ad-hoc commands see the caller's uncommitted work).
- *  - only `branch` set → the committed base tree of that branch (deploy jobs
- *    and CI build exactly what is committed).
- *  - neither → the project default branch's committed tree (blank projects:
- *    the shared tree).
+ * Full file contents of the dbt tree, for materializing runs:
+ *  - `userId` set → that user's session branch (IDE/agent ad-hoc commands
+ *    build exactly what the user sees — which is committed, because every
+ *    save commits).
+ *  - `branch` set → that branch (CI-style runs).
+ *  - neither → the default branch (deploy jobs).
+ * Binary files and files over the size cap are skipped — dbt trees are text.
  */
 export async function loadWorkingTreeContents(
   project: IDbtProject,
   opts: { userId?: string; branch?: string } = {},
 ): Promise<Array<{ path: string; content: string }>> {
-  if (!project.repo) {
-    const rows = await loadBaseRows(project, undefined);
-    return rows.map(row => ({ path: row.path, content: row.content ?? "" }));
-  }
-  const branch =
+  const repoDir = await repoDirIfExists(project);
+  if (!repoDir) return [];
+  const wanted =
     opts.branch ??
     (opts.userId
       ? await getCheckoutBranch(project, opts.userId)
-      : project.repo.branch);
-  const baseRows = await loadBaseRows(project, branch);
-  const files = new Map<string, string>(
-    baseRows.map(row => [row.path, row.content ?? ""]),
-  );
-  if (opts.userId) {
-    const drafts = await loadDrafts(project, opts.userId, branch);
-    for (const draft of drafts) {
-      if (draft.is_deleted) files.delete(draft.path);
-      else files.set(draft.path, draft.content ?? "");
-    }
+      : DEFAULT_BRANCH);
+  const branch = await resolveBranchOrDefault(repoDir, wanted);
+  const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
+  if (!head) return [];
+  const entries = await listTree(repoDir, head);
+  const paths = entries.map(e => e.path).filter(p => projectPathOf(p) !== null);
+  const blobs = await readBlobsBatch(repoDir, head, paths);
+  const files: Array<{ path: string; content: string }> = [];
+  for (const [repoRelative, buf] of blobs) {
+    if (buf.length > MAX_FILE_BYTES || buf.includes(0)) continue;
+    const path = projectPathOf(repoRelative);
+    if (path) files.push({ path, content: buf.toString("utf8") });
   }
-  return [...files.entries()]
-    .map(([path, content]) => ({ path, content }))
-    .sort((a, b) => a.path.localeCompare(b.path));
+  return files.sort((a, b) => a.path.localeCompare(b.path));
 }
