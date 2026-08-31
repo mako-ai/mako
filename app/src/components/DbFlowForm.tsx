@@ -53,6 +53,7 @@ import { ConnectionSelector } from "./ConnectionSelector";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { SchemaMappingTable, TypeCoercion } from "./SchemaMappingTable";
 import { FlowRunNotificationsSection } from "./FlowRunNotificationsSection";
+import { useConfirm } from "./ConfirmDialog";
 
 interface DbFlowFormProps {
   flowId?: string;
@@ -198,6 +199,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
     ref,
   ) {
     const { currentWorkspace } = useWorkspace();
+    const confirm = useConfirm();
     const {
       flows: flowsMap,
       loading: _loadingMap,
@@ -1047,14 +1049,21 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
               size="small"
               startIcon={<DeleteIcon />}
               onClick={async () => {
-                if (confirm("Are you sure you want to delete this flow?")) {
-                  if (currentWorkspace?.id) {
-                    try {
-                      await deleteFlow(currentWorkspace.id, currentFlowId);
-                      onCancel?.();
-                    } catch (error) {
-                      console.error("Failed to delete flow:", error);
-                    }
+                if (
+                  !(await confirm({
+                    title: "Are you sure you want to delete this flow?",
+                    confirmLabel: "Delete",
+                    destructive: true,
+                  }))
+                ) {
+                  return;
+                }
+                if (currentWorkspace?.id) {
+                  try {
+                    await deleteFlow(currentWorkspace.id, currentFlowId);
+                    onCancel?.();
+                  } catch (error) {
+                    console.error("Failed to delete flow:", error);
                   }
                 }
               }}

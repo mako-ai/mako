@@ -23,6 +23,7 @@ import {
   Save as SaveIcon,
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useConfirm } from "./ConfirmDialog";
 
 interface SkillSummary {
   id: string;
@@ -53,6 +54,7 @@ function formatDate(iso: string | null | undefined): string {
 
 export function SkillsSection() {
   const { currentWorkspace } = useWorkspace();
+  const confirm = useConfirm();
   const workspaceId = currentWorkspace?.id;
 
   const [skills, setSkills] = useState<SkillSummary[]>([]);
@@ -121,9 +123,12 @@ export function SkillsSection() {
   const handleDelete = async (skill: SkillSummary) => {
     if (!workspaceId) return;
     if (
-      !window.confirm(
-        `Delete skill "${skill.name}"? This is permanent — the agent can still recreate it later.`,
-      )
+      !(await confirm({
+        title: `Delete skill "${skill.name}"?`,
+        body: "This is permanent — the agent can still recreate it later.",
+        confirmLabel: "Delete",
+        destructive: true,
+      }))
     ) {
       return;
     }

@@ -40,6 +40,7 @@ import {
   type AppGithubInstallation,
   type AppGithubRepo,
 } from "../store/appsStore";
+import { useConfirm } from "./ConfirmDialog";
 
 function installationSettingsUrl(inst: AppGithubInstallation): string {
   const base =
@@ -64,6 +65,7 @@ function AccountAvatar({ login, size = 18 }: { login: string; size?: number }) {
 
 export default function GitHubConnectionSection() {
   const { currentWorkspace } = useWorkspace();
+  const confirm = useConfirm();
   const workspaceId = currentWorkspace?.id;
   const isAdmin = useIsWorkspaceAdmin();
 
@@ -186,24 +188,30 @@ export default function GitHubConnectionSection() {
     async (owner: string, repo: string) => {
       if (!workspaceId) return;
       if (
-        !window.confirm(
-          `Disconnect ${owner}/${repo}? Its content stays in GitHub; this workspace just stops pointing at it.`,
-        )
+        !(await confirm({
+          title: `Disconnect ${owner}/${repo}?`,
+          body: "Its content stays in GitHub; this workspace just stops pointing at it.",
+          confirmLabel: "Disconnect",
+          destructive: true,
+        }))
       ) {
         return;
       }
       await disconnectRepo(workspaceId, owner, repo);
     },
-    [workspaceId, disconnectRepo],
+    [workspaceId, disconnectRepo, confirm],
   );
 
   const handleForgetInstallation = useCallback(
     async (inst: AppGithubInstallation) => {
       if (!workspaceId) return;
       if (
-        !window.confirm(
-          `Forget the "${inst.accountLogin}" account? This only clears Mako's record — it does not uninstall the app on GitHub.`,
-        )
+        !(await confirm({
+          title: `Forget the "${inst.accountLogin}" account?`,
+          body: "This only clears Mako's record — it does not uninstall the app on GitHub.",
+          confirmLabel: "Forget",
+          destructive: true,
+        }))
       ) {
         return;
       }
@@ -220,7 +228,13 @@ export default function GitHubConnectionSection() {
         setError(result.error ?? "Failed to forget account");
       }
     },
-    [workspaceId, disconnectGithubInstallation, installationId, reloadStatus],
+    [
+      workspaceId,
+      disconnectGithubInstallation,
+      installationId,
+      reloadStatus,
+      confirm,
+    ],
   );
 
   if (!isAdmin) {

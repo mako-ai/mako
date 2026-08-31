@@ -49,6 +49,7 @@ import {
   StatusPill,
 } from "./bui-status";
 import { BUI_MONO_FONT_FAMILY } from "./chat/bui-styles";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 interface BackfillPanelProps {
   workspaceId: string;
@@ -2398,40 +2399,32 @@ export function BackfillPanel({
       </Box>
 
       {/* Reset entity table dialog */}
-      <Dialog
+      <ConfirmDialog
         open={entityResetOpen}
-        onClose={() => !busy && setEntityResetOpen(false)}
-      >
-        <DialogTitle>Reset table and rebackfill</DialogTitle>
-        <DialogContent sx={{ display: "grid", gap: 1, minWidth: 420 }}>
-          <Typography variant="body2">
-            Entity:{" "}
-            <Box
-              component="span"
-              sx={{ fontFamily: "monospace", fontWeight: 600 }}
-            >
-              {entityResetEntity ? entityLabel(entityResetEntity) : "—"}
-            </Box>
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            This drops the destination table for this entity, clears its CDC
-            state, and starts a fresh backfill.
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setEntityResetOpen(false)} disabled={busy}>
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            color="warning"
-            disabled={!entityResetEntity || busy}
-            onClick={handleResetEntityTable}
-          >
-            {busy ? "Resetting…" : "Reset + rebackfill"}
-          </Button>
-        </DialogActions>
-      </Dialog>
+        title="Reset table and rebackfill"
+        body={
+          <Box sx={{ display: "grid", gap: 1 }}>
+            <Typography variant="body2">
+              Entity:{" "}
+              <Box
+                component="span"
+                sx={{ fontFamily: "monospace", fontWeight: 600 }}
+              >
+                {entityResetEntity ? entityLabel(entityResetEntity) : "—"}
+              </Box>
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              This drops the destination table for this entity, clears its CDC
+              state, and starts a fresh backfill.
+            </Typography>
+          </Box>
+        }
+        confirmLabel="Reset + rebackfill"
+        destructive
+        busy={busy}
+        onConfirm={() => void handleResetEntityTable()}
+        onCancel={() => setEntityResetOpen(false)}
+      />
 
       {/* Reset dialog */}
       <Dialog open={resyncOpen} onClose={() => setResyncOpen(false)}>

@@ -15,10 +15,6 @@ import {
   Button,
   Chip,
   CircularProgress,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   IconButton,
   LinearProgress,
   Tooltip,
@@ -33,6 +29,7 @@ import {
 import { useWorkspace } from "../../contexts/workspace-context";
 import { useAppsStore } from "../../store/appsStore";
 import { formatBytes } from "../../utils/format";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
 
 interface SandboxStats {
   running: boolean;
@@ -329,9 +326,10 @@ export default function SettingsSandbox() {
         </>
       )}
 
-      <Dialog open={confirmOpen} onClose={() => setConfirmOpen(false)}>
-        <DialogTitle>Kill &amp; recycle the sandbox?</DialogTitle>
-        <DialogContent>
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Kill & recycle the sandbox?"
+        body={
           <Typography variant="body2">
             Running processes, terminal sessions and{" "}
             <strong>uncommitted working-copy changes</strong> die with the
@@ -339,20 +337,13 @@ export default function SettingsSandbox() {
             work is safe. A fresh sandbox boots on your next terminal or dev
             session.
           </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setConfirmOpen(false)}>Cancel</Button>
-          <Button
-            color="error"
-            variant="contained"
-            disabled={recycling}
-            onClick={() => void recycle()}
-            startIcon={recycling ? <CircularProgress size={14} /> : undefined}
-          >
-            {recycling ? "Recycling…" : "Kill it"}
-          </Button>
-        </DialogActions>
-      </Dialog>
+        }
+        confirmLabel="Kill it"
+        destructive
+        busy={recycling}
+        onConfirm={() => void recycle()}
+        onCancel={() => setConfirmOpen(false)}
+      />
     </Box>
   );
 }

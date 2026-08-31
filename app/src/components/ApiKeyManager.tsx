@@ -43,6 +43,7 @@ import { trackEvent } from "../lib/analytics";
 import { useApiKeyStore } from "../store/apiKeyStore";
 import type { ApiKeyCreateResponse } from "../lib/api-types";
 import { formatRelativeTime } from "../utils/relative-time";
+import { useConfirm } from "./ConfirmDialog";
 
 const MCP_STARTER_PROMPT =
   "Using the mako tools, explore my data and build an app showing revenue " +
@@ -260,6 +261,7 @@ function McpConnectSection({
 
 export function ApiKeyManager() {
   const { currentWorkspace, loading: workspaceLoading } = useWorkspace();
+  const confirm = useConfirm();
   const { keys, loading, fetchKeys, createKey, deleteKey } = useApiKeyStore();
   const apiKeys = currentWorkspace ? keys[currentWorkspace.id] || [] : [];
   const isLoading = currentWorkspace
@@ -330,9 +332,12 @@ export function ApiKeyManager() {
     if (!currentWorkspace) return;
 
     if (
-      !confirm(
-        "Are you sure you want to delete this API key? This action cannot be undone.",
-      )
+      !(await confirm({
+        title: "Delete API key?",
+        body: "Are you sure you want to delete this API key? This action cannot be undone.",
+        confirmLabel: "Delete",
+        destructive: true,
+      }))
     ) {
       return;
     }

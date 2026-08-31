@@ -11,10 +11,6 @@ import {
   Tooltip,
   Button,
   CircularProgress,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
   TextField,
   Avatar,
   Stack,
@@ -30,6 +26,7 @@ import {
 } from "../store/versionStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { formatRelativeTimeCompact } from "../utils/relative-time";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 interface VersionHistoryPanelProps {
   open: boolean;
@@ -457,43 +454,30 @@ export function VersionHistoryPanel({
         )}
       </Drawer>
 
-      <Dialog
+      <ConfirmDialog
         open={restoreDialogOpen}
-        onClose={() => !restoring && setRestoreDialogOpen(false)}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle>Restore Version {restoreTarget?.version}?</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            This will create a new version with the content from v
-            {restoreTarget?.version}. The current state is not lost.
-          </Typography>
-          <TextField
-            fullWidth
-            size="small"
-            label="Comment"
-            value={restoreComment}
-            onChange={e => setRestoreComment(e.target.value)}
-            placeholder="Describe the restore reason"
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={() => setRestoreDialogOpen(false)}
-            disabled={restoring}
-          >
-            Cancel
-          </Button>
-          <Button
-            onClick={handleRestoreConfirm}
-            variant="contained"
-            disabled={restoring}
-          >
-            {restoring ? "Restoring..." : "Restore"}
-          </Button>
-        </DialogActions>
-      </Dialog>
+        title={`Restore Version ${restoreTarget?.version}?`}
+        body={
+          <>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              This will create a new version with the content from v
+              {restoreTarget?.version}. The current state is not lost.
+            </Typography>
+            <TextField
+              fullWidth
+              size="small"
+              label="Comment"
+              value={restoreComment}
+              onChange={e => setRestoreComment(e.target.value)}
+              placeholder="Describe the restore reason"
+            />
+          </>
+        }
+        confirmLabel="Restore"
+        busy={restoring}
+        onConfirm={() => void handleRestoreConfirm()}
+        onCancel={() => setRestoreDialogOpen(false)}
+      />
     </>
   );
 }

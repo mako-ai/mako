@@ -52,6 +52,7 @@ import {
 } from "lucide-react";
 import { tabKindIcon } from "../lib/entity-icons";
 import type { TabKind } from "../store/lib/types";
+import { useConfirm } from "./ConfirmDialog";
 
 /** Renders the canonical icon for a tab kind (see lib/entity-icons.ts). */
 function TabKindGlyph({ kind }: { kind: TabKind | undefined }) {
@@ -350,6 +351,7 @@ function Editor({
   resultsContextRef,
 }: EditorProps = {}) {
   const { currentWorkspace } = useWorkspace();
+  const confirm = useConfirm();
   const { user } = useAuth();
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
   const [tabResults, setTabResults] = useState<
@@ -1721,11 +1723,12 @@ function Editor({
       const hasChanges = !existingHash || currentHash !== existingHash;
 
       if (hasChanges) {
-        const confirmed = window.confirm(
-          `The file "${existingTab.title || conflictData.existingName}" is open in another tab with unsaved changes.\n\n` +
-            `If you proceed, those unsaved changes will be lost.\n\n` +
-            `Do you want to continue with the overwrite?`,
-        );
+        const confirmed = await confirm({
+          title: "Overwrite with unsaved changes?",
+          body: `The file "${existingTab.title || conflictData.existingName}" is open in another tab with unsaved changes. If you proceed, those unsaved changes will be lost. Do you want to continue with the overwrite?`,
+          confirmLabel: "Overwrite",
+          destructive: true,
+        });
         if (!confirmed) {
           return;
         }

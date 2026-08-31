@@ -68,6 +68,7 @@ import {
 } from "../store/availableEntitiesStore";
 import { trackEvent } from "../lib/analytics";
 import { FlowRunNotificationsSection } from "./FlowRunNotificationsSection";
+import { useConfirm } from "./ConfirmDialog";
 
 interface SyncFlowFormProps {
   flowId?: string;
@@ -204,6 +205,7 @@ export function SyncFlowForm({
   onSwitchToDbSync,
 }: SyncFlowFormProps) {
   const { currentWorkspace } = useWorkspace();
+  const confirm = useConfirm();
   const {
     flows: flowsMap,
     error: errorMap,
@@ -1331,14 +1333,21 @@ export function SyncFlowForm({
             size="small"
             startIcon={<DeleteIcon />}
             onClick={async () => {
-              if (confirm("Are you sure you want to delete this sync?")) {
-                if (currentWorkspace?.id) {
-                  try {
-                    await deleteFlow(currentWorkspace.id, currentFlowId);
-                    onCancel?.();
-                  } catch {
-                    setError("Failed to delete sync");
-                  }
+              if (
+                !(await confirm({
+                  title: "Are you sure you want to delete this sync?",
+                  confirmLabel: "Delete",
+                  destructive: true,
+                }))
+              ) {
+                return;
+              }
+              if (currentWorkspace?.id) {
+                try {
+                  await deleteFlow(currentWorkspace.id, currentFlowId);
+                  onCancel?.();
+                } catch {
+                  setError("Failed to delete sync");
                 }
               }
             }}

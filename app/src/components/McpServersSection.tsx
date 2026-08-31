@@ -45,6 +45,7 @@ import {
   type McpWriteScope,
   useMcpStore,
 } from "../store/mcpStore";
+import { useConfirm } from "./ConfirmDialog";
 
 const WRITE_SCOPE_LABELS: Record<McpWriteScope, string> = {
   read: "Read only",
@@ -902,6 +903,7 @@ function ServerDetail({
   onNotify: (message: string, severity: "success" | "error") => void;
 }) {
   const { currentWorkspace } = useWorkspace();
+  const confirm = useConfirm();
   const {
     testServer,
     updateServer,
@@ -1005,9 +1007,12 @@ function ServerDetail({
   const handleDelete = async () => {
     if (!currentWorkspace) return;
     if (
-      !window.confirm(
-        `Remove "${server.name}"? Stored credentials and grants are deleted too.`,
-      )
+      !(await confirm({
+        title: `Remove "${server.name}"?`,
+        body: "Stored credentials and grants are deleted too.",
+        confirmLabel: "Remove",
+        destructive: true,
+      }))
     ) {
       return;
     }

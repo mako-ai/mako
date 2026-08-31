@@ -56,6 +56,7 @@ import EntityLoadErrorState, {
   EntityLoadingState,
 } from "./EntityLoadErrorState";
 import { missingEntityError } from "../lib/entity-labels";
+import { useConfirmProdRun } from "../dbt-runtime/confirm-prod-run";
 
 const DbtLineageView = lazy(() => import("./DbtLineageView"));
 
@@ -94,6 +95,7 @@ function logsToProblems(logs: DbtRunLogLine[]): Problem[] {
 
 export default function DbtConsoleView({ projectId }: { projectId: string }) {
   const { currentWorkspace } = useWorkspace();
+  const confirmProdRun = useConfirmProdRun();
   const { user } = useAuth();
   const workspaceId = currentWorkspace?.id;
 
@@ -166,10 +168,7 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
 
   const handleRunCommand = useCallback(async () => {
     if (!workspaceId || !command.trim()) return;
-    if (
-      environment === "prod" &&
-      !window.confirm(`Run "${command}" against the prod environment?`)
-    ) {
+    if (environment === "prod" && !(await confirmProdRun(command))) {
       return;
     }
     setBusy("command");
@@ -207,7 +206,15 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
       }),
     );
     setBusy(null);
-  }, [workspaceId, projectId, command, environment, defer, runCommand]);
+  }, [
+    workspaceId,
+    projectId,
+    command,
+    environment,
+    defer,
+    runCommand,
+    confirmProdRun,
+  ]);
 
   const errorCount = useMemo(
     () => problems?.filter(p => p.severity === "error").length ?? 0,

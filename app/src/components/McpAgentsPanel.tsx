@@ -32,6 +32,7 @@ import {
 } from "../store/consoleStore";
 import { SECTION_LABELS } from "../pages/settings/sections";
 import { formatRelativeTime } from "../utils/relative-time";
+import { useConfirm } from "./ConfirmDialog";
 
 const MCP_STARTER_PROMPT =
   "Using the mako tools, explore my data and build an app showing revenue " +
@@ -310,6 +311,7 @@ export function McpConnectedAgents({
   onNotify: (message: string, severity: "success" | "error") => void;
 }) {
   const { currentWorkspace, loading: workspaceLoading } = useWorkspace();
+  const confirm = useConfirm();
   const workspaceId = currentWorkspace?.id;
   const fetchMcpConnections = useMcpStore(s => s.fetchMcpConnections);
   const revokeMcpConnection = useMcpStore(s => s.revokeMcpConnection);
@@ -343,9 +345,12 @@ export function McpConnectedAgents({
   const handleRevoke = async (connection: McpConnection) => {
     if (!workspaceId) return;
     if (
-      !confirm(
-        `Disconnect "${connection.clientName}"? The agent loses access immediately and must sign in again to reconnect.`,
-      )
+      !(await confirm({
+        title: `Disconnect "${connection.clientName}"?`,
+        body: "The agent loses access immediately and must sign in again to reconnect.",
+        confirmLabel: "Disconnect",
+        destructive: true,
+      }))
     ) {
       return;
     }

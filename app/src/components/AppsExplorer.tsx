@@ -55,6 +55,7 @@ import { APP_DIR_SEP, APP_FILE_SEP } from "../lib/explorer-reveal";
 import { TAB_KIND_ICONS } from "../lib/entity-icons";
 import ExplorerShell from "./ExplorerShell";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
+import { useConfirm } from "./ConfirmDialog";
 
 const AppIcon = TAB_KIND_ICONS["app"];
 
@@ -152,6 +153,7 @@ function buildFileNodes(
 
 export default function AppsExplorer() {
   const { currentWorkspace } = useWorkspace();
+  const confirm = useConfirm();
   const workspaceId = currentWorkspace?.id;
 
   const apps = useAppsStore(s => s.apps);
@@ -406,9 +408,12 @@ export default function AppsExplorer() {
     async (appId: string) => {
       if (!workspaceId) return;
       if (
-        !window.confirm(
-          "Delete this app? Its folder is removed from the workspace repo (history stays in git).",
-        )
+        !(await confirm({
+          title: "Delete this app?",
+          body: "Its folder is removed from the workspace repo (history stays in git).",
+          confirmLabel: "Delete",
+          destructive: true,
+        }))
       ) {
         return;
       }
@@ -423,7 +428,7 @@ export default function AppsExplorer() {
         }
       }
     },
-    [workspaceId, deleteApp],
+    [workspaceId, deleteApp, confirm],
   );
 
   const getContextMenuItems = useCallback(

@@ -6,16 +6,7 @@ import {
   useState,
   type ChangeEvent,
 } from "react";
-import {
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogContentText,
-  DialogTitle,
-  IconButton,
-  Tooltip,
-} from "@mui/material";
+import { IconButton, Tooltip } from "@mui/material";
 import {
   Download,
   Globe as GlobeIcon,
@@ -44,6 +35,7 @@ import {
   notebookToIpynb,
   type Ipynb,
 } from "../notebook-runtime/ipynb";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 const EMPTY_TREE: ResourceTreeNode[] = [];
 
@@ -372,24 +364,19 @@ export default function NotebooksExplorer() {
         )}
       </ExplorerShell>
 
-      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
-        <DialogTitle>
-          Delete {deleteTarget?.isDirectory ? "Folder" : "Notebook"}?
-        </DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            {deleteTarget?.isDirectory
-              ? `"${deleteTarget.name}" and its subfolders will be deleted. Notebooks inside will move to the root level.`
-              : `"${deleteTarget?.name}" will be permanently deleted. This cannot be undone.`}
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDeleteTarget(null)}>Cancel</Button>
-          <Button color="error" onClick={() => void handleDeleteConfirm()}>
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title={`Delete ${deleteTarget?.isDirectory ? "Folder" : "Notebook"}?`}
+        body={
+          deleteTarget?.isDirectory
+            ? `"${deleteTarget.name}" and its subfolders will be deleted. Notebooks inside will move to the root level.`
+            : `"${deleteTarget?.name}" will be permanently deleted. This cannot be undone.`
+        }
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => void handleDeleteConfirm()}
+        onCancel={() => setDeleteTarget(null)}
+      />
 
       <input
         ref={fileInputRef}

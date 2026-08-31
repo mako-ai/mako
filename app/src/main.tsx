@@ -10,6 +10,7 @@ import App from "./App.tsx";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { AuthProvider } from "./contexts/auth-context.tsx";
+import { ConfirmProvider } from "./components/ConfirmDialog";
 import { initializeStoreVersion } from "./store/lib/storeVersion";
 
 // Register MUI X Premium license key (same provisioning as realadvisor.crm:
@@ -47,9 +48,11 @@ ReactDOM.createRoot(rootElement).render(
       <BrowserRouter>
         <ThemeProvider>
           <CssBaseline />
-          <AuthProvider>
-            <App />
-          </AuthProvider>
+          <ConfirmProvider>
+            <AuthProvider>
+              <App />
+            </AuthProvider>
+          </ConfirmProvider>
         </ThemeProvider>
       </BrowserRouter>
     </AppErrorBoundary>

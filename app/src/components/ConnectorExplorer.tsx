@@ -5,13 +5,7 @@ import {
   IconButton,
   CircularProgress,
   Tooltip,
-  Alert,
   MenuItem,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  Button,
 } from "@mui/material";
 import {
   Plus as AddIcon,
@@ -31,6 +25,7 @@ import ResourceTree, {
   type ResourceTreeSection,
 } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 interface Connector {
   _id: string;
@@ -251,32 +246,15 @@ function ConnectorExplorer() {
         }
       </ExplorerShell>
 
-      <Dialog
+      <ConfirmDialog
         open={deleteDialogOpen}
-        onClose={() => setDeleteDialogOpen(false)}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle>Delete Connector</DialogTitle>
-        <DialogContent>
-          <Alert severity="warning" sx={{ mb: 2 }}>
-            This will permanently delete the connector.
-          </Alert>
-          <Typography>
-            Are you sure you want to delete &quot;{selectedItem?.name}&quot;?
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
-          <Button
-            onClick={handleDeleteConfirm}
-            color="error"
-            variant="contained"
-          >
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
+        title="Delete Connector"
+        body={`This will permanently delete the connector. Are you sure you want to delete "${selectedItem?.name}"?`}
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => void handleDeleteConfirm()}
+        onCancel={() => setDeleteDialogOpen(false)}
+      />
     </>
   );
 }

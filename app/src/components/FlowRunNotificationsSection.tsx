@@ -46,6 +46,7 @@ import {
   ruleSummary,
   useNotificationRuleStore,
 } from "../store/notificationRuleStore";
+import { useConfirm } from "./ConfirmDialog";
 
 export interface FlowRunNotificationsSectionProps {
   workspaceId: string;
@@ -118,6 +119,7 @@ export function FlowRunNotificationsSection({
   );
   const fetchRules = useNotificationRuleStore(s => s.fetchRules);
   const fetchDeliveries = useNotificationRuleStore(s => s.fetchDeliveries);
+  const confirm = useConfirm();
   const createRule = useNotificationRuleStore(s => s.createRule);
   const updateRule = useNotificationRuleStore(s => s.updateRule);
   const deleteRule = useNotificationRuleStore(s => s.deleteRule);
@@ -354,7 +356,15 @@ export function FlowRunNotificationsSection({
 
   const handleDelete = async (ruleId: string) => {
     if (!workspaceId || !canManage) return;
-    if (!confirm("Delete this notification?")) return;
+    if (
+      !(await confirm({
+        title: "Delete this notification?",
+        confirmLabel: "Delete",
+        destructive: true,
+      }))
+    ) {
+      return;
+    }
     try {
       await deleteRule(workspaceId, ruleId);
     } catch (e) {

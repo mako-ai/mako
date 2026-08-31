@@ -15,7 +15,6 @@ import {
   Typography,
   Box,
   Divider,
-  Alert,
 } from "@mui/material";
 import { Copy, RotateCcw, Trash2 } from "lucide-react";
 import { useDashboardStore } from "../../store/dashboardStore";
@@ -23,6 +22,7 @@ import { useWorkspace } from "../../contexts/workspace-context";
 import { useConsoleStore } from "../../store/consoleStore";
 import MaterializationScheduleControls from "../MaterializationScheduleControls";
 import type { MaterializationScheduleValue } from "../../lib/materializationSchedule";
+import { useConfirm } from "../ConfirmDialog";
 
 interface DashboardSettingsDialogProps {
   open: boolean;
@@ -36,6 +36,7 @@ export default function DashboardSettingsDialog({
   dashboardId,
 }: DashboardSettingsDialogProps) {
   const { currentWorkspace } = useWorkspace();
+  const confirm = useConfirm();
   const workspaceId = currentWorkspace?.id;
   const dashboard = useDashboardStore(s =>
     dashboardId ? s.openDashboards[dashboardId] : undefined,
@@ -59,7 +60,6 @@ export default function DashboardSettingsDialog({
   const [crossFilterEngine, setCrossFilterEngine] = useState<
     "mosaic" | "legacy"
   >("mosaic");
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const isReadOnly = dashboard?.readOnly === true;
 
   useEffect(() => {
@@ -83,7 +83,6 @@ export default function DashboardSettingsDialog({
       setCrossFilterEnabled(dashboard.crossFilter.enabled);
       setCrossFilterResolution(dashboard.crossFilter.resolution);
       setCrossFilterEngine(dashboard.crossFilter.engine ?? "mosaic");
-      setConfirmDelete(false);
     }
   }, [dashboard, open]);
 
@@ -148,6 +147,16 @@ export default function DashboardSettingsDialog({
 
   const handleDelete = async () => {
     if (!workspaceId || !dashboard) return;
+    if (
+      !(await confirm({
+        title: "Delete dashboard?",
+        body: "This dashboard will be permanently deleted.",
+        confirmLabel: "Delete",
+        destructive: true,
+      }))
+    ) {
+      return;
+    }
     await useDashboardStore
       .getState()
       .deleteDashboard(workspaceId, dashboard._id);
@@ -333,24 +342,12 @@ export default function DashboardSettingsDialog({
                 color="error"
                 size="small"
                 startIcon={<Trash2 size={16} />}
-                onClick={() => setConfirmDelete(true)}
+                onClick={handleDelete}
               >
                 Delete
               </Button>
             )}
           </Box>
-          {confirmDelete && (
-            <Alert
-              severity="error"
-              action={
-                <Button color="error" size="small" onClick={handleDelete}>
-                  Confirm
-                </Button>
-              }
-            >
-              This dashboard will be permanently deleted.
-            </Alert>
-          )}
         </Box>
       </DialogContent>
       <DialogActions>
