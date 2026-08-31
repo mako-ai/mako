@@ -212,6 +212,10 @@ The mode is resolved in three layers: probed capabilities persisted in the model
 
 Users pick their preferred model in the chat UI. The model is persisted per-user in workspace settings. If a user's saved model becomes unavailable (e.g. billing downgrade), Mako falls back to the best available model for their plan.
 
+### Per-Response Cost
+
+Each assistant turn shows a small cost tag (e.g. `$0.0132`) once the response settles — hover for the model name and input/output token counts. This is a **display estimate**: it prices the turn's total usage against the resolved model's current Gateway pricing, computed client-side in `messageMetadata` on the stream's finish part. Authoritative billing happens separately (`onFinish` → `computeInvocationCost`, which prices per-step models individually) — the two only diverge on multi-model turns (e.g. a turn that switches models mid-stream via retries). If Gateway pricing lookup fails, the tag is omitted rather than shown wrong; token counts still land in history.
+
 ### Utility / Fast Model
 
 Cheap, high-volume tasks — AI-suggested version commit messages, summaries, and other internal helpers — run on a dedicated **utility model** instead of the user's chosen chat model. By default Mako auto-selects the cheapest capable tool-use model, cheapest first.
