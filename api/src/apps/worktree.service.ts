@@ -59,6 +59,7 @@ import {
   boxFileVersions,
   boxPorcelain,
   type BoxFileVersions,
+  boxRestoreTreeFrom,
 } from "./box";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import {
@@ -82,6 +83,7 @@ import {
   initRepo,
   listTree,
   log as repoLog,
+  diffNameStatus,
   readBlob,
   repoDirFor,
   repoExists,
@@ -1460,6 +1462,81 @@ export async function gitPathsAction(
 }
 
 /** HEAD / index / working-tree contents of one repo-relative path, for diffs. */
+/** The empty tree: what a root commit's "parent" diffs against. */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/**
+ * What one commit changed INSIDE this app (paths app-relative), and its
+ * parent — the unit the History panel's "View changes" works in. Read from
+ * the bare repo: no sandbox, no working copy.
+ */
+export async function commitChanges(
+  project: IAppProject,
+  sha: string,
+): Promise<{ sha: string; parent: string | null; files: ChangedFile[] }> {
+  const repoDir = await repoFor(project);
+  const oid = await resolveCommit(repoDir, sha);
+  if (!oid) throw new Error(`No such commit: ${sha}`);
+  const parent = await resolveCommit(repoDir, `${oid}^`);
+  const root = appRootFor(project);
+  const files = (await diffNameStatus(repoDir, parent ?? EMPTY_TREE, oid))
+    .filter(f => f.path.startsWith(`${root}/`))
+    .map(f => ({ ...f, path: f.path.slice(root.length + 1) }));
+  return { sha: oid, parent, files };
+}
+
+/** One app file before and after a commit (null = absent on that side). */
+export async function commitFileVersions(
+  project: IAppProject,
+  sha: string,
+  relPath: string,
+): Promise<{ before: string | null; after: string | null; binary: boolean }> {
+  const repoDir = await repoFor(project);
+  const oid = await resolveCommit(repoDir, sha);
+  if (!oid) throw new Error(`No such commit: ${sha}`);
+  const parent = await resolveCommit(repoDir, `${oid}^`);
+  const full = appPath(project, relPath);
+  const read = async (ref: string | null) => {
+    if (!ref) return null;
+    try {
+      return await readBlob(repoDir, ref, full);
+    } catch {
+      return null;
+    }
+  };
+  const [before, after] = await Promise.all([read(parent), read(oid)]);
+  return {
+    before: before?.isBinary ? null : (before?.contents ?? null),
+    after: after?.isBinary ? null : (after?.contents ?? null),
+    binary: Boolean(before?.isBinary || after?.isBinary),
+  };
+}
+
+/**
+ * "Restore this version": set the app's folder back to its content at `sha`
+ * and commit that as a NEW commit on the actor's branch (then push, like
+ * every commit). History is append-only — the versions in between stay in
+ * the log, which is what makes this safe to offer from a list of commits.
+ */
+export async function restoreWorktreeTo(
+  handle: WorktreeHandle,
+  sha: string,
+  author?: GitAuthor,
+): Promise<CommitResult> {
+  const repoDir = handle.repoDir;
+  const oid = await resolveCommit(repoDir, sha);
+  if (!oid) throw new Error(`No such commit: ${sha}`);
+  const [info] = await repoLog(repoDir, oid, 1);
+  const ctx = await ensureBox(handle);
+  await boxRestoreTreeFrom(ctx, oid, handle.appRoot);
+  const subject = info?.subject ? ` "${info.subject}"` : "";
+  return commitWorktree(
+    handle,
+    `Restore${subject} (${oid.slice(0, 7)})`,
+    author,
+  );
+}
+
 export async function fileVersions(
   handle: WorktreeHandle,
   relPath: string,

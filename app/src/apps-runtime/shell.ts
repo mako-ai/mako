@@ -73,30 +73,39 @@ export function focusAppsFileTab(
 export function focusAppsDiffTab(
   appId: string,
   path: string,
-  mode: "working" | "index",
+  mode: "working" | "index" | "commit",
   slug?: string,
+  /** "commit" mode: the commit whose change to `path` is shown. */
+  sha?: string,
 ): string {
   const consoleStore = useConsoleStore.getState();
   const existingTab = Object.values(consoleStore.tabs).find(
     (tab: {
       kind?: string;
-      metadata?: { appId?: string; path?: string; mode?: string };
+      metadata?: { appId?: string; path?: string; mode?: string; sha?: string };
     }) =>
       tab.kind === "app-diff" &&
       tab.metadata?.appId === appId &&
       tab.metadata?.path === path &&
-      tab.metadata?.mode === mode,
+      tab.metadata?.mode === mode &&
+      (mode !== "commit" || tab.metadata?.sha === sha),
   );
   if (existingTab) {
     consoleStore.setActiveTab(existingTab.id);
     return existingTab.id;
   }
   const fileName = path.split("/").pop() || path;
+  const label =
+    mode === "commit"
+      ? (sha ?? "").slice(0, 7)
+      : mode === "index"
+        ? "Index"
+        : "Working Tree";
   const tabId = consoleStore.openTab({
-    title: `${fileName} (${mode === "index" ? "Index" : "Working Tree"})`,
+    title: `${fileName} (${label})`,
     content: "",
     kind: "app-diff",
-    metadata: { appId: appId, appSlug: slug, path, mode },
+    metadata: { appId: appId, appSlug: slug, path, mode, sha },
   });
   consoleStore.setActiveTab(tabId);
   return tabId;

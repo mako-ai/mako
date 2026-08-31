@@ -22,9 +22,6 @@ import {
   Chip,
   CircularProgress,
   IconButton,
-  ListItemText,
-  Menu,
-  MenuItem,
   Tooltip,
   Typography,
   styled,
@@ -45,6 +42,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useRealtimeStore } from "../store/realtimeStore";
 import { useAppsStore } from "../store/appsStore";
+import AppHistoryPopover from "./AppHistoryPopover";
 import { useConsoleStore } from "../store/consoleStore";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { setIframeDragGuard } from "../lib/iframe-drag-guard";
@@ -932,7 +930,6 @@ export default function AppWorkspace({
 
   const app = useAppsStore(s => s.apps.find(a => a.id === appId));
   const status = useAppsStore(s => s.statusByApp[appId]);
-  const history = useAppsStore(s => s.historyByApp[appId]);
   const branches = useAppsStore(s => s.branchesByApp[appId]);
   const preview = useAppsStore(s => s.previewByApp[appId]);
   const publishedSha = app?.publishedSha;
@@ -1415,24 +1412,15 @@ export default function AppWorkspace({
         </PanelGroup>
       )}
 
-      {/* History menu */}
-      <Menu
+      <AppHistoryPopover
         anchorEl={historyAnchor}
-        open={Boolean(historyAnchor)}
         onClose={() => setHistoryAnchor(null)}
-      >
-        {(history ?? []).length === 0 && (
-          <MenuItem disabled>No commits yet</MenuItem>
-        )}
-        {(history ?? []).map(c => (
-          <MenuItem key={c.oid} disabled sx={{ opacity: 1 }}>
-            <ListItemText
-              primary={c.subject}
-              secondary={`${c.oid.slice(0, 8)} · ${c.author} · ${new Date(c.timestamp).toLocaleString()}`}
-            />
-          </MenuItem>
-        ))}
-      </Menu>
+        workspaceId={workspaceId}
+        appId={appId}
+        slug={app?.slug}
+        branch={status?.branch ?? "main"}
+        publishedSha={app?.publishedSha}
+      />
     </Box>
   );
 }

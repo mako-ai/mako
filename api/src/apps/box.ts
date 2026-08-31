@@ -627,6 +627,55 @@ export interface BoxCommitResult {
  * be, except that it is a commit on a branch, visible to git, and reachable
  * from any other clone.
  */
+/**
+ * Set one folder of the working copy back to its content at `sha` — the
+ * working-copy half of "restore this version". Tracked files under `root`
+ * are removed first so files that did not exist at `sha` disappear too
+ * (`git checkout <sha> -- <dir>` alone only adds and overwrites); ignored
+ * files (node_modules, dist) are untouched. Nothing is committed here.
+ */
+export async function boxRestoreTreeFrom(
+  ctx: SandboxExecContext,
+  sha: string,
+  root: string,
+): Promise<void> {
+  if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new Error("Invalid commit sha");
+  const exists = await boxExec(
+    ctx,
+    boxGit(ctx, "cat-file", "-e", `${sha}^{commit}`),
+    { timeoutMs: 30_000 },
+  );
+  if (exists.exitCode !== 0) {
+    // The box clones from Mako's endpoint; a commit that landed there since
+    // the last pull is one fetch away.
+    await boxExec(ctx, boxGit(ctx, "fetch", "-q", "origin"), {
+      timeoutMs: 120_000,
+    });
+  }
+  const removed = await boxExec(
+    ctx,
+    boxGit(ctx, "rm", "-r", "-q", "--ignore-unmatch", "--", root),
+    { timeoutMs: 120_000 },
+  );
+  if (removed.exitCode !== 0) {
+    throw new Error(`Could not clear ${root}: ${removed.stderr.slice(-300)}`);
+  }
+  const restored = await boxExec(
+    ctx,
+    boxGit(ctx, "checkout", sha, "--", root),
+    { timeoutMs: 120_000 },
+  );
+  if (restored.exitCode !== 0) {
+    // Put the working copy back the way it was before failing.
+    await boxExec(ctx, boxGit(ctx, "checkout", "HEAD", "--", root), {
+      timeoutMs: 120_000,
+    }).catch(() => undefined);
+    throw new Error(
+      `This version has no "${root}" to restore: ${restored.stderr.slice(-300)}`,
+    );
+  }
+}
+
 export async function boxCommitAll(input: {
   ctx: SandboxExecContext;
   message: string;

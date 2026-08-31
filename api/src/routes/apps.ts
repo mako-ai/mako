@@ -70,6 +70,9 @@ import {
   listFiles,
   mergeBranchToMain,
   projectHistory,
+  commitChanges,
+  commitFileVersions,
+  restoreWorktreeTo,
   promoteToMain,
   readFile,
   synthesizeProjectFromFolder,
@@ -1147,6 +1150,15 @@ appsRoutes.openapi(
             p => !p.startsWith("/") && !p.split("/").includes(".."),
             "path must stay inside the repository",
           ),
+        /**
+         * With a commit: the file before and after THAT commit (app-relative
+         * path), read from the repo — no sandbox. Without: HEAD / index /
+         * working tree of the caller's box.
+         */
+        sha: z
+          .string()
+          .regex(/^[0-9a-f]{7,40}$/)
+          .optional(),
       }),
     },
     responses: OPEN_RESPONSES,
@@ -1155,7 +1167,11 @@ appsRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const { path: relPath } = c.req.valid("query");
+      const { path: relPath, sha } = c.req.valid("query");
+      if (sha) {
+        const versions = await commitFileVersions(loaded.project, sha, relPath);
+        return c.json({ success: true as const, versions }, 200);
+      }
       const handle = await ensureWorktree(
         loaded.project,
         loaded.userId ?? "api-key",
@@ -1284,6 +1300,76 @@ appsRoutes.openapi(
         loaded.userId ?? "api-key",
       );
       return c.json({ success: true as const, ...result }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/git/commit",
+    tags: ["Apps"],
+    summary: "What one commit changed in this app",
+    description:
+      "The commit's parent and the app-relative files it added, modified, deleted or renamed. Read from the repository — starts no sandbox.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      query: z.object({ sha: z.string().regex(/^[0-9a-f]{7,40}$/) }),
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { sha } = c.req.valid("query");
+      const commit = await commitChanges(loaded.project, sha);
+      return c.json({ success: true as const, commit }, 200);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  },
+);
+
+appsRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/restore",
+    tags: ["Apps"],
+    summary: "Restore the app to a previous version (as a new commit)",
+    description:
+      "Sets the app's files back to their content at `sha` and commits that on the caller's branch, then pushes. Nothing is rewritten: the versions in between stay in the history. Runs in the caller's sandbox (starting it if needed), like any edit.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ProjectParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({ sha: z.string().regex(/^[0-9a-f]{7,40}$/) }),
+          },
+        },
+      },
+    },
+    responses: OPEN_RESPONSES,
+  }),
+  async c => {
+    try {
+      const loaded = await loadProject(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const userId = loaded.userId ?? "api-key";
+      const { sha } = c.req.valid("json");
+      const user = c.get("user");
+      const handle = await ensureWorktree(loaded.project, userId);
+      const result = await restoreWorktreeTo(
+        handle,
+        sha,
+        user?.email ? { name: user.email, email: user.email } : undefined,
+      );
+      return c.json({ success: true as const, result }, 200);
     } catch (error) {
       return handleError(c, error);
     }
