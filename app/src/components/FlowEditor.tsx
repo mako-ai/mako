@@ -1,4 +1,5 @@
 import { useEffect, useState, type RefObject } from "react";
+import { useConsoleStore } from "../store/consoleStore";
 import { Alert, Box, Tab, Tabs } from "@mui/material";
 import { SyncFlowForm } from "./SyncFlowForm";
 import { DbFlowForm, type DbFlowFormRef } from "./DbFlowForm";
@@ -12,6 +13,8 @@ import EntityLoadErrorState, {
 import { missingEntityError } from "../lib/entity-labels";
 
 interface FlowEditorProps {
+  /** The hosting tab, pinned when editing starts (preview-tab invariant). */
+  tabId?: string;
   flowId?: string;
   isNew?: boolean;
   /**
@@ -32,6 +35,7 @@ interface FlowSavedOptions {
 }
 
 export function FlowEditor({
+  tabId,
   flowId,
   isNew = false,
   flowType = "sync",
@@ -40,6 +44,13 @@ export function FlowEditor({
   dbFlowFormRef,
 }: FlowEditorProps) {
   const [isEditing, setIsEditing] = useState(isNew);
+  // Editing a flow (or creating one) is "modifying the content": pin the tab
+  // so the next open cannot replace a half-filled form.
+  useEffect(() => {
+    if (isEditing && tabId) {
+      useConsoleStore.getState().updateDirty(tabId, true);
+    }
+  }, [isEditing, tabId]);
   const [currentFlowId, setCurrentFlowId] = useState<string | undefined>(
     flowId,
   );

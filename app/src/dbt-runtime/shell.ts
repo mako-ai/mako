@@ -66,6 +66,9 @@ export function focusDbtConsoleTab(projectId: string, title: string): string {
       },
       { replacePristine: false },
     );
+  // A project's console is a durable document, not a preview: pin it at open
+  // (as notebooks do) so the next open cannot replace it.
+  consoleStore.updateDirty(tabId, true);
 
   useDbtStore.getState().setActiveProject(projectId);
   consoleStore.setActiveTab(tabId);

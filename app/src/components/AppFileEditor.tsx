@@ -11,6 +11,7 @@ import { Database as DatabaseIcon, Play as PlayIcon } from "lucide-react";
 import MonacoEditor from "@monaco-editor/react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppsStore } from "../store/appsStore";
+import { useConsoleStore } from "../store/consoleStore";
 import {
   configureMonacoForJsx,
   languageForPath,
@@ -96,6 +97,8 @@ export default function AppFileEditor({
   const handleChange = useCallback(
     (value: string | undefined) => {
       updateFileLocal(appId, path, value ?? "");
+      // First keystroke pins the tab (preview -> permanent), as for consoles.
+      useConsoleStore.getState().updateDirty(_tabId, true);
       if (saveTimer.current) clearTimeout(saveTimer.current);
       if (workspaceId) {
         saveTimer.current = setTimeout(() => {
@@ -103,7 +106,7 @@ export default function AppFileEditor({
         }, 1000);
       }
     },
-    [appId, path, workspaceId, updateFileLocal, saveFile],
+    [appId, path, workspaceId, updateFileLocal, saveFile, _tabId],
   );
 
   return (

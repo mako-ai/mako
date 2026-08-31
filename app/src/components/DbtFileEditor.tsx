@@ -11,6 +11,7 @@
  * command that produced them.
  */
 
+import { useConsoleStore } from "../store/consoleStore";
 import {
   lazy,
   Suspense,
@@ -344,6 +345,8 @@ export default function DbtFileEditor({
   const handleChange = useCallback(
     (value: string | undefined) => {
       writeFile(projectId, path, value ?? "");
+      // First keystroke pins the tab (preview -> permanent), as for consoles.
+      useConsoleStore.getState().updateDirty(tabId, true);
       if (saveTimer.current) clearTimeout(saveTimer.current);
       if (workspaceId) {
         saveTimer.current = setTimeout(() => {
@@ -353,7 +356,7 @@ export default function DbtFileEditor({
         }, 1200);
       }
     },
-    [projectId, path, workspaceId, writeFile, persistFile],
+    [projectId, path, workspaceId, writeFile, persistFile, tabId],
   );
 
   const saveNow = useCallback(() => {

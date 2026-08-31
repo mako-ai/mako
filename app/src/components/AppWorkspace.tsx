@@ -995,6 +995,14 @@ export default function AppWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId, workspaceId]);
 
+  // Entering edit mode is "modifying the content" for an app tab: it pins
+  // the tab (consoleStore's preview invariant), so a workbench with a dev
+  // server and terminals is never replaced by the next app you click. A
+  // merely viewed app stays a preview tab, like a file you only looked at.
+  useEffect(() => {
+    if (editing) useConsoleStore.getState().updateDirty(_tabId, true);
+  }, [editing, _tabId]);
+
   // The consumer view's token is short-lived, so it is fetched when this app
   // is opened for viewing and again whenever a publish moves the app on.
   useEffect(() => {
