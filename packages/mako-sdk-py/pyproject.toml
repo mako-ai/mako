@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Mako SDK — read Mako-managed data sources from notebooks as DataFrames."
 readme = "README.md"
 requires-python = ">=3.9"
-license = "Apache-2.0"
+license = "MIT"
 authors = [{ name = "Mako" }]
 keywords = ["mako", "analytics", "notebook", "sql", "dataframe"]
 dependencies = [
