@@ -58,6 +58,8 @@ pnpm app:build             # Build frontend only (outputs to app/dist)
 pnpm api:build             # Build backend only (TypeScript compilation)
 pnpm lint:all              # Lint all packages
 pnpm lint:fix:all          # Auto-fix linting issues across workspace
+pnpm openapi:sync          # Regenerate OpenAPI spec + typed client (~3s) — REQUIRED after any api route/schema change; commit the outputs
+
 ```
 
 ### Data Operations
