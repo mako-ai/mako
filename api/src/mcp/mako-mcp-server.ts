@@ -86,7 +86,7 @@ Typical loop:
 4. Verify with app_open_app (starts the dev server, focuses the user's UI) + app_dev_log (vite + browser console) + app_browse (headless browser: click, navigate, screenshot the running app).
 5. app_commit → app_merge_to_main (main is what publishes buildable state).
 
-dbt: read_dbt_project_tree → read/edit files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run). Check dbt_git_status before finishing — edits are working-tree drafts until committed. Warehouse-mutating runs (dbt_run_model, dbt_run_job) appear only when the API key has the warehouse:write scope; Git mutations (dbt_commit_to_branch, branches, PRs) only with git:write.
+dbt: read_dbt_project_tree → read/edit files → validate with dbt_parse / dbt_compile_model / dbt_show (async: poll dbt_get_run). Edits commit straight to the user's session branch of the workspace repo (dbt/ folder). Warehouse-mutating runs (dbt_run_model, dbt_run_job) appear only when the API key has the warehouse:write scope.
 
 Skills (same knowledge as the in-product agent):
 - list_skills → compact index (workspace + system).

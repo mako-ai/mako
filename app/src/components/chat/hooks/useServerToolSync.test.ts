@@ -1,12 +1,11 @@
 // @vitest-environment jsdom
 /**
- * useServerToolSync — dbt git/checkout chat-stream backstop.
+ * useServerToolSync — dbt file-mutation chat-stream backstop.
  *
- * Regression coverage for "the UI doesn't follow the agent's branch": a
- * server-side dbt_switch_branch only reached open tabs via the workspace SSE
- * poke (dbt.checkout.updated), so a dead/dropped stream left the tab
- * rendering the old branch/tree until a manual reload. The hook now also
- * reconciles off the resumable chat stream when git tool results arrive.
+ * Server-side dbt file tools only reach open tabs via the workspace SSE poke
+ * (dbt.file.updated); a dead/dropped stream would leave the tab rendering
+ * stale content until a manual reload. The hook also reconciles off the
+ * resumable chat stream when file tool results arrive.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
@@ -14,13 +13,9 @@ import type { UIMessage } from "ai";
 
 const stores = vi.hoisted(() => {
   const dbtState = {
-    projects: [] as Array<{ _id: string; repo?: { owner: string } }>,
+    projects: [] as Array<{ _id: string }>,
     filePathsByProject: {} as Record<string, string[]>,
-    gitStatusByProject: {} as Record<string, unknown>,
     applyRemoteFileUpdate: vi.fn(),
-    applyRemoteGitUpdate: vi.fn(),
-    applyRemoteCheckoutUpdate: vi.fn(),
-    fetchGitStatus: vi.fn(),
   };
   return {
     dbtState,
@@ -78,100 +73,19 @@ function render(messages: UIMessage[]) {
   );
 }
 
-function markProjectLoaded(withRepo = true) {
-  stores.dbtState.projects = [
-    { _id: PROJECT, ...(withRepo ? { repo: { owner: "acme" } } : {}) },
-  ];
+function markProjectLoaded() {
+  stores.dbtState.projects = [{ _id: PROJECT }];
   stores.dbtState.filePathsByProject = { [PROJECT]: ["models/a.sql"] };
-  stores.dbtState.gitStatusByProject = { [PROJECT]: { branch: "main" } };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   stores.dbtState.projects = [];
   stores.dbtState.filePathsByProject = {};
-  stores.dbtState.gitStatusByProject = {};
-});
-
-describe("dbt checkout-moving tools (branch follow)", () => {
-  it("follows a dbt_switch_branch result onto the new branch", () => {
-    markProjectLoaded();
-    render(
-      toolMessage("dbt_switch_branch", { success: true, branch: "feat/x" }),
-    );
-    expect(stores.dbtState.applyRemoteCheckoutUpdate).toHaveBeenCalledWith(
-      WS,
-      PROJECT,
-      "feat/x",
-    );
-  });
-
-  it("follows dbt_commit_to_branch onto the promoted branch", () => {
-    markProjectLoaded();
-    render(
-      toolMessage("dbt_commit_to_branch", { success: true, branch: "feat/y" }),
-    );
-    expect(stores.dbtState.applyRemoteCheckoutUpdate).toHaveBeenCalledWith(
-      WS,
-      PROJECT,
-      "feat/y",
-    );
-  });
-
-  it("handles each tool call once across re-renders (dedupe)", () => {
-    markProjectLoaded();
-    const messages = toolMessage("dbt_switch_branch", {
-      success: true,
-      branch: "feat/x",
-    });
-    const { rerender } = render(messages);
-    rerender({ messages: [...messages] });
-    expect(stores.dbtState.applyRemoteCheckoutUpdate).toHaveBeenCalledTimes(1);
-  });
-
-  it("ignores results for projects this window never loaded", () => {
-    render(
-      toolMessage("dbt_switch_branch", { success: true, branch: "feat/x" }),
-    );
-    expect(stores.dbtState.applyRemoteCheckoutUpdate).not.toHaveBeenCalled();
-  });
-
-  it("ignores failed tool results", () => {
-    markProjectLoaded();
-    render(toolMessage("dbt_switch_branch", { success: false }));
-    expect(stores.dbtState.applyRemoteCheckoutUpdate).not.toHaveBeenCalled();
-  });
-});
-
-describe("dbt git-surface tools (no checkout move)", () => {
-  it("refetches tree + status after dbt_sync_from_repo", () => {
-    markProjectLoaded();
-    render(
-      toolMessage("dbt_sync_from_repo", { success: true, branch: "main" }),
-    );
-    // Sync carries `branch` in its output but does NOT move the checkout —
-    // it must reconcile via the git-update path, not the checkout path.
-    expect(stores.dbtState.applyRemoteGitUpdate).toHaveBeenCalledWith(
-      WS,
-      PROJECT,
-    );
-    expect(stores.dbtState.applyRemoteCheckoutUpdate).not.toHaveBeenCalled();
-  });
-
-  it("refetches tree + status after dbt_commit_and_push", () => {
-    markProjectLoaded();
-    render(
-      toolMessage("dbt_commit_and_push", { success: true, branch: "main" }),
-    );
-    expect(stores.dbtState.applyRemoteGitUpdate).toHaveBeenCalledWith(
-      WS,
-      PROJECT,
-    );
-  });
 });
 
 describe("dbt file mutation tools", () => {
-  it("pulls the file AND refreshes git status after edit_dbt_file", () => {
+  it("pulls the file after edit_dbt_file", () => {
     markProjectLoaded();
     render(
       toolMessage(
@@ -186,11 +100,38 @@ describe("dbt file mutation tools", () => {
       "models/a.sql",
       false,
     );
-    expect(stores.dbtState.fetchGitStatus).toHaveBeenCalledWith(WS, PROJECT);
   });
 
-  it("skips the git-status refresh for non-repo projects", () => {
-    markProjectLoaded(false);
+  it("drops the file after delete_dbt_file", () => {
+    markProjectLoaded();
+    render(
+      toolMessage(
+        "delete_dbt_file",
+        { success: true },
+        { input: { path: "models/a.sql" } },
+      ),
+    );
+    expect(stores.dbtState.applyRemoteFileUpdate).toHaveBeenCalledWith(
+      WS,
+      PROJECT,
+      "models/a.sql",
+      true,
+    );
+  });
+
+  it("handles each tool call once across re-renders (dedupe)", () => {
+    markProjectLoaded();
+    const messages = toolMessage(
+      "modify_dbt_file",
+      { success: true },
+      { input: { path: "models/a.sql" } },
+    );
+    const { rerender } = render(messages);
+    rerender({ messages: [...messages] });
+    expect(stores.dbtState.applyRemoteFileUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores results for projects this window never loaded", () => {
     render(
       toolMessage(
         "modify_dbt_file",
@@ -198,7 +139,18 @@ describe("dbt file mutation tools", () => {
         { input: { path: "models/a.sql" } },
       ),
     );
-    expect(stores.dbtState.applyRemoteFileUpdate).toHaveBeenCalled();
-    expect(stores.dbtState.fetchGitStatus).not.toHaveBeenCalled();
+    expect(stores.dbtState.applyRemoteFileUpdate).not.toHaveBeenCalled();
+  });
+
+  it("ignores failed tool results", () => {
+    markProjectLoaded();
+    render(
+      toolMessage(
+        "modify_dbt_file",
+        { success: false },
+        { input: { path: "models/a.sql" } },
+      ),
+    );
+    expect(stores.dbtState.applyRemoteFileUpdate).not.toHaveBeenCalled();
   });
 });

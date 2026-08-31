@@ -13,13 +13,13 @@ entities:
 
 # dbt jobs and production runs
 
-Jobs execute the committed tracked branch. They never include the acting
-user's checkout branch or uncommitted drafts.
+Jobs execute the workspace repo's DEFAULT branch (`main`). They never build
+the acting user's session branch.
 
 ## Required flow
 
 1. Use ad-hoc `dbt_parse`, `dbt_compile_model`, `dbt_show`, and
-   `dbt_run_model` to verify working-tree changes in the user's development
+   `dbt_run_model` to verify session-branch changes in the user's development
    environment.
 2. Commit, review, and merge through the dbt Git workflow.
 3. Trigger `dbt_run_job` only after the user explicitly confirms the job and

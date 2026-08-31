@@ -161,42 +161,25 @@ AND its tests — always add at least `unique` + `not_null` on the primary key.
   - MULTI-USER workspace: each user tests against their OWN environment.
     `dbt_run_model` auto-provisions a personal one (schema `dbt_<user>`) on
     the first build so teammates never build over each other's schemas.
-- **Drafts are per user AND per branch (git-worktree semantics)**:
-  uncommitted edits stay with the branch they were made on. Switching
-  branches (`dbt_switch_branch`) is always safe — each branch's
-  work-in-progress is intact when you switch back, and nothing mixes across
-  branches. This means the user can iterate on several branches in parallel.
-  Consequences to keep straight:
-  - `dbt_git_status` shows ONLY the current branch's pending changes; work
-    stashed on another branch is invisible until you switch to it.
-  - `dbt_create_branch` is `git checkout -b`: the current dirty tree moves to
-    the new branch.
-  - Deleting a branch (`dbt_delete_branch`, or `deleteBranch` on close/merge
-    of a PR) drops the drafts stashed on it — except a PR merge, which moves
-    them to the default branch with the user.
-  - `dbt_compare_branches` diffs any branch against a base without switching
-    checkouts (ahead/behind, changed files, that branch's PRs). Its
-    `fullyMergedIntoBase` flag detects squash/rebase merges too — check it
-    before deleting a branch during cleanup.
-  - `discardLocalChanges` (on switch/sync) only discards the branch being
-    left / the current branch — never other branches' stashes.
-- **Which git tree a run builds (repo-bound projects)** — never mix these up:
+- **Files live in git (the workspace repo's `dbt/` folder)**: every edit is
+  a COMMIT on the acting user's session branch — the same branch pointer the
+  Source Control rail moves. There are no drafts: what you see on your
+  branch is committed there. Work on separate branches stays separate, like
+  separate clones.
+- **Which git tree a run builds** — never mix these up:
   - Ad-hoc tools (`dbt_parse`, `dbt_compile_model`, `dbt_show`,
-    `dbt_run_model`) build YOUR working tree: your checkout branch + your
-    uncommitted drafts on that branch. This is the ONLY way to verify
-    uncommitted or feature-branch work.
-  - Jobs (`dbt_run_job`, schedules) build the COMMITTED tracked branch only —
-    never your checkout or drafts. Triggering a job to test a draft silently
-    runs the OLD code; do not do it, and do not "fix" it by committing — the
-    job still builds the tracked branch, not your feature branch.
-  - **Full refresh of a draft**: pass `fullRefresh: true` to `dbt_run_model`
+    `dbt_run_model`) build YOUR session branch. This is the way to verify
+    feature-branch work.
+  - Jobs (`dbt_run_job`, schedules) build the DEFAULT branch (`main`) only —
+    never your session branch. Triggering a job to test branch work silently
+    runs the OLD code; the change ships when the user merges to main.
+  - **Full refresh of an edit**: pass `fullRefresh: true` to `dbt_run_model`
     (adds `--full-refresh`). Never reach for a full-refresh job to rebuild an
     incremental model you just edited.
-- **Prod is protected from ad-hoc runs**: on repo-connected projects the
-  prod-like environment refuses ad-hoc warehouse writes (`run`/`build`/
-  `seed`/`snapshot`). Deploys go through jobs or CI after the change is
-  merged into the tracked branch. Read-only commands (parse/compile/show)
-  still work against any environment.
+- **Prod is protected from ad-hoc runs**: the prod-like environment refuses
+  ad-hoc warehouse writes (`run`/`build`/`seed`/`snapshot`). Deploys go
+  through jobs after the change is merged into `main`. Read-only commands
+  (parse/compile/show) still work against any environment.
 - **Personal environments**: per-user environments (schema `dbt_<user>`, same
   connection as prod). In MULTI-USER workspaces `dbt_run_model`
   auto-provisions the caller's on its first build;
@@ -215,8 +198,8 @@ AND its tests — always add at least `unique` + `not_null` on the primary key.
 - Jobs are saved command lists (`build`, `test`, `seed`, `snapshot`,
   `source freshness`, `docs generate` + `--select/--exclude/--full-refresh`
   flags) with optional cron schedules. Trigger via `dbt_run_job` only after
-  explicit user confirmation, and only for committed work — never to verify
-  drafts.
+  explicit user confirmation, and only for work merged to main — never to
+  verify branch work.
 
 ## Iterating on models that feed apps (dev → prod loop)
 
@@ -238,9 +221,9 @@ The full safe-iteration loop:
    personal one — the draft preview then reads the freshly built schema.
    This is per-user view state: other editors, the published app, and
    shared links keep reading prod. Verify visually (screenshot) if useful.
-3. Promote the dbt change: `dbt_commit_to_branch` → `dbt_open_pull_request` →
-   (after review) `dbt_merge_pull_request`; then run the prod job via
-   `dbt_run_job` — ONLY with explicit user confirmation.
+3. Promote the dbt change: the user merges their branch to `main` (Source
+   Control rail, or a PR on the connected GitHub repo); then run the prod job
+   via `dbt_run_job` — ONLY with explicit user confirmation.
 4. After the prod build succeeds, reset the binding/preview to prod and,
    if app code changed, ship it (`app_commit` → `app_merge_to_main`).
 

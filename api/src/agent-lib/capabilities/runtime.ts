@@ -97,8 +97,8 @@ export function missingInputConditionalGrant(
  * removing them desyncs the system-prompt tool inventory ("active, schemas
  * provided") from the tools actually sent to the provider, and models then
  * map the intended call onto a similarly named tool that IS available
- * (observed: dbt_run_model / dbt_run_job / dbt_commit_and_push calls landing
- * on dbt_list_pull_requests). Failing the call with an actionable message
+ * (observed historically with similarly-named dbt tools). Failing the call
+ * with an actionable message
  * keeps the schema visible and gives the model a recovery path: submit a
  * plan requesting the missing grant.
  *

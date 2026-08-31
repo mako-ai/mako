@@ -16,58 +16,15 @@ import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import {
-  DbtCheckout,
   DbtEnvPreference,
-  DbtFile,
-  DbtFileDraft,
   DbtJob,
   DbtProject,
   DbtRun,
   DatabaseConnection,
-  GitHubInstallation,
 } from "../database/workspace-schema";
 import {
-  getInstallationToken,
-  resolveRepoToken,
-} from "../integrations/github/app-auth";
-import { signInstallState } from "../integrations/github/install-state";
-import {
-  getGitHubAppSlug,
-  isGitHubAppConfigured,
-  getGitHubDevToken,
-} from "../integrations/github/config";
-import {
-  fileExistsAtRef,
-  getBranchHeadSha,
-  getRepoInfo,
-  listBranches,
-  listDbtProjectSubdirectories,
-  listInstallationRepos,
-} from "../integrations/github/github-api";
-import {
-  fetchRepoDbtFiles,
-  repoFilesToInserts,
-  syncProjectBranchFromRepo,
-} from "../dbt/dbt-github-sync.service";
-import {
-  closeProjectPullRequest,
-  commitAndPush,
-  commitToNewBranch,
-  createProjectBranch,
-  deleteProjectBranch,
-  getGitStatus,
-  getProjectFileDiff,
-  listProjectBranches,
-  listProjectPullRequests,
-  mergeProjectPullRequest,
-  openProjectPullRequest,
-  ProtectedBranchError,
-  switchProjectBranch,
-  updateProjectPullRequest,
-} from "../dbt/dbt-github-git.service";
-import {
+  commitDbtFiles,
   deleteWorkingFile,
-  discardUserDrafts,
   getCheckoutBranch,
   listWorkingFiles,
   readWorkingFile,
@@ -75,7 +32,6 @@ import {
   writeWorkingFile,
 } from "../dbt/dbt-working-tree.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
-import { generateDbtCommitMessage } from "../dbt/dbt-commit-message.service";
 import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
   isDbtCompatibleConnectionType,
@@ -113,11 +69,6 @@ import {
 } from "../dbt/dbt-run.service";
 import { validateScheduledConsoleSchedule } from "../services/scheduled-query-schedule.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
-import {
-  createVersion,
-  getLatestVersionNumber,
-  getUserDisplayName,
-} from "../services/entity-version.service";
 
 const logger = loggers.api("dbt");
 
@@ -197,10 +148,7 @@ function serverError(
   error: unknown,
   fallback: string,
 ) {
-  if (
-    error instanceof ProtectedBranchError ||
-    error instanceof DbtProtectedEnvironmentError
-  ) {
+  if (error instanceof DbtProtectedEnvironmentError) {
     return c.json({ success: false, error: error.message }, 400);
   }
   logger.error(fallback, { error });
@@ -264,31 +212,6 @@ export function isValidRepoSegment(value: string): boolean {
   );
 }
 
-const repoSegmentSchema = z
-  .string()
-  .min(1)
-  .max(100)
-  .refine(
-    isValidRepoSegment,
-    "must contain only letters, numbers, '.', '_', '-'",
-  );
-
-const repoBindingSchema = z.object({
-  owner: repoSegmentSchema,
-  repo: repoSegmentSchema,
-  branch: z.string().min(1).max(255).optional(),
-  subdirectory: z.string().max(255).optional(),
-  installationId: z.number().int().positive().optional(),
-});
-
-const importGithubSchema = z.object({
-  name: z.string().min(1).max(128),
-  dbtVersion: z.string().max(16).optional(),
-  environments: z.array(environmentSchema).min(1),
-  defaultEnvironment: z.string().min(1),
-  repo: repoBindingSchema,
-});
-
 const patchProjectSchema = z.object({
   name: z.string().min(1).max(128).optional(),
   dbtVersion: z.string().max(16).optional(),
@@ -299,21 +222,6 @@ const patchProjectSchema = z.object({
    * override back to the convention (env named "prod", else the default).
    */
   prodEnvironment: z.string().max(64).optional(),
-  ci: z
-    .object({
-      enabled: z.boolean(),
-      environment: z.string().min(1).optional(),
-      deferToProduction: z.boolean().optional(),
-    })
-    .optional(),
-  /** Branches that refuse direct commits (PR-only). Admin-gated via RBAC. */
-  protectedBranches: z.array(z.string().min(1).max(255)).max(20).optional(),
-  /**
-   * Tracked branch of the repo binding — what deploy/job runs build and what
-   * syncs target by default. Must exist on the remote; its base tree is
-   * synced on change.
-   */
-  repoBranch: z.string().min(1).max(255).optional(),
 });
 
 /**
@@ -448,6 +356,17 @@ dbtRoutes.post("/projects", async (c: AuthenticatedContext) => {
     if (personalError) return badRequest(c, personalError);
 
     const userId = getUserId(c);
+    // ONE dbt project per workspace: the project is the `dbt/` folder of the
+    // workspace repo (apps.md §20), and two projects cannot share it.
+    const existing = await DbtProject.exists({
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (existing) {
+      return badRequest(
+        c,
+        "This workspace already has a dbt project (dbt/ in the workspace repo)",
+      );
+    }
     const project = await DbtProject.create({
       workspaceId: new Types.ObjectId(workspaceId),
       name: body.name,
@@ -460,16 +379,23 @@ dbtRoutes.post("/projects", async (c: AuthenticatedContext) => {
       createdBy: userId,
     });
 
-    const scaffold = buildStarterScaffold(body.name);
-    await DbtFile.insertMany(
-      scaffold.map(file => ({
-        workspaceId: project.workspaceId,
-        projectId: project._id,
-        path: file.path,
-        content: file.content,
-        updatedBy: userId,
-      })),
+    // Scaffold straight into the workspace repo: dbt/ appears as one commit
+    // on the creator's session branch. A pre-existing dbt/dbt_project.yml
+    // (external import) is left untouched.
+    const alreadyInRepo = await readWorkingFile(
+      project,
+      userId,
+      "dbt_project.yml",
     );
+    if (!alreadyInRepo) {
+      const scaffold = buildStarterScaffold(body.name);
+      await commitDbtFiles(
+        project,
+        userId,
+        Object.fromEntries(scaffold.map(f => [f.path, f.content])),
+        `dbt: scaffold project "${body.name}"`,
+      );
+    }
 
     publishDbtEvent(c, {
       type: "dbt.project.updated",
@@ -557,74 +483,7 @@ dbtRoutes.patch("/projects/:projectId", async (c: AuthenticatedContext) => {
       );
       if (personalError) return badRequest(c, personalError);
     }
-    if (body.ci) {
-      if (
-        body.ci.environment &&
-        !project.environments.some(env => env.name === body.ci?.environment)
-      ) {
-        return badRequest(
-          c,
-          `CI environment "${body.ci.environment}" is not in environments`,
-        );
-      }
-      project.ci = {
-        enabled: body.ci.enabled,
-        environment: body.ci.environment,
-        deferToProduction: body.ci.deferToProduction ?? true,
-      };
-      project.markModified("ci");
-    }
-    if (body.protectedBranches) {
-      if (!project.repo) {
-        return badRequest(
-          c,
-          "Branch protection requires a connected repository",
-        );
-      }
-      project.protectedBranches = [...new Set(body.protectedBranches)];
-      project.markModified("protectedBranches");
-    }
-    let trackedBranchChanged = false;
-    if (body.repoBranch) {
-      if (!project.repo) {
-        return badRequest(
-          c,
-          "Changing the tracked branch requires a connected repository",
-        );
-      }
-      if (body.repoBranch !== project.repo.branch) {
-        // The tracked branch is what deploy/job runs build — verify it exists
-        // on the remote before re-pointing the project at it.
-        const token = await resolveRepoToken(project.repo.installationId);
-        try {
-          await getBranchHeadSha(
-            project.repo.owner,
-            project.repo.repo,
-            body.repoBranch,
-            token,
-          );
-        } catch {
-          return badRequest(
-            c,
-            `Branch "${body.repoBranch}" was not found on ` +
-              `${project.repo.owner}/${project.repo.repo}`,
-          );
-        }
-        project.repo.branch = body.repoBranch;
-        project.markModified("repo");
-        trackedBranchChanged = true;
-      }
-    }
     await project.save();
-    if (trackedBranchChanged && project.repo) {
-      // Materialize the new tracked branch's committed base tree so deploy
-      // runs and fresh checkouts have files to build immediately.
-      await syncProjectBranchFromRepo(
-        project,
-        project.repo.branch,
-        getUserId(c),
-      );
-    }
     publishDbtEvent(c, {
       type: "dbt.project.updated",
       projectId: project._id.toString(),
@@ -735,10 +594,10 @@ dbtRoutes.delete("/projects/:projectId", async (c: AuthenticatedContext) => {
     if (!project) {
       return c.json({ success: false, error: "dbt project not found" }, 404);
     }
+    // The dbt/ folder in the repo is deliberately left alone: deleting the
+    // project row removes the runner surface, not the files (git history is
+    // the recovery path either way).
     await Promise.all([
-      DbtFile.deleteMany({ projectId: project._id }),
-      DbtFileDraft.deleteMany({ projectId: project._id }),
-      DbtCheckout.deleteMany({ projectId: project._id }),
       DbtEnvPreference.deleteMany({ projectId: project._id }),
       DbtJob.deleteMany({ projectId: project._id }),
       DbtRun.deleteMany({ projectId: project._id }),
@@ -755,867 +614,6 @@ dbtRoutes.delete("/projects/:projectId", async (c: AuthenticatedContext) => {
 });
 
 // ---------------------------------------------------------------------------
-// GitHub integration — connect a repo, list installation repos, import & sync
-// ---------------------------------------------------------------------------
-
-// GET /github/status — tells the UI which connect paths are available.
-dbtRoutes.get("/github/status", async (c: AuthenticatedContext) => {
-  const workspaceId = c.req.param("workspaceId");
-  const installations = workspaceId
-    ? await GitHubInstallation.find({
-        workspaceId: new Types.ObjectId(workspaceId),
-      })
-        .select("installationId accountLogin accountType repositorySelection")
-        .lean()
-    : [];
-  return c.json({
-    success: true,
-    appConfigured: isGitHubAppConfigured(),
-    appSlug: getGitHubAppSlug() ?? null,
-    devTokenAvailable: Boolean(getGitHubDevToken()),
-    installations,
-  });
-});
-
-// GET /github/install-url — URL that starts the GitHub App install flow.
-dbtRoutes.get("/github/install-url", async (c: AuthenticatedContext) => {
-  const workspaceId = c.req.param("workspaceId");
-  if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
-    return badRequest(c, "Valid workspace ID is required");
-  }
-  const slug = getGitHubAppSlug();
-  if (!slug) {
-    return badRequest(
-      c,
-      "GitHub App is not configured (set GITHUB_APP_SLUG/GITHUB_APP_ID)",
-    );
-  }
-  // Connecting a repo is a deployment-config mutation → admin+ (consistent with
-  // the rbac policy and the /setup callback that consumes this state).
-  const user = c.get("user");
-  if (!user || !(await workspaceService.isAdmin(workspaceId, user.id))) {
-    return c.json(
-      {
-        success: false,
-        error: "Connecting GitHub requires the admin or owner workspace role",
-      },
-      403,
-    );
-  }
-  const returnClientUrl = process.env.CLIENT_URL || "http://localhost:5173";
-  // Signed, short-lived state pins the workspace + initiating user so the
-  // /setup callback cannot be forged to bind an arbitrary installation.
-  const state = signInstallState({
-    workspaceId,
-    userId: user.id,
-    clientUrl: returnClientUrl,
-  });
-  return c.json({
-    success: true,
-    url: `https://github.com/apps/${slug}/installations/new?state=${state}`,
-  });
-});
-
-// GET /github/repos?installationId= — repos an installation can access.
-dbtRoutes.get("/github/repos", async (c: AuthenticatedContext) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
-      return badRequest(c, "Valid workspace ID is required");
-    }
-    const installationIdRaw = c.req.query("installationId");
-    if (!installationIdRaw) {
-      return badRequest(c, "installationId is required");
-    }
-    const installationId = Number(installationIdRaw);
-    const installation = await GitHubInstallation.findOne({
-      workspaceId: new Types.ObjectId(workspaceId),
-      installationId,
-    });
-    if (!installation) {
-      return c.json({ success: false, error: "Installation not found" }, 404);
-    }
-    const token = await getInstallationToken(installationId);
-    const repos = await listInstallationRepos(token);
-    return c.json({ success: true, repos });
-  } catch (error) {
-    return serverError(c, error, "Failed to list repositories");
-  }
-});
-
-// GET /github/branches — branch names for import UI.
-dbtRoutes.get("/github/branches", async (c: AuthenticatedContext) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
-      return badRequest(c, "Valid workspace ID is required");
-    }
-    const owner = c.req.query("owner")?.trim();
-    const repo = c.req.query("repo")?.trim();
-    if (!owner || !repo) {
-      return badRequest(c, "owner and repo are required");
-    }
-    if (!isValidRepoSegment(owner) || !isValidRepoSegment(repo)) {
-      return badRequest(c, "Invalid owner or repo name");
-    }
-    const installationIdRaw = c.req.query("installationId");
-    const installationId = installationIdRaw
-      ? Number(installationIdRaw)
-      : undefined;
-    if (installationIdRaw && Number.isNaN(installationId)) {
-      return badRequest(c, "installationId must be a number");
-    }
-    if (installationId) {
-      const installation = await GitHubInstallation.findOne({
-        workspaceId: new Types.ObjectId(workspaceId),
-        installationId,
-      });
-      if (!installation) {
-        return c.json({ success: false, error: "Installation not found" }, 404);
-      }
-    }
-    const token = await resolveRepoToken(installationId);
-    const branches = await listBranches(owner, repo, token);
-    return c.json({ success: true, branches });
-  } catch (error) {
-    return serverError(c, error, "Failed to list branches");
-  }
-});
-
-// GET /github/repo-check — validate dbt_project.yml before import.
-dbtRoutes.get("/github/repo-check", async (c: AuthenticatedContext) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
-      return badRequest(c, "Valid workspace ID is required");
-    }
-    const owner = c.req.query("owner")?.trim();
-    const repo = c.req.query("repo")?.trim();
-    if (!owner || !repo) {
-      return badRequest(c, "owner and repo are required");
-    }
-    if (!isValidRepoSegment(owner) || !isValidRepoSegment(repo)) {
-      return badRequest(c, "Invalid owner or repo name");
-    }
-    const installationIdRaw = c.req.query("installationId");
-    const installationId = installationIdRaw
-      ? Number(installationIdRaw)
-      : undefined;
-    if (installationIdRaw && Number.isNaN(installationId)) {
-      return badRequest(c, "installationId must be a number");
-    }
-    if (installationId) {
-      const installation = await GitHubInstallation.findOne({
-        workspaceId: new Types.ObjectId(workspaceId),
-        installationId,
-      });
-      if (!installation) {
-        return c.json({ success: false, error: "Installation not found" }, 404);
-      }
-    }
-    const subdirectory = c.req.query("subdirectory")?.trim() ?? "";
-    const token = await resolveRepoToken(installationId);
-    const info = await getRepoInfo(owner, repo, token);
-    const branch = c.req.query("branch")?.trim() || info.defaultBranch;
-    const subdir = subdirectory.replace(/^\/+|\/+$/g, "");
-    const projectPath = subdir
-      ? `${subdir}/dbt_project.yml`
-      : "dbt_project.yml";
-    const hasDbtProjectYml = await fileExistsAtRef(
-      owner,
-      repo,
-      projectPath,
-      branch,
-      token,
-    );
-    let suggestedSubdirectories: string[] = [];
-    if (!hasDbtProjectYml) {
-      suggestedSubdirectories = await listDbtProjectSubdirectories(
-        owner,
-        repo,
-        branch,
-        token,
-      );
-    }
-    return c.json({
-      success: true,
-      owner,
-      repo,
-      branch,
-      subdirectory: subdir || undefined,
-      defaultBranch: info.defaultBranch,
-      hasDbtProjectYml,
-      suggestedSubdirectories,
-    });
-  } catch (error) {
-    return serverError(c, error, "Failed to check repository");
-  }
-});
-
-// POST /projects/import-github — create a project from a repo's contents.
-dbtRoutes.post("/projects/import-github", async (c: AuthenticatedContext) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
-      return badRequest(c, "Valid workspace ID is required");
-    }
-    const parsed = importGithubSchema.safeParse(await c.req.json());
-    if (!parsed.success) {
-      return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
-    }
-    const body = parsed.data;
-    if (!body.environments.some(env => env.name === body.defaultEnvironment)) {
-      return badRequest(
-        c,
-        `Default environment "${body.defaultEnvironment}" is not in environments`,
-      );
-    }
-    const envError = await validateEnvironments(workspaceId, body.environments);
-    if (envError) return badRequest(c, envError);
-    const personalError = validatePersonalEnvironments(
-      body.environments,
-      body.defaultEnvironment,
-      undefined,
-    );
-    if (personalError) return badRequest(c, personalError);
-
-    // SECURITY: never mint an installation token for an installation that is
-    // not bound to THIS workspace — otherwise an admin could read any private
-    // repo any App installation can see. Mirror the scope check the other
-    // GitHub routes (repos/branches/repo-check) already perform.
-    if (body.repo.installationId) {
-      const installation = await GitHubInstallation.findOne({
-        workspaceId: new Types.ObjectId(workspaceId),
-        installationId: body.repo.installationId,
-      });
-      if (!installation) {
-        return c.json({ success: false, error: "Installation not found" }, 404);
-      }
-    }
-
-    // Resolve the default branch when the caller didn't pin one, and the
-    // repo default branch to seed branch protection.
-    const token = await resolveRepoToken(body.repo.installationId);
-    const info = await getRepoInfo(body.repo.owner, body.repo.repo, token);
-    const branch = body.repo.branch || info.defaultBranch;
-
-    const binding = {
-      owner: body.repo.owner,
-      repo: body.repo.repo,
-      branch,
-      subdirectory: body.repo.subdirectory,
-      installationId: body.repo.installationId,
-    };
-    const { sha, files, skippedLarge } = await fetchRepoDbtFiles(binding);
-
-    if (files.length === 0) {
-      return badRequest(
-        c,
-        "No dbt files found in that repo/branch/subdirectory",
-      );
-    }
-    const hasProjectYml = files.some(f => f.path === "dbt_project.yml");
-    if (!hasProjectYml) {
-      return badRequest(
-        c,
-        "dbt_project.yml not found at the project root — set the correct subdirectory",
-      );
-    }
-
-    const userId = getUserId(c);
-    const project = await DbtProject.create({
-      workspaceId: new Types.ObjectId(workspaceId),
-      name: body.name,
-      dbtVersion: body.dbtVersion ?? "1.9",
-      environments: body.environments.map(env => ({
-        ...env,
-        connectionId: new Types.ObjectId(env.connectionId),
-      })),
-      defaultEnvironment: body.defaultEnvironment,
-      repo: {
-        provider: "github" as const,
-        installationId: body.repo.installationId,
-        owner: binding.owner,
-        repo: binding.repo,
-        branch: binding.branch,
-        subdirectory: body.repo.subdirectory,
-        lastSyncedSha: sha,
-        lastSyncedAt: new Date(),
-      },
-      // New imports protect the repo's default branch out of the box: prod
-      // changes go through a PR (commit-to-branch → open PR → merge).
-      protectedBranches: [info.defaultBranch],
-      createdBy: userId,
-    });
-
-    await DbtFile.insertMany(
-      repoFilesToInserts(files, {
-        workspaceId: project.workspaceId,
-        projectId: project._id,
-        branch: binding.branch,
-        updatedBy: userId,
-      }),
-    );
-
-    publishDbtEvent(c, {
-      type: "dbt.project.updated",
-      projectId: project._id.toString(),
-    });
-    return c.json({
-      success: true,
-      project,
-      imported: files.length,
-      skippedLarge,
-    });
-  } catch (error) {
-    if ((error as { code?: number }).code === 11000) {
-      return badRequest(c, "A dbt project with this name already exists");
-    }
-    return serverError(c, error, "Failed to import dbt project from GitHub");
-  }
-});
-
-// POST /projects/:projectId/sync — pull the caller's checkout branch into its
-// committed base tree. Always safe: drafts (uncommitted per-user work) live in
-// a separate overlay. `?discard=true` additionally drops the CALLER's drafts
-// (a `git checkout -- .` before the pull).
-dbtRoutes.post("/projects/:projectId/sync", async (c: AuthenticatedContext) => {
-  try {
-    const project = await findProject(c);
-    if (!project) {
-      return c.json({ success: false, error: "dbt project not found" }, 404);
-    }
-    if (!project.repo) {
-      return badRequest(c, "Project is not connected to a repository");
-    }
-    const userId = getUserId(c);
-    const branch = (await getCheckoutBranch(project, userId)) as string;
-    if (c.req.query("discard") === "true") {
-      await discardUserDrafts(project, userId, branch);
-    }
-    const result = await syncProjectBranchFromRepo(project, branch, userId);
-    publishDbtEvent(c, {
-      type: "dbt.git.updated",
-      projectId: project._id.toString(),
-      updatedBy: userId,
-    });
-    return c.json({ success: true, ...result, branch, project });
-  } catch (error) {
-    return serverError(c, error, "Failed to sync dbt project from GitHub");
-  }
-});
-
-// ---------------------------------------------------------------------------
-// In-IDE git: status, commit & push, branches, pull requests
-// ---------------------------------------------------------------------------
-
-const commitSchema = z.object({ message: z.string().min(1).max(500) });
-const branchNameField = z
-  .string()
-  .min(1)
-  .max(255)
-  .regex(/^[^\s~^:?*[\\]+$/, "Invalid branch name");
-const branchSchema = z.object({ name: branchNameField });
-const commitToBranchSchema = z.object({
-  name: branchNameField,
-  message: z.string().min(1).max(500),
-});
-const switchBranchSchema = z.object({
-  branch: z.string().min(1).max(255),
-  discardLocalChanges: z.boolean().optional(),
-});
-const pullRequestSchema = z.object({
-  title: z.string().min(1).max(255),
-  body: z.string().max(10_000).optional(),
-  base: z.string().min(1).max(255).optional(),
-});
-const updatePullRequestSchema = z
-  .object({
-    title: z.string().min(1).max(255).optional(),
-    body: z.string().max(10_000).optional(),
-    base: z.string().min(1).max(255).optional(),
-  })
-  .refine(
-    data =>
-      data.title !== undefined ||
-      data.body !== undefined ||
-      data.base !== undefined,
-    { message: "Provide at least one of title, body, or base" },
-  );
-const closePullRequestSchema = z.object({
-  deleteBranch: z.boolean().optional(),
-});
-const listPullRequestsQuerySchema = z
-  .enum(["open", "closed", "all"])
-  .default("open");
-
-// GET /projects/:projectId/git/status — the CALLER's working-tree diff (their
-// drafts vs the committed base of their checked-out branch).
-dbtRoutes.get(
-  "/projects/:projectId/git/status",
-  async (c: AuthenticatedContext) => {
-    try {
-      const project = await findProject(c);
-      if (!project) {
-        return c.json({ success: false, error: "dbt project not found" }, 404);
-      }
-      if (!project.repo) {
-        return badRequest(c, "Project is not connected to a repository");
-      }
-      const status = await getGitStatus(project, getUserId(c));
-      return c.json({
-        success: true,
-        status,
-        protectedBranches: project.protectedBranches ?? [],
-      });
-    } catch (error) {
-      return serverError(c, error, "Failed to compute git status");
-    }
-  },
-);
-
-// GET /projects/:projectId/git/diff?path= — committed base vs the caller's
-// draft content.
-dbtRoutes.get(
-  "/projects/:projectId/git/diff",
-  async (c: AuthenticatedContext) => {
-    try {
-      const project = await findProject(c);
-      if (!project) {
-        return c.json({ success: false, error: "dbt project not found" }, 404);
-      }
-      if (!project.repo) {
-        return badRequest(c, "Project is not connected to a repository");
-      }
-      const path = c.req.query("path");
-      if (!path) {
-        return badRequest(c, "path query parameter is required");
-      }
-      const diff = await getProjectFileDiff(project, getUserId(c), path);
-      return c.json({ success: true, diff });
-    } catch (error) {
-      return serverError(c, error, "Failed to compute git diff");
-    }
-  },
-);
-
-// POST /projects/:projectId/git/commit — commit & push the caller's drafts to
-// their checked-out branch. Refuses protected branches (400).
-dbtRoutes.post(
-  "/projects/:projectId/git/commit",
-  async (c: AuthenticatedContext) => {
-    try {
-      const project = await findProject(c);
-      if (!project) {
-        return c.json({ success: false, error: "dbt project not found" }, 404);
-      }
-      if (!project.repo) {
-        return badRequest(c, "Project is not connected to a repository");
-      }
-      const parsed = commitSchema.safeParse(await c.req.json());
-      if (!parsed.success) {
-        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
-      }
-      const userId = getUserId(c);
-      const result = await commitAndPush(project, {
-        userId,
-        message: parsed.data.message,
-        updatedBy: userId,
-      });
-      if (result.committed) {
-        publishDbtEvent(c, {
-          type: "dbt.git.updated",
-          projectId: project._id.toString(),
-          updatedBy: userId,
-        });
-      }
-      return c.json({ success: true, ...result });
-    } catch (error) {
-      return serverError(c, error, "Failed to commit and push");
-    }
-  },
-);
-
-// POST /projects/:projectId/git/commit-message — AI-generate a commit message
-// from the working-tree diff. Returns { message: null } when there are no
-// changes or generation is unavailable; the client keeps the manual field.
-dbtRoutes.post(
-  "/projects/:projectId/git/commit-message",
-  async (c: AuthenticatedContext) => {
-    try {
-      const project = await findProject(c);
-      if (!project) {
-        return c.json({ success: false, error: "dbt project not found" }, 404);
-      }
-      if (!project.repo) {
-        return badRequest(c, "Project is not connected to a repository");
-      }
-      const user = c.get("user");
-      const message = await generateDbtCommitMessage(project, {
-        workspaceId: c.req.param("workspaceId") ?? "unknown",
-        userId: getUserId(c),
-        userEmail: user?.email,
-      });
-      return c.json({ success: true, message });
-    } catch (error) {
-      return serverError(c, error, "Failed to generate commit message");
-    }
-  },
-);
-
-// GET /projects/:projectId/git/branches — list remote branches; `current` is
-// the CALLER's checkout, not a shared project pointer.
-dbtRoutes.get(
-  "/projects/:projectId/git/branches",
-  async (c: AuthenticatedContext) => {
-    try {
-      const project = await findProject(c);
-      if (!project) {
-        return c.json({ success: false, error: "dbt project not found" }, 404);
-      }
-      if (!project.repo) {
-        return badRequest(c, "Project is not connected to a repository");
-      }
-      const [branches, current] = await Promise.all([
-        listProjectBranches(project),
-        getCheckoutBranch(project, getUserId(c)),
-      ]);
-      return c.json({
-        success: true,
-        branches,
-        current,
-        protectedBranches: project.protectedBranches ?? [],
-      });
-    } catch (error) {
-      return serverError(c, error, "Failed to list branches");
-    }
-  },
-);
-
-// POST /projects/:projectId/git/branch — create a branch off the caller's
-// checkout HEAD and check it out for them (only their checkout moves).
-dbtRoutes.post(
-  "/projects/:projectId/git/branch",
-  async (c: AuthenticatedContext) => {
-    try {
-      const project = await findProject(c);
-      if (!project) {
-        return c.json({ success: false, error: "dbt project not found" }, 404);
-      }
-      if (!project.repo) {
-        return badRequest(c, "Project is not connected to a repository");
-      }
-      const parsed = branchSchema.safeParse(await c.req.json());
-      if (!parsed.success) {
-        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
-      }
-      const userId = getUserId(c);
-      const result = await createProjectBranch(
-        project,
-        userId,
-        parsed.data.name,
-      );
-      publishDbtEvent(c, {
-        type: "dbt.checkout.updated",
-        projectId: project._id.toString(),
-        branch: result.branch,
-        forUserId: userId,
-        updatedBy: userId,
-      });
-      return c.json({ success: true, ...result, project });
-    } catch (error) {
-      return serverError(c, error, "Failed to create branch");
-    }
-  },
-);
-
-// POST /projects/:projectId/git/commit-to-branch — atomic create-branch +
-// commit the caller's drafts onto it (race-free promote; the protected-branch
-// escape hatch).
-dbtRoutes.post(
-  "/projects/:projectId/git/commit-to-branch",
-  async (c: AuthenticatedContext) => {
-    try {
-      const project = await findProject(c);
-      if (!project) {
-        return c.json({ success: false, error: "dbt project not found" }, 404);
-      }
-      if (!project.repo) {
-        return badRequest(c, "Project is not connected to a repository");
-      }
-      const parsed = commitToBranchSchema.safeParse(await c.req.json());
-      if (!parsed.success) {
-        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
-      }
-      const userId = getUserId(c);
-      const result = await commitToNewBranch(project, {
-        userId,
-        branchName: parsed.data.name,
-        message: parsed.data.message,
-        updatedBy: userId,
-      });
-      publishDbtEvent(c, {
-        type: "dbt.checkout.updated",
-        projectId: project._id.toString(),
-        branch: result.branch,
-        forUserId: userId,
-        updatedBy: userId,
-      });
-      return c.json({ success: true, ...result });
-    } catch (error) {
-      return serverError(c, error, "Failed to commit to new branch");
-    }
-  },
-);
-
-// DELETE /projects/:projectId/git/branch/:name — delete a remote branch.
-dbtRoutes.delete(
-  "/projects/:projectId/git/branch/:name",
-  async (c: AuthenticatedContext) => {
-    try {
-      const project = await findProject(c);
-      if (!project) {
-        return c.json({ success: false, error: "dbt project not found" }, 404);
-      }
-      if (!project.repo) {
-        return badRequest(c, "Project is not connected to a repository");
-      }
-      const name = c.req.param("name");
-      if (!name) {
-        return badRequest(c, "Branch name is required");
-      }
-      const userId = getUserId(c);
-      const result = await deleteProjectBranch(
-        project,
-        userId,
-        decodeURIComponent(name),
-      );
-      publishDbtEvent(c, {
-        type: "dbt.git.updated",
-        projectId: project._id.toString(),
-        updatedBy: userId,
-      });
-      return c.json({ success: true, ...result });
-    } catch (error) {
-      return serverError(c, error, "Failed to delete branch");
-    }
-  },
-);
-
-// POST /projects/:projectId/git/switch-branch — move the CALLER's checkout to
-// another branch. Their drafts stay with the branch they were made on
-// (git-worktree semantics — nothing mixes across branches, nothing is lost);
-// discardLocalChanges drops the caller's drafts on the branch they leave.
-dbtRoutes.post(
-  "/projects/:projectId/git/switch-branch",
-  async (c: AuthenticatedContext) => {
-    try {
-      const project = await findProject(c);
-      if (!project) {
-        return c.json({ success: false, error: "dbt project not found" }, 404);
-      }
-      if (!project.repo) {
-        return badRequest(c, "Project is not connected to a repository");
-      }
-      const parsed = switchBranchSchema.safeParse(await c.req.json());
-      if (!parsed.success) {
-        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
-      }
-      const userId = getUserId(c);
-      const result = await switchProjectBranch(
-        project,
-        userId,
-        parsed.data.branch,
-        userId,
-        { discardLocalChanges: parsed.data.discardLocalChanges ?? false },
-      );
-      publishDbtEvent(c, {
-        type: "dbt.checkout.updated",
-        projectId: project._id.toString(),
-        branch: result.branch,
-        forUserId: userId,
-        updatedBy: userId,
-      });
-      return c.json({ success: true, ...result, project });
-    } catch (error) {
-      return serverError(c, error, "Failed to switch branch");
-    }
-  },
-);
-
-// POST /projects/:projectId/git/pull-request — open a PR from the caller's
-// checked-out branch.
-dbtRoutes.post(
-  "/projects/:projectId/git/pull-request",
-  async (c: AuthenticatedContext) => {
-    try {
-      const project = await findProject(c);
-      if (!project) {
-        return c.json({ success: false, error: "dbt project not found" }, 404);
-      }
-      if (!project.repo) {
-        return badRequest(c, "Project is not connected to a repository");
-      }
-      const parsed = pullRequestSchema.safeParse(await c.req.json());
-      if (!parsed.success) {
-        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
-      }
-      const result = await openProjectPullRequest(
-        project,
-        getUserId(c),
-        parsed.data,
-      );
-      return c.json({ success: true, ...result });
-    } catch (error) {
-      return serverError(c, error, "Failed to open pull request");
-    }
-  },
-);
-
-const mergePullRequestSchema = z.object({
-  prNumber: z.number().int().positive(),
-  mergeMethod: z.enum(["merge", "squash", "rebase"]).optional(),
-  deleteBranch: z.boolean().optional(),
-});
-
-// POST /projects/:projectId/git/merge-pull-request — merge a PR (the only
-// write path into protected branches). Admin+ via the RBAC policy.
-dbtRoutes.post(
-  "/projects/:projectId/git/merge-pull-request",
-  async (c: AuthenticatedContext) => {
-    try {
-      const project = await findProject(c);
-      if (!project) {
-        return c.json({ success: false, error: "dbt project not found" }, 404);
-      }
-      if (!project.repo) {
-        return badRequest(c, "Project is not connected to a repository");
-      }
-      const parsed = mergePullRequestSchema.safeParse(await c.req.json());
-      if (!parsed.success) {
-        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
-      }
-      const userId = getUserId(c);
-      const result = await mergeProjectPullRequest(project, {
-        userId,
-        prNumber: parsed.data.prNumber,
-        mergeMethod: parsed.data.mergeMethod,
-        deleteBranch: parsed.data.deleteBranch,
-        updatedBy: userId,
-      });
-      publishDbtEvent(c, {
-        type: "dbt.git.updated",
-        projectId: project._id.toString(),
-        updatedBy: userId,
-      });
-      return c.json({ success: true, ...result });
-    } catch (error) {
-      return serverError(c, error, "Failed to merge pull request");
-    }
-  },
-);
-
-function parsePrNumber(raw: string | undefined): number | null {
-  if (!raw || !/^\d+$/.test(raw)) return null;
-  const num = Number(raw);
-  return num > 0 ? num : null;
-}
-
-// GET /projects/:projectId/git/pull-requests?state=open|closed|all — list the
-// repo's PRs (newest first).
-dbtRoutes.get(
-  "/projects/:projectId/git/pull-requests",
-  async (c: AuthenticatedContext) => {
-    try {
-      const project = await findProject(c);
-      if (!project) {
-        return c.json({ success: false, error: "dbt project not found" }, 404);
-      }
-      if (!project.repo) {
-        return badRequest(c, "Project is not connected to a repository");
-      }
-      const parsed = listPullRequestsQuerySchema.safeParse(
-        c.req.query("state") ?? undefined,
-      );
-      if (!parsed.success) {
-        return badRequest(c, "state must be one of open, closed, all");
-      }
-      const pullRequests = await listProjectPullRequests(project, {
-        state: parsed.data,
-      });
-      return c.json({ success: true, pullRequests });
-    } catch (error) {
-      return serverError(c, error, "Failed to list pull requests");
-    }
-  },
-);
-
-// PATCH /projects/:projectId/git/pull-request/:number — update an open PR's
-// title/body/base.
-dbtRoutes.patch(
-  "/projects/:projectId/git/pull-request/:number",
-  async (c: AuthenticatedContext) => {
-    try {
-      const project = await findProject(c);
-      if (!project) {
-        return c.json({ success: false, error: "dbt project not found" }, 404);
-      }
-      if (!project.repo) {
-        return badRequest(c, "Project is not connected to a repository");
-      }
-      const prNumber = parsePrNumber(c.req.param("number"));
-      if (!prNumber) {
-        return badRequest(c, "Invalid pull request number");
-      }
-      const parsed = updatePullRequestSchema.safeParse(await c.req.json());
-      if (!parsed.success) {
-        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
-      }
-      const pr = await updateProjectPullRequest(project, {
-        prNumber,
-        ...parsed.data,
-      });
-      return c.json({ success: true, pr });
-    } catch (error) {
-      return serverError(c, error, "Failed to update pull request");
-    }
-  },
-);
-
-// POST /projects/:projectId/git/pull-request/:number/close — close a PR
-// without merging, optionally deleting its source branch.
-dbtRoutes.post(
-  "/projects/:projectId/git/pull-request/:number/close",
-  async (c: AuthenticatedContext) => {
-    try {
-      const project = await findProject(c);
-      if (!project) {
-        return c.json({ success: false, error: "dbt project not found" }, 404);
-      }
-      if (!project.repo) {
-        return badRequest(c, "Project is not connected to a repository");
-      }
-      const prNumber = parsePrNumber(c.req.param("number"));
-      if (!prNumber) {
-        return badRequest(c, "Invalid pull request number");
-      }
-      const body = await c.req.json().catch(() => ({}));
-      const parsed = closePullRequestSchema.safeParse(body);
-      if (!parsed.success) {
-        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
-      }
-      const result = await closeProjectPullRequest(project, {
-        prNumber,
-        deleteBranch: parsed.data.deleteBranch,
-      });
-      return c.json({ success: true, ...result });
-    } catch (error) {
-      return serverError(c, error, "Failed to close pull request");
-    }
-  },
-);
-
-// ---------------------------------------------------------------------------
 // Files
 // ---------------------------------------------------------------------------
 
@@ -1629,9 +627,9 @@ function isSafeDbtPath(path: string): boolean {
   );
 }
 
-// File reads/writes go through the per-user working tree: repo projects
-// merge the caller's draft overlay over the committed base of their checkout
-// branch, so uncommitted edits are only visible to their author.
+// File reads/writes address the dbt/ folder of the workspace repo at the
+// caller's SESSION branch (apps.md §20): a save is a commit, visible to
+// whoever is on that branch — separate branches, separate views, like clones.
 
 dbtRoutes.get("/projects/:projectId/files", async (c: AuthenticatedContext) => {
   try {
@@ -1689,40 +687,16 @@ dbtRoutes.put(
       }
 
       const userId = getUserId(c);
-      const { versionEntityId } = await writeWorkingFile(
-        project,
-        userId,
-        path,
-        body.content,
-      );
-
-      // Version snapshot (entity-version pattern) — undo/version history.
-      try {
-        const latest = await getLatestVersionNumber(
-          versionEntityId,
-          "dbt-file",
-        );
-        await createVersion({
-          entityType: "dbt-file",
-          entityId: versionEntityId,
-          workspaceId: project.workspaceId,
-          snapshot: { path, content: body.content },
-          savedBy: userId,
-          savedByName: await getUserDisplayName(userId),
-          comment: `Save ${path} (v${latest + 1})`,
-        });
-      } catch (versionError) {
-        logger.warn("dbt file version snapshot failed", {
-          error: versionError,
-        });
-      }
+      // A save is a commit on the caller's session branch; git history
+      // replaces the retired dbt-file entity-version snapshots.
+      await writeWorkingFile(project, userId, path, body.content);
 
       await DbtProject.updateOne(
         { _id: project._id },
         { $currentDate: { updatedAt: true } },
       );
-      // Draft edits poke only the author's other windows (forUserId); blank
-      // projects stay workspace-wide (shared tree).
+      // A save is a commit: poke the workspace so every open window on the
+      // branch refreshes (branch scoping happens at read time).
       publishDbtEvent(c, {
         type: "dbt.file.updated",
         projectId: project._id.toString(),
@@ -1730,7 +704,6 @@ dbtRoutes.put(
         updatedBy: userId,
         clientId: typeof body.clientId === "string" ? body.clientId : undefined,
         origin: "save",
-        forUserId: project.repo ? userId : undefined,
       });
       return c.json({
         success: true,
@@ -1763,7 +736,6 @@ dbtRoutes.delete(
         deleted: true,
         updatedBy: userId,
         origin: "save",
-        forUserId: project.repo ? userId : undefined,
       });
       return c.json({ success: true });
     } catch (error) {
@@ -1796,12 +768,10 @@ dbtRoutes.post(
         return c.json({ success: false, error: renameError }, 404);
       }
       if (renameError) return badRequest(c, renameError);
-      // The working tree expresses a rename as delete(from) + add(to) — poke
-      // both paths so the acting user's other windows (and, for blank
-      // projects, the whole workspace) move the file and refresh git status.
+      // The rename is one commit (delete + add) — poke both paths so open
+      // windows move the file.
       const clientId =
         typeof body.clientId === "string" ? body.clientId : undefined;
-      const forUserId = project.repo ? userId : undefined;
       publishDbtEvent(c, {
         type: "dbt.file.updated",
         projectId: project._id.toString(),
@@ -1810,7 +780,6 @@ dbtRoutes.post(
         updatedBy: userId,
         clientId,
         origin: "save",
-        forUserId,
       });
       publishDbtEvent(c, {
         type: "dbt.file.updated",
@@ -1819,7 +788,6 @@ dbtRoutes.post(
         updatedBy: userId,
         clientId,
         origin: "save",
-        forUserId,
       });
       return c.json({ success: true });
     } catch (error) {
@@ -2447,7 +1415,7 @@ dbtRoutes.post(
           environment: environment ?? project.defaultEnvironment,
           command: normalized,
           triggeredBy: userId,
-          workingTreeUserId: project.repo ? userId : undefined,
+          workingTreeUserId: userId,
           sourceBranch: await getCheckoutBranch(project, userId),
           deferToProduction: Boolean(defer && deferState),
           startedAt,

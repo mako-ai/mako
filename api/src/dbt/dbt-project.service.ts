@@ -15,7 +15,7 @@ import {
   type IDbtEnvironment,
   type IDbtProject,
 } from "../database/workspace-schema";
-import { loadRunnableWorkingTree } from "./dbt-github-sync.service";
+import { loadWorkingTreeContents } from "./dbt-working-tree.service";
 import { renderDbtProfile, type RenderedProfile } from "./adapter-map";
 import { assertAdhocDbtRunAllowed } from "./dbt-environments.service";
 import { parseDbtCommand, type ParsedDbtCommand } from "./commands";
@@ -94,13 +94,19 @@ export async function loadDbtProjectSnapshot(params: {
 
   const profile = renderDbtProfile(connection, environment);
 
-  // Self-healing load: re-syncs a missing branch base tree (and re-anchors a
-  // tracked branch that no longer exists on the remote) rather than handing
-  // dbt a tree without dbt_project.yml.
-  const files = await loadRunnableWorkingTree(project, {
+  // The dbt tree is the `dbt/` folder of the workspace repo at the caller's
+  // session branch (apps.md §20). A missing dbt_project.yml means the folder
+  // is not there (pre-cutover, or someone deleted it) — fail with a message
+  // that says so instead of handing dbt an empty tree.
+  const files = await loadWorkingTreeContents(project, {
     userId: params.userId,
     branch: params.branch,
   });
+  if (!files.some(f => f.path === "dbt_project.yml")) {
+    throw new Error(
+      "No dbt project found: the workspace repo has no dbt/dbt_project.yml on this branch",
+    );
+  }
 
   // Environment vars (environment.vars) are injected as `--vars` by runDbt for
   // every command, so callers just forward snapshot.environment.vars.

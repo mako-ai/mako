@@ -1,17 +1,13 @@
 /**
- * Agent dbt file tools — draft/dirty-tracking integration tests.
- *
- * Boots `createDbtServerTools` against an ephemeral mongodb-memory-server and
- * exercises the file mutation tools through the REAL working-tree + git-status
- * services (only GitHub network calls and heavy collaborators are mocked).
- *
- * Regression coverage for "anchored edit_dbt_file edits were invisible to
- * dbt_git_status / the Version Control UI": edit_dbt_file used to write the
- * committed base tree (DbtFile) directly instead of the per-user draft
- * overlay (DbtFileDraft), so after a dbt_sync_from_repo stamped base blob
- * SHAs the working tree reported clean and dbt_commit_and_push refused with
- * "No changes to commit" — while modify_dbt_file (full rewrite) worked.
+ * dbt agent FILE tools against the git-backed working tree (apps.md §20):
+ * a real bare workspace repo under a temp APPS_GIT_ROOT, real Mongo for the
+ * project row. A file edit is a COMMIT on the actor's session branch —
+ * these specs pin exactly that: content lands under dbt/<path> in git,
+ * branch-scoped, with ordinary git history.
  */
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   afterAll,
   beforeAll,
@@ -24,408 +20,189 @@ import {
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
-// Heavy collaborators pulled in transitively by the tools module — stubbed so
-// imports resolve and side-effects are inert. dbt-github-git.service and
-// dbt-working-tree.service stay REAL (they are the code under test).
 vi.mock("../../services/realtime.service", () => ({
   publishRealtimeEvent: vi.fn(),
 }));
 vi.mock("../../services/workspace.service", () => ({
-  workspaceService: { isAdmin: vi.fn(async () => true) },
-}));
-vi.mock("../../services/entity-version.service", () => ({
-  createVersion: vi.fn(async () => ({})),
-  getLatestVersionNumber: vi.fn(async () => 0),
-  getUserDisplayName: vi.fn(async () => "Tester"),
+  workspaceService: { hasAccess: vi.fn(async () => true) },
 }));
 vi.mock("../../dbt/dbt-project.service", () => ({
+  loadDbtDeferState: vi.fn(async () => undefined),
   runAdhocDbtCommand: vi.fn(),
 }));
 vi.mock("../../dbt/dbt-run.service", () => ({
-  applyJobScheduleChange: vi.fn(async () => undefined),
-  reconcileStaleQueuedRun: vi.fn(async (r: unknown) => r),
+  triggerDbtRun: vi.fn(),
+  triggerDbtJobRun: vi.fn(),
   requestDbtRunCancel: vi.fn(),
-  triggerDbtJobRun: vi.fn(async () => ({ _id: new Types.ObjectId() })),
-  triggerDbtRun: vi.fn(async () => ({ _id: new Types.ObjectId() })),
-}));
-vi.mock("../../dbt/dbt-commit-message.service", () => ({
-  generateDbtCommitMessage: vi.fn(),
+  reconcileStaleQueuedRun: vi.fn(async (run: unknown) => run),
+  applyJobScheduleChange: vi.fn(),
 }));
 vi.mock("../../services/scheduled-query-schedule.service", () => ({
   validateScheduledConsoleSchedule: vi.fn(() => null),
 }));
-// GitHub network surface only — the local git services run for real.
-vi.mock("../../integrations/github/app-auth", () => ({
-  resolveRepoToken: vi.fn(async () => "token"),
-}));
-vi.mock("../../integrations/github/github-api", () => ({
-  commitChanges: vi.fn(),
-  createBranch: vi.fn(),
-  createPullRequest: vi.fn(),
-  deleteBranch: vi.fn(),
-  getBlobContent: vi.fn(),
-  getBranchHeadSha: vi.fn(),
-  getPullRequest: vi.fn(),
-  getRefCommit: vi.fn(),
-  getRepoInfo: vi.fn(),
-  getRepoTree: vi.fn(),
-  listBranches: vi.fn(),
-  listPullRequests: vi.fn(),
-  mergePullRequest: vi.fn(),
-  tryDeleteBranch: vi.fn(),
-  updatePullRequest: vi.fn(),
-}));
 
-// Imported after the mocks are registered.
 import { createDbtServerTools } from "./dbt-tools";
-import { DBT_RULES_MAX_CHARS } from "../../dbt/dbt-rules.service";
+import { AppWorktree, DbtProject } from "../../database/workspace-schema";
+import { seedDbtGitTree } from "../../dbt/test-support/git-tree";
 import {
-  DbtFile,
-  DbtFileDraft,
-  DbtProject,
-} from "../../database/workspace-schema";
-import { publishRealtimeEvent } from "../../services/realtime.service";
-import { gitBlobSha } from "../../integrations/github/git-blob";
+  DEFAULT_BRANCH,
+  log as repoLog,
+  readBlob,
+  repoDirFor,
+} from "../../apps/repository.service";
 
 let mongo: MongoMemoryServer;
+let tmpRoot: string;
 const WS = new Types.ObjectId().toString();
 const CONN = new Types.ObjectId();
 const USER = "u1";
 
 const tools = createDbtServerTools(WS, USER, { chatId: "chat1" });
 
-type EditInput = {
-  projectId: string;
-  path: string;
-  oldString: string;
-  newString: string;
-  replaceAll?: boolean;
-};
-type EditResult = {
-  success: boolean;
-  error?: string;
-  path?: string;
-  replacements?: number;
-};
-type StatusResult = {
-  success: boolean;
-  branch?: string;
-  hasChanges?: boolean;
-  added?: number;
-  modified?: number;
-  deleted?: number;
-  changes?: Array<{ path: string; status: string }>;
-};
-type ReadResult = { success: boolean; contents?: string };
-
-function editFile(input: EditInput): Promise<EditResult> {
-  return (tools.edit_dbt_file.execute as (i: EditInput) => Promise<EditResult>)(
-    input,
-  );
-}
-
-function gitStatus(projectId: string): Promise<StatusResult> {
-  return (
-    tools.dbt_git_status.execute as (i: {
-      projectId: string;
-    }) => Promise<StatusResult>
-  )({ projectId });
-}
-
-function readFile(projectId: string, path: string): Promise<ReadResult> {
-  return (
-    tools.read_dbt_file.execute as (i: {
-      projectId: string;
-      path: string;
-    }) => Promise<ReadResult>
-  )({ projectId, path });
-}
-
-type TreeResult = {
-  success: boolean;
-  files?: string[];
-  rules?: { path: string; contents: string; truncated?: boolean };
-};
-
-function readTree(projectId: string): Promise<TreeResult> {
-  return (
-    tools.read_dbt_project_tree.execute as (i: {
-      projectId: string;
-    }) => Promise<TreeResult>
-  )({ projectId });
-}
-
-async function seedRepoProject(): Promise<string> {
-  const project = await DbtProject.create({
-    workspaceId: new Types.ObjectId(WS),
-    name: "Analytics",
-    environments: [
-      {
-        name: "dev",
-        connectionId: CONN,
-        targetSchema: "analytics",
-        threads: 4,
-      },
-    ],
-    defaultEnvironment: "dev",
-    createdBy: "tester",
-    repo: {
-      provider: "github",
-      owner: "acme",
-      repo: "analytics",
-      branch: "main",
-      installationId: 123,
-    },
-  });
-  // Committed base tree of `main`, as a dbt_sync_from_repo leaves it: content
-  // mirrors the branch head and repoBlobSha is stamped for diffing.
-  await DbtFile.insertMany(
-    [
-      { path: "dbt_project.yml", content: "name: analytics" },
-      { path: "models/a.sql", content: "select 1" },
-    ].map(file => ({
-      workspaceId: project.workspaceId,
-      projectId: project._id,
-      branch: "main",
-      path: file.path,
-      content: file.content,
-      updatedBy: "sync",
-      repoBlobSha: gitBlobSha(file.content),
-    })),
-  );
-  return project._id.toString();
-}
-
-async function seedBlankProject(): Promise<string> {
-  const project = await DbtProject.create({
-    workspaceId: new Types.ObjectId(WS),
-    name: "Blank",
-    environments: [
-      {
-        name: "dev",
-        connectionId: CONN,
-        targetSchema: "analytics",
-        threads: 4,
-      },
-    ],
-    defaultEnvironment: "dev",
-    createdBy: "tester",
-  });
-  await DbtFile.create({
-    workspaceId: project.workspaceId,
-    projectId: project._id,
-    path: "models/a.sql",
-    content: "select 1",
-    updatedBy: "tester",
-  });
-  return project._id.toString();
-}
+const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 
 beforeAll(async () => {
+  tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "dbt-file-tools-test-"));
+  process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
+  process.env.APPS_SANDBOX_PROVIDER = "local";
+  delete process.env.APPS_REQUIRE_CONNECTED_REPO;
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
-});
+}, 120_000);
 
 afterAll(async () => {
   await mongoose.disconnect();
   await mongo.stop();
+  await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
-  vi.clearAllMocks();
-  await Promise.all([
-    mongoose.connection.collection("dbt_projects").deleteMany({}),
-    mongoose.connection.collection("dbt_files").deleteMany({}),
-    mongoose.connection.collection("dbt_file_drafts").deleteMany({}),
-    mongoose.connection.collection("dbt_checkouts").deleteMany({}),
-  ]);
+  await Promise.all([DbtProject.deleteMany({}), AppWorktree.deleteMany({})]);
+  await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
 });
 
-describe("edit_dbt_file on a repo-bound project", () => {
-  it("writes a draft overlay, never the committed base tree", async () => {
-    const projectId = await seedRepoProject();
+async function seedProject() {
+  const project = await DbtProject.create({
+    workspaceId: new Types.ObjectId(WS),
+    name: "Analytics",
+    environments: [
+      { name: "dev", connectionId: CONN, targetSchema: "dbt_dev", threads: 4 },
+    ],
+    defaultEnvironment: "dev",
+    createdBy: "tester",
+  });
+  await seedDbtGitTree(WS, {
+    "dbt_project.yml": "name: analytics\n",
+    "models/stg_orders.sql": "select 1\n",
+  });
+  return project;
+}
 
-    const result = await editFile({
-      projectId,
-      path: "models/a.sql",
-      oldString: "select 1",
-      newString: "select 2",
+async function fileAtMain(rel: string): Promise<string | null> {
+  try {
+    const blob = await readBlob(repoDirFor(WS), MAIN, `dbt/${rel}`);
+    return blob.isBinary ? null : blob.contents;
+  } catch {
+    return null;
+  }
+}
+
+type Exec<I, O> = (i: I) => Promise<O>;
+const run = <I, O>(tool: { execute?: unknown }, input: I): Promise<O> =>
+  (tool.execute as Exec<I, O>)(input);
+
+describe("git-backed dbt file tools", () => {
+  it("create_dbt_file commits under dbt/ on main", async () => {
+    const project = await seedProject();
+    const result = await run<
+      { projectId: string; path: string; contents: string },
+      { success: boolean; error?: string }
+    >(tools.create_dbt_file, {
+      projectId: project._id.toString(),
+      path: "models/new_model.sql",
+      contents: "select 2\n",
     });
     expect(result.success).toBe(true);
-    expect(result.replacements).toBe(1);
-
-    // The edit lives in the acting user's draft overlay...
-    const draft = await DbtFileDraft.findOne({ userId: USER }).lean();
-    expect(draft?.path).toBe("models/a.sql");
-    expect(draft?.content).toBe("select 2");
-    // ...and the committed base tree is untouched (other users see HEAD).
-    const base = await DbtFile.findOne({
-      branch: "main",
-      path: "models/a.sql",
-    }).lean();
-    expect(base?.content).toBe("select 1");
-    expect(base?.repoBlobSha).toBe(gitBlobSha("select 1"));
+    expect(await fileAtMain("models/new_model.sql")).toBe("select 2\n");
+    const [head] = await repoLog(repoDirFor(WS), MAIN, 1);
+    expect(head.subject).toContain("models/new_model.sql");
   });
 
-  it("shows the anchored edit as a pending change in dbt_git_status", async () => {
-    // The reported bug: after a sync stamped base blob SHAs, an anchored
-    // edit succeeded (readable/compilable) but git status reported a clean
-    // tree, so commit tools refused with "No changes to commit".
-    const projectId = await seedRepoProject();
-
-    await editFile({
-      projectId,
-      path: "models/a.sql",
+  it("edit_dbt_file replaces content and commits", async () => {
+    const project = await seedProject();
+    const result = await run<
+      {
+        projectId: string;
+        path: string;
+        oldString: string;
+        newString: string;
+      },
+      { success: boolean; error?: string }
+    >(tools.edit_dbt_file, {
+      projectId: project._id.toString(),
+      path: "models/stg_orders.sql",
       oldString: "select 1",
-      newString: "select 2",
+      newString: "select 42",
     });
-
-    const status = await gitStatus(projectId);
-    expect(status.success).toBe(true);
-    expect(status.hasChanges).toBe(true);
-    expect(status.modified).toBe(1);
-    expect(status.changes).toEqual([
-      { path: "models/a.sql", status: "modified" },
-    ]);
+    expect(result.success).toBe(true);
+    expect(await fileAtMain("models/stg_orders.sql")).toBe("select 42\n");
   });
 
-  it("edits are visible to the working-tree read path and stack across calls", async () => {
-    const projectId = await seedRepoProject();
-
-    await editFile({
-      projectId,
-      path: "models/a.sql",
-      oldString: "select 1",
-      newString: "select 2",
-    });
-    // Second anchored edit must read the DRAFT content, not the base.
-    const second = await editFile({
-      projectId,
-      path: "models/a.sql",
-      oldString: "select 2",
-      newString: "select 3",
-    });
-    expect(second.success).toBe(true);
-
-    const read = await readFile(projectId, "models/a.sql");
-    expect(read.contents).toBe("select 3");
-    expect((await gitStatus(projectId)).modified).toBe(1);
+  it("delete_dbt_file removes the file; a second delete reports not found", async () => {
+    const project = await seedProject();
+    const del = () =>
+      run<{ projectId: string; path: string }, { success: boolean }>(
+        tools.delete_dbt_file,
+        { projectId: project._id.toString(), path: "models/stg_orders.sql" },
+      );
+    expect((await del()).success).toBe(true);
+    expect(await fileAtMain("models/stg_orders.sql")).toBeNull();
+    expect((await del()).success).toBe(false);
   });
 
-  it("reverting back to the committed content clears the pending change", async () => {
-    const projectId = await seedRepoProject();
-
-    await editFile({
-      projectId,
-      path: "models/a.sql",
-      oldString: "select 1",
-      newString: "select 2",
+  it("edits land on the actor's SESSION branch, invisible to main", async () => {
+    const project = await seedProject();
+    await AppWorktree.create({
+      workspaceId: new Types.ObjectId(WS),
+      userId: USER,
+      branch: "feature/models",
     });
-    await editFile({
-      projectId,
-      path: "models/a.sql",
-      oldString: "select 2",
-      newString: "select 1",
+    await run<
+      { projectId: string; path: string; contents: string },
+      { success: boolean }
+    >(tools.create_dbt_file, {
+      projectId: project._id.toString(),
+      path: "models/branch_only.sql",
+      contents: "select 3\n",
     });
-
-    expect(await DbtFileDraft.countDocuments({})).toBe(0);
-    expect((await gitStatus(projectId)).hasChanges).toBe(false);
-  });
-
-  it("publishes a user-scoped draft poke so only the author's windows react", async () => {
-    const projectId = await seedRepoProject();
-
-    await editFile({
-      projectId,
-      path: "models/a.sql",
-      oldString: "select 1",
-      newString: "select 2",
-    });
-
-    expect(publishRealtimeEvent).toHaveBeenCalledWith(
-      WS,
-      expect.objectContaining({
-        type: "dbt.file.updated",
-        path: "models/a.sql",
-        forUserId: USER,
-      }),
+    // Main does not have it; the session branch does.
+    expect(await fileAtMain("models/branch_only.sql")).toBeNull();
+    const branchBlob = await readBlob(
+      repoDirFor(WS),
+      "refs/heads/feature/models",
+      "dbt/models/branch_only.sql",
     );
-  });
-
-  it("returns an error for a missing file without creating a draft", async () => {
-    const projectId = await seedRepoProject();
-    const result = await editFile({
-      projectId,
-      path: "models/missing.sql",
-      oldString: "x",
-      newString: "y",
+    expect(branchBlob.contents).toBe("select 3\n");
+    // read_dbt_file sees the session branch's version.
+    const read = await run<
+      { projectId: string; path: string },
+      { success: boolean; contents?: string }
+    >(tools.read_dbt_file, {
+      projectId: project._id.toString(),
+      path: "models/branch_only.sql",
     });
-    expect(result.success).toBe(false);
-    expect(result.error).toMatch(/not found/i);
-    expect(await DbtFileDraft.countDocuments({})).toBe(0);
+    expect(read.contents).toBe("select 3\n");
   });
-});
 
-describe("edit_dbt_file on a blank (non-repo) project", () => {
-  it("updates the shared working tree directly (no draft overlay)", async () => {
-    const projectId = await seedBlankProject();
-
-    const result = await editFile({
-      projectId,
-      path: "models/a.sql",
-      oldString: "select 1",
-      newString: "select 2",
-    });
-    expect(result.success).toBe(true);
-
-    const file = await DbtFile.findOne({ path: "models/a.sql" }).lean();
-    expect(file?.content).toBe("select 2");
-    expect(await DbtFileDraft.countDocuments({})).toBe(0);
-  });
-});
-
-describe("read_dbt_project_tree .makorules", () => {
-  it("omits the rules key when the project has none", async () => {
-    const projectId = await seedRepoProject();
-    const tree = await readTree(projectId);
+  it("read_dbt_project_tree lists the git tree", async () => {
+    const project = await seedProject();
+    const tree = await run<
+      { projectId?: string },
+      { success: boolean; files?: string[] }
+    >(tools.read_dbt_project_tree, { projectId: project._id.toString() });
     expect(tree.success).toBe(true);
-    expect(tree).not.toHaveProperty("rules");
-  });
-
-  it("returns the rules file inline when present", async () => {
-    const projectId = await seedRepoProject();
-    await DbtFile.create({
-      workspaceId: new Types.ObjectId(WS),
-      projectId: new Types.ObjectId(projectId),
-      branch: "main",
-      path: ".makorules.md",
-      content: "- never select *",
-      updatedBy: "sync",
-      repoBlobSha: gitBlobSha("- never select *"),
-    });
-    const tree = await readTree(projectId);
-    expect(tree.rules).toEqual({
-      path: ".makorules.md",
-      contents: "- never select *",
-    });
-    // The rules file is still a normal working-tree file.
-    expect(tree.files).toContain(".makorules.md");
-  });
-
-  it("flags truncated rules so a tool-only reader knows the file was cut", async () => {
-    const projectId = await seedRepoProject();
-    const oversized = "x".repeat(DBT_RULES_MAX_CHARS + 500);
-    await DbtFile.create({
-      workspaceId: new Types.ObjectId(WS),
-      projectId: new Types.ObjectId(projectId),
-      branch: "main",
-      path: ".makorules.md",
-      content: oversized,
-      updatedBy: "sync",
-      repoBlobSha: gitBlobSha(oversized),
-    });
-    const tree = await readTree(projectId);
-    expect(tree.rules?.truncated).toBe(true);
-    expect(tree.rules?.contents).toHaveLength(DBT_RULES_MAX_CHARS);
+    const paths = tree.files ?? [];
+    expect(paths).toContain("dbt_project.yml");
+    expect(paths).toContain("models/stg_orders.sql");
   });
 });

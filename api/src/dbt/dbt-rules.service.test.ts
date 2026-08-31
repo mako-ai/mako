@@ -1,10 +1,13 @@
 /**
  * .makorules resolution + rendering.
  *
- * Runs the REAL working-tree service against an ephemeral mongodb-memory-server
- * so draft-over-base precedence is exercised for real: a user's uncommitted
- * .makorules draft must govern their own agent turns before it is committed.
+ * Runs the REAL git-backed working-tree service (apps.md §20) against a bare
+ * workspace repo under a temp APPS_GIT_ROOT, so branch-scoped reads are
+ * exercised for real: rules on your session branch govern your agent turns.
  */
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
@@ -16,18 +19,23 @@ import {
   resolveDbtRules,
 } from "./dbt-rules.service";
 import {
-  DbtFile,
-  DbtFileDraft,
+  AppWorktree,
   DbtProject,
   type IDbtProject,
 } from "../database/workspace-schema";
+import { seedDbtGitTree } from "./test-support/git-tree";
 
 let mongo: MongoMemoryServer;
+let tmpRoot: string;
 const WS = new Types.ObjectId();
 const CONN = new Types.ObjectId();
 const USER = "u1";
 
 beforeAll(async () => {
+  tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "dbt-rules-test-"));
+  process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
+  process.env.APPS_SANDBOX_PROVIDER = "local";
+  delete process.env.APPS_REQUIRE_CONNECTED_REPO;
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 }, 120_000);
@@ -35,14 +43,12 @@ beforeAll(async () => {
 afterAll(async () => {
   await mongoose.disconnect();
   await mongo.stop();
+  await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
-  await Promise.all([
-    DbtFile.deleteMany({}),
-    DbtFileDraft.deleteMany({}),
-    DbtProject.deleteMany({}),
-  ]);
+  await Promise.all([DbtProject.deleteMany({}), AppWorktree.deleteMany({})]);
+  await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
 });
 
 async function seedProject(): Promise<IDbtProject> {
@@ -59,26 +65,12 @@ async function seedProject(): Promise<IDbtProject> {
     ],
     defaultEnvironment: "dev",
     createdBy: "tester",
-    repo: {
-      provider: "github",
-      owner: "acme",
-      repo: "analytics",
-      branch: "main",
-      installationId: 123,
-    },
   });
   return project as unknown as IDbtProject;
 }
 
 async function seedBase(project: IDbtProject, path: string, content: string) {
-  await DbtFile.create({
-    workspaceId: project.workspaceId,
-    projectId: project._id,
-    branch: "main",
-    path,
-    content,
-    updatedBy: "sync",
-  });
+  await seedDbtGitTree(project.workspaceId, { [path]: content });
 }
 
 describe("resolveDbtRules", () => {
@@ -130,19 +122,25 @@ describe("resolveDbtRules", () => {
     expect((await resolveDbtRules(project, USER))?.path).toBe(".makorules");
   });
 
-  it("lets an uncommitted user draft shadow the committed base", async () => {
+  it("reads the rules from the user's SESSION branch, not main", async () => {
     const project = await seedProject();
-    await seedBase(project, ".makorules.md", "committed rules");
-    await DbtFileDraft.create({
+    await seedBase(project, ".makorules.md", "main rules");
+    await AppWorktree.create({
       workspaceId: project.workspaceId,
-      projectId: project._id,
       userId: USER,
-      branch: "main",
-      path: ".makorules.md",
-      content: "draft rules",
+      branch: "feature/rules",
     });
+    await seedDbtGitTree(
+      project.workspaceId,
+      { ".makorules.md": "branch rules" },
+      { branch: "feature/rules" },
+    );
     expect((await resolveDbtRules(project, USER))?.contents).toBe(
-      "draft rules",
+      "branch rules",
+    );
+    // A user with no session reads main.
+    expect((await resolveDbtRules(project, "other-user"))?.contents).toBe(
+      "main rules",
     );
   });
 

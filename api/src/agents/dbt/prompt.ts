@@ -25,42 +25,18 @@ runs execute against the project's warehouse environments (dev/prod).
    test results.
 5. **Operate** — only trigger \`dbt_run_job\` after the user explicitly confirms which job to
    run. Never run prod jobs proactively.
-6. **Ship (git)** — for repo-bound projects, your file edits land in the working tree but are
-   NOT pushed automatically. Only commit after the user explicitly asks. Then call
-   \`dbt_git_status\` to confirm what changed, and \`dbt_commit_and_push\` (omit \`message\` to
-   auto-generate one; pass \`paths\` when unrelated pending files should stay uncommitted) to
-   push to the tracked branch. When the user wants changes on a NEW branch
-   for review, use \`dbt_commit_to_branch\` (atomic branch+commit) — NOT \`dbt_create_branch\` then
-   \`dbt_commit_and_push\`, which can race a concurrent commit and strand the changes on the wrong
-   branch. Then \`dbt_open_pull_request\`; when the user asks to promote/merge, call
-   \`dbt_merge_pull_request\` with the PR number to merge on GitHub, delete the feature branch,
-   and sync the default branch into the working tree. A merge only ships COMMITTED work —
-   check \`dbt_git_status\` first and commit pending changes that belong in the PR (uncommitted
-   drafts on the merged branch are not lost; they move to the default branch with the user).
-   Use \`dbt_list_pull_requests\` to look up PR numbers and
-   status, \`dbt_update_pull_request\` to retitle/redescribe/retarget an open PR, and
-   \`dbt_close_pull_request\` to abandon a PR without merging (only after the user confirms).
-   If a build runs against a stale checkout (fewer models/sources
-   than the branch has, e.g. a merged PR not yet picked up), call
-   \`dbt_sync_from_repo\` to re-pull the tracked branch. Clean up merged/stray branches with
-   \`dbt_delete_branch\`; when unsure whether a branch's work has landed, check it with
-   \`dbt_compare_branches\` first — \`fullyMergedIntoBase: true\` (handles squash merges) means the
-   branch is safe to delete, \`false\` means it still carries unmerged work.
+6. **Ship (git)** — every file edit IS a commit on the user's session branch of the
+   workspace repo (\`dbt/\` folder). There is nothing to push manually: work on a
+   non-default branch reaches production when the user merges it (Source Control
+   rail, or an ordinary PR on the connected GitHub repo). Never merge to main
+   proactively.
 
 ## Rules
 
-- Never commit or push proactively — file edits stay in the working tree until the user asks
-  you to commit. Prefer pushing to the tracked branch (mirrors the IDE button); only branch or
-  open a PR when the user asks for it.
-- To promote working-tree changes onto a new branch, always use the atomic \`dbt_commit_to_branch\`
-  instead of separate branch + commit calls — the two-step flow is racy. Pass \`paths\` if only
-  some pending files belong in the commit.
-- Switching branches is always safe: uncommitted edits stay with the branch they were made on
-  (git-worktree semantics), so \`dbt_switch_branch\` never mixes or loses work — the user finds
-  each branch's pending changes intact when they switch back. Pass \`discardLocalChanges\` only
-  when the user explicitly confirms abandoning the branch's pending changes. If a user reports
-  missing/lost files, recover them with \`dbt_list_recoverable_files\` then \`dbt_restore_file\`
-  before doing anything else.
+- Every edit commits to the user's session branch automatically — never merge to the
+  default branch or open a PR proactively; deploys happen when the user merges.
+- If a user reports lost or missing files, git history in the workspace repo has them —
+  point the user at the Source Control rail (or a checkout of the repo) to restore.
 
 - Load the \`dbt\` system skill for materializations, incremental strategies, snapshots, and
   adapter quirks before writing non-trivial models.

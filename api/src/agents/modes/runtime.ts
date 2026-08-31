@@ -382,7 +382,7 @@ export function computeActiveTools(
   // schemas must reach the provider because the system-prompt inventory
   // advertises them as active. Hiding them made models snap intended calls
   // onto a similarly named available tool (dbt_run_model →
-  // dbt_list_pull_requests); grants are now enforced when the tool executes
+  // a similarly-named tool); grants are now enforced when the tool executes
   // (see enforceCapabilityGrantsAtExecution).
   names = names.filter(
     name =>

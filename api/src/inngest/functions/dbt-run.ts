@@ -210,14 +210,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       // deferToProduction flag (fast iteration in personal dev schemas).
       let deferStateKey: string | null = null;
       let wantsDefer = false;
-      if (run.trigger === "ci") {
-        const project = await DbtProject.findById(run.projectId)
-          .select("ci")
-          .lean();
-        wantsDefer =
-          (project as { ci?: { deferToProduction?: boolean } })?.ci
-            ?.deferToProduction !== false;
-      } else if (run.jobId) {
+      if (run.jobId) {
         wantsDefer = Boolean(
           (await DbtJob.findById(run.jobId).select("deferToProduction").lean())
             ?.deferToProduction,
@@ -611,13 +604,6 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             consecutiveFailures: failures,
           });
         }
-      }
-
-      // PR CI: post the terminal commit status back to the PR head.
-      const ciRun = await DbtRun.findById(runObjectId).select("ci").lean();
-      if (ciRun?.ci) {
-        const { postCiRunResult } = await import("../../dbt/dbt-ci.service");
-        await postCiRunResult({ _id: runObjectId, ci: ciRun.ci }, !failed);
       }
 
       // Keep the last successful prod manifest as the state artifact for

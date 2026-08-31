@@ -72,58 +72,22 @@ vi.mock("../dbt/dbt-run.service", () => ({
   reconcileStaleQueuedRun: vi.fn(async (r: unknown) => r),
   reconcileStaleQueuedRuns: vi.fn(async (r: unknown) => r),
 }));
-vi.mock("../integrations/github/app-auth", () => ({
-  getInstallationToken: vi.fn(),
-  resolveRepoToken: vi.fn(),
-}));
-vi.mock("../integrations/github/config", () => ({
-  getGitHubAppSlug: vi.fn(() => null),
-  isGitHubAppConfigured: vi.fn(() => false),
-  getGitHubDevToken: vi.fn(() => null),
-}));
-vi.mock("../integrations/github/github-api", () => ({
-  fileExistsAtRef: vi.fn(),
-  getBranchHeadSha: vi.fn(),
-  getRepoInfo: vi.fn(),
-  listBranches: vi.fn(),
-  listDbtProjectSubdirectories: vi.fn(),
-  listInstallationRepos: vi.fn(),
-}));
-vi.mock("../dbt/dbt-github-sync.service", () => ({
-  fetchRepoDbtFiles: vi.fn(),
-  repoFilesToInserts: vi.fn(),
-  syncProjectBranchFromRepo: vi.fn(),
-}));
-vi.mock("../dbt/dbt-github-git.service", () => ({
-  commitAndPush: vi.fn(),
-  commitToNewBranch: vi.fn(),
-  createProjectBranch: vi.fn(),
-  deleteProjectBranch: vi.fn(),
-  getGitStatus: vi.fn(),
-  getProjectFileDiff: vi.fn(),
-  listProjectBranches: vi.fn(),
-  mergeProjectPullRequest: vi.fn(),
-  openProjectPullRequest: vi.fn(),
-  ProtectedBranchError: class ProtectedBranchError extends Error {},
-  switchProjectBranch: vi.fn(),
-}));
 vi.mock("../services/realtime.service", () => ({
   publishRealtimeEvent: vi.fn(),
 }));
 vi.mock("../services/dashboard-artifact-store.service", () => ({
   getDashboardArtifactStore: vi.fn(() => ({})),
 }));
-vi.mock("../services/entity-version.service", () => ({
-  createVersion: vi.fn(async () => ({})),
-  getLatestVersionNumber: vi.fn(async () => 0),
-  getUserDisplayName: vi.fn(async () => "Tester"),
-}));
 vi.mock("../services/scheduled-query-schedule.service", () => ({
   validateScheduledConsoleSchedule: vi.fn(() => null),
 }));
 
 // Imported after the mocks are registered.
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { dbtRoutes } from "./dbt.routes";
+import { seedDbtGitTree } from "../dbt/test-support/git-tree";
 import { DatabaseConnection } from "../database/workspace-schema";
 import { runAdhocDbtCommand } from "../dbt/dbt-project.service";
 import {
@@ -131,8 +95,6 @@ import {
   requestDbtRunCancel,
   triggerDbtRunRetry,
 } from "../dbt/dbt-run.service";
-import { getBranchHeadSha } from "../integrations/github/github-api";
-import { syncProjectBranchFromRepo } from "../dbt/dbt-github-sync.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
 
 const publishMock = publishRealtimeEvent as unknown as ReturnType<typeof vi.fn>;
@@ -142,10 +104,6 @@ const recordAdhocMock = recordCompletedAdhocDbtRun as unknown as ReturnType<
 >;
 const cancelMock = requestDbtRunCancel as unknown as ReturnType<typeof vi.fn>;
 const retryMock = triggerDbtRunRetry as unknown as ReturnType<typeof vi.fn>;
-const branchHeadMock = getBranchHeadSha as unknown as ReturnType<typeof vi.fn>;
-const syncBranchMock = syncProjectBranchFromRepo as unknown as ReturnType<
-  typeof vi.fn
->;
 
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId().toString();
@@ -187,7 +145,13 @@ async function createProjectAsOwner(): Promise<string> {
   return json.project._id;
 }
 
+let tmpRoot: string;
+
 beforeAll(async () => {
+  tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "dbt-routes-test-"));
+  process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
+  process.env.APPS_SANDBOX_PROVIDER = "local";
+  delete process.env.APPS_REQUIRE_CONNECTED_REPO;
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
 });
@@ -195,6 +159,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await mongoose.disconnect();
   await mongo.stop();
+  await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
@@ -203,13 +168,14 @@ beforeEach(async () => {
   // Reset data and (re)seed a dbt-compatible connection for environments.
   await Promise.all([
     mongoose.connection.collection("dbt_projects").deleteMany({}),
-    mongoose.connection.collection("dbt_files").deleteMany({}),
-    mongoose.connection.collection("dbt_file_drafts").deleteMany({}),
-    mongoose.connection.collection("dbt_checkouts").deleteMany({}),
     mongoose.connection.collection("dbt_jobs").deleteMany({}),
     mongoose.connection.collection("dbt_runs").deleteMany({}),
+    mongoose.connection.collection("app_worktrees").deleteMany({}),
     mongoose.connection.collection("databaseconnections").deleteMany({}),
   ]);
+  // Fresh bare workspace repo per test: file writes are commits now.
+  await fs.rm(path.join(tmpRoot, "repos"), { recursive: true, force: true });
+  await seedDbtGitTree(WS, { "dbt_project.yml": "name: analytics\n" });
   await DatabaseConnection.collection.insertOne({
     _id: new Types.ObjectId(CONN),
     workspaceId: new Types.ObjectId(WS),
@@ -284,11 +250,12 @@ describe("project CRUD", () => {
   it("creates, lists, gets, patches, and deletes a project", async () => {
     const projectId = await createProjectAsOwner();
 
-    // The starter scaffold is materialized on create.
-    const fileCount = await mongoose.connection
-      .collection("dbt_files")
-      .countDocuments({ projectId: new Types.ObjectId(projectId) });
-    expect(fileCount).toBeGreaterThan(0);
+    // The working tree is the workspace repo's dbt/ folder (seeded in
+    // beforeEach; a fresh workspace would get the starter scaffold committed).
+    const filesRes = (await (
+      await req("GET", `/projects/${projectId}/files`)
+    ).json()) as { files: Array<{ path: string }> };
+    expect(filesRes.files.map(f => f.path)).toContain("dbt_project.yml");
 
     const list = await (await req("GET", "/projects")).json();
     expect(list.projects).toHaveLength(1);
@@ -307,76 +274,6 @@ describe("project CRUD", () => {
     expect(
       (await (await req("GET", "/projects")).json()).projects,
     ).toHaveLength(0);
-  });
-
-  it("changes the tracked branch after verifying it exists on the remote", async () => {
-    const projectId = await createProjectAsOwner();
-    await mongoose.connection.collection("dbt_projects").updateOne(
-      { _id: new Types.ObjectId(projectId) },
-      {
-        $set: {
-          repo: {
-            provider: "github",
-            owner: "acme",
-            repo: "analytics",
-            branch: "fix/stale-feature",
-            installationId: 1,
-          },
-        },
-      },
-    );
-    branchHeadMock.mockResolvedValueOnce("sha-main");
-
-    const res = await req("PATCH", `/projects/${projectId}`, {
-      repoBranch: "main",
-    });
-    expect(res.status).toBe(200);
-    expect((await res.json()).project.repo.branch).toBe("main");
-    // The new tracked branch's base tree is materialized right away.
-    expect(syncBranchMock).toHaveBeenCalledTimes(1);
-    const [projArg, branchArg, userArg] = syncBranchMock.mock.calls[0] as [
-      { _id: Types.ObjectId },
-      string,
-      string,
-    ];
-    expect(projArg._id.toString()).toBe(projectId);
-    expect(branchArg).toBe("main");
-    expect(userArg).toBe("u1");
-  });
-
-  it("rejects a tracked branch that does not exist on the remote", async () => {
-    const projectId = await createProjectAsOwner();
-    await mongoose.connection.collection("dbt_projects").updateOne(
-      { _id: new Types.ObjectId(projectId) },
-      {
-        $set: {
-          repo: {
-            provider: "github",
-            owner: "acme",
-            repo: "analytics",
-            branch: "main",
-            installationId: 1,
-          },
-        },
-      },
-    );
-    branchHeadMock.mockRejectedValueOnce(new Error("GitHub 404"));
-
-    const res = await req("PATCH", `/projects/${projectId}`, {
-      repoBranch: "typo/branch",
-    });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/not found/);
-    expect(syncBranchMock).not.toHaveBeenCalled();
-  });
-
-  it("rejects repoBranch on a project without a repo binding", async () => {
-    const projectId = await createProjectAsOwner();
-    const res = await req("PATCH", `/projects/${projectId}`, {
-      repoBranch: "main",
-    });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(/connected repository/);
   });
 
   it("saves, validates, clears, and surfaces the caller's dev environment", async () => {

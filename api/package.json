@@ -8,7 +8,6 @@
     "build": "pnpm run lint && cd ../packages/schemas && node ../../api/node_modules/typescript/bin/tsc && cd ../../api && node ./node_modules/typescript/bin/tsc -p tsconfig.build.json && copyfiles -u 1 'src/**/*.svg' 'src/agent-skills/**/*.md' 'src/**/*.py' dist && copyfiles -f ../packages/app-sdk/package.json ../packages/app-sdk/index.js ../packages/app-sdk/index.d.ts ../packages/app-sdk/vite.js ../packages/app-sdk/vite.d.ts ../packages/app-sdk/credentials.js ../packages/app-sdk/credentials.d.ts ../packages/app-sdk/README.md dist/app-sdk",
     "start": "tsx src/index.ts",
     "sync": "tsx src/sync/cli.ts",
-    "seed:dbt-demo": "tsx src/scripts/seed-dbt-engine-demo.ts",
     "worker": "tsx src/worker.ts",
     "worker:dev": "tsx watch --include \"src/**/*\" src/worker.ts",
     "migrate:workspaces": "tsx src/migrations/migrate-to-workspaces.ts",

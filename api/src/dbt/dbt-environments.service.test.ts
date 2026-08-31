@@ -174,14 +174,14 @@ describe("assertAdhocDbtRunAllowed", () => {
     ).not.toThrow();
   });
 
-  it("exempts projects without a repo binding (no committed tree to bypass)", () => {
-    const blankProject = {
+  it("applies to every project — repo-less exemption is gone (apps.md §20)", () => {
+    const project = {
       environments: [env("dev"), env("prod")],
       defaultEnvironment: "dev",
     };
     expect(() =>
-      assertAdhocDbtRunAllowed(blankProject, "prod", commands("build")),
-    ).not.toThrow();
+      assertAdhocDbtRunAllowed(project, "prod", commands("build")),
+    ).toThrow(DbtProtectedEnvironmentError);
   });
 
   it("follows an explicit prodEnvironment setting", () => {
@@ -189,7 +189,6 @@ describe("assertAdhocDbtRunAllowed", () => {
       environments: [env("dev"), env("prod"), env("release")],
       defaultEnvironment: "dev",
       prodEnvironment: "release",
-      repo: { branch: "main" },
     };
     expect(() =>
       assertAdhocDbtRunAllowed(project, "release", commands("build")),

@@ -24,7 +24,6 @@ export default function DbtProjectDrawersHost() {
   const workspaceId = currentWorkspace?.id;
   const settingsProjectId = useDbtStore(s => s.settingsProjectId);
   const createProjectOpen = useDbtStore(s => s.createProjectOpen);
-  const createProjectMode = useDbtStore(s => s.createProjectMode);
   const closeProjectSettings = useDbtStore(s => s.closeProjectSettings);
   const closeCreateProject = useDbtStore(s => s.closeCreateProject);
   const connectionsByWorkspace = useSchemaStore(s => s.connections);
@@ -56,7 +55,6 @@ export default function DbtProjectDrawersHost() {
       />
       <DbtProjectCreateDrawer
         open={createProjectOpen}
-        mode={createProjectMode}
         workspaceId={workspaceId}
         connections={dbtConnections}
         onClose={closeCreateProject}

@@ -22,22 +22,11 @@ import {
   DialogActions,
   TextField,
   Button,
-  Select,
-  Checkbox,
-  FormControl,
-  FormControlLabel,
-  InputLabel,
   Menu,
   Chip,
   CircularProgress,
   Divider,
-  Link,
-  Snackbar,
-  Alert,
-  useTheme,
 } from "@mui/material";
-import { DiffEditor } from "@monaco-editor/react";
-import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import {
   Plus as AddIcon,
   RefreshCw as RefreshIcon,
@@ -52,40 +41,21 @@ import {
   MoreVertical as KebabIcon,
   Terminal as ConsoleIcon,
   History as RunsIcon,
-  Github as GithubIcon,
-  DownloadCloud as SyncIcon,
-  GitCommitHorizontal as CommitIcon,
-  GitPullRequest as PullRequestIcon,
-  GitPullRequestClosed as PullRequestClosedIcon,
-  GitMerge as MergedIcon,
-  GitBranchPlus as NewBranchIcon,
-  ArrowLeftRight as SwitchBranchIcon,
   ChevronDown as ChevronDownIcon,
   ChevronRight as ChevronRightIcon,
   Check as CheckIcon,
   Box as ProjectBoxIcon,
-  Sparkles as GenerateIcon,
-  Lock as LockIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { useExplorerStore } from "../store/explorerStore";
-import {
-  useDbtStore,
-  type DbtJobItem,
-  type GitFileDiff,
-  type PullRequestItem,
-} from "../store/dbtStore";
+import { useDbtStore, type DbtJobItem } from "../store/dbtStore";
 import {
   focusDbtConsoleTab,
   focusDbtFileTab,
   focusDbtJobTab,
   focusDbtRunsTab,
 } from "../dbt-runtime/shell";
-import {
-  DBT_JINJA_LANGUAGE_ID,
-  registerDbtJinjaLanguage,
-} from "../lib/dbt-monaco";
 import { envBadgeColor } from "../lib/dbt-env";
 import {
   useExplorerRevealStore,
@@ -98,13 +68,6 @@ import {
   DBT_RUNS_SEP,
 } from "../lib/explorer-reveal";
 import { ConfirmDialog } from "./ConfirmDialog";
-
-function dbtDiffLanguage(path: string): string {
-  if (path.endsWith(".sql")) return DBT_JINJA_LANGUAGE_ID;
-  if (path.endsWith(".yml") || path.endsWith(".yaml")) return "yaml";
-  if (path.endsWith(".md")) return "markdown";
-  return "plaintext";
-}
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
 import { dirname } from "../utils/path";
@@ -225,7 +188,7 @@ function scheduleSummary(job: DbtJobItem): string {
   return `${job.schedule.cron} ${job.schedule.timezone ?? "UTC"}`;
 }
 
-/** Collapsible section header (dbt Studio "Version control" / "File explorer"). */
+/** Collapsible section header (dbt Studio "File explorer" / "Jobs & runs"). */
 function SectionHeader({
   label,
   open,
@@ -287,17 +250,9 @@ function SectionHeader({
   );
 }
 
-const STATUS_META = {
-  added: { letter: "A", color: "success.main" },
-  deleted: { letter: "D", color: "error.main" },
-  modified: { letter: "M", color: "warning.main" },
-} as const;
-
 export function DbtExplorer() {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
-  const theme = useTheme();
-  const monacoTheme = useMonacoTheme();
 
   const projects = useDbtStore(s => s.projects);
   const projectsLoaded = useDbtStore(s => s.projectsLoaded);
@@ -311,24 +266,6 @@ export function DbtExplorer() {
   const fetchFiles = useDbtStore(s => s.fetchFiles);
   const fetchJobs = useDbtStore(s => s.fetchJobs);
   const deleteProject = useDbtStore(s => s.deleteProject);
-  const syncProjectFromGitHub = useDbtStore(s => s.syncProjectFromGitHub);
-  const gitStatusByProject = useDbtStore(s => s.gitStatusByProject);
-  const checkoutBranchByProject = useDbtStore(s => s.checkoutBranchByProject);
-  const protectedBranchesByProject = useDbtStore(
-    s => s.protectedBranchesByProject,
-  );
-  const fetchGitStatus = useDbtStore(s => s.fetchGitStatus);
-  const fetchGitDiff = useDbtStore(s => s.fetchGitDiff);
-  const commitAndPush = useDbtStore(s => s.commitAndPush);
-  const commitToBranch = useDbtStore(s => s.commitToBranch);
-  const generateCommitMessage = useDbtStore(s => s.generateCommitMessage);
-  const listBranches = useDbtStore(s => s.listBranches);
-  const createBranch = useDbtStore(s => s.createBranch);
-  const switchBranch = useDbtStore(s => s.switchBranch);
-  const openPullRequest = useDbtStore(s => s.openPullRequest);
-  const listPullRequests = useDbtStore(s => s.listPullRequests);
-  const updatePullRequest = useDbtStore(s => s.updatePullRequest);
-  const closePullRequest = useDbtStore(s => s.closePullRequest);
   const createFile = useDbtStore(s => s.createFile);
   const deleteFile = useDbtStore(s => s.deleteFile);
   const renameFile = useDbtStore(s => s.renameFile);
@@ -362,44 +299,6 @@ export function DbtExplorer() {
   const [loadingProjects, setLoadingProjects] = useState<
     Record<string, boolean>
   >({});
-  const [syncingProjectId, setSyncingProjectId] = useState<string | null>(null);
-
-  // In-IDE git dialogs
-  const [commitTarget, setCommitTarget] = useState<string | null>(null);
-  const [commitMessage, setCommitMessage] = useState("");
-  /** New branch name when committing from a protected (PR-only) checkout. */
-  const [commitBranchName, setCommitBranchName] = useState("");
-  const [generatingMessage, setGeneratingMessage] = useState(false);
-  const [gitBusy, setGitBusy] = useState(false);
-  const [gitResult, setGitResult] = useState<string | null>(null);
-  const [syncSnack, setSyncSnack] = useState<{
-    severity: "success" | "info" | "warning" | "error";
-    message: string;
-    /** When set, the snackbar offers an "Overwrite local" re-pull action. */
-    projectId?: string;
-  } | null>(null);
-  const [diffData, setDiffData] = useState<GitFileDiff | null>(null);
-  const [diffLoading, setDiffLoading] = useState(false);
-  const [branchTarget, setBranchTarget] = useState<string | null>(null);
-  const [branchName, setBranchName] = useState("");
-  const [switchTarget, setSwitchTarget] = useState<string | null>(null);
-  const [switchBranches, setSwitchBranches] = useState<string[]>([]);
-  const [switchValue, setSwitchValue] = useState("");
-  const [switchDiscard, setSwitchDiscard] = useState(false);
-  const [prTarget, setPrTarget] = useState<string | null>(null);
-  const [prTitle, setPrTitle] = useState("");
-  const [prBody, setPrBody] = useState("");
-  // Pull requests list dialog
-  const [prListTarget, setPrListTarget] = useState<string | null>(null);
-  const [prList, setPrList] = useState<PullRequestItem[] | null>(null);
-  const [prListState, setPrListState] = useState<"open" | "all">("open");
-  const [prEdit, setPrEdit] = useState<{
-    number: number;
-    title: string;
-    body: string;
-  } | null>(null);
-  const [prCloseConfirm, setPrCloseConfirm] = useState<number | null>(null);
-  const [prBusy, setPrBusy] = useState(false);
   const [newFileTarget, setNewFileTarget] = useState<{
     projectId: string;
     dir: string;
@@ -422,13 +321,11 @@ export function DbtExplorer() {
   } | null>(null);
 
   // dbt Studio-style chrome: project switcher + collapsible sections + the
-  // project actions / git actions overflow menus.
+  // project actions overflow menu.
   const [projectMenuAnchor, setProjectMenuAnchor] =
     useState<HTMLElement | null>(null);
   const [projectActionsAnchor, setProjectActionsAnchor] =
     useState<HTMLElement | null>(null);
-  const [gitMenuAnchor, setGitMenuAnchor] = useState<HTMLElement | null>(null);
-  const [vcOpen, setVcOpen] = useState(true);
   const [filesOpen, setFilesOpen] = useState(true);
   const [orchOpen, setOrchOpen] = useState(true);
 
@@ -460,40 +357,6 @@ export function DbtExplorer() {
     fetchJobs,
   ]);
 
-  // After returning from the GitHub App install flow, open the import drawer
-  // in GitHub mode, then clean the URL.
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const result = params.get("transformGithub");
-    if (!result) return;
-    if (result === "connected") {
-      openCreateProject("github");
-    }
-    params.delete("transformGithub");
-    const query = params.toString();
-    window.history.replaceState(
-      {},
-      "",
-      window.location.pathname + (query ? `?${query}` : ""),
-    );
-  }, [openCreateProject]);
-
-  // Working-tree git status for repo-bound projects (drives change badges).
-  const repoProjectIds = useMemo(
-    () =>
-      projects
-        .filter(p => p.repo)
-        .map(p => p._id)
-        .join(","),
-    [projects],
-  );
-  useEffect(() => {
-    if (!workspaceId || !repoProjectIds) return;
-    for (const id of repoProjectIds.split(",")) {
-      void fetchGitStatus(workspaceId, id);
-    }
-  }, [workspaceId, repoProjectIds, fetchGitStatus]);
-
   // File tree for the active project only (no project-root wrapper). Jobs and
   // Runs live in their own "Jobs & runs" section, not the file tree.
   const sections = useMemo(() => {
@@ -512,46 +375,12 @@ export function DbtExplorer() {
   );
   const runsNodeId = activeProjectId ? `${activeProjectId}${RUNS_SEP}` : "";
 
-  const activeStatus = activeProjectId
-    ? gitStatusByProject[activeProjectId]
-    : undefined;
-  const activeChangeCount = activeStatus?.changes.length ?? 0;
-  /** The current user's checked-out branch (per-user checkout). */
-  const activeBranch = activeProjectId
-    ? (checkoutBranchByProject[activeProjectId] ??
-      activeStatus?.branch ??
-      activeProject?.repo?.branch)
-    : undefined;
-  /** True when the user's checkout is a protected (PR-only) branch. */
-  const activeBranchProtected = Boolean(
-    activeProjectId &&
-      activeBranch &&
-      (
-        protectedBranchesByProject[activeProjectId] ??
-        activeProject?.protectedBranches ??
-        []
-      ).includes(activeBranch),
-  );
-
   const handleRefresh = useCallback(() => {
     if (!workspaceId) return;
     void fetchProjects(workspaceId);
-    // Re-pull working-tree git status so change badges reflect commits made
-    // outside this view (e.g. the agent committing server-side) without
-    // forcing a full page reload — the mount effect only runs once.
-    for (const id of repoProjectIds ? repoProjectIds.split(",") : []) {
-      void fetchGitStatus(workspaceId, id);
-    }
     // Refresh the active project's file tree so agent-added/removed files show.
     if (activeProjectId) void fetchFiles(workspaceId, activeProjectId);
-  }, [
-    workspaceId,
-    repoProjectIds,
-    activeProjectId,
-    fetchProjects,
-    fetchGitStatus,
-    fetchFiles,
-  ]);
+  }, [workspaceId, activeProjectId, fetchProjects, fetchFiles]);
 
   const handleLoadChildren = useCallback(
     async (node: ResourceTreeNode) => {
@@ -633,296 +462,6 @@ export function DbtExplorer() {
     }
     return undefined;
   }, []);
-
-  const handleSyncProject = useCallback(
-    async (projectId: string, discard = false) => {
-      if (!workspaceId) return;
-      setSyncingProjectId(projectId);
-      const result = await syncProjectFromGitHub(workspaceId, projectId, {
-        discard,
-      });
-      setSyncingProjectId(null);
-      if (!result) {
-        setSyncSnack({
-          severity: "error",
-          message:
-            useDbtStore.getState().error.projects ?? "Pull from remote failed.",
-        });
-        return;
-      }
-      await fetchFiles(workspaceId, projectId);
-      const status = await fetchGitStatus(workspaceId, projectId);
-
-      const ref = result.branch ?? "remote";
-      const changed = result.added + result.updated + result.deleted;
-      const pending = status?.changes.length ?? 0;
-      if (changed === 0) {
-        setSyncSnack({
-          severity: "info",
-          message: `Already up to date with ${ref}.`,
-        });
-      } else {
-        const parts = `+${result.added} ~${result.updated} −${result.deleted}`;
-        setSyncSnack({
-          severity: "success",
-          message:
-            `Pulled ${ref}: ${parts}` +
-            (pending > 0
-              ? ` · your ${pending} uncommitted change${pending === 1 ? "" : "s"} ` +
-                "stay pending on top."
-              : ""),
-        });
-      }
-    },
-    [workspaceId, syncProjectFromGitHub, fetchFiles, fetchGitStatus],
-  );
-
-  const openCommitDialog = useCallback(
-    (projectId: string) => {
-      setCommitTarget(projectId);
-      setCommitMessage("");
-      setCommitBranchName("");
-      setGitResult(null);
-      if (workspaceId) void fetchGitStatus(workspaceId, projectId);
-    },
-    [workspaceId, fetchGitStatus],
-  );
-
-  const handleOpenDiff = useCallback(
-    async (projectId: string, path: string) => {
-      if (!workspaceId) return;
-      setDiffLoading(true);
-      const diff = await fetchGitDiff(workspaceId, projectId, path);
-      setDiffLoading(false);
-      if (diff) setDiffData(diff);
-    },
-    [workspaceId, fetchGitDiff],
-  );
-
-  const commitTargetProtected = useMemo(() => {
-    if (!commitTarget) return false;
-    const branch =
-      checkoutBranchByProject[commitTarget] ??
-      gitStatusByProject[commitTarget]?.branch;
-    if (!branch) return false;
-    const protectedBranches =
-      protectedBranchesByProject[commitTarget] ??
-      projects.find(p => p._id === commitTarget)?.protectedBranches ??
-      [];
-    return protectedBranches.includes(branch);
-  }, [
-    commitTarget,
-    checkoutBranchByProject,
-    gitStatusByProject,
-    protectedBranchesByProject,
-    projects,
-  ]);
-
-  const handleCommit = useCallback(async () => {
-    if (!workspaceId || !commitTarget || !commitMessage.trim()) return;
-    // Protected checkout: direct commits are refused server-side — promote the
-    // drafts onto a new branch instead (then open a PR to merge).
-    if (commitTargetProtected && !commitBranchName.trim()) return;
-    setGitBusy(true);
-    const result = commitTargetProtected
-      ? await commitToBranch(
-          workspaceId,
-          commitTarget,
-          commitBranchName.trim(),
-          commitMessage.trim(),
-        )
-      : await commitAndPush(workspaceId, commitTarget, commitMessage.trim());
-    setGitBusy(false);
-    if (result?.committed) {
-      const { added, modified, deleted } = result.pushed;
-      setGitResult(
-        `Pushed to ${result.branch}: +${added} ~${modified} -${deleted}`,
-      );
-      setCommitMessage("");
-      setCommitBranchName("");
-      // Briefly show the confirmation, then close — the working tree is now
-      // clean, so leaving the dialog open just shows a dead "0 changes" state.
-      window.setTimeout(() => {
-        setCommitTarget(null);
-        setGitResult(null);
-      }, 1500);
-    } else if (result) {
-      setGitResult("No changes to commit");
-    } else {
-      setGitResult(
-        useDbtStore.getState().error.projects ?? "Commit failed — try again.",
-      );
-    }
-  }, [
-    workspaceId,
-    commitTarget,
-    commitMessage,
-    commitBranchName,
-    commitTargetProtected,
-    commitAndPush,
-    commitToBranch,
-  ]);
-
-  const handleGenerateMessage = useCallback(async () => {
-    if (!workspaceId || !commitTarget) return;
-    setGeneratingMessage(true);
-    setGitResult(null);
-    const message = await generateCommitMessage(workspaceId, commitTarget);
-    setGeneratingMessage(false);
-    if (message) {
-      setCommitMessage(message);
-    } else {
-      setGitResult("Could not generate a message — write one manually.");
-    }
-  }, [workspaceId, commitTarget, generateCommitMessage]);
-
-  const handleCreateBranch = useCallback(async () => {
-    if (!workspaceId || !branchTarget || !branchName.trim()) return;
-    setGitBusy(true);
-    const updated = await createBranch(
-      workspaceId,
-      branchTarget,
-      branchName.trim(),
-    );
-    setGitBusy(false);
-    if (updated) {
-      setBranchTarget(null);
-      setBranchName("");
-    }
-  }, [workspaceId, branchTarget, branchName, createBranch]);
-
-  const openSwitchDialog = useCallback(
-    async (projectId: string) => {
-      if (!workspaceId) return;
-      setSwitchTarget(projectId);
-      setSwitchBranches([]);
-      setSwitchDiscard(false);
-      const result = await listBranches(workspaceId, projectId);
-      if (result) {
-        setSwitchBranches(result.branches);
-        setSwitchValue(result.current);
-      }
-    },
-    [workspaceId, listBranches],
-  );
-
-  const handleSwitchBranch = useCallback(async () => {
-    if (!workspaceId || !switchTarget || !switchValue) return;
-    setGitBusy(true);
-    const updated = await switchBranch(workspaceId, switchTarget, switchValue, {
-      discardLocalChanges: switchDiscard,
-    });
-    setGitBusy(false);
-    if (updated) {
-      await fetchFiles(workspaceId, switchTarget);
-      await fetchGitStatus(workspaceId, switchTarget);
-      setSwitchTarget(null);
-    }
-  }, [
-    workspaceId,
-    switchTarget,
-    switchValue,
-    switchDiscard,
-    switchBranch,
-    fetchFiles,
-    fetchGitStatus,
-  ]);
-
-  const handleOpenPullRequest = useCallback(async () => {
-    if (!workspaceId || !prTarget || !prTitle.trim()) return;
-    setGitBusy(true);
-    const result = await openPullRequest(workspaceId, prTarget, {
-      title: prTitle.trim(),
-      body: prBody.trim() || undefined,
-    });
-    setGitBusy(false);
-    if (result) {
-      window.open(result.htmlUrl, "_blank", "noopener");
-      setPrTarget(null);
-      setPrTitle("");
-      setPrBody("");
-    }
-  }, [workspaceId, prTarget, prTitle, prBody, openPullRequest]);
-
-  const refreshPrList = useCallback(
-    async (projectId: string, state: "open" | "all") => {
-      if (!workspaceId) return;
-      setPrList(null);
-      const result = await listPullRequests(workspaceId, projectId, state);
-      setPrList(result ?? []);
-    },
-    [workspaceId, listPullRequests],
-  );
-
-  const openPrListDialog = useCallback(
-    (projectId: string) => {
-      setPrListTarget(projectId);
-      setPrEdit(null);
-      setPrCloseConfirm(null);
-      setPrListState("open");
-      void refreshPrList(projectId, "open");
-    },
-    [refreshPrList],
-  );
-
-  const handlePrStateFilterChange = useCallback(
-    (state: "open" | "all") => {
-      setPrListState(state);
-      if (prListTarget) void refreshPrList(prListTarget, state);
-    },
-    [prListTarget, refreshPrList],
-  );
-
-  const handleUpdatePullRequest = useCallback(async () => {
-    if (!workspaceId || !prListTarget || !prEdit || !prEdit.title.trim()) {
-      return;
-    }
-    setPrBusy(true);
-    const updated = await updatePullRequest(
-      workspaceId,
-      prListTarget,
-      prEdit.number,
-      { title: prEdit.title.trim(), body: prEdit.body },
-    );
-    setPrBusy(false);
-    if (updated) {
-      setPrEdit(null);
-      setSyncSnack({
-        severity: "success",
-        message: `PR #${updated.number} updated`,
-      });
-      void refreshPrList(prListTarget, prListState);
-    }
-  }, [
-    workspaceId,
-    prListTarget,
-    prEdit,
-    prListState,
-    updatePullRequest,
-    refreshPrList,
-  ]);
-
-  const handleClosePullRequest = useCallback(
-    async (prNumber: number) => {
-      if (!workspaceId || !prListTarget) return;
-      setPrBusy(true);
-      const closed = await closePullRequest(
-        workspaceId,
-        prListTarget,
-        prNumber,
-      );
-      setPrBusy(false);
-      setPrCloseConfirm(null);
-      if (closed) {
-        setSyncSnack({
-          severity: "success",
-          message: `PR #${closed.number} closed without merging`,
-        });
-        void refreshPrList(prListTarget, prListState);
-      }
-    },
-    [workspaceId, prListTarget, prListState, closePullRequest, refreshPrList],
-  );
 
   const getContextMenuItems = useCallback(
     (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
@@ -1018,94 +557,6 @@ export function DbtExplorer() {
             New job
           </MenuItem>,
         );
-        if (project?.repo) {
-          const status = gitStatusByProject[parsed.projectId];
-          const changeCount = status?.changes.length ?? 0;
-          items.push(
-            <MenuItem
-              key="git-commit"
-              disabled={changeCount === 0}
-              onClick={() => {
-                openCommitDialog(parsed.projectId);
-                helpers.closeMenu();
-              }}
-            >
-              <ListItemIcon>
-                <CommitIcon size={16} strokeWidth={1.5} />
-              </ListItemIcon>
-              {changeCount > 0
-                ? `Commit & push (${changeCount})\u2026`
-                : "Commit & push"}
-            </MenuItem>,
-            <MenuItem
-              key="git-pull"
-              disabled={syncingProjectId === parsed.projectId}
-              onClick={() => {
-                void handleSyncProject(parsed.projectId);
-                helpers.closeMenu();
-              }}
-            >
-              <ListItemIcon>
-                <SyncIcon size={16} strokeWidth={1.5} />
-              </ListItemIcon>
-              {syncingProjectId === parsed.projectId
-                ? "Pulling\u2026"
-                : "Pull from remote"}
-            </MenuItem>,
-            <MenuItem
-              key="git-branch"
-              onClick={() => {
-                setBranchTarget(parsed.projectId);
-                setBranchName("");
-                helpers.closeMenu();
-              }}
-            >
-              <ListItemIcon>
-                <NewBranchIcon size={16} strokeWidth={1.5} />
-              </ListItemIcon>
-              Create branch
-            </MenuItem>,
-            <MenuItem
-              key="git-switch"
-              onClick={() => {
-                void openSwitchDialog(parsed.projectId);
-                helpers.closeMenu();
-              }}
-            >
-              <ListItemIcon>
-                <SwitchBranchIcon size={16} strokeWidth={1.5} />
-              </ListItemIcon>
-              Switch branch
-            </MenuItem>,
-            <MenuItem
-              key="git-pr"
-              onClick={() => {
-                setPrTarget(parsed.projectId);
-                setPrTitle("");
-                setPrBody("");
-                helpers.closeMenu();
-              }}
-            >
-              <ListItemIcon>
-                <PullRequestIcon size={16} strokeWidth={1.5} />
-              </ListItemIcon>
-              Open pull request
-            </MenuItem>,
-            <MenuItem
-              key="git-pr-list"
-              onClick={() => {
-                openPrListDialog(parsed.projectId);
-                helpers.closeMenu();
-              }}
-            >
-              <ListItemIcon>
-                <PullRequestIcon size={16} strokeWidth={1.5} />
-              </ListItemIcon>
-              Pull requests
-            </MenuItem>,
-            <Divider key="git-divider" />,
-          );
-        }
         items.push(
           <MenuItem
             key="edit-project"
@@ -1162,126 +613,39 @@ export function DbtExplorer() {
       }
       return items;
     },
-    [
-      handleItemClick,
-      openProjectSettingsFromMenu,
-      projects,
-      handleSyncProject,
-      syncingProjectId,
-      gitStatusByProject,
-      openCommitDialog,
-      openSwitchDialog,
-      openPrListDialog,
-      handleNewJob,
-    ],
+    [handleItemClick, openProjectSettingsFromMenu, projects, handleNewJob],
   );
 
   // Hover kebab: same actions as the right-click menu, but discoverable.
-  const getRightAdornment = useCallback(
-    (node: ResourceTreeNode) => {
-      const parsed = parseNodeId(node.id);
-      // The Jobs folder gets a kebab (→ "New job"); other dirs/runs do not.
-      if (parsed.kind === "runs") return null;
-      if (parsed.kind === "dir" && parsed.path !== JOBS_DIR) return null;
+  const getRightAdornment = useCallback((node: ResourceTreeNode) => {
+    const parsed = parseNodeId(node.id);
+    // The Jobs folder gets a kebab (→ "New job"); other dirs/runs do not.
+    if (parsed.kind === "runs") return null;
+    if (parsed.kind === "dir" && parsed.path !== JOBS_DIR) return null;
 
-      // Per-file change dot (modified/added) for repo-bound projects.
-      if (parsed.kind === "file") {
-        const status = gitStatusByProject[parsed.projectId];
-        const change = status?.changes.find(c => c.path === parsed.path);
-        if (!change) return null;
-        const color =
-          change.status === "added"
-            ? "success.main"
-            : change.status === "deleted"
-              ? "error.main"
-              : "warning.main";
-        const letter =
-          change.status === "added"
-            ? "A"
-            : change.status === "deleted"
-              ? "D"
-              : "M";
-        return (
-          <Tooltip title={`${change.status} (uncommitted)`}>
-            <Box
-              component="span"
-              sx={{ color, fontSize: 11, fontWeight: 700, pr: 0.5 }}
-            >
-              {letter}
-            </Box>
-          </Tooltip>
-        );
-      }
+    if (parsed.kind === "file") return null;
 
-      const project =
-        parsed.kind === "project"
-          ? projects.find(p => p._id === parsed.projectId)
-          : undefined;
-      const kebab = (
-        <IconButton
-          size="small"
-          aria-label="Actions"
-          className="dbt-row-kebab"
-          onClick={event => {
-            event.stopPropagation();
-            setKebabMenu({ anchorEl: event.currentTarget, node });
-          }}
-          sx={{
-            p: 0.25,
-            opacity: 0,
-            transition: "opacity 0.1s",
-            ".MuiListItemButton-root:hover &": { opacity: 1 },
-            "&:focus-visible, &[aria-expanded='true']": { opacity: 1 },
-          }}
-        >
-          <KebabIcon size={15} strokeWidth={1.5} />
-        </IconButton>
-      );
-      if (!project?.repo) return kebab;
-      const status = gitStatusByProject[parsed.projectId];
-      const changeCount = status?.changes.length ?? 0;
-      const branchLabel =
-        checkoutBranchByProject[parsed.projectId] ??
-        status?.branch ??
-        project.repo.branch;
-      return (
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
-          <Tooltip
-            title={
-              `${project.repo.owner}/${project.repo.repo} @ ${branchLabel}` +
-              (changeCount > 0 ? ` — ${changeCount} uncommitted` : "")
-            }
-          >
-            <Box
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: 0.25,
-                color: changeCount > 0 ? "warning.main" : "text.secondary",
-                fontSize: 11,
-                maxWidth: 90,
-              }}
-            >
-              <GithubIcon size={12} strokeWidth={1.5} />
-              <Box
-                component="span"
-                sx={{
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {branchLabel}
-                {changeCount > 0 ? ` •${changeCount}` : ""}
-              </Box>
-            </Box>
-          </Tooltip>
-          {kebab}
-        </Box>
-      );
-    },
-    [projects, gitStatusByProject, checkoutBranchByProject],
-  );
+    return (
+      <IconButton
+        size="small"
+        aria-label="Actions"
+        className="dbt-row-kebab"
+        onClick={event => {
+          event.stopPropagation();
+          setKebabMenu({ anchorEl: event.currentTarget, node });
+        }}
+        sx={{
+          p: 0.25,
+          opacity: 0,
+          transition: "opacity 0.1s",
+          ".MuiListItemButton-root:hover &": { opacity: 1 },
+          "&:focus-visible, &[aria-expanded='true']": { opacity: 1 },
+        }}
+      >
+        <KebabIcon size={15} strokeWidth={1.5} />
+      </IconButton>
+    );
+  }, []);
 
   const handleNewFileConfirm = useCallback(async () => {
     if (!workspaceId || !newFileTarget) return;
@@ -1318,8 +682,7 @@ export function DbtExplorer() {
     setDeleteTarget(null);
   }, [deleteTarget, workspaceId, deleteProject, deleteFile, deleteJob]);
 
-  // Project-level actions (the kebab next to the project switcher). Git
-  // actions live in the Version control section instead.
+  // Project-level actions (the kebab next to the project switcher).
   const projectMenuItems = useCallback(
     (projectId: string, close: () => void) => {
       const project = projects.find(p => p._id === projectId);
@@ -1391,78 +754,6 @@ export function DbtExplorer() {
       ];
     },
     [projects, handleNewJob, openProjectSettingsFromMenu],
-  );
-
-  // Git actions overflow menu (Version control header). Primary commit action
-  // is a dedicated button; the rest live here.
-  const gitMenuItems = useCallback(
-    (projectId: string, close: () => void) => [
-      <MenuItem
-        key="pull"
-        disabled={syncingProjectId === projectId}
-        onClick={() => {
-          void handleSyncProject(projectId);
-          close();
-        }}
-      >
-        <ListItemIcon>
-          <SyncIcon size={16} strokeWidth={1.5} />
-        </ListItemIcon>
-        {syncingProjectId === projectId ? "Pulling\u2026" : "Pull from remote"}
-      </MenuItem>,
-      <MenuItem
-        key="branch"
-        onClick={() => {
-          setBranchTarget(projectId);
-          setBranchName("");
-          close();
-        }}
-      >
-        <ListItemIcon>
-          <NewBranchIcon size={16} strokeWidth={1.5} />
-        </ListItemIcon>
-        Create branch
-      </MenuItem>,
-      <MenuItem
-        key="switch"
-        onClick={() => {
-          void openSwitchDialog(projectId);
-          close();
-        }}
-      >
-        <ListItemIcon>
-          <SwitchBranchIcon size={16} strokeWidth={1.5} />
-        </ListItemIcon>
-        Switch branch
-      </MenuItem>,
-      <MenuItem
-        key="pr"
-        onClick={() => {
-          setPrTarget(projectId);
-          setPrTitle("");
-          setPrBody("");
-          close();
-        }}
-      >
-        <ListItemIcon>
-          <PullRequestIcon size={16} strokeWidth={1.5} />
-        </ListItemIcon>
-        Open pull request
-      </MenuItem>,
-      <MenuItem
-        key="pr-list"
-        onClick={() => {
-          openPrListDialog(projectId);
-          close();
-        }}
-      >
-        <ListItemIcon>
-          <PullRequestIcon size={16} strokeWidth={1.5} />
-        </ListItemIcon>
-        Pull requests
-      </MenuItem>,
-    ],
-    [syncingProjectId, handleSyncProject, openSwitchDialog, openPrListDialog],
   );
 
   const projectSelector = (
@@ -1579,152 +870,6 @@ export function DbtExplorer() {
           ) : !activeProject ? null : (
             <Box sx={{ display: "flex", flexDirection: "column" }}>
               {projectSelectorRow}
-              {/* Version control (repo-bound projects) */}
-              {activeProject.repo ? (
-                <>
-                  <SectionHeader
-                    label="Version control"
-                    open={vcOpen}
-                    onToggle={() => setVcOpen(o => !o)}
-                    actions={
-                      <Tooltip title="Branch actions">
-                        <IconButton
-                          size="small"
-                          onClick={e => setGitMenuAnchor(e.currentTarget)}
-                        >
-                          <KebabIcon size={15} strokeWidth={1.75} />
-                        </IconButton>
-                      </Tooltip>
-                    }
-                  />
-                  {vcOpen && (
-                    <Box sx={{ px: 1.25, pb: 1 }}>
-                      <Box
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 0.5,
-                          color: "text.secondary",
-                          mb: 0.75,
-                          minWidth: 0,
-                        }}
-                      >
-                        <GithubIcon size={13} strokeWidth={1.75} />
-                        <Box
-                          component="span"
-                          sx={{
-                            fontSize: 12,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                            flex: 1,
-                          }}
-                        >
-                          {activeBranch ?? activeProject.repo.branch}
-                        </Box>
-                        {activeBranchProtected && (
-                          <Tooltip title="Protected branch — changes merge via pull request">
-                            <LockIcon size={12} strokeWidth={1.75} />
-                          </Tooltip>
-                        )}
-                        {activeChangeCount > 0 && (
-                          <Chip
-                            label={activeChangeCount}
-                            size="small"
-                            color="warning"
-                            sx={{ height: 16, fontSize: "0.62rem" }}
-                          />
-                        )}
-                      </Box>
-                      <Button
-                        fullWidth
-                        size="small"
-                        variant="outlined"
-                        startIcon={<CommitIcon size={15} strokeWidth={1.75} />}
-                        disabled={activeChangeCount === 0}
-                        onClick={() => openCommitDialog(activeProject._id)}
-                        sx={{ textTransform: "none", mb: 1 }}
-                      >
-                        {activeChangeCount > 0
-                          ? `Commit & push (${activeChangeCount})`
-                          : "No changes to commit"}
-                      </Button>
-                      {activeChangeCount > 0 && (
-                        <Box
-                          sx={{
-                            border: 1,
-                            borderColor: "divider",
-                            borderRadius: 1,
-                            overflow: "hidden",
-                          }}
-                        >
-                          {activeStatus?.changes.map(change => {
-                            const meta = STATUS_META[change.status];
-                            return (
-                              <Box
-                                key={change.path}
-                                role="button"
-                                tabIndex={0}
-                                title="View diff"
-                                onClick={() =>
-                                  void handleOpenDiff(
-                                    activeProject._id,
-                                    change.path,
-                                  )
-                                }
-                                onKeyDown={e => {
-                                  if (e.key === "Enter" || e.key === " ") {
-                                    e.preventDefault();
-                                    void handleOpenDiff(
-                                      activeProject._id,
-                                      change.path,
-                                    );
-                                  }
-                                }}
-                                sx={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: 0.75,
-                                  px: 1,
-                                  py: 0.4,
-                                  fontSize: 12,
-                                  cursor: "pointer",
-                                  "&:hover": {
-                                    backgroundColor: "action.hover",
-                                  },
-                                }}
-                              >
-                                <Box
-                                  component="span"
-                                  sx={{
-                                    fontWeight: 700,
-                                    width: 12,
-                                    color: meta.color,
-                                  }}
-                                >
-                                  {meta.letter}
-                                </Box>
-                                <Box
-                                  component="span"
-                                  sx={{
-                                    overflow: "hidden",
-                                    textOverflow: "ellipsis",
-                                    whiteSpace: "nowrap",
-                                  }}
-                                >
-                                  {change.path}
-                                </Box>
-                              </Box>
-                            );
-                          })}
-                        </Box>
-                      )}
-                    </Box>
-                  )}
-                  <Divider />
-                </>
-              ) : null}
-
               {/* File explorer */}
               <SectionHeader
                 label="File explorer"
@@ -2038,19 +1183,6 @@ export function DbtExplorer() {
           : null}
       </Menu>
 
-      {/* Git actions menu (Version control header) */}
-      <Menu
-        open={!!gitMenuAnchor}
-        anchorEl={gitMenuAnchor}
-        onClose={() => setGitMenuAnchor(null)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
-        transformOrigin={{ vertical: "top", horizontal: "right" }}
-      >
-        {activeProjectId
-          ? gitMenuItems(activeProjectId, () => setGitMenuAnchor(null))
-          : null}
-      </Menu>
-
       {/* New file dialog */}
       <Dialog
         open={!!newFileTarget}
@@ -2139,791 +1271,6 @@ export function DbtExplorer() {
         onConfirm={() => void handleDeleteConfirm()}
         onCancel={() => setDeleteTarget(null)}
       />
-
-      {/* Commit & push dialog */}
-      <Dialog
-        open={!!commitTarget}
-        onClose={() => setCommitTarget(null)}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>Commit &amp; push</DialogTitle>
-        <DialogContent>
-          {(() => {
-            const status = commitTarget
-              ? gitStatusByProject[commitTarget]
-              : undefined;
-            const changes = status?.changes ?? [];
-            return (
-              <>
-                <Typography variant="caption" color="text.secondary">
-                  {status
-                    ? `${changes.length} change${
-                        changes.length === 1 ? "" : "s"
-                      } on ${status.branch}` +
-                      (changes.length > 0
-                        ? " — click a file to view its diff"
-                        : "")
-                    : "Loading changes…"}
-                </Typography>
-                <Box
-                  sx={{
-                    maxHeight: 160,
-                    overflow: "auto",
-                    my: 1,
-                    border: 1,
-                    borderColor: "divider",
-                    borderRadius: 1,
-                  }}
-                >
-                  {changes.length === 0 ? (
-                    <Typography
-                      variant="body2"
-                      sx={{ p: 1.5, color: "text.secondary" }}
-                    >
-                      No changes to commit.
-                    </Typography>
-                  ) : (
-                    changes.map(change => (
-                      <Box
-                        key={change.path}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => {
-                          if (commitTarget) {
-                            void handleOpenDiff(commitTarget, change.path);
-                          }
-                        }}
-                        onKeyDown={e => {
-                          if (
-                            (e.key === "Enter" || e.key === " ") &&
-                            commitTarget
-                          ) {
-                            e.preventDefault();
-                            void handleOpenDiff(commitTarget, change.path);
-                          }
-                        }}
-                        title="View diff"
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 1,
-                          px: 1.5,
-                          py: 0.5,
-                          fontSize: 13,
-                          cursor: "pointer",
-                          "&:hover": { backgroundColor: "action.hover" },
-                        }}
-                      >
-                        <Box
-                          component="span"
-                          sx={{
-                            fontWeight: 700,
-                            width: 14,
-                            color:
-                              change.status === "added"
-                                ? "success.main"
-                                : change.status === "deleted"
-                                  ? "error.main"
-                                  : "warning.main",
-                          }}
-                        >
-                          {change.status === "added"
-                            ? "A"
-                            : change.status === "deleted"
-                              ? "D"
-                              : "M"}
-                        </Box>
-                        <Box
-                          component="span"
-                          sx={{
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {change.path}
-                        </Box>
-                      </Box>
-                    ))
-                  )}
-                </Box>
-                <Box
-                  sx={{
-                    display: "flex",
-                    justifyContent: "flex-end",
-                    mb: 0.5,
-                  }}
-                >
-                  <Button
-                    size="small"
-                    onClick={handleGenerateMessage}
-                    disabled={generatingMessage || changes.length === 0}
-                    startIcon={
-                      generatingMessage ? (
-                        <CircularProgress size={13} />
-                      ) : (
-                        <GenerateIcon size={14} strokeWidth={1.75} />
-                      )
-                    }
-                    sx={{ textTransform: "none" }}
-                  >
-                    {generatingMessage ? "Generating…" : "Generate with AI"}
-                  </Button>
-                </Box>
-                <TextField
-                  autoFocus
-                  fullWidth
-                  multiline
-                  minRows={2}
-                  size="small"
-                  label="Commit message"
-                  value={commitMessage}
-                  onChange={e => setCommitMessage(e.target.value)}
-                />
-                {commitTargetProtected && (
-                  <>
-                    <Alert severity="info" sx={{ mt: 1.5 }} icon={false}>
-                      <Box
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 0.75,
-                        }}
-                      >
-                        <LockIcon size={14} strokeWidth={1.75} />
-                        <span>
-                          {status?.branch ?? "This branch"} is protected —
-                          changes commit to a new branch, then merge via pull
-                          request.
-                        </span>
-                      </Box>
-                    </Alert>
-                    <TextField
-                      fullWidth
-                      size="small"
-                      label="New branch name"
-                      placeholder="feature/my-change"
-                      value={commitBranchName}
-                      onChange={e => setCommitBranchName(e.target.value)}
-                      sx={{ mt: 1.5 }}
-                    />
-                  </>
-                )}
-                {gitResult && (
-                  <Typography
-                    variant="caption"
-                    color="success.main"
-                    display="block"
-                    sx={{ mt: 1 }}
-                  >
-                    {gitResult}
-                  </Typography>
-                )}
-              </>
-            );
-          })()}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setCommitTarget(null)}>Close</Button>
-          <Button
-            onClick={handleCommit}
-            startIcon={
-              gitBusy ? (
-                <CircularProgress size={14} />
-              ) : (
-                <CommitIcon size={15} strokeWidth={1.75} />
-              )
-            }
-            disabled={
-              gitBusy ||
-              !commitMessage.trim() ||
-              (commitTargetProtected && !commitBranchName.trim()) ||
-              (commitTarget
-                ? (gitStatusByProject[commitTarget]?.changes.length ?? 0) === 0
-                : true)
-            }
-          >
-            {gitBusy
-              ? "Pushing…"
-              : commitTargetProtected
-                ? "Commit to new branch"
-                : "Commit & push"}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* File diff dialog (side-by-side, screenshot 52) */}
-      <Dialog
-        open={!!diffData || diffLoading}
-        onClose={() => setDiffData(null)}
-        maxWidth="lg"
-        fullWidth
-        PaperProps={{ sx: { height: "80vh" } }}
-      >
-        <DialogTitle
-          sx={{ fontSize: "0.9rem", fontFamily: "monospace", py: 1.25 }}
-        >
-          {diffData?.path ?? "Loading diff…"}
-        </DialogTitle>
-        <DialogContent dividers sx={{ p: 0 }}>
-          {diffLoading ? (
-            <Box
-              sx={{
-                height: "100%",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <CircularProgress size={20} />
-            </Box>
-          ) : diffData ? (
-            <DiffEditor
-              height="100%"
-              theme={monacoTheme}
-              original={diffData.base}
-              modified={diffData.working}
-              language={dbtDiffLanguage(diffData.path)}
-              beforeMount={registerDbtJinjaLanguage}
-              options={{ ...EDITOR_OPTIONS.diff, fontSize: 12 }}
-            />
-          ) : null}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDiffData(null)}>Close</Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Create branch dialog */}
-      <Dialog
-        open={!!branchTarget}
-        onClose={() => setBranchTarget(null)}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>Create branch</DialogTitle>
-        <DialogContent>
-          <Typography variant="caption" color="text.secondary">
-            Branches off the current branch and checks it out.
-          </Typography>
-          <TextField
-            autoFocus
-            fullWidth
-            size="small"
-            label="New branch name"
-            placeholder="feature/my-change"
-            value={branchName}
-            onChange={e => setBranchName(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter") void handleCreateBranch();
-            }}
-            sx={{ mt: 1.5 }}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setBranchTarget(null)}>Cancel</Button>
-          <Button
-            onClick={handleCreateBranch}
-            disabled={gitBusy || !branchName.trim()}
-          >
-            {gitBusy ? "Creating…" : "Create & switch"}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Switch branch dialog */}
-      <Dialog
-        open={!!switchTarget}
-        onClose={() => setSwitchTarget(null)}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>Switch branch</DialogTitle>
-        <DialogContent>
-          <FormControl fullWidth size="small" sx={{ mt: 1.5 }}>
-            <InputLabel id="dbt-switch-branch">Branch</InputLabel>
-            <Select
-              labelId="dbt-switch-branch"
-              label="Branch"
-              value={switchValue}
-              onChange={e => setSwitchValue(e.target.value)}
-            >
-              {switchBranches.length === 0 && (
-                <MenuItem disabled value="">
-                  Loading branches…
-                </MenuItem>
-              )}
-              {switchBranches.map(branch => (
-                <MenuItem key={branch} value={branch}>
-                  {branch}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            display="block"
-            sx={{ mt: 1 }}
-          >
-            Switching pulls the selected branch for you only — teammates keep
-            their own checkout. Your uncommitted changes stay with the branch
-            they were made on, waiting for you when you switch back.
-          </Typography>
-          {switchTarget && gitStatusByProject[switchTarget]?.hasChanges && (
-            <FormControlLabel
-              sx={{ mt: 0.5 }}
-              control={
-                <Checkbox
-                  size="small"
-                  checked={switchDiscard}
-                  onChange={e => setSwitchDiscard(e.target.checked)}
-                />
-              }
-              label={
-                <Typography variant="caption">
-                  Discard my uncommitted changes on{" "}
-                  <strong>
-                    {checkoutBranchByProject[switchTarget] ??
-                      gitStatusByProject[switchTarget]?.branch}
-                  </strong>{" "}
-                  instead of keeping them there
-                </Typography>
-              }
-            />
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setSwitchTarget(null)}>Cancel</Button>
-          <Button
-            onClick={handleSwitchBranch}
-            disabled={gitBusy || !switchValue}
-          >
-            {gitBusy ? "Switching…" : "Switch"}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Open pull request dialog */}
-      <Dialog
-        open={!!prTarget}
-        onClose={() => setPrTarget(null)}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>Open pull request</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            fullWidth
-            size="small"
-            label="Title"
-            value={prTitle}
-            onChange={e => setPrTitle(e.target.value)}
-            sx={{ mt: 1.5, mb: 2 }}
-          />
-          <TextField
-            fullWidth
-            multiline
-            minRows={3}
-            size="small"
-            label="Description (optional)"
-            value={prBody}
-            onChange={e => setPrBody(e.target.value)}
-          />
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            display="block"
-            sx={{ mt: 1 }}
-          >
-            Opens a PR from the current branch into the repository&apos;s
-            default branch.
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setPrTarget(null)}>Cancel</Button>
-          <Button
-            onClick={handleOpenPullRequest}
-            startIcon={
-              gitBusy ? (
-                <CircularProgress size={14} />
-              ) : (
-                <PullRequestIcon size={15} strokeWidth={1.75} />
-              )
-            }
-            disabled={gitBusy || !prTitle.trim()}
-          >
-            {gitBusy ? "Opening…" : "Open PR"}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Pull requests list dialog (view / edit / close) */}
-      <Dialog
-        open={!!prListTarget}
-        onClose={() => setPrListTarget(null)}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle
-          sx={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 1,
-          }}
-        >
-          Pull requests
-          <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-            <FormControl size="small" sx={{ minWidth: 90 }}>
-              <Select
-                value={prListState}
-                onChange={e =>
-                  handlePrStateFilterChange(e.target.value as "open" | "all")
-                }
-              >
-                <MenuItem value="open">Open</MenuItem>
-                <MenuItem value="all">All</MenuItem>
-              </Select>
-            </FormControl>
-            <Tooltip title="Refresh">
-              <IconButton
-                size="small"
-                onClick={() => {
-                  if (prListTarget) {
-                    void refreshPrList(prListTarget, prListState);
-                  }
-                }}
-              >
-                <RefreshIcon size={16} strokeWidth={2} />
-              </IconButton>
-            </Tooltip>
-          </Box>
-        </DialogTitle>
-        <DialogContent dividers sx={{ p: 0, minHeight: 160 }}>
-          {prList === null ? (
-            <Box
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                py: 5,
-              }}
-            >
-              <CircularProgress size={20} />
-            </Box>
-          ) : prList.length === 0 ? (
-            <Typography
-              variant="body2"
-              color="text.secondary"
-              sx={{ px: 2.5, py: 4, textAlign: "center" }}
-            >
-              {prListState === "open"
-                ? "No open pull requests."
-                : "No pull requests."}
-            </Typography>
-          ) : (
-            prList.map(pr => {
-              const isEditing = prEdit?.number === pr.number;
-              const isConfirmingClose = prCloseConfirm === pr.number;
-              return (
-                <Box
-                  key={pr.number}
-                  sx={{
-                    px: 2,
-                    py: 1.25,
-                    borderBottom: 1,
-                    borderColor: "divider",
-                    "&:last-of-type": { borderBottom: 0 },
-                  }}
-                >
-                  <Box
-                    sx={{ display: "flex", alignItems: "flex-start", gap: 1 }}
-                  >
-                    <Box sx={{ mt: 0.25, flexShrink: 0, display: "flex" }}>
-                      {pr.merged ? (
-                        <MergedIcon
-                          size={16}
-                          strokeWidth={2}
-                          color={theme.palette.secondary.main}
-                        />
-                      ) : pr.state === "open" ? (
-                        <PullRequestIcon
-                          size={16}
-                          strokeWidth={2}
-                          color={theme.palette.success.main}
-                        />
-                      ) : (
-                        <PullRequestClosedIcon
-                          size={16}
-                          strokeWidth={2}
-                          color={theme.palette.error.main}
-                        />
-                      )}
-                    </Box>
-                    <Box sx={{ flexGrow: 1, minWidth: 0 }}>
-                      <Link
-                        href={pr.htmlUrl}
-                        target="_blank"
-                        rel="noopener"
-                        underline="hover"
-                        color="text.primary"
-                        sx={{
-                          fontSize: "0.85rem",
-                          fontWeight: 500,
-                          display: "block",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        #{pr.number} {pr.title}
-                      </Link>
-                      <Box
-                        sx={{
-                          display: "flex",
-                          alignItems: "baseline",
-                          gap: 0.5,
-                          minWidth: 0,
-                        }}
-                      >
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          sx={{
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                            minWidth: 0,
-                          }}
-                        >
-                          {pr.headRef} → {pr.baseRef}
-                          {pr.author ? ` · ${pr.author}` : ""}
-                        </Typography>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          sx={{ flexShrink: 0 }}
-                        >
-                          · {new Date(pr.updatedAt).toLocaleDateString()}
-                        </Typography>
-                      </Box>
-                    </Box>
-                    {pr.draft && pr.state === "open" && (
-                      <Chip
-                        label="Draft"
-                        size="small"
-                        variant="outlined"
-                        sx={{ flexShrink: 0 }}
-                      />
-                    )}
-                    {pr.merged ? (
-                      <Chip
-                        label="Merged"
-                        size="small"
-                        color="secondary"
-                        variant="outlined"
-                        sx={{ flexShrink: 0 }}
-                      />
-                    ) : pr.state === "closed" ? (
-                      <Chip
-                        label="Closed"
-                        size="small"
-                        color="error"
-                        variant="outlined"
-                        sx={{ flexShrink: 0 }}
-                      />
-                    ) : (
-                      <Box
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 0.25,
-                          flexShrink: 0,
-                        }}
-                      >
-                        <Tooltip title="Edit title & description">
-                          <IconButton
-                            size="small"
-                            disabled={prBusy}
-                            onClick={() => {
-                              setPrCloseConfirm(null);
-                              setPrEdit(
-                                isEditing
-                                  ? null
-                                  : {
-                                      number: pr.number,
-                                      title: pr.title,
-                                      body: pr.body,
-                                    },
-                              );
-                            }}
-                          >
-                            <RenameIcon size={14} strokeWidth={1.75} />
-                          </IconButton>
-                        </Tooltip>
-                        <Tooltip title="Close without merging">
-                          <IconButton
-                            size="small"
-                            disabled={prBusy}
-                            onClick={() => {
-                              setPrEdit(null);
-                              setPrCloseConfirm(
-                                isConfirmingClose ? null : pr.number,
-                              );
-                            }}
-                          >
-                            <PullRequestClosedIcon
-                              size={14}
-                              strokeWidth={1.75}
-                            />
-                          </IconButton>
-                        </Tooltip>
-                      </Box>
-                    )}
-                  </Box>
-                  {isEditing && (
-                    <Box sx={{ mt: 1.25, pl: 3 }}>
-                      <TextField
-                        autoFocus
-                        fullWidth
-                        size="small"
-                        label="Title"
-                        value={prEdit.title}
-                        onChange={e =>
-                          setPrEdit({ ...prEdit, title: e.target.value })
-                        }
-                        sx={{ mb: 1.5 }}
-                      />
-                      <TextField
-                        fullWidth
-                        multiline
-                        minRows={2}
-                        size="small"
-                        label="Description"
-                        value={prEdit.body}
-                        onChange={e =>
-                          setPrEdit({ ...prEdit, body: e.target.value })
-                        }
-                      />
-                      <Box
-                        sx={{
-                          display: "flex",
-                          justifyContent: "flex-end",
-                          gap: 1,
-                          mt: 1,
-                        }}
-                      >
-                        <Button size="small" onClick={() => setPrEdit(null)}>
-                          Cancel
-                        </Button>
-                        <Button
-                          size="small"
-                          variant="contained"
-                          onClick={handleUpdatePullRequest}
-                          disabled={prBusy || !prEdit.title.trim()}
-                          startIcon={
-                            prBusy ? <CircularProgress size={12} /> : undefined
-                          }
-                        >
-                          {prBusy ? "Saving…" : "Save"}
-                        </Button>
-                      </Box>
-                    </Box>
-                  )}
-                  {isConfirmingClose && (
-                    <Box
-                      sx={{
-                        mt: 1,
-                        pl: 3,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "flex-end",
-                        gap: 1,
-                      }}
-                    >
-                      <Typography variant="caption" color="text.secondary">
-                        Close #{pr.number} without merging?
-                      </Typography>
-                      <Button
-                        size="small"
-                        onClick={() => setPrCloseConfirm(null)}
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        size="small"
-                        color="error"
-                        variant="contained"
-                        onClick={() => void handleClosePullRequest(pr.number)}
-                        disabled={prBusy}
-                        startIcon={
-                          prBusy ? <CircularProgress size={12} /> : undefined
-                        }
-                      >
-                        {prBusy ? "Closing…" : "Close PR"}
-                      </Button>
-                    </Box>
-                  )}
-                </Box>
-              );
-            })
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button
-            startIcon={<PullRequestIcon size={15} strokeWidth={1.75} />}
-            onClick={() => {
-              const pid = prListTarget;
-              setPrListTarget(null);
-              if (pid) {
-                setPrTarget(pid);
-                setPrTitle("");
-                setPrBody("");
-              }
-            }}
-          >
-            New PR
-          </Button>
-          <Box sx={{ flexGrow: 1 }} />
-          <Button onClick={() => setPrListTarget(null)}>Close</Button>
-        </DialogActions>
-      </Dialog>
-
-      <Snackbar
-        open={!!syncSnack}
-        autoHideDuration={syncSnack?.severity === "warning" ? 10000 : 6000}
-        onClose={() => setSyncSnack(null)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-      >
-        {syncSnack ? (
-          <Alert
-            severity={syncSnack.severity}
-            variant="filled"
-            onClose={() => setSyncSnack(null)}
-            sx={{ maxWidth: 520 }}
-            action={
-              syncSnack.projectId ? (
-                <Button
-                  color="inherit"
-                  size="small"
-                  onClick={() => {
-                    const pid = syncSnack.projectId;
-                    setSyncSnack(null);
-                    if (pid) void handleSyncProject(pid, true);
-                  }}
-                >
-                  Overwrite local
-                </Button>
-              ) : undefined
-            }
-          >
-            {syncSnack.message}
-          </Alert>
-        ) : undefined}
-      </Snackbar>
     </>
   );
 }
