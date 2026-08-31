@@ -52,6 +52,27 @@ export function appsConnectedRepoPushEnv(): string | undefined {
   return appsEnv("CONNECTED_REPO_PUSH");
 }
 
+/**
+ * Production: a workspace must connect its own GitHub repository before
+ * anything is saved to git — there is no Mako-hosted tier (apps.md §17).
+ * Unset (dev, previews, tests) = local bare repos, nothing durable.
+ */
+export function appsRequireConnectedRepo(): boolean {
+  return appsEnv("REQUIRE_CONNECTED_REPO") === "true";
+}
+
+/** Thrown by write paths when the gate above is on and no repo is bound. */
+export class RepoRequiredError extends Error {
+  readonly status = 412;
+  readonly code = "github_required";
+  constructor() {
+    super(
+      "Connect a GitHub repository first (Settings → GitHub). Mako keeps your apps and consoles in your own repo.",
+    );
+    this.name = "RepoRequiredError";
+  }
+}
+
 export type AppsSandboxProviderId = "local" | "e2b";
 
 /** Default and ceiling for sandbox command execution time. */

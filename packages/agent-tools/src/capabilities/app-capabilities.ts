@@ -34,13 +34,14 @@ export const APP_CAPABILITIES = [
     // One capability, one name, one result envelope (run-app.ts), three
     // adapters: Chat rebuilds the live iframe and self-captures a screenshot
     // (client tool), Desktop delivers the same executor via the mako-desktop
-    // loopback server (screenshot as MCP image content), and external MCP
-    // runs the server-side headless renderer (api/src/mcp/preview-tools.ts).
-    // Rendering a draft mutates nothing, so it is read-risk on every surface.
+    // loopback server (screenshot as MCP image content). The server-side
+    // headless renderer went with v1 (apps.md §17), so external MCP has no
+    // run_app — those clients verify with app_browse instead. Rendering
+    // mutates nothing, so it is read-risk on every surface it exists on.
     name: "run_app",
     pack: "app-ui",
     risk: "read",
-    surfaces: ALL_AGENT_SURFACES,
+    surfaces: ["in-chat", "desktop-acp"],
     resultKind: "ui-effect",
     desktopDelivery: "mako-desktop",
   }),

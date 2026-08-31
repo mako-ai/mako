@@ -20,6 +20,7 @@ export type TabKind =
   | "app"
   | "app-file"
   | "app-diff"
+  | "console-diff"
   | "plan"
   | "dbt-file"
   | "dbt-job"

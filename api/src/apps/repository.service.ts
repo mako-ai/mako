@@ -15,6 +15,7 @@
  *   WIP snapshots into session working trees by object id over the file
  *   transport without advertising the hidden refs.
  */
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -259,6 +260,112 @@ export async function commitSubtreeOnBranch(
   } finally {
     await fs.rm(indexFile, { force: true });
   }
+}
+
+/**
+ * The git object id of a blob with these contents — `sha1("blob <len>\0" +
+ * bytes)`. Computed in-process so a caller can stamp a derived index with
+ * the id git will assign without a round-trip (§16.3: consoles record their
+ * file's blob id and skip re-projection when it has not moved).
+ */
+export function blobOid(contents: string | Buffer): string {
+  const bytes = Buffer.isBuffer(contents)
+    ? contents
+    : Buffer.from(contents, "utf8");
+  return crypto
+    .createHash("sha1")
+    .update(`blob ${bytes.length}\0`)
+    .update(bytes)
+    .digest("hex");
+}
+
+export interface BlobMutation {
+  /** repo-relative path → full contents. */
+  writes?: Record<string, string>;
+  /** repo-relative paths to remove; absent paths are ignored. */
+  deletes?: string[];
+}
+
+/**
+ * Commit a set of whole-file writes and deletes onto `branch` with index
+ * plumbing only — no clone, no work tree: `hash-object -w` the blobs, load
+ * the head tree into a throwaway index, splice the entries in with
+ * `update-index --index-info`, `write-tree`, `commit-tree`, CAS the ref.
+ * A few milliseconds for a small change against any size of repo, which is
+ * what a console save needs (§16.3); `commitFilesOnBranch` clones and is
+ * for lifecycle-sized changes.
+ *
+ * Returns `unchanged: true` (and the head oid) when the mutation produces
+ * the tree already at head, so re-runs and no-op saves leave no commit —
+ * unless `allowEmpty` is set: a replayed version whose content equals its
+ * predecessor still happened (its author, date and message are the record),
+ * and dropping it would silently renumber history (§13.18 doctrine).
+ */
+export async function commitBlobsOnBranch(
+  repoDir: string,
+  branch: string,
+  mutation: BlobMutation,
+  options: { message: string; author?: GitAuthor; allowEmpty?: boolean },
+): Promise<{ commitOid: string; previousHead: string; unchanged: boolean }> {
+  const writes = Object.entries(mutation.writes ?? {}).map(
+    ([rel, contents]) => [assertSafeRelPath(rel), contents] as const,
+  );
+  const deletes = (mutation.deletes ?? []).map(p => assertSafeRelPath(p));
+  // Blobs first: they are content-addressed, so writing them before knowing
+  // the head is safe and keeps the CAS window short.
+  const oids = new Map<string, string>();
+  for (const [rel, contents] of writes) {
+    const { stdout } = await runGit(
+      ["-C", repoDir, "hash-object", "-w", "--stdin", "--path", rel],
+      { stdin: contents },
+    );
+    oids.set(rel, stdout.trim());
+  }
+  const indexInfo =
+    [
+      ...deletes.map(rel => `0 ${ZERO_OID}\t${rel}`),
+      ...writes.map(([rel]) => `100644 ${oids.get(rel)}\t${rel}`),
+    ].join("\n") + "\n";
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const head = await resolveCommit(repoDir, `refs/heads/${branch}`);
+    if (!head) throw new Error(`Branch ${branch} is missing`);
+    const headTree = await treeOfCommit(repoDir, head);
+    const indexFile = path.join(
+      os.tmpdir(),
+      `mako-apps-blobs-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    const env = { GIT_DIR: repoDir, GIT_INDEX_FILE: indexFile };
+    let treeOid: string;
+    try {
+      await runGit(["read-tree", headTree], { env, cwd: repoDir });
+      await runGit(["update-index", "--index-info"], {
+        env,
+        cwd: repoDir,
+        stdin: indexInfo,
+      });
+      treeOid = (
+        await runGit(["write-tree"], { env, cwd: repoDir })
+      ).stdout.trim();
+    } finally {
+      await fs.rm(indexFile, { force: true });
+    }
+    if (treeOid === headTree && !options.allowEmpty) {
+      return { commitOid: head, previousHead: head, unchanged: true };
+    }
+    const commitOid = await commitTree(repoDir, {
+      treeOid,
+      parents: [head],
+      message: options.message,
+      author: options.author,
+    });
+    if (await updateRefCas(repoDir, `refs/heads/${branch}`, commitOid, head)) {
+      return { commitOid, previousHead: head, unchanged: false };
+    }
+  }
+  throw new Error(
+    `Branch ${branch} kept advancing during a blob commit; retry.`,
+  );
 }
 
 export async function commitTree(

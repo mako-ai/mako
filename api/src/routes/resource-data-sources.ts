@@ -1,5 +1,5 @@
 /**
- * Unified data-source routes for dashboard data sources and app data bindings.
+ * Data-source routes for dashboards (materialization settings + refresh).
  *
  * Classification: Authenticated + workspace-scoped
  * (`unifiedAuthMiddleware` + workspace verification).
@@ -22,7 +22,7 @@ import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 const logger = loggers.api("resource-data-sources");
 const app = createRouter();
 
-const ResourceTypeSchema = z.enum(["dashboard", "app"]);
+const ResourceTypeSchema = z.enum(["dashboard"]);
 const ScheduleSchema = z.object({
   enabled: z.boolean(),
   cron: z.string().nullable(),
@@ -37,9 +37,7 @@ const ResourceParam = z.object({
   resourceType: ResourceTypeSchema.openapi({
     param: { name: "resourceType", in: "path" },
   }),
-  resourceId: z
-    .string()
-    .openapi({ param: { name: "resourceId", in: "path" } }),
+  resourceId: z.string().openapi({ param: { name: "resourceId", in: "path" } }),
 });
 
 const DataSourceParam = ResourceParam.extend({
@@ -119,7 +117,7 @@ app.openapi(
     method: "get",
     path: "/{resourceType}/{resourceId}",
     tags: ["Data Sources"],
-    summary: "List data sources for a dashboard or app",
+    summary: "List data sources for a dashboard",
     security: AUTH_SECURITY,
     request: { params: ResourceParam },
     responses: { ...OPEN_RESPONSES },
@@ -128,7 +126,7 @@ app.openapi(
     try {
       const dataSources = await listResourceDataSources({
         workspaceId: c.req.param("workspaceId") as string,
-        resourceType: c.req.param("resourceType") as "dashboard" | "app",
+        resourceType: c.req.param("resourceType") as "dashboard",
         resourceId: c.req.param("resourceId") as string,
         userId: c.get("user")?.id,
         memberRole: c.get("memberRole"),
@@ -149,7 +147,7 @@ app.openapi(
     method: "get",
     path: "/{resourceType}/{resourceId}/{dataSourceId}",
     tags: ["Data Sources"],
-    summary: "Get one dashboard/app data source",
+    summary: "Get one dashboard data source",
     security: AUTH_SECURITY,
     request: { params: DataSourceParam },
     responses: { ...OPEN_RESPONSES },
@@ -158,7 +156,7 @@ app.openapi(
     try {
       const dataSource = await getResourceDataSource({
         workspaceId: c.req.param("workspaceId") as string,
-        resourceType: c.req.param("resourceType") as "dashboard" | "app",
+        resourceType: c.req.param("resourceType") as "dashboard",
         resourceId: c.req.param("resourceId") as string,
         dataSourceId: c.req.param("dataSourceId") as string,
         userId: c.get("user")?.id,
@@ -190,7 +188,7 @@ app.openapi(
       const body = await c.req.json().catch(() => ({}));
       const dataSource = await updateResourceDataSourceSettings({
         workspaceId: c.req.param("workspaceId") as string,
-        resourceType: c.req.param("resourceType") as "dashboard" | "app",
+        resourceType: c.req.param("resourceType") as "dashboard",
         resourceId: c.req.param("resourceId") as string,
         dataSourceId: c.req.param("dataSourceId") as string,
         settings: body,
@@ -213,7 +211,7 @@ app.openapi(
     method: "post",
     path: "/{resourceType}/{resourceId}/refresh",
     tags: ["Data Sources"],
-    summary: "Refresh all materialized data sources for a dashboard or app",
+    summary: "Refresh all materialized data sources for a dashboard",
     security: AUTH_SECURITY,
     request: { params: ResourceParam },
     responses: { ...OPEN_RESPONSES },
@@ -222,7 +220,7 @@ app.openapi(
     try {
       const result = await refreshResourceDataSources({
         workspaceId: c.req.param("workspaceId") as string,
-        resourceType: c.req.param("resourceType") as "dashboard" | "app",
+        resourceType: c.req.param("resourceType") as "dashboard",
         resourceId: c.req.param("resourceId") as string,
         userId: c.get("user")?.id,
         memberRole: c.get("memberRole"),
@@ -243,7 +241,7 @@ app.openapi(
     method: "post",
     path: "/{resourceType}/{resourceId}/{dataSourceId}/refresh",
     tags: ["Data Sources"],
-    summary: "Refresh one materialized data source for a dashboard or app",
+    summary: "Refresh one materialized data source for a dashboard",
     security: AUTH_SECURITY,
     request: { params: DataSourceParam },
     responses: { ...OPEN_RESPONSES },
@@ -252,7 +250,7 @@ app.openapi(
     try {
       const result = await refreshResourceDataSources({
         workspaceId: c.req.param("workspaceId") as string,
-        resourceType: c.req.param("resourceType") as "dashboard" | "app",
+        resourceType: c.req.param("resourceType") as "dashboard",
         resourceId: c.req.param("resourceId") as string,
         dataSourceId: c.req.param("dataSourceId") as string,
         userId: c.get("user")?.id,

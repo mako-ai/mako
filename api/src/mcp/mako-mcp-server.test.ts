@@ -379,13 +379,15 @@ async function main() {
       false,
       "client-only app tools must not be bridged",
     );
-    // Canonical verify capability: external MCP gets run_app (headless
-    // renderer adapter), annotated read-only like the render it performs.
-    assert.ok(names.has("run_app"), "run_app must be bridged for external MCP");
-    assert.equal(
-      byName.get("run_app")?.annotations?.readOnlyHint,
-      true,
-      "run_app renders a draft and mutates nothing",
+    // The headless renderer went with v1 (apps.md §17): external MCP
+    // verifies through app_browse (a browser inside the sandbox), and the
+    // preview-token tools no longer exist at all.
+    assert.equal(names.has("run_app"), false, "run_app went with v1");
+    assert.equal(names.has("render_app"), false);
+    assert.equal(names.has("create_preview_token"), false);
+    assert.ok(
+      names.has("app_browse"),
+      "app_browse is the external verify capability",
     );
     // Warehouse-mutating dbt runs require the explicit warehouse:write
     // scope; a default query:read key must not see them.

@@ -61,6 +61,14 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
       mode: "working",
     },
   }),
+  "console-diff": baseTab({
+    kind: "console-diff",
+    metadata: {
+      appId: "66f000000000000000000001",
+      path: "apps/x/src/App.tsx",
+      mode: "working",
+    },
+  }),
   plan: baseTab({ kind: "plan", metadata: { chatId: "chat-1" } }),
   settings: baseTab({ kind: "settings", settingsSection: "models" }),
   members: baseTab({ kind: "members" }),

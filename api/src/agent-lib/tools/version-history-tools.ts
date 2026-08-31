@@ -18,7 +18,7 @@ export const createVersionHistoryTools = (workspaceId: string) => ({
       "Pass the entityId from a search result.",
     inputSchema: z.object({
       entityType: z
-        .enum(["console", "dashboard", "app"])
+        .enum(["console", "dashboard"])
         .describe("Whether this is a console, dashboard, or app"),
       entityId: z.string().describe("The ID of the console, dashboard, or app"),
       limit: z
@@ -68,7 +68,7 @@ export const createVersionHistoryTools = (workspaceId: string) => ({
       "it includes the files, dependencies, and data binding queries.",
     inputSchema: z.object({
       entityType: z
-        .enum(["console", "dashboard", "app"])
+        .enum(["console", "dashboard"])
         .describe("Whether this is a console, dashboard, or app"),
       entityId: z.string().describe("The ID of the console, dashboard, or app"),
       version: z.number().describe("The version number to retrieve"),

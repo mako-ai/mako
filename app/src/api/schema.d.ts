@@ -1188,7 +1188,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post?: never;
+        /**
+         * Restore the console to a previous commit (as a new commit)
+         * @description Sets the console back to its content at `sha` and commits that on main. Nothing is rewritten: the versions in between stay in the history.
+         */
+        post: operations["post_api_workspaces_workspaceId_consoles_id_restore"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1358,6 +1362,57 @@ export interface paths {
         };
         /** GET /{id}/details */
         get: operations["get_api_workspaces_workspaceId_consoles_id_details"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/consoles/{id}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Commit history of a console (its file in the workspace repo) */
+        get: operations["get_api_workspaces_workspaceId_consoles_id_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/consoles/{id}/git/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What one commit changed for this console */
+        get: operations["get_api_workspaces_workspaceId_consoles_id_git_commit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/consoles/{id}/git/file-versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A console file before and after one commit (for diffs) */
+        get: operations["get_api_workspaces_workspaceId_consoles_id_git_file_versions"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4358,7 +4413,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List data sources for a dashboard or app */
+        /** List data sources for a dashboard */
         get: operations["get_api_workspaces_workspaceId_data_sources_resourceType_resourceId"];
         put?: never;
         post?: never;
@@ -4375,7 +4430,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get one dashboard/app data source */
+        /** Get one dashboard data source */
         get: operations["get_api_workspaces_workspaceId_data_sources_resourceType_resourceId_dataSourceId"];
         put?: never;
         post?: never;
@@ -4411,7 +4466,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Refresh all materialized data sources for a dashboard or app */
+        /** Refresh all materialized data sources for a dashboard */
         post: operations["post_api_workspaces_workspaceId_data_sources_resourceType_resourceId_refresh"];
         delete?: never;
         options?: never;
@@ -4428,7 +4483,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Refresh one materialized data source for a dashboard or app */
+        /** Refresh one materialized data source for a dashboard */
         post: operations["post_api_workspaces_workspaceId_data_sources_resourceType_resourceId_dataSourceId_refresh"];
         delete?: never;
         options?: never;
@@ -4634,23 +4689,6 @@ export interface paths {
         get: operations["get_api_share_token_artifacts_artifactId"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/share/{token}/binding/{bindingId}/execute": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Run a shared app's published live binding */
-        post: operations["post_api_share_token_binding_bindingId_execute"];
         delete?: never;
         options?: never;
         head?: never;
@@ -9465,6 +9503,53 @@ export interface operations {
             };
         };
     };
+    post_api_workspaces_workspaceId_consoles_id_restore: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    sha: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     patch_api_workspaces_workspaceId_consoles_id_restore: {
         parameters: {
             query?: never;
@@ -9915,6 +10000,136 @@ export interface operations {
     get_api_workspaces_workspaceId_consoles_id_details: {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_consoles_id_history: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_consoles_id_git_commit: {
+        parameters: {
+            query: {
+                sha: string;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_api_workspaces_workspaceId_consoles_id_git_file_versions: {
+        parameters: {
+            query: {
+                sha: string;
+                path?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;
@@ -19402,7 +19617,7 @@ export interface operations {
             header?: never;
             path: {
                 workspaceId: string;
-                resourceType: "dashboard" | "app";
+                resourceType: "dashboard";
                 resourceId: string;
             };
             cookie?: never;
@@ -19444,7 +19659,7 @@ export interface operations {
             header?: never;
             path: {
                 workspaceId: string;
-                resourceType: "dashboard" | "app";
+                resourceType: "dashboard";
                 resourceId: string;
                 dataSourceId: string;
             };
@@ -19487,7 +19702,7 @@ export interface operations {
             header?: never;
             path: {
                 workspaceId: string;
-                resourceType: "dashboard" | "app";
+                resourceType: "dashboard";
                 resourceId: string;
                 dataSourceId: string;
             };
@@ -19543,7 +19758,7 @@ export interface operations {
             header?: never;
             path: {
                 workspaceId: string;
-                resourceType: "dashboard" | "app";
+                resourceType: "dashboard";
                 resourceId: string;
             };
             cookie?: never;
@@ -19585,7 +19800,7 @@ export interface operations {
             header?: never;
             path: {
                 workspaceId: string;
-                resourceType: "dashboard" | "app";
+                resourceType: "dashboard";
                 resourceId: string;
                 dataSourceId: string;
             };
@@ -20120,47 +20335,6 @@ export interface operations {
                 };
                 content: {
                     "application/vnd.apache.parquet": string;
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    post_api_share_token_binding_bindingId_execute: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                token: string;
-                bindingId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
                 };
             };
             /** @description Invalid request */
