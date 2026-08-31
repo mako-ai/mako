@@ -37,6 +37,7 @@ import {
   useTheme,
 } from "@mui/material";
 import { DiffEditor } from "@monaco-editor/react";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import {
   Plus as AddIcon,
   RefreshCw as RefreshIcon,
@@ -300,7 +301,7 @@ export function DbtExplorer() {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
   const theme = useTheme();
-  const monacoTheme = theme.palette.mode === "dark" ? "vs-dark" : "vs";
+  const monacoTheme = useMonacoTheme();
 
   const projects = useDbtStore(s => s.projects);
   const projectsLoaded = useDbtStore(s => s.projectsLoaded);
@@ -2394,13 +2395,7 @@ export function DbtExplorer() {
               modified={diffData.working}
               language={dbtDiffLanguage(diffData.path)}
               beforeMount={registerDbtJinjaLanguage}
-              options={{
-                readOnly: true,
-                renderSideBySide: true,
-                minimap: { enabled: false },
-                fontSize: 12,
-                scrollBeyondLastLine: false,
-              }}
+              options={{ ...EDITOR_OPTIONS.diff, fontSize: 12 }}
             />
           ) : null}
         </DialogContent>

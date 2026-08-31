@@ -17,7 +17,7 @@ import {
 } from "@mui/material";
 import { Close as CloseIcon } from "@mui/icons-material";
 import Editor from "@monaco-editor/react";
-import { useTheme } from "../contexts/ThemeContext";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useSchemaStore } from "../store/schemaStore";
 
@@ -38,7 +38,7 @@ const CreateViewDialog: React.FC<CreateViewDialogProps> = ({
   databaseId,
   workspaceId,
 }) => {
-  const { effectiveMode } = useTheme();
+  const monacoTheme = useMonacoTheme();
   const { currentWorkspace } = useWorkspace();
   const fetchDatabaseCollections = useSchemaStore(s => s.fetchCollections);
   const effectiveWorkspaceId = workspaceId || currentWorkspace?.id;
@@ -209,15 +209,13 @@ const CreateViewDialog: React.FC<CreateViewDialogProps> = ({
               defaultLanguage="json"
               value={pipeline}
               height="100%"
-              theme={effectiveMode === "dark" ? "vs-dark" : "vs"}
+              theme={monacoTheme}
               onChange={value => setPipeline(value || "")}
               options={{
-                automaticLayout: true,
+                ...EDITOR_OPTIONS.code,
                 readOnly: isCreating,
-                minimap: { enabled: false },
                 fontSize: 12,
                 wordWrap: "on",
-                scrollBeyondLastLine: false,
                 formatOnPaste: true,
                 formatOnType: true,
               }}

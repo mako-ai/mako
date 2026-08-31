@@ -31,7 +31,6 @@ import {
   AccordionSummary,
   AccordionDetails,
 } from "@mui/material";
-import { useTheme as useMuiTheme } from "@mui/material/styles";
 import {
   Save as SaveIcon,
   Schedule as ScheduleIcon,
@@ -45,6 +44,7 @@ import {
   ExpandMore as ExpandMoreIcon,
 } from "@mui/icons-material";
 import Editor, { Monaco, OnMount } from "@monaco-editor/react";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore, TreeNode } from "../store/schemaStore";
@@ -279,8 +279,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
     );
 
     // Theme for Monaco
-    const muiTheme = useMuiTheme();
-    const effectiveMode = muiTheme.palette.mode;
+    const monacoTheme = useMonacoTheme();
 
     // Register template placeholder completions
     const registerTemplateCompletions = useCallback((monaco: Monaco) => {
@@ -1283,27 +1282,15 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                     <Editor
                                       language="sql"
                                       value={field.value}
-                                      theme={
-                                        effectiveMode === "dark"
-                                          ? "vs-dark"
-                                          : "vs"
-                                      }
+                                      theme={monacoTheme}
                                       onChange={value =>
                                         field.onChange(value || "")
                                       }
                                       options={{
-                                        minimap: { enabled: false },
-                                        fontSize: 13,
+                                        ...EDITOR_OPTIONS.code,
                                         wordWrap: "on",
-                                        lineNumbers: "on",
-                                        scrollBeyondLastLine: false,
-                                        automaticLayout: true,
                                         tabSize: 2,
                                         padding: { top: 8, bottom: 8 },
-                                        scrollbar: {
-                                          vertical: "auto",
-                                          horizontal: "auto",
-                                        },
                                       }}
                                       onMount={(editor, monaco) => {
                                         editorRef.current = editor;

@@ -10,9 +10,9 @@ import {
   ToggleButton,
   ToggleButtonGroup,
   Typography,
-  useTheme,
 } from "@mui/material";
 import MonacoEditor from "@monaco-editor/react";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import {
   Circle,
   CircleCheck,
@@ -56,8 +56,7 @@ export default function PlanDocumentTab({
 }: {
   toolCallId: string;
 }) {
-  const theme = useTheme();
-  const monacoTheme = theme.palette.mode === "dark" ? "vs-dark" : "vs";
+  const monacoTheme = useMonacoTheme();
 
   const plan = usePlanStore(s => s.plans[toolCallId]);
   const setDraftTitle = usePlanStore(s => s.setDraftTitle);
@@ -172,13 +171,7 @@ export default function PlanDocumentTab({
             value={plan.draft.planMarkdown}
             theme={monacoTheme}
             onChange={value => setDraftMarkdown(toolCallId, value ?? "")}
-            options={{
-              minimap: { enabled: false },
-              fontSize: 13,
-              automaticLayout: true,
-              scrollBeyondLastLine: false,
-              wordWrap: "on",
-            }}
+            options={{ ...EDITOR_OPTIONS.code, wordWrap: "on" }}
           />
         ) : (
           <Box sx={{ maxWidth: 760, mx: "auto", px: 3, py: 3 }}>

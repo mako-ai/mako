@@ -38,7 +38,6 @@ import {
   Tabs,
   Tooltip,
   Typography,
-  useTheme,
 } from "@mui/material";
 import {
   AlertTriangle as WarnIcon,
@@ -54,6 +53,7 @@ import {
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import MonacoEditor, { type Monaco } from "@monaco-editor/react";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import {
@@ -237,7 +237,7 @@ export default function DbtFileEditor({
   const { currentWorkspace } = useWorkspace();
   const { user } = useAuth();
   const workspaceId = currentWorkspace?.id;
-  const monacoTheme = useTheme().palette.mode === "dark" ? "vs-dark" : "vs";
+  const monacoTheme = useMonacoTheme();
 
   const project = useDbtStore(s => s.projects.find(p => p._id === projectId));
   const file = useDbtStore(s => s.filesByProject[projectId]?.[path]);
@@ -800,10 +800,8 @@ export default function DbtFileEditor({
         beforeMount={handleBeforeMount}
         onMount={handleEditorMount as never}
         options={{
+          ...EDITOR_OPTIONS.code,
           minimap: { enabled: true },
-          fontSize: 13,
-          automaticLayout: true,
-          scrollBeyondLastLine: false,
           wordWrap: isMarkdown ? "on" : "off",
         }}
       />
@@ -1002,12 +1000,7 @@ export default function DbtFileEditor({
             language="sql"
             value={compileResult.compiledSql}
             theme={monacoTheme}
-            options={{
-              readOnly: true,
-              minimap: { enabled: false },
-              fontSize: 12,
-              scrollBeyondLastLine: false,
-            }}
+            options={{ ...EDITOR_OPTIONS.readOnly, wordWrap: "off" }}
           />
         ) : (
           <Box sx={{ p: 2 }}>

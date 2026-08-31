@@ -6,9 +6,10 @@
  * WIP ref so nothing is lost if the tab or the sandbox dies.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Box, Button, Chip, Typography, useTheme } from "@mui/material";
+import { Alert, Box, Button, Chip, Typography } from "@mui/material";
 import { Database as DatabaseIcon, Play as PlayIcon } from "lucide-react";
 import MonacoEditor from "@monaco-editor/react";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppsStore } from "../store/appsStore";
 import { useConsoleStore } from "../store/consoleStore";
@@ -44,7 +45,7 @@ export default function AppFileEditor({
 }) {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
-  const monacoTheme = useTheme().palette.mode === "dark" ? "vs-dark" : "vs";
+  const monacoTheme = useMonacoTheme();
 
   const fileEntry = useAppsStore(s => s.fileContents[`${appId}\u0000${path}`]);
   const apps = useAppsStore(s => s.apps);
@@ -175,12 +176,7 @@ export default function AppFileEditor({
             theme={monacoTheme}
             beforeMount={configureMonacoForJsx}
             onChange={handleChange}
-            options={{
-              minimap: { enabled: false },
-              fontSize: 13,
-              automaticLayout: true,
-              scrollBeyondLastLine: false,
-            }}
+            options={EDITOR_OPTIONS.code}
           />
         ) : (
           <Box sx={{ p: 2 }}>

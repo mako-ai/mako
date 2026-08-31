@@ -29,7 +29,7 @@ import {
   ExpandMore as ExpandMoreIcon,
 } from "@mui/icons-material";
 import Editor from "@monaco-editor/react";
-import { useTheme } from "../contexts/ThemeContext";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useSchemaStore } from "../store/schemaStore";
 
@@ -76,7 +76,7 @@ const CollectionEditorComponent = (
 ) => {
   const editorRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { effectiveMode } = useTheme();
+  const monacoTheme = useMonacoTheme();
   const { currentWorkspace } = useWorkspace();
   const fetchDatabaseCollectionInfo = useSchemaStore(
     s => s.fetchCollectionInfo,
@@ -409,16 +409,13 @@ db.createCollection("new_collection_name", {
             defaultLanguage="javascript"
             value={currentQuery}
             height="100%"
-            theme={effectiveMode === "dark" ? "vs-dark" : "vs"}
+            theme={monacoTheme}
             onMount={handleEditorDidMount}
             onChange={handleEditorChange}
             options={{
-              automaticLayout: true,
-              readOnly: false,
-              minimap: { enabled: false },
+              ...EDITOR_OPTIONS.code,
               fontSize: 12,
               wordWrap: "on",
-              scrollBeyondLastLine: false,
               formatOnPaste: true,
               formatOnType: true,
             }}

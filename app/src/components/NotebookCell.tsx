@@ -11,9 +11,9 @@ import {
   Select,
   TextField,
   Tooltip,
-  useTheme,
 } from "@mui/material";
 import Editor from "@monaco-editor/react";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { ChevronDown, ChevronUp, Play, Trash2 } from "lucide-react";
 
 import type { NotebookBlock, NotebookBlockType } from "../store/notebookStore";
@@ -84,7 +84,7 @@ export default function NotebookCell({
   onDelete,
   onMove,
 }: NotebookCellProps) {
-  const theme = useTheme();
+  const monacoTheme = useMonacoTheme();
   const monacoLanguage = MONACO_LANGUAGE[block.type];
 
   const [localRunning, setLocalRunning] = useState(false);
@@ -365,16 +365,12 @@ export default function NotebookCell({
           language={monacoLanguage}
           value={block.source}
           onChange={value => onChange({ source: value ?? "" })}
-          theme={theme.palette.mode === "dark" ? "vs-dark" : "light"}
+          theme={monacoTheme}
           height={editorHeight(block.source)}
           options={{
-            minimap: { enabled: false },
-            lineNumbers: "on",
-            scrollBeyondLastLine: false,
-            fontSize: 13,
+            ...EDITOR_OPTIONS.code,
             folding: false,
             wordWrap: "on",
-            automaticLayout: true,
             scrollbar: { alwaysConsumeMouseWheel: false },
             padding: { top: 8, bottom: 8 },
           }}

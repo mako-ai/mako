@@ -35,7 +35,6 @@ import {
   type DashboardWidget,
 } from "../store/dashboardStore";
 import { useConsoleStore } from "../store/consoleStore";
-import { useTheme } from "../contexts/ThemeContext";
 import { useAuth } from "../contexts/auth-context";
 import {
   applyFreshMaterializationCommand,
@@ -84,7 +83,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   onCreated,
 }) => {
   const { user } = useAuth();
-  const { effectiveMode } = useTheme();
 
   const {
     dashboard,
@@ -553,7 +551,6 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             <DashboardCodeEditor
               dashboard={dashboard}
               dashboardId={dashboardId}
-              effectiveMode={effectiveMode}
               onCodeError={setHasCodeError}
             />
           )}

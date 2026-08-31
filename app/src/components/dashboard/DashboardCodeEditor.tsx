@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Typography } from "@mui/material";
 import Editor from "@monaco-editor/react";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../../lib/monaco-presets";
 import { useDashboardStore } from "../../store/dashboardStore";
 import {
   serializeDashboardDefinition,
@@ -21,16 +22,15 @@ function formatZodErrors(error: {
 interface DashboardCodeEditorProps {
   dashboard: Dashboard;
   dashboardId?: string;
-  effectiveMode: "light" | "dark";
   onCodeError?: (hasError: boolean) => void;
 }
 
 const DashboardCodeEditor: React.FC<DashboardCodeEditorProps> = ({
   dashboard,
   dashboardId,
-  effectiveMode,
   onCodeError,
 }) => {
+  const monacoTheme = useMonacoTheme();
   const [codeValue, setCodeValue] = useState("");
   const [codeError, setCodeError] = useState<string | null>(null);
   const isEditorFocusedRef = useRef(false);
@@ -128,11 +128,10 @@ const DashboardCodeEditor: React.FC<DashboardCodeEditorProps> = ({
           language="json"
           value={codeValue}
           onChange={handleCodeChange}
-          theme={effectiveMode === "dark" ? "vs-dark" : "light"}
+          theme={monacoTheme}
           options={{
-            minimap: { enabled: false },
+            ...EDITOR_OPTIONS.code,
             fontSize: 12,
-            scrollBeyondLastLine: false,
             wordWrap: "on",
             formatOnPaste: true,
             tabSize: 2,

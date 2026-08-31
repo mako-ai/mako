@@ -21,6 +21,7 @@ import {
 } from "@mui/material";
 import { X, RotateCcw } from "lucide-react";
 import Editor from "@monaco-editor/react";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import {
   useVersionStore,
   type VersionListItem,
@@ -28,7 +29,6 @@ import {
   type VersionEntityType,
 } from "../store/versionStore";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useTheme } from "../contexts/ThemeContext";
 
 interface VersionHistoryPanelProps {
   open: boolean;
@@ -76,7 +76,7 @@ export function VersionHistoryPanel({
   entityId,
   onRestore,
 }: VersionHistoryPanelProps) {
-  const { effectiveMode } = useTheme();
+  const monacoTheme = useMonacoTheme();
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
 
@@ -168,8 +168,6 @@ export function VersionHistoryPanel({
       onRestore?.();
     }
   };
-
-  const monacoTheme = effectiveMode === "dark" ? "vs-dark" : "light";
 
   let snapshotValue = "";
   let previewLanguage = "json";
@@ -286,11 +284,7 @@ export function VersionHistoryPanel({
                   theme={monacoTheme}
                   value={snapshotValue}
                   options={{
-                    readOnly: true,
-                    minimap: { enabled: false },
-                    scrollBeyondLastLine: false,
-                    fontSize: 12,
-                    wordWrap: "on",
+                    ...EDITOR_OPTIONS.readOnly,
                     renderLineHighlight: "none",
                   }}
                 />

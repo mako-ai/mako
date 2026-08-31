@@ -16,7 +16,7 @@ import {
   Warning as WarningIcon,
 } from "@mui/icons-material";
 import { DiffEditor } from "@monaco-editor/react";
-import { useTheme } from "../contexts/ThemeContext";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import type { ConsoleVersionConflict } from "../lib/api-types";
 
 interface VersionConflictDialogProps {
@@ -49,7 +49,7 @@ const VersionConflictDialog: React.FC<VersionConflictDialogProps> = ({
   onLoadLatest,
   isProcessing = false,
 }) => {
-  const { effectiveMode } = useTheme();
+  const monacoTheme = useMonacoTheme();
 
   if (!conflict) return null;
 
@@ -144,21 +144,14 @@ const VersionConflictDialog: React.FC<VersionConflictDialogProps> = ({
         >
           <DiffEditor
             height="100%"
-            theme={effectiveMode === "dark" ? "vs-dark" : "vs"}
+            theme={monacoTheme}
             language={language === "mongodb" ? "javascript" : language || "sql"}
             original={conflict.content}
             modified={newContent}
             options={{
-              automaticLayout: true,
-              readOnly: true,
-              minimap: { enabled: false },
-              fontSize: 13,
+              ...EDITOR_OPTIONS.diff,
               wordWrap: "on",
-              scrollBeyondLastLine: false,
-              renderSideBySide: true,
-              enableSplitViewResizing: true,
               diffWordWrap: "on",
-              originalEditable: false,
             }}
           />
         </Box>
