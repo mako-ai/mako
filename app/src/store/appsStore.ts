@@ -36,6 +36,8 @@ export interface AppMeta {
    * personally — the sidebar's "Shared with me" section.
    */
   owner_id?: string;
+  /** What workspace members may do with a workspace-access app. */
+  workspaceRole?: "viewer" | "editor";
 }
 
 export interface AppFileEntry {

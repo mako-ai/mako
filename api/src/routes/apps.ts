@@ -80,6 +80,10 @@ import {
 import { APPS_EXEC_MAX_TIMEOUT_MS, previewStagingDir } from "../apps/config";
 import { registerPublicShareRoutes } from "./lib/public-share-routes";
 import {
+  registerCollaboratorRoutes,
+  registerSharingSettingsRoutes,
+} from "./lib/collaborator-routes";
+import {
   buildApp,
   buildLogPath,
   deployBuild,
@@ -671,6 +675,7 @@ appsRoutes.openapi(
             // Who restricted it — the sidebar files a private app someone
             // else shared with you under "Shared with me", not "My Apps".
             owner_id: state?.owner_id,
+            workspaceRole: state?.workspaceRole,
             publishedSha: state?.publishedSha,
             publishedAt: state?.publishedAt,
           };
@@ -2314,35 +2319,48 @@ appsRoutes.openapi(
 appsRoutes.get("/:id/live", serveLive);
 appsRoutes.get("/:id/live/*", serveLive);
 
-// Public-link sharing, reusing the exact primitive dashboards and v1 apps use
-// (bcrypt password + AES copy for reveal, token rotation, owner/admin gate).
-// The anonymous consumption side lives in routes/public-share.ts.
+// Sharing — the SAME primitive dashboards and consoles use, all three
+// surfaces of it: per-user collaborators (viewer/editor), general access
+// (private/workspace + workspace role) and public links (bcrypt password +
+// AES copy for reveal, token rotation, owner/admin gate). The v1 rip-out
+// (#816) took the collaborator and sharing routes with it and left only the
+// public link, so the Share dialog had nothing to talk to for apps. The
+// anonymous consumption side lives in routes/public-share.ts.
+const loadShareableApp = async (c: AuthenticatedContext) => {
+  const id = c.req.param("id");
+  const workspaceId = c.req.param("workspaceId");
+  if (!id || !workspaceId) return null;
+  const ref = id.replace(/^apps\//, "");
+  const existing = Types.ObjectId.isValid(ref)
+    ? await AppProject.findOne({
+        _id: new Types.ObjectId(ref),
+        workspaceId: new Types.ObjectId(workspaceId),
+      })
+    : await AppProject.findOne({
+        slug: ref,
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+  if (existing) return existing;
+
+  // Sharing is one of the three things that gives an app a database row
+  // (§13.6) — a share token and its password hash cannot live in a repo the
+  // customer can clone. So if the app exists only as a folder, materialize
+  // the row now, with the id derived from (workspace, folder) so every
+  // artifact key stays stable.
+  const folder = await synthesizeProjectFromFolder(workspaceId, ref);
+  if (!folder) return null;
+  return ensureProjectRow(folder, actingUserId(c) ?? "");
+};
+registerCollaboratorRoutes(appsRoutes, {
+  resourceName: "App",
+  load: loadShareableApp,
+});
+registerSharingSettingsRoutes(appsRoutes, {
+  resourceName: "App",
+  load: loadShareableApp,
+});
 registerPublicShareRoutes(appsRoutes, {
   resourceName: "App",
-  load: async c => {
-    const id = c.req.param("id");
-    const workspaceId = c.req.param("workspaceId");
-    if (!id || !workspaceId) return null;
-    const ref = id.replace(/^apps\//, "");
-    const existing = Types.ObjectId.isValid(ref)
-      ? await AppProject.findOne({
-          _id: new Types.ObjectId(ref),
-          workspaceId: new Types.ObjectId(workspaceId),
-        })
-      : await AppProject.findOne({
-          slug: ref,
-          workspaceId: new Types.ObjectId(workspaceId),
-        });
-    if (existing) return existing;
-
-    // Sharing is one of the three things that gives an app a database row
-    // (§13.6) — a share token and its password hash cannot live in a repo the
-    // customer can clone. So if the app exists only as a folder, materialize
-    // the row now, with the id derived from (workspace, folder) so every
-    // artifact key stays stable.
-    const folder = await synthesizeProjectFromFolder(workspaceId, ref);
-    if (!folder) return null;
-    return ensureProjectRow(folder, actingUserId(c) ?? "");
-  },
+  load: loadShareableApp,
   getTitle: doc => (doc as unknown as IAppProject).title,
 });
