@@ -27,8 +27,13 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
   },
   { cron: "*/15 * * * *" },
   async ({ step }) => {
+    // `slug` is not optional here: readBindings locates the app's files at
+    // `apps/<slug>/…` (appRootFor), and without it the lookup falls back to
+    // `apps/<mongoId>/…` — a folder that does not exist — so every project
+    // silently read ZERO bindings and this scheduler triggered nothing in
+    // production for weeks while reporting success.
     const projects = await step.run("list-projects", async () =>
-      AppProject.find({}).select("_id workspaceId defaultBranch").lean(),
+      AppProject.find({}).select("_id workspaceId defaultBranch slug").lean(),
     );
     let triggered = 0;
     for (const project of projects as Array<{
