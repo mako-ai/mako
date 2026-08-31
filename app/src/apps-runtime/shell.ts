@@ -10,31 +10,16 @@ export function focusAppsTab(
   title: string,
   slug?: string,
 ): string {
-  const consoleStore = useConsoleStore.getState();
-  const existingTab = Object.values(consoleStore.tabs).find(
-    (tab: { kind?: string; metadata?: { appId?: string } }) =>
-      tab.kind === "app" && tab.metadata?.appId === appId,
-  );
-
-  if (existingTab) {
-    if (existingTab.title !== title && title) {
-      useConsoleStore.setState(state => {
-        const tab = state.tabs[existingTab.id];
-        if (tab) tab.title = title;
-      });
-    }
-    consoleStore.setActiveTab(existingTab.id);
-    return existingTab.id;
-  }
-
-  const tabId = consoleStore.openTab({
-    title: title || "App",
-    content: "",
-    kind: "app",
-    metadata: { appId: appId, appSlug: slug },
-  });
-  consoleStore.setActiveTab(tabId);
-  return tabId;
+  return useConsoleStore.getState().focusOrOpenTab(
+    { kind: "app", metadata: { appId } },
+    () => ({
+      title: title || "App",
+      content: "",
+      kind: "app",
+      metadata: { appId: appId, appSlug: slug },
+    }),
+    { title: title || undefined },
+  ) as string;
 }
 
 /** Open (or focus) a file of an Apps project in its own editor tab. */
@@ -43,32 +28,22 @@ export function focusAppsFileTab(
   path: string,
   slug?: string,
 ): string {
-  const consoleStore = useConsoleStore.getState();
-  const existingTab = Object.values(consoleStore.tabs).find(
-    (tab: { kind?: string; metadata?: { appId?: string; path?: string } }) =>
-      tab.kind === "app-file" &&
-      tab.metadata?.appId === appId &&
-      tab.metadata?.path === path,
-  );
-  if (existingTab) {
-    consoleStore.setActiveTab(existingTab.id);
-    return existingTab.id;
-  }
   const fileName = path.split("/").pop() || path;
-  const tabId = consoleStore.openTab({
-    title: fileName,
-    content: "",
-    kind: "app-file",
-    metadata: { appId: appId, appSlug: slug, path },
-  });
-  consoleStore.setActiveTab(tabId);
-  return tabId;
+  return useConsoleStore
+    .getState()
+    .focusOrOpenTab({ kind: "app-file", metadata: { appId, path } }, () => ({
+      title: fileName,
+      content: "",
+      kind: "app-file",
+      metadata: { appId: appId, appSlug: slug, path },
+    })) as string;
 }
 
 /**
  * Open (or focus) a diff of one repo-relative path, VS Code style: "Working
  * Tree" compares index → working copy (the Changes group), "Index" compares
- * HEAD → index (the Staged Changes group).
+ * HEAD → index (the Staged Changes group), "commit" shows what one commit
+ * did to the file (parent → sha).
  */
 export function focusAppsDiffTab(
   appId: string,
@@ -78,22 +53,6 @@ export function focusAppsDiffTab(
   /** "commit" mode: the commit whose change to `path` is shown. */
   sha?: string,
 ): string {
-  const consoleStore = useConsoleStore.getState();
-  const existingTab = Object.values(consoleStore.tabs).find(
-    (tab: {
-      kind?: string;
-      metadata?: { appId?: string; path?: string; mode?: string; sha?: string };
-    }) =>
-      tab.kind === "app-diff" &&
-      tab.metadata?.appId === appId &&
-      tab.metadata?.path === path &&
-      tab.metadata?.mode === mode &&
-      (mode !== "commit" || tab.metadata?.sha === sha),
-  );
-  if (existingTab) {
-    consoleStore.setActiveTab(existingTab.id);
-    return existingTab.id;
-  }
   const fileName = path.split("/").pop() || path;
   const label =
     mode === "commit"
@@ -101,14 +60,18 @@ export function focusAppsDiffTab(
       : mode === "index"
         ? "Index"
         : "Working Tree";
-  const tabId = consoleStore.openTab({
-    title: `${fileName} (${label})`,
-    content: "",
-    kind: "app-diff",
-    metadata: { appId: appId, appSlug: slug, path, mode, sha },
-  });
-  consoleStore.setActiveTab(tabId);
-  return tabId;
+  return useConsoleStore.getState().focusOrOpenTab(
+    {
+      kind: "app-diff",
+      metadata: { appId, path, mode, ...(mode === "commit" ? { sha } : {}) },
+    },
+    () => ({
+      title: `${fileName} (${label})`,
+      content: "",
+      kind: "app-diff",
+      metadata: { appId: appId, appSlug: slug, path, mode, sha },
+    }),
+  ) as string;
 }
 
 /**

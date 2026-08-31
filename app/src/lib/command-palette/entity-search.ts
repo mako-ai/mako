@@ -9,6 +9,7 @@
 
 import { focusDashboardTab } from "../../dashboard-runtime/shell";
 import { focusDbtConsoleTab } from "../../dbt-runtime/shell";
+import { focusFlowTab, getFlowTitle } from "../../flow-runtime/shell";
 import type { ConsoleSearchResult } from "../../store/commandPaletteStore";
 import { useConsoleStore } from "../../store/consoleStore";
 import {
@@ -16,7 +17,7 @@ import {
   type DashboardEntry,
 } from "../../store/dashboardTreeStore";
 import { useDbtStore } from "../../store/dbtStore";
-import { useFlowStore, type Flow } from "../../store/flowStore";
+import { useFlowStore } from "../../store/flowStore";
 import { EXPLORER_ICONS, TAB_KIND_ICONS, tabKindIcon } from "../entity-icons";
 import { matchScore, type PaletteEntityItem } from "./types";
 
@@ -136,30 +137,13 @@ export function searchDbtProjects(query: string): PaletteEntityItem[] {
   return sorted(scored, 4);
 }
 
-/** Mirrors FlowsExplorer's title derivation for a flow row. */
-function flowTitle(flow: Flow): string {
-  const f = flow as Flow & {
-    sourceType?: string;
-    tableDestination?: { tableName?: string };
-  };
-  if (f.sourceType === "database") {
-    return `Query -> ${f.tableDestination?.tableName || "Table"}`;
-  }
-  const sourceName =
-    (flow.dataSourceId as { name?: string } | undefined)?.name || "Source";
-  const destName =
-    (flow.destinationDatabaseId as { name?: string } | undefined)?.name ||
-    "Destination";
-  return `${sourceName} -> ${destName}`;
-}
-
 export function searchFlows(
   workspaceId: string,
   query: string,
 ): PaletteEntityItem[] {
   const flows = useFlowStore.getState().flows[workspaceId] ?? [];
   const scored: Scored[] = flows.map(flow => {
-    const title = flowTitle(flow);
+    const title = getFlowTitle(flow);
     return {
       score: matchScore(query, title),
       item: {
@@ -168,32 +152,8 @@ export function searchFlows(
         section: "Flows",
         icon: EXPLORER_ICONS.flows,
         run: () => {
-          const consoleStore = useConsoleStore.getState();
           useFlowStore.getState().selectFlow(flow._id);
-          const existing = Object.values(consoleStore.tabs).find(
-            tab => tab.metadata?.flowId === flow._id,
-          );
-          if (existing) {
-            consoleStore.setActiveTab(existing.id);
-            return;
-          }
-          const f = flow as Flow & { sourceType?: string };
-          const id = consoleStore.openTab({
-            title,
-            content: "",
-            kind: "flow-editor",
-            metadata: {
-              flowId: flow._id,
-              isNew: false,
-              flowType:
-                f.sourceType === "database" ? "db-scheduled" : flow.type,
-              enabled:
-                flow.type === "webhook"
-                  ? flow.webhookConfig?.enabled
-                  : flow.schedule?.enabled,
-            },
-          });
-          consoleStore.setActiveTab(id);
+          focusFlowTab(flow);
         },
       },
     };

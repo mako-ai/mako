@@ -230,3 +230,110 @@ describe("consoleStore preview-tab invariant (kind-agnostic)", () => {
     expect(useConsoleStore.getState().tabOrder).toEqual(["a1"]);
   });
 });
+
+describe("consoleStore focusOrOpenTab — the one open-or-focus primitive", () => {
+  beforeEach(() => {
+    resetConsoleStore();
+  });
+
+  it("opens when nothing matches, focuses (without reopening) when it does", () => {
+    const store = useConsoleStore.getState();
+    const first = store.focusOrOpenTab(
+      { kind: "dashboard", metadata: { dashboardId: "d1" } },
+      () => ({
+        title: "Sales",
+        content: "",
+        kind: "dashboard",
+        metadata: { dashboardId: "d1" },
+      }),
+    );
+    expect(first).not.toBeNull();
+    const again = store.focusOrOpenTab(
+      { kind: "dashboard", metadata: { dashboardId: "d1" } },
+      () => ({
+        title: "Sales",
+        content: "",
+        kind: "dashboard",
+        metadata: { dashboardId: "d1" },
+      }),
+    );
+    expect(again).toBe(first);
+    expect(useConsoleStore.getState().tabOrder).toEqual([first]);
+    expect(useConsoleStore.getState().activeTabId).toBe(first);
+  });
+
+  it("matches on kind AND every listed metadata key", () => {
+    const store = useConsoleStore.getState();
+    const a = store.focusOrOpenTab(
+      { kind: "app-file", metadata: { appId: "a", path: "x.ts" } },
+      () => ({
+        title: "x.ts",
+        content: "",
+        kind: "app-file",
+        metadata: { appId: "a", path: "x.ts" },
+      }),
+    );
+    useConsoleStore.getState().updateDirty(a as string, true);
+    const b = store.focusOrOpenTab(
+      { kind: "app-file", metadata: { appId: "a", path: "y.ts" } },
+      () => ({
+        title: "y.ts",
+        content: "",
+        kind: "app-file",
+        metadata: { appId: "a", path: "y.ts" },
+      }),
+    );
+    expect(b).not.toBe(a);
+    // Same metadata, different kind: not the same entity.
+    const c = store.focusOrOpenTab(
+      { kind: "app-diff", metadata: { appId: "a", path: "x.ts" } },
+      () => ({
+        title: "x.ts (diff)",
+        content: "",
+        kind: "app-diff",
+        metadata: { appId: "a", path: "x.ts" },
+      }),
+    );
+    expect(c).not.toBe(a);
+  });
+
+  it("is 'focus if present' when create is omitted", () => {
+    const store = useConsoleStore.getState();
+    expect(
+      store.focusOrOpenTab({ kind: "plan", metadata: { chatId: "c" } }),
+    ).toBeNull();
+    expect(useConsoleStore.getState().tabOrder).toEqual([]);
+  });
+
+  it("refreshes the title of an existing tab and can pin it", () => {
+    const store = useConsoleStore.getState();
+    const id = store.focusOrOpenTab(
+      { kind: "app", metadata: { appId: "a" } },
+      () => ({
+        title: "Old",
+        content: "",
+        kind: "app",
+        metadata: { appId: "a" },
+      }),
+    ) as string;
+    store.focusOrOpenTab({ kind: "app", metadata: { appId: "a" } }, undefined, {
+      title: "New",
+      pin: true,
+    });
+    expect(useConsoleStore.getState().tabs[id].title).toBe("New");
+    expect(useConsoleStore.getState().tabs[id].isDirty).toBe(true);
+  });
+
+  it("supports a predicate for identity that is not in metadata", () => {
+    const store = useConsoleStore.getState();
+    const id = store.focusOrOpenTab(
+      { kind: "connectors", where: t => t.content === "cx1" },
+      () => ({ title: "Connector", content: "cx1", kind: "connectors" }),
+    );
+    const again = store.focusOrOpenTab(
+      { kind: "connectors", where: t => t.content === "cx1" },
+      () => ({ title: "Connector", content: "cx1", kind: "connectors" }),
+    );
+    expect(again).toBe(id);
+  });
+});
