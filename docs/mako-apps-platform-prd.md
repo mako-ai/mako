@@ -377,11 +377,12 @@ Keep this list current: it is the hand-off.
       npm token or human 2FA.
       Existing workspace apps keep importing `@mako/app-sdk` (npm links the
       vendored folder under the dependency key); new apps get `@makoai/app-sdk`.
-- [ ] **Publish `mako-ai` to PyPI** (`packages/mako-sdk-py`; pyproject is
-      ready; needs a PyPI token). Its suite has 4 PRE-EXISTING failures in
-      `test_sources.ReadTest` (the fake transport does not stub
-      `/notebook/sources`) — same on master, unrelated to the rename; fix
-      before publishing (`PYTHONPATH=src python3 -m unittest discover -s tests`).
+- [x] **PyPI** — `mako-ai` 0.1.0 published 2026-08-31 from GitHub Actions
+      via trusted publishing (pending publisher registered on the PyPI
+      account: project mako-ai · mako-ai/mako · publish-pypi.yml). Release =
+      bump `version` in `packages/mako-sdk-py/pyproject.toml`, merge, then
+      `git tag py-vX.Y.Z && git push origin py-vX.Y.Z`. The suite's four
+      failures were the fake transport still answering `/databases`; fixed.
 - [x] **MCP Registry**: published as `io.github.mako-ai/mako` v1.0.0
       (2026-08-31). Mechanics worth remembering: the registry grants an org
       namespace only to org **Owners**, read via `GET /user/memberships/orgs`;
