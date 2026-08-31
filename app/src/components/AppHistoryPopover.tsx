@@ -126,6 +126,11 @@ export default function AppHistoryPopover({
 
   const commits = history ?? [];
   const headOid = commits[0]?.oid;
+  // The published sha is often a repo-wide commit (a publish merges main),
+  // which does not touch this app's folder and so is absent from the
+  // app-scoped list. Say where "live" is rather than showing no chip at all.
+  const liveInHistory =
+    !!publishedSha && commits.some(c => c.oid === publishedSha);
 
   return (
     <>
@@ -177,6 +182,36 @@ export default function AppHistoryPopover({
           </Alert>
         )}
         <Box sx={{ overflowY: "auto", minHeight: 0 }}>
+          {publishedSha && history !== undefined && !liveInHistory && (
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 0.75,
+                px: 2,
+                py: 0.75,
+                borderBottom: 1,
+                borderColor: "divider",
+                bgcolor: "action.hover",
+              }}
+            >
+              <CommitChip
+                label="Live"
+                color="success"
+                icon={<LiveIcon size={12} />}
+              />
+              <Typography
+                variant="caption"
+                sx={{ fontFamily: "monospace", color: "text.secondary" }}
+              >
+                {publishedSha.slice(0, 7)}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                — published from a repo-wide commit that did not change this
+                app&apos;s files
+              </Typography>
+            </Box>
+          )}
           {history !== undefined && commits.length === 0 && (
             <Typography
               variant="body2"
