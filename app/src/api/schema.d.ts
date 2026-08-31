@@ -1111,23 +1111,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{workspaceId}/consoles/folders": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** POST /folders */
-        post: operations["post_api_workspaces_workspaceId_consoles_folders"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/workspaces/{workspaceId}/consoles/{id}/rename": {
         parameters: {
             query?: never;
@@ -1198,74 +1181,6 @@ export interface paths {
         head?: never;
         /** PATCH /{id}/restore */
         patch: operations["patch_api_workspaces_workspaceId_consoles_id_restore"];
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/consoles/folders/{id}/rename": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** PATCH /folders/{id}/rename */
-        patch: operations["patch_api_workspaces_workspaceId_consoles_folders_id_rename"];
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/consoles/folders/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** DELETE /folders/{id} */
-        delete: operations["delete_api_workspaces_workspaceId_consoles_folders_id"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/consoles/{id}/move": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** PATCH /{id}/move */
-        patch: operations["patch_api_workspaces_workspaceId_consoles_id_move"];
-        trace?: never;
-    };
-    "/api/workspaces/{workspaceId}/consoles/folders/{id}/move": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** PATCH /folders/{id}/move */
-        patch: operations["patch_api_workspaces_workspaceId_consoles_folders_id_move"];
         trace?: never;
     };
     "/api/workspaces/{workspaceId}/consoles/{id}/version-comment": {
@@ -1419,6 +1334,91 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/consoles/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /folders */
+        post: operations["post_api_workspaces_workspaceId_consoles_folders"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/consoles/folders/{id}/rename": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** PATCH /folders/{id}/rename */
+        patch: operations["patch_api_workspaces_workspaceId_consoles_folders_id_rename"];
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/consoles/folders/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /folders/{id} */
+        delete: operations["delete_api_workspaces_workspaceId_consoles_folders_id"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/consoles/folders/{id}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** PATCH /folders/{id}/move */
+        patch: operations["patch_api_workspaces_workspaceId_consoles_folders_id_move"];
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/consoles/{id}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** PATCH /{id}/move */
+        patch: operations["patch_api_workspaces_workspaceId_consoles_id_move"];
         trace?: never;
     };
     "/api/workspaces/{workspaceId}/realtime": {
@@ -3326,22 +3326,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{workspaceId}/notebooks/{id}/move": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch: operations["patch_api_workspaces_workspaceId_notebooks_id_move"];
-        trace?: never;
-    };
     "/api/workspaces/{workspaceId}/notebooks/folders": {
         parameters: {
             query?: never;
@@ -3351,6 +3335,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** POST /folders */
         post: operations["post_api_workspaces_workspaceId_notebooks_folders"];
         delete?: never;
         options?: never;
@@ -3371,6 +3356,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
+        /** PATCH /folders/{id}/rename */
         patch: operations["patch_api_workspaces_workspaceId_notebooks_folders_id_rename"];
         trace?: never;
     };
@@ -3384,6 +3370,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
+        /** DELETE /folders/{id} */
         delete: operations["delete_api_workspaces_workspaceId_notebooks_folders_id"];
         options?: never;
         head?: never;
@@ -3403,7 +3390,25 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
+        /** PATCH /folders/{id}/move */
         patch: operations["patch_api_workspaces_workspaceId_notebooks_folders_id_move"];
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/notebooks/{id}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** PATCH /{id}/move */
+        patch: operations["patch_api_workspaces_workspaceId_notebooks_id_move"];
         trace?: never;
     };
     "/api/workspaces/{workspaceId}/notebooks/{id}/sessions": {
@@ -5358,6 +5363,25 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        CreateConsoleFolderRequest: {
+            name: string;
+            parentId?: string | null;
+            /** @enum {string} */
+            access?: "private" | "workspace";
+        };
+        RenameConsoleFolderRequest: {
+            name: string;
+        };
+        MoveConsoleFolderRequest: {
+            parentId?: string | null;
+            /** @enum {string} */
+            access?: "private" | "workspace";
+        };
+        MoveConsoleRequest: {
+            folderId?: string | null;
+            /** @enum {string} */
+            access?: "private" | "workspace";
+        };
         Error: {
             success?: boolean;
             /** @example Human-readable error message */
@@ -5607,6 +5631,25 @@ export interface components {
             updatedAt?: string;
             readOnly?: boolean;
         };
+        CreateDashboardFolderRequest: {
+            name: string;
+            parentId?: string | null;
+            /** @enum {string} */
+            access?: "private" | "workspace";
+        };
+        RenameDashboardFolderRequest: {
+            name: string;
+        };
+        MoveDashboardFolderRequest: {
+            parentId?: string | null;
+            /** @enum {string} */
+            access?: "private" | "workspace";
+        };
+        MoveDashboardRequest: {
+            folderId?: string | null;
+            /** @enum {string} */
+            access?: "private" | "workspace";
+        };
         NotebookReadRequest: {
             /** @example 507f1f77bcf86cd799439011 */
             connectionId: string;
@@ -5648,11 +5691,6 @@ export interface components {
             activeCellId?: string | null;
             gone?: boolean;
         };
-        MoveNotebookRequest: {
-            folderId?: string | null;
-            /** @enum {string} */
-            access?: "private" | "workspace";
-        };
         CreateNotebookFolderRequest: {
             name: string;
             parentId?: string | null;
@@ -5664,6 +5702,11 @@ export interface components {
         };
         MoveNotebookFolderRequest: {
             parentId?: string | null;
+            /** @enum {string} */
+            access?: "private" | "workspace";
+        };
+        MoveNotebookRequest: {
+            folderId?: string | null;
             /** @enum {string} */
             access?: "private" | "workspace";
         };
@@ -9464,52 +9507,6 @@ export interface operations {
             };
         };
     };
-    post_api_workspaces_workspaceId_consoles_folders: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
     patch_api_workspaces_workspaceId_consoles_id_rename: {
         parameters: {
             query?: never;
@@ -9693,188 +9690,6 @@ export interface operations {
         };
     };
     patch_api_workspaces_workspaceId_consoles_id_restore: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    patch_api_workspaces_workspaceId_consoles_folders_id_rename: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    delete_api_workspaces_workspaceId_consoles_folders_id: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    patch_api_workspaces_workspaceId_consoles_id_move: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    patch_api_workspaces_workspaceId_consoles_folders_id_move: {
         parameters: {
             query?: never;
             header?: never;
@@ -10280,6 +10095,226 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_consoles_folders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CreateConsoleFolderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    patch_api_workspaces_workspaceId_consoles_folders_id_rename: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RenameConsoleFolderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    delete_api_workspaces_workspaceId_consoles_folders_id: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    patch_api_workspaces_workspaceId_consoles_folders_id_move: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["MoveConsoleFolderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    patch_api_workspaces_workspaceId_consoles_id_move: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["MoveConsoleRequest"];
+            };
+        };
         responses: {
             /** @description Successful response */
             "2XX": {
@@ -15532,9 +15567,7 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
+                "application/json": components["schemas"]["CreateDashboardFolderRequest"];
             };
         };
         responses: {
@@ -15579,9 +15612,7 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
+                "application/json": components["schemas"]["RenameDashboardFolderRequest"];
             };
         };
         responses: {
@@ -15667,9 +15698,7 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
+                "application/json": components["schemas"]["MoveDashboardFolderRequest"];
             };
         };
         responses: {
@@ -15714,9 +15743,7 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
+                "application/json": components["schemas"]["MoveDashboardRequest"];
             };
         };
         responses: {
@@ -16804,51 +16831,6 @@ export interface operations {
             };
         };
     };
-    patch_api_workspaces_workspaceId_notebooks_id_move: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workspaceId: string;
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["MoveNotebookRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful response */
-            "2XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
-                };
-            };
-            /** @description Invalid request */
-            "4XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Internal server error */
-            "5XX": {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
     post_api_workspaces_workspaceId_notebooks_folders: {
         parameters: {
             query?: never;
@@ -16903,7 +16885,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
+        requestBody?: {
             content: {
                 "application/json": components["schemas"]["RenameNotebookFolderRequest"];
             };
@@ -16992,6 +16974,51 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": components["schemas"]["MoveNotebookFolderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    patch_api_workspaces_workspaceId_notebooks_id_move: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["MoveNotebookRequest"];
             };
         };
         responses: {
