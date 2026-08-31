@@ -310,10 +310,38 @@ function toolAnnotations(
 ): Record<string, unknown> {
   const readOnly = mcpReadOnlyHint(name, queryAccess);
   return {
+    // Directories (Anthropic's in particular) require a human-readable title
+    // next to the hints; derive it from the name so it can never drift.
+    title: toolTitle(name),
     readOnlyHint: readOnly,
     destructiveHint: !readOnly && mcpDestructiveHint(name),
     openWorldHint: mcpOpenWorldHint(name),
   };
+}
+
+const TITLE_ACRONYMS = new Set([
+  "sql",
+  "dbt",
+  "mcp",
+  "api",
+  "url",
+  "id",
+  "csv",
+  "json",
+]);
+
+/** `app_list_apps` → "App list apps"; `dbt_run_model` → "dbt run model". */
+export function toolTitle(name: string): string {
+  return name
+    .split("_")
+    .filter(Boolean)
+    .map((part, i) => {
+      if (TITLE_ACRONYMS.has(part)) {
+        return part === "dbt" ? "dbt" : part.toUpperCase();
+      }
+      return i === 0 ? part.charAt(0).toUpperCase() + part.slice(1) : part;
+    })
+    .join(" ");
 }
 
 function isZodSchema(value: unknown): value is z.ZodType {
