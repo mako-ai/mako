@@ -11,10 +11,20 @@
  *   credential: the serving route is cookie-free and the iframe embeds it
  *   with sandbox="allow-scripts" (opaque origin), so previewed app code
  *   never runs with Mako's origin or cookies.
- * - Tokens are held in-process (single-instance dev API). Fine for the
- *   pilot; a shared store comes with the E2B/multi-instance phase.
+ * - STATIC grants (a built dist/ staged on this instance's disk) are held
+ *   in-process: the directory they serve exists only on the instance that
+ *   staged it, so a shared registry would buy nothing.
+ * - PUBLISHED grants are STATELESS: an HMAC-signed token carrying
+ *   (workspace, project, sha, expiry). Production runs many API instances
+ *   behind one load balancer with no session affinity, so a token minted
+ *   by one instance is routinely presented to another; when these lived in
+ *   a per-process Map, every published app in production intermittently
+ *   rendered "Preview expired" seconds after the token was minted. The
+ *   deployment a published token names is immutable and lives in the shared
+ *   artifact store, so nothing about it is instance-local — the signature
+ *   is all any instance needs to trust the token.
  */
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -51,7 +61,7 @@ function sweep(): void {
 
 function mint(
   input: { workspaceId: string; projectId: string; token?: string },
-  scope: Pick<PreviewGrant, "rootDir" | "publishedSha">,
+  scope: Pick<PreviewGrant, "rootDir">,
   dedupe: (grant: PreviewGrant) => boolean,
 ): PreviewGrant {
   sweep();
@@ -87,17 +97,107 @@ export function mintPreviewGrant(input: {
   );
 }
 
-/** Published grant: serves an immutable deployment from the artifact store. */
+/**
+ * Published grant: serves an immutable deployment from the artifact store.
+ *
+ * Stateless — see the module comment. The token is `pub.<payload>.<sig>`
+ * where payload is base64url JSON and sig is HMAC-SHA256 over it (same
+ * construction as git-token.service). No registry, so nothing to sweep and
+ * nothing to lose across instances or restarts.
+ */
+const PUBLISHED_TOKEN_PREFIX = "pub.";
+
+interface PublishedTokenPayload {
+  v: 1;
+  w: string;
+  p: string;
+  s: string;
+  /** Epoch milliseconds. */
+  exp: number;
+}
+
+function resolveSecret(): string {
+  const secret = process.env.SESSION_SECRET || process.env.ENCRYPTION_KEY;
+  if (!secret) {
+    throw new Error(
+      "Missing HMAC secret: set SESSION_SECRET or ENCRYPTION_KEY",
+    );
+  }
+  return secret;
+}
+
+function sign(body: string, secret: string): string {
+  return createHmac("sha256", secret).update(body).digest("base64url");
+}
+
 export function mintPublishedGrant(input: {
   workspaceId: string;
   projectId: string;
   sha: string;
 }): PreviewGrant {
-  return mint(
-    { workspaceId: input.workspaceId, projectId: input.projectId },
-    { publishedSha: input.sha },
-    grant => grant.publishedSha === input.sha,
+  const payload: PublishedTokenPayload = {
+    v: 1,
+    w: input.workspaceId,
+    p: input.projectId,
+    s: input.sha,
+    exp: Date.now() + PREVIEW_TTL_MS,
+  };
+  const body = Buffer.from(JSON.stringify(payload), "utf8").toString(
+    "base64url",
   );
+  const token = `${PUBLISHED_TOKEN_PREFIX}${body}.${sign(body, resolveSecret())}`;
+  return {
+    token,
+    workspaceId: input.workspaceId,
+    projectId: input.projectId,
+    publishedSha: input.sha,
+    expiresAt: payload.exp,
+  };
+}
+
+function resolvePublishedGrant(token: string): PreviewGrant | null {
+  const [body, signature] = token
+    .slice(PUBLISHED_TOKEN_PREFIX.length)
+    .split(".");
+  if (!body || !signature) return null;
+  let secret: string;
+  try {
+    secret = resolveSecret();
+  } catch {
+    return null;
+  }
+  const expected = Buffer.from(sign(body, secret), "utf8");
+  const actual = Buffer.from(signature, "utf8");
+  // Length-check first: timingSafeEqual THROWS on a length mismatch rather
+  // than returning false, which would turn a forged token into a 500.
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+    return null;
+  }
+  let payload: PublishedTokenPayload;
+  try {
+    payload = JSON.parse(
+      Buffer.from(body, "base64url").toString("utf8"),
+    ) as PublishedTokenPayload;
+  } catch {
+    return null;
+  }
+  if (
+    payload.v !== 1 ||
+    typeof payload.w !== "string" ||
+    typeof payload.p !== "string" ||
+    typeof payload.s !== "string" ||
+    typeof payload.exp !== "number" ||
+    payload.exp <= Date.now()
+  ) {
+    return null;
+  }
+  return {
+    token,
+    workspaceId: payload.w,
+    projectId: payload.p,
+    publishedSha: payload.s,
+    expiresAt: payload.exp,
+  };
 }
 
 /**
@@ -109,6 +209,9 @@ export function mintPublishedGrant(input: {
  * click that reuses that already-running process.
  */
 export function resolvePreviewGrant(token: string): PreviewGrant | null {
+  if (token.startsWith(PUBLISHED_TOKEN_PREFIX)) {
+    return resolvePublishedGrant(token);
+  }
   sweep();
   return grants.get(token) ?? null;
 }
