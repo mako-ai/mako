@@ -336,8 +336,9 @@ export function toolTitle(name: string): string {
     .split("_")
     .filter(Boolean)
     .map((part, i) => {
-      if (TITLE_ACRONYMS.has(part))
+      if (TITLE_ACRONYMS.has(part)) {
         return part === "dbt" ? "dbt" : part.toUpperCase();
+      }
       return i === 0 ? part.charAt(0).toUpperCase() + part.slice(1) : part;
     })
     .join(" ");
