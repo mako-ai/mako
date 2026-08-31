@@ -270,6 +270,60 @@ export async function mirrorPushNow(workspaceId: string): Promise<void> {
  * commits that failed to push, plus direct GitHub commits) we log and stand
  * still rather than silently drop either side.
  */
+/**
+ * Make sure `sha` exists in this instance's local repo, fetching it if not.
+ *
+ * Publishing moves `main` and deploys, but only the instance that HANDLED the
+ * push (or the webhook) has the commit in its cache. Every other instance —
+ * and on Cloud Run there are several, each with its own tmpfs — has a clone
+ * that predates it, and `ensureLocalRepo` returns early because a repo dir is
+ * there. Serving a published app then reads binding files AT the published
+ * sha, and git answers `fatal: not a tree object`: measured on a freshly
+ * published app, half of its `__data/<name>.parquet` requests 500'd, the
+ * other half succeeded, purely by which instance answered.
+ *
+ * A missing commit is recoverable — it is on the mirror's default branch,
+ * since publishing promotes it to main before deploying — so fetch once and
+ * look again. Coalesced per (workspace, sha) so a page asking for sixteen
+ * bindings at once triggers one fetch, not sixteen.
+ */
+const commitFetchInFlight = new Map<string, Promise<void>>();
+
+async function commitPresent(repoDir: string, sha: string): Promise<boolean> {
+  return runGit(["-C", repoDir, "cat-file", "-e", `${sha}^{commit}`])
+    .then(() => true)
+    .catch(() => false);
+}
+
+export async function ensureCommitLocally(
+  workspaceId: string,
+  sha: string,
+  branch: string = DEFAULT_BRANCH,
+): Promise<void> {
+  if (!/^[0-9a-f]{7,40}$/.test(sha)) return;
+  await ensureLocalRepo(workspaceId);
+  const repoDir = repoDirFor(workspaceId);
+  if (await commitPresent(repoDir, sha)) return;
+  const key = `${workspaceId}#${sha}`;
+  const existing = commitFetchInFlight.get(key);
+  if (existing) return existing;
+  const run = (async () => {
+    try {
+      await fetchFromCloud(workspaceId, branch);
+    } catch (error) {
+      // Not fatal here: the caller's git command produces the real, specific
+      // error if the commit is still missing after this.
+      logger.warn("Fetch for a missing commit failed", {
+        workspaceId,
+        sha,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  })().finally(() => commitFetchInFlight.delete(key));
+  commitFetchInFlight.set(key, run);
+  return run;
+}
+
 export async function fetchFromCloud(
   workspaceId: string,
   branch: string,

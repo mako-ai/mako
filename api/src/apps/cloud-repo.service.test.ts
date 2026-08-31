@@ -61,6 +61,7 @@ import {
 } from "./repository.service";
 import {
   adoptConnectedRepo,
+  ensureCommitLocally,
   fetchFromCloud,
   mirrorPushNow,
   resolveMirrorTarget,
@@ -276,6 +277,75 @@ describe("pushes to a connected repo", () => {
       await runGit(["-C", remoteDir, "rev-parse", "refs/mako/wip"])
     ).stdout.trim();
     expect(remoteWip).toBe(wipB);
+  });
+});
+
+/**
+ * Serving a published app reads its binding files AT the published sha. On a
+ * multi-instance host only the instance that handled the push has that
+ * commit; the rest hold a clone that predates it, and ensureLocalRepo is
+ * happy because a repo dir exists. That is `fatal: not a tree object` on a
+ * live app's data — so a miss must fetch, not fail.
+ */
+describe("ensureCommitLocally", () => {
+  it("fetches a commit this instance's cache has never seen", async () => {
+    const remoteDir = await makeBareRemote("acme", "published");
+    state.binding = { owner: "acme", repo: "published" };
+    await initRepo(repoDirFor(workspaceId), { "apps/a/mako.json": "{}" });
+    await adoptConnectedRepo(workspaceId, state.binding);
+    // Another instance publishes: the commit exists only on the mirror.
+    const publishedSha = await commitFiles(
+      remoteDir,
+      { "apps/a/bindings/x.sql": "-- connection: c\nSELECT 1\n" },
+      "publish from another instance",
+    );
+    await expect(
+      runGit([
+        "-C",
+        repoDirFor(workspaceId),
+        "cat-file",
+        "-e",
+        `${publishedSha}^{commit}`,
+      ]),
+    ).rejects.toThrow();
+
+    await ensureCommitLocally(workspaceId, publishedSha);
+
+    await expect(
+      runGit([
+        "-C",
+        repoDirFor(workspaceId),
+        "cat-file",
+        "-e",
+        `${publishedSha}^{commit}`,
+      ]),
+    ).resolves.toBeDefined();
+  });
+
+  it("does not fetch when the commit is already here", async () => {
+    await makeBareRemote("acme", "already");
+    state.binding = { owner: "acme", repo: "already" };
+    await initRepo(repoDirFor(workspaceId), { "apps/a/mako.json": "{}" });
+    await adoptConnectedRepo(workspaceId, state.binding);
+    const local = await headOf(repoDirFor(workspaceId));
+    // No remote branch to fetch: a fetch here would throw, so passing proves
+    // the present-commit path never reached the network.
+    await expect(
+      ensureCommitLocally(workspaceId, local as string),
+    ).resolves.toBeUndefined();
+  });
+
+  it("leaves the caller's own error for a sha that is nowhere", async () => {
+    const remoteDir = await makeBareRemote("acme", "missing");
+    state.binding = { owner: "acme", repo: "missing" };
+    await initRepo(repoDirFor(workspaceId), { "apps/a/mako.json": "{}" });
+    await adoptConnectedRepo(workspaceId, state.binding);
+    await commitFiles(remoteDir, { "r.txt": "remote" }, "remote side");
+    // Unknown sha: it must return quietly (the git command the caller runs
+    // next is what reports the real, specific failure), not throw here.
+    await expect(
+      ensureCommitLocally(workspaceId, "0".repeat(40)),
+    ).resolves.toBeUndefined();
   });
 });
 
