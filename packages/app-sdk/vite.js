@@ -10,7 +10,7 @@
 // Plain ESM, Node built-ins only — like the rest of this package.
 import fs from "node:fs";
 import path from "node:path";
-import { findCredential, getAccessToken } from "./credentials.js";
+import { HOSTED_API_URL, findCredential, getAccessToken } from "./credentials.js";
 
 const BINDING_NAME = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
 const DEFAULT_REVALIDATE_MS = 5 * 60 * 1000;
@@ -72,11 +72,13 @@ export function resolveMakoContext(appDir, options = {}) {
   const dotenv = readDotenv(path.join(repoRoot, ".env"));
   const ws = readWorkspaceJson(repoRoot);
   const env = (name) => process.env[name] ?? dotenv[name];
+  // Hosted Mako is the default: a fresh clone + `mako login` needs no .env.
+  // MAKO_API_URL / workspace.json apiUrl exist for self-hosted or local dev.
   const apiUrl = (
     options.apiUrl ??
     env("MAKO_API_URL") ??
     ws.apiUrl ??
-    ""
+    HOSTED_API_URL
   ).replace(/\/+$/, "");
   return {
     repoRoot,
@@ -122,8 +124,11 @@ export function makoData(options = {}) {
       // once keeps working without ever pasting a key.
       const loggedIn = !ctx.apiKey && !!findCredential(ctx.apiUrl, ctx.workspaceId);
       const problems = [];
-      if (!ctx.apiUrl) problems.push("MAKO_API_URL is not set");
-      if (!ctx.apiKey && !loggedIn) problems.push("not signed in: run `mako login` (or set MAKO_API_KEY)");
+      if (!ctx.apiUrl) problems.push("MAKO_API_URL is set but empty");
+      if (!ctx.apiKey && !loggedIn)
+        problems.push(
+          `not signed in to ${ctx.apiUrl || "Mako"}: run \`npx @makoai/cli login\` in this repo (or set MAKO_API_KEY in .env)`,
+        );
       if (!ctx.workspaceId) problems.push("workspace id unknown (.mako/workspace.json or MAKO_WORKSPACE_ID)");
       const appBase = () =>
         `${ctx.apiUrl}/api/workspaces/${encodeURIComponent(ctx.workspaceId)}/apps/${encodeURIComponent(ctx.slug)}`;
@@ -138,12 +143,28 @@ export function makoData(options = {}) {
             : ` via ${ctx.apiUrl} (${ctx.apiKey ? "API key" : "mako login"})`),
       );
 
+      // fetch() with network failures translated into something a person can
+      // act on — "fetch failed" alone has sent people debugging the wrong end.
+      async function apiFetch(url, init) {
+        try {
+          return await fetch(url, init);
+        } catch (error) {
+          const cause = error?.cause?.code ?? error?.cause?.message ?? error?.message ?? String(error);
+          throw new Error(
+            `cannot reach the Mako API at ${ctx.apiUrl} (${cause})` +
+              (ctx.apiUrl === HOSTED_API_URL
+                ? " — check your network connection"
+                : ` — is that server running? Unset MAKO_API_URL (repo .env or environment) to use ${HOSTED_API_URL}`),
+          );
+        }
+      }
+
       async function fetchArtifact(name) {
         const url = `${appBase()}/bindings/${encodeURIComponent(name)}/artifact`;
-        let res = await fetch(url, { headers: await headers() });
+        let res = await apiFetch(url, { headers: await headers() });
         if (res.status === 404 && options.materialize !== false) {
           // Never materialized (or a live binding): build it now, then read.
-          const built = await fetch(
+          const built = await apiFetch(
             `${appBase()}/bindings/${encodeURIComponent(name)}/materialize`,
             { method: "POST", headers: await headers() },
           );
@@ -151,10 +172,19 @@ export function makoData(options = {}) {
             const text = await built.text().catch(() => "");
             throw new Error(`materialize ${name}: HTTP ${built.status} ${text.slice(0, 300)}`);
           }
-          res = await fetch(url, { headers: await headers() });
+          res = await apiFetch(url, { headers: await headers() });
         }
         if (!res.ok) {
           const text = await res.text().catch(() => "");
+          if (res.status === 401 || res.status === 403) {
+            throw new Error(
+              `the Mako API at ${ctx.apiUrl} refused the credential (HTTP ${res.status}) — ` +
+                (ctx.apiKey
+                  ? "the MAKO_API_KEY in .env is invalid for this host/workspace"
+                  : "run `npx @makoai/cli login` in this repo again") +
+                (text ? ` (${text.slice(0, 200)})` : ""),
+            );
+          }
           throw new Error(`artifact ${name}: HTTP ${res.status} ${text.slice(0, 300)}`);
         }
         return Buffer.from(await res.arrayBuffer());

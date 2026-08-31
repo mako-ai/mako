@@ -11,6 +11,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+/** The hosted Mako API — the default wherever nothing overrides it
+ * (MAKO_API_URL, .env, .mako/workspace.json apiUrl, or an explicit option). */
+export const HOSTED_API_URL = "https://app.mako.ai";
+
 export const CREDENTIALS_PATH =
   process.env.MAKO_CREDENTIALS_FILE ||
   path.join(os.homedir(), ".mako", "credentials.json");

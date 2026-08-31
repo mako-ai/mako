@@ -1,3 +1,6 @@
+/** The hosted Mako API — the default wherever nothing overrides it. */
+export const HOSTED_API_URL: string;
+
 export const CREDENTIALS_PATH: string;
 
 export interface StoredCredential {

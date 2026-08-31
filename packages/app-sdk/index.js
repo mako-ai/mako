@@ -32,8 +32,19 @@ function registerBinding(name) {
         const res = await fetch("__data/" + encodeURIComponent(name) + ".parquet");
         if (!res.ok) {
           registered.delete(name);
+          // The dev server answers failures with JSON { error, hint } — show
+          // that, not a bare status code (and never let it reach DuckDB,
+          // where it would surface as a baffling Catalog Error).
+          let detail = "";
+          try {
+            const body = await res.json();
+            detail = [body.error, body.hint].filter(Boolean).join(" — ");
+          } catch {
+            /* not JSON (e.g. a published build with no artifact) */
+          }
           throw new Error(
-            'Binding "' + name + '" is not materialized (HTTP ' + res.status + ")",
+            'Data for binding "' + name + '" could not be loaded (HTTP ' + res.status + ")" +
+              (detail ? ": " + detail : ""),
           );
         }
         const buf = new Uint8Array(await res.arrayBuffer());
@@ -175,11 +186,31 @@ export function useDuckDB(sql, opts) {
   const rowLimit = opts ? opts.rowLimit : undefined;
   return useAsyncQuery(async () => {
     // Register everything the server staged, so SQL can join across
-    // bindings by name without declaring them first.
+    // bindings by name without declaring them first. A binding that fails to
+    // load must not sink the whole query set silently: remember why, and when
+    // the SQL then fails (typically DuckDB's "Table … does not exist"),
+    // surface the load failure — it is the actual cause.
     const names = await bindingIndex();
-    await Promise.all(names.map(n => registerBinding(n).catch(() => {})));
-    const r = await runSql(sql, rowLimit);
-    return { data: r.rows, fields: r.fields, truncated: r.truncated, rowCount: r.rowCount };
+    const failures = new Map();
+    await Promise.all(
+      names.map(n => registerBinding(n).catch(e => failures.set(n, e))),
+    );
+    try {
+      const r = await runSql(sql, rowLimit);
+      return { data: r.rows, fields: r.fields, truncated: r.truncated, rowCount: r.rowCount };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      for (const [n, cause] of failures) {
+        if (message.includes(n)) throw cause;
+      }
+      if (failures.size) {
+        const details = [...failures.values()]
+          .map(e => (e instanceof Error ? e.message : String(e)))
+          .join("; ");
+        throw new Error(message + " (bindings that failed to load: " + details + ")");
+      }
+      throw error;
+    }
   }, [sql, rowLimit]);
 }
 
