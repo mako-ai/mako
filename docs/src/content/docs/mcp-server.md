@@ -126,6 +126,44 @@ claude -p "explore my mako data and summarize revenue" --allowedTools "mcp__mako
 
 To keep agent context lean, agents can pass `includeScreenshot: false` to `app_browse` while iterating and fetch one screenshot at the end.
 
+## Working from a local checkout
+
+Every workspace repo carries a small template Mako keeps current: `AGENTS.md`
+(imported by `CLAUDE.md`) telling your agent what the repo is and how to work
+in it, `.mcp.json` wiring the `mako` MCP server, `.envrc` for direnv, and the
+vendored `@mako/app-sdk`. So the whole setup is:
+
+```bash
+git clone <your workspace repo> && cd <repo>
+# Workspace Settings → API Keys → create (scopes mcp + query:read), then:
+printf 'MAKO_API_URL=https://your-mako-host\nMAKO_API_KEY=revops_…\n' > .env
+set -a; . ./.env; set +a      # or: direnv allow
+claude                        # approve the project's mako MCP server once
+```
+
+`.mcp.json` expands `${MAKO_API_URL:-https://app.mako.ai}` and
+`${MAKO_API_KEY}` from the environment — not from the file, hence the export.
+
+Inside an app, `npm install && npm run dev` renders with **real data**: the
+scaffold's `vite.config.ts` includes `makoData()` from `@mako/app-sdk/vite`,
+which serves `__data/<binding>.parquet` by streaming the binding's
+materialized artifact from your Mako host with the key in `.env` (a binding
+that was never materialized is built on first request; results are cached for
+five minutes under `node_modules/.mako-data/`, `?refresh` bypasses). This is
+the one place a scoped key is accepted outside `/api/mcp`: a `query:read` key
+may call the three read-only binding routes (`GET …/bindings`,
+`GET …/bindings/<name>/artifact`, `POST …/bindings/<name>/materialize`) and
+nothing else.
+
+Two things `AGENTS.md` tells the agent that are easy to get wrong:
+
+- Edit files with your own tools. The `app_*` file tools (`app_write_file`,
+  `app_bash`, `app_commit`, …) act on Mako's *sandbox* copy of the repo, not
+  on your checkout.
+- Push to deploy. `main` is production; a commit on `main` — from your
+  terminal, a merged PR, or the Publish button — is what builds and serves the
+  app.
+
 ## Apps toolset
 
 The app is a folder in the workspace's git monorepo and the agent works like
