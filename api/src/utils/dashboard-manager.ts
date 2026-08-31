@@ -1,4 +1,5 @@
 import { Types } from "mongoose";
+import { sortTreeNodes, wouldCreateFolderCycle } from "./folder-tree";
 import {
   Dashboard,
   DashboardFolder,
@@ -161,19 +162,7 @@ export class DashboardManager {
       }
     }
 
-    const sortNodes = (nodes: DashboardTreeNode[]) => {
-      nodes.sort((a, b) => {
-        if (a.isDirectory && !b.isDirectory) return -1;
-        if (!a.isDirectory && b.isDirectory) return 1;
-        return a.name.localeCompare(b.name);
-      });
-      for (const node of nodes) {
-        if (node.isDirectory && node.children) {
-          sortNodes(node.children);
-        }
-      }
-    };
-    sortNodes(rootItems);
+    sortTreeNodes(rootItems);
 
     return rootItems;
   }
@@ -292,26 +281,11 @@ export class DashboardManager {
     targetParentId: string | null,
     workspaceId: string,
   ): Promise<boolean> {
-    if (!targetParentId) return false;
-    if (folderId === targetParentId) return true;
-
-    const folders = await DashboardFolder.find({
-      workspaceId: new Types.ObjectId(workspaceId),
-    }).lean();
-
-    const parentMap = new Map<string, string | undefined>();
-    for (const f of folders) {
-      parentMap.set(f._id.toString(), f.parentId?.toString());
-    }
-
-    let current: string | undefined = targetParentId;
-    const visited = new Set<string>();
-    while (current) {
-      if (current === folderId) return true;
-      if (visited.has(current)) return true;
-      visited.add(current);
-      current = parentMap.get(current);
-    }
-    return false;
+    return wouldCreateFolderCycle(
+      DashboardFolder,
+      folderId,
+      targetParentId,
+      workspaceId,
+    );
   }
 }
