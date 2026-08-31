@@ -88,7 +88,9 @@ class SourcesTest(unittest.TestCase):
 class ReadTest(unittest.TestCase):
     def _handler_factory(self, read_response):
         def handler(method, url, body):
-            if url.endswith("/databases"):
+            # Source discovery moved from /databases to /notebook/sources; the
+            # fake answers both so the test pins the contract, not the path.
+            if url.endswith("/databases") or url.endswith("/notebook/sources"):
                 return _json_response(200, DATABASES)
             if url.endswith("/notebook/read"):
                 self.last_read_body = json.loads(body.decode("utf-8"))
