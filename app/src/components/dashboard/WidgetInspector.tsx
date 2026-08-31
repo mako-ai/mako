@@ -14,11 +14,11 @@ import {
 } from "@mui/material";
 import { X, Copy } from "lucide-react";
 import Editor from "@monaco-editor/react";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../../lib/monaco-presets";
 import {
   useDashboardStore,
   type DashboardWidget,
 } from "../../store/dashboardStore";
-import { useTheme } from "../../contexts/ThemeContext";
 import { useDashboardRuntimeStore } from "../../dashboard-runtime/store";
 import { previewDashboardQuery } from "../../dashboard-runtime/commands";
 
@@ -49,7 +49,7 @@ const WidgetInspector: React.FC<WidgetInspectorProps> = ({
   dashboardId,
 }) => {
   const { modifyWidget, addWidget } = useDashboardStore();
-  const { effectiveMode } = useTheme();
+  const monacoTheme = useMonacoTheme();
   const runtimeSession = useDashboardRuntimeStore(state =>
     dashboardId ? state.sessions[dashboardId] || null : null,
   );
@@ -263,14 +263,8 @@ const WidgetInspector: React.FC<WidgetInspectorProps> = ({
             language="sql"
             value={localSql}
             onChange={val => setLocalSql(val || "")}
-            theme={effectiveMode === "dark" ? "vs-dark" : "light"}
-            options={{
-              minimap: { enabled: false },
-              lineNumbers: "off",
-              fontSize: 12,
-              scrollBeyondLastLine: false,
-              wordWrap: "on",
-            }}
+            theme={monacoTheme}
+            options={EDITOR_OPTIONS.inline}
           />
         </Box>
         <Button
@@ -332,14 +326,8 @@ const WidgetInspector: React.FC<WidgetInspectorProps> = ({
                 language="json"
                 value={specJson}
                 onChange={val => setSpecJson(val || "")}
-                theme={effectiveMode === "dark" ? "vs-dark" : "light"}
-                options={{
-                  minimap: { enabled: false },
-                  lineNumbers: "off",
-                  fontSize: 12,
-                  scrollBeyondLastLine: false,
-                  wordWrap: "on",
-                }}
+                theme={monacoTheme}
+                options={EDITOR_OPTIONS.inline}
               />
             </Box>
           </>

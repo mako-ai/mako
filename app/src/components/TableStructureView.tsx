@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Box, Alert, Button, CircularProgress } from "@mui/material";
 import Editor from "@monaco-editor/react";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useSchemaStore } from "../store/schemaStore";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useTheme } from "../contexts/ThemeContext";
 
 interface TableStructureViewProps {
   connectionId: string;
@@ -25,7 +25,7 @@ function TableStructureView({
 }: TableStructureViewProps) {
   const fetchTableDefinition = useSchemaStore(s => s.fetchTableDefinition);
   const { currentWorkspace } = useWorkspace();
-  const { effectiveMode } = useTheme();
+  const monacoTheme = useMonacoTheme();
 
   const [definition, setDefinition] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -98,15 +98,8 @@ function TableStructureView({
         height="100%"
         defaultLanguage="sql"
         value={definition}
-        theme={effectiveMode === "dark" ? "vs-dark" : "vs"}
-        options={{
-          readOnly: true,
-          minimap: { enabled: false },
-          scrollBeyondLastLine: false,
-          fontSize: 14,
-          wordWrap: "on",
-          automaticLayout: true,
-        }}
+        theme={monacoTheme}
+        options={{ ...EDITOR_OPTIONS.readOnly, fontSize: 14 }}
       />
     </Box>
   );

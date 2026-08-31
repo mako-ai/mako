@@ -22,7 +22,7 @@ import {
   Delete as DeleteIcon,
 } from "@mui/icons-material";
 import Editor from "@monaco-editor/react";
-import { useTheme } from "../contexts/ThemeContext";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useSchemaStore } from "../store/schemaStore";
 
@@ -73,7 +73,7 @@ const ViewEditor = forwardRef<ViewEditorRef, ViewEditorProps>(
   ) {
     const editorRef = useRef<any>(null);
     const containerRef = useRef<HTMLDivElement>(null);
-    const { effectiveMode } = useTheme();
+    const monacoTheme = useMonacoTheme();
     const { currentWorkspace } = useWorkspace();
     const fetchDatabaseCollections = useSchemaStore(s => s.fetchCollections);
     const effectiveWorkspaceId = workspaceId || currentWorkspace?.id;
@@ -318,16 +318,13 @@ const ViewEditor = forwardRef<ViewEditorRef, ViewEditorProps>(
               defaultLanguage="json"
               value={currentContent}
               height="100%"
-              theme={effectiveMode === "dark" ? "vs-dark" : "vs"}
+              theme={monacoTheme}
               onMount={handleEditorDidMount}
               onChange={handleEditorChange}
               options={{
-                automaticLayout: true,
-                readOnly: false,
-                minimap: { enabled: false },
+                ...EDITOR_OPTIONS.code,
                 fontSize: 12,
                 wordWrap: "on",
-                scrollBeyondLastLine: false,
                 formatOnPaste: true,
                 formatOnType: true,
               }}

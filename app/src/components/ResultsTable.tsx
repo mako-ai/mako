@@ -28,7 +28,7 @@ import {
   FileCode2 as StructureIcon,
 } from "lucide-react";
 import Editor from "@monaco-editor/react";
-import { useTheme } from "../contexts/ThemeContext";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useIsMobile } from "../hooks/useIsMobile";
 import type { MakoChartSpec } from "../lib/chart-spec";
 import ResultsChart from "./ResultsChart";
@@ -160,7 +160,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
   );
   const [downloadAnchorEl, setDownloadAnchorEl] =
     React.useState<HTMLElement | null>(null);
-  const { effectiveMode } = useTheme();
+  const monacoTheme = useMonacoTheme();
 
   const requestedViewMode: ResultsViewMode =
     localOverride ?? controlledViewMode ?? internalViewMode;
@@ -1057,15 +1057,8 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
               height="100%"
               defaultLanguage="json"
               value={jsonContent}
-              theme={effectiveMode === "dark" ? "vs-dark" : "vs"}
-              options={{
-                readOnly: true,
-                minimap: { enabled: false },
-                scrollBeyondLastLine: false,
-                fontSize: 14,
-                wordWrap: "on",
-                automaticLayout: true,
-              }}
+              theme={monacoTheme}
+              options={{ ...EDITOR_OPTIONS.readOnly, fontSize: 14 }}
             />
           </Box>
         )}

@@ -42,6 +42,7 @@ import {
   Share2 as Share2Icon,
 } from "lucide-react";
 import Editor, { DiffEditor } from "@monaco-editor/react";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useTheme } from "../contexts/ThemeContext";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useSchemaStore, TreeNode } from "../store/schemaStore";
@@ -209,6 +210,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const isMobile = useIsMobile();
   const { effectiveMode } = useTheme();
+  const monacoTheme = useMonacoTheme();
   const { currentWorkspace } = useWorkspace();
   const autoSaveConsole = useConsoleStore(state => state.autoSaveConsole);
   const resolveAgentReview = useConsoleStore(state => state.resolveAgentReview);
@@ -1641,36 +1643,31 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
               language={editorLanguage || "javascript"}
               defaultValue={lastInitialContentRef.current || initialContent}
               height="100%"
-              theme={effectiveMode === "dark" ? "vs-dark" : "vs"}
+              theme={monacoTheme}
               onMount={handleEditorDidMount}
               onChange={handleEditorChange}
               options={{
-                automaticLayout: true,
+                ...EDITOR_OPTIONS.code,
                 readOnly: isReadOnly,
-                minimap: { enabled: false },
                 fontSize: 12,
                 wordWrap: "on",
-                scrollBeyondLastLine: false,
               }}
             />
           ) : (
             <DiffEditor
               height="100%"
-              theme={effectiveMode === "dark" ? "vs-dark" : "vs"}
+              theme={monacoTheme}
               language={editorLanguage || "javascript"}
               original={originalContent}
               modified={modifiedContent}
               onMount={handleDiffEditorDidMount}
               options={{
-                automaticLayout: true,
-                readOnly: true,
-                minimap: { enabled: false },
+                ...EDITOR_OPTIONS.diff,
                 fontSize: 12,
                 wordWrap: "on",
-                scrollBeyondLastLine: false,
+                diffWordWrap: "on",
                 renderSideBySide: false,
                 enableSplitViewResizing: false,
-                diffWordWrap: "on",
               }}
             />
           )}

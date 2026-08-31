@@ -5,15 +5,9 @@
  * Re-reads when the box reports the file's state changed.
  */
 import { useEffect, useMemo, useState } from "react";
-import {
-  Box,
-  Button,
-  Chip,
-  CircularProgress,
-  Typography,
-  useTheme,
-} from "@mui/material";
+import { Box, Button, Chip, CircularProgress, Typography } from "@mui/material";
 import { DiffEditor } from "@monaco-editor/react";
+import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { SquareArrowOutUpRight as OpenIcon } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppsStore, type AppFileVersions } from "../store/appsStore";
@@ -45,7 +39,7 @@ export default function AppDiffTab({
       ? `${change.status}:${change.staged}:${change.unstaged}`
       : "clean";
   });
-  const monacoTheme = useTheme().palette.mode === "dark" ? "vs-dark" : "vs";
+  const monacoTheme = useMonacoTheme();
 
   const [versions, setVersions] = useState<AppFileVersions | null>(null);
   const [loading, setLoading] = useState(true);
@@ -181,16 +175,7 @@ export default function AppDiffTab({
             theme={monacoTheme}
             original={original ?? ""}
             modified={modified ?? ""}
-            options={{
-              readOnly: true,
-              originalEditable: false,
-              renderSideBySide: true,
-              minimap: { enabled: false },
-              fontSize: 13,
-              scrollBeyondLastLine: false,
-              automaticLayout: true,
-              renderOverviewRuler: false,
-            }}
+            options={{ ...EDITOR_OPTIONS.diff, renderOverviewRuler: false }}
           />
         )}
       </Box>
