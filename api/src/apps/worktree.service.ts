@@ -74,7 +74,7 @@ import {
   appsGitOriginBase,
   appsSessionsRoot,
 } from "./config";
-import { assertSafeRelPath, runGit, ZERO_OID } from "./git";
+import { assertSafeRelPath, EMPTY_TREE, runGit, ZERO_OID } from "./git";
 import {
   DEFAULT_BRANCH,
   commitTree,
@@ -1462,9 +1462,6 @@ export async function gitPathsAction(
 }
 
 /** HEAD / index / working-tree contents of one repo-relative path, for diffs. */
-/** The empty tree: what a root commit's "parent" diffs against. */
-const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-
 /**
  * What one commit changed INSIDE this app (paths app-relative), and its
  * parent — the unit the History panel's "View changes" works in. Read from

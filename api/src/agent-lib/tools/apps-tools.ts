@@ -55,7 +55,7 @@ import {
   ensureDevServer,
 } from "../../apps/dev-server.service";
 import { getDashboardArtifactStore } from "../../services/dashboard-artifact-store.service";
-import { browseApp } from "../../apps/eyes.service";
+import { browseApp, eyesShotKey } from "../../apps/eyes.service";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import { loggers } from "../../logging";
 
@@ -616,7 +616,10 @@ export function createAppsTools({
           if (result.screenshotBase64) {
             try {
               const shotId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-              const key = `apps/eyes/${loaded.project._id.toString()}/${shotId}.jpg`;
+              const key = eyesShotKey(
+                loaded.project._id.toString(),
+                `${shotId}.jpg`,
+              );
               await getDashboardArtifactStore().putBuffer(
                 Buffer.from(result.screenshotBase64, "base64"),
                 key,

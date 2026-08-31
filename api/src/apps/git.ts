@@ -46,6 +46,8 @@ const BASE_ENV: Record<string, string> = {
 };
 
 export const ZERO_OID = "0".repeat(40);
+/** The empty tree: what a root commit's "parent" diffs against. */
+export const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /**
  * The subcommand, for error messages — `args[0]` is usually `-C`, so naming it

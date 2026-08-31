@@ -10,6 +10,7 @@
  * feature flag).
  */
 import { createRoute, z } from "@hono/zod-openapi";
+import { eyesShotKey } from "../apps/eyes.service";
 import { Types } from "mongoose";
 import {
   AppProject,
@@ -2381,7 +2382,7 @@ appsRoutes.openapi(
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { shot } = c.req.valid("param");
-      const key = `apps/eyes/${loaded.project._id.toString()}/${shot}`;
+      const key = eyesShotKey(loaded.project._id.toString(), shot);
       const store = getDashboardArtifactStore();
       const stream = await store.openReadStream(key);
       if (!stream) {

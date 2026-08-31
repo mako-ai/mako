@@ -25,6 +25,7 @@
  *   is all any instance needs to trust the token.
  */
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { contentTypeFor } from "./deployment.service";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -216,27 +217,6 @@ export function resolvePreviewGrant(token: string): PreviewGrant | null {
   return grants.get(token) ?? null;
 }
 
-const CONTENT_TYPES: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".mjs": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".map": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp",
-  ".ico": "image/x-icon",
-  ".txt": "text/plain; charset=utf-8",
-  ".woff": "font/woff",
-  ".woff2": "font/woff2",
-  ".ttf": "font/ttf",
-  ".wasm": "application/wasm",
-};
-
 export interface PreviewAsset {
   contents: Buffer;
   contentType: string;
@@ -262,11 +242,7 @@ export async function readPreviewAsset(
       const stat = await fs.stat(abs);
       if (!stat.isFile()) return null;
       const contents = await fs.readFile(abs);
-      const ext = path.extname(abs).toLowerCase();
-      return {
-        contents,
-        contentType: CONTENT_TYPES[ext] ?? "application/octet-stream",
-      };
+      return { contents, contentType: contentTypeFor(abs) };
     } catch {
       return null;
     }

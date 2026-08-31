@@ -36,7 +36,7 @@ import {
   sessionKeyFor,
 } from "./worktree.service";
 import { loggers } from "../logging";
-import { boxEnvPath } from "./box";
+import { boxEnvPath, sh } from "./box";
 import { ensureBoxAgent } from "./box-agent";
 import { getBoxState, probeReachable } from "./box-state.service";
 import { readBindings, bindingArtifactKey } from "./bindings.service";
@@ -164,7 +164,7 @@ async function devPort(
         `console.log(m[app]??"");`);
   const result = await provider.exec(
     ctx,
-    `node -e '${script.replace(/'/g, String.raw`'\''`)}' ${JSON.stringify(handle.appRoot)}`,
+    `node -e ${sh(script)} ${JSON.stringify(handle.appRoot)}`,
     { timeoutMs: 30_000 },
   );
   const port = Number(result.stdout.trim());
@@ -694,11 +694,9 @@ export async function discoverDevServers(
     `if(--left===0)console.log(JSON.stringify(out))};` +
     `s.setTimeout(800);s.once("connect",()=>done(true));` +
     `s.once("error",()=>done(false));s.once("timeout",()=>done(false));});`;
-  const result = await provider.exec(
-    ctx,
-    `node -e '${script.replace(/'/g, String.raw`'\''`)}'`,
-    { timeoutMs: 15_000 },
-  );
+  const result = await provider.exec(ctx, `node -e ${sh(script)}`, {
+    timeoutMs: 15_000,
+  });
   try {
     const parsed = JSON.parse(result.stdout.trim() || "[]") as Array<{
       slug: string;
