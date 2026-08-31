@@ -2,7 +2,7 @@
   "name": "@makoai/cli",
   "version": "0.1.0",
   "description": "Mako from your terminal: sign in once (mako login), run a workspace app locally with real data (mako dev).",
-  "license": "ISC",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/mako-ai/mako.git",
