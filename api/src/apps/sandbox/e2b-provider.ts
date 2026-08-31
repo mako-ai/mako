@@ -206,7 +206,7 @@ async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
         const sandbox = await Sandbox.connect(info.sandboxId, {
           apiKey: apiKey(),
         });
-        sessions.set(sessionKey, sandbox.sandboxId);
+        rememberSession(sessionKey, sandbox.sandboxId);
         return sandbox;
       } catch (error) {
         // The listed box is really gone (killed between list and connect):
@@ -241,7 +241,7 @@ async function connectSessionNow(sessionKey: string): Promise<Sandbox> {
   // A concurrent create in another API instance may have made a second box
   // for this key; reduce to one deterministically before anyone uses it.
   const winner = await convergeToSingle(sessionKey, sandbox);
-  sessions.set(sessionKey, winner.sandboxId);
+  rememberSession(sessionKey, winner.sandboxId);
   logger.info("E2B sandbox created", {
     sessionKey,
     sandboxId: winner.sandboxId,
@@ -458,7 +458,7 @@ async function peekPublicUrlForPortE2b(
     const sandbox = await Sandbox.connect(info.sandboxId, {
       apiKey: apiKey(),
     });
-    sessions.set(ctx.sessionKey, sandbox.sandboxId);
+    rememberSession(ctx.sessionKey, sandbox.sandboxId);
     return `https://${sandbox.getHost(port)}`;
   } catch {
     return null;
@@ -701,10 +701,33 @@ async function openTerminalE2b(
 const knownAlive = new Map<string, number>();
 const KNOWN_ALIVE_TTL_MS = 15_000;
 
+/**
+ * ...and negative answers for a moment, because a read path asks in bursts.
+ *
+ * Resolving "live box or last commit?" happens per FILE READ, so one request
+ * that reads a handful of files asked this a handful of times in a row — and
+ * with nothing cached on NO, each of those was an E2B list round trip. That
+ * is the difference between an app's data binding answering in a second and
+ * in thirty. The window is deliberately small, and everything that learns a
+ * sandbox exists clears it (rememberSession), so the only staleness left is a
+ * box another API instance created — visible at most KNOWN_ABSENT_TTL_MS
+ * late, one beat of a poll rather than a frozen view.
+ */
+const knownAbsent = new Map<string, number>();
+const KNOWN_ABSENT_TTL_MS = 2_000;
+
+/** This session has a live sandbox: remember it, and stop calling it absent. */
+function rememberSession(sessionKey: string, sandboxId: string): void {
+  sessions.set(sessionKey, sandboxId);
+  knownAbsent.delete(sessionKey);
+  knownAlive.set(sessionKey, Date.now() + KNOWN_ALIVE_TTL_MS);
+}
+
 /** Is a sandbox already up for this session? Never creates one. */
 async function sessionExists(sessionKey: string): Promise<boolean> {
   if (sessions.has(sessionKey)) return true;
   if ((knownAlive.get(sessionKey) ?? 0) > Date.now()) return true;
+  if ((knownAbsent.get(sessionKey) ?? 0) > Date.now()) return false;
   try {
     const paginator = Sandbox.list({
       apiKey: apiKey(),
@@ -713,11 +736,13 @@ async function sessionExists(sessionKey: string): Promise<boolean> {
     });
     const found = paginator.hasNext && (await paginator.nextItems()).length > 0;
     if (found) knownAlive.set(sessionKey, Date.now() + KNOWN_ALIVE_TTL_MS);
+    else knownAbsent.set(sessionKey, Date.now() + KNOWN_ABSENT_TTL_MS);
     return found;
   } catch {
     // Unreachable E2B is not the same as "no sandbox", but for the one caller
     // — should this read come from the working copy or the last commit? — the
-    // committed answer is the safe one.
+    // committed answer is the safe one. Deliberately NOT cached: a blip is not
+    // an answer, and caching it would extend one bad request into a window.
     return false;
   }
 }
