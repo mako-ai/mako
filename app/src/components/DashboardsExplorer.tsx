@@ -75,10 +75,10 @@ export function DashboardsExplorer() {
     currentWorkspace?.role === "owner" || currentWorkspace?.role === "admin";
 
   const myDashboards = useDashboardTreeStore(
-    s => (workspaceId && s.myDashboards[workspaceId]) || EMPTY_TREE,
+    s => (workspaceId && s.myItems[workspaceId]) || EMPTY_TREE,
   );
   const workspaceDashboards = useDashboardTreeStore(
-    s => (workspaceId && s.workspaceDashboards[workspaceId]) || EMPTY_TREE,
+    s => (workspaceId && s.workspaceItems[workspaceId]) || EMPTY_TREE,
   );
   const loading = useDashboardTreeStore(s =>
     workspaceId ? !!s.loading[workspaceId] : false,

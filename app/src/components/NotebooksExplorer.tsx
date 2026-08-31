@@ -44,10 +44,10 @@ export default function NotebooksExplorer() {
   const workspaceId = currentWorkspace?.id;
 
   const myNotebooks = useNotebookTreeStore(
-    s => (workspaceId && s.myNotebooks[workspaceId]) || EMPTY_TREE,
+    s => (workspaceId && s.myItems[workspaceId]) || EMPTY_TREE,
   );
   const workspaceNotebooks = useNotebookTreeStore(
-    s => (workspaceId && s.workspaceNotebooks[workspaceId]) || EMPTY_TREE,
+    s => (workspaceId && s.workspaceItems[workspaceId]) || EMPTY_TREE,
   );
   const loading = useNotebookTreeStore(s =>
     workspaceId ? !!s.loading[workspaceId] : false,
