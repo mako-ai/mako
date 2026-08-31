@@ -376,14 +376,19 @@ Keep this list current: it is the hand-off.
       `test_sources.ReadTest` (the fake transport does not stub
       `/notebook/sources`) — same on master, unrelated to the rename; fix
       before publishing (`PYTHONPATH=src python3 -m unittest discover -s tests`).
-- [ ] **MCP Registry**: `mcp-publisher login dns --domain mako.ai` (DNS TXT
-      record on mako.ai) then `mcp-publisher publish` from the repo root; or
-      switch `server.json` `name` to `io.github.mako-ai/mako` and use
-      `mcp-publisher login github`. Then submit the hosted URL to Anthropic's
-      connector directory and Cursor's MCP directory.
-- [ ] **Merge PR #842** (branch `feat/local-first`). After deploy, the
-      reconcile cron redeploys the 25 RealAdvisor apps whose `publishedSha`
-      lags `main` (nothing to do by hand).
+- [x] **MCP Registry**: published as `io.github.mako-ai/mako` v1.0.0
+      (2026-08-31). Mechanics worth remembering: the registry grants an org
+      namespace only to org **Owners**, read via `GET /user/memberships/orgs`;
+      mako-ai restricts third-party apps and the registry's GitHub App is
+      private (cannot be installed), so the interactive device login only
+      sees the personal namespace. Use a token that can read the org role:
+      `mcp-publisher login github -token "$(gh auth token)"` (gh's token has
+      `admin:org`), then `mcp-publisher publish` from the repo root. New
+      versions: bump `version` in `server.json`, same two commands.
+- [ ] **Directories**: submit the hosted URL to Anthropic's connector
+      directory and Cursor's MCP directory (both are forms/PRs, not code).
+- [x] **Merge PR #842** — merged 2026-08-31 11:50Z (`26f481f2`); the
+      12:17Z reconcile run republished the stale RealAdvisor apps as designed.
 - [ ] **Migrated apps and dates**: SDK 2.2 sends DATE/TIMESTAMP as strings.
       Grep the 58 migrated apps for `formatDate`/`new Date(` on binding
       fields and fix any that assumed numbers (they were broken before too).
