@@ -101,6 +101,10 @@ function segmentsForTab(
       const path = (tab.metadata?.path as string | undefined) || "";
       return plain(["Source Control", ...path.split("/").filter(Boolean)]);
     }
+    case "repo-diff": {
+      const path = (tab.metadata?.path as string | undefined) || "";
+      return plain(["Source Control", ...path.split("/").filter(Boolean)]);
+    }
     case "connectors":
       return plain(["Connectors", tab.title || "New connector"]);
     case "flow-editor":

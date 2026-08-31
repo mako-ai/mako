@@ -90,6 +90,7 @@ import {
   type GitAuthor,
   type TreeEntry,
 } from "./repository.service";
+import { commitBranchFor } from "./branch-policy";
 import { EMPTY_TREE } from "./git";
 
 const logger = loggers.api("consoles-git");
@@ -394,12 +395,17 @@ export async function commitConsoleBatch(input: {
     });
   }
   const author = await authorForUser(input.actorUserId);
-  const result = await commitBlobsOnBranch(
-    repoDir,
-    DEFAULT_BRANCH,
-    input.mutation,
-    { message: input.message, author },
+  // Ref policy: consoles pin to the default branch while their Mongo index
+  // is main-scoped — see branch-policy.ts for the doctrine.
+  const branch = await commitBranchFor(
+    "console",
+    input.workspaceId,
+    input.actorUserId ?? "api-key",
   );
+  const result = await commitBlobsOnBranch(repoDir, branch, input.mutation, {
+    message: input.message,
+    author,
+  });
   if (!result.unchanged) queueMirrorPush(input.workspaceId);
   return { commitOid: result.commitOid, unchanged: result.unchanged };
 }

@@ -2633,3 +2633,64 @@ retired the same evening: no dual-writes, no legacy `/versions` routes —
 save baselines and the version-comment diff read the file at HEAD. The 412
 now lands as UX: a failed save opens Settings → GitHub with a plain
 explanation. Template v7 documents `skills/` in AGENTS.md.
+
+## 19. The doctrine, decomposed: workspace-scoped repo + branch policy (2026-08-31, night)
+
+"Every save is a commit" (§10 Block A) was three rules traveling under one
+slogan, and preparing dbt's landing (Block D3) forced them apart. The user's
+framing that split them: the slogan is only true for ephemeral working
+copies — a laptop clone owes nobody a commit — and durability never implied
+the commits belong on main.
+
+1. **Durability.** An ephemeral working copy (the sandbox, a Monaco buffer)
+   never holds work the server is responsible for: agent turns and manual
+   saves commit AND push. A laptop clone is exempt. Enforced where writes
+   happen; unchanged.
+2. **Ref policy** — which branch those commits advance. Now ONE module:
+   `api/src/apps/branch-policy.ts` (`sessionBranchFor`, `commitBranchFor`).
+   Apps (and dbt, when it lands) follow the actor's session branch
+   (`AppWorktree.branch`, the pointer `git checkout` moves). Consoles and
+   skills pin to the default branch — not doctrine but a CONSTRAINT: their
+   Mongo rows are a derived index of main, so a save committed to a feature
+   branch would be visually reverted by the next index sync. Branch-scoped
+   indexes are the prerequisite for lifting it. Main-by-default for apps
+   stands on the pinned-sha argument (publish deploys a sha, so main is not
+   production); dbt inverts it (scheduled jobs build the tracked branch), so
+   its Block D3 default is a working branch with merge-to-main as deploy.
+3. **Granularity** — amend/squash/standalone per save is a per-surface
+   choice, deliberately not policy (see autoCommitFileEdit's history).
+
+**The repo is workspace-scoped in code now, not just in the data model.**
+The Source Control panel and the rail's dirty dot used to reach the repo
+through "any app id" (`apps[0].id` + app routes with `scope=repo`) — a
+workspace whose repo holds only consoles (or, post-D3, only dbt) had a blank
+panel. What landed:
+
+- `RepoScope` + `workspaceScope()`/`scopeOf(project)` in worktree.service;
+  status/history/branches/merge/commit-inspection take a scope, not an
+  IAppProject. `ensureWorkspaceWorktree(workspaceId, actorId)` returns the
+  same session doc with no app lens (`WorktreeHandle.project` is optional).
+- `/api/workspaces/:id/repo/*` (routes/workspace-repo.ts): status (with
+  `hasRepo`, and an at-rest default-branch answer when no session exists),
+  history, branches, checkout, merge, commit, stage/unstage/discard,
+  git/commit, git/file-versions — OpenAPI-typed, no app handle.
+- Frontend `repoStore` (workspace-keyed twin of appsStore's git slice, same
+  `AppCommit`/`AppStatus` shapes); SourceControlExplorer and the Sidebar
+  dirty dot rewired onto it; new `repo-diff` tab kind + `RepoDiffTab`
+  (workspace-addressed twin of AppDiffTab) so any repo path diffs without an
+  owning app — the graph and CHANGES rows open everything, with "Open file"
+  when an app owns the path (consoles/dbt grow their own openers with their
+  explorer integrations).
+- The GitHub connect surface appsStore had borrowed from dbt
+  (`/dbt/github/install-url`, `/dbt/github/branches` — both TODO-tagged)
+  moved to `/repo/github/*`: Block D3 can now delete dbt's git routes
+  without breaking apps, and appsStore no longer uses the raw client at all.
+
+Rail visibility deliberately unchanged (`settings.appsEnabled`, a
+synchronous fact per Sidebar's doctrine); when dbt lands in the repo the
+flag's meaning grows to "repo features", not into a network probe.
+
+Next on this axis (not started): agent-on-a-branch — commitAgentTurn keyed
+by actor commits to the branch the person is on; the review-flow convention
+(agent works its own branch, human merges) is §14.2's "staged group" item
+and becomes cheap once dbt normalizes branch-per-line-of-work.

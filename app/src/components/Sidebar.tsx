@@ -21,7 +21,7 @@ import { useConnectorStore } from "../store/connectorStore";
 import { useFlowStore } from "../store/flowStore";
 import { useChatStore } from "../store/chatStore";
 import { useExplorerStore } from "../store/explorerStore";
-import { useAppsStore } from "../store/appsStore";
+import { useRepoStore } from "../store/repoStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent, resetIdentity } from "../lib/analytics";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -96,22 +96,18 @@ const topNavigationItems: {
 function useRepoDirty(enabled: boolean): boolean {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
-  const appId = useAppsStore(state => state.apps[0]?.id);
-  const fetchStatus = useAppsStore(state => state.fetchStatus);
-  const dirty = useAppsStore(state =>
-    Object.values(state.statusByApp).some(
-      status => (status?.repoChanges?.length ?? 0) > 0,
-    ),
+  const fetchStatus = useRepoStore(state => state.fetchStatus);
+  const dirty = useRepoStore(state =>
+    workspaceId
+      ? (state.statusByWorkspace[workspaceId]?.repoChanges?.length ?? 0) > 0
+      : false,
   );
   useEffect(() => {
-    if (!enabled || !workspaceId || !appId) return;
-    void fetchStatus(workspaceId, appId);
-    const timer = setInterval(
-      () => void fetchStatus(workspaceId, appId),
-      30_000,
-    );
+    if (!enabled || !workspaceId) return;
+    void fetchStatus(workspaceId);
+    const timer = setInterval(() => void fetchStatus(workspaceId), 30_000);
     return () => clearInterval(timer);
-  }, [enabled, workspaceId, appId, fetchStatus]);
+  }, [enabled, workspaceId, fetchStatus]);
   return dirty;
 }
 

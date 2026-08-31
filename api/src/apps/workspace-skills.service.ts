@@ -57,6 +57,8 @@ const logger = loggers.api("skills-git");
 /** Mirrors skills.service's MAX_SKILLS_PER_WORKSPACE — bounds the index. */
 const MAX_SYNCED_SKILLS = 200;
 
+// Ref policy: skills pin to the default branch while their Mongo index is
+// main-scoped — see branch-policy.ts (commitBranchFor "skill") for why.
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 
 async function readRepoFile(

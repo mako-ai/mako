@@ -15,6 +15,7 @@ import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
 import { startTestGitServer, type TestGitServer } from "./test-git-server";
+import { scopeOf } from "./worktree.service";
 
 let mongo: MongoMemoryServer;
 let tmpRoot: string;
@@ -143,7 +144,9 @@ describe("hostile branch names", () => {
     // nothing executed.
     const after = await ensureWorktree(project, USER);
     expect(after.doc.branch).toBe(hostile);
-    expect((await listBranches(project)).map(b => b.name)).toContain(hostile);
+    expect((await listBranches(scopeOf(project))).map(b => b.name)).toContain(
+      hostile,
+    );
     await expect(fs.stat("/tmp/mako-pwned")).rejects.toThrow();
   }, 120_000);
 });
@@ -240,12 +243,12 @@ describe("losing the machine", () => {
     // server-side gets to hold a different opinion about what is in the tree,
     // because nothing server-side holds an opinion at all.
     await writeFile(await ensureWorktree(project, USER), "tracked.txt", "v2\n");
-    const dirty = await worktreeStatus(project, USER);
+    const dirty = await worktreeStatus(scopeOf(project), USER);
     expect(dirty?.changes.map(c => c.path)).toContain("tracked.txt");
 
     await execInWorktree(handle, "git reset -q --hard HEAD", {});
 
-    const status = await worktreeStatus(project, USER);
+    const status = await worktreeStatus(scopeOf(project), USER);
     expect(status?.changes.map(c => c.path) ?? []).not.toContain("tracked.txt");
   }, 120_000);
 });
@@ -524,7 +527,7 @@ describe("uncommitted work you cannot see", () => {
       "written by a build\n",
     );
 
-    const status = await worktreeStatus(mine, USER);
+    const status = await worktreeStatus(scopeOf(mine), USER);
     expect(status?.changes.map(c => c.path)).not.toContain("generated.lock");
     expect(status?.repoChanges.map(c => c.path).join("\n")).toMatch(
       /generated\.lock/,
@@ -634,7 +637,7 @@ describe("publishing", () => {
     );
     await commitWorktree(await ensureWorktree(project, USER), "theirs 2");
 
-    const before = (await projectHistory(project)).length;
+    const before = (await projectHistory(scopeOf(project))).length;
     const publishHandle = await ensureWorktree(project, PUBLISH_ACTOR, {
       branch: project.defaultBranch || "main",
     });
@@ -642,7 +645,7 @@ describe("publishing", () => {
     expect(trial.ok, "a conflicting merge must be refused").toBe(false);
     expect(trial.reason).toMatch(/conflict/i);
     // Refusing must not have advanced main.
-    expect((await projectHistory(project)).length).toBe(before);
+    expect((await projectHistory(scopeOf(project))).length).toBe(before);
   }, 180_000);
 });
 
@@ -658,9 +661,9 @@ describe("repeated operations are idempotent", () => {
     // Reading used to WRITE: every read snapshotted the working copy into a
     // new commit, so asking what had changed changed something. A read is a
     // read now, and this is the case that says so.
-    const first = await worktreeStatus(project, USER);
-    const second = await worktreeStatus(project, USER);
-    const third = await worktreeStatus(project, USER);
+    const first = await worktreeStatus(scopeOf(project), USER);
+    const second = await worktreeStatus(scopeOf(project), USER);
+    const third = await worktreeStatus(scopeOf(project), USER);
     expect(second?.baseSha).toBe(first?.baseSha);
     expect(third?.baseSha).toBe(first?.baseSha);
     expect(third?.changes.map(c => c.path)).toEqual(
