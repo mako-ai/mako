@@ -2237,7 +2237,33 @@ opens; the test enumerates the neighbours that stay closed.
   for local-first it means "push and see it in the app" only holds on the
   deployment the webhook points at.
 
-### 15.4 Still open
+### 15.4 The acceptance run
+
+Same setup, fresh session, bare clone of `main`, task: "add a revenue-by-
+country bar chart to `latest-sales`, verify locally with real data, commit,
+push to `main`". It read `AGENTS.md`, edited with its own tools, ran `vite`
+with `makoData` (a fresh artifact fetched from the API mid-run), verified with
+a headless browser (four bars summing to the artifact's total), passed `tsc -b`
+and `npm run build`, committed source + lockfile, pushed. Prod deployed it 90
+seconds later (`c55cf0f9`). No workaround, no `app_*` file tool, no `run_app`;
+it asked before writing to `update_self_directive`. §11.8 step 1's acceptance
+test holds.
+
+It also found two things worth more than the chart:
+
+- **DATE columns arrive as epoch milliseconds.** The parquet → DuckDB-WASM path
+  hands `first_invoice_date` to the app as a number; the v1-migrated
+  `formatDate` did `new Date(\`${d}T00:00:00\`)`, threw, and React unmounted
+  the tree — the deployed app was almost certainly blank until this commit.
+  v1 served JSON strings, so other migrated apps likely share the pattern.
+  Decision needed: normalise DATE/TIMESTAMP in `useQuery` (ISO strings), or
+  document it in the skill and audit the migrated apps.
+- **No charting guidance for v2 apps.** `get_relevant_skills` / the `apps`
+  system skill returned nothing for "chart in a Mako app"; the agent fell
+  back to general dataviz knowledge and the SDK's theme tokens. A charting
+  reference belongs in `api/src/agent-skills/apps/`.
+
+### 15.5 Still open
 
 `mako login` (device flow writing `~/.mako/credentials`) to replace the paste-
 a-key step; hiding or renaming the box-shaped `app_*` tools for a client that
