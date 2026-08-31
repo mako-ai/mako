@@ -3,9 +3,14 @@
  * scheduler (scheduled queries, dbt jobs — previously copy-pasted per kind).
  *
  * These docs precompute their next occurrence in `scheduledRun.nextAt`; the
- * scan selects `nextAt <= now` and claims a run by flipping `nextAt` with the
- * OLD value in the filter, so with several API instances exactly one wins the
- * claim and triggers.
+ * scan selects `nextAt <= now` (an indexed query — no cron parsing over the
+ * whole collection) and claims a run by flipping `nextAt` with the OLD value
+ * in the filter. The flip is what advances the schedule; that it is
+ * compare-and-swap also makes the trigger exactly-once when scans overlap
+ * (a slow scan running past the next tick, an Inngest retry of the scan
+ * step, or a manual trigger racing the schedule). Note the cron function
+ * itself already fires once per tick globally — Inngest invokes one
+ * instance — so multi-instance dedup is NOT what this is for.
  *
  * Both helpers are called inside `step.run` by their Inngest functions; the
  * claim deliberately returns the raw update result (not a boolean) so the
