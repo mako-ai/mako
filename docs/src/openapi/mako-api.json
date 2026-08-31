@@ -102,6 +102,77 @@
           "settings"
         ]
       },
+      "CreateConsoleFolderRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "access": {
+            "type": "string",
+            "enum": [
+              "private",
+              "workspace"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "RenameConsoleFolderRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "MoveConsoleFolderRequest": {
+        "type": "object",
+        "properties": {
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "access": {
+            "type": "string",
+            "enum": [
+              "private",
+              "workspace"
+            ]
+          }
+        }
+      },
+      "MoveConsoleRequest": {
+        "type": "object",
+        "properties": {
+          "folderId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "access": {
+            "type": "string",
+            "enum": [
+              "private",
+              "workspace"
+            ]
+          }
+        }
+      },
       "Error": {
         "type": "object",
         "properties": {
@@ -999,6 +1070,77 @@
           "createdBy"
         ]
       },
+      "CreateDashboardFolderRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "access": {
+            "type": "string",
+            "enum": [
+              "private",
+              "workspace"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "RenameDashboardFolderRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "MoveDashboardFolderRequest": {
+        "type": "object",
+        "properties": {
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "access": {
+            "type": "string",
+            "enum": [
+              "private",
+              "workspace"
+            ]
+          }
+        }
+      },
+      "MoveDashboardRequest": {
+        "type": "object",
+        "properties": {
+          "folderId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "access": {
+            "type": "string",
+            "enum": [
+              "private",
+              "workspace"
+            ]
+          }
+        }
+      },
       "NotebookReadRequest": {
         "type": "object",
         "properties": {
@@ -1134,24 +1276,6 @@
           "clientId"
         ]
       },
-      "MoveNotebookRequest": {
-        "type": "object",
-        "properties": {
-          "folderId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "access": {
-            "type": "string",
-            "enum": [
-              "private",
-              "workspace"
-            ]
-          }
-        }
-      },
       "CreateNotebookFolderRequest": {
         "type": "object",
         "properties": {
@@ -1191,6 +1315,24 @@
         "type": "object",
         "properties": {
           "parentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "access": {
+            "type": "string",
+            "enum": [
+              "private",
+              "workspace"
+            ]
+          }
+        }
+      },
+      "MoveNotebookRequest": {
+        "type": "object",
+        "properties": {
+          "folderId": {
             "type": [
               "string",
               "null"
@@ -7813,86 +7955,6 @@
         "operationId": "get_api_workspaces_workspaceId_consoles_search"
       }
     },
-    "/api/workspaces/{workspaceId}/consoles/folders": {
-      "post": {
-        "tags": [
-          "Consoles"
-        ],
-        "summary": "POST /folders",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_workspaces_workspaceId_consoles_folders"
-      }
-    },
     "/api/workspaces/{workspaceId}/consoles/{id}/rename": {
       "patch": {
         "tags": [
@@ -8327,347 +8389,6 @@
           }
         },
         "operationId": "post_api_workspaces_workspaceId_consoles_id_restore"
-      }
-    },
-    "/api/workspaces/{workspaceId}/consoles/folders/{id}/rename": {
-      "patch": {
-        "tags": [
-          "Consoles"
-        ],
-        "summary": "PATCH /folders/{id}/rename",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "patch_api_workspaces_workspaceId_consoles_folders_id_rename"
-      }
-    },
-    "/api/workspaces/{workspaceId}/consoles/folders/{id}": {
-      "delete": {
-        "tags": [
-          "Consoles"
-        ],
-        "summary": "DELETE /folders/{id}",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "delete_api_workspaces_workspaceId_consoles_folders_id"
-      }
-    },
-    "/api/workspaces/{workspaceId}/consoles/{id}/move": {
-      "patch": {
-        "tags": [
-          "Consoles"
-        ],
-        "summary": "PATCH /{id}/move",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "patch_api_workspaces_workspaceId_consoles_id_move"
-      }
-    },
-    "/api/workspaces/{workspaceId}/consoles/folders/{id}/move": {
-      "patch": {
-        "tags": [
-          "Consoles"
-        ],
-        "summary": "PATCH /folders/{id}/move",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": {}
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "patch_api_workspaces_workspaceId_consoles_folders_id_move"
       }
     },
     "/api/workspaces/{workspaceId}/consoles/{id}/version-comment": {
@@ -9421,6 +9142,423 @@
           }
         },
         "operationId": "get_api_workspaces_workspaceId_consoles_id_git_file_versions"
+      }
+    },
+    "/api/workspaces/{workspaceId}/consoles/folders": {
+      "post": {
+        "summary": "POST /folders",
+        "tags": [
+          "Consoles"
+        ],
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateConsoleFolderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_consoles_folders"
+      }
+    },
+    "/api/workspaces/{workspaceId}/consoles/folders/{id}/rename": {
+      "patch": {
+        "summary": "PATCH /folders/{id}/rename",
+        "tags": [
+          "Consoles"
+        ],
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameConsoleFolderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "patch_api_workspaces_workspaceId_consoles_folders_id_rename"
+      }
+    },
+    "/api/workspaces/{workspaceId}/consoles/folders/{id}": {
+      "delete": {
+        "summary": "DELETE /folders/{id}",
+        "tags": [
+          "Consoles"
+        ],
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "delete_api_workspaces_workspaceId_consoles_folders_id"
+      }
+    },
+    "/api/workspaces/{workspaceId}/consoles/folders/{id}/move": {
+      "patch": {
+        "summary": "PATCH /folders/{id}/move",
+        "tags": [
+          "Consoles"
+        ],
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveConsoleFolderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "patch_api_workspaces_workspaceId_consoles_folders_id_move"
+      }
+    },
+    "/api/workspaces/{workspaceId}/consoles/{id}/move": {
+      "patch": {
+        "summary": "PATCH /{id}/move",
+        "tags": [
+          "Consoles"
+        ],
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveConsoleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "patch_api_workspaces_workspaceId_consoles_id_move"
       }
     },
     "/api/workspaces/{workspaceId}/realtime": {
@@ -18957,10 +19095,10 @@
     },
     "/api/workspaces/{workspaceId}/dashboards/folders": {
       "post": {
+        "summary": "POST /folders",
         "tags": [
           "Dashboards"
         ],
-        "summary": "POST /folders",
         "security": [
           {
             "cookieAuth": []
@@ -18984,8 +19122,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "additionalProperties": {}
+                "$ref": "#/components/schemas/CreateDashboardFolderRequest"
               }
             }
           }
@@ -19037,10 +19174,10 @@
     },
     "/api/workspaces/{workspaceId}/dashboards/folders/{id}/rename": {
       "patch": {
+        "summary": "PATCH /folders/{id}/rename",
         "tags": [
           "Dashboards"
         ],
-        "summary": "PATCH /folders/{id}/rename",
         "security": [
           {
             "cookieAuth": []
@@ -19072,8 +19209,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "additionalProperties": {}
+                "$ref": "#/components/schemas/RenameDashboardFolderRequest"
               }
             }
           }
@@ -19125,10 +19261,10 @@
     },
     "/api/workspaces/{workspaceId}/dashboards/folders/{id}": {
       "delete": {
+        "summary": "DELETE /folders/{id}",
         "tags": [
           "Dashboards"
         ],
-        "summary": "DELETE /folders/{id}",
         "security": [
           {
             "cookieAuth": []
@@ -19202,10 +19338,10 @@
     },
     "/api/workspaces/{workspaceId}/dashboards/folders/{id}/move": {
       "patch": {
+        "summary": "PATCH /folders/{id}/move",
         "tags": [
           "Dashboards"
         ],
-        "summary": "PATCH /folders/{id}/move",
         "security": [
           {
             "cookieAuth": []
@@ -19237,8 +19373,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "additionalProperties": {}
+                "$ref": "#/components/schemas/MoveDashboardFolderRequest"
               }
             }
           }
@@ -19290,10 +19425,10 @@
     },
     "/api/workspaces/{workspaceId}/dashboards/{id}/move": {
       "patch": {
+        "summary": "PATCH /{id}/move",
         "tags": [
           "Dashboards"
         ],
-        "summary": "PATCH /{id}/move",
         "security": [
           {
             "cookieAuth": []
@@ -19325,8 +19460,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "additionalProperties": {}
+                "$ref": "#/components/schemas/MoveDashboardRequest"
               }
             }
           }
@@ -21411,94 +21545,9 @@
         "operationId": "post_api_workspaces_workspaceId_notebooks_id_presence"
       }
     },
-    "/api/workspaces/{workspaceId}/notebooks/{id}/move": {
-      "patch": {
-        "tags": [
-          "Notebooks"
-        ],
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "workspaceId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MoveNotebookRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "patch_api_workspaces_workspaceId_notebooks_id_move"
-      }
-    },
     "/api/workspaces/{workspaceId}/notebooks/folders": {
       "post": {
+        "summary": "POST /folders",
         "tags": [
           "Notebooks"
         ],
@@ -21577,6 +21626,7 @@
     },
     "/api/workspaces/{workspaceId}/notebooks/folders/{id}/rename": {
       "patch": {
+        "summary": "PATCH /folders/{id}/rename",
         "tags": [
           "Notebooks"
         ],
@@ -21607,7 +21657,7 @@
           }
         ],
         "requestBody": {
-          "required": true,
+          "required": false,
           "content": {
             "application/json": {
               "schema": {
@@ -21663,6 +21713,7 @@
     },
     "/api/workspaces/{workspaceId}/notebooks/folders/{id}": {
       "delete": {
+        "summary": "DELETE /folders/{id}",
         "tags": [
           "Notebooks"
         ],
@@ -21739,6 +21790,7 @@
     },
     "/api/workspaces/{workspaceId}/notebooks/folders/{id}/move": {
       "patch": {
+        "summary": "PATCH /folders/{id}/move",
         "tags": [
           "Notebooks"
         ],
@@ -21821,6 +21873,93 @@
           }
         },
         "operationId": "patch_api_workspaces_workspaceId_notebooks_folders_id_move"
+      }
+    },
+    "/api/workspaces/{workspaceId}/notebooks/{id}/move": {
+      "patch": {
+        "summary": "PATCH /{id}/move",
+        "tags": [
+          "Notebooks"
+        ],
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveNotebookRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "patch_api_workspaces_workspaceId_notebooks_id_move"
       }
     },
     "/api/workspaces/{workspaceId}/notebooks/{id}/sessions": {

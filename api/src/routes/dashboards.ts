@@ -1,6 +1,10 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { workspaceResourceLoader } from "./lib/load-resource";
 import {
+  createModelFolderBackend,
+  registerFolderRoutes,
+} from "./lib/folder-routes";
+import {
   Dashboard,
   DashboardFolder,
   DatabaseConnection,
@@ -2032,411 +2036,47 @@ app.openapi(
   },
 );
 
-// ── Folder endpoints ──
+// ── Folder + move endpoints (shared registrar) ──
 
-// POST /api/workspaces/:workspaceId/dashboards/folders - Create folder
-app.openapi(
-  createRoute({
-    method: "post",
-    path: "/folders",
-    tags: ["Dashboards"],
-    summary: "POST /folders",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-      }),
-      body: {
-        required: false,
-        content: {
-          "application/json": { schema: z.record(z.string(), z.any()) },
-        },
-      },
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const userId = c.get("user")?.id;
-      if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
-      }
-      const body = await c.req.json();
-      const { name, parentId, access } = body;
-
-      if (!name || typeof name !== "string" || !name.trim()) {
-        return c.json(
-          { success: false, error: "Folder name is required" },
-          400,
-        );
-      }
-
-      if (parentId && !Types.ObjectId.isValid(parentId)) {
-        return c.json({ success: false, error: "Invalid parentId" }, 400);
-      }
-
-      const folder = new DashboardFolder({
-        workspaceId: new Types.ObjectId(workspaceId),
-        name: name.trim(),
-        parentId: parentId ? new Types.ObjectId(parentId) : undefined,
-        ownerId: userId,
-        access: access || "private",
-      });
-
-      await folder.save();
-      return c.json({
-        success: true,
-        data: {
-          id: folder._id.toString(),
-          name: folder.name,
-          parentId: folder.parentId?.toString() || null,
-          access: folder.access,
-          ownerId: folder.ownerId,
-        },
-      });
-    } catch (error) {
-      logger.error("Error creating dashboard folder", { error });
-      return c.json(
-        {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        },
-        500,
-      );
+const dashboardFolderBackend = createModelFolderBackend({
+  folderModel: DashboardFolder,
+  itemModel: Dashboard,
+  moveItem: async (ctx, { itemId, folderId, access }) => {
+    const dashboard = await Dashboard.findOne({
+      _id: new Types.ObjectId(itemId),
+      workspaceId: new Types.ObjectId(ctx.workspaceId),
+    });
+    if (!dashboard) {
+      return { ok: false, status: 404, error: "Dashboard not found" };
     }
-  },
-);
-
-// PATCH /api/workspaces/:workspaceId/dashboards/folders/:id/rename
-app.openapi(
-  createRoute({
-    method: "patch",
-    path: "/folders/{id}/rename",
-    tags: ["Dashboards"],
-    summary: "PATCH /folders/{id}/rename",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-      }),
-      body: {
-        required: false,
-        content: {
-          "application/json": { schema: z.record(z.string(), z.any()) },
-        },
-      },
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const folderId = c.req.param("id");
-      const userId = c.get("user")?.id;
-      if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
-      }
-
-      const body = await c.req.json();
-      const { name } = body;
-
-      if (!name || typeof name !== "string" || !name.trim()) {
-        return c.json(
-          { success: false, error: "Folder name is required" },
-          400,
-        );
-      }
-
-      const folder = await DashboardFolder.findOne({
-        _id: new Types.ObjectId(folderId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-
-      if (!folder) {
-        return c.json({ success: false, error: "Folder not found" }, 404);
-      }
-
-      const memberRole = c.get("memberRole");
-      const isAdmin = memberRole === "owner" || memberRole === "admin";
-      if (folder.ownerId !== userId && !isAdmin) {
-        return c.json({ success: false, error: "Access denied" }, 403);
-      }
-
-      folder.name = name.trim();
-      await folder.save();
-
-      return c.json({
-        success: true,
-        data: { id: folder._id.toString(), name: folder.name },
-      });
-    } catch (error) {
-      logger.error("Error renaming dashboard folder", { error });
-      return c.json(
-        {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        },
-        500,
-      );
+    const isAdmin = ctx.role === "owner" || ctx.role === "admin";
+    if (!DashboardManager.canWrite(dashboard, ctx.userId, isAdmin, ctx.role)) {
+      return { ok: false, status: 403, error: "Access denied" };
     }
-  },
-);
-
-// DELETE /api/workspaces/:workspaceId/dashboards/folders/:id
-app.openapi(
-  createRoute({
-    method: "delete",
-    path: "/folders/{id}",
-    tags: ["Dashboards"],
-    summary: "DELETE /folders/{id}",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-      }),
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const folderId = c.req.param("id");
-      const userId = c.get("user")?.id;
-      if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
-      }
-
-      const folder = await DashboardFolder.findOne({
-        _id: new Types.ObjectId(folderId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-
-      if (!folder) {
-        return c.json({ success: false, error: "Folder not found" }, 404);
-      }
-
-      const memberRole = c.get("memberRole");
-      const isAdmin = memberRole === "owner" || memberRole === "admin";
-      if (folder.ownerId !== userId && !isAdmin) {
-        return c.json({ success: false, error: "Access denied" }, 403);
-      }
-
-      const wsId = new Types.ObjectId(workspaceId);
-      const collectFolderIds = async (
-        parentId: Types.ObjectId,
-      ): Promise<Types.ObjectId[]> => {
-        const children = await DashboardFolder.find({
-          workspaceId: wsId,
-          parentId,
-        });
-        const ids: Types.ObjectId[] = [];
-        for (const child of children) {
-          ids.push(child._id);
-          ids.push(...(await collectFolderIds(child._id)));
-        }
-        return ids;
-      };
-
-      const descendantIds = await collectFolderIds(
-        new Types.ObjectId(folderId),
-      );
-      const allFolderIds = [new Types.ObjectId(folderId), ...descendantIds];
-
-      await Dashboard.updateMany(
-        { workspaceId: wsId, folderId: { $in: allFolderIds } },
-        { $unset: { folderId: "" } },
-      );
-      await DashboardFolder.deleteMany({ _id: { $in: allFolderIds } });
-
-      return c.json({ success: true });
-    } catch (error) {
-      logger.error("Error deleting dashboard folder", { error });
-      return c.json(
-        {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        },
-        500,
-      );
+    if (folderId !== undefined) {
+      dashboard.folderId = folderId ? new Types.ObjectId(folderId) : undefined;
     }
-  },
-);
-
-// PATCH /api/workspaces/:workspaceId/dashboards/folders/:id/move
-app.openapi(
-  createRoute({
-    method: "patch",
-    path: "/folders/{id}/move",
-    tags: ["Dashboards"],
-    summary: "PATCH /folders/{id}/move",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-      }),
-      body: {
-        required: false,
-        content: {
-          "application/json": { schema: z.record(z.string(), z.any()) },
-        },
-      },
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const folderId = c.req.param("id");
-      const userId = c.get("user")?.id;
-      if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
+    if (access !== undefined) {
+      // Visibility changes are owner/admin-only (see PUT handler).
+      if (!DashboardManager.isOwner(dashboard, ctx.userId) && !isAdmin) {
+        return {
+          ok: false,
+          status: 403,
+          error: "Only the owner or an admin can change dashboard visibility",
+        };
       }
-
-      const body = await c.req.json();
-      const { parentId, access } = body;
-
-      const folder = await DashboardFolder.findOne({
-        _id: new Types.ObjectId(folderId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-
-      if (!folder) {
-        return c.json({ success: false, error: "Folder not found" }, 404);
-      }
-
-      if (parentId !== undefined && parentId !== null) {
-        const wouldCycle = await DashboardManager.wouldCreateCycle(
-          folderId,
-          parentId,
-          workspaceId,
-        );
-        if (wouldCycle) {
-          return c.json(
-            { success: false, error: "Folder not found or circular nesting" },
-            404,
-          );
-        }
-      }
-
-      if (parentId !== undefined) {
-        folder.parentId = parentId ? new Types.ObjectId(parentId) : undefined;
-      }
-      if (access !== undefined) {
-        folder.access = access;
-      }
-      await folder.save();
-
-      return c.json({ success: true });
-    } catch (error) {
-      logger.error("Error moving dashboard folder", { error });
-      return c.json(
-        {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        },
-        500,
-      );
+      dashboard.access = access;
     }
+    await dashboard.save();
+    return { ok: true };
   },
-);
+});
 
-// PATCH /api/workspaces/:workspaceId/dashboards/:id/move - Move dashboard to folder
-app.openapi(
-  createRoute({
-    method: "patch",
-    path: "/{id}/move",
-    tags: ["Dashboards"],
-    summary: "PATCH /{id}/move",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-      }),
-      body: {
-        required: false,
-        content: {
-          "application/json": { schema: z.record(z.string(), z.any()) },
-        },
-      },
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const id = c.req.param("id");
-      const userId = c.get("user")?.id;
-      if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
-      }
-
-      const body = await c.req.json();
-      const { folderId, access } = body;
-
-      const dashboard = await Dashboard.findOne({
-        _id: new Types.ObjectId(id),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-
-      if (!dashboard) {
-        return c.json({ success: false, error: "Dashboard not found" }, 404);
-      }
-
-      const memberRole = c.get("memberRole");
-      const isAdmin = memberRole === "owner" || memberRole === "admin";
-      if (!DashboardManager.canWrite(dashboard, userId, isAdmin, memberRole)) {
-        return c.json({ success: false, error: "Access denied" }, 403);
-      }
-
-      if (folderId !== undefined) {
-        dashboard.folderId = folderId
-          ? new Types.ObjectId(folderId)
-          : undefined;
-      }
-      if (access !== undefined) {
-        // Visibility changes are owner/admin-only (see PUT handler).
-        if (!DashboardManager.isOwner(dashboard, userId) && !isAdmin) {
-          return c.json(
-            {
-              success: false,
-              error:
-                "Only the owner or an admin can change dashboard visibility",
-            },
-            403,
-          );
-        }
-        dashboard.access = access;
-      }
-      await dashboard.save();
-
-      return c.json({ success: true });
-    } catch (error) {
-      logger.error("Error moving dashboard", { error });
-      return c.json(
-        {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        },
-        500,
-      );
-    }
-  },
-);
+registerFolderRoutes(app, {
+  tag: "Dashboards",
+  schemaPrefix: "Dashboard",
+  backend: dashboardFolderBackend,
+});
 
 // ---------------------------------------------------------------------------
 // Version history routes

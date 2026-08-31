@@ -2,6 +2,9 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { workspaceResourceLoader } from "./lib/load-resource";
 import type { Context } from "hono";
 import { ConsoleManager } from "../utils/console-manager";
+import { canWriteResource } from "../utils/resource-acl";
+import { wouldCreateFolderCycle } from "../utils/folder-tree";
+import { registerFolderRoutes, type FolderBackend } from "./lib/folder-routes";
 import {
   unifiedAuthMiddleware,
   isApiKeyAuth,
@@ -1628,91 +1631,6 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
   }
 });
 
-// POST /api/workspaces/:workspaceId/consoles/folders - Create new folder
-consoleRoutes.openapi(
-  createRoute({
-    method: "post",
-    path: "/folders",
-    tags: ["Consoles"],
-    summary: "POST /folders",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-      }),
-      body: {
-        required: false,
-        content: {
-          "application/json": { schema: z.record(z.string(), z.any()) },
-        },
-      },
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const body = await c.req.json();
-      const { name, parentId, isPrivate, access } = body;
-      const user = c.get("user");
-
-      // Workspace access itself is the router middleware's job (it ran and
-      // set memberRole); this only keeps the route session-only.
-      if (!user) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
-
-      if (!name || typeof name !== "string") {
-        return c.json(
-          { success: false, error: "Name is required and must be a string" },
-          400,
-        );
-      }
-
-      const folder = await consoleManager.createFolder(
-        name,
-        workspaceId,
-        user.id,
-        parentId,
-        isPrivate || false,
-        access || "private",
-      );
-
-      return c.json(
-        {
-          success: true,
-          message: "Folder created successfully",
-          data: {
-            id: folder._id.toString(),
-            name: folder.name,
-            parentId: folder.parentId?.toString(),
-            isPrivate: folder.isPrivate,
-          },
-        },
-        201,
-      );
-    } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
-      logger.error("Error creating folder", { error });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Unknown error creating folder",
-        },
-        500,
-      );
-    }
-  },
-);
-
 // PATCH /api/workspaces/:workspaceId/consoles/:id/rename - Rename a console
 consoleRoutes.openapi(
   createRoute({
@@ -2093,368 +2011,6 @@ consoleRoutes.openapi(
             error instanceof Error
               ? error.message
               : "Unknown error restoring console",
-        },
-        500,
-      );
-    }
-  },
-);
-
-// PATCH /api/workspaces/:workspaceId/consoles/folders/:id/rename - Rename a folder
-consoleRoutes.openapi(
-  createRoute({
-    method: "patch",
-    path: "/folders/{id}/rename",
-    tags: ["Consoles"],
-    summary: "PATCH /folders/{id}/rename",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-      }),
-      body: {
-        required: false,
-        content: {
-          "application/json": { schema: z.record(z.string(), z.any()) },
-        },
-      },
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const folderId = c.req.param("id");
-      const body = await c.req.json();
-      const { name } = body;
-      const user = c.get("user");
-
-      // Verify user has access to workspace
-      // Workspace access itself is the router middleware's job (it ran and
-      // set memberRole); this only keeps the route session-only.
-      if (!user) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
-
-      if (!name || typeof name !== "string") {
-        return c.json(
-          { success: false, error: "Name is required and must be a string" },
-          400,
-        );
-      }
-
-      const success = await consoleManager.renameFolder(
-        folderId,
-        name,
-        workspaceId,
-        user.id,
-      );
-
-      if (success) {
-        return c.json({
-          success: true,
-          message: "Folder renamed successfully",
-        });
-      } else {
-        return c.json({ success: false, error: "Folder not found" }, 404);
-      }
-    } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
-      logger.error("Error renaming folder", {
-        folderId: c.req.param("id"),
-        error,
-      });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Unknown error renaming folder",
-        },
-        500,
-      );
-    }
-  },
-);
-
-// DELETE /api/workspaces/:workspaceId/consoles/folders/:id - Delete a folder
-consoleRoutes.openapi(
-  createRoute({
-    method: "delete",
-    path: "/folders/{id}",
-    tags: ["Consoles"],
-    summary: "DELETE /folders/{id}",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-      }),
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const folderId = c.req.param("id");
-      const user = c.get("user");
-
-      // Verify user has access to workspace
-      // Workspace access itself is the router middleware's job (it ran and
-      // set memberRole); this only keeps the route session-only.
-      if (!user) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
-
-      // Verify ownership or admin/owner role
-      if (Types.ObjectId.isValid(folderId)) {
-        const folder = await ConsoleFolder.findOne({
-          _id: new Types.ObjectId(folderId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        });
-        if (folder) {
-          const isOwnFolder = folder.ownerId?.toString() === user.id;
-          if (!isOwnFolder) {
-            const isAdminOrOwner = await workspaceService.hasRole(
-              workspaceId,
-              user.id,
-              ["owner", "admin"],
-            );
-            if (!isAdminOrOwner) {
-              return c.json(
-                {
-                  success: false,
-                  error:
-                    "Only the folder owner or a workspace admin can delete it",
-                },
-                403,
-              );
-            }
-          }
-        }
-      }
-
-      const success = await consoleManager.deleteFolder(
-        folderId,
-        workspaceId,
-        user.id,
-      );
-
-      if (success) {
-        return c.json({
-          success: true,
-          message: "Folder deleted successfully",
-        });
-      } else {
-        return c.json({ success: false, error: "Folder not found" }, 404);
-      }
-    } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
-      logger.error("Error deleting folder", {
-        folderId: c.req.param("id"),
-        error,
-      });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Unknown error deleting folder",
-        },
-        500,
-      );
-    }
-  },
-);
-
-// PATCH /api/workspaces/:workspaceId/consoles/:id/move - Move a console to a different folder
-consoleRoutes.openapi(
-  createRoute({
-    method: "patch",
-    path: "/{id}/move",
-    tags: ["Consoles"],
-    summary: "PATCH /{id}/move",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-      }),
-      body: {
-        required: false,
-        content: {
-          "application/json": { schema: z.record(z.string(), z.any()) },
-        },
-      },
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
-      const body = await c.req.json();
-      const { folderId, access } = body as {
-        folderId: string | null;
-        access?: "private" | "workspace";
-      };
-      const user = c.get("user");
-
-      // Workspace access itself is the router middleware's job (it ran and
-      // set memberRole); this only keeps the route session-only.
-      if (!user) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
-
-      const memberMove = await workspaceService.getMember(workspaceId, user.id);
-      const isAdminMove =
-        memberMove?.role === "owner" || memberMove?.role === "admin";
-
-      if (Types.ObjectId.isValid(consoleId)) {
-        const existing = await SavedConsole.findOne({
-          _id: new Types.ObjectId(consoleId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        });
-        if (
-          existing &&
-          !ConsoleManager.canWrite(
-            existing,
-            user.id,
-            isAdminMove,
-            memberMove?.role,
-          )
-        ) {
-          return c.json(
-            { success: false, error: "Cannot move a read-only console" },
-            403,
-          );
-        }
-      }
-
-      const success = await consoleManager.moveConsole(
-        consoleId,
-        workspaceId,
-        folderId ?? null,
-        access,
-        user.id,
-      );
-
-      if (success) {
-        return c.json({ success: true, message: "Console moved successfully" });
-      } else {
-        return c.json({ success: false, error: "Console not found" }, 404);
-      }
-    } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
-      logger.error("Error moving console", {
-        consoleId: c.req.param("id"),
-        error,
-      });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Unknown error moving console",
-        },
-        500,
-      );
-    }
-  },
-);
-
-// PATCH /api/workspaces/:workspaceId/consoles/folders/:id/move - Move a folder to a different parent
-consoleRoutes.openapi(
-  createRoute({
-    method: "patch",
-    path: "/folders/{id}/move",
-    tags: ["Consoles"],
-    summary: "PATCH /folders/{id}/move",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-      }),
-      body: {
-        required: false,
-        content: {
-          "application/json": { schema: z.record(z.string(), z.any()) },
-        },
-      },
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const folderId = c.req.param("id");
-      const body = await c.req.json();
-      const { parentId, access } = body as {
-        parentId: string | null;
-        access?: "private" | "workspace";
-      };
-      const user = c.get("user");
-
-      // Workspace access itself is the router middleware's job (it ran and
-      // set memberRole); this only keeps the route session-only.
-      if (!user) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
-
-      const success = await consoleManager.moveFolder(
-        folderId,
-        workspaceId,
-        parentId ?? null,
-        access,
-        user.id,
-      );
-
-      if (success) {
-        return c.json({ success: true, message: "Folder moved successfully" });
-      } else {
-        return c.json(
-          { success: false, error: "Folder not found or circular nesting" },
-          404,
-        );
-      }
-    } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
-      logger.error("Error moving folder", {
-        folderId: c.req.param("id"),
-        error,
-      });
-      return c.json(
-        {
-          success: false,
-          error:
-            error instanceof Error
-              ? error.message
-              : "Unknown error moving folder",
         },
         500,
       );
@@ -3670,3 +3226,142 @@ consoleRoutes.openapi(
     }
   },
 );
+
+// ── Folder + move endpoints (shared registrar) ──
+
+/**
+ * Write access to a console folder via the shared resource ACL; the legacy
+ * `isPrivate` flag stands in for `access` on folders that predate it.
+ */
+async function consoleFolderWriteDenied(
+  ctx: { workspaceId: string; userId: string; role: string | undefined },
+  folderId: string,
+): Promise<{ ok: false; status: 403 | 404; error: string } | null> {
+  const folder = await ConsoleFolder.findOne({
+    _id: new Types.ObjectId(folderId),
+    workspaceId: new Types.ObjectId(ctx.workspaceId),
+  }).lean();
+  if (!folder) return { ok: false, status: 404, error: "Folder not found" };
+  const access = folder.access ?? (folder.isPrivate ? "private" : "workspace");
+  const allowed = canWriteResource(
+    { owner_id: folder.ownerId?.toString(), access },
+    ctx.userId,
+    ctx.role,
+    { effectiveAccess: access },
+  );
+  return allowed ? null : { ok: false, status: 403, error: "Access denied" };
+}
+
+const consoleFolderBackend: FolderBackend = {
+  createFolder: async (ctx, { name, parentId, access }) => {
+    const folder = await consoleManager.createFolder(
+      name,
+      ctx.workspaceId,
+      ctx.userId,
+      parentId ?? undefined,
+      false,
+      access ?? "private",
+    );
+    return {
+      ok: true,
+      data: {
+        id: folder._id.toString(),
+        name: folder.name,
+        parentId: folder.parentId?.toString(),
+        isPrivate: folder.isPrivate,
+      },
+    };
+  },
+
+  renameFolder: async (ctx, { folderId, name }) => {
+    const denied = await consoleFolderWriteDenied(ctx, folderId);
+    if (denied) return denied;
+    const success = await consoleManager.renameFolder(
+      folderId,
+      name,
+      ctx.workspaceId,
+      ctx.userId,
+    );
+    if (!success) return { ok: false, status: 404, error: "Folder not found" };
+    return { ok: true };
+  },
+
+  deleteFolder: async (ctx, { folderId }) => {
+    const denied = await consoleFolderWriteDenied(ctx, folderId);
+    if (denied) return denied;
+    const success = await consoleManager.deleteFolder(
+      folderId,
+      ctx.workspaceId,
+      ctx.userId,
+    );
+    if (!success) return { ok: false, status: 404, error: "Folder not found" };
+    return { ok: true };
+  },
+
+  moveFolder: async (ctx, { folderId, parentId, access }) => {
+    const denied = await consoleFolderWriteDenied(ctx, folderId);
+    if (denied) return denied;
+    if (
+      parentId &&
+      (await wouldCreateFolderCycle(
+        ConsoleFolder,
+        folderId,
+        parentId,
+        ctx.workspaceId,
+      ))
+    ) {
+      return {
+        ok: false,
+        status: 400,
+        error: "Cannot move a folder into itself",
+      };
+    }
+    const success = await consoleManager.moveFolder(
+      folderId,
+      ctx.workspaceId,
+      parentId ?? null,
+      access,
+      ctx.userId,
+    );
+    if (!success) return { ok: false, status: 404, error: "Folder not found" };
+    return { ok: true };
+  },
+
+  moveItem: async (ctx, { itemId, folderId, access }) => {
+    if (Types.ObjectId.isValid(itemId)) {
+      const existing = await SavedConsole.findOne({
+        _id: new Types.ObjectId(itemId),
+        workspaceId: new Types.ObjectId(ctx.workspaceId),
+      });
+      const isAdmin = ctx.role === "owner" || ctx.role === "admin";
+      if (
+        existing &&
+        !ConsoleManager.canWrite(existing, ctx.userId, isAdmin, ctx.role)
+      ) {
+        return {
+          ok: false,
+          status: 403,
+          error: "Cannot move a read-only console",
+        };
+      }
+    }
+    const success = await consoleManager.moveConsole(
+      itemId,
+      ctx.workspaceId,
+      folderId ?? null,
+      access,
+      ctx.userId,
+    );
+    if (!success) return { ok: false, status: 404, error: "Console not found" };
+    return { ok: true };
+  },
+};
+
+registerFolderRoutes(consoleRoutes, {
+  tag: "Consoles",
+  schemaPrefix: "Console",
+  backend: consoleFolderBackend,
+  createdStatus: 201,
+  onError: (c, error) =>
+    error instanceof RepoRequiredError ? repoRequired(c, error) : undefined,
+});

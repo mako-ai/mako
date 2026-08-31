@@ -44,6 +44,35 @@ export async function wouldCreateFolderCycle<T extends FolderLike>(
   return false;
 }
 
+/**
+ * Every folder id under `folderId` (not including it), breadth-first.
+ * Used to cascade folder deletion; one query per level, cycle-safe.
+ */
+export async function collectDescendantFolderIds<T extends FolderLike>(
+  folderModel: Model<T>,
+  workspaceId: Types.ObjectId,
+  folderId: Types.ObjectId,
+): Promise<Types.ObjectId[]> {
+  const out: Types.ObjectId[] = [];
+  const seen = new Set<string>([folderId.toString()]);
+  let frontier = [folderId];
+  while (frontier.length > 0) {
+    const children = (await folderModel
+      .find({ workspaceId, parentId: { $in: frontier } })
+      .select("_id")
+      .lean()) as unknown as { _id: Types.ObjectId }[];
+    frontier = [];
+    for (const child of children) {
+      const key = child._id.toString();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(child._id);
+      frontier.push(child._id);
+    }
+  }
+  return out;
+}
+
 interface TreeNodeLike {
   name: string;
   isDirectory: boolean;

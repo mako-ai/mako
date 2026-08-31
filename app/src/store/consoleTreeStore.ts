@@ -125,7 +125,6 @@ export const useConsoleTreeStore = createResourceTreeStore<
             body: {
               name,
               parentId: parentId || undefined,
-              isPrivate: access !== "workspace",
               access,
             },
           }),
