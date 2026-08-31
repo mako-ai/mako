@@ -39,6 +39,37 @@ export function deploymentKey(
   return `apps/${projectId}/deployments/${sha}/${assetPath}`;
 }
 
+/**
+ * Where deployments lived before the `apps-v2 → apps` rename (#820). The
+ * rename changed this prefix but not the objects already in the store, so
+ * every app published before it vanished behind "Not found" in production.
+ * Reads fall back to the old key; writes only ever use the new one. Keep
+ * until every store's `apps-v2/` prefix has been copied under `apps/`.
+ */
+export function legacyDeploymentKey(
+  projectId: string,
+  sha: string,
+  assetPath: string,
+): string {
+  return `apps-v2/${projectId}/deployments/${sha}/${assetPath}`;
+}
+
+/** The key that actually holds `assetPath` for this deployment, or null. */
+async function existingDeploymentKey(
+  projectId: string,
+  sha: string,
+  assetPath: string,
+): Promise<string | null> {
+  const store = getDashboardArtifactStore();
+  for (const key of [
+    deploymentKey(projectId, sha, assetPath),
+    legacyDeploymentKey(projectId, sha, assetPath),
+  ]) {
+    if (await store.exists(key)) return key;
+  }
+  return null;
+}
+
 /** Content types for what a Vite build actually emits. */
 const CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -108,7 +139,7 @@ export async function uploadDeployment(
   const store = getDashboardArtifactStore();
 
   // index.html is the marker: if it is already there, this sha is deployed.
-  if (await store.exists(deploymentKey(projectId, sha, "index.html"))) {
+  if (await deploymentExists(projectId, sha)) {
     logger.info("Apps deployment already present; reusing", {
       projectId,
       sha,
@@ -159,9 +190,7 @@ export async function deploymentExists(
   projectId: string,
   sha: string,
 ): Promise<boolean> {
-  return getDashboardArtifactStore().exists(
-    deploymentKey(projectId, sha, "index.html"),
-  );
+  return (await existingDeploymentKey(projectId, sha, "index.html")) !== null;
 }
 
 export interface DeploymentAsset {
@@ -189,7 +218,8 @@ export async function readDeploymentAsset(
   if (!path.extname(clean)) candidates.push("index.html");
 
   for (const candidate of candidates) {
-    const key = deploymentKey(projectId, sha, candidate);
+    const key = await existingDeploymentKey(projectId, sha, candidate);
+    if (!key) continue;
     const stream = await store.openReadStream(key);
     if (stream) {
       return {

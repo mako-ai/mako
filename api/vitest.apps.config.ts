@@ -21,6 +21,7 @@ export default defineConfig({
       "src/apps/git-endpoint.test.ts",
       "src/apps/migrate-v1-apps.test.ts",
       "src/apps/box-state.service.test.ts",
+      "src/apps/preview.service.test.ts",
     ],
     exclude: ["**/node_modules/**"],
     // Real git, real sandbox: slower than a unit test by design.
