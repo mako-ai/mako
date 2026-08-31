@@ -399,8 +399,26 @@ Keep this list current: it is the hand-off.
 - [ ] **Migrated apps and dates**: SDK 2.2 sends DATE/TIMESTAMP as strings.
       Grep the 58 migrated apps for `formatDate`/`new Date(` on binding
       fields and fix any that assumed numbers (they were broken before too).
-- [ ] **LICENSE file**: `package.json` says ISC but the repo has no LICENSE;
-      the published packages need one.
+- [x] **LICENSE** — MIT (PR #867; mako.ai's footer had promised MIT). Also
+      SECURITY.md, CONTRIBUTING.md; every package `license` field agrees.
+      Published packages show it from their next release.
+- [ ] **Directory listings — what is still missing** (Anthropic Software
+      Directory policy, also useful for Cursor/OpenAI):
+      - [ ] Website legal pages: mako-marketing PR #47 adds /privacy, /terms,
+            /about, /security, /support, /.well-known/security.txt. Fill
+            `website/lib/company.ts` (registered entity, address, venue),
+            have counsel read Terms, merge.
+      - [ ] Mailboxes `support@`, `privacy@`, `security@`, `legal@mako.ai`
+            (Google Workspace aliases) — "verified contact information".
+      - [ ] A **test account with sample data** for reviewers: a demo
+            workspace (DEMO_DATABASE_URL exists) with a read-only API key
+            or a reviewer login.
+      - [ ] Three working examples — the MCP docs page has them; link them
+            in the submission.
+      - [x] Tool annotations: `title` added next to readOnlyHint /
+            destructiveHint (PR #868); names ≤ 26 chars.
+      - [ ] Submit: Anthropic (partner form via the Software Directory
+            policy page), Cursor directory PR, OpenAI connector review.
 - [ ] **Decide**: hide/rename the sandbox-shaped `app_*` file tools for MCP
       clients that identify as a local checkout; `skills/<name>/SKILL.md`
       in workspace repos (§10 Block D1); fetch-before-write for every
