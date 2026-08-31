@@ -23,6 +23,10 @@ import {
   createModelFolderBackend,
   registerFolderRoutes,
 } from "./lib/folder-routes";
+import {
+  registerVersionRoutes,
+  type VersionBackend,
+} from "./lib/version-routes";
 import { getNotebookStore } from "../notebooks/store";
 import { NotebookVersionConflictError } from "../notebooks/store/types";
 import { offloadBlocks } from "../notebooks/offload";
@@ -287,150 +291,99 @@ notebookRoutes.openapi(
   },
 );
 
-// GET /:id/versions — list prior generations (newest first)
-notebookRoutes.openapi(
-  createRoute({
-    method: "get",
-    path: "/{id}/versions",
-    tags: ["Notebooks"],
-    security: AUTH_SECURITY,
-    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
-    request: { params: wsIdParams },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    const ws = workspaceId(c);
-    const id = c.req.valid("param").id;
+// ── Version history (shared registrar; notebook store generations) ──
+
+const notebookVersionBackend: VersionBackend = {
+  list: async (ctx, { id }) => {
     const access = await requireNotebookAccess(
-      ws,
+      ctx.workspaceId,
       id,
-      editorUserId(c),
-      memberRole(c),
+      ctx.userId,
+      ctx.role ?? "member",
       "read",
     );
     if (!access.ok) {
-      return c.json(
-        { success: false, error: "Notebook not found" },
-        access.status,
-      );
+      return { ok: false, status: access.status, error: "Notebook not found" };
     }
-
-    const data = await getNotebookStore().listVersions(ws, id);
-    return c.json({ success: true, data });
+    const data = await getNotebookStore().listVersions(ctx.workspaceId, id);
+    return { ok: true, payload: { data } };
   },
-);
 
-// GET /:id/versions/:versionId — fetch a prior generation's document
-notebookRoutes.openapi(
-  createRoute({
-    method: "get",
-    path: "/{id}/versions/{versionId}",
-    tags: ["Notebooks"],
-    security: AUTH_SECURITY,
-    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
-    request: {
-      params: z.object({
-        workspaceId: pathParam("workspaceId"),
-        id: pathParam("id"),
-        versionId: pathParam("versionId"),
-      }),
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    const ws = workspaceId(c);
-    const { id, versionId } = c.req.valid("param");
+  get: async (ctx, { id, ref }) => {
     const access = await requireNotebookAccess(
-      ws,
+      ctx.workspaceId,
       id,
-      editorUserId(c),
-      memberRole(c),
+      ctx.userId,
+      ctx.role ?? "member",
       "read",
     );
     if (!access.ok) {
-      return c.json(
-        { success: false, error: "Version not found" },
-        access.status,
-      );
+      return { ok: false, status: access.status, error: "Version not found" };
     }
-
-    const doc = await getNotebookStore().getVersion(ws, id, versionId);
+    const doc = await getNotebookStore().getVersion(ctx.workspaceId, id, ref);
     if (!doc) {
-      return c.json({ success: false, error: "Version not found" }, 404);
+      return { ok: false, status: 404, error: "Version not found" };
     }
-    return c.json({ success: true, data: doc });
+    return { ok: true, payload: { data: doc } };
   },
-);
 
-// POST /:id/versions/:versionId/restore — restore a prior generation as current
-notebookRoutes.openapi(
-  createRoute({
-    method: "post",
-    path: "/{id}/versions/{versionId}/restore",
-    tags: ["Notebooks"],
-    security: AUTH_SECURITY,
-    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
-    request: {
-      params: z.object({
-        workspaceId: pathParam("workspaceId"),
-        id: pathParam("id"),
-        versionId: pathParam("versionId"),
-      }),
-      body: jsonBody(
-        z
-          .object({ clientId: z.string().optional() })
-          .openapi("RestoreNotebookVersionRequest"),
-        true,
-      ),
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    const ws = workspaceId(c);
-    const { id, versionId } = c.req.valid("param");
-    const body = (await c.req.json().catch(() => ({}))) as {
-      clientId?: string;
-    };
+  restore: async (ctx, { id, ref, body }) => {
     const access = await requireNotebookAccess(
-      ws,
+      ctx.workspaceId,
       id,
-      editorUserId(c),
-      memberRole(c),
+      ctx.userId,
+      ctx.role ?? "member",
       "write",
     );
     if (!access.ok) {
-      return c.json(
-        { success: false, error: "Notebook or version not found" },
-        access.status === 403 ? 403 : 404,
-      );
+      return {
+        ok: false,
+        status: access.status === 403 ? 403 : 404,
+        error: "Notebook or version not found",
+      };
     }
-
-    const doc = await getNotebookStore().restoreVersion(ws, id, versionId);
+    const doc = await getNotebookStore().restoreVersion(
+      ctx.workspaceId,
+      id,
+      ref,
+    );
     if (!doc) {
-      return c.json(
-        { success: false, error: "Notebook or version not found" },
-        404,
-      );
+      return {
+        ok: false,
+        status: 404,
+        error: "Notebook or version not found",
+      };
     }
-    await updateNotebookIndex(ws, id, { updatedAt: new Date(doc.updatedAt) });
+    await updateNotebookIndex(ctx.workspaceId, id, {
+      updatedAt: new Date(doc.updatedAt),
+    });
 
     logger.info("Restored notebook version", {
-      workspaceId: ws,
+      workspaceId: ctx.workspaceId,
       notebookId: id,
-      versionId,
+      versionId: ref,
       newVersion: doc.version,
     });
-    publishRealtimeEvent(ws, {
+    publishRealtimeEvent(ctx.workspaceId, {
       type: "notebook.updated",
       notebookId: doc.id,
       version: doc.version,
-      updatedBy: editorUserId(c),
+      updatedBy: ctx.userId,
       clientId: typeof body.clientId === "string" ? body.clientId : undefined,
       origin: "save",
     });
-    return c.json({ success: true, data: doc });
+    return { ok: true, payload: { data: doc } };
   },
-);
+};
+
+registerVersionRoutes(notebookRoutes, {
+  tag: "Notebooks",
+  schemaPrefix: "Notebook",
+  refParam: "versionId",
+  middleware: [unifiedAuthMiddleware, requireWorkspace],
+  actor: "allow-system",
+  backend: notebookVersionBackend,
+});
 
 // PATCH /:id — rename and/or replace blocks
 notebookRoutes.openapi(

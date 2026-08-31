@@ -33,18 +33,12 @@ import {
   collectDescendantFolderIds,
   wouldCreateFolderCycle,
 } from "../../utils/folder-tree";
-import { loggers } from "../../logging";
-
-const logger = loggers.api("folder-routes");
+import { createOpRunner, type ResourceOpContext } from "./resource-op";
 
 export type FolderAccessLevel = "private" | "workspace";
 
 /** Who is asking. `role` is the workspace member role set by the router. */
-export interface FolderOpContext {
-  workspaceId: string;
-  userId: string;
-  role: string | undefined;
-}
+export type FolderOpContext = ResourceOpContext;
 
 /** What a backend op reports; the registrar turns it into the envelope. */
 export type FolderOpResult =
@@ -134,52 +128,31 @@ export function registerFolderRoutes(
     responses: { ...OPEN_RESPONSES },
   };
 
-  /**
-   * Shared handler shell: resolve the actor, run the op, apply the envelope.
-   * `body` is read defensively (schemas document the contract; handlers must
-   * not 500 on a missing body).
-   */
-  const run = async (
+  const runOp = createOpRunner({
+    tag,
+    actor: config.actor,
+    afterChange,
+    onError,
+  });
+  // Folder backends speak `{ ok, data? }`; the runner wants `payload` to
+  // spread — keep the historical `{ success, data }` envelope.
+  const run = (
     c: Context,
     op: (ctx: FolderOpContext) => Promise<FolderOpResult>,
     successStatus: 200 | 201 = 200,
-  ): Promise<Response> => {
-    const workspaceId = c.req.param("workspaceId") ?? "";
-    const user = c.get("user") as { id?: unknown } | undefined;
-    if (!user && config.actor !== "allow-system") {
-      return c.json({ success: false, error: "Unauthorized" }, 401);
-    }
-    const ctx: FolderOpContext = {
-      workspaceId,
-      userId: String(user?.id ?? "system"),
-      role: c.get("memberRole") as string | undefined,
-    };
-    try {
-      const result = await op(ctx);
-      if (!result.ok) {
-        return c.json({ success: false, error: result.error }, result.status);
-      }
-      afterChange?.(workspaceId);
-      return c.json(
-        { success: true, ...(result.data ? { data: result.data } : {}) },
-        successStatus,
-      );
-    } catch (error) {
-      const mapped = onError?.(c, error);
-      if (mapped) return mapped;
-      logger.error(`Folder route error (${tag})`, {
-        path: c.req.path,
-        error,
-      });
-      return c.json(
-        {
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-        },
-        500,
-      );
-    }
-  };
+  ): Promise<Response> =>
+    runOp(
+      c,
+      async ctx => {
+        const result = await op(ctx);
+        if (!result.ok) return result;
+        return {
+          ok: true,
+          payload: result.data ? { data: result.data } : undefined,
+        };
+      },
+      successStatus,
+    );
 
   const readBody = async (c: Context): Promise<Record<string, unknown>> =>
     ((await c.req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;

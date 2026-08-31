@@ -1,6 +1,10 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { workspaceResourceLoader } from "./lib/load-resource";
 import {
+  registerVersionRoutes,
+  type VersionBackend,
+} from "./lib/version-routes";
+import {
   createModelFolderBackend,
   registerFolderRoutes,
 } from "./lib/folder-routes";
@@ -2082,272 +2086,175 @@ registerFolderRoutes(app, {
 // Version history routes
 // ---------------------------------------------------------------------------
 
-// GET /api/workspaces/:workspaceId/dashboards/:id/versions
-app.openapi(
-  createRoute({
-    method: "get",
-    path: "/{id}/versions",
-    tags: ["Dashboards"],
-    summary: "List dashboard versions",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-      }),
-      query: z.object({
-        limit: z
-          .string()
-          .optional()
-          .openapi({ param: { name: "limit", in: "query" } }),
-        offset: z
-          .string()
-          .optional()
-          .openapi({ param: { name: "offset", in: "query" } }),
-      }),
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const id = c.req.param("id");
-      const userId = c.get("user")?.id;
+// ── Version history (shared registrar; EntityVersion snapshots) ──
 
-      if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
-      }
-
-      if (!Types.ObjectId.isValid(id)) {
-        return c.json({ success: false, error: "Invalid dashboard ID" }, 400);
-      }
-
-      const dashboard = await Dashboard.findOne({
-        _id: new Types.ObjectId(id),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (!dashboard) {
-        return c.json({ success: false, error: "Dashboard not found" }, 404);
-      }
-      if (!DashboardManager.canRead(dashboard, userId)) {
-        return c.json({ success: false, error: "Access denied" }, 403);
-      }
-
-      const limit = Math.min(
-        parseInt(c.req.query("limit") ?? "50", 10) || 50,
-        100,
-      );
-      const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
-
-      const result = await listVersions(new Types.ObjectId(id), "dashboard", {
-        limit,
-        offset,
-      });
-
-      return c.json({ success: true, ...result });
-    } catch (error) {
-      logger.error("Error listing dashboard versions", { error });
-      return c.json({ success: false, error: "Failed to list versions" }, 500);
+async function dashboardVersionGate(
+  ctx: { workspaceId: string; userId: string; role: string | undefined },
+  id: string,
+  mode: "read" | "write",
+  invalidIdError: string,
+): Promise<
+  | {
+      ok: true;
+      dashboard: NonNullable<Awaited<ReturnType<typeof Dashboard.findOne>>>;
     }
-  },
-);
-
-// GET /api/workspaces/:workspaceId/dashboards/:id/versions/:version
-app.openapi(
-  createRoute({
-    method: "get",
-    path: "/{id}/versions/{version}",
-    tags: ["Dashboards"],
-    summary: "GET /{id}/versions/{version}",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-        version: z.string().openapi({ param: { name: "version", in: "path" } }),
-      }),
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const id = c.req.param("id");
-      const versionNum = parseInt(c.req.param("version"), 10);
-      const userId = c.get("user")?.id;
-
-      if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
-      }
-
-      if (!Types.ObjectId.isValid(id) || isNaN(versionNum)) {
-        return c.json(
-          { success: false, error: "Invalid dashboard ID or version" },
-          400,
-        );
-      }
-
-      const dashboard = await Dashboard.findOne({
-        _id: new Types.ObjectId(id),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (!dashboard) {
-        return c.json({ success: false, error: "Dashboard not found" }, 404);
-      }
-      if (!DashboardManager.canRead(dashboard, userId)) {
-        return c.json({ success: false, error: "Access denied" }, 403);
-      }
-
-      const version = await getVersion(id, "dashboard", versionNum);
-      if (!version) {
-        return c.json({ success: false, error: "Version not found" }, 404);
-      }
-
-      return c.json({ success: true, version });
-    } catch (error) {
-      logger.error("Error getting dashboard version", { error });
-      return c.json({ success: false, error: "Failed to get version" }, 500);
+  | { ok: false; status: 400 | 403 | 404; error: string }
+> {
+  if (!Types.ObjectId.isValid(id)) {
+    return { ok: false, status: 400, error: invalidIdError };
+  }
+  const dashboard = await Dashboard.findOne({
+    _id: new Types.ObjectId(id),
+    workspaceId: new Types.ObjectId(ctx.workspaceId),
+  });
+  if (!dashboard) {
+    return { ok: false, status: 404, error: "Dashboard not found" };
+  }
+  if (mode === "read") {
+    if (!DashboardManager.canRead(dashboard, ctx.userId)) {
+      return { ok: false, status: 403, error: "Access denied" };
     }
+  } else {
+    const isAdmin = ctx.role === "owner" || ctx.role === "admin";
+    if (!DashboardManager.canWrite(dashboard, ctx.userId, isAdmin, ctx.role)) {
+      return { ok: false, status: 403, error: "You do not have write access" };
+    }
+  }
+  return { ok: true, dashboard };
+}
+
+const dashboardVersionBackend: VersionBackend = {
+  list: async (ctx, { id, limit, offset }) => {
+    const gate = await dashboardVersionGate(
+      ctx,
+      id,
+      "read",
+      "Invalid dashboard ID",
+    );
+    if (!gate.ok) return gate;
+    const result = await listVersions(new Types.ObjectId(id), "dashboard", {
+      limit: limit ?? 50,
+      offset: offset ?? 0,
+    });
+    return { ok: true, payload: { ...result } };
   },
-);
 
-// POST /api/workspaces/:workspaceId/dashboards/:id/versions/:version/restore
-app.openapi(
-  createRoute({
-    method: "post",
-    path: "/{id}/versions/{version}/restore",
-    tags: ["Dashboards"],
-    summary: "POST /{id}/versions/{version}/restore",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-        version: z.string().openapi({ param: { name: "version", in: "path" } }),
-      }),
-      body: {
-        required: false,
-        content: {
-          "application/json": { schema: z.record(z.string(), z.any()) },
-        },
-      },
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const id = c.req.param("id");
-      const versionNum = parseInt(c.req.param("version"), 10);
-      const body = await c.req.json().catch(() => ({}));
-      const userId = c.get("user")?.id;
-
-      if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
-      }
-
-      if (!Types.ObjectId.isValid(id) || isNaN(versionNum)) {
-        return c.json(
-          { success: false, error: "Invalid dashboard ID or version" },
-          400,
-        );
-      }
-
-      const dashboard = await Dashboard.findOne({
-        _id: new Types.ObjectId(id),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (!dashboard) {
-        return c.json({ success: false, error: "Dashboard not found" }, 404);
-      }
-
-      const memberRole = c.get("memberRole");
-      const isAdmin = memberRole === "owner" || memberRole === "admin";
-      if (!DashboardManager.canWrite(dashboard, userId, isAdmin, memberRole)) {
-        return c.json(
-          { success: false, error: "You do not have write access" },
-          403,
-        );
-      }
-
-      const oldVersion = await getVersion(id, "dashboard", versionNum);
-      if (!oldVersion) {
-        return c.json({ success: false, error: "Version not found" }, 404);
-      }
-
-      const snap = oldVersion.snapshot as Record<string, any>;
-
-      const restoreFields: Record<string, any> = {
-        title: snap.title,
-        description: snap.description,
-        dataSources: snap.dataSources,
-        widgets: snap.widgets,
-        relationships: snap.relationships,
-        globalFilters: snap.globalFilters,
-        crossFilter: snap.crossFilter,
-        layout: snap.layout,
-        materializationSchedule: snap.materializationSchedule,
+  get: async (ctx, { id, ref }) => {
+    const versionNum = parseInt(ref, 10);
+    if (Number.isNaN(versionNum)) {
+      return {
+        ok: false,
+        status: 400,
+        error: "Invalid dashboard ID or version",
       };
+    }
+    const gate = await dashboardVersionGate(
+      ctx,
+      id,
+      "read",
+      "Invalid dashboard ID or version",
+    );
+    if (!gate.ok) return gate;
+    const version = await getVersion(id, "dashboard", versionNum);
+    if (!version) {
+      return { ok: false, status: 404, error: "Version not found" };
+    }
+    return { ok: true, payload: { version } };
+  },
 
-      const restored = await Dashboard.findOneAndUpdate(
-        {
-          _id: new Types.ObjectId(id),
-          workspaceId: new Types.ObjectId(workspaceId),
-        },
-        { $set: restoreFields, $inc: { version: 1 } },
-        { new: true },
-      );
+  restore: async (ctx, { id, ref, body }) => {
+    const versionNum = parseInt(ref, 10);
+    if (Number.isNaN(versionNum)) {
+      return {
+        ok: false,
+        status: 400,
+        error: "Invalid dashboard ID or version",
+      };
+    }
+    const gate = await dashboardVersionGate(
+      ctx,
+      id,
+      "write",
+      "Invalid dashboard ID or version",
+    );
+    if (!gate.ok) return gate;
 
-      if (!restored) {
-        return c.json({ success: false, error: "Restore failed" }, 500);
-      }
+    const oldVersion = await getVersion(id, "dashboard", versionNum);
+    if (!oldVersion) {
+      return { ok: false, status: 404, error: "Version not found" };
+    }
 
-      const displayName = await getUserDisplayName(userId);
-      const comment = body.comment ?? `Restored from version ${versionNum}`;
-      await createVersion({
-        entityType: "dashboard",
-        entityId: new Types.ObjectId(id),
-        workspaceId: new Types.ObjectId(workspaceId),
-        snapshot: buildDashboardSnapshot(restored.toObject()),
-        savedBy: userId,
-        savedByName: displayName,
-        comment,
-        restoredFrom: versionNum,
-      });
+    const snap = oldVersion.snapshot as Record<string, any>;
+    const restoreFields: Record<string, any> = {
+      title: snap.title,
+      description: snap.description,
+      dataSources: snap.dataSources,
+      widgets: snap.widgets,
+      relationships: snap.relationships,
+      globalFilters: snap.globalFilters,
+      crossFilter: snap.crossFilter,
+      layout: snap.layout,
+      materializationSchedule: snap.materializationSchedule,
+    };
 
-      // Restore reverts the working draft only (no publish): public/shared
-      // viewers keep seeing the published version until the next explicit save.
-      // Poke open editor tabs so they reload the reverted draft.
-      publishRealtimeEvent(workspaceId, {
-        type: "dashboard.updated",
-        dashboardId: restored._id.toString(),
-        version: restored.version,
-        updatedBy: userId,
-        origin: "save",
-      });
+    const restored = await Dashboard.findOneAndUpdate(
+      {
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(ctx.workspaceId),
+      },
+      { $set: restoreFields, $inc: { version: 1 } },
+      { new: true },
+    );
+    if (!restored) {
+      throw new Error("Restore failed");
+    }
 
-      return c.json({
-        success: true,
+    const displayName = await getUserDisplayName(ctx.userId);
+    const comment =
+      typeof body.comment === "string" && body.comment
+        ? body.comment
+        : `Restored from version ${versionNum}`;
+    await createVersion({
+      entityType: "dashboard",
+      entityId: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(ctx.workspaceId),
+      snapshot: buildDashboardSnapshot(restored.toObject()),
+      savedBy: ctx.userId,
+      savedByName: displayName,
+      comment,
+      restoredFrom: versionNum,
+    });
+
+    // Restore reverts the working draft only (no publish): public/shared
+    // viewers keep seeing the published version until the next explicit save.
+    // Poke open editor tabs so they reload the reverted draft.
+    publishRealtimeEvent(ctx.workspaceId, {
+      type: "dashboard.updated",
+      dashboardId: restored._id.toString(),
+      version: restored.version,
+      updatedBy: ctx.userId,
+      origin: "save",
+    });
+
+    return {
+      ok: true,
+      payload: {
         message: `Restored to version ${versionNum}`,
         data: sanitizeDashboardResponse(
           await hydrateDashboardArtifactUrls(restored.toObject() as any),
         ),
-      });
-    } catch (error) {
-      logger.error("Error restoring dashboard version", { error });
-      return c.json(
-        { success: false, error: "Failed to restore version" },
-        500,
-      );
-    }
+      },
+    };
   },
-);
+};
+
+registerVersionRoutes(app, {
+  tag: "Dashboards",
+  schemaPrefix: "Dashboard",
+  refParam: "version",
+  listQuery: true,
+  backend: dashboardVersionBackend,
+});
 
 // ── Sharing (collaborators, general access, public link) ──
 
