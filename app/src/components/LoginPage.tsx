@@ -19,6 +19,7 @@ import {
 import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { handleInviteRedirectIfPresent } from "../utils/invite-redirect";
+import { readReturnTo, stashReturnTo } from "../utils/return-to";
 import { authClient } from "../lib/auth-client";
 import { AuthLayout } from "./AuthLayout";
 import { trackEvent } from "../lib/analytics";
@@ -91,6 +92,9 @@ export function LoginPage({
 
   const handleOAuthLogin = (provider: "google" | "github") => {
     clearError();
+    // OAuth is a full-page round trip that lands back on "/", losing the
+    // ?returnTo the API's login gate put on this URL — keep it for after.
+    stashReturnTo(readReturnTo());
     if (useBrowserAuth) {
       void handleBrowserAuth();
       return;

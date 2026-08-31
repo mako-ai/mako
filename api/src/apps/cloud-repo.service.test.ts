@@ -4,7 +4,7 @@
  * Real git against file:// remotes (APPS_GITHUB_REMOTE_BASE); Mongo and
  * GitHub auth are mocked at the module boundary. What must hold:
  *
- *  - a workspace binding outranks the mako-cloud pointer, but only where the
+ *  - a workspace binding is the mirror, but only where the
  *    connected tier is enabled (prod / explicit opt-in) — previews and dev on
  *    prod-cloned DBs must treat customer bindings as inert
  *  - connect-time adoption: seed an empty repo, import a non-empty repo into
@@ -33,7 +33,6 @@ const state = vi.hoisted(() => ({
     repo: string;
     installationId?: number;
   },
-  pointer: null as null | { owner: string; repo: string },
 }));
 
 vi.mock("../services/workspace-repos.service", () => ({
@@ -42,23 +41,7 @@ vi.mock("../services/workspace-repos.service", () => ({
 }));
 
 vi.mock("../database/workspace-schema", () => ({
-  Workspace: {
-    findById: () => ({
-      select: () => ({
-        lean: async () => ({ appsCloudRepo: state.pointer }),
-      }),
-    }),
-    updateOne: vi.fn(async () => ({})),
-  },
-}));
-
-vi.mock("../integrations/github/cloud-app-auth", () => ({
-  getMakoCloudOrg: () => undefined,
-  getMakoCloudRepoPrefix: () => "dev",
-  getMakoCloudToken: async () => {
-    throw new Error("mako cloud not configured in this test");
-  },
-  isMakoCloudConfigured: () => false,
+  Workspace: { updateOne: vi.fn(async () => ({})) },
 }));
 
 vi.mock("../integrations/github/app-auth", () => ({
@@ -104,7 +87,6 @@ beforeAll(async () => {
 beforeEach(() => {
   workspaceId = freshWorkspaceId();
   state.binding = null;
-  state.pointer = null;
   process.env.APPS_CONNECTED_REPO_PUSH = "allow";
 });
 
@@ -174,17 +156,15 @@ async function headOf(repoDir: string): Promise<string | null> {
 describe("resolveMirrorTarget", () => {
   it("prefers the connected binding when the tier is enabled", async () => {
     state.binding = { owner: "acme", repo: "site" };
-    state.pointer = { owner: "mako-ai-cloud", repo: "dev-x" };
     const target = await resolveMirrorTarget(workspaceId);
     expect(target).toMatchObject({ kind: "connected", owner: "acme" });
   });
 
   it("treats the binding as inert metadata where the tier is gated off", async () => {
-    delete process.env.APPS_CONNECTED_REPO_PUSH; // prefix "dev" → gated
+    delete process.env.APPS_CONNECTED_REPO_PUSH; // dev, no opt-in → gated
     state.binding = { owner: "acme", repo: "site" };
-    state.pointer = { owner: "mako-ai-cloud", repo: "dev-x" };
     const target = await resolveMirrorTarget(workspaceId);
-    expect(target).toMatchObject({ kind: "mako-cloud", repo: "dev-x" });
+    expect(target).toBeNull();
   });
 });
 

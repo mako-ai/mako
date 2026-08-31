@@ -18,10 +18,6 @@ import {
   cleanupAbandonedMaterializationRunsFunction,
 } from "./functions/dashboard-refresh";
 import {
-  appBindingMaterializeFunction,
-  appBindingSchedulerFunction,
-} from "./functions/app-binding-materialize";
-import {
   appsBindingMaterializeFunction,
   appsBindingSchedulerFunction,
 } from "./functions/apps-binding-refresh";
@@ -47,6 +43,7 @@ import {
   dbtSchedulerFunction,
   dbtRunSweeperFunction,
 } from "./functions/dbt-run";
+import { consoleDescriptionFunction } from "./functions/console-description";
 import { loggers } from "../logging";
 
 const baseFunctions = [
@@ -58,7 +55,6 @@ const baseFunctions = [
   cdcRepartitionFunction,
   dashboardRefreshFunction,
   cleanupAbandonedMaterializationRunsFunction,
-  appBindingMaterializeFunction,
   appsBindingMaterializeFunction,
   appsDeployFunction,
   usageReportingFunction,
@@ -69,6 +65,7 @@ const baseFunctions = [
   dbtRunExecutorFunction,
   dbtRunCancelFunction,
   dbtRunSweeperFunction,
+  consoleDescriptionFunction,
 ];
 
 const allWebhookFunctions = [
@@ -102,7 +99,6 @@ export function getFunctions() {
         flowSchedulerFunction,
         cdcScheduledBackfillFunction,
         dashboardSchedulerFunction,
-        appBindingSchedulerFunction,
         appsBindingSchedulerFunction,
         appsDeployReconcileFunction,
         scheduledQuerySchedulerFunction,
@@ -153,9 +149,7 @@ export {
   dashboardRefreshFunction,
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,
-  appBindingMaterializeFunction,
   appsBindingMaterializeFunction,
-  appBindingSchedulerFunction,
   appsBindingSchedulerFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,

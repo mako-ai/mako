@@ -79,7 +79,6 @@ const SourceControlExplorer = lazy(
   () => import("./components/SourceControlExplorer"),
 );
 const PublicSharePage = lazy(() => import("./pages/PublicSharePage"));
-const AppPreviewPage = lazy(() => import("./pages/AppPreviewPage"));
 const loadDbtExplorer = () => import("./components/DbtExplorer");
 const DbtExplorer = lazy(loadDbtExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
@@ -88,6 +87,7 @@ import { WorkspaceProvider, useWorkspace } from "./contexts/workspace-context";
 import { OnboardingProvider } from "./contexts/onboarding-context";
 import type { DbFlowFormRef } from "./components/DbFlowForm";
 import { generateObjectId } from "./utils/objectId";
+import { readReturnTo, takeReturnTo } from "./utils/return-to";
 import { LoginPage } from "./components/LoginPage";
 import { DesktopAuthPage } from "./components/DesktopAuthPage";
 import { hasPendingDesktopAuth } from "./utils/desktop-auth-redirect";
@@ -918,11 +918,9 @@ function LoadingScreen() {
  * Only relative paths are honored so the parameter can't redirect off-site.
  */
 function safeReturnTo(): string | null {
-  const returnTo = new URLSearchParams(window.location.search).get("returnTo");
-  if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
-    return returnTo;
-  }
-  return null;
+  // ?returnTo on this URL, or the one stashed before an OAuth round trip
+  // (utils/return-to.ts) — the API's login gate sets the parameter.
+  return readReturnTo() ?? takeReturnTo();
 }
 
 // Auth route wrapper - redirects to "/" if already authenticated
@@ -1132,30 +1130,6 @@ function App() {
             }
           />
         ))}
-
-        {/* Draft-app preview via signed token - no authentication required.
-            Machine-facing sibling of /share (see AppPreviewPage). */}
-        <Route
-          path="/preview/:token"
-          element={
-            <Suspense
-              fallback={
-                <Box
-                  sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    height: "100vh",
-                  }}
-                >
-                  <CircularProgress />
-                </Box>
-              }
-            >
-              <AppPreviewPage />
-            </Suspense>
-          }
-        />
 
         {/* Desktop sign-in handoff - renders for both authed and unauthed users */}
         <Route path="/desktop-auth" element={<DesktopAuthPage />} />

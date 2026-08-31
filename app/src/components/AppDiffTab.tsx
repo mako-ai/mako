@@ -5,14 +5,12 @@
  * Re-reads when the box reports the file's state changed.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Box, Button, Chip, CircularProgress, Typography } from "@mui/material";
-import { DiffEditor } from "@monaco-editor/react";
-import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
+import { Button } from "@mui/material";
 import { SquareArrowOutUpRight as OpenIcon } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppsStore, type AppFileVersions } from "../store/appsStore";
 import { focusAppsFileTab } from "../apps-runtime/shell";
-import { languageForPath } from "../app-runtime/monaco-jsx";
+import { GitFileDiffView } from "./GitFileDiffView";
 
 export default function AppDiffTab({
   appId,
@@ -39,7 +37,6 @@ export default function AppDiffTab({
       ? `${change.status}:${change.staged}:${change.unstaged}`
       : "clean";
   });
-  const monacoTheme = useMonacoTheme();
 
   const [versions, setVersions] = useState<AppFileVersions | null>(null);
   const [loading, setLoading] = useState(true);
@@ -98,44 +95,21 @@ export default function AppDiffTab({
   }, [apps, path]);
 
   return (
-    <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1,
-          px: 1.5,
-          py: 0.5,
-          borderBottom: "1px solid",
-          borderColor: "divider",
-          flexShrink: 0,
-        }}
-      >
-        <Typography
-          variant="body2"
-          sx={{
-            fontFamily: "monospace",
-            minWidth: 0,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {path}
-        </Typography>
-        <Chip
-          size="small"
-          label={
-            mode === "commit"
-              ? `${(sha ?? "").slice(0, 7)}^ → ${(sha ?? "").slice(0, 7)}`
-              : mode === "index"
-                ? "HEAD → Index"
-                : "Index → Working Tree"
-          }
-          sx={{ height: 18, fontSize: "0.65rem" }}
-        />
-        <Box sx={{ flex: 1 }} />
-        {owner && (
+    <GitFileDiffView
+      path={path}
+      label={
+        mode === "commit"
+          ? `${(sha ?? "").slice(0, 7)}^ → ${(sha ?? "").slice(0, 7)}`
+          : mode === "index"
+            ? "HEAD → Index"
+            : "Index → Working Tree"
+      }
+      original={original}
+      modified={modified}
+      binary={versions?.binary}
+      loading={loading && !versions}
+      action={
+        owner ? (
           <Button
             size="small"
             startIcon={<OpenIcon size={14} />}
@@ -145,40 +119,8 @@ export default function AppDiffTab({
           >
             Open file
           </Button>
-        )}
-      </Box>
-      <Box sx={{ flex: 1, minHeight: 0 }}>
-        {loading && !versions ? (
-          <Box sx={{ p: 3, display: "flex", justifyContent: "center" }}>
-            <CircularProgress size={20} />
-          </Box>
-        ) : versions?.binary ? (
-          <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
-            Binary file — no text diff.
-          </Typography>
-        ) : (
-          <DiffEditor
-            height="100%"
-            // VS Code opens a diff on its first change, not on line 1.
-            onMount={editor => {
-              const disposable = editor.onDidUpdateDiff(() => {
-                const first = editor.getLineChanges()?.[0];
-                if (first) {
-                  editor
-                    .getModifiedEditor()
-                    .revealLineInCenter(first.modifiedStartLineNumber);
-                }
-                disposable.dispose();
-              });
-            }}
-            language={languageForPath(path)}
-            theme={monacoTheme}
-            original={original ?? ""}
-            modified={modified ?? ""}
-            options={{ ...EDITOR_OPTIONS.diff, renderOverviewRuler: false }}
-          />
-        )}
-      </Box>
-    </Box>
+        ) : undefined
+      }
+    />
   );
 }

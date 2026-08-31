@@ -29,10 +29,6 @@ import { Types } from "mongoose";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
-import {
-  isDescriptionGenAvailable,
-  generateDescriptionAndEmbedding,
-} from "../services/console-description.service";
 import { generateVersionComment } from "../services/version-comment.service";
 import {
   applySqlRowLimit,
@@ -53,6 +49,16 @@ import {
 } from "../services/scheduled-query-schedule.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { buildConsoleWriteGuard } from "../services/console-save-guards";
+import { RepoRequiredError } from "../apps/config";
+import {
+  commitConsoleState,
+  consoleCommitChanges,
+  consoleFileVersions,
+  consoleHistory,
+  projectSavedConsole,
+  requestConsoleDescription,
+  restoreConsoleTo,
+} from "../apps/workspace-consoles.service";
 import {
   registerCollaboratorRoutes,
   registerSharingSettingsRoutes,
@@ -70,6 +76,14 @@ function mapConsoleLanguageToQueryLanguage(
 }
 
 const logger = loggers.api("consoles");
+
+/** The production gate (apps.md §17): no connected repo, no save. */
+function repoRequired(c: Context, error: RepoRequiredError) {
+  return c.json(
+    { success: false, code: error.code, error: error.message },
+    error.status as 412,
+  );
+}
 
 function buildConsoleSnapshot(doc: ISavedConsole): Record<string, unknown> {
   return {
@@ -276,6 +290,7 @@ consoleRoutes.openapi(
       );
       return c.json({ success: true, tree });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error listing consoles", { error });
       return c.json(
         {
@@ -411,6 +426,7 @@ consoleRoutes.openapi(
         lastRun: fullConsole?.lastRun,
       });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error fetching console content", {
         consoleId: c.req.query("id"),
         error,
@@ -539,6 +555,7 @@ consoleRoutes.openapi(
 
       return c.json({ success: true, changed, deleted });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error syncing console revisions", { error });
       return c.json(
         {
@@ -620,6 +637,15 @@ consoleRoutes.openapi(
           savedConsole.scheduledRun?.consecutiveFailures ?? 0,
       };
       savedConsole.isSaved = true;
+      // The schedule is authored: it lives in the file's front-matter.
+      const committed = await commitConsoleState({
+        row: savedConsole,
+        previousPath: savedConsole.path,
+        actorUserId: c.get("user")?.id,
+        message: `schedule: ${savedConsole.name}`,
+      });
+      savedConsole.path = committed.path;
+      savedConsole.sourceBlobSha = committed.sourceBlobSha;
       await savedConsole.save();
 
       return c.json({
@@ -628,6 +654,7 @@ consoleRoutes.openapi(
         scheduledRun: savedConsole.scheduledRun,
       });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error updating console schedule", { error });
       return c.json(
         {
@@ -669,26 +696,41 @@ consoleRoutes.openapi(
         return c.json({ success: false, error: "Invalid console ID" }, 400);
       }
 
-      const savedConsole = await SavedConsole.findOneAndUpdate(
+      const current = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!current) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+      const unscheduledSet: Record<string, unknown> = {};
+      if (current.isSaved) {
+        current.schedule = undefined;
+        const committed = await commitConsoleState({
+          row: current,
+          previousPath: current.path,
+          actorUserId: c.get("user")?.id,
+          message: `unschedule: ${current.name}`,
+        });
+        unscheduledSet.path = committed.path;
+        unscheduledSet.sourceBlobSha = committed.sourceBlobSha;
+      }
+      await SavedConsole.updateOne(
+        { _id: current._id },
         {
-          _id: new Types.ObjectId(consoleId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        },
-        {
+          ...(Object.keys(unscheduledSet).length
+            ? { $set: unscheduledSet }
+            : {}),
           $unset: {
             schedule: 1,
             "scheduledRun.nextAt": 1,
           },
         },
-        { new: true },
       );
-
-      if (!savedConsole) {
-        return c.json({ success: false, error: "Console not found" }, 404);
-      }
 
       return c.json({ success: true });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error removing console schedule", { error });
       return c.json(
         {
@@ -758,6 +800,7 @@ consoleRoutes.openapi(
 
       return c.json({ success: true, eventId });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error triggering scheduled console run", { error });
       return c.json(
         {
@@ -844,6 +887,7 @@ consoleRoutes.openapi(
         })),
       });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error listing scheduled console runs", { error });
       return c.json(
         {
@@ -1048,15 +1092,26 @@ consoleRoutes.openapi(
         },
       );
 
-      // Persist chart spec and view mode if provided
+      // Persist chart spec and view mode if provided (authored: they ride
+      // along in the file, so the commit is re-projected with them).
       if (body.chartSpec !== undefined || body.resultsViewMode !== undefined) {
         const chartUpdate: Record<string, unknown> = {};
         if (body.chartSpec !== undefined) {
           chartUpdate.chartSpec = body.chartSpec;
+          savedConsole.chartSpec = body.chartSpec;
         }
         if (body.resultsViewMode !== undefined) {
           chartUpdate.resultsViewMode = body.resultsViewMode;
+          savedConsole.resultsViewMode = body.resultsViewMode;
         }
+        const committed = await commitConsoleState({
+          row: savedConsole,
+          previousPath: savedConsole.path,
+          actorUserId: user.id,
+          message: `save: ${consolePath}`,
+        });
+        chartUpdate.path = committed.path;
+        chartUpdate.sourceBlobSha = committed.sourceBlobSha;
         await SavedConsole.findByIdAndUpdate(savedConsole._id, {
           $set: chartUpdate,
         });
@@ -1081,48 +1136,13 @@ consoleRoutes.openapi(
         );
       }
 
-      // Fire-and-forget: generate description + embedding for searchability
-      if (isDescriptionGenAvailable() && content.trim()) {
-        void (async () => {
-          try {
-            const connDoc = targetConnectionId
-              ? await DatabaseConnection.findById(targetConnectionId)
-              : null;
-            const {
-              description: genDesc,
-              embedding,
-              embeddingModel,
-            } = await generateDescriptionAndEmbedding(
-              {
-                code: content,
-                title: consolePath.split("/").pop() || consolePath,
-                connectionName: connDoc?.name,
-                databaseType: connDoc?.type,
-                databaseName,
-                language: savedConsole.language,
-              },
-              { workspaceId, userId: user.id, userEmail: user.email },
-            );
-            if (genDesc || embedding) {
-              const update: Record<string, unknown> = {};
-              if (genDesc && !description) update.description = genDesc;
-              if (embedding) {
-                update.descriptionEmbedding = embedding;
-                update.embeddingModel = embeddingModel;
-              }
-              if (Object.keys(update).length > 0) {
-                await SavedConsole.findByIdAndUpdate(savedConsole._id, {
-                  $set: update,
-                });
-              }
-            }
-          } catch (err) {
-            logger.debug("Console description generation failed", {
-              error: err,
-            });
-          }
-        })();
-      }
+      // Description + embedding are derived from the committed content,
+      // debounced and sha-guarded (apps.md §16.4).
+      requestConsoleDescription({
+        workspaceId,
+        consoleId: savedConsole._id.toString(),
+        tracking: { userId: user.id, userEmail: user.email },
+      });
 
       return c.json(
         {
@@ -1141,6 +1161,7 @@ consoleRoutes.openapi(
         201,
       );
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error creating console", { error });
       return c.json(
         {
@@ -1369,6 +1390,19 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           setOnInsertFields.access = "private" as const;
         }
 
+        // Git first (apps.md §16.3), then the guarded row write; a lost
+        // guard reverts the commit.
+        const projected = await projectSavedConsole({
+          workspaceId,
+          current: existingById ?? null,
+          set: setFields,
+          onInsert: setOnInsertFields,
+          actorUserId: user.id,
+          message: body.comment?.trim() || `save: ${consolePath}`,
+        });
+        setFields.path = projected.path;
+        setFields.sourceBlobSha = projected.sourceBlobSha;
+
         const result = await SavedConsole.findOneAndUpdate(
           guardedFilter,
           {
@@ -1379,6 +1413,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           { upsert: !saveGuardActive, new: true },
         );
         if (!result) {
+          await projected.revert();
           return versionConflictResponse();
         }
 
@@ -1394,6 +1429,11 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         });
 
         publishConsoleUpdated(result as ISavedConsole, "save");
+        requestConsoleDescription({
+          workspaceId,
+          consoleId: result._id.toString(),
+          tracking: { userId: user.id, userEmail: user.email },
+        });
 
         return c.json({
           success: true,
@@ -1457,6 +1497,19 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           setOnInsertFields.name = body.title || "Untitled";
         }
 
+        const projected = await projectSavedConsole({
+          workspaceId,
+          current: existingById ?? null,
+          set: setFields,
+          onInsert: setOnInsertFields,
+          actorUserId: user.id,
+          message:
+            body.comment?.trim() ||
+            `save: ${setFields.name ?? existingById?.name ?? "console"}`,
+        });
+        setFields.path = projected.path;
+        setFields.sourceBlobSha = projected.sourceBlobSha;
+
         const result = await SavedConsole.findOneAndUpdate(
           guardedFilter,
           {
@@ -1467,6 +1520,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           { upsert: !saveGuardActive, new: true },
         );
         if (!result) {
+          await projected.revert();
           return versionConflictResponse();
         }
 
@@ -1484,48 +1538,11 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           comment: body.comment ?? "",
         });
 
-        // Fire-and-forget: generate description + embedding on explicit save
-        if (isDescriptionGenAvailable() && body.content?.trim()) {
-          void (async () => {
-            try {
-              const connDoc = body.connectionId
-                ? await DatabaseConnection.findById(body.connectionId)
-                : null;
-              const {
-                description: genDesc,
-                embedding,
-                embeddingModel,
-              } = await generateDescriptionAndEmbedding(
-                {
-                  code: body.content,
-                  title: result.name,
-                  connectionName: connDoc?.name,
-                  databaseType: connDoc?.type,
-                  databaseName: body.databaseName,
-                  language: result.language,
-                },
-                { workspaceId, userId: user.id, userEmail: user.email },
-              );
-              if (genDesc || embedding) {
-                const descUpdate: Record<string, unknown> = {};
-                if (genDesc) descUpdate.description = genDesc;
-                if (embedding) {
-                  descUpdate.descriptionEmbedding = embedding;
-                  descUpdate.embeddingModel = embeddingModel;
-                }
-                if (Object.keys(descUpdate).length > 0) {
-                  await SavedConsole.findByIdAndUpdate(result._id, {
-                    $set: descUpdate,
-                  });
-                }
-              }
-            } catch (err) {
-              logger.debug("Console description generation failed", {
-                error: err,
-              });
-            }
-          })();
-        }
+        requestConsoleDescription({
+          workspaceId,
+          consoleId: result._id.toString(),
+          tracking: { userId: user.id, userEmail: user.email },
+        });
 
         return c.json({
           success: true,
@@ -1661,46 +1678,11 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       );
     }
 
-    // Fire-and-forget: regenerate description + embedding when content changes
-    if (isDescriptionGenAvailable() && body.content.trim()) {
-      void (async () => {
-        try {
-          const connDoc = targetConnectionId
-            ? await DatabaseConnection.findById(targetConnectionId)
-            : null;
-          const {
-            description: genDesc,
-            embedding,
-            embeddingModel,
-          } = await generateDescriptionAndEmbedding(
-            {
-              code: body.content,
-              title: consolePath.split("/").pop() || consolePath,
-              connectionName: connDoc?.name,
-              databaseType: connDoc?.type,
-              databaseName: body.databaseName,
-              language: savedConsole.language,
-            },
-            { workspaceId, userId: user.id, userEmail: user.email },
-          );
-          if (genDesc || embedding) {
-            const update: Record<string, unknown> = {};
-            if (genDesc) update.description = genDesc;
-            if (embedding) {
-              update.descriptionEmbedding = embedding;
-              update.embeddingModel = embeddingModel;
-            }
-            if (Object.keys(update).length > 0) {
-              await SavedConsole.findByIdAndUpdate(savedConsole._id, {
-                $set: update,
-              });
-            }
-          }
-        } catch (err) {
-          logger.debug("Console description generation failed", { error: err });
-        }
-      })();
-    }
+    requestConsoleDescription({
+      workspaceId,
+      consoleId: savedConsole._id.toString(),
+      tracking: { userId: user.id, userEmail: user.email },
+    });
 
     return c.json({
       success: true,
@@ -1802,6 +1784,7 @@ consoleRoutes.openapi(
         201,
       );
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error creating folder", { error });
       return c.json(
         {
@@ -1935,6 +1918,7 @@ consoleRoutes.openapi(
         return c.json({ success: false, error: "Console not found" }, 404);
       }
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error renaming console", {
         consoleId: c.req.param("id"),
         error,
@@ -2016,6 +2000,7 @@ consoleRoutes.openapi(
       const success = await consoleManager.softDeleteConsole(
         consoleId,
         workspaceId,
+        user.id,
       );
 
       if (success) {
@@ -2032,6 +2017,7 @@ consoleRoutes.openapi(
         return c.json({ success: false, error: "Console not found" }, 404);
       }
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error deleting console", {
         consoleId: c.req.param("id"),
         error,
@@ -2112,6 +2098,7 @@ consoleRoutes.openapi(
         return c.json({ success: false, error: "Console not found" }, 404);
       }
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error duplicating console", {
         consoleId: c.req.param("id"),
         error,
@@ -2172,6 +2159,7 @@ consoleRoutes.openapi(
       const success = await consoleManager.restoreConsole(
         consoleId,
         workspaceId,
+        user.id,
       );
 
       if (success) {
@@ -2180,6 +2168,7 @@ consoleRoutes.openapi(
         return c.json({ success: false, error: "Console not found" }, 404);
       }
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error restoring console", {
         consoleId: c.req.param("id"),
         error,
@@ -2251,6 +2240,7 @@ consoleRoutes.openapi(
         folderId,
         name,
         workspaceId,
+        user.id,
       );
 
       if (success) {
@@ -2262,6 +2252,7 @@ consoleRoutes.openapi(
         return c.json({ success: false, error: "Folder not found" }, 404);
       }
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error renaming folder", {
         folderId: c.req.param("id"),
         error,
@@ -2342,7 +2333,11 @@ consoleRoutes.openapi(
         }
       }
 
-      const success = await consoleManager.deleteFolder(folderId, workspaceId);
+      const success = await consoleManager.deleteFolder(
+        folderId,
+        workspaceId,
+        user.id,
+      );
 
       if (success) {
         return c.json({
@@ -2353,6 +2348,7 @@ consoleRoutes.openapi(
         return c.json({ success: false, error: "Folder not found" }, 404);
       }
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error deleting folder", {
         folderId: c.req.param("id"),
         error,
@@ -2445,6 +2441,7 @@ consoleRoutes.openapi(
         workspaceId,
         folderId ?? null,
         access,
+        user.id,
       );
 
       if (success) {
@@ -2453,6 +2450,7 @@ consoleRoutes.openapi(
         return c.json({ success: false, error: "Console not found" }, 404);
       }
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error moving console", {
         consoleId: c.req.param("id"),
         error,
@@ -2520,6 +2518,7 @@ consoleRoutes.openapi(
         workspaceId,
         parentId ?? null,
         access,
+        user.id,
       );
 
       if (success) {
@@ -2531,6 +2530,7 @@ consoleRoutes.openapi(
         );
       }
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error moving folder", {
         folderId: c.req.param("id"),
         error,
@@ -2658,6 +2658,7 @@ consoleRoutes.openapi(
         },
       });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error generating version comment", { error });
       return c.json(
         { success: false, error: "Failed to generate version comment" },
@@ -2975,6 +2976,7 @@ consoleRoutes.openapi(
             },
       );
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error executing console", { error });
 
       // Track failed execution
@@ -3194,6 +3196,7 @@ consoleRoutes.openapi(
         },
       });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error exporting console data", { error });
       return c.json(
         {
@@ -3274,6 +3277,7 @@ consoleRoutes.openapi(
         total: visibleConsoles.length,
       });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error listing consoles", { error });
       return c.json(
         {
@@ -3370,6 +3374,7 @@ consoleRoutes.openapi(
         })),
       });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error listing console executions", { error });
       return c.json(
         {
@@ -3497,6 +3502,7 @@ consoleRoutes.openapi(
         },
       });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error getting console details", { error });
       return c.json(
         {
@@ -3515,6 +3521,252 @@ consoleRoutes.openapi(
 // ---------------------------------------------------------------------------
 // Version history routes
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Git history — the same surface apps expose (apps.md §16): commits that
+// touched the console's file, what one commit changed, a file before/after
+// a commit, and restore-as-new-commit. Read from the repo; no sandbox.
+// ---------------------------------------------------------------------------
+
+const ConsoleIdParams = z.object({
+  workspaceId: z
+    .string()
+    .openapi({ param: { name: "workspaceId", in: "path" } }),
+  id: z.string().openapi({ param: { name: "id", in: "path" } }),
+});
+
+async function loadReadableConsole(
+  c: Context,
+  opts: { write: boolean },
+): Promise<
+  | { doc: ISavedConsole; userId: string; workspaceId: string }
+  | { errorResponse: Response }
+> {
+  const workspaceId = c.req.param("workspaceId") as string;
+  const consoleId = c.req.param("id");
+  const user = (c as AuthenticatedContext).get("user");
+  if (!user) {
+    return {
+      errorResponse: c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      ),
+    };
+  }
+  if (!Types.ObjectId.isValid(consoleId)) {
+    return {
+      errorResponse: c.json(
+        { success: false, error: "Invalid console ID" },
+        400,
+      ),
+    };
+  }
+  const doc = await SavedConsole.findOne({
+    _id: new Types.ObjectId(consoleId),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+  const memberRole = (c as AuthenticatedContext).get("memberRole");
+  if (!doc || !ConsoleManager.canRead(doc, user.id, memberRole)) {
+    return {
+      errorResponse: c.json(
+        { success: false, error: "Console not found" },
+        404,
+      ),
+    };
+  }
+  if (opts.write) {
+    const isAdmin = memberRole === "owner" || memberRole === "admin";
+    if (!ConsoleManager.canWrite(doc, user.id, isAdmin, memberRole)) {
+      return {
+        errorResponse: c.json(
+          { success: false, error: "You do not have write access" },
+          403,
+        ),
+      };
+    }
+  }
+  return { doc, userId: user.id, workspaceId };
+}
+
+consoleRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/history",
+    tags: ["Consoles"],
+    summary: "Commit history of a console (its file in the workspace repo)",
+    security: AUTH_SECURITY,
+    request: {
+      params: ConsoleIdParams,
+      query: z.object({
+        limit: z.coerce.number().int().positive().max(200).optional(),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const loaded = await loadReadableConsole(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { limit } = c.req.valid("query");
+      const commits = await consoleHistory(loaded.doc, limit ?? 50);
+      return c.json({
+        success: true as const,
+        commits,
+        path: loaded.doc.path ?? null,
+      });
+    } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      logger.error("Error listing console history", { error });
+      return c.json({ success: false, error: "Failed to list history" }, 500);
+    }
+  },
+);
+
+consoleRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/git/commit",
+    tags: ["Consoles"],
+    summary: "What one commit changed for this console",
+    security: AUTH_SECURITY,
+    request: {
+      params: ConsoleIdParams,
+      query: z.object({ sha: z.string().regex(/^[0-9a-f]{7,40}$/) }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const loaded = await loadReadableConsole(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { sha } = c.req.valid("query");
+      const commit = await consoleCommitChanges(loaded.doc, sha);
+      return c.json({ success: true as const, commit });
+    } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      logger.error("Error reading console commit", { error });
+      return c.json(
+        { success: false, error: "Failed to read the commit" },
+        500,
+      );
+    }
+  },
+);
+
+consoleRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/git/file-versions",
+    tags: ["Consoles"],
+    summary: "A console file before and after one commit (for diffs)",
+    security: AUTH_SECURITY,
+    request: {
+      params: ConsoleIdParams,
+      query: z.object({
+        sha: z.string().regex(/^[0-9a-f]{7,40}$/),
+        path: z
+          .string()
+          .min(1)
+          .max(4096)
+          .refine(
+            p => !p.startsWith("/") && !p.split("/").includes(".."),
+            "path must stay inside the repository",
+          )
+          .optional(),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const loaded = await loadReadableConsole(c, { write: false });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { sha, path: relPath } = c.req.valid("query");
+      const target = relPath ?? loaded.doc.path;
+      if (!target) {
+        return c.json(
+          { success: false, error: "Console has no file yet" },
+          404,
+        );
+      }
+      // Only this console's own file (and its chart) may be read through it.
+      const own = new Set([
+        loaded.doc.path,
+        loaded.doc.path
+          ? `${loaded.doc.path.replace(/\.[^./]+(\.js)?$/, "")}.chart.json`
+          : undefined,
+      ]);
+      if (!own.has(target)) {
+        return c.json(
+          { success: false, error: "Path is not this console" },
+          403,
+        );
+      }
+      const versions = await consoleFileVersions(loaded.doc, sha, target);
+      return c.json({ success: true as const, versions });
+    } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      logger.error("Error reading console file versions", { error });
+      return c.json({ success: false, error: "Failed to read the diff" }, 500);
+    }
+  },
+);
+
+consoleRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/restore",
+    tags: ["Consoles"],
+    summary: "Restore the console to a previous commit (as a new commit)",
+    description:
+      "Sets the console back to its content at `sha` and commits that on main. Nothing is rewritten: the versions in between stay in the history.",
+    security: AUTH_SECURITY,
+    request: {
+      params: ConsoleIdParams,
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({ sha: z.string().regex(/^[0-9a-f]{7,40}$/) }),
+          },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const loaded = await loadReadableConsole(c, { write: true });
+      if ("errorResponse" in loaded) return loaded.errorResponse;
+      const { sha } = c.req.valid("json");
+      const result = await restoreConsoleTo(loaded.doc, sha, loaded.userId);
+      publishRealtimeEvent(loaded.workspaceId, {
+        type: "console.updated",
+        consoleId: loaded.doc._id.toString(),
+        draftRevision: loaded.doc.draftRevision ?? 1,
+        name: loaded.doc.name,
+        updatedBy: loaded.userId,
+        origin: "save",
+      });
+      requestConsoleDescription({
+        workspaceId: loaded.workspaceId,
+        consoleId: loaded.doc._id.toString(),
+        tracking: { userId: loaded.userId },
+      });
+      return c.json({ success: true as const, result });
+    } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
+      logger.error("Error restoring console", { error });
+      return c.json(
+        {
+          success: false,
+          error: error instanceof Error ? error.message : "Restore failed",
+        },
+        500,
+      );
+    }
+  },
+);
 
 // GET /api/workspaces/:workspaceId/consoles/:id/versions
 consoleRoutes.openapi(
@@ -3593,6 +3845,7 @@ consoleRoutes.openapi(
 
       return c.json({ success: true, ...result });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error listing console versions", { error });
       return c.json({ success: false, error: "Failed to list versions" }, 500);
     }
@@ -3664,6 +3917,7 @@ consoleRoutes.openapi(
 
       return c.json({ success: true, version });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error getting console version", { error });
       return c.json({ success: false, error: "Failed to get version" }, 500);
     }
@@ -3764,6 +4018,18 @@ consoleRoutes.openapi(
         access: snap.access,
       };
 
+      if (consoleDoc.isSaved) {
+        const projected = await projectSavedConsole({
+          workspaceId,
+          current: consoleDoc,
+          set: restoreFields,
+          actorUserId: user.id,
+          message: body.comment ?? `Restored from version ${versionNum}`,
+        });
+        restoreFields.path = projected.path;
+        restoreFields.sourceBlobSha = projected.sourceBlobSha;
+      }
+
       const restored = await SavedConsole.findOneAndUpdate(
         {
           _id: new Types.ObjectId(consoleId),
@@ -3776,6 +4042,11 @@ consoleRoutes.openapi(
       if (!restored) {
         return c.json({ success: false, error: "Restore failed" }, 500);
       }
+      requestConsoleDescription({
+        workspaceId,
+        consoleId,
+        tracking: { userId: user.id, userEmail: user.email },
+      });
 
       const displayName = await getUserDisplayName(user.id);
       const comment = body.comment ?? `Restored from version ${versionNum}`;
@@ -3800,6 +4071,7 @@ consoleRoutes.openapi(
         },
       });
     } catch (error) {
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error restoring console version", { error });
       return c.json(
         { success: false, error: "Failed to restore version" },

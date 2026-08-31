@@ -4,6 +4,7 @@ import { useAuth } from "../contexts/auth-context";
 import { CircularProgress, Box } from "@mui/material";
 import { OnboardingGuard } from "./onboarding";
 import { getAndClearInviteRedirect } from "../utils/invite-redirect";
+import { takeReturnTo } from "../utils/return-to";
 
 /**
  * Props for ProtectedRoute component
@@ -41,6 +42,14 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
       if (inviteRedirect) {
         // Redirect to the stored invite URL
         window.location.href = inviteRedirect;
+        return;
+      }
+      // Same idea for someone who followed a link to an API-served page (a
+      // published app) while signed out: the gate sent them to /login and an
+      // OAuth sign-in landed them here, so finish the journey.
+      const returnTo = takeReturnTo();
+      if (returnTo) {
+        window.location.replace(returnTo);
         return;
       }
     }

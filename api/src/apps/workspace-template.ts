@@ -31,7 +31,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 5;
+export const WORKSPACE_TEMPLATE_VERSION = 6;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -46,7 +46,7 @@ export interface WorkspaceStamp {
 const AGENTS_MD = `# Mako workspace
 
 <!-- managed by Mako: overwritten on template refresh. Put your own guidance
-     in README.md or in skills/ (coming), not here. -->
+     in README.md, not here. -->
 
 This repository is a Mako workspace: one git monorepo holding every data app
 of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
@@ -58,6 +58,10 @@ of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
   \`src/\`, \`package.json\` + \`package-lock.json\` (commit the lockfile).
 - \`packages/app-sdk/\` — \`@makoai/app-sdk\` (managed by Mako, do not edit).
   Apps depend on it via \`file:../../packages/app-sdk\`.
+- \`consoles/<folder>/<name>.sql\` — saved consoles (\`.js\`, \`.mongodb.js\`
+  for the other languages); \`users/<userId>/consoles/…\` are private ones.
+  Leading \`-- key: value\` lines are metadata (\`connection\`, \`database\`,
+  \`description\`, \`schedule\`); a commit here shows up in the app on push.
 - \`.mako/workspace.json\` — workspace id + template version (managed).
 - \`.mcp.json\` — the \`mako\` MCP server for your agent (managed).
 

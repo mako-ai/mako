@@ -48,7 +48,6 @@ import {
   Workspace,
   DatabaseConnection,
   Chat,
-  SavedConsole,
 } from "../database/workspace-schema";
 import { saveChat } from "../services/agent-thread.service";
 import { buildMcpToolsForChat } from "../services/mcp-client.service";
@@ -62,8 +61,8 @@ import { generateChatTitle } from "../services/title-generator";
 import {
   isDescriptionGenAvailable,
   extractConsoleContextFromMessages,
-  generateDescriptionAndEmbedding,
 } from "../services/console-description.service";
+import { requestConsoleDescription } from "../apps/workspace-consoles.service";
 import { searchConsoles } from "../agent-lib/tools/console-search-tools";
 import { prepareAgentTurnGuidance } from "../services/agent-turn-preparation.service";
 import { isDbtShapedTurn } from "../dbt/dbt-turn-shape";
@@ -1492,63 +1491,23 @@ agentRoutes.openapi(
                   });
                 }
 
+                // The turn's context (what was asked, what came back) only
+                // exists here; it rides along on the derivation request and
+                // pre-empts the push-driven baseline (apps.md §16.4).
                 if (isDescriptionGenAvailable()) {
-                  void (async () => {
-                    try {
-                      const consoleContexts =
-                        extractConsoleContextFromMessages(allMessages);
-                      for (const [consoleId, ctx] of consoleContexts) {
-                        const console = await SavedConsole.findById(
-                          consoleId,
-                        ).select(
-                          "code name connectionId databaseName language",
-                        );
-                        if (!console) continue;
-
-                        const connDoc = console.connectionId
-                          ? await DatabaseConnection.findById(
-                              console.connectionId,
-                            )
-                          : null;
-
-                        const { description, embedding, embeddingModel } =
-                          await generateDescriptionAndEmbedding(
-                            {
-                              code: console.code,
-                              title: console.name,
-                              connectionName: connDoc?.name,
-                              databaseType: connDoc?.type,
-                              databaseName: console.databaseName,
-                              language: console.language,
-                              conversationExcerpt: ctx.conversationExcerpt,
-                              resultSample: ctx.resultSample,
-                            },
-                            {
-                              workspaceId,
-                              userId: actorId,
-                              userEmail: actorEmail,
-                            },
-                          );
-
-                        const $set: Record<string, any> = {
-                          descriptionGeneratedAt: new Date(),
-                        };
-                        if (description) $set.description = description;
-                        if (embedding) {
-                          $set.descriptionEmbedding = embedding;
-                          $set.embeddingModel = embeddingModel;
-                        }
-                        await SavedConsole.updateOne(
-                          { _id: new ObjectId(consoleId) },
-                          { $set },
-                        );
-                      }
-                    } catch (err) {
-                      logger.error("Background description generation failed", {
-                        error: err,
-                      });
-                    }
-                  })();
+                  const consoleContexts =
+                    extractConsoleContextFromMessages(allMessages);
+                  for (const [consoleId, ctx] of consoleContexts) {
+                    requestConsoleDescription({
+                      workspaceId,
+                      consoleId,
+                      context: {
+                        conversationExcerpt: ctx.conversationExcerpt,
+                        resultSample: ctx.resultSample,
+                      },
+                      tracking: { userId: actorId, userEmail: actorEmail },
+                    });
+                  }
                 }
               });
             },

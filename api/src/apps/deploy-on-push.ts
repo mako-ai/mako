@@ -28,23 +28,9 @@ import {
   deploymentExists,
   setPublishedSha,
 } from "./deployment.service";
-import { getMakoCloudRepoPrefix } from "../integrations/github/cloud-app-auth";
 import { Types } from "mongoose";
 
 const logger = loggers.api("apps-deploy-on-push");
-
-/**
- * Recover the workspace from a pushed repository name.
- *
- * Cloud repos are named `<prefix>-<workspaceId>`, so the id is right there.
- * BYO repos are matched through the workspace's own binding instead.
- */
-export function workspaceIdFromCloudRepo(repo: string): string | null {
-  const prefix = `${getMakoCloudRepoPrefix()}-`;
-  if (!repo.startsWith(prefix)) return null;
-  const candidate = repo.slice(prefix.length);
-  return Types.ObjectId.isValid(candidate) ? candidate : null;
-}
 
 /** App folders touched between two commits. */
 async function changedApps(

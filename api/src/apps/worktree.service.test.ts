@@ -60,9 +60,6 @@ beforeAll(async () => {
   process.env.APPS_GIT_ORIGIN_URL = gitServer.url;
   // Hermetic: never let a configured cloud org make createProject create
   // real GitHub repos from tests (e.g. when the shell exports .env).
-  delete process.env.MAKO_CLOUD_GITHUB_ORG;
-  delete process.env.MAKO_CLOUD_GITHUB_APP_ID;
-  delete process.env.MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY;
 
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());

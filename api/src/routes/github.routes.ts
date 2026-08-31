@@ -35,13 +35,11 @@ import {
 import { handlePullRequestEvent, handlePushEvent } from "../dbt/dbt-ci.service";
 import { workspaceService } from "../services/workspace.service";
 import { loggers } from "../logging";
-import {
-  deployAppsForPush,
-  workspaceIdFromCloudRepo,
-} from "../apps/deploy-on-push";
+import { deployAppsForPush } from "../apps/deploy-on-push";
 import { ensureLocalRepo, fetchFromCloud } from "../apps/cloud-repo.service";
 import { findWorkspaceIdByRepoBinding } from "../services/workspace-repos.service";
 import { repoDirFor } from "../apps/repository.service";
+import { syncConsolesIndexFromRepo } from "../apps/workspace-consoles.service";
 
 const logger = loggers.api("github");
 
@@ -151,12 +149,9 @@ async function handleAppsPush(input: {
 }): Promise<void> {
   const { owner, repo, branch, before, after, defaultBranch } = input;
   if (!after) return;
-  // Mako-cloud repos encode the workspace id in their name; CONNECTED repos
-  // (§13.17: the customer's own repo as the durable mirror) are matched
-  // through the workspace's binding.
-  const workspaceId =
-    workspaceIdFromCloudRepo(repo) ??
-    (await findWorkspaceIdByRepoBinding(owner, repo));
+  // The customer's own repo is the durable mirror (§13.17); the push is
+  // matched through the workspace's binding.
+  const workspaceId = await findWorkspaceIdByRepoBinding(owner, repo);
   if (!workspaceId) return;
   if (branch !== (defaultBranch || "main")) return;
 
@@ -165,6 +160,14 @@ async function handleAppsPush(input: {
   // may not exist at all yet.
   await ensureLocalRepo(workspaceId);
   await fetchFromCloud(workspaceId, branch);
+  // A console committed on GitHub (laptop clone, PR merge) is in the index
+  // before anyone opens the app (apps.md §16.3).
+  void syncConsolesIndexFromRepo(workspaceId).catch(error => {
+    logger.warn("Console index sync after GitHub push failed", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
   // Builds run as Inngest work (apps-deploy) — this only decides what changed.
   const requested = await deployAppsForPush({
     workspaceId,

@@ -39,7 +39,6 @@ import { webhookRoutes } from "./webhooks";
 import { mcpPresetRoutes, mcpRoutes } from "./mcp.routes";
 import { mcpProtocolRoutes } from "./mcp-server.routes";
 import { mcpOAuthRoutes } from "./mcp-oauth.routes";
-import { appPreviewRoutes } from "./app-preview.routes";
 import { appsRoutes } from "./apps";
 import { appsGitRoutes } from "./apps-git";
 import { appsBoxRoutes } from "./apps-box";
@@ -126,8 +125,6 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   );
   // Intentionally public: token-gated read-only shares (dashboards + apps).
   app.route("/api/share", publicShareRoutes);
-  // Intentionally public: signed short-TTL draft previews (headless renders).
-  app.route("/api/preview", appPreviewRoutes);
   app.route("/api/agent", agentRoutes);
   app.route("/api/admin", adminRoutes);
   app.route("/api/connectors", connectorRoutes);

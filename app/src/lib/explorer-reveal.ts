@@ -137,6 +137,7 @@ export function tabRevealTarget(
       return projectId ? { explorer: "dbt", nodeId: projectId } : null;
     }
     case "app-diff":
+    case "console-diff":
       // A transient diff view; nothing in an explorer corresponds to it.
       return null;
     default: {

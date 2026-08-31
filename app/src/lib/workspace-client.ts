@@ -40,7 +40,6 @@ export interface Workspace {
     maxMembers: number;
     billingTier: "free" | "pro" | "enterprise";
     dashboardRefreshConcurrency?: number;
-    appBindingRefreshConcurrency?: number;
     /** Apps rollout flag (Settings › Super Admin › Feature flags). */
     appsEnabled?: boolean;
   };
