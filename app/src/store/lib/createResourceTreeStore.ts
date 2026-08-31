@@ -1,5 +1,6 @@
 /**
- * ONE tree store for every foldered resource (notebooks, dashboards, …).
+ * ONE tree store for every foldered resource (notebooks, dashboards,
+ * consoles, …).
  *
  * The two-section tree ("My X" / "Workspace X"), the optimistic move /
  * rename / create-folder / delete with refresh-on-failure, the per-workspace
@@ -7,9 +8,12 @@
  * notebookTreeStore and dashboardTreeStore differed by 29 lines out of 400
  * once the noun was renamed, and consoleTreeStore forked to grow a third
  * section and then drifted 600 lines. A resource now supplies only its
- * entry type and its endpoints; the mechanics live here once.
+ * entry type and its endpoints; the mechanics live here once. Anything a
+ * resource needs beyond the shared set (consoles: search, remote rename,
+ * duplicate, restore) composes on top through `extend`, which receives the
+ * same section helpers the built-in actions use.
  */
-import { create } from "zustand";
+import { create, type StateCreator } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { toErrorMessage } from "../../api";
 import {
@@ -36,7 +40,12 @@ export interface ResourceTreeEntry {
   updatedAt?: string;
 }
 
-/** What a resource must know how to do; the store never builds a URL. */
+/**
+ * What a resource must know how to do; the store never builds a URL. An
+ * endpoint that resolves counts as success; one that throws triggers the
+ * refresh-on-failure path (so an endpoint whose envelope carries
+ * `success: false` should throw on it).
+ */
 export interface ResourceTreeEndpoints<T extends ResourceTreeEntry> {
   fetch: (workspaceId: string) => Promise<{ my: T[]; workspace: T[] }>;
   moveItem: (
@@ -79,18 +88,19 @@ export interface ResourceTreeState<T extends ResourceTreeEntry> {
 
   fetchTree: (workspaceId: string) => Promise<void>;
   refresh: (workspaceId: string) => Promise<void>;
+  /** Optimistic; resolves `false` after the tree was refetched on failure. */
   moveItem: (
     workspaceId: string,
     itemId: string,
     targetFolderId: string | null,
     access?: TreeAccessLevel,
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   moveFolder: (
     workspaceId: string,
     folderId: string,
     parentId: string | null,
     access?: TreeAccessLevel,
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   createFolder: (
     workspaceId: string,
     name: string,
@@ -102,30 +112,94 @@ export interface ResourceTreeState<T extends ResourceTreeEntry> {
     itemId: string,
     name: string,
     isDirectory: boolean,
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   deleteItem: (
     workspaceId: string,
     itemId: string,
     isDirectory: boolean,
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   resortItem: (workspaceId: string, itemId: string) => void;
 }
 
-export function createResourceTreeStore<T extends ResourceTreeEntry>(config: {
+/** The section arrays an extension mutates inside `set`. */
+export type ResourceTreeSections<T extends ResourceTreeEntry> = Pick<
+  ResourceTreeState<T>,
+  "myItems" | "workspaceItems"
+>;
+
+/** The internal section helpers, handed to `extend` so extras compose. */
+export interface ResourceTreeHelpers<T extends ResourceTreeEntry> {
+  /** Both section arrays for a workspace (missing ones read as empty). */
+  allSections: (state: ResourceTreeSections<T>, wid: string) => T[][];
+  findInAnySection: (
+    state: ResourceTreeSections<T>,
+    wid: string,
+    id: string,
+  ) => T | null;
+  removeFromAnySection: (
+    state: ResourceTreeSections<T>,
+    wid: string,
+    id: string,
+  ) => T | null;
+  /** Into a folder's children, or the section root when it is not found. */
+  insertIntoFolder: (
+    state: ResourceTreeSections<T>,
+    wid: string,
+    entry: T,
+    targetFolderId: string | null,
+    targetSection: TreeSection,
+    placement?: "alphabetical" | "top",
+  ) => void;
+  sectionOfFolder: (
+    state: ResourceTreeSections<T>,
+    wid: string,
+    folderId: string,
+  ) => TreeSection;
+  /** Re-sort one node within its parent array (after a rename). */
+  resortIn: (state: ResourceTreeSections<T>, wid: string, id: string) => void;
+}
+
+type ImmerCreator<S> = StateCreator<S, [["zustand/immer", never]], [], S>;
+export type ResourceTreeSet<S> = Parameters<ImmerCreator<S>>[0];
+export type ResourceTreeGet<S> = Parameters<ImmerCreator<S>>[1];
+
+export function createResourceTreeStore<
+  T extends ResourceTreeEntry,
+  Extra extends object = Record<never, never>,
+>(config: {
   /** Used in the fetch-error fallback message, e.g. "notebook". */
   resourceName: string;
   endpoints: ResourceTreeEndpoints<T>;
+  /** Resource-specific state and actions layered on the shared slice. */
+  extend?: (
+    set: ResourceTreeSet<ResourceTreeState<T> & Extra>,
+    get: ResourceTreeGet<ResourceTreeState<T> & Extra>,
+    helpers: ResourceTreeHelpers<T>,
+  ) => Extra;
 }) {
-  const { resourceName, endpoints } = config;
-  type State = ResourceTreeState<T>;
+  const { resourceName, endpoints, extend } = config;
+  type State = ResourceTreeState<T> & Extra;
+  type Sections = ResourceTreeSections<T>;
 
-  const allSections = (state: State, wid: string): T[][] => [
+  const allSections = (state: Sections, wid: string): T[][] => [
     state.myItems[wid] || [],
     state.workspaceItems[wid] || [],
   ];
 
+  const findInAnySection = (
+    state: Sections,
+    wid: string,
+    id: string,
+  ): T | null => {
+    for (const section of allSections(state, wid)) {
+      const found = findById(section, id);
+      if (found) return found;
+    }
+    return null;
+  };
+
   const removeFromAnySection = (
-    state: State,
+    state: Sections,
     wid: string,
     id: string,
   ): T | null => {
@@ -137,7 +211,7 @@ export function createResourceTreeStore<T extends ResourceTreeEntry>(config: {
   };
 
   const insertIntoFolder = (
-    state: State,
+    state: Sections,
     wid: string,
     entry: T,
     targetFolderId: string | null,
@@ -160,14 +234,14 @@ export function createResourceTreeStore<T extends ResourceTreeEntry>(config: {
   };
 
   const sectionOfFolder = (
-    state: State,
+    state: Sections,
     wid: string,
     folderId: string,
   ): TreeSection =>
     findById(state.workspaceItems[wid] || [], folderId) ? "workspace" : "my";
 
   const targetSectionFor = (
-    state: State,
+    state: Sections,
     wid: string,
     access: TreeAccessLevel | undefined,
     folderId: string | null | undefined,
@@ -178,7 +252,7 @@ export function createResourceTreeStore<T extends ResourceTreeEntry>(config: {
     return "my";
   };
 
-  const resortIn = (state: State, wid: string, itemId: string): void => {
+  const resortIn = (state: Sections, wid: string, itemId: string): void => {
     for (const section of allSections(state, wid)) {
       const parent = findParentArray(section, itemId);
       if (parent) {
@@ -190,6 +264,15 @@ export function createResourceTreeStore<T extends ResourceTreeEntry>(config: {
         break;
       }
     }
+  };
+
+  const helpers: ResourceTreeHelpers<T> = {
+    allSections,
+    findInAnySection,
+    removeFromAnySection,
+    insertIntoFolder,
+    sectionOfFolder,
+    resortIn,
   };
 
   return create<State>()(
@@ -231,19 +314,19 @@ export function createResourceTreeStore<T extends ResourceTreeEntry>(config: {
       moveItem: async (workspaceId, itemId, targetFolderId, access) => {
         set(state => {
           const entry = removeFromAnySection(
-            state as State,
+            state as Sections,
             workspaceId,
             itemId,
           );
           if (!entry) return;
           if (access) entry.access = access;
           insertIntoFolder(
-            state as State,
+            state as Sections,
             workspaceId,
             entry,
             targetFolderId,
             targetSectionFor(
-              state as State,
+              state as Sections,
               workspaceId,
               access,
               targetFolderId,
@@ -252,37 +335,49 @@ export function createResourceTreeStore<T extends ResourceTreeEntry>(config: {
         });
         try {
           await endpoints.moveItem(workspaceId, itemId, targetFolderId, access);
+          return true;
         } catch {
           await get().refresh(workspaceId);
+          return false;
         }
       },
 
       moveFolder: async (workspaceId, folderId, parentId, access) => {
         set(state => {
           const entry = removeFromAnySection(
-            state as State,
+            state as Sections,
             workspaceId,
             folderId,
           );
           if (!entry) return;
           if (access) entry.access = access;
           insertIntoFolder(
-            state as State,
+            state as Sections,
             workspaceId,
             entry,
             parentId,
-            targetSectionFor(state as State, workspaceId, access, parentId),
+            targetSectionFor(state as Sections, workspaceId, access, parentId),
           );
         });
         try {
           await endpoints.moveFolder(workspaceId, folderId, parentId, access);
+          return true;
         } catch {
           await get().refresh(workspaceId);
+          return false;
         }
       },
 
       createFolder: async (workspaceId, name, parentId, access) => {
-        const resolvedAccess = access || "private";
+        // No explicit access: a folder created inside another one lives in
+        // that folder's section, so it inherits that section's access.
+        const parentSection: TreeSection = parentId
+          ? sectionOfFolder(get(), workspaceId, parentId)
+          : "my";
+        const resolvedAccess: TreeAccessLevel =
+          access ?? (parentSection === "workspace" ? "workspace" : "private");
+        const targetSection: TreeSection =
+          resolvedAccess === "workspace" ? "workspace" : parentSection;
         const tempId = `temp-${Date.now()}`;
         const tempEntry = {
           id: tempId,
@@ -292,15 +387,9 @@ export function createResourceTreeStore<T extends ResourceTreeEntry>(config: {
           children: [],
           access: resolvedAccess,
         } as unknown as T;
-        const targetSection: TreeSection =
-          resolvedAccess === "workspace"
-            ? "workspace"
-            : parentId
-              ? sectionOfFolder(get(), workspaceId, parentId)
-              : "my";
         set(state => {
           insertIntoFolder(
-            state as State,
+            state as Sections,
             workspaceId,
             tempEntry,
             parentId || null,
@@ -316,15 +405,14 @@ export function createResourceTreeStore<T extends ResourceTreeEntry>(config: {
             resolvedAccess,
           );
           const realId = created?.id;
-          if (!realId) return null;
+          if (!realId) throw new Error("Folder was not created");
           set(state => {
-            for (const section of allSections(state as State, workspaceId)) {
-              const node = findById(section, tempId);
-              if (node) {
-                node.id = realId;
-                break;
-              }
-            }
+            const node = findInAnySection(
+              state as Sections,
+              workspaceId,
+              tempId,
+            );
+            if (node) node.id = realId;
           });
           return realId;
         } catch {
@@ -335,42 +423,44 @@ export function createResourceTreeStore<T extends ResourceTreeEntry>(config: {
 
       renameItem: async (workspaceId, itemId, name, isDirectory) => {
         set(state => {
-          for (const section of allSections(state as State, workspaceId)) {
-            const node = findById(section, itemId);
-            if (node) {
-              node.name = name;
-              resortIn(state as State, workspaceId, itemId);
-              break;
-            }
-          }
+          const node = findInAnySection(state as Sections, workspaceId, itemId);
+          if (!node) return;
+          node.name = name;
+          resortIn(state as Sections, workspaceId, itemId);
         });
         try {
           await (isDirectory
             ? endpoints.renameFolder(workspaceId, itemId, name)
             : endpoints.renameItem(workspaceId, itemId, name));
+          return true;
         } catch {
           await get().refresh(workspaceId);
+          return false;
         }
       },
 
       deleteItem: async (workspaceId, itemId, isDirectory) => {
         set(state => {
-          removeFromAnySection(state as State, workspaceId, itemId);
+          removeFromAnySection(state as Sections, workspaceId, itemId);
         });
         try {
           await (isDirectory
             ? endpoints.deleteFolder(workspaceId, itemId)
             : endpoints.deleteItem(workspaceId, itemId));
+          return true;
         } catch {
           await get().refresh(workspaceId);
+          return false;
         }
       },
 
       resortItem: (workspaceId, itemId) => {
         set(state => {
-          resortIn(state as State, workspaceId, itemId);
+          resortIn(state as Sections, workspaceId, itemId);
         });
       },
+
+      ...(extend ? extend(set, get, helpers) : ({} as Extra)),
     })),
   );
 }
