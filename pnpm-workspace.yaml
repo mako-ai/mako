@@ -21,6 +21,10 @@ allowBuilds:
   workerd: false
 ignoredBuiltDependencies:
   - bcrypt
+# 24h supply-chain gate. The Docker build's pnpm (latest) enforces this by
+# default; declaring it here makes local resolution match CI so a fresh
+# install can't pin hours-old releases into the lockfile.
+minimumReleaseAge: 1440
 minimumReleaseAgeExclude:
   - '@ai-sdk/gateway@3.0.124'
   - '@ai-sdk/react@3.0.198'
