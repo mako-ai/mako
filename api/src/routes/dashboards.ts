@@ -1,4 +1,5 @@
 import { createRoute, z } from "@hono/zod-openapi";
+import { workspaceResourceLoader } from "./lib/load-resource";
 import {
   Dashboard,
   DashboardFolder,
@@ -2710,15 +2711,7 @@ app.openapi(
 
 // ── Sharing (collaborators, general access, public link) ──
 
-const loadDashboardById = async (c: AuthenticatedContext) => {
-  const workspaceId = c.req.param("workspaceId") as string;
-  const id = c.req.param("id");
-  if (!Types.ObjectId.isValid(id)) return null;
-  return Dashboard.findOne({
-    _id: new Types.ObjectId(id),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
-};
+const loadDashboardById = workspaceResourceLoader(Dashboard);
 
 registerCollaboratorRoutes(app, {
   resourceName: "Dashboard",
