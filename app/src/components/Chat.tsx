@@ -25,6 +25,7 @@ import {
   History,
   Menu as MenuIcon,
   Plus,
+  X,
 } from "lucide-react";
 import { useTheme as useMuiTheme } from "@mui/material/styles";
 import { useChat } from "@ai-sdk/react";
@@ -1341,6 +1342,19 @@ const Chat: React.FC<ChatProps> = ({
                 <History size={20} />
               </IconButton>
             </Tooltip>
+            {/* Desktop only: on mobile the chat is a tab, not a pane. The
+                sidebar shows an "Open Chat" button while the pane is closed. */}
+            {!isMobile && (
+              <Tooltip title="Close chat">
+                <IconButton
+                  size="small"
+                  aria-label="Close chat"
+                  onClick={() => useUIStore.getState().closeRightPane()}
+                >
+                  <X size={20} />
+                </IconButton>
+              </Tooltip>
+            )}
           </Box>
         </Box>
       </Box>
