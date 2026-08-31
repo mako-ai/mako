@@ -33,7 +33,6 @@ import {
   getGitHubDevToken,
   isGitHubAppConfigured,
 } from "../integrations/github/config";
-import { isMakoCloudConfigured } from "../integrations/github/cloud-app-auth";
 import { signInstallState } from "../integrations/github/install-state";
 import {
   getInstallationToken,
@@ -83,7 +82,11 @@ import {
   repoForWorkspace,
 } from "../apps/worktree.service";
 import { ensureWorkspaceTemplateSoon } from "../apps/workspace-template";
-import { APPS_EXEC_MAX_TIMEOUT_MS, previewStagingDir } from "../apps/config";
+import {
+  APPS_EXEC_MAX_TIMEOUT_MS,
+  previewStagingDir,
+  appsRequireConnectedRepo,
+} from "../apps/config";
 import { registerPublicShareRoutes } from "./lib/public-share-routes";
 import {
   registerCollaboratorRoutes,
@@ -323,9 +326,9 @@ appsRoutes.openapi(
         success: true as const,
         enabled,
         linked: repos.length > 0,
-        // Creation works without a connected repo when Mako-hosted cloud
-        // storage is configured (per-app repos under MAKO_CLOUD_GITHUB_ORG).
-        canCreate: repos.length > 0 || isMakoCloudConfigured(),
+        // Production requires the workspace's own repo (apps.md §17); dev
+        // and previews work local-only.
+        canCreate: repos.length > 0 || !appsRequireConnectedRepo(),
         repos: repos.map(r => ({
           owner: r.owner,
           repo: r.repo,
@@ -728,18 +731,19 @@ appsRoutes.openapi(
       const { workspaceId } = c.req.valid("param");
       const { title, description } = c.req.valid("json");
       const userId = actingUserId(c);
-      // Instant start: with no repo connected, apps are stored in a
-      // Mako-hosted cloud repo (per-project, under MAKO_CLOUD_GITHUB_ORG).
-      // Only refuse when NEITHER path exists, so the failure stays actionable.
+      // Apps live in the workspace's own GitHub repo (apps.md §17): in
+      // production, creating one without a connected repo is refused with an
+      // actionable message. Dev and previews keep local-only repos.
       const repos = await listWorkspaceRepos(workspaceId);
-      if (repos.length === 0 && !isMakoCloudConfigured()) {
+      if (repos.length === 0 && appsRequireConnectedRepo()) {
         return c.json(
           {
             success: false,
+            code: "github_required",
             error:
-              "No GitHub repo is connected and Mako Cloud storage is not configured. Connect a repo (Settings → GitHub) or set MAKO_CLOUD_GITHUB_*.",
+              "Connect a GitHub repository first (Settings → GitHub). Mako keeps your apps and consoles in your own repo.",
           },
-          409,
+          412,
         );
       }
       const project = await createProject({

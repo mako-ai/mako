@@ -113,7 +113,8 @@ interface ConsoleProps {
     databaseName: string | undefined,
   ) => void;
   filePath?: string;
-  onHistoryClick?: () => void;
+  /** Receives the History button, so a popover can anchor to it. */
+  onHistoryClick?: (anchor: HTMLElement) => void;
   /**
    * When false, the history button is rendered but disabled (e.g. for
    * unsaved drafts that have no versions yet). Defaults to true so existing
@@ -1470,7 +1471,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                   <span>
                     <IconButton
                       size="small"
-                      onClick={onHistoryClick}
+                      onClick={e => onHistoryClick(e.currentTarget)}
                       disabled={isDiffMode || !historyAvailable}
                     >
                       <HistoryIcon strokeWidth={2} size={22} />

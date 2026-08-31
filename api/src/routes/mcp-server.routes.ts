@@ -30,7 +30,6 @@ import {
 } from "../auth/api-key-scopes";
 import { buildMakoMcpServer } from "../mcp/mako-mcp-server";
 import { createChatGptConnectorTools } from "../mcp/chatgpt-connector-tools";
-import { createMcpPreviewTools } from "../mcp/preview-tools";
 import { StatelessMcpTransport } from "../mcp/stateless-transport";
 import { ACP_MCP_CLIENT_ID } from "../auth/mcp-oauth.service";
 import type { AuthEnv } from "../openapi/core";
@@ -134,8 +133,8 @@ mcpProtocolRoutes.post(
       );
     }
 
-    // Desktop ACP attaches via a fixed OAuth client. Those sessions already
-    // have a live iframe — hide headless create_preview_token / render_app.
+    // Desktop ACP attaches via a fixed OAuth client. Those sessions have a
+    // live iframe and their own plan/clarify cards.
     const acpDesktop = c.get("mcpOAuthClientId") === ACP_MCP_CLIENT_ID;
     const capabilityGrants =
       acpDesktop && user
@@ -157,12 +156,7 @@ mcpProtocolRoutes.post(
     // harmless workspace search for everyone else.
     const server = buildMakoMcpServer(
       mcpContext,
-      acpDesktop
-        ? undefined
-        : {
-            ...createMcpPreviewTools(mcpContext),
-            ...createChatGptConnectorTools(mcpContext),
-          },
+      acpDesktop ? undefined : createChatGptConnectorTools(mcpContext),
     );
     const transport = new StatelessMcpTransport();
 

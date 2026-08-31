@@ -12,9 +12,6 @@ import { Lock } from "lucide-react";
 import PublicDashboardViewer, {
   type PublicDashboardContent,
 } from "../components/public/PublicDashboardViewer";
-import PublicAppViewer, {
-  type PublicAppContent,
-} from "../components/public/PublicAppViewer";
 
 /**
  * Anonymous viewer for public share links (/share/:token).
@@ -25,13 +22,13 @@ import PublicAppViewer, {
  */
 
 interface ShareMeta {
-  type: "dashboard" | "app";
+  type: "dashboard";
   title: string;
   passwordRequired: boolean;
   unlocked: boolean;
 }
 
-type ShareContent = PublicDashboardContent | PublicAppContent;
+type ShareContent = PublicDashboardContent;
 
 export default function PublicSharePage() {
   const { token = "" } = useParams<{ token: string }>();
@@ -213,30 +210,13 @@ export default function PublicSharePage() {
     );
   }
 
-  if (content.type === "dashboard") {
-    return (
-      <PublicDashboardViewer
-        token={token}
-        content={content}
-        reloadContent={async () => {
-          const next = await loadContent();
-          if (next && next.type === "dashboard") {
-            setContent(next);
-            return next;
-          }
-          return null;
-        }}
-      />
-    );
-  }
-
   return (
-    <PublicAppViewer
+    <PublicDashboardViewer
       token={token}
       content={content}
       reloadContent={async () => {
         const next = await loadContent();
-        if (next && next.type === "app") {
+        if (next) {
           setContent(next);
           return next;
         }

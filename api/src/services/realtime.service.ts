@@ -72,18 +72,6 @@ export type RealtimeEvent =
       chatId: string;
       state: "streaming" | "idle";
     }
-  // Legacy (pre-git) MakoApp poke — emitted when a retained v1 public-share
-  // binding refresh bumps the document version. No current client consumes
-  // it (v1 tabs are gone); kept distinct so it can never be mistaken for a
-  // git-backed app.updated.
-  | {
-      type: "legacy-app.updated";
-      appId: string;
-      version: number;
-      updatedBy: string;
-      clientId?: string;
-      origin: "agent" | "save";
-    }
   // Apps (git-backed): any durable change — WIP flush, commit, merge,
   // discard, create/delete — pokes open windows to refetch from the API.
   | {

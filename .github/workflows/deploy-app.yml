@@ -195,10 +195,6 @@ jobs:
       # Apps cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
       # All previews share the staging DB, so they share the "staging" prefix:
       # same workspace -> same repo regardless of which PR created it.
-      MAKO_CLOUD_GITHUB_ORG: ${{ vars.MAKO_CLOUD_GITHUB_ORG }}
-      MAKO_CLOUD_GITHUB_APP_ID: ${{ vars.MAKO_CLOUD_GITHUB_APP_ID }}
-      MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY }}
-      MAKO_CLOUD_REPO_PREFIX: staging
       TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
@@ -618,10 +614,6 @@ jobs:
             --set-env-vars E2B_API_KEY=${E2B_API_KEY} \
             --set-env-vars APPS_SANDBOX_PROVIDER=${APPS_SANDBOX_PROVIDER} \
             --set-env-vars APPS_E2B_TEMPLATE=${APPS_E2B_TEMPLATE} \
-            --set-env-vars MAKO_CLOUD_GITHUB_ORG=${MAKO_CLOUD_GITHUB_ORG} \
-            --set-env-vars MAKO_CLOUD_GITHUB_APP_ID=${MAKO_CLOUD_GITHUB_APP_ID} \
-            --set-env-vars "^|^MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY=${MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY}" \
-            --set-env-vars MAKO_CLOUD_REPO_PREFIX=${MAKO_CLOUD_REPO_PREFIX} \
             --set-env-vars TAVILY_API_KEY=${TAVILY_API_KEY} \
             --set-env-vars LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY} \
             --set-env-vars LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY} \
@@ -873,10 +865,9 @@ jobs:
       APPS_SANDBOX_PROVIDER: e2b
       APPS_E2B_TEMPLATE: mako-apps
       # Apps cloud repos (Mako-hosted GitHub storage under mako-ai-cloud).
-      MAKO_CLOUD_GITHUB_ORG: ${{ vars.MAKO_CLOUD_GITHUB_ORG }}
-      MAKO_CLOUD_GITHUB_APP_ID: ${{ vars.MAKO_CLOUD_GITHUB_APP_ID }}
-      MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY }}
-      MAKO_CLOUD_REPO_PREFIX: ws
+      # Production: the workspace's own GitHub repo is the only durable store
+      # (apps.md §17) — no repo, no app/console saves.
+      APPS_REQUIRE_CONNECTED_REPO: "true"
       TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
@@ -1066,10 +1057,7 @@ jobs:
             --set-env-vars E2B_API_KEY=${E2B_API_KEY} \
             --set-env-vars APPS_SANDBOX_PROVIDER=${APPS_SANDBOX_PROVIDER} \
             --set-env-vars APPS_E2B_TEMPLATE=${APPS_E2B_TEMPLATE} \
-            --set-env-vars MAKO_CLOUD_GITHUB_ORG=${MAKO_CLOUD_GITHUB_ORG} \
-            --set-env-vars MAKO_CLOUD_GITHUB_APP_ID=${MAKO_CLOUD_GITHUB_APP_ID} \
-            --set-env-vars "^|^MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY=${MAKO_CLOUD_GITHUB_APP_PRIVATE_KEY}" \
-            --set-env-vars MAKO_CLOUD_REPO_PREFIX=${MAKO_CLOUD_REPO_PREFIX} \
+            --set-env-vars APPS_REQUIRE_CONNECTED_REPO=${APPS_REQUIRE_CONNECTED_REPO} \
             --set-env-vars TAVILY_API_KEY=${TAVILY_API_KEY} \
             --set-env-vars LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY} \
             --set-env-vars LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY} \
@@ -1139,6 +1127,14 @@ jobs:
           echo "Cloud Run direct URL: ${CLOUD_RUN_URL}"
 
       - name: Run database migrations
+        # Runs on the runner, not Cloud Run: give it the same GitHub App
+        # identity the service uses (the consoles adoption clones and pushes
+        # the customer mirror) and the artifact store type (the v1 parquet
+        # purge must hit GCS, not the runner's disk).
+        env:
+          GITHUB_APP_ID: ${{ vars.MAKO_GITHUB_APP_ID }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_GITHUB_APP_PRIVATE_KEY }}
+          DASHBOARD_ARTIFACT_STORE: gcs
         run: pnpm run migrate
 
       - name: Sync Inngest app

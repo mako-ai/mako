@@ -15,11 +15,8 @@ import {
 } from "../auth/mcp-oauth.service";
 import { workspaceService } from "../services/workspace.service";
 import {
-  APP_BINDING_REFRESH_CONCURRENCY_MAX,
-  clampAppBindingRefreshConcurrency,
   clampDashboardRefreshConcurrency,
   DASHBOARD_REFRESH_CONCURRENCY_MAX,
-  DEFAULT_APP_BINDING_REFRESH_CONCURRENCY,
   DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
 } from "../services/workspace-refresh-limits.service";
 import {
@@ -847,20 +844,12 @@ workspaceRoutes.openapi(
         workspace.settings?.dashboardRefreshConcurrency ??
           DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
       );
-      const appBindingRefreshConcurrency = clampAppBindingRefreshConcurrency(
-        workspace.settings?.appBindingRefreshConcurrency ??
-          DEFAULT_APP_BINDING_REFRESH_CONCURRENCY,
-      );
       return c.json({
         success: true,
         dashboardRefreshConcurrency,
-        appBindingRefreshConcurrency,
         dashboardRefreshConcurrencyMax: DASHBOARD_REFRESH_CONCURRENCY_MAX,
-        appBindingRefreshConcurrencyMax: APP_BINDING_REFRESH_CONCURRENCY_MAX,
         dashboardRefreshConcurrencyDefault:
           DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
-        appBindingRefreshConcurrencyDefault:
-          DEFAULT_APP_BINDING_REFRESH_CONCURRENCY,
       });
     } catch (error) {
       logger.error("Error fetching workspace limits settings", { error });
@@ -902,19 +891,11 @@ workspaceRoutes.openapi(
 
       const body = (await c.req.json()) as {
         dashboardRefreshConcurrency?: unknown;
-        appBindingRefreshConcurrency?: unknown;
       };
 
-      if (
-        body.dashboardRefreshConcurrency === undefined &&
-        body.appBindingRefreshConcurrency === undefined
-      ) {
+      if (body.dashboardRefreshConcurrency === undefined) {
         return c.json(
-          {
-            success: false,
-            error:
-              "Provide dashboardRefreshConcurrency and/or appBindingRefreshConcurrency",
-          },
+          { success: false, error: "Provide dashboardRefreshConcurrency" },
           400,
         );
       }
@@ -932,53 +913,28 @@ workspaceRoutes.openapi(
         );
       }
 
-      if (
-        body.appBindingRefreshConcurrency !== undefined &&
-        !isFiniteNumberish(body.appBindingRefreshConcurrency)
-      ) {
-        return c.json(
-          {
-            success: false,
-            error: "appBindingRefreshConcurrency must be a number",
-          },
-          400,
-        );
-      }
-
       const dashboardRefreshConcurrency = clampDashboardRefreshConcurrency(
         body.dashboardRefreshConcurrency ??
           workspace.settings?.dashboardRefreshConcurrency ??
           DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
       );
-      const appBindingRefreshConcurrency = clampAppBindingRefreshConcurrency(
-        body.appBindingRefreshConcurrency ??
-          workspace.settings?.appBindingRefreshConcurrency ??
-          DEFAULT_APP_BINDING_REFRESH_CONCURRENCY,
-      );
-
       await Workspace.findByIdAndUpdate(workspaceId, {
         $set: {
           "settings.dashboardRefreshConcurrency": dashboardRefreshConcurrency,
-          "settings.appBindingRefreshConcurrency": appBindingRefreshConcurrency,
         },
       });
 
       logger.info("Updated workspace refresh limits", {
         workspaceId,
         dashboardRefreshConcurrency,
-        appBindingRefreshConcurrency,
       });
 
       return c.json({
         success: true,
         dashboardRefreshConcurrency,
-        appBindingRefreshConcurrency,
         dashboardRefreshConcurrencyMax: DASHBOARD_REFRESH_CONCURRENCY_MAX,
-        appBindingRefreshConcurrencyMax: APP_BINDING_REFRESH_CONCURRENCY_MAX,
         dashboardRefreshConcurrencyDefault:
           DEFAULT_DASHBOARD_REFRESH_CONCURRENCY,
-        appBindingRefreshConcurrencyDefault:
-          DEFAULT_APP_BINDING_REFRESH_CONCURRENCY,
       });
     } catch (error) {
       logger.error("Error updating workspace limits settings", { error });

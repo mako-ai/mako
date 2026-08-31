@@ -1,30 +1,22 @@
 import { Types } from "mongoose";
 import {
   Dashboard,
-  MakoApp,
   type IDashboard,
   type IDashboardDataSource,
-  type IMakoApp,
-  type IMakoAppDataBinding,
 } from "../database/workspace-schema";
 import { DashboardManager } from "../utils/dashboard-manager";
-import { canReadResource, canWriteResource } from "../utils/resource-acl";
 import {
   buildDataSourceMaterializationStatus,
   type MaterializationStatusValue,
 } from "./dashboard-materialization.service";
 import { queueDashboardArtifactRefresh } from "./dashboard-refresh-runner.service";
 import {
-  buildAppBindingMaterializationStatus,
-  queueAppBindingMaterialization,
-} from "./app-binding-materialization.service";
-import {
   normalizeDashboardMaterializationSchedule,
   validateDashboardMaterializationSchedule,
   type DashboardMaterializationScheduleInput,
 } from "./dashboard-materialization-schedule.service";
 
-export type ResourceDataSourceType = "dashboard" | "app";
+export type ResourceDataSourceType = "dashboard";
 export type ResourceDataSourceMaterialization = "live" | "parquet";
 
 export interface ResourceDataSourceSettingsInput {
@@ -103,43 +95,6 @@ function requireDashboardWrite(
   }
 }
 
-function requireAppRead(
-  app: IMakoApp,
-  userId: string | undefined,
-  memberRole?: string,
-): void {
-  if (!canReadResource(app, userId, memberRole)) {
-    throw new Error("Access denied");
-  }
-}
-
-function requireAppWrite(
-  app: IMakoApp,
-  userId: string | undefined,
-  memberRole?: string,
-): void {
-  if (!canWriteResource(app, userId, memberRole)) {
-    throw new Error("Access denied");
-  }
-}
-
-function serializeAppStatus(
-  status: NonNullable<ReturnType<typeof buildAppBindingMaterializationStatus>>,
-): ResourceDataSourceStatus {
-  return {
-    status: status.status,
-    rowCount: status.rowCount ?? null,
-    byteSize: status.byteSize ?? null,
-    artifactRevision: status.artifactRevision ?? null,
-    materializedAt:
-      status.parquetBuiltAt?.toISOString() ??
-      status.lastRefreshedAt?.toISOString() ??
-      null,
-    readUrl: null,
-    lastError: status.error ?? null,
-  };
-}
-
 async function serializeDashboardDataSource(input: {
   workspaceId: string;
   dashboard: IDashboard;
@@ -180,48 +135,6 @@ async function serializeDashboardDataSource(input: {
   };
 }
 
-function serializeAppBinding(input: {
-  app: IMakoApp;
-  binding: IMakoAppDataBinding;
-}): UnifiedResourceDataSource {
-  const status = buildAppBindingMaterializationStatus(
-    input.app,
-    input.binding.id,
-  );
-  return {
-    id: input.binding.id,
-    name: input.binding.name,
-    resourceType: "app",
-    resourceId: input.app._id.toString(),
-    sourceKind: "app-binding",
-    connectionId: input.binding.connectionId.toString(),
-    language: input.binding.language,
-    code: input.binding.code,
-    databaseId: input.binding.databaseId,
-    databaseName: input.binding.databaseName,
-    materialization: input.binding.materialization,
-    materializationSchedule: normalizeDashboardMaterializationSchedule(
-      input.binding.materializationSchedule ?? {
-        enabled: false,
-        cron: null,
-        timezone: "UTC",
-      },
-    ),
-    scheduleScope: "data-source",
-    status: status
-      ? serializeAppStatus(status)
-      : {
-          status: "missing",
-          rowCount: null,
-          byteSize: null,
-          artifactRevision: null,
-          materializedAt: null,
-          readUrl: null,
-          lastError: "Binding not found",
-        },
-  };
-}
-
 async function getDashboardOrThrow(input: {
   workspaceId: string;
   resourceId: string;
@@ -235,21 +148,6 @@ async function getDashboardOrThrow(input: {
     throw new Error("Dashboard not found");
   }
   return dashboard;
-}
-
-async function getAppOrThrow(input: {
-  workspaceId: string;
-  resourceId: string;
-}): Promise<IMakoApp> {
-  assertObjectId(input.resourceId, "app ID");
-  const app = await MakoApp.findOne({
-    _id: new Types.ObjectId(input.resourceId),
-    workspaceId: new Types.ObjectId(input.workspaceId),
-  });
-  if (!app) {
-    throw new Error("App not found");
-  }
-  return app;
 }
 
 export async function listResourceDataSources(input: {
@@ -272,10 +170,7 @@ export async function listResourceDataSources(input: {
       ),
     );
   }
-
-  const app = await getAppOrThrow(input);
-  requireAppRead(app, input.userId, input.memberRole);
-  return app.dataBindings.map(binding => serializeAppBinding({ app, binding }));
+  throw new Error("Unsupported resource type");
 }
 
 export async function getResourceDataSource(input: {
@@ -287,7 +182,9 @@ export async function getResourceDataSource(input: {
   memberRole?: string;
 }): Promise<UnifiedResourceDataSource> {
   const dataSources = await listResourceDataSources(input);
-  const dataSource = dataSources.find(source => source.id === input.dataSourceId);
+  const dataSource = dataSources.find(
+    source => source.id === input.dataSourceId,
+  );
   if (!dataSource) {
     throw new Error("Data source not found");
   }
@@ -318,35 +215,13 @@ export async function updateResourceDataSourceSettings(input: {
       dashboard.markModified("dataSources");
     }
     if (input.settings.schedule !== undefined) {
-      dashboard.materializationSchedule = validateDashboardMaterializationSchedule(
-        input.settings.schedule,
-      );
+      dashboard.materializationSchedule =
+        validateDashboardMaterializationSchedule(input.settings.schedule);
     }
     await dashboard.save();
     return await getResourceDataSource(input);
   }
-
-  const app = await getAppOrThrow(input);
-  requireAppWrite(app, input.userId, input.memberRole);
-  const bindingIndex = app.dataBindings.findIndex(
-    binding => binding.id === input.dataSourceId,
-  );
-  if (bindingIndex < 0) {
-    throw new Error("Data source not found");
-  }
-
-  const binding = app.dataBindings[bindingIndex];
-  if (input.settings.materialization) {
-    binding.materialization = input.settings.materialization;
-  }
-  if (input.settings.schedule !== undefined) {
-    binding.materializationSchedule = validateDashboardMaterializationSchedule(
-      input.settings.schedule,
-    );
-  }
-  app.markModified("dataBindings");
-  await app.save();
-  return await getResourceDataSource(input);
+  throw new Error("Unsupported resource type");
 }
 
 export async function refreshResourceDataSources(input: {
@@ -368,7 +243,9 @@ export async function refreshResourceDataSources(input: {
         throw new Error("Data source not found");
       }
       if (target.materialization === "live") {
-        throw new Error("Live data sources always run fresh; nothing to refresh");
+        throw new Error(
+          "Live data sources always run fresh; nothing to refresh",
+        );
       }
     }
     const result = await queueDashboardArtifactRefresh({
@@ -388,35 +265,5 @@ export async function refreshResourceDataSources(input: {
         : undefined,
     };
   }
-
-  const app = await getAppOrThrow(input);
-  requireAppWrite(app, input.userId, input.memberRole);
-  const targetBindings = input.dataSourceId
-    ? app.dataBindings.filter(binding => binding.id === input.dataSourceId)
-    : app.dataBindings.filter(binding => binding.materialization === "parquet");
-  if (targetBindings.length === 0) {
-    throw new Error(
-      input.dataSourceId
-        ? "Data source not found or not materialized"
-        : "No materialized app data sources to refresh",
-    );
-  }
-
-  const results = await Promise.all(
-    targetBindings.map(binding =>
-      queueAppBindingMaterialization({
-        workspaceId: input.workspaceId,
-        appId: input.resourceId,
-        bindingId: binding.id,
-        force: true,
-      }),
-    ),
-  );
-  return {
-    resourceType: "app",
-    resourceId: input.resourceId,
-    dataSourceIds: results.map(result => result.bindingId),
-    queued: results.some(result => result.queued),
-    alreadyRunning: results.some(result => result.alreadyRunning),
-  };
+  throw new Error("Unsupported resource type");
 }

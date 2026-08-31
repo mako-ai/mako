@@ -34,7 +34,6 @@ import {
   authorizeAgentCapability,
   missingInputConditionalGrant,
 } from "../agent-lib/capabilities/runtime";
-import { createHeadlessRunAppTool } from "./preview-tools";
 import { createAppsTools } from "../agent-lib/tools/apps-tools";
 import { createSqlToolsV2 } from "../agent-lib/tools/sql-tools";
 import { createMongoToolsV2 } from "../agent-lib/tools/mongodb-tools";
@@ -104,7 +103,7 @@ Typical loop:
 2. Validate queries with sql_execute_query (short exploration timeout). For slow warehouses: create_console → run_console → check_query_status.
 3. app_list_apps → app_create_app → app_write_file / app_edit_file / app_bash → app_materialize (bindings are bindings/<name>.sql files with the validated query).
 4. For dbt work: read_dbt_project_tree → read/edit files → validate asynchronously, then poll dbt_get_run. For large or destructive work (warehouse runs, Git mutations, schedules), prefer proposing a plan via mako-desktop submit_plan before acting.
-5. app_open_app opens/refreshes the app tab in Desktop. Do NOT create_preview_token or paste /preview/… URLs. Verify with app_dev_log (vite + browser console) and app_browse (headless browser inside the sandbox). For consoles use open_console / create_console; for notebooks use create_notebook / cell tools.
+5. app_open_app opens/refreshes the app tab in Desktop. Verify with app_dev_log (vite + browser console) and app_browse (headless browser inside the sandbox). For consoles use open_console / create_console; for notebooks use create_notebook / cell tools.
 6. Interactive UX: mako-desktop ask_clarifying_questions / submit_plan (docked Chat cards) — never ask as plain text.
 7. Durable memory: read_self_directive / update_self_directive only. Do NOT write .claude/**/MEMORY.md or other local Claude memory files.
 8. app_commit → app_merge_to_main when the user asks to ship.
@@ -202,13 +201,7 @@ export function buildMakoMcpCandidateTools(
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId, userId);
   const webTools = createWebTools();
   const dbtTools = createDbtServerTools(workspaceId, userId, { chatId });
-  // Headless adapter for the canonical run_app capability (external MCP
-  // only — the bridge policy omits it for Desktop ACP, where mako-desktop
-  // provides run_app against the live tab).
-  const headlessRunApp = createHeadlessRunAppTool(context);
-
   return {
-    ...headlessRunApp,
     ...appsTools,
     ...consoleTools,
     ...dashboardTools,
@@ -370,7 +363,7 @@ function toolInputJsonSchema(tool: BridgeableTool): Record<string, unknown> {
 }
 
 /**
- * Escape hatch for tools whose result is richer than text (e.g. render_app
+ * Escape hatch for tools whose result is richer than text (e.g. app_browse
  * screenshots): a result of shape `{ mcpContent: [...] }` is passed through
  * as the MCP content array verbatim instead of being JSON-stringified.
  */
@@ -402,8 +395,8 @@ function serializeToolResult(result: unknown): string {
 
 /**
  * Build a stateless MCP Server bound to one workspace + acting user.
- * `extraTools` lets the route layer add endpoint-specific tools (e.g.
- * create_preview_token / render_app) without widening this module.
+ * `extraTools` lets the route layer add endpoint-specific tools (e.g. the
+ * ChatGPT connector contract) without widening this module.
  */
 export function buildMakoMcpServer(
   context: MakoMcpContext,

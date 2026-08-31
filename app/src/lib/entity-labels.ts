@@ -22,6 +22,7 @@ export const TAB_KIND_ENTITY_LABELS = {
   app: "app",
   "app-file": "file",
   "app-diff": "diff",
+  "console-diff": "diff",
   plan: "plan",
   settings: "settings section",
   members: "members page",

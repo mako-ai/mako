@@ -94,6 +94,7 @@ export const TAB_KIND_ICONS = {
   app: AppWindowMac,
   "app-file": FileCode,
   "app-diff": GitCompare,
+  "console-diff": GitCompare,
   plan: ClipboardList,
   "dbt-file": FileCode,
   "dbt-job": CalendarClock,

@@ -14,11 +14,8 @@ import { useWorkspace } from "../../contexts/workspace-context";
 type LimitsSettingsResponse = {
   success: boolean;
   dashboardRefreshConcurrency?: number;
-  appBindingRefreshConcurrency?: number;
   dashboardRefreshConcurrencyMax?: number;
-  appBindingRefreshConcurrencyMax?: number;
   dashboardRefreshConcurrencyDefault?: number;
-  appBindingRefreshConcurrencyDefault?: number;
   error?: string;
 };
 
@@ -27,13 +24,9 @@ export default function SettingsLimits() {
   const workspaceId = currentWorkspace?.id;
 
   const [dashboardConcurrency, setDashboardConcurrency] = useState(2);
-  const [appConcurrency, setAppConcurrency] = useState(2);
   const [savedDashboard, setSavedDashboard] = useState(2);
-  const [savedApp, setSavedApp] = useState(2);
   const [dashboardMax, setDashboardMax] = useState(10);
-  const [appMax, setAppMax] = useState(10);
   const [dashboardDefault, setDashboardDefault] = useState(2);
-  const [appDefault, setAppDefault] = useState(2);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,15 +48,10 @@ export default function SettingsLimits() {
         }
         if (cancelled) return;
         const dash = data.dashboardRefreshConcurrency ?? 2;
-        const app = data.appBindingRefreshConcurrency ?? 2;
         setDashboardConcurrency(dash);
         setSavedDashboard(dash);
-        setAppConcurrency(app);
-        setSavedApp(app);
         setDashboardMax(data.dashboardRefreshConcurrencyMax ?? 10);
-        setAppMax(data.appBindingRefreshConcurrencyMax ?? 10);
         setDashboardDefault(data.dashboardRefreshConcurrencyDefault ?? 2);
-        setAppDefault(data.appBindingRefreshConcurrencyDefault ?? 2);
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Failed to load");
@@ -77,8 +65,7 @@ export default function SettingsLimits() {
     };
   }, [workspaceId]);
 
-  const modified =
-    dashboardConcurrency !== savedDashboard || appConcurrency !== savedApp;
+  const modified = dashboardConcurrency !== savedDashboard;
 
   const clamp = (n: number, max: number, fallback: number) => {
     if (!Number.isFinite(n)) return fallback;
@@ -97,7 +84,6 @@ export default function SettingsLimits() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             dashboardRefreshConcurrency: dashboardConcurrency,
-            appBindingRefreshConcurrency: appConcurrency,
           }),
         },
       );
@@ -106,13 +92,9 @@ export default function SettingsLimits() {
         throw new Error(data.error || "Failed to save");
       }
       const dash = data.dashboardRefreshConcurrency ?? dashboardConcurrency;
-      const app = data.appBindingRefreshConcurrency ?? appConcurrency;
       setDashboardConcurrency(dash);
       setSavedDashboard(dash);
-      setAppConcurrency(app);
-      setSavedApp(app);
       setDashboardMax(data.dashboardRefreshConcurrencyMax ?? dashboardMax);
-      setAppMax(data.appBindingRefreshConcurrencyMax ?? appMax);
       setSnackbar("Limits saved");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save");
@@ -124,7 +106,7 @@ export default function SettingsLimits() {
   return (
     <SettingsLayout
       title="Limits"
-      description="Cap how much warehouse work this workspace can run at once. Extra dashboard refreshes and app binding builds wait and retry instead of stampeding shared capacity."
+      description="Cap how much warehouse work this workspace can run at once. Extra dashboard refreshes wait and retry instead of stampeding shared capacity."
     >
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
@@ -148,24 +130,6 @@ export default function SettingsLimits() {
         disabled={loading || saving || !workspaceId}
         sx={{ mb: 1, maxWidth: 420 }}
         helperText={`Range 1–${dashboardMax}. Default ${dashboardDefault}. One dashboard may still rematerialize multiple sources.`}
-      />
-
-      <Typography variant="subtitle2" sx={{ mt: 3, mb: 1, fontWeight: 600 }}>
-        Apps
-      </Typography>
-      <TextField
-        label="Max concurrent app binding refreshes"
-        type="number"
-        value={appConcurrency}
-        onChange={e =>
-          setAppConcurrency(
-            clamp(parseInt(e.target.value, 10), appMax, appDefault),
-          )
-        }
-        inputProps={{ min: 1, max: appMax }}
-        disabled={loading || saving || !workspaceId}
-        sx={{ mb: 1, maxWidth: 420 }}
-        helperText={`Range 1–${appMax}. Default ${appDefault}. Counts parquet binding builds across all apps in the workspace.`}
       />
 
       <Typography variant="body2" color="text.secondary" sx={{ mt: 2, mb: 2 }}>
