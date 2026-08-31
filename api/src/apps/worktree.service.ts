@@ -97,6 +97,7 @@ import {
 import { initialWorkspaceFiles } from "./workspace-template";
 import { createAppsScaffold } from "./scaffold";
 import {
+  ensureCommitLocally,
   ensureDurableRepo,
   ensureLocalRepo,
   mirrorPushNow,
@@ -933,7 +934,19 @@ async function readSource(
   // not whatever main says today. Resolving them from main meant an edit to
   // a binding on main changed its content-addressed artifact key under the
   // live app, whose tables then 404'd until someone republished.
-  if (at) return { kind: "repo", repoDir, ref: at };
+  //
+  // The commit has to be HERE, though: only the instance that handled the
+  // push has it, so on a multi-instance host a published app read binding
+  // files at a sha its own cache had never seen (`fatal: not a tree object`,
+  // a 500 per data request, roughly half of them). Fetch it on a miss.
+  if (at) {
+    await ensureCommitLocally(
+      project.workspaceId.toString(),
+      at,
+      project.defaultBranch || DEFAULT_BRANCH,
+    );
+    return { kind: "repo", repoDir, ref: at };
+  }
   const branchRef = `refs/heads/${project.defaultBranch || DEFAULT_BRANCH}`;
   if (!userId) return { kind: "repo", repoDir, ref: branchRef };
 
