@@ -5,7 +5,7 @@ Read Mako-managed data sources from a notebook as DataFrames. Reads are
 database connection and never holds credentials.
 
 ```python
-import mako
+import mako_ai as mako
 
 # In a Mako notebook, config is injected via env (MAKO_API_URL,
 # MAKO_WORKSPACE_ID, MAKO_KERNEL_TOKEN). Elsewhere, configure explicitly:

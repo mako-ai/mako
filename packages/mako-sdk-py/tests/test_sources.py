@@ -4,11 +4,11 @@ import unittest
 
 import pyarrow as pa
 
-from mako._client import Client
-from mako._config import Config
-from mako._sources import Sources, assert_read_only
-from mako._transport import Response
-from mako.errors import (
+from mako_ai._client import Client
+from mako_ai._config import Config
+from mako_ai._sources import Sources, assert_read_only
+from mako_ai._transport import Response
+from mako_ai.errors import (
     MakoAuthError,
     MakoNotReadOnlyError,
     MakoQueryError,

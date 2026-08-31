@@ -6,6 +6,8 @@ import {
   MCP_ACCESS_TOKEN_PREFIX,
   validateMcpAccessToken,
 } from "./mcp-oauth.service";
+import { resolveWorkspaceApiKeyScopes } from "./api-key-scopes";
+import { scopedKeyMayAccess } from "./scoped-key-routes";
 import { Workspace } from "../database/workspace-schema";
 import { User } from "../database/schema";
 import {
@@ -27,20 +29,29 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
     const apiKey = authHeader.substring(7);
 
     // OAuth access tokens minted by the MCP sign-in flow. Like scoped API
-    // keys they are valid only on the MCP endpoint — never the REST surface.
+    // keys they are valid on the MCP endpoint plus the read-only app binding
+    // routes (scoped-key-routes.ts) — never the rest of the REST surface.
     if (apiKey.startsWith(MCP_ACCESS_TOKEN_PREFIX)) {
       try {
-        if (!/^\/api\/mcp\/?$/.test(c.req.path)) {
-          return c.json(
-            {
-              error: "MCP OAuth tokens are restricted to the /api/mcp endpoint",
-            },
-            403,
-          );
-        }
         const validated = await validateMcpAccessToken(apiKey);
         if (!validated) {
           return c.json({ error: "Invalid or expired MCP access token" }, 401);
+        }
+        if (
+          !scopedKeyMayAccess(
+            c.req.method,
+            c.req.path,
+            resolveWorkspaceApiKeyScopes(validated.scopes),
+          )
+        ) {
+          return c.json(
+            {
+              error:
+                "MCP OAuth tokens are restricted to the /api/mcp endpoint" +
+                " (plus read-only app binding routes)",
+            },
+            403,
+          );
         }
         const [tokenUser, workspace] = await Promise.all([
           User.findById(validated.userId).lean(),
@@ -91,12 +102,17 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
           }
           if (
             workspaceApiKey.scopes !== undefined &&
-            !/^\/api\/mcp\/?$/.test(c.req.path)
+            !scopedKeyMayAccess(
+              c.req.method,
+              c.req.path,
+              resolveWorkspaceApiKeyScopes(workspaceApiKey.scopes),
+            )
           ) {
             return c.json(
               {
                 error:
-                  "This scoped API key is restricted to the Mako MCP endpoint",
+                  "This scoped API key is restricted to the Mako MCP endpoint" +
+                  " (plus read-only app binding routes for query:read keys)",
               },
               403,
             );

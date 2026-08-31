@@ -2126,3 +2126,211 @@ qualifier was dropped across code, tools, routes, env, and data:
 - Deliberately still "v2"-marked: this journal's dated history, applied
   migration filenames (the runner tracks by name), and `migrate-v1-apps.*`
   (its whole point is v1 → v2).
+
+## 15. Local-first, dogfooded: what a clone actually needed (2026-08-31)
+
+§11.3 promised `git clone && claude` in a workspace repo would be as capable
+as Mako's chat. We tested it the honest way: cloned
+`realadvisor/mako-workspace` on a laptop, ran a fresh Claude Code session in
+it with a small real task ("add a KPI to `latest-sales`, run it locally with
+real data, commit"), and fixed the platform for every place it stumbled. The
+nested `mako/` checkout used to do that is scaffolding for the exercise —
+nothing below depends on it, and the final acceptance run used a bare clone.
+
+### 15.1 What the baseline run found
+
+The agent *succeeded*, in about fifteen minutes, mostly by heroics:
+
+1. **The repo told it nothing.** README, `.gitignore`, `apps/`,
+   `packages/app-sdk`. No `CLAUDE.md`, no `.mcp.json`, no skills — §11.7's
+   gap, confirmed on the real repo.
+2. **Credentials need a browser** (Workspace Settings → API Keys), and
+   nothing said where the key goes afterwards. The create-key response also
+   carries a 14-char `prefix` next to the real `key`; store the wrong one and
+   you get a bare `401 Unauthorized`.
+3. **A plain `vite dev` has no data.** `__data/<name>.parquet` is answered by
+   a middleware Mako's launcher generates *inside the E2B box* with a box
+   token (`dev-server.service.ts`). On a laptop Vite's SPA fallback returns
+   `index.html` and DuckDB fails with `footer != PAR1`. The agent pulled the
+   binding's query through `sql_execute_query`, wrote the rows to a parquet
+   with pyarrow, drove Chrome with puppeteer, then deleted the file — real
+   data, wrong artifact, customer rows left in `/tmp`.
+4. **The `app_*` tools act on a different checkout.** `app_status` was
+   `null`; the agent noticed the sandbox "runs its own checkout, not my local
+   branch" and rightly avoided `app_open_app` / `app_materialize` for fear of
+   side effects. Nothing told it which tools are checkout-agnostic.
+5. `run_app` failed (no `RENDER_APP_BROWSER_PATH` in dev) — it tried it first
+   because the MCP handshake advertises the sandbox loop.
+6. It "saved the recipe to memory" — Claude Code's local memory on that
+   laptop, invisible to Mako and to teammates.
+7. Lockfile policy was undecided (5/58 apps tracked one); it left
+   `package-lock.json` untracked and asked.
+
+### 15.2 What we shipped
+
+**A seeded, refreshed workspace template** (`api/src/apps/workspace-template.ts`).
+Two kinds of file. *Managed* — overwritten on every refresh, headed "managed
+by Mako": `AGENTS.md` (the instructions; `CLAUDE.md` is one line, `@AGENTS.md`,
+so Claude Code, Codex and Cursor read the same text), `.mcp.json` (`url:
+${MAKO_API_URL:-https://app.mako.ai}/api/mcp`, `Authorization: Bearer
+${MAKO_API_KEY}` — Claude Code expands both from the environment), `.envrc`
+(`dotenv_if_exists`, so direnv users export the key by cd-ing in),
+`.mako/workspace.json` (workspace id + template version), and the vendored
+`packages/app-sdk`. *Seeded* — written once when absent and the user's from
+then on: `README.md`, `.gitignore`.
+
+The instructions are pointers, not knowledge. They say what the repo is, that
+`main` deploys, where the key goes, which MCP tools are for data and which
+`app_*` tools act on the sandbox copy and must not be used for file work here,
+that skills come from `get_relevant_skills`, that eyes are your own `vite` and
+browser, that memory goes to `update_self_directive`, and that the lockfile is
+committed. Skill bodies stay behind the MCP server: one copy in
+`api/src/agent-skills/**`, served on demand, instead of one per workspace that
+drifts — the §11.8 warning taken literally. The starter-repo idea (clone a
+template repository on workspace creation) was rejected for the same reason:
+a second source of truth plus a network dependency on creation. A public
+starter repo, if we want one, is a *showcase* of this template, not its source.
+
+Refresh is **monotonic on `templateVersion`**: a repo only moves forward, so a
+dev API and a prod API on different versions sharing one connected repo (this
+workspace) cannot ping-pong. It runs from repo init and, throttled to once an
+hour per process, off the apps list route — any workspace someone looks at
+gets and stays current. A refresh writes **nothing under `apps/`**: the
+first one upgraded 58 scaffold-identical `vite.config.ts` files in one commit
+and prod dutifully rebuilt every published app for a dev-only change
+(§15.4). New apps get `makoData()` from the scaffold; `AGENTS.md` gives the
+one-line by-hand path for older ones.
+A test pins a fingerprint of the managed
+content so changing it without bumping the version fails CI.
+
+**`@mako/app-sdk/vite`** — `makoData()`, a dependency-free Vite plugin in the
+vendored package (`exports: { ".", "./vite" }`). During `vite dev` it answers
+`__data/index.json` from `bindings/*.sql` on disk and streams each binding's
+materialized artifact from `GET …/bindings/<name>/artifact`, materializing on
+404, with a 5-minute disk cache under `node_modules/.mako-data/` (`?refresh`
+bypasses; stale beats nothing when offline). Credentials come from
+`MAKO_API_URL` / `MAKO_API_KEY` in the environment or the repo-root `.env`;
+the workspace id from `.mako/workspace.json`. No key → every binding answers a
+503 that names the fix. `apply: "serve"`, so publish builds never load it.
+The scaffold's `vite.config.ts` includes it. The box launcher still generates
+its own middleware; converging it on this plugin is the obvious follow-up.
+
+**Scoped keys may read bindings.** Scoped (`mcp`) keys were MCP-only by
+construction — correct for replay safety, but parquet does not fit in a
+JSON-RPC tool result. `auth/scoped-key-routes.ts` is the whole policy: a key
+carrying `query:read` may additionally call the three binding routes (list,
+artifact, materialize), each read-only against the warehouse. Nothing else
+opens; the test enumerates the neighbours that stay closed.
+
+### 15.3 Two things the exercise surfaced beyond its scope
+
+- **Mako writes on a stale base when the mirror moved (§13.17 corollary).**
+  The bare repo is a cache of the connected GitHub repo, fetched only on the
+  GitHub webhook — which reaches one deployment. This dev API's `main` was
+  days behind; the first template refresh committed on that base and the
+  mirror push was rejected as non-fast-forward, stranding the commit. The
+  refresh now fetches first. `createProject`'s scaffold commit and every
+  other Mako-authored write on a shared connected repo has the same hazard —
+  fetch-before-write (or reconcile with a merge commit, never force) should
+  become the rule, not a per-call fix.
+- **A laptop push reaches GitHub, not the API you are looking at.** Prod
+  learns through the webhook and deploys; a dev API sharing the repo does not
+  see the commit until something fetches. In the web tier that is invisible;
+  for local-first it means "push and see it in the app" only holds on the
+  deployment the webhook points at.
+
+### 15.4 The acceptance run
+
+Same setup, fresh session, bare clone of `main`, task: "add a revenue-by-
+country bar chart to `latest-sales`, verify locally with real data, commit,
+push to `main`". It read `AGENTS.md`, edited with its own tools, ran `vite`
+with `makoData` (a fresh artifact fetched from the API mid-run), verified with
+a headless browser (four bars summing to the artifact's total), passed `tsc -b`
+and `npm run build`, committed source + lockfile, pushed. Prod deployed it 90
+seconds later (`c55cf0f9`). No workaround, no `app_*` file tool, no `run_app`;
+it asked before writing to `update_self_directive`. §11.8 step 1's acceptance
+test holds.
+
+It also found two things worth more than the chart:
+
+- **DATE columns arrive as epoch milliseconds.** The parquet → DuckDB-WASM path
+  hands `first_invoice_date` to the app as a number; the v1-migrated
+  `formatDate` did `new Date(\`${d}T00:00:00\`)`, threw, and React unmounted
+  the tree — the deployed app was almost certainly blank until this commit.
+  v1 served JSON strings, so other migrated apps likely share the pattern.
+  Decision needed: normalise DATE/TIMESTAMP in `useQuery` (ISO strings), or
+  document it in the skill and audit the migrated apps.
+- **No charting guidance for v2 apps.** `get_relevant_skills` / the `apps`
+  system skill returned nothing for "chart in a Mako app"; the agent fell
+  back to general dataviz knowledge and the SDK's theme tokens. A charting
+  reference belongs in `api/src/agent-skills/apps/`.
+
+- **Deploy-on-push for many apps dies with the request.** The template
+  commit touched 58 app folders; prod republished 13 published apps in
+  alphabetical order and stopped at 09:05:30Z, about four and a half minutes
+  after the webhook. The loop catches per-app failures, so an exception does
+  not explain it; the work runs *detached* from the webhook response
+  (`github.routes.ts`), which on Cloud Run is where background CPU gets
+  throttled away. Harmless this time (the other 25 serve their previous
+  build, and the change was dev-only config), but `publishedSha` now lags
+  `main` for them. A push touching many apps should hand the loop to an
+  Inngest function — durable and resumable — and answer the webhook at once.
+
+### 15.5 Second pass: no key to paste, and the SDK becomes a real package (2026-08-31, later)
+
+Three follow-ups from the review of the first pass, plus one correction.
+
+- **The refresh writes nothing under `apps/`.** See §15.2; the correction
+  that keeps a template bump from fanning rebuilds out to prod.
+- **`@mako/app-sdk` is a real workspace package** (`packages/app-sdk`, plain
+  ESM + `.d.ts`, `node --test`, publishable) instead of a 600-line template
+  literal. `app-sdk-package.ts` vendors its files from disk — the API build
+  copies them to `dist/app-sdk`, the same trick system skills use — so the
+  bytes in a workspace repo are the bytes on npm. Publishing is a
+  `pnpm publish` away once we own the `@mako` scope (nothing is under it
+  today; `mako` and `mako-cli` unscoped are taken by strangers, and the
+  Python SDK's `mako` collides with the Mako templating engine on PyPI).
+- **`mako login` / `mako dev`** (`packages/cli`, `@mako/cli`, dependency-free
+  beyond the SDK). `login` is the OAuth 2.1 sign-in every MCP client already
+  performs against Mako — PKCE, loopback redirect (RFC 8252, which the
+  authorization server already allowed), dynamic client registration —
+  stored in `~/.mako/credentials.json` keyed by host and workspace, refreshed
+  on demand by the shared `@mako/app-sdk/credentials` module. The Vite plugin
+  reads it when there is no API key. So the template is now **OAuth-first**
+  (v2): `.mcp.json` carries no `Authorization` header and the agent signs in
+  through its own browser prompt; the API key path remains for CI. To make
+  that work, OAuth tokens get the same narrow allowlist scoped keys got —
+  the three read-only binding routes — with the token validated *before* the
+  path check.
+- **`server.json`** at the repository root describes the hosted remote for
+  the MCP Registry (`ai.mako/mako`, streamable HTTP). Submitting it (and the
+  Anthropic and Cursor directories) is a release step, not code.
+
+### 15.6 Third pass: the follow-ups (2026-08-31, later still)
+
+- **Deploy-on-push is Inngest work.** `apps-deploy` builds one app per event
+  with bounded concurrency (two per workspace, one per app); the webhook only
+  decides what changed and emits events. `apps-deploy-reconcile` runs hourly
+  and redeploys any published app whose folder differs between its
+  `publishedSha` and the head of `main` — the definition of "needs deploying",
+  so a missed delivery or a dead instance heals itself. This is also how the 25
+  RealAdvisor apps stranded in §15.4 get their build, once this is deployed.
+- **SDK 2.2 decodes dates.** `useQuery`/`useDuckDB` return DATE as
+  `YYYY-MM-DD`, TIMESTAMP as ISO 8601, BigInt as Number — what v1 apps always
+  saw (§15.4's crash). Template v3 ships it.
+- **Charting reference** in the `apps` skill (`references/charting.md`):
+  recharts (28 apps use it), `--chart-N` tokens, formatting, the three states.
+- **Python SDK is `mako-ai`** (`import mako_ai as mako`); `mako` on PyPI is
+  the templating engine.
+- `server.json` validates against the registry (100-char description cap).
+
+The hand-off list — everything that needs an account, a secret, or a decision
+— lives in `docs/mako-apps-platform-prd.md` §8.
+
+### 15.7 Still open
+
+hiding or renaming the box-shaped `app_*` tools for a client that
+declares itself a local checkout; `skills/<name>/SKILL.md` in the repo for
+workspace-authored skills (§10 Block D1) — system skills stay behind MCP;
+converging the box launcher on `makoData`; and a decision on whether the
+scaffold should commit `package-lock.json` for it (the template says commit).

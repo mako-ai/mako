@@ -619,6 +619,18 @@ importers:
         specifier: ^5.8.3
         version: 5.8.3
 
+  packages/app-sdk:
+    dependencies:
+      react:
+        specifier: '>=18'
+        version: 18.3.1
+
+  packages/cli:
+    dependencies:
+      '@mako/app-sdk':
+        specifier: workspace:*
+        version: link:../app-sdk
+
   packages/desktop:
     devDependencies:
       '@types/node':

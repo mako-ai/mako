@@ -80,7 +80,9 @@ import {
   trialMerge,
   worktreeStatus,
   writeFile,
+  repoForWorkspace,
 } from "../apps/worktree.service";
+import { ensureWorkspaceTemplateSoon } from "../apps/workspace-template";
 import { APPS_EXEC_MAX_TIMEOUT_MS, previewStagingDir } from "../apps/config";
 import { registerPublicShareRoutes } from "./lib/public-share-routes";
 import {
@@ -652,6 +654,11 @@ appsRoutes.openapi(
       // in a repo the customer can clone: visibility, the deployed sha, and
       // the share token.
       const folders = await listAppFolders(workspaceId);
+      // Keep the repo's agent-facing template current for whoever is looking
+      // at it (throttled, off the request path — see workspace-template.ts).
+      repoForWorkspace(workspaceId)
+        .then(repoDir => ensureWorkspaceTemplateSoon(workspaceId, repoDir))
+        .catch(() => undefined);
       const docs = await AppProject.find({
         workspaceId: new Types.ObjectId(workspaceId),
       });

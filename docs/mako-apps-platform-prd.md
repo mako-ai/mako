@@ -22,9 +22,10 @@ Quickstart — **Claude Code**:
 ```bash
 claude mcp add --transport http mako https://<host>/api/mcp \
   --header "Authorization: Bearer revops_..."
-# or team-shared, checked into the repo (.mcp.json):
-#   { "mcpServers": { "mako": { "type": "http", "url": "https://<host>/api/mcp",
-#     "headers": { "Authorization": "Bearer ${MAKO_API_KEY}" } } } }
+# or team-shared, checked into the repo (.mcp.json — Mako seeds this one):
+#   { "mcpServers": { "mako": { "type": "http",
+#     "url": "${MAKO_API_URL:-https://app.mako.ai}/api/mcp" } } }
+#   (no header: the client signs in via OAuth; add the Bearer header for CI)
 # then: "Build me an app showing revenue by month" — the agent creates the
 # app, iterates with render_app (or create_preview_token + local browser),
 # and any open Mako tab live-reloads on every edit.
@@ -332,3 +333,63 @@ Numbered so phases and reviews can reference them. **Bold** = changes the design
 - **L17 — SDK/docs drift.** Three copies of truth threaten to diverge: the synthetic `@mako/app-sdk` module in `preview.ts`, the npm package, and the generated `CLAUDE.md` (distilled from `agent-skills/apps/SKILL.md`). *Mitigation:* generate the synthetic module and the npm package from one source; serve authoring guidance to external agents dynamically as an MCP resource instead of freezing it into scaffolds.
 - **L18 — Metering & billing.** Key-authenticated traffic (MCP tool calls, binding executions from standalone apps) bypasses today's in-product usage accounting; a popular standalone app is unmetered load. *Mitigation:* per-key usage log (Phase 0) feeds the existing `usage`/`billing` routes; publishable-key executions counted against the owning workspace with configurable caps.
 - **L19 — Version/publish semantics across three authoring paths.** In-product agent, MCP, and git sync all mutate the same draft; without a convention, `app_save_version` checkpoints and git history tell conflicting stories. *Mitigation:* record `origin` (`agent` / `mcp:<keyId>` / `git:<sha>`) on every version snapshot — cheap now, painful to retrofit.
+
+## 8. Local-first — status and open todos (2026-08-31)
+
+What the local-first tier (apps.md §11, §15; PR #842) delivers today, and the
+items that need a human or an account we do not have from a coding session.
+Keep this list current: it is the hand-off.
+
+### Done
+
+- Workspace repos carry a Mako-managed template: `AGENTS.md` (+ `CLAUDE.md`
+  → `@AGENTS.md`), OAuth-first `.mcp.json`, `.envrc`, `.mako/workspace.json`,
+  vendored `@mako/app-sdk`. Refreshed monotonically, never touches `apps/`.
+- `@mako/app-sdk` is a real package (`packages/app-sdk`): hooks, `./vite`
+  (`makoData()` — local `vite dev` gets real parquet from the API), and
+  `./credentials` (`~/.mako/credentials.json`). SDK 2.2 decodes DATE →
+  `YYYY-MM-DD`, TIMESTAMP → ISO, BigInt → Number.
+- `@mako/cli` (`packages/cli`): `mako login` (OAuth PKCE loopback against the
+  MCP auth server), `mako dev [app]`, `whoami`, `logout`.
+- Auth: OAuth tokens and `query:read` keys may call the three read-only
+  binding routes besides `/api/mcp` (`auth/scoped-key-routes.ts`).
+- Deploy-on-push runs as Inngest work (`apps-deploy`, bounded concurrency)
+  with an hourly reconcile (`apps-deploy-reconcile`) that redeploys any
+  published app whose folder changed since its `publishedSha`.
+- `server.json` (`ai.mako/mako`) validates against the MCP Registry.
+- Python SDK renamed `mako-ai` (module `mako_ai`) — `mako` on PyPI is the
+  templating engine.
+- `apps` skill: `references/charting.md` (recharts, theme tokens, states).
+
+### Todo — needs an account, a secret, or a decision
+
+- [ ] **npm scope `@mako`.** Nothing is published under it; check whether the
+      org name is free/ours (`npm org ls mako` from an owner account) and
+      claim it. Fallback names if not: `@mako-ai/app-sdk`, `@mako-ai/cli`
+      (update `packages/*/package.json`, `APP_SDK_DEPENDENCY`, AGENTS.md,
+      docs). Unscoped `mako` / `mako-cli` are taken by strangers.
+- [ ] **Publish** `@mako/app-sdk` 2.2.0 and `@mako/cli` 0.1.0
+      (`pnpm --filter @mako/app-sdk publish`, then cli). Add a release
+      workflow so a version bump publishes from CI (`NPM_TOKEN` secret).
+- [ ] **Publish `mako-ai` to PyPI** (`packages/mako-sdk-py`; pyproject is
+      ready; needs a PyPI token). Its suite has 4 PRE-EXISTING failures in
+      `test_sources.ReadTest` (the fake transport does not stub
+      `/notebook/sources`) — same on master, unrelated to the rename; fix
+      before publishing (`PYTHONPATH=src python3 -m unittest discover -s tests`).
+- [ ] **MCP Registry**: `mcp-publisher login dns --domain mako.ai` (DNS TXT
+      record on mako.ai) then `mcp-publisher publish` from the repo root; or
+      switch `server.json` `name` to `io.github.mako-ai/mako` and use
+      `mcp-publisher login github`. Then submit the hosted URL to Anthropic's
+      connector directory and Cursor's MCP directory.
+- [ ] **Merge PR #842** (branch `feat/local-first`). After deploy, the
+      reconcile cron redeploys the 25 RealAdvisor apps whose `publishedSha`
+      lags `main` (nothing to do by hand).
+- [ ] **Migrated apps and dates**: SDK 2.2 sends DATE/TIMESTAMP as strings.
+      Grep the 58 migrated apps for `formatDate`/`new Date(` on binding
+      fields and fix any that assumed numbers (they were broken before too).
+- [ ] **LICENSE file**: `package.json` says ISC but the repo has no LICENSE;
+      the published packages need one.
+- [ ] **Decide**: hide/rename the sandbox-shaped `app_*` file tools for MCP
+      clients that identify as a local checkout; `skills/<name>/SKILL.md`
+      in workspace repos (§10 Block D1); fetch-before-write for every
+      Mako-authored commit on shared connected repos (apps.md §15.3).
