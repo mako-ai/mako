@@ -21,7 +21,7 @@ import {
 
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
-import { useDataSourceEntitiesStore } from "../store/dataSourceEntitiesStore";
+import { useConnectorEntitiesStore } from "../store/connectorEntitiesStore";
 import {
   useExplorerRevealStore,
   selectRevealFor,
@@ -52,7 +52,7 @@ function ConnectorExplorer() {
     init,
     refresh,
     delete: deleteSource,
-  } = useDataSourceEntitiesStore();
+  } = useConnectorEntitiesStore();
 
   const connectors: Connector[] = useMemo(() => {
     if (!currentWorkspace) return [];

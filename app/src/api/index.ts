@@ -6,5 +6,6 @@ export {
   unwrapBody,
   type ApiResult,
   type LoadError,
+  toErrorMessage,
 } from "./result";
 export type { paths, components, operations } from "./schema";

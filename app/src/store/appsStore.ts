@@ -13,7 +13,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist } from "zustand/middleware";
-import { api, unwrapBody, ApiError } from "../api";
+import { api, unwrapBody, ApiError, toErrorMessage as message } from "../api";
 import { apiClient } from "../lib/api-client";
 import { reconcileAppsTabs } from "../apps-runtime/shell";
 
@@ -488,10 +488,6 @@ interface AppsStore {
 }
 
 const fileKey = (appId: string, path: string) => `${appId}\u0000${path}`;
-
-function message(e: unknown, fallback: string): string {
-  return e instanceof Error && e.message ? e.message : fallback;
-}
 
 export const useAppsStore = create<AppsStore>()(
   persist(

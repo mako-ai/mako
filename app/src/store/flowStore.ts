@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist } from "zustand/middleware";
-import { api, unwrapBody } from "../api";
+import { api, unwrapBody, toErrorMessage as normalizeError } from "../api";
 import { z } from "zod";
 import { createValidatedStorage, errorSchema } from "./store-validation";
 
@@ -605,18 +605,6 @@ const initialState: FlowStoreState = {
   error: {},
   selectedFlowId: null,
   executionHistory: {},
-};
-
-// Helper to ensure error is always a string
-const normalizeError = (error: any): string => {
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  if (error && typeof error === "object") {
-    if ("message" in error) return String(error.message);
-    if ("error" in error) return String(error.error);
-    return JSON.stringify(error);
-  }
-  return "Unknown error";
 };
 
 export const useFlowStore = create<FlowStore>()(

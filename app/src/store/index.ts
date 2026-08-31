@@ -6,7 +6,7 @@ export { useSettingsStore } from "./settingsStore";
 export { useApiKeyStore } from "./apiKeyStore";
 export { useConnectorStore } from "./connectorStore";
 export { useConnectorCatalogStore } from "./connectorCatalogStore";
-export { useDataSourceEntitiesStore } from "./dataSourceEntitiesStore";
+export { useConnectorEntitiesStore } from "./connectorEntitiesStore";
 export { useSchemaStore } from "./schemaStore";
 export type {
   Connection,

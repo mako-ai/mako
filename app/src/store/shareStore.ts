@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { api, unwrap } from "../api";
+import { api, unwrap, toErrorMessage as errMessage } from "../api";
 
 /**
  * Typed base path per resource. Collaborator + sharing endpoints exist for all
@@ -105,10 +105,6 @@ export function buildWorkspaceResourceUrl(
   resourceId: string,
 ): string {
   return `${window.location.origin}/${RESOURCE_URL_PREFIX[resourceType]}/${resourceId}`;
-}
-
-function errMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
 }
 
 interface ShareStoreState {

@@ -8,6 +8,7 @@
  */
 
 import { create } from "zustand";
+import { toErrorMessage as errMessage } from "../api";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
 import { toLoadError, type LoadError } from "../api/result";
@@ -695,10 +696,6 @@ const initialState: DbtState = {
   error: {},
   loadErrors: {},
 };
-
-function errMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
-}
 
 /**
  * Encode a dbt file path for use in a URL while preserving the "/" separators.
