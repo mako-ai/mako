@@ -165,16 +165,17 @@ async function handleAppsPush(input: {
   // may not exist at all yet.
   await ensureLocalRepo(workspaceId);
   await fetchFromCloud(workspaceId, branch);
-  const deployed = await deployAppsForPush({
+  // Builds run as Inngest work (apps-deploy) — this only decides what changed.
+  const requested = await deployAppsForPush({
     workspaceId,
     repoDir: repoDirFor(workspaceId),
     before,
     after,
   });
-  if (deployed.length > 0) {
-    logger.info("Deployed apps from a push to main", {
+  if (requested.length > 0) {
+    logger.info("Requested app deploys from a push to main", {
       workspaceId,
-      apps: deployed,
+      apps: requested,
     });
   }
 }

@@ -1,8 +1,8 @@
 import os
 import unittest
 
-from mako._config import resolve_config
-from mako.errors import MakoConfigError
+from mako_ai._config import resolve_config
+from mako_ai.errors import MakoConfigError
 
 ENV_VARS = [
     "MAKO_API_URL",

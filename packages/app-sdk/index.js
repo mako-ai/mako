@@ -66,19 +66,38 @@ function bindingIndex() {
   return indexPromise;
 }
 
+// Arrow → plain JS, with the types apps actually want. DuckDB hands DATE and
+// TIMESTAMP columns to JS as epoch milliseconds; v1 apps (JSON over the wire)
+// always saw strings, and a migrated formatDate() that did
+// new Date(`${d}T00:00:00`) on a number threw and unmounted the whole app
+// (apps.md §15.4). So: DATE → "YYYY-MM-DD", TIMESTAMP → ISO 8601, BigInt →
+// Number when it fits. Everything else passes through untouched.
+function columnDecoder(field) {
+  const type = String(field.type);
+  if (type.startsWith("Date")) {
+    return v => (v == null ? v : new Date(Number(v)).toISOString().slice(0, 10));
+  }
+  if (type.startsWith("Timestamp")) {
+    return v => (v == null ? v : new Date(Number(v)).toISOString());
+  }
+  return v =>
+    typeof v === "bigint" && v >= Number.MIN_SAFE_INTEGER && v <= Number.MAX_SAFE_INTEGER
+      ? Number(v)
+      : v;
+}
+
 function toPlainRows(table, cap) {
   const rows = [];
   const fields = table.schema.fields.map(f => f.name);
-  for (const batchRow of table) {
-    if (rows.length >= cap) break;
-    const row = {};
-    for (const f of fields) {
-      let v = batchRow[f];
-      // DuckDB counts come back as BigInt; charts and JSON both choke on it.
-      if (typeof v === "bigint") v = Number(v);
-      row[f] = v;
+  const decoders = table.schema.fields.map(columnDecoder);
+  const limit = cap == null ? Infinity : cap;
+  for (const row of table) {
+    if (rows.length >= limit) break;
+    const out = {};
+    for (let i = 0; i < fields.length; i++) {
+      out[fields[i]] = decoders[i](row[fields[i]]);
     }
-    rows.push(row);
+    rows.push(out);
   }
   return { rows, fields };
 }

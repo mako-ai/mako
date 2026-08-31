@@ -1,6 +1,6 @@
 {
   "name": "@mako/app-sdk",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Mako app SDK: data bindings (useQuery/useDuckDB), URL state, theme.",
   "license": "ISC",
   "repository": {

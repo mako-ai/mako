@@ -151,3 +151,11 @@ Fetch and read with hyparquet or duckdb-wasm; artifacts are
 SNAPPY-compressed, so plain hyparquet works (no compressors bundle needed).
 After wiring a binding into the UI, `app_browse` is how you confirm the data
 actually loads — a failed `__data/...` fetch shows up in its failedRequests.
+
+## Charts
+
+Before adding any chart, read `references/charting.md`
+(`read_skill_resource("apps", "references/charting.md")`): recharts, the
+`--chart-N` theme tokens, date/money formatting, and the loading/error/empty
+states every chart card must render. Dates arrive from bindings as strings
+(`YYYY-MM-DD` / ISO) since SDK 2.2 — do not assume numbers.

@@ -19,6 +19,7 @@ import {
   ensureWorktree,
   execInWorktree,
   listAppFolders,
+  repoForWorkspace,
   synthesizeProjectFromFolder,
 } from "./worktree.service";
 import {
@@ -79,6 +80,76 @@ async function changedApps(
  * Returns the apps it deployed. Safe to call for pushes that touch no app —
  * it simply does nothing.
  */
+/**
+ * Did `apps/<slug>/` change between two commits? The one question both the
+ * webhook and the hourly reconcile ask.
+ */
+export async function appFolderChanged(
+  workspaceId: string,
+  slug: string,
+  from: string,
+  to: string,
+): Promise<boolean> {
+  const repoDir = await repoForWorkspace(workspaceId);
+  const { stdout } = await runGit(
+    [
+      "-C",
+      repoDir,
+      "diff",
+      "--name-only",
+      `${from}..${to}`,
+      "--",
+      `apps/${slug}/`,
+    ],
+    { timeoutMs: 60_000 },
+  );
+  return stdout.trim().length > 0;
+}
+
+/**
+ * Build one app at `sha` and make it the live deployment. Idempotent: a
+ * commit already built (the Publish button got there first) is just made
+ * live. Throws on a failed build so Inngest retries and records it; `main`
+ * is NOT reverted — it already moved, and rewriting a branch someone pushed
+ * to would be worse than serving the previous build.
+ */
+export async function deployOneApp(
+  workspaceId: string,
+  slug: string,
+  sha: string,
+): Promise<{
+  slug: string;
+  sha: string;
+  outcome: "built" | "already-built" | "gone";
+}> {
+  const project =
+    (await AppProject.findOne({
+      slug,
+      workspaceId: new Types.ObjectId(workspaceId),
+    })) ?? (await synthesizeProjectFromFolder(workspaceId, slug));
+  // The folder may have been deleted in this very push.
+  if (!project) return { slug, sha, outcome: "gone" };
+
+  const handle = await ensureWorktree(project as IAppProject, PUBLISH_ACTOR, {
+    branch: project.defaultBranch || "main",
+  });
+  if (await deploymentExists(project._id.toString(), sha)) {
+    await setPublishedSha(project as IAppProject, sha);
+    return { slug, sha, outcome: "already-built" };
+  }
+  const build = await buildApp(handle, execInWorktree);
+  if (!build.ok) throw new Error(build.output);
+  await deployBuild(project as IAppProject, sha, handle);
+  logger.info("Deployed app from main", { workspaceId, slug, sha });
+  return { slug, sha, outcome: "built" };
+}
+
+/**
+ * A push to `main` arrived: decide which apps it touched and hand each one to
+ * the `apps-deploy` Inngest function. Returns the slugs enqueued. Nothing is
+ * built here — the webhook delivery must return quickly, and on Cloud Run
+ * work detached from a request does not reliably run to completion.
+ */
 export async function deployAppsForPush(input: {
   workspaceId: string;
   repoDir: string;
@@ -88,54 +159,14 @@ export async function deployAppsForPush(input: {
   const { workspaceId, repoDir, before, after } = input;
   const slugs = await changedApps(workspaceId, repoDir, before, after);
   if (slugs.length === 0) return [];
-
-  const deployed: string[] = [];
-  for (const slug of slugs) {
-    try {
-      const project =
-        (await AppProject.findOne({
-          slug,
-          workspaceId: new Types.ObjectId(workspaceId),
-        })) ?? (await synthesizeProjectFromFolder(workspaceId, slug));
-      // The folder may have been deleted in this very push.
-      if (!project) continue;
-
-      const handle = await ensureWorktree(
-        project as IAppProject,
-        PUBLISH_ACTOR,
-        { branch: project.defaultBranch || "main" },
-      );
-
-      // Already built this commit (the Publish button gets here first when it
-      // is the one that moved main) — just make sure it is the live one.
-      if (await deploymentExists(project._id.toString(), after)) {
-        await setPublishedSha(project as IAppProject, after);
-        deployed.push(slug);
-        continue;
-      }
-
-      const build = await buildApp(handle, execInWorktree);
-      if (!build.ok) {
-        // main is NOT reverted: it already moved, and rewriting a branch
-        // someone pushed to would be worse than serving the previous build.
-        throw new Error(build.output);
-      }
-      await deployBuild(project as IAppProject, after, handle);
-      deployed.push(slug);
-      logger.info("Deployed app from push to main", {
-        workspaceId,
-        slug,
-        sha: after,
-      });
-    } catch (error) {
-      // One app failing must not stop the others: a push can touch several,
-      // and a broken one should not hold back the rest.
-      logger.error("Deploy from push failed", {
-        workspaceId,
-        slug,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-  return deployed;
+  const { requestAppDeploys } = await import(
+    "../inngest/functions/apps-deploy"
+  );
+  await requestAppDeploys(workspaceId, slugs, after, "push");
+  logger.info("Apps deploys requested from push", {
+    workspaceId,
+    sha: after,
+    apps: slugs.length,
+  });
+  return slugs;
 }

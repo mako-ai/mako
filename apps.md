@@ -2306,7 +2306,28 @@ Three follow-ups from the review of the first pass, plus one correction.
   the MCP Registry (`ai.mako/mako`, streamable HTTP). Submitting it (and the
   Anthropic and Cursor directories) is a release step, not code.
 
-### 15.6 Still open
+### 15.6 Third pass: the follow-ups (2026-08-31, later still)
+
+- **Deploy-on-push is Inngest work.** `apps-deploy` builds one app per event
+  with bounded concurrency (two per workspace, one per app); the webhook only
+  decides what changed and emits events. `apps-deploy-reconcile` runs hourly
+  and redeploys any published app whose folder differs between its
+  `publishedSha` and the head of `main` — the definition of "needs deploying",
+  so a missed delivery or a dead instance heals itself. This is also how the 25
+  RealAdvisor apps stranded in §15.4 get their build, once this is deployed.
+- **SDK 2.2 decodes dates.** `useQuery`/`useDuckDB` return DATE as
+  `YYYY-MM-DD`, TIMESTAMP as ISO 8601, BigInt as Number — what v1 apps always
+  saw (§15.4's crash). Template v3 ships it.
+- **Charting reference** in the `apps` skill (`references/charting.md`):
+  recharts (28 apps use it), `--chart-N` tokens, formatting, the three states.
+- **Python SDK is `mako-ai`** (`import mako_ai as mako`); `mako` on PyPI is
+  the templating engine.
+- `server.json` validates against the registry (100-char description cap).
+
+The hand-off list — everything that needs an account, a secret, or a decision
+— lives in `docs/mako-apps-platform-prd.md` §8.
+
+### 15.7 Still open
 
 hiding or renaming the box-shaped `app_*` tools for a client that
 declares itself a local checkout; `skills/<name>/SKILL.md` in the repo for
