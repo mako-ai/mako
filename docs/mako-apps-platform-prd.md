@@ -371,9 +371,10 @@ Keep this list current: it is the hand-off.
 - [x] **Published** `@makoai/app-sdk@2.2.0` and `@makoai/cli@0.1.0`
       (2026-08-31, by hand with web 2FA). Future releases: bump the version,
       push a tag `app-sdk-vX.Y.Z` / `cli-vX.Y.Z` → `.github/workflows/publish-npm.yml`
-      publishes with **trusted publishing** (OIDC, provenance). Requires the
-      trusted-publisher connection on each package page (GitHub Actions ·
-      mako-ai/mako · publish-npm.yml) — set for app-sdk; do the same for cli.
+      publishes with **trusted publishing** (OIDC, provenance). Trusted-publisher
+      connections are set on BOTH package pages (GitHub Actions · mako-ai/mako ·
+      publish-npm.yml · npm publish) as of 2026-08-31 — releases need no
+      npm token or human 2FA.
       Existing workspace apps keep importing `@mako/app-sdk` (npm links the
       vendored folder under the dependency key); new apps get `@makoai/app-sdk`.
 - [ ] **Publish `mako-ai` to PyPI** (`packages/mako-sdk-py`; pyproject is
