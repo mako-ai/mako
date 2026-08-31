@@ -5,6 +5,7 @@
  */
 import type { DbtRunLogLine } from "../store/dbtStore";
 import { DBT_JINJA_LANGUAGE_ID } from "./dbt-monaco";
+import { basename } from "../utils/path";
 
 export interface Problem {
   severity: "error" | "warn";
@@ -53,12 +54,11 @@ export function isMarkdownDbtPath(path: string): boolean {
 export function modelNamesFromPaths(paths: string[]): string[] {
   return paths
     .filter(p => p.startsWith("models/") && p.endsWith(".sql"))
-    .map(p => (p.split("/").pop() ?? "").replace(/\.sql$/, ""))
+    .map(p => basename(p).replace(/\.sql$/, ""))
     .filter(Boolean);
 }
 
 export function modelNameForPath(path: string): string | null {
   if (!path.startsWith("models/") || !path.endsWith(".sql")) return null;
-  const base = path.split("/").pop() ?? "";
-  return base.replace(/\.sql$/, "");
+  return basename(path).replace(/\.sql$/, "");
 }

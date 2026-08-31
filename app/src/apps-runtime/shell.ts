@@ -4,6 +4,7 @@
  * the tab owns file selection, terminal, and preview state (appsStore).
  */
 import { useConsoleStore } from "../store/consoleStore";
+import { basename } from "../utils/path";
 
 export function focusAppsTab(
   appId: string,
@@ -28,7 +29,7 @@ export function focusAppsFileTab(
   path: string,
   slug?: string,
 ): string {
-  const fileName = path.split("/").pop() || path;
+  const fileName = basename(path);
   return useConsoleStore
     .getState()
     .focusOrOpenTab({ kind: "app-file", metadata: { appId, path } }, () => ({
@@ -53,7 +54,7 @@ export function focusAppsDiffTab(
   /** "commit" mode: the commit whose change to `path` is shown. */
   sha?: string,
 ): string {
-  const fileName = path.split("/").pop() || path;
+  const fileName = basename(path);
   const label =
     mode === "commit"
       ? (sha ?? "").slice(0, 7)

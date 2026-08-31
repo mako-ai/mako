@@ -106,6 +106,7 @@ function dbtDiffLanguage(path: string): string {
 }
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
+import { dirname } from "../utils/path";
 
 // Node id encoding (flat ResourceTree ids stay unique and parseable):
 // Project node: "<projectId>"
@@ -119,12 +120,6 @@ const DIR_SEP = DBT_DIR_SEP;
 const JOB_SEP = DBT_JOB_SEP;
 const RUNS_SEP = DBT_RUNS_SEP;
 const JOBS_DIR = "__jobs";
-
-function dirname(path: string): string {
-  const parts = path.split("/").filter(Boolean);
-  parts.pop();
-  return parts.join("/");
-}
 
 interface ParsedNode {
   kind: "project" | "dir" | "file" | "job" | "runs";

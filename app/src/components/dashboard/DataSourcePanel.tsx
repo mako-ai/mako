@@ -60,6 +60,7 @@ import { useDashboardRuntimeStore } from "../../dashboard-runtime/store";
 import { focusDashboardDataSourceTab } from "../../dashboard-runtime/shell";
 import { useSchemaStore } from "../../store/schemaStore";
 import { formatRelativeTime } from "../../utils/relative-time";
+import { formatBytes } from "../../utils/format";
 
 interface ConsoleResult {
   id: string;
@@ -84,17 +85,6 @@ const STATUS_CHIP_PROPS: Record<
   error: { label: "Error", color: "error" },
 };
 
-function formatBytes(value?: number): string | null {
-  if (!value || value <= 0) return null;
-  if (value >= 1024 * 1024) {
-    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-  }
-  if (value >= 1024) {
-    return `${Math.round(value / 1024)} KB`;
-  }
-  return `${value} B`;
-}
-
 function formatLoadingStatus(options: {
   loadingMessage?: string | null;
   rowsLoaded: number;
@@ -108,7 +98,7 @@ function formatLoadingStatus(options: {
       : "Preparing stream");
   const byteProgress =
     options.totalBytes != null && options.totalBytes > 0
-      ? `${formatBytes(options.bytesLoaded) ?? "0 B"} / ${formatBytes(options.totalBytes) ?? "0 B"}`
+      ? `${formatBytes(options.bytesLoaded ?? 0)} / ${formatBytes(options.totalBytes)}`
       : null;
   return [baseMessage, byteProgress].filter(Boolean).join(" · ");
 }
@@ -895,7 +885,9 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
               const materializedAt = formatRelativeTime(
                 ds.cache?.parquetBuiltAt,
               );
-              const sizeLabel = formatBytes(ds.cache?.byteSize);
+              const sizeLabel = ds.cache?.byteSize
+                ? formatBytes(ds.cache.byteSize)
+                : null;
               const materializationError =
                 materializationStatus === "error"
                   ? ds.cache?.parquetLastError || null
@@ -1337,7 +1329,10 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                     {selectedRunDetail.rowCount?.toLocaleString() || "unknown"}
                   </Typography>
                   <Typography variant="body2">
-                    Size: {formatBytes(selectedRunDetail.byteSize) || "unknown"}
+                    Size:{" "}
+                    {selectedRunDetail.byteSize
+                      ? formatBytes(selectedRunDetail.byteSize)
+                      : "unknown"}
                   </Typography>
                   {selectedRunDetail.error && (
                     <Typography variant="body2" color="error.main">

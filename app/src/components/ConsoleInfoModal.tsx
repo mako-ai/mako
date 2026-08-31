@@ -23,6 +23,7 @@ import {
   consoleExecutionSourceLabel,
   isExternalConsoleExecutionSource,
 } from "../lib/console-execution-source";
+import { formatDuration } from "../utils/format";
 
 interface ConsoleInfoModalProps {
   open: boolean;
@@ -96,12 +97,6 @@ const accessLabels: Record<string, string> = {
   private: "Private",
   workspace: "Shared with workspace",
 };
-
-function formatDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return "—";
-  if (ms < 1000) return `${Math.round(ms)} ms`;
-  return `${(ms / 1000).toFixed(1)} s`;
-}
 
 function formatExecutedAt(value: string): string {
   const date = new Date(value);

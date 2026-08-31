@@ -14,6 +14,7 @@ import {
   consoleExecutionSourceLabel,
   isExternalConsoleExecutionSource,
 } from "../lib/console-execution-source";
+import { formatDuration } from "../utils/format";
 
 export interface ConsoleExecutionRow {
   id: string;
@@ -30,12 +31,6 @@ interface ConsoleExecutionsPanelProps {
   loading: boolean;
   error?: string | null;
   executions: ConsoleExecutionRow[];
-}
-
-function formatDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return "—";
-  if (ms < 1000) return `${Math.round(ms)} ms`;
-  return `${(ms / 1000).toFixed(1)} s`;
 }
 
 function TriggerSourceCell({

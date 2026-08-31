@@ -29,6 +29,7 @@ import {
   type VersionEntityType,
 } from "../store/versionStore";
 import { useWorkspace } from "../contexts/workspace-context";
+import { formatRelativeTimeCompact } from "../utils/relative-time";
 
 interface VersionHistoryPanelProps {
   open: boolean;
@@ -41,24 +42,6 @@ interface VersionHistoryPanelProps {
 
 const LIST_WIDTH = 380;
 const PREVIEW_WIDTH = 640;
-
-function formatDate(dateStr: string): string {
-  const d = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now.getTime() - d.getTime();
-  const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return "just now";
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHrs = Math.floor(diffMin / 60);
-  if (diffHrs < 24) return `${diffHrs}h ago`;
-  const diffDays = Math.floor(diffHrs / 24);
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return d.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
-  });
-}
 
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -245,7 +228,9 @@ export function VersionHistoryPanel({
                   sx={{ minWidth: 0 }}
                 >
                   {selectedVersion.savedByName} ·{" "}
-                  {formatDate(selectedVersion.createdAt)}
+                  {formatRelativeTimeCompact(selectedVersion.createdAt, {
+                    absoluteAfterDays: 7,
+                  })}
                 </Typography>
               </Stack>
               <Stack direction="row" spacing={0.5} sx={{ flexShrink: 0 }}>
@@ -401,7 +386,9 @@ export function VersionHistoryPanel({
                     {v.savedByName}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    {formatDate(v.createdAt)}
+                    {formatRelativeTimeCompact(v.createdAt, {
+                      absoluteAfterDays: 7,
+                    })}
                   </Typography>
                   <Tooltip title="Restore this version">
                     <IconButton

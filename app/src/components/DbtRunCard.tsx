@@ -32,6 +32,7 @@ import {
   StatusPill,
   type BuiPillTone,
 } from "./bui-status";
+import { formatDuration } from "../utils/format";
 
 interface DbtRunCardProps {
   runId: string;
@@ -45,16 +46,6 @@ const ACTIVE_POLL_INTERVAL_MS = 2_000;
 // errors) so a brief network blip doesn't permanently freeze a live card.
 const MAX_POLL_ERRORS = 10;
 const MAX_VISIBLE_LOGS = 200;
-
-function formatDuration(ms: number | undefined): string {
-  if (ms === undefined) return "";
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = ms / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const minutes = Math.floor(seconds / 60);
-  const rest = Math.round(seconds % 60);
-  return `${minutes}m ${rest}s`;
-}
 
 const STATUS_PILL: Partial<
   Record<

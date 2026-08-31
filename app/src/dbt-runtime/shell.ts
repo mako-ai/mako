@@ -4,16 +4,8 @@
  */
 
 import { findTab, useConsoleStore } from "../store/consoleStore";
-import { useUIStore } from "../store/uiStore";
 import { useDbtStore } from "../store/dbtStore";
-
-export function getCurrentWorkspaceId(): string | null {
-  return useUIStore.getState().currentWorkspaceId ?? null;
-}
-
-function basename(path: string): string {
-  return path.split("/").filter(Boolean).pop() || path;
-}
+import { basename } from "../utils/path";
 
 /** Open (or focus) a full-screen editor tab for a single dbt project file. */
 export function focusDbtFileTab(projectId: string, path: string): string {

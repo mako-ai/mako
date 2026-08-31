@@ -255,6 +255,15 @@ export const selectActiveEditorContent = (state: UIStore) =>
   state.activeEditorContent;
 
 /**
+ * Imperative read of the current workspace id for code that runs outside
+ * React (agent client tools, tab-open shells). Components should subscribe
+ * with `selectCurrentWorkspaceId` instead.
+ */
+export function getCurrentWorkspaceId(): string | null {
+  return useUIStore.getState().currentWorkspaceId ?? null;
+}
+
+/**
  * The "active explorer" — the explorer panel currently visible on the left,
  * or `null` when no explorer is open (pane collapsed). Unlike `leftPane`,
  * which is the last-selected view and is retained across collapse/expand

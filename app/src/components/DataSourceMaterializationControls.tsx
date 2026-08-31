@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import MaterializationScheduleControls from "./MaterializationScheduleControls";
 import type { MaterializationScheduleValue } from "../lib/materializationSchedule";
+import { formatRelativeTimeCompact } from "../utils/relative-time";
 
 /**
  * Shared materialization toolbar for app data bindings and dashboard data
@@ -92,16 +93,6 @@ interface Props {
 
 const DEFAULT_FRESHNESS_TTL_MS = 24 * 60 * 60 * 1000;
 
-function formatRelative(ms: number): string {
-  const sec = Math.round(ms / 1000);
-  if (sec < 60) return "just now";
-  const min = Math.round(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  return `${Math.round(hr / 24)}d ago`;
-}
-
 export default function DataSourceMaterializationControls({
   leadingControls,
   showMaterializeControls = true,
@@ -143,7 +134,10 @@ export default function DataSourceMaterializationControls({
   if (buildStatus === "ready" && builtAtMs) {
     const ageMs = Date.now() - builtAtMs;
     const ttl = dataFreshnessTtlMs ?? DEFAULT_FRESHNESS_TTL_MS;
-    freshness = { label: formatRelative(ageMs), stale: ageMs > ttl };
+    freshness = {
+      label: formatRelativeTimeCompact(builtAtMs),
+      stale: ageMs > ttl,
+    };
   }
 
   // One combined chip carries build status + row count + freshness (the old
