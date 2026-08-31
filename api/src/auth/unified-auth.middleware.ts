@@ -6,6 +6,8 @@ import {
   MCP_ACCESS_TOKEN_PREFIX,
   validateMcpAccessToken,
 } from "./mcp-oauth.service";
+import { resolveWorkspaceApiKeyScopes } from "./api-key-scopes";
+import { scopedKeyMayAccess } from "./scoped-key-routes";
 import { Workspace } from "../database/workspace-schema";
 import { User } from "../database/schema";
 import {
@@ -91,12 +93,17 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
           }
           if (
             workspaceApiKey.scopes !== undefined &&
-            !/^\/api\/mcp\/?$/.test(c.req.path)
+            !scopedKeyMayAccess(
+              c.req.method,
+              c.req.path,
+              resolveWorkspaceApiKeyScopes(workspaceApiKey.scopes),
+            )
           ) {
             return c.json(
               {
                 error:
-                  "This scoped API key is restricted to the Mako MCP endpoint",
+                  "This scoped API key is restricted to the Mako MCP endpoint" +
+                  " (plus read-only app binding routes for query:read keys)",
               },
               403,
             );

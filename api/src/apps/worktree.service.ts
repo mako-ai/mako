@@ -54,7 +54,6 @@ import {
   cloneIntoBox,
   configureBoxRemote,
   sh,
-  workspaceRootGitignore,
   boxGitPaths,
   boxFileVersions,
   boxPorcelain,
@@ -95,7 +94,7 @@ import {
   type GrepMatch,
   type TreeEntry,
 } from "./repository.service";
-import { appSdkFiles } from "./app-sdk-package";
+import { initialWorkspaceFiles } from "./workspace-template";
 import { createAppsScaffold } from "./scaffold";
 import {
   ensureDurableRepo,
@@ -114,7 +113,7 @@ async function repoFor(project: IAppProject): Promise<string> {
 }
 
 /** §10 monorepo: the ONE bare repo per workspace (clone-on-miss). */
-async function repoForWorkspace(workspaceId: string): Promise<string> {
+export async function repoForWorkspace(workspaceId: string): Promise<string> {
   await ensureLocalRepo(workspaceId);
   return repoDirFor(workspaceId);
 }
@@ -607,12 +606,6 @@ export async function commitFilesOnBranch(
   );
 }
 
-const WORKSPACE_README = `# Mako workspace
-
-Managed by Mako. Apps live under apps/<name>; consoles, skills and dbt
-content will join as sibling folders (apps.md §10).
-`;
-
 export async function createProject(input: {
   workspaceId: string;
   title: string;
@@ -646,22 +639,15 @@ export async function createProject(input: {
   let scaffoldCommit: { commitOid: string; previousHead: string } | null = null;
   try {
     if (!(await repoExists(repoDir))) {
-      await initRepo(
-        repoDir,
-        {
-          "README.md": WORKSPACE_README,
-          // The @mako/app-sdk package, so `import { useQuery } from
-          // "@mako/app-sdk"` resolves in every app via a file: dependency —
-          // in vite dev, in npm run build, and in a laptop clone alike.
-          ...appSdkFiles(),
-          // The root .gitignore is the guarantee that EVERY app — scaffolded,
-          // hand-built by an agent, or pushed from a laptop — ignores what
-          // must never be committed. Per-app .gitignores and the sandbox's
-          // info/exclude are refinements; this is the one that is versioned.
-          ".gitignore": workspaceRootGitignore(),
-        },
-        { message: "Initialize workspace repository", author: input.author },
-      );
+      // README + .gitignore (seeded once), and the managed template: agent
+      // instructions, MCP wiring, identity stamp, and the vendored
+      // @mako/app-sdk so `import { useQuery } from "@mako/app-sdk"` resolves
+      // in vite dev, in npm run build, and in a laptop clone alike. Existing
+      // repos are brought level by ensureWorkspaceTemplate (workspace-template.ts).
+      await initRepo(repoDir, initialWorkspaceFiles(input.workspaceId), {
+        message: "Initialize workspace repository",
+        author: input.author,
+      });
     }
     const scaffold = createAppsScaffold({
       title: project.title,
