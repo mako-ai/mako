@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo } from "react";
 import {
   Box,
   Chip,
@@ -15,8 +15,6 @@ import {
 import {
   Plus as AddIcon,
   RefreshCw as RefreshIcon,
-  Globe as GlobeIcon,
-  User as UserIcon,
   Database as DataSourceIcon,
 } from "lucide-react";
 import { TAB_KIND_ICONS } from "../lib/entity-icons";
@@ -28,6 +26,7 @@ import { useAuth } from "../contexts/auth-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useDashboardTreeStore } from "../store/dashboardTreeStore";
+import { useResourceTreeExplorer } from "../hooks/useResourceTreeExplorer";
 import { useExplorerStore } from "../store/explorerStore";
 import {
   useExplorerRevealStore,
@@ -43,7 +42,6 @@ import { computeDashboardStateHash } from "../utils/stateHash";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
 
-const EMPTY_TREE: ResourceTreeNode[] = [];
 const DATA_SOURCES_DIR = "__datasources";
 const DASHBOARD_DATA_SOURCE_DIR_SEP = "::dashboard-data-sources::";
 const NEW_DASHBOARD_TEMPLATE = {
@@ -74,25 +72,30 @@ export function DashboardsExplorer() {
   const isAdmin =
     currentWorkspace?.role === "owner" || currentWorkspace?.role === "admin";
 
-  const myDashboards = useDashboardTreeStore(
-    s => (workspaceId && s.myItems[workspaceId]) || EMPTY_TREE,
+  // A dashboard renders as a folder (it holds its data sources) but is an
+  // item to the store; only real folders are folders. Read from the store
+  // rather than the hook's selections so the predicate can be handed to the
+  // hook without a circular definition.
+  const isDashboardEntryId = useCallback(
+    (id: string) => {
+      const s = useDashboardTreeStore.getState();
+      const nodes = workspaceId
+        ? [
+            ...(s.myItems[workspaceId] ?? []),
+            ...(s.workspaceItems[workspaceId] ?? []),
+          ]
+        : [];
+      return nodes.some(function visit(node: ResourceTreeNode): boolean {
+        if (node.id === id) return !node.isDirectory;
+        return node.children?.some(visit) ?? false;
+      });
+    },
+    [workspaceId],
   );
-  const workspaceDashboards = useDashboardTreeStore(
-    s => (workspaceId && s.workspaceItems[workspaceId]) || EMPTY_TREE,
-  );
-  const loading = useDashboardTreeStore(s =>
-    workspaceId ? !!s.loading[workspaceId] : false,
-  );
-  const error = useDashboardTreeStore(s =>
-    workspaceId ? s.error[workspaceId] || null : null,
-  );
-  const fetchTree = useDashboardTreeStore(s => s.fetchTree);
-  const moveItem = useDashboardTreeStore(s => s.moveItem);
-  const moveFolder = useDashboardTreeStore(s => s.moveFolder);
-  const createFolder = useDashboardTreeStore(s => s.createFolder);
-  const renameItem = useDashboardTreeStore(s => s.renameItem);
-  const deleteItem = useDashboardTreeStore(s => s.deleteItem);
-  const resortItem = useDashboardTreeStore(s => s.resortItem);
+  const tree = useResourceTreeExplorer(useDashboardTreeStore, workspaceId, {
+    isFolder: (id, isDirectory) => isDirectory && !isDashboardEntryId(id),
+  });
+  const { loading, fetchTree } = tree;
   const createDashboard = useDashboardStore(s => s.createDashboard);
   const duplicateDashboard = useDashboardStore(s => s.duplicateDashboard);
   const openDashboard = useDashboardStore(s => s.openDashboard);
@@ -111,26 +114,13 @@ export function DashboardsExplorer() {
 
   const reveal = useExplorerRevealStore(selectRevealFor("dashboards"));
 
-  const { openTab, setActiveTab, activeTabId, tabs } = useConsoleStore();
+  const { activeTabId, tabs } = useConsoleStore();
 
-  const [deleteTarget, setDeleteTarget] = useState<ResourceTreeNode | null>(
-    null,
-  );
   const [moveTarget, setMoveTarget] = useState<ResourceTreeNode | null>(null);
   const [infoTarget, setInfoTarget] = useState<ResourceTreeNode | null>(null);
   const [loadingDashboards, setLoadingDashboards] = useState<
     Record<string, boolean>
   >({});
-
-  useEffect(() => {
-    if (workspaceId) {
-      fetchTree(workspaceId);
-    }
-  }, [workspaceId, fetchTree]);
-
-  const handleRefresh = useCallback(async () => {
-    if (workspaceId) await fetchTree(workspaceId);
-  }, [workspaceId, fetchTree]);
 
   const handleCreate = useCallback(async () => {
     if (!workspaceId) return;
@@ -149,60 +139,18 @@ export function DashboardsExplorer() {
     void fetchTree(workspaceId);
   }, [workspaceId, createDashboard, fetchTree]);
 
-  const handleItemClick = useCallback(
-    (node: ResourceTreeNode) => {
-      if (node.id.includes(DASHBOARD_DATA_SOURCE_SEP)) {
-        const [dashboardId, dataSourceId] = node.id.split(
-          DASHBOARD_DATA_SOURCE_SEP,
-        );
-        focusDashboardDataSourceTab(dashboardId, dataSourceId, node.name);
-        return;
-      }
-      if (node.id.includes(DASHBOARD_DATA_SOURCE_DIR_SEP)) return;
-
-      const existingTab = Object.values(tabs).find(
-        (tab: any) =>
-          tab.kind === "dashboard" && tab.metadata?.dashboardId === node.id,
+  const handleItemClick = useCallback((node: ResourceTreeNode) => {
+    if (node.id.includes(DASHBOARD_DATA_SOURCE_SEP)) {
+      const [dashboardId, dataSourceId] = node.id.split(
+        DASHBOARD_DATA_SOURCE_SEP,
       );
-      if (existingTab) {
-        setActiveTab(existingTab.id);
-      } else {
-        const id = openTab({
-          title: node.name,
-          content: "",
-          kind: "dashboard",
-          metadata: { dashboardId: node.id },
-        });
-        setActiveTab(id);
-      }
-    },
-    [tabs, openTab, setActiveTab],
-  );
+      focusDashboardDataSourceTab(dashboardId, dataSourceId, node.name);
+      return;
+    }
+    if (node.id.includes(DASHBOARD_DATA_SOURCE_DIR_SEP)) return;
 
-  const handleDeleteItem = useCallback((node: ResourceTreeNode) => {
-    setDeleteTarget(node);
+    focusDashboardTab(node.id, node.name);
   }, []);
-
-  const isDashboardEntryId = useCallback(
-    (id: string) =>
-      [...myDashboards, ...workspaceDashboards].some(function visit(
-        node: ResourceTreeNode,
-      ): boolean {
-        if (node.id === id) return !node.isDirectory;
-        return node.children?.some(visit) ?? false;
-      }),
-    [myDashboards, workspaceDashboards],
-  );
-
-  const handleDeleteConfirm = useCallback(async () => {
-    if (!deleteTarget || !workspaceId) return;
-    await deleteItem(
-      workspaceId,
-      deleteTarget.id,
-      deleteTarget.isDirectory && !isDashboardEntryId(deleteTarget.id),
-    );
-    setDeleteTarget(null);
-  }, [deleteTarget, workspaceId, deleteItem, isDashboardEntryId]);
 
   const handleDuplicate = useCallback(
     async (node: ResourceTreeNode) => {
@@ -210,85 +158,10 @@ export function DashboardsExplorer() {
       const result = await duplicateDashboard(workspaceId, node.id);
       if (result) {
         await fetchTree(workspaceId);
-        const id = openTab({
-          title: result.title,
-          content: "",
-          kind: "dashboard",
-          metadata: { dashboardId: result._id },
-        });
-        setActiveTab(id);
+        focusDashboardTab(result._id, result.title);
       }
     },
-    [workspaceId, duplicateDashboard, fetchTree, openTab, setActiveTab],
-  );
-
-  const handleCreateFolder = useCallback(
-    async (
-      parentId: string | null,
-      access?: string,
-    ): Promise<{ id: string; name: string } | null> => {
-      if (!workspaceId) return null;
-      const id = await createFolder(
-        workspaceId,
-        "New Folder",
-        parentId,
-        (access as "private" | "workspace") || undefined,
-      );
-      return id ? { id, name: "New Folder" } : null;
-    },
-    [workspaceId, createFolder],
-  );
-
-  const handleMoveItem = useCallback(
-    (itemId: string, targetFolderId: string | null, access?: string) => {
-      if (!workspaceId) return;
-      moveItem(
-        workspaceId,
-        itemId,
-        targetFolderId,
-        (access as "private" | "workspace") || undefined,
-      );
-    },
-    [workspaceId, moveItem],
-  );
-
-  const handleMoveFolder = useCallback(
-    (folderId: string, parentId: string | null, access?: string) => {
-      if (!workspaceId) return;
-      const isDashboard = isDashboardEntryId(folderId);
-      if (isDashboard) {
-        moveItem(
-          workspaceId,
-          folderId,
-          parentId,
-          (access as "private" | "workspace") || undefined,
-        );
-        return;
-      }
-      moveFolder(
-        workspaceId,
-        folderId,
-        parentId,
-        (access as "private" | "workspace") || undefined,
-      );
-    },
-    [workspaceId, isDashboardEntryId, moveItem, moveFolder],
-  );
-
-  const handleRenameItem = useCallback(
-    (id: string, name: string, isDirectory: boolean) => {
-      if (!workspaceId) return;
-      renameItem(workspaceId, id, name, isDirectory && !isDashboardEntryId(id));
-    },
-    [workspaceId, renameItem, isDashboardEntryId],
-  );
-
-  const handleResortItem = useCallback(
-    (id: string) => {
-      if (!workspaceId) return;
-      resortItem(workspaceId, id);
-    },
-    [workspaceId, resortItem],
+    [workspaceId, duplicateDashboard, fetchTree],
   );
 
   const canManageItem = useCallback(
@@ -395,25 +268,8 @@ export function DashboardsExplorer() {
   );
 
   const sectionsDef = useMemo(
-    () => [
-      {
-        key: "my",
-        label: "My Dashboards",
-        icon: <UserIcon size={16} strokeWidth={1.5} />,
-        nodes: withDataSourceNodes(myDashboards as ResourceTreeNode[]),
-        droppableId: "__section_my",
-        defaultAccess: "private" as const,
-      },
-      {
-        key: "workspace",
-        label: "Workspace",
-        icon: <GlobeIcon size={16} strokeWidth={1.5} />,
-        nodes: withDataSourceNodes(workspaceDashboards as ResourceTreeNode[]),
-        droppableId: "__section_workspace",
-        defaultAccess: "workspace" as const,
-      },
-    ],
-    [myDashboards, workspaceDashboards, withDataSourceNodes],
+    () => tree.sections({ my: "My Dashboards" }, withDataSourceNodes),
+    [tree, withDataSourceNodes],
   );
 
   const folderOnlyNodes = useCallback(function onlyFolders(
@@ -428,25 +284,8 @@ export function DashboardsExplorer() {
   }, []);
 
   const pickerSectionsDef = useMemo(
-    () => [
-      {
-        key: "my",
-        label: "My Dashboards",
-        icon: <UserIcon size={16} strokeWidth={1.5} />,
-        nodes: folderOnlyNodes(myDashboards as ResourceTreeNode[]),
-        droppableId: "__section_my",
-        defaultAccess: "private" as const,
-      },
-      {
-        key: "workspace",
-        label: "Workspace",
-        icon: <GlobeIcon size={16} strokeWidth={1.5} />,
-        nodes: folderOnlyNodes(workspaceDashboards as ResourceTreeNode[]),
-        droppableId: "__section_workspace",
-        defaultAccess: "workspace" as const,
-      },
-    ],
-    [myDashboards, workspaceDashboards, folderOnlyNodes],
+    () => tree.sections({ my: "My Dashboards" }, folderOnlyNodes),
+    [tree, folderOnlyNodes],
   );
 
   const activeDashboardTabId = (() => {
@@ -469,15 +308,16 @@ export function DashboardsExplorer() {
         </IconButton>
       </Tooltip>
       <Tooltip title="Refresh">
-        <IconButton size="small" onClick={handleRefresh} disabled={loading}>
+        <IconButton
+          size="small"
+          onClick={() => void tree.refresh()}
+          disabled={loading}
+        >
           <RefreshIcon size={20} strokeWidth={2} />
         </IconButton>
       </Tooltip>
     </>
   );
-
-  const isInitialLoading =
-    loading && myDashboards.length === 0 && workspaceDashboards.length === 0;
 
   return (
     <>
@@ -485,20 +325,9 @@ export function DashboardsExplorer() {
         title="Dashboards"
         actions={actions}
         searchPlaceholder="Search dashboards..."
-        error={error}
-        onErrorClose={() => {
-          if (workspaceId) {
-            useDashboardTreeStore.setState(state => {
-              state.error[workspaceId] = null;
-            });
-          }
-        }}
-        loading={isInitialLoading}
-        skeleton={
-          <Box sx={{ p: 3, textAlign: "center", color: "text.secondary" }}>
-            <Typography variant="body2">Loading...</Typography>
-          </Box>
-        }
+        error={tree.error}
+        onErrorClose={tree.clearError}
+        loading={tree.isInitialLoading}
       >
         {({ searchQuery }) => (
           <ResourceTree
@@ -518,13 +347,8 @@ export function DashboardsExplorer() {
             shouldFolderClickActivate={node => node.entityType === "dashboard"}
             onLoadChildren={handleLoadChildren}
             isLoadingChildren={node => !!loadingDashboards[node.id]}
-            onMoveItem={handleMoveItem}
-            onMoveFolder={handleMoveFolder}
-            onRenameItem={handleRenameItem}
-            onDeleteItem={handleDeleteItem}
+            {...tree.treeHandlers}
             onDuplicateItem={handleDuplicate}
-            onCreateFolder={handleCreateFolder}
-            onResortItem={handleResortItem}
             enableMove
             enableInfo
             onMoveRequest={handleMoveRequest}
@@ -541,21 +365,23 @@ export function DashboardsExplorer() {
 
       {/* Delete Confirmation Dialog */}
       <ConfirmDialog
-        open={!!deleteTarget}
+        open={!!tree.deleteTarget}
         title={`Delete ${
-          deleteTarget?.isDirectory && !isDashboardEntryId(deleteTarget.id)
+          tree.deleteTarget?.isDirectory &&
+          !isDashboardEntryId(tree.deleteTarget.id)
             ? "Folder"
             : "Dashboard"
         }`}
-        body={`Are you sure you want to delete "${deleteTarget?.name}"?${
-          deleteTarget?.isDirectory && !isDashboardEntryId(deleteTarget.id)
+        body={`Are you sure you want to delete "${tree.deleteTarget?.name}"?${
+          tree.deleteTarget?.isDirectory &&
+          !isDashboardEntryId(tree.deleteTarget.id)
             ? " All dashboards inside will be moved to the root level."
             : " This action cannot be undone."
         }`}
         confirmLabel="Delete"
         destructive
-        onConfirm={() => void handleDeleteConfirm()}
-        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => void tree.confirmDelete()}
+        onCancel={tree.cancelDelete}
       />
 
       {/* Move Dialog */}
@@ -585,13 +411,12 @@ export function DashboardsExplorer() {
               if (!moveTarget || !workspaceId) return;
               const access =
                 sectionKey === "workspace" ? "workspace" : "private";
-              if (
-                moveTarget.isDirectory &&
-                !isDashboardEntryId(moveTarget.id)
-              ) {
-                moveFolder(workspaceId, moveTarget.id, folderId, access);
+              // onMoveFolder already moves a dashboard-that-looks-like-a-
+              // folder as an item.
+              if (moveTarget.isDirectory) {
+                tree.treeHandlers.onMoveFolder(moveTarget.id, folderId, access);
               } else {
-                moveItem(workspaceId, moveTarget.id, folderId, access);
+                tree.treeHandlers.onMoveItem(moveTarget.id, folderId, access);
               }
               setMoveTarget(null);
             }}
