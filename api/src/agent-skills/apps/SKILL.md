@@ -158,6 +158,14 @@ New apps depend on `@makoai/app-sdk` (npm) — vendored at `packages/app-sdk`.
 Apps created before 2026-09 import the same package as `@makoai/app-sdk`
 (older alias): keep whatever the app's `package.json` already uses.
 
+## Styling & UI components
+
+For Tailwind v4 + shadcn/ui in an app — install, mapping Tailwind onto the
+SDK's theme tokens, the cursor-pointer base rule, the multi-select
+filter-dropdown pattern, and v1-CDN migration notes — read
+`references/ui-toolkit.md`
+(`read_skill_resource("apps", "references/ui-toolkit.md")`).
+
 ## Charts
 
 Before adding any chart, read `references/charting.md`
