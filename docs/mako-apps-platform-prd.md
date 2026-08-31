@@ -372,8 +372,10 @@ Keep this list current: it is the hand-off.
       (`pnpm --filter @mako/app-sdk publish`, then cli). Add a release
       workflow so a version bump publishes from CI (`NPM_TOKEN` secret).
 - [ ] **Publish `mako-ai` to PyPI** (`packages/mako-sdk-py`; pyproject is
-      ready; needs a PyPI token). Run its tests first — `pytest` is not
-      installed on the dev machine.
+      ready; needs a PyPI token). Its suite has 4 PRE-EXISTING failures in
+      `test_sources.ReadTest` (the fake transport does not stub
+      `/notebook/sources`) — same on master, unrelated to the rename; fix
+      before publishing (`PYTHONPATH=src python3 -m unittest discover -s tests`).
 - [ ] **MCP Registry**: `mcp-publisher login dns --domain mako.ai` (DNS TXT
       record on mako.ai) then `mcp-publisher publish` from the repo root; or
       switch `server.json` `name` to `io.github.mako-ai/mako` and use
