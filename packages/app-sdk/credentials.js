@@ -1,4 +1,4 @@
-// @mako/app-sdk/credentials — the laptop credential store shared by the
+// @makoai/app-sdk/credentials — the laptop credential store shared by the
 // `mako` CLI (which writes it) and the Vite plugin (which reads it).
 //
 // `mako login` runs the same OAuth 2.1 sign-in Claude Code uses against the

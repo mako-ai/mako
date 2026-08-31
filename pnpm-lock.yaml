@@ -627,7 +627,7 @@ importers:
 
   packages/cli:
     dependencies:
-      '@mako/app-sdk':
+      '@makoai/app-sdk':
         specifier: workspace:*
         version: link:../app-sdk
 

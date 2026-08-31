@@ -35,7 +35,7 @@ SELECT category, amount, created_at FROM orders
 Queries execute server-side through Mako's scoped execute API — **the app code never sees credentials or connection strings**. The query is materialized into a Parquet artifact (same pipeline as dashboards); at runtime the preview serves each artifact at the app-relative URL `__data/<name>.parquet`, ready for hyparquet or DuckDB-WASM. In app code, read bindings through `@mako/app-sdk` — a real package committed into the workspace repo:
 
 ```tsx
-import { useQuery, useDuckDB } from "@mako/app-sdk";
+import { useQuery, useDuckDB } from "@makoai/app-sdk"; // apps created before 2026-09: "@mako/app-sdk" (older alias, same package)
 
 const { data, loading, error } = useQuery("recent_orders");
 
@@ -51,7 +51,7 @@ A binding can pin a workspace [dbt project](/transforms/) via `-- dbt_project: <
 Apps can keep view state — the active tab, applied filters, a selected record, a sub-page — in the URL, so a reload restores it and the link is shareable. Reach for the `@mako/app-sdk` hooks rather than `window.history` directly, and they work both embedded in Mako (`/a/:app`) and in the public share view (`/share/:token`):
 
 ```tsx
-import { useLocation, useSearchParams, navigate } from "@mako/app-sdk";
+import { useLocation, useSearchParams, navigate } from "@makoai/app-sdk";
 
 const loc = useLocation();
 const [params, setParams] = useSearchParams();

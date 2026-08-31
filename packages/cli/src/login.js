@@ -4,7 +4,7 @@
 // 127.0.0.1, dynamic client registration, no client secret.
 import crypto from "node:crypto";
 import http from "node:http";
-import { saveCredential, normalizeApiUrl } from "@mako/app-sdk/credentials";
+import { saveCredential, normalizeApiUrl } from "@makoai/app-sdk/credentials";
 import { openInBrowser } from "./browser.js";
 
 const CLIENT_NAME = "Mako CLI";

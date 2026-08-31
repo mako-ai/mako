@@ -1,5 +1,5 @@
 {
-  "name": "@mako/cli",
+  "name": "@makoai/cli",
   "version": "0.1.0",
   "description": "Mako from your terminal: sign in once (mako login), run a workspace app locally with real data (mako dev).",
   "license": "ISC",
@@ -19,7 +19,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@mako/app-sdk": "workspace:*"
+    "@makoai/app-sdk": "workspace:*"
   },
   "publishConfig": {
     "access": "public"

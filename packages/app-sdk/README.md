@@ -1,17 +1,17 @@
-# @mako/app-sdk
+# @makoai/app-sdk
 
 The runtime SDK for [Mako](https://mako.ai) data apps — React hooks over an
 app's data bindings, plus a Vite plugin that serves those bindings during a
 local `vite dev`.
 
 Every Mako workspace repository carries this package at `packages/app-sdk`;
-apps depend on it with `"@mako/app-sdk": "file:../../packages/app-sdk"`. Mako
+apps depend on it with `"@makoai/app-sdk": "file:../../packages/app-sdk"`. Mako
 keeps the vendored copy current — do not edit it in a workspace repo.
 
 ## In the app
 
 ```tsx
-import { useQuery, useDuckDB, useSearchParams, useTheme } from "@mako/app-sdk";
+import { useQuery, useDuckDB, useSearchParams, useTheme } from "@makoai/app-sdk";
 
 // Rows of bindings/<name>.sql, materialized to parquet by Mako.
 const { data, loading, error } = useQuery("latest_sales");
@@ -31,7 +31,7 @@ path in Mako's sandbox, in a published app, and on a laptop.
 ## In `vite.config.ts`
 
 ```ts
-import { makoData } from "@mako/app-sdk/vite";
+import { makoData } from "@makoai/app-sdk/vite";
 
 export default defineConfig({ plugins: [react(), makoData()] });
 ```

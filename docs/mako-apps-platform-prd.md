@@ -62,10 +62,10 @@ Almost everything needed already exists inside the product; what's missing is th
 | **Git → Mako sync precedent** | dbt: `IDbtRepoBinding` + GitHub App webhooks (`api/src/routes/github.routes.ts` → `dbt-ci.service.ts`) | ✅ Proven pattern, dbt-only |
 | **Public data serving for published apps** | `api/src/services/public-live-query.service.ts` (serves `app.published` snapshot bindings via share token) | ✅ Token-gated, read-only |
 | **MCP infrastructure** | `api/src/services/mcp-client.service.ts`, risk tiers (`read`/`write_safe`/`write_destructive`), tool restriction model | ✅ **Client only** — Mako does not expose an MCP *server* |
-| **App runtime** | `app/src/app-runtime/preview.ts` (esm.sh import map, sandboxed iframe, injected `@mako/app-sdk`: `useQuery`, `useDuckDB`, `useTheme`, `useLocation`, `navigate`) | ✅ But embedded in the frontend; `@mako/app-sdk` is a synthetic module, **not a real npm package** |
+| **App runtime** | `app/src/app-runtime/preview.ts` (esm.sh import map, sandboxed iframe, injected `@makoai/app-sdk`: `useQuery`, `useDuckDB`, `useTheme`, `useLocation`, `navigate`) | ✅ But embedded in the frontend; `@makoai/app-sdk` is a synthetic module, **not a real npm package** |
 | **Machine-readable API** | `GET /api/openapi.json`, Consoles API, `/api/workspaces/:id/execute` | ✅ |
 
-**Gaps** (the actual work): Mako-as-MCP-server, an on-disk repo format + CLI, a published `@mako/app-sdk` package, GitHub repo binding for apps, API-key scopes, and a standalone runtime + app-scoped data endpoint.
+**Gaps** (the actual work): Mako-as-MCP-server, an on-disk repo format + CLI, a published `@makoai/app-sdk` package, GitHub repo binding for apps, API-key scopes, and a standalone runtime + app-scoped data endpoint.
 
 ---
 
@@ -151,8 +151,8 @@ my-app/
 Key design points:
 
 - **Connection aliasing:** `dataBindings[].connectionId` is workspace-specific and must never be hardcoded in a repo. The manifest references connections by **alias** (e.g. `"warehouse"`); `mako push` / repo-binding sync resolves aliases → connection ids per workspace (interactive on first push, stored in `.mako/`). Same trick as the existing `{{ dbt_schema }}` token.
-- **Publish `@mako/app-sdk` as a real npm package:** types + a dev implementation of `useQuery`/`useDuckDB`/`useTheme`/`useLocation` that calls the Mako API with an API key. In-product, the injected synthetic module keeps winning (import-map override), so runtime behavior is unchanged; the package exists so repos type-check and run locally.
-- **`mako` CLI** (`packages/cli`, `npx @mako/cli`), auth via `MAKO_API_KEY` env or `mako login`:
+- **Publish `@makoai/app-sdk` as a real npm package:** types + a dev implementation of `useQuery`/`useDuckDB`/`useTheme`/`useLocation` that calls the Mako API with an API key. In-product, the injected synthetic module keeps winning (import-map override), so runtime behavior is unchanged; the package exists so repos type-check and run locally.
+- **`mako` CLI** (`packages/cli`, `npx @makoai/cli`), auth via `MAKO_API_KEY` env or `mako login`:
   - `mako init` — scaffold from `createAppScaffold` + CLAUDE.md + SDK types
   - `mako pull` / `mako push` — bidirectional sync between repo ⇄ app draft (REST, `apps:write`)
   - `mako dev` — local Vite dev server with the dev SDK hitting real bindings (`bindings:execute`)
@@ -213,8 +213,8 @@ Prerequisite for every other phase; nothing external ships until this lands.
 
 **Deliverables**
 - Repo format spec (`mako.app.json`, `src/`, `bindings/*`) + zod validation shared with the server; connection **aliases** resolved at push.
-- `@mako/app-sdk` on npm — types + dev implementation, **generated from the same source** as the synthetic module in `preview.ts` (single source of truth, see L19).
-- `@mako/cli`: `init`, `pull`, `push`, `dev`, `publish`, `check` (headless validation against the real cdn/import-map runtime), generated `CLAUDE.md`.
+- `@makoai/app-sdk` on npm — types + dev implementation, **generated from the same source** as the synthetic module in `preview.ts` (single source of truth, see L19).
+- `@makoai/cli`: `init`, `pull`, `push`, `dev`, `publish`, `check` (headless validation against the real cdn/import-map runtime), generated `CLAUDE.md`.
 
 **Exit criteria:** `pull → edit → push` round-trips losslessly; `mako dev` renders with real workspace data; `mako check` catches an esm.sh-incompatible import before push.
 
@@ -262,7 +262,7 @@ The developer keeps a Mako browser tab open next to the Claude Code terminal; Ma
 
 Everything Claude Code already does well — local files, local server, local browser — with real workspace data behind it.
 
-1. `mako init` (or `mako pull`) → repo with `CLAUDE.md`, typed `@mako/app-sdk`, binding files.
+1. `mako init` (or `mako pull`) → repo with `CLAUDE.md`, typed `@makoai/app-sdk`, binding files.
 2. `mako dev` → local Vite server on `localhost` with HMR. The dev SDK implements `useQuery` by executing the **local** binding code through the workspace API (requires `query:execute` scope on the dev key — bindings in the repo aren't on the server yet). Published/standalone apps never do this; only dev mode runs ad-hoc binding code.
 3. Claude Code edits `src/` and `bindings/` directly — errors appear in the Vite terminal output (which Claude Code reads natively), HMR refreshes instantly, and Claude Code can screenshot `localhost` with Playwright. No Mako-side round-trip per edit.
 4. `mako push` → syncs to the Mako draft to verify in the real (sandboxed, esm.sh) renderer — the fidelity check, since local Vite is a simulation of the cdn runtime.
@@ -330,7 +330,7 @@ Numbered so phases and reviews can reference them. **Bold** = changes the design
 
 - **L15 — Concurrent-edit clobbering.** An MCP agent and a human editing the same app race; today's server tools are effectively last-write-wins on the draft. *Mitigation:* optimistic concurrency — write tools take the expected `version` and fail with a fresh snapshot on mismatch (the `app.updated` version counter already exists to build on).
 - **L16 — Local dev ≠ cdn runtime.** Vite dev with node-resolved deps will happily run code the esm.sh import-map runtime rejects (or resolves differently). *Mitigation:* `mako check` validates against the real import-map resolution headlessly; `mako push` runs it automatically; treat the Mako draft preview as CI, not as the first time the real runtime sees the code.
-- **L17 — SDK/docs drift.** Three copies of truth threaten to diverge: the synthetic `@mako/app-sdk` module in `preview.ts`, the npm package, and the generated `CLAUDE.md` (distilled from `agent-skills/apps/SKILL.md`). *Mitigation:* generate the synthetic module and the npm package from one source; serve authoring guidance to external agents dynamically as an MCP resource instead of freezing it into scaffolds.
+- **L17 — SDK/docs drift.** Three copies of truth threaten to diverge: the synthetic `@makoai/app-sdk` module in `preview.ts`, the npm package, and the generated `CLAUDE.md` (distilled from `agent-skills/apps/SKILL.md`). *Mitigation:* generate the synthetic module and the npm package from one source; serve authoring guidance to external agents dynamically as an MCP resource instead of freezing it into scaffolds.
 - **L18 — Metering & billing.** Key-authenticated traffic (MCP tool calls, binding executions from standalone apps) bypasses today's in-product usage accounting; a popular standalone app is unmetered load. *Mitigation:* per-key usage log (Phase 0) feeds the existing `usage`/`billing` routes; publishable-key executions counted against the owning workspace with configurable caps.
 - **L19 — Version/publish semantics across three authoring paths.** In-product agent, MCP, and git sync all mutate the same draft; without a convention, `app_save_version` checkpoints and git history tell conflicting stories. *Mitigation:* record `origin` (`agent` / `mcp:<keyId>` / `git:<sha>`) on every version snapshot — cheap now, painful to retrofit.
 
@@ -344,12 +344,12 @@ Keep this list current: it is the hand-off.
 
 - Workspace repos carry a Mako-managed template: `AGENTS.md` (+ `CLAUDE.md`
   → `@AGENTS.md`), OAuth-first `.mcp.json`, `.envrc`, `.mako/workspace.json`,
-  vendored `@mako/app-sdk`. Refreshed monotonically, never touches `apps/`.
-- `@mako/app-sdk` is a real package (`packages/app-sdk`): hooks, `./vite`
+  vendored `@makoai/app-sdk`. Refreshed monotonically, never touches `apps/`.
+- `@makoai/app-sdk` is a real package (`packages/app-sdk`): hooks, `./vite`
   (`makoData()` — local `vite dev` gets real parquet from the API), and
   `./credentials` (`~/.mako/credentials.json`). SDK 2.2 decodes DATE →
   `YYYY-MM-DD`, TIMESTAMP → ISO, BigInt → Number.
-- `@mako/cli` (`packages/cli`): `mako login` (OAuth PKCE loopback against the
+- `@makoai/cli` (`packages/cli`): `mako login` (OAuth PKCE loopback against the
   MCP auth server), `mako dev [app]`, `whoami`, `logout`.
 - Auth: OAuth tokens and `query:read` keys may call the three read-only
   binding routes besides `/api/mcp` (`auth/scoped-key-routes.ts`).
@@ -368,8 +368,8 @@ Keep this list current: it is the hand-off.
       claim it. Fallback names if not: `@mako-ai/app-sdk`, `@mako-ai/cli`
       (update `packages/*/package.json`, `APP_SDK_DEPENDENCY`, AGENTS.md,
       docs). Unscoped `mako` / `mako-cli` are taken by strangers.
-- [ ] **Publish** `@mako/app-sdk` 2.2.0 and `@mako/cli` 0.1.0
-      (`pnpm --filter @mako/app-sdk publish`, then cli). Add a release
+- [ ] **Publish** `@makoai/app-sdk` 2.2.0 and `@makoai/cli` 0.1.0
+      (`pnpm --filter @makoai/app-sdk publish`, then cli). Add a release
       workflow so a version bump publishes from CI (`NPM_TOKEN` secret).
 - [ ] **Publish `mako-ai` to PyPI** (`packages/mako-sdk-py`; pyproject is
       ready; needs a PyPI token). Its suite has 4 PRE-EXISTING failures in

@@ -11,7 +11,7 @@ Mako is a data platform. Its core concepts are:
 - **Connectors** — SaaS integrations (Stripe, PostHog, Close CRM, REST, GraphQL) that sync external data into a connection.
 - **Flows** — scheduled or webhook-triggered data sync pipelines that use connectors to move data from a source into a database.
 - **Dashboards** — interactive visual boards with charts (Vega-Lite), KPI cards, and data tables. Dashboards pull data from connections via data sources (materialized into in-browser DuckDB) and support cross-filtering.
-- **Apps** — full React applications (Lovable / v0 style) authored as a virtual filesystem. Apps can use any npm library and custom components, and read workspace data through named **data bindings** (\`useQuery("name")\` from \`@mako/app-sdk\`). Bindings run server-side, scoped to the workspace.
+- **Apps** — full React applications (Lovable / v0 style) authored as a virtual filesystem. Apps can use any npm library and custom components, and read workspace data through named **data bindings** (\`useQuery("name")\` from \`@makoai/app-sdk\`). Bindings run server-side, scoped to the workspace.
 
 ## Expertise Modes (read this FIRST)
 
@@ -105,7 +105,7 @@ For sync-flow setup, query templates, pagination, destination requirements, sche
 
 ## App Guidance
 
-For building React apps (file editing workflow, data bindings, \`@mako/app-sdk\` hooks, materialized DuckDB bindings, and runtime constraints), load the \`apps\` system skill.`;
+For building React apps (file editing workflow, data bindings, \`@makoai/app-sdk\` hooks, materialized DuckDB bindings, and runtime constraints), load the \`apps\` system skill.`;
 
 function buildConsoleContext(context: AgentContext): string[] {
   const parts: string[] = [];

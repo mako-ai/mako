@@ -1,4 +1,4 @@
-import { findCredential, removeCredential } from "@mako/app-sdk/credentials";
+import { findCredential, removeCredential } from "@makoai/app-sdk/credentials";
 import { parseArgs } from "./args.js";
 import { loadContext } from "./context.js";
 import { login } from "./login.js";

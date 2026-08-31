@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { resolveMakoContext } from "@mako/app-sdk/vite";
+import { resolveMakoContext } from "@makoai/app-sdk/vite";
 
 export const HOSTED_API_URL = "https://app.mako.ai";
 

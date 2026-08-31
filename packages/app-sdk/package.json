@@ -1,5 +1,5 @@
 {
-  "name": "@mako/app-sdk",
+  "name": "@makoai/app-sdk",
   "version": "2.2.0",
   "description": "Mako app SDK: data bindings (useQuery/useDuckDB), URL state, theme.",
   "license": "ISC",

@@ -31,7 +31,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 3;
+export const WORKSPACE_TEMPLATE_VERSION = 4;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -56,7 +56,7 @@ of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
 - \`apps/<slug>/\` — one app per folder: a real Vite + React + TypeScript
   project. \`mako.json\` (title, entry), \`bindings/<name>.sql\` (data),
   \`src/\`, \`package.json\` + \`package-lock.json\` (commit the lockfile).
-- \`packages/app-sdk/\` — \`@mako/app-sdk\` (managed by Mako, do not edit).
+- \`packages/app-sdk/\` — \`@makoai/app-sdk\` (managed by Mako, do not edit).
   Apps depend on it via \`file:../../packages/app-sdk\`.
 - \`.mako/workspace.json\` — workspace id + template version (managed).
 - \`.mcp.json\` — the \`mako\` MCP server for your agent (managed).
@@ -70,7 +70,7 @@ paste:
 1. \`claude\` (or Cursor / Codex) → the \`mako\` MCP server in \`.mcp.json\`
    opens a browser sign-in on first use: pick this workspace, approve
    (read-only). Claude Code: type \`/mcp\` if it does not prompt.
-2. \`npx @mako/cli login\` (or \`mako login\` once installed) in this checkout —
+2. \`npx @makoai/cli login\` (or \`mako login\` once installed) in this checkout —
    the same sign-in, kept in \`~/.mako/credentials.json\` for \`vite dev\`.
 
 Headless / CI instead: create a workspace API key in Mako (**Workspace
@@ -109,7 +109,7 @@ You are an ordinary developer in an ordinary checkout.
 ## Data in local dev
 
 Each app's \`vite.config.ts\` includes \`makoData()\` from
-\`@mako/app-sdk/vite\`. During \`vite dev\` it answers
+\`@makoai/app-sdk/vite\`. During \`vite dev\` it answers
 \`__data/index.json\` (the app's \`bindings/*.sql\`) and
 \`__data/<name>.parquet\` by streaming the binding's materialized artifact
 from the Mako API with your login (or the key in \`.env\`); a binding that was never
@@ -118,7 +118,7 @@ materialized is built on first request. Results are cached under
 
 No key → the app runs and every binding answers 503 with a hint. An app whose
 \`vite.config.ts\` predates the plugin: add
-\`import { makoData } from "@mako/app-sdk/vite";\` and \`makoData()\` to
+\`import { makoData } from "@makoai/app-sdk/vite";\` and \`makoData()\` to
 \`plugins\`.
 
 ## Bindings

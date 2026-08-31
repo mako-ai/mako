@@ -152,6 +152,12 @@ SNAPPY-compressed, so plain hyparquet works (no compressors bundle needed).
 After wiring a binding into the UI, `app_browse` is how you confirm the data
 actually loads — a failed `__data/...` fetch shows up in its failedRequests.
 
+## The SDK's name
+
+New apps depend on `@makoai/app-sdk` (npm) — vendored at `packages/app-sdk`.
+Apps created before 2026-09 import the same package as `@makoai/app-sdk`
+(older alias): keep whatever the app's `package.json` already uses.
+
 ## Charts
 
 Before adding any chart, read `references/charting.md`

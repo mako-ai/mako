@@ -1,4 +1,4 @@
-// @mako/app-sdk/vite — data bindings for a LOCAL `vite dev`.
+// @makoai/app-sdk/vite — data bindings for a LOCAL `vite dev`.
 //
 // Inside Mako's sandbox the dev server is launched by Mako, which answers
 // `__data/<name>.parquet` itself. On a laptop nothing does, so Vite's SPA

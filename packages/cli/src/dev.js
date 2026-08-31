@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { findCredential } from "@mako/app-sdk/credentials";
+import { findCredential } from "@makoai/app-sdk/credentials";
 import { resolveAppDir } from "./context.js";
 
 function run(cmd, args, opts) {

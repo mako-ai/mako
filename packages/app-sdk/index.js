@@ -1,4 +1,4 @@
-// @mako/app-sdk — see package.json. Plain ESM on purpose: no build step.
+// @makoai/app-sdk — see package.json. Plain ESM on purpose: no build step.
 import * as React from "react";
 
 const DEFAULT_ROW_LIMIT = 500000;
