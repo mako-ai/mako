@@ -9,7 +9,6 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
-  DialogContentText,
   DialogActions,
   Button,
 } from "@mui/material";
@@ -21,6 +20,7 @@ import {
   Database as DataSourceIcon,
 } from "lucide-react";
 import { TAB_KIND_ICONS } from "../lib/entity-icons";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 const DashboardIcon = TAB_KIND_ICONS.dashboard;
 import { useWorkspace } from "../contexts/workspace-context";
@@ -540,28 +540,23 @@ export function DashboardsExplorer() {
       </ExplorerShell>
 
       {/* Delete Confirmation Dialog */}
-      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
-        <DialogTitle>
-          Delete{" "}
-          {deleteTarget?.isDirectory && !isDashboardEntryId(deleteTarget.id)
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title={`Delete ${
+          deleteTarget?.isDirectory && !isDashboardEntryId(deleteTarget.id)
             ? "Folder"
-            : "Dashboard"}
-        </DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            Are you sure you want to delete &quot;{deleteTarget?.name}&quot;?
-            {deleteTarget?.isDirectory && !isDashboardEntryId(deleteTarget.id)
-              ? " All dashboards inside will be moved to the root level."
-              : " This action cannot be undone."}
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDeleteTarget(null)}>Cancel</Button>
-          <Button onClick={handleDeleteConfirm} color="error">
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
+            : "Dashboard"
+        }`}
+        body={`Are you sure you want to delete "${deleteTarget?.name}"?${
+          deleteTarget?.isDirectory && !isDashboardEntryId(deleteTarget.id)
+            ? " All dashboards inside will be moved to the root level."
+            : " This action cannot be undone."
+        }`}
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => void handleDeleteConfirm()}
+        onCancel={() => setDeleteTarget(null)}
+      />
 
       {/* Move Dialog */}
       <Dialog

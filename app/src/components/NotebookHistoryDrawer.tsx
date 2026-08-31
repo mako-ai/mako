@@ -2,14 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Backdrop,
   Box,
-  Button,
   Chip,
   CircularProgress,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogContentText,
-  DialogTitle,
   Drawer,
   IconButton,
   List,
@@ -23,6 +17,7 @@ import { History, RotateCcw, X } from "lucide-react";
 import { useNotebookStore, type NotebookVersion } from "../store/notebookStore";
 import { formatBytes } from "../utils/format";
 import { formatRelativeTime } from "../utils/relative-time";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 interface NotebookHistoryDrawerProps {
   open: boolean;
@@ -154,35 +149,15 @@ export default function NotebookHistoryDrawer({
         )}
       </Drawer>
 
-      <Dialog open={!!confirmId} onClose={() => setConfirmId(null)}>
-        <DialogTitle>Restore this version?</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            The current notebook will be replaced with this version. This is
-            saved as a new version, so nothing is lost — you can restore the
-            current state again from history.
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setConfirmId(null)} disabled={restoring}>
-            Cancel
-          </Button>
-          <Button
-            onClick={() => void doRestore()}
-            variant="contained"
-            disabled={restoring}
-            startIcon={
-              restoring ? (
-                <CircularProgress size={14} />
-              ) : (
-                <RotateCcw size={14} />
-              )
-            }
-          >
-            Restore
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <ConfirmDialog
+        open={!!confirmId}
+        title="Restore this version?"
+        body="The current notebook will be replaced with this version. This is saved as a new version, so nothing is lost — you can restore the current state again from history."
+        confirmLabel="Restore"
+        busy={restoring}
+        onConfirm={() => void doRestore()}
+        onCancel={() => setConfirmId(null)}
+      />
     </>
   );
 }

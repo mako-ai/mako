@@ -68,6 +68,7 @@ import { SECTION_LABELS } from "../pages/settings/sections";
 import { focusAppsDiffTab, focusAppsFileTab } from "../apps-runtime/shell";
 import VSScrollArea from "./VSScrollArea";
 import { basename, dirname } from "../utils/path";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 /** VS Code's status letters, in VS Code's colors. */
 const STATUS_STYLE: Record<
@@ -668,34 +669,20 @@ export default function SourceControlExplorer() {
           </DialogActions>
         </Dialog>
 
-        <Dialog open={!!confirm} onClose={() => !acting && setConfirm(null)}>
-          <DialogTitle sx={{ fontSize: 15 }}>{confirm?.title}</DialogTitle>
-          <DialogContent>
-            <Typography variant="body2">{confirm?.body}</Typography>
-          </DialogContent>
-          <DialogActions>
-            <Button
-              size="small"
-              onClick={() => setConfirm(null)}
-              disabled={acting}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="small"
-              color="error"
-              variant="contained"
-              disabled={acting}
-              onClick={async () => {
-                const paths = confirm?.paths ?? [];
-                await runGit("discard", paths);
-                setConfirm(null);
-              }}
-            >
-              {acting ? "Discarding…" : "Discard"}
-            </Button>
-          </DialogActions>
-        </Dialog>
+        <ConfirmDialog
+          open={!!confirm}
+          title={confirm?.title ?? ""}
+          body={confirm?.body}
+          confirmLabel="Discard"
+          destructive
+          busy={acting}
+          onConfirm={async () => {
+            const paths = confirm?.paths ?? [];
+            await runGit("discard", paths);
+            setConfirm(null);
+          }}
+          onCancel={() => setConfirm(null)}
+        />
 
         {error && (
           <Alert

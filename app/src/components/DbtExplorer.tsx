@@ -97,6 +97,7 @@ import {
   DBT_JOB_SEP,
   DBT_RUNS_SEP,
 } from "../lib/explorer-reveal";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 function dbtDiffLanguage(path: string): string {
   if (path.endsWith(".sql")) return DBT_JINJA_LANGUAGE_ID;
@@ -2125,24 +2126,19 @@ export function DbtExplorer() {
       </Menu>
 
       {/* Delete confirmation */}
-      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
-        <DialogTitle>Delete {deleteKindLabel}</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            Are you sure you want to delete &quot;{deleteTarget?.name}&quot;?
-            {deleteTarget?.parsed.kind === "project"
-              ? " This deletes all files, jobs and run history."
-              : ""}{" "}
-            This action cannot be undone.
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDeleteTarget(null)}>Cancel</Button>
-          <Button onClick={handleDeleteConfirm} color="error">
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title={`Delete ${deleteKindLabel}`}
+        body={`Are you sure you want to delete "${deleteTarget?.name}"?${
+          deleteTarget?.parsed.kind === "project"
+            ? " This deletes all files, jobs and run history."
+            : ""
+        } This action cannot be undone.`}
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => void handleDeleteConfirm()}
+        onCancel={() => setDeleteTarget(null)}
+      />
 
       {/* Commit & push dialog */}
       <Dialog

@@ -58,6 +58,7 @@ import {
   parseMySQLConnectionString,
   buildMySQLConnectionString,
 } from "../utils/mysql-connection-string";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 /** Set a value at a dot-separated path inside a nested object, creating intermediate objects as needed. */
 function setNested(obj: Record<string, any>, path: string, value: any) {
@@ -1125,40 +1126,30 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
 
       {/* Connection test failed before save: let the user fix the config or
         persist it unverified. Save anyways never counts as activation. */}
-      <Dialog
+      <ConfirmDialog
         open={failedTest.open}
-        onClose={handleEditConnection}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>Connection test failed</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" sx={{ mb: 1 }}>
-            Mako couldn&apos;t connect to this database, so we haven&apos;t
-            saved it yet. This can happen if the credentials are wrong, or if
-            the database isn&apos;t reachable from Mako (for example a private
-            network or an allowlist).
-          </Typography>
-          {failedTest.error && (
-            <Alert severity="error" sx={{ mt: 1 }}>
-              {failedTest.error}
-            </Alert>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleEditConnection} variant="outlined">
-            Edit connection string
-          </Button>
-          <Button
-            onClick={handleSaveAnyways}
-            variant="contained"
-            disabled={loading}
-            startIcon={loading ? <CircularProgress size={16} /> : null}
-          >
-            Save anyways
-          </Button>
-        </DialogActions>
-      </Dialog>
+        title="Connection test failed"
+        body={
+          <>
+            <Typography variant="body2" sx={{ mb: 1 }}>
+              Mako couldn&apos;t connect to this database, so we haven&apos;t
+              saved it yet. This can happen if the credentials are wrong, or if
+              the database isn&apos;t reachable from Mako (for example a private
+              network or an allowlist).
+            </Typography>
+            {failedTest.error && (
+              <Alert severity="error" sx={{ mt: 1 }}>
+                {failedTest.error}
+              </Alert>
+            )}
+          </>
+        }
+        cancelLabel="Edit connection string"
+        confirmLabel="Save anyways"
+        busy={loading}
+        onConfirm={() => void handleSaveAnyways()}
+        onCancel={handleEditConnection}
+      />
     </>
   );
 };

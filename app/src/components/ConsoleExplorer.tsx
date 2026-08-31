@@ -17,13 +17,7 @@ import {
   Skeleton,
   Menu,
   MenuItem,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  Button,
   Tooltip,
-  Alert,
 } from "@mui/material";
 import {
   SquareTerminal as ConsoleIcon,
@@ -45,6 +39,7 @@ import ConsoleInfoModal from "./ConsoleInfoModal";
 import FolderInfoModal from "./FolderInfoModal";
 import ConsoleTree from "./ConsoleTree";
 import ExplorerShell from "./ExplorerShell";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 interface ConsoleExplorerProps {
   onConsoleSelect: (
@@ -648,36 +643,19 @@ function ConsoleExplorer(
         </MenuItem>
       </Menu>
 
-      <Dialog
+      <ConfirmDialog
         open={deleteDialogOpen}
-        onClose={() => setDeleteDialogOpen(false)}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle>
-          Delete {selectedItem?.isDirectory ? "Folder" : "Console"}
-        </DialogTitle>
-        <DialogContent>
-          <Alert severity="warning" sx={{ mb: 2 }}>
-            {selectedItem?.isDirectory
-              ? "This will permanently delete the folder and all its contents (subfolders and consoles)."
-              : "This will permanently delete the console."}
-          </Alert>
-          <Typography>
-            Are you sure you want to delete &ldquo;{selectedItem?.name}&rdquo;?
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
-          <Button
-            onClick={handleDeleteConfirm}
-            color="error"
-            variant="contained"
-          >
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
+        title={`Delete ${selectedItem?.isDirectory ? "Folder" : "Console"}`}
+        body={`${
+          selectedItem?.isDirectory
+            ? "This will permanently delete the folder and all its contents (subfolders and consoles)."
+            : "This will permanently delete the console."
+        } Are you sure you want to delete "${selectedItem?.name}"?`}
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => void handleDeleteConfirm()}
+        onCancel={() => setDeleteDialogOpen(false)}
+      />
 
       <ConsoleInfoModal
         open={infoModalOpen}

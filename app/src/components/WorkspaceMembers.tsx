@@ -36,6 +36,7 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { trackEvent } from "../lib/analytics";
+import { useConfirm } from "./ConfirmDialog";
 
 interface MemberRow {
   id: string;
@@ -50,6 +51,7 @@ interface MemberRow {
 
 export function WorkspaceMembers() {
   const { user } = useAuth();
+  const confirm = useConfirm();
   const {
     currentWorkspace,
     members,
@@ -120,12 +122,20 @@ export function WorkspaceMembers() {
       return;
     }
 
-    if (window.confirm("Are you sure you want to remove this member?")) {
-      try {
-        await removeMember(userId);
-      } catch (error: any) {
-        setError(error.message || "Failed to remove member");
-      }
+    if (
+      !(await confirm({
+        title: "Remove member?",
+        body: "Are you sure you want to remove this member?",
+        confirmLabel: "Remove",
+        destructive: true,
+      }))
+    ) {
+      return;
+    }
+    try {
+      await removeMember(userId);
+    } catch (error: any) {
+      setError(error.message || "Failed to remove member");
     }
   };
 

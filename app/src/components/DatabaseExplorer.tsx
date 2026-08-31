@@ -46,6 +46,7 @@ import ResourceTree, {
   type ResourceTreeSection,
 } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
+import { useConfirm } from "./ConfirmDialog";
 
 export interface CollectionInfo {
   name: string;
@@ -137,6 +138,7 @@ function DatabaseExplorer({
   onCollectionClick,
 }: DatabaseExplorerProps) {
   const connections = useSchemaStore(s => s.connections);
+  const confirm = useConfirm();
   const treeNodes = useSchemaStore(s => s.treeNodes);
   const loading = useSchemaStore(s => s.loading);
   const error = useSchemaStore(s => s.error);
@@ -541,9 +543,12 @@ function DatabaseExplorer({
             onClick={async () => {
               helpers.closeMenu();
               if (
-                !window.confirm(
-                  `Are you sure you want to delete database "${info.displayName}"? This action cannot be undone.`,
-                )
+                !(await confirm({
+                  title: "Delete database?",
+                  body: `Are you sure you want to delete database "${info.displayName}"? This action cannot be undone.`,
+                  confirmLabel: "Delete",
+                  destructive: true,
+                }))
               ) {
                 return;
               }
@@ -601,7 +606,7 @@ function DatabaseExplorer({
         </MenuItem>,
       ];
     },
-    [nodeInfoById, currentWorkspace, deleteConnection],
+    [nodeInfoById, currentWorkspace, deleteConnection, confirm],
   );
 
   const connectionTypeById = useMemo(() => {

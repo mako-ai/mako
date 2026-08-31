@@ -102,6 +102,7 @@ import EntityLoadErrorState, {
 } from "./EntityLoadErrorState";
 import StreamingMarkdown from "./StreamingMarkdown";
 import DbtCommandsPanel from "./DbtCommandsPanel";
+import { useConfirmProdRun } from "../dbt-runtime/confirm-prod-run";
 
 const DbtLineageView = lazy(() => import("./DbtLineageView"));
 // The results grid drags in MUI's DataGrid (+ its stylesheet) and the charting
@@ -235,6 +236,7 @@ export default function DbtFileEditor({
   path: string;
 }) {
   const { currentWorkspace } = useWorkspace();
+  const confirmProdRun = useConfirmProdRun();
   const { user } = useAuth();
   const workspaceId = currentWorkspace?.id;
   const monacoTheme = useMonacoTheme();
@@ -620,10 +622,7 @@ export default function DbtFileEditor({
     async (verb: DbtRunVerb, scope: DbtSelectScope) => {
       if (!workspaceId || !modelName) return;
       const cmd = buildDbtNodeCommand(verb, modelName, scope, { fullRefresh });
-      if (
-        environment === "prod" &&
-        !window.confirm(`Run "dbt ${cmd}" against the prod environment?`)
-      ) {
+      if (environment === "prod" && !(await confirmProdRun(`dbt ${cmd}`))) {
         return;
       }
       saveNow();
@@ -660,15 +659,13 @@ export default function DbtFileEditor({
       runCommand,
       saveNow,
       recordInvocation,
+      confirmProdRun,
     ],
   );
 
   const handleRunCommand = useCallback(async () => {
     if (!workspaceId || !command.trim()) return;
-    if (
-      environment === "prod" &&
-      !window.confirm(`Run "${command}" against the prod environment?`)
-    ) {
+    if (environment === "prod" && !(await confirmProdRun(command))) {
       return;
     }
     saveNow();
@@ -706,6 +703,7 @@ export default function DbtFileEditor({
     runCommand,
     saveNow,
     recordInvocation,
+    confirmProdRun,
   ]);
 
   const errorCount = useMemo(

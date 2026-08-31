@@ -5,16 +5,7 @@ import React, {
   forwardRef,
   useImperativeHandle,
 } from "react";
-import {
-  Box,
-  Button,
-  Typography,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogContentText,
-  DialogActions,
-} from "@mui/material";
+import { Box, Button, Typography } from "@mui/material";
 import {
   PlayArrow,
   Save as SaveIcon,
@@ -25,6 +16,7 @@ import Editor from "@monaco-editor/react";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useSchemaStore } from "../store/schemaStore";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 interface ViewDefinition {
   name: string;
@@ -358,34 +350,16 @@ const ViewEditor = forwardRef<ViewEditorRef, ViewEditorProps>(
           )}
         </Box>
 
-        <Dialog
+        <ConfirmDialog
           open={deleteDialogOpen}
-          onClose={handleDeleteCancel}
-          aria-labelledby="delete-dialog-title"
-          aria-describedby="delete-dialog-description"
-        >
-          <DialogTitle id="delete-dialog-title">Delete View</DialogTitle>
-          <DialogContent>
-            <DialogContentText id="delete-dialog-description">
-              Are you sure you want to delete the view &quot;{selectedView}
-              &quot;? This action cannot be undone.
-            </DialogContentText>
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={handleDeleteCancel} disabled={isDeleting}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleDeleteConfirm}
-              color="error"
-              variant="contained"
-              disabled={isDeleting}
-              disableElevation
-            >
-              {isDeleting ? "Deleting..." : "Delete"}
-            </Button>
-          </DialogActions>
-        </Dialog>
+          title="Delete View"
+          body={`Are you sure you want to delete the view "${selectedView}"? This action cannot be undone.`}
+          confirmLabel="Delete"
+          destructive
+          busy={isDeleting}
+          onConfirm={() => void handleDeleteConfirm()}
+          onCancel={handleDeleteCancel}
+        />
       </Box>
     );
   },

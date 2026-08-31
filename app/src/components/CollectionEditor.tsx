@@ -9,11 +9,6 @@ import {
   Box,
   Button,
   Typography,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogContentText,
-  DialogActions,
   Card,
   CardContent,
   Chip,
@@ -32,6 +27,7 @@ import Editor from "@monaco-editor/react";
 import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useSchemaStore } from "../store/schemaStore";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 interface CollectionInfo {
   name: string;
@@ -211,15 +207,14 @@ db.createCollection("new_collection_name", {
   };
 
   const handleDelete = () => {
-    setIsDeleting(true);
     setDeleteDialogOpen(true);
   };
 
   const handleDeleteConfirm = async () => {
     if (onDelete && selectedCollection && !isCreatingNew) {
+      setIsDeleting(true);
       try {
         await onDelete(selectedCollection);
-        setDeleteDialogOpen(false);
       } catch (error) {
         console.error("Failed to delete collection:", error);
       }
@@ -449,35 +444,16 @@ db.createCollection("new_collection_name", {
         )}
       </Box>
 
-      <Dialog
+      <ConfirmDialog
         open={deleteDialogOpen}
-        onClose={handleDeleteCancel}
-        aria-labelledby="delete-dialog-title"
-        aria-describedby="delete-dialog-description"
-      >
-        <DialogTitle id="delete-dialog-title">Delete Collection</DialogTitle>
-        <DialogContent>
-          <DialogContentText id="delete-dialog-description">
-            Are you sure you want to delete the collection &quot;
-            {selectedCollection}&quot;? This action cannot be undone and will
-            permanently delete all documents in the collection.
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleDeleteCancel} disabled={isDeleting}>
-            Cancel
-          </Button>
-          <Button
-            onClick={handleDeleteConfirm}
-            color="error"
-            variant="contained"
-            disabled={isDeleting}
-            disableElevation
-          >
-            {isDeleting ? "Deleting..." : "Delete"}
-          </Button>
-        </DialogActions>
-      </Dialog>
+        title="Delete Collection"
+        body={`Are you sure you want to delete the collection "${selectedCollection}"? This action cannot be undone and will permanently delete all documents in the collection.`}
+        confirmLabel="Delete"
+        destructive
+        busy={isDeleting}
+        onConfirm={() => void handleDeleteConfirm()}
+        onCancel={handleDeleteCancel}
+      />
     </Box>
   );
 };
