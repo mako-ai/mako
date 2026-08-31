@@ -2861,8 +2861,12 @@ function Editor({
                       appId={tab.metadata?.appId as string}
                       path={tab.metadata?.path as string}
                       mode={
-                        (tab.metadata?.mode as "working" | "index") ?? "working"
+                        (tab.metadata?.mode as
+                          | "working"
+                          | "index"
+                          | "commit") ?? "working"
                       }
+                      sha={tab.metadata?.sha as string | undefined}
                     />
                   ) : tab.kind === "app-file" ? (
                     <AppFileEditor

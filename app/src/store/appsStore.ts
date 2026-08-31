@@ -111,6 +111,19 @@ export interface AppCommit {
   subject: string;
 }
 
+/** One file a commit touched, app-relative (from GET /git/commit). */
+export interface AppCommitFile {
+  path: string;
+  status: "added" | "modified" | "deleted" | "renamed";
+}
+
+/** A file before/after one commit (null = absent on that side). */
+export interface AppCommitFileVersions {
+  before: string | null;
+  after: string | null;
+  binary: boolean;
+}
+
 export interface AppTerminalEntry {
   id: string;
   command: string;
@@ -211,6 +224,8 @@ interface AppsStore {
    */
   viewUrlByApp: Record<string, string | undefined>;
   historyByApp: Record<string, AppCommit[]>;
+  /** Files per commit, per app — the History panel's "View changes". */
+  commitFilesByApp: Record<string, Record<string, AppCommitFile[]>>;
   /** Repo-wide graph (Source Control panel) — same repo, no app pathspec. */
   repoHistoryByApp: Record<string, AppCommit[]>;
   branchesByApp: Record<string, AppBranch[]>;
@@ -341,6 +356,33 @@ interface AppsStore {
     action: "stage" | "unstage" | "discard",
     paths: string[],
   ) => Promise<{ ok: boolean; error?: string }>;
+  /** What one commit changed in this app. Cached per (app, sha). */
+  fetchCommitFiles: (
+    workspaceId: string,
+    appId: string,
+    sha: string,
+  ) => Promise<AppCommitFile[] | null>;
+  fetchCommitFileVersions: (
+    workspaceId: string,
+    appId: string,
+    sha: string,
+    path: string,
+  ) => Promise<AppCommitFileVersions | null>;
+  /**
+   * Restore the app to `sha` as a NEW commit on the caller's branch. Throws
+   * with the server's message so the caller can show it where it acted.
+   */
+  restoreVersion: (
+    workspaceId: string,
+    appId: string,
+    sha: string,
+  ) => Promise<void>;
+  /** Repoint the live (published) app at a previously published sha. */
+  rollbackTo: (
+    workspaceId: string,
+    appId: string,
+    sha: string,
+  ) => Promise<void>;
   fetchFileVersions: (
     workspaceId: string,
     appId: string,
@@ -455,6 +497,7 @@ export const useAppsStore = create<AppsStore>()(
     editingByApp: {},
     viewUrlByApp: {},
     historyByApp: {},
+    commitFilesByApp: {},
     repoHistoryByApp: {},
     runningDevApps: [],
     boxStatus: undefined,
@@ -1092,6 +1135,84 @@ export const useAppsStore = create<AppsStore>()(
       } catch (e) {
         return { ok: false, error: message(e, `Could not ${action}`) };
       }
+    },
+
+    fetchCommitFiles: async (workspaceId, appId, sha) => {
+      const cached = get().commitFilesByApp[appId]?.[sha];
+      if (cached) return cached;
+      try {
+        const body = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/apps/{id}/git/commit", {
+            params: { path: { workspaceId, id: appId }, query: { sha } },
+          }),
+        ) as { commit?: { files?: AppCommitFile[] } };
+        const files = body.commit?.files ?? [];
+        set(s => {
+          (s.commitFilesByApp[appId] ??= {})[sha] = files;
+        });
+        return files;
+      } catch (e) {
+        set(s => {
+          s.error = message(e, "Failed to load the commit");
+        });
+        return null;
+      }
+    },
+
+    fetchCommitFileVersions: async (workspaceId, appId, sha, path) => {
+      try {
+        const body = unwrapBody(
+          await api.GET(
+            "/api/workspaces/{workspaceId}/apps/{id}/git/file-versions",
+            {
+              params: {
+                path: { workspaceId, id: appId },
+                query: { path, sha },
+              },
+            },
+          ),
+        ) as { versions?: AppCommitFileVersions };
+        return body.versions ?? null;
+      } catch {
+        return null;
+      }
+    },
+
+    restoreVersion: async (workspaceId, appId, sha) => {
+      unwrapBody(
+        await api.POST("/api/workspaces/{workspaceId}/apps/{id}/restore", {
+          params: { path: { workspaceId, id: appId } },
+          body: { sha },
+        }),
+      );
+      // Same cache hygiene as discard: contents changed under every open tab.
+      set(s => {
+        for (const key of Object.keys(s.fileContents)) {
+          if (key.startsWith(`${appId}\u0000`)) delete s.fileContents[key];
+        }
+      });
+      void get().fetchFiles(workspaceId, appId);
+      void get().fetchStatus(workspaceId, appId);
+      void get().fetchHistory(workspaceId, appId);
+      const selected = get().selectedFile[appId];
+      if (selected) void get().openFile(workspaceId, appId, selected);
+    },
+
+    rollbackTo: async (workspaceId, appId, sha) => {
+      unwrapBody(
+        await api.POST("/api/workspaces/{workspaceId}/apps/{id}/rollback", {
+          params: { path: { workspaceId, id: appId } },
+          body: { sha },
+        }),
+      );
+      set(s => {
+        const app = s.apps.find(a => a.id === appId);
+        if (app) {
+          app.publishedSha = sha;
+          app.publishedAt = new Date().toISOString();
+        }
+      });
+      void get().fetchViewUrl(workspaceId, appId);
     },
 
     fetchFileVersions: async (workspaceId, appId, path) => {
