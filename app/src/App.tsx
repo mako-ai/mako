@@ -79,7 +79,6 @@ const SourceControlExplorer = lazy(
   () => import("./components/SourceControlExplorer"),
 );
 const PublicSharePage = lazy(() => import("./pages/PublicSharePage"));
-const AppPreviewPage = lazy(() => import("./pages/AppPreviewPage"));
 const loadDbtExplorer = () => import("./components/DbtExplorer");
 const DbtExplorer = lazy(loadDbtExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
@@ -1131,30 +1130,6 @@ function App() {
             }
           />
         ))}
-
-        {/* Draft-app preview via signed token - no authentication required.
-            Machine-facing sibling of /share (see AppPreviewPage). */}
-        <Route
-          path="/preview/:token"
-          element={
-            <Suspense
-              fallback={
-                <Box
-                  sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    height: "100vh",
-                  }}
-                >
-                  <CircularProgress />
-                </Box>
-              }
-            >
-              <AppPreviewPage />
-            </Suspense>
-          }
-        />
 
         {/* Desktop sign-in handoff - renders for both authed and unauthed users */}
         <Route path="/desktop-auth" element={<DesktopAuthPage />} />

@@ -2335,7 +2335,243 @@ workspace-authored skills (§10 Block D1) — system skills stay behind MCP;
 converging the box launcher on `makoData`; and a decision on whether the
 scaffold should commit `package-lock.json` for it (the template says commit).
 
-## §18 Parquet leaves through the bucket, not the API (2026-08-31)
+## 16. Consoles are files: Block D2 execution spec (2026-08-31)
+
+The next content type into the workspace repo after apps. Chosen over
+dashboards, dbt, notebooks and flows because a console is a binding without
+an app (same front-matter, same `.sql` file), because it is the object the
+agent edits most, and because it makes the one pattern every later type
+needs — **git owns the authored text, Mongo keeps a content-addressed derived
+index** — concrete on the highest-traffic path. Correction to §15.7: skills
+(Block D1, `3bb42ac4`) never merged to master; consoles land first and the
+skills branch is rebased onto the primitive built here.
+
+### 16.1 State of play
+
+793 saved consoles across 209 workspaces, 1,025 explicit versions in
+`entity_versions`, 5,611 unsaved drafts. 737 of the saved ones are private.
+Search today is three-tier (`console-search-tools.ts`): Atlas `$vectorSearch`
+on `descriptionEmbedding` → `$text` on name+description → regex on name. The
+vector is of an LLM-written description, not the SQL, generated
+fire-and-forget in three places in `routes/consoles.ts`.
+
+### 16.2 The file
+
+```
+consoles/<folder path>/<name>.sql                 # access = workspace
+users/<ownerId>/consoles/<folder path>/<name>.sql # access = private
+```
+
+Extension carries the language: `.sql`, `.js` (javascript), `.mongodb.js`.
+The name is the filename; folders are the `ConsoleFolder` chain, which stays
+in Mongo as organization (empty folders, ACL) and is re-created from
+directories on the way back in. Front-matter is the bindings convention —
+leading comment lines, terminated by the first blank line — so the file stays
+runnable anywhere:
+
+```sql
+-- connection: 6846e6a01b05af0948070583
+-- database: analytics
+-- description: Monthly recurring revenue by plan, last 24 months
+-- schedule: 0 6 * * 1
+-- timezone: Europe/Zurich
+-- results_view: chart
+
+SELECT ...
+```
+
+`collection:`/`operation:` for MongoDB consoles; `chartSpec` is a sidecar
+`<name>.chart.json` next to the file. Anything server-derived — embeddings,
+execution telemetry, `sharedWith`, `lastRun`, `scheduledRun` — never enters
+the file. Unsaved drafts (`isSaved:false`) never enter the repo: git holds
+explicit saves, Mongo holds the working copy, exactly like a laptop.
+
+### 16.3 One write path, content-addressed
+
+Every saved-console mutation commits to `main` first, then updates the Mongo
+row — through `commitBlobsOnBranch` (index plumbing, no clone: hash-object →
+update-index → write-tree → commit-tree → CAS update-ref). The row carries
+`path` and `sourceBlobSha`, the git blob id of the file, computed in-process
+(`sha1("blob <len>\0" + bytes)`) so stamping costs no git call. When the
+Mongo write is version-guarded and loses (409), the commit is reverted with a
+second commit — honest history, no divergence.
+
+Pushes from anywhere else (terminal, laptop clone, GitHub webhook on a
+connected repo) reach `syncConsolesIndexFromRepo` via `notifyRepoPushed`:
+`ls-tree` gives every path with its blob sha for free; same sha as the row →
+skip; changed → re-project the file onto the row; new path whose sha equals
+a vanished row's `sourceBlobSha` → rename (row `_id`, telemetry, shares and
+embedding survive); path gone → soft-delete. A repo that has not adopted
+(`consoles/README.md` absent) is never touched: Mongo may hold consoles git
+has never seen, so "not in git" must not mean "deleted" there.
+
+### 16.4 Embeddings and search
+
+Search does not change: the vector index, `$text` index, the search tool and
+the non-Atlas fallback are untouched, because `SavedConsole` survives as the
+derived index. What changes is who writes it and when:
+
+- The row also stores `descriptionSourceSha` — the blob the current
+  description/embedding was derived from. Generation runs only when it
+  differs from `sourceBlobSha`; a no-op push, a re-run migration, a rename
+  cost zero LLM calls.
+- Generation is an Inngest function (`console-description`), debounced 60s
+  per console, replacing the three racing fire-and-forgets. Its write is
+  guarded on `sourceBlobSha`, so a slow result never overwrites a newer one.
+- A `-- description:` in the file is authored and authoritative: it is
+  embedded directly and the LLM is not called. Otherwise the generated
+  description is derived state that lives only in Mongo — no bot commits on
+  `main` writing it back. Promoting it into the file is an explicit edit.
+- Agent-side context (`conversationExcerpt`, `resultSample`) exists only
+  inside the turn, so the agent's save requests generation with it directly;
+  the push-driven sync arrives, sees the shas match, and skips. The push path
+  is the guarantee, the rich path is opportunistic.
+- Migration keeps every existing embedding: it stamps
+  `descriptionSourceSha = sourceBlobSha` on rows that already have one, and
+  queues only rows without, or whose `embeddingModel` is stale. The old
+  backfill script becomes that one reconcile rule.
+
+### 16.5 Migration
+
+`consoles_to_git` (DB migration, re-runnable) adopts every workspace that
+holds saved consoles **and already has a repo** — a local bare repo or a
+durable mirror (connected or mako-cloud): it replays each console's
+`entity_versions` as commits with the original author, timestamp and version
+comment (§13.18 plumbing), commits the live state when it differs from the
+last version, stamps the rows, and writes `consoles/README.md` as the
+adoption marker. Workspaces with consoles but no repo at all are left alone
+by the migration — provisioning a GitHub repo per dormant trial workspace is
+not a side effect a DB migration should have. They adopt on their **first
+console write**, which (like the first app) creates the durable repo and
+snapshots every saved console in one commit; `pnpm consoles:migrate
+--workspace <id> --create-repo --execute` does the same with full history,
+and `--reconcile-descriptions` is the one backfill rule (§16.4). Dry run is
+the default.
+
+Semantics worth stating once: unsaved drafts (Mongo) are a laptop's
+uncommitted edits — a git-side change to a saved console overwrites the
+row's working copy on sync, the same way `git pull` would. Agent edits
+(`modify_console`) are drafts until the user saves, so they never reach git
+on their own.
+
+Kept for now, deliberately: `entity_versions` dual-write for the version
+history UI (switching that UI to `git log -- <path>` is the follow-up that
+retires it), the `ConsoleFolder` collection, and all read paths on the index.
+
+### 16.6 History is the apps surface (2026-08-31)
+
+Consoles get the apps History popover, not their own: `GET
+/consoles/:id/history` (commits that touched the file), `GET
+/consoles/:id/git/commit?sha` (what one commit changed), `GET
+/consoles/:id/git/file-versions?sha` (before/after for the diff), `POST
+/consoles/:id/restore {sha}` (a NEW commit setting the file back — history
+is append-only). The frontend reuses `CommitRow`/`CommitChip` and the
+extracted `GitFileDiffView` (the apps diff tab now renders through it too);
+a commit's file opens as a `console-diff` tab. The snapshot-based
+`VersionHistoryPanel` stays for dashboards only; the sync no longer writes
+`entity_versions` rows for consoles (the legacy `/versions` routes still
+serve the pre-migration snapshots).
+
+### 16.7 Verified end to end (2026-08-31)
+
+Against the dev DB (a prod clone) with an isolated git root — a read-only
+mirror clone of `realadvisor/mako-workspace`, `APPS_CONNECTED_REPO_PUSH=deny`
+and no mako-cloud credentials, so nothing left the machine:
+
+- **Migration**: `consoles:migrate --workspace <RealAdvisor>` dry run
+  reported 301 consoles / 453 versions; `--execute` took 71s and replayed
+  366 versions as commits with original authors and dates; a second run was
+  a no-op (301 current, 0 commits). An interrupted first attempt left three
+  files committed but unstamped; the adoption now claims an identical
+  unowned file at the wanted path instead of minting "(2)". 289 of 300
+  embeddings were kept by stamping (the other 11 rows had empty vectors).
+- **Browser** (`scripts/dev-browser.sh`): new console → Save → commit
+  authored by the signed-in user at `users/<id>/consoles/<name>.sql` with
+  `-- connection:` front-matter; a second save with a comment → its own
+  commit; History popover lists both with author/time/Latest; expanding a
+  commit shows its file; clicking it opens the Monaco diff tab; Restore of
+  v1 produces `Restore "save: …" (sha)` and the open editor reloads. The
+  description job fired on save (Inngest `console-description`), generated
+  text + embedding stamped with the source sha.
+- **External push**: a laptop clone over the git endpoint (mgt_ token),
+  `consoles/laptop/external test.sql` committed and pushed → sync created
+  the row (workspace scope, `laptop` folder created, authored description,
+  owner = pusher) before the app was touched.
+- Found in the audit, fixed, and re-verified with a pristine re-run
+  (453/453 versions replayed, idempotent second run = 0 commits): version
+  replays now commit even when the file is byte-identical (schedule- or
+  comment-only saves) — `commitBlobsOnBranch` grew `allowEmpty`, because
+  dropping them silently renumbers history (§13.18 doctrine). Note the
+  §13.21 trap applies as it does for apps: `git log <path>` prunes
+  TREESAME commits, so these versions appear in the full log, not in the
+  per-file History list.
+- Found and fixed on the way: the explicit-save handler passes
+  `connectionId: undefined` for "unchanged", which the projection had read
+  as "cleared" (front-matter vanished on the second save) — `undefined` now
+  means unchanged, like `$set`; the operator CLI never exited (module-level
+  Inngest/realtime handles) — it exits explicitly.
+
+### 16.8 What landed (2026-08-31)
+
+`repository.service.commitBlobsOnBranch` + `blobOid` (index plumbing, no
+clone; `runGit` grew a `stdin` option); `apps/console-files.ts` (paths,
+front-matter, sidecar — pure format); `apps/workspace-consoles.service.ts`
+(write-through, push sync, derivation, adoption); `SavedConsole.path /
+sourceBlobSha / descriptionSourceSha / descriptionSource`; every
+`ConsoleManager` mutation and every explicit-save / schedule / restore
+handler in `routes/consoles.ts` commits first; the four fire-and-forget
+description generators (three in the routes, one in `agent.routes.ts`)
+collapsed into the `console-description` Inngest function; the sync hooked
+into `notifyRepoPushed` and the GitHub webhook; the template's `AGENTS.md`
+documents the layout (template v4). Fourteen service tests drive real bare
+repos: write-through paths, folder moves in one commit, external edits,
+renames keeping the row, adoption safety, sha-gated derivation, version
+replay with original authors and dates.
+
+## 17. The cut: v1 erased, mako-cloud erased, GitHub required (2026-08-31)
+
+The salvage analysis (dev clone of prod, 2026-08-31) settled it: of 326
+workspaces holding consoles or v1 apps, exactly TWO had more than one member —
+RealAdvisor (29 members, 32k console executions) and the internal "Mako"
+workspace. Everything else was single-member signup-and-poke: 203 unmigrated
+v1 apps across 125 workspaces, 22 public links, 492 consoles in 208
+workspaces with no repo, near-zero executions. And the mako-cloud org held
+six repos, all Mako-internal test artifacts — no customer ever had a
+production mako-cloud mirror. So instead of migrating ghosts:
+
+**v1 apps are gone entirely.** The retained public-share serving path
+(§13.21's "45 live links", 22 by now), the `/preview/:token` +
+`create_preview_token` / `render_app` headless stack (it only ever rendered
+MakoApp drafts), the v1 binding materializer and its Inngest scheduler, the
+per-workspace app-binding refresh limit, the v1 halves of
+resource-data-sources and public-share, `PublicAppViewer` /
+`AppPreviewPage` / the opaque-iframe self-capture protocol, the `MakoApp*`
+schemas, and the `apps:migrate-v1` CLI (there is nothing left to migrate
+into). The rip-out migration drops `makoapps` (public links 404), deletes
+`entity_versions` of type "app", purges every v1 binding parquet from the
+artifact bucket (keyed by MakoApp id, so dashboard and git-app artifacts
+are untouched), and drops the seven pre-rename `app_v2_*`/`*_v2` leftover
+collections.
+
+**mako-cloud is gone.** One durable tier remains: the workspace's own
+connected GitHub repo (§13.17 doctrine, now the only doctrine).
+`cloud-app-auth.ts`, `ensureCloudRepo`, the `<prefix>-<workspaceId>` naming,
+the `appsCloudRepo` pointer, `MAKO_CLOUD_*` env everywhere — deleted. The
+prod-vs-preview signal `MAKO_CLOUD_REPO_PREFIX=ws` is replaced by an explicit
+`APPS_REQUIRE_CONNECTED_REPO=true` in the production deploy env.
+
+**The rule users see:** connect GitHub, or nothing saves. In production,
+creating an app or saving a console in a workspace without a connected repo
+returns 412 `github_required` with "Connect a GitHub repository first
+(Settings → GitHub)". Dev, tests and previews keep local-only bare repos
+(nothing durable — previews are throwaway by design). The consoles CLI lost
+`--create-repo`; adoption happens on the first save after connecting.
+
+Six test repos in `mako-ai-cloud` remain to be deleted by hand (`gh repo
+delete` needs the `delete_repo` scope). Cut through complexity: one tier,
+one truth, zero ghosts.
+
+## 18. Parquet leaves through the bucket, not the API (2026-08-31)
 
 Serving `__data/<name>.parquet` used to proxy every byte through the API:
 resolve the binding's artifact key, `openReadStream` from GCS, pipe. That

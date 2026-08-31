@@ -8232,6 +8232,101 @@
           }
         },
         "operationId": "patch_api_workspaces_workspaceId_consoles_id_restore"
+      },
+      "post": {
+        "tags": [
+          "Consoles"
+        ],
+        "summary": "Restore the console to a previous commit (as a new commit)",
+        "description": "Sets the console back to its content at `sha` and commits that on main. Nothing is rewritten: the versions in between stay in the history.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sha": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{7,40}$"
+                  }
+                },
+                "required": [
+                  "sha"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_workspaces_workspaceId_consoles_id_restore"
       }
     },
     "/api/workspaces/{workspaceId}/consoles/folders/{id}/rename": {
@@ -9057,6 +9152,275 @@
           }
         },
         "operationId": "get_api_workspaces_workspaceId_consoles_id_details"
+      }
+    },
+    "/api/workspaces/{workspaceId}/consoles/{id}/history": {
+      "get": {
+        "tags": [
+          "Consoles"
+        ],
+        "summary": "Commit history of a console (its file in the workspace repo)",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 200
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_consoles_id_history"
+      }
+    },
+    "/api/workspaces/{workspaceId}/consoles/{id}/git/commit": {
+      "get": {
+        "tags": [
+          "Consoles"
+        ],
+        "summary": "What one commit changed for this console",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{7,40}$"
+            },
+            "required": true,
+            "name": "sha",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_consoles_id_git_commit"
+      }
+    },
+    "/api/workspaces/{workspaceId}/consoles/{id}/git/file-versions": {
+      "get": {
+        "tags": [
+          "Consoles"
+        ],
+        "summary": "A console file before and after one commit (for diffs)",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{7,40}$"
+            },
+            "required": true,
+            "name": "sha",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "required": false,
+            "name": "path",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_consoles_id_git_file_versions"
       }
     },
     "/api/workspaces/{workspaceId}/consoles/{id}/versions": {
@@ -26895,7 +27259,7 @@
         "tags": [
           "Data Sources"
         ],
-        "summary": "List data sources for a dashboard or app",
+        "summary": "List data sources for a dashboard",
         "security": [
           {
             "cookieAuth": []
@@ -26917,8 +27281,7 @@
             "schema": {
               "type": "string",
               "enum": [
-                "dashboard",
-                "app"
+                "dashboard"
               ]
             },
             "required": true,
@@ -26984,7 +27347,7 @@
         "tags": [
           "Data Sources"
         ],
-        "summary": "Get one dashboard/app data source",
+        "summary": "Get one dashboard data source",
         "security": [
           {
             "cookieAuth": []
@@ -27006,8 +27369,7 @@
             "schema": {
               "type": "string",
               "enum": [
-                "dashboard",
-                "app"
+                "dashboard"
               ]
             },
             "required": true,
@@ -27103,8 +27465,7 @@
             "schema": {
               "type": "string",
               "enum": [
-                "dashboard",
-                "app"
+                "dashboard"
               ]
             },
             "required": true,
@@ -27227,7 +27588,7 @@
         "tags": [
           "Data Sources"
         ],
-        "summary": "Refresh all materialized data sources for a dashboard or app",
+        "summary": "Refresh all materialized data sources for a dashboard",
         "security": [
           {
             "cookieAuth": []
@@ -27249,8 +27610,7 @@
             "schema": {
               "type": "string",
               "enum": [
-                "dashboard",
-                "app"
+                "dashboard"
               ]
             },
             "required": true,
@@ -27316,7 +27676,7 @@
         "tags": [
           "Data Sources"
         ],
-        "summary": "Refresh one materialized data source for a dashboard or app",
+        "summary": "Refresh one materialized data source for a dashboard",
         "security": [
           {
             "cookieAuth": []
@@ -27338,8 +27698,7 @@
             "schema": {
               "type": "string",
               "enum": [
-                "dashboard",
-                "app"
+                "dashboard"
               ]
             },
             "required": true,
@@ -28365,76 +28724,6 @@
           }
         },
         "operationId": "get_api_share_token_artifacts_artifactId"
-      }
-    },
-    "/api/share/{token}/binding/{bindingId}/execute": {
-      "post": {
-        "tags": [
-          "Public Shares"
-        ],
-        "summary": "Run a shared app's published live binding",
-        "security": [],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "token",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "bindingId",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "2XX": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/GenericJsonResponse"
-                    },
-                    {
-                      "type": [
-                        "object",
-                        "null"
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "post_api_share_token_binding_bindingId_execute"
       }
     },
     "/api/share/{token}/refresh": {

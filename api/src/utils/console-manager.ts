@@ -11,6 +11,14 @@ import {
 } from "../database/workspace-schema";
 import { getLogger } from "../logging";
 import { canReadResource, canWriteResource } from "./resource-acl";
+import {
+  commitConsoleBatch,
+  commitConsoleMoves,
+  commitConsoleRemoval,
+  commitConsoleState,
+} from "../apps/workspace-consoles.service";
+import { chartSidecarPath } from "../apps/console-files";
+import { RepoRequiredError } from "../apps/config";
 
 const logger = getLogger(["api", "consoles"]);
 
@@ -259,6 +267,7 @@ export class ConsoleManager {
 
       return this.buildTree(folders, visibleConsoles);
     } catch (error) {
+      if (error instanceof RepoRequiredError) throw error;
       logger.error("Error listing consoles from database", { error });
       return this.listConsolesFromFilesystem();
     }
@@ -444,6 +453,7 @@ export class ConsoleManager {
         ),
       };
     } catch (error) {
+      if (error instanceof RepoRequiredError) throw error;
       logger.error("Error listing consoles split", { error });
       return { myConsoles: [], sharedWithWorkspace: [] };
     }
@@ -502,6 +512,7 @@ export class ConsoleManager {
       // Fallback to filesystem
       return this.getConsoleFromFilesystem(consolePath);
     } catch (error) {
+      if (error instanceof RepoRequiredError) throw error;
       logger.error("Error getting console from database", { error });
       // Fallback to filesystem
       return this.getConsoleFromFilesystem(consolePath);
@@ -578,6 +589,7 @@ export class ConsoleManager {
 
       return null;
     } catch (error) {
+      if (error instanceof RepoRequiredError) throw error;
       logger.error("Error getting console with metadata", { error });
       return null;
     }
@@ -609,9 +621,20 @@ export class ConsoleManager {
       savedConsole.access = access;
       savedConsole.isPrivate = access === "private";
       savedConsole.updatedAt = new Date();
+      if (savedConsole.isSaved) {
+        const committed = await commitConsoleState({
+          row: savedConsole,
+          previousPath: savedConsole.path,
+          actorUserId: userId,
+          message: `access ${access}: ${savedConsole.name}`,
+        });
+        savedConsole.path = committed.path;
+        savedConsole.sourceBlobSha = committed.sourceBlobSha;
+      }
       await savedConsole.save();
       return savedConsole;
     } catch (error) {
+      if (error instanceof RepoRequiredError) throw error;
       logger.error("Error updating console access", { error });
       return null;
     }
@@ -642,9 +665,16 @@ export class ConsoleManager {
       await folder.save();
 
       await this.propagateFolderAccess(folderId, workspaceId, userId, access);
+      await this.reprojectFolderSubtree(
+        folderId,
+        workspaceId,
+        userId,
+        `access ${access}: folder ${folder.name}`,
+      );
 
       return true;
     } catch (error) {
+      if (error instanceof RepoRequiredError) throw error;
       logger.error("Error updating folder access", { error });
       return false;
     }
@@ -848,6 +878,15 @@ export class ConsoleManager {
             : "workspace";
         }
 
+        // Git first (apps.md §16.3): the file is the record, the row follows.
+        const committed = await commitConsoleState({
+          row: savedConsole,
+          previousPath: savedConsole.path,
+          actorUserId: userId,
+          message: `save: ${consolePath}`,
+        });
+        savedConsole.path = committed.path;
+        savedConsole.sourceBlobSha = committed.sourceBlobSha;
         await savedConsole.save();
       } else {
         // Create new console (explicitly saved)
@@ -880,11 +919,19 @@ export class ConsoleManager {
         }
 
         savedConsole = new SavedConsole(consoleData);
+        const committed = await commitConsoleState({
+          row: savedConsole,
+          actorUserId: userId,
+          message: `create: ${consolePath}`,
+        });
+        savedConsole.path = committed.path;
+        savedConsole.sourceBlobSha = committed.sourceBlobSha;
         await savedConsole.save();
       }
 
       return savedConsole;
     } catch (error) {
+      if (error instanceof RepoRequiredError) throw error;
       logger.error("Error saving console to database", { error });
       throw error;
     }
@@ -967,6 +1014,28 @@ export class ConsoleManager {
         updateFields.folderId = folderId ? new Types.ObjectId(folderId) : null;
       }
 
+      const current = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!current) return false;
+      if (current.isSaved) {
+        current.name = consoleName;
+        if (parts.length > 1) {
+          current.folderId = folderId
+            ? new Types.ObjectId(folderId)
+            : undefined;
+        }
+        const committed = await commitConsoleState({
+          row: current,
+          previousPath: current.path,
+          actorUserId: userId,
+          message: `rename: ${consoleName}`,
+        });
+        updateFields.path = committed.path;
+        updateFields.sourceBlobSha = committed.sourceBlobSha;
+      }
+
       const result = await SavedConsole.updateOne(
         {
           _id: new Types.ObjectId(consoleId),
@@ -979,6 +1048,7 @@ export class ConsoleManager {
 
       return result.modifiedCount > 0;
     } catch (error) {
+      if (error instanceof RepoRequiredError) throw error;
       logger.error("Error renaming console", { error });
       return false;
     }
@@ -992,6 +1062,17 @@ export class ConsoleManager {
     workspaceId: string,
   ): Promise<boolean> {
     try {
+      const doomed = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      }).select("path");
+      if (doomed?.path) {
+        await commitConsoleRemoval({
+          workspaceId,
+          path: doomed.path,
+          message: `delete: ${doomed.path}`,
+        });
+      }
       const result = await SavedConsole.deleteOne({
         _id: new Types.ObjectId(consoleId),
         workspaceId: new Types.ObjectId(workspaceId),
@@ -999,6 +1080,7 @@ export class ConsoleManager {
 
       return result.deletedCount > 0;
     } catch (error) {
+      if (error instanceof RepoRequiredError) throw error;
       logger.error("Error deleting console", { error });
       return false;
     }
@@ -1011,33 +1093,132 @@ export class ConsoleManager {
     folderId: string,
     newName: string,
     workspaceId: string,
+    userId?: string,
   ): Promise<boolean> {
     try {
-      const result = await ConsoleFolder.updateOne(
-        {
-          _id: new Types.ObjectId(folderId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        },
-        {
-          $set: {
-            name: newName,
-            updatedAt: new Date(),
-          },
-        },
-      );
-
-      return result.modifiedCount > 0;
+      const folder = await ConsoleFolder.findOne({
+        _id: new Types.ObjectId(folderId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!folder) return false;
+      const previousName = folder.name;
+      folder.name = newName;
+      await folder.save();
+      try {
+        await this.reprojectFolderSubtree(
+          folderId,
+          workspaceId,
+          userId,
+          `rename folder: ${previousName} → ${newName}`,
+        );
+      } catch (error) {
+        folder.name = previousName;
+        await folder.save();
+        throw error;
+      }
+      return true;
     } catch (error) {
+      if (error instanceof RepoRequiredError) throw error;
       logger.error("Error renaming folder", { error });
       return false;
     }
   }
 
   /**
+   * Every saved console under a folder (recursively), for git moves when the
+   * folder itself renames, moves, or changes access.
+   */
+  private async consolesUnderFolder(
+    folderId: string,
+    workspaceId: string,
+  ): Promise<ISavedConsole[]> {
+    const wid = new Types.ObjectId(workspaceId);
+    const out: ISavedConsole[] = [];
+    const queue = [folderId];
+    const seen = new Set<string>();
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const fid = new Types.ObjectId(id);
+      out.push(
+        ...(await SavedConsole.find({
+          workspaceId: wid,
+          folderId: fid,
+          isSaved: true,
+          $or: [
+            { is_deleted: { $ne: true } },
+            { is_deleted: { $exists: false } },
+          ],
+        })),
+      );
+      const children = await ConsoleFolder.find({
+        workspaceId: wid,
+        parentId: fid,
+      }).select("_id");
+      queue.push(...children.map(c => c._id.toString()));
+    }
+    return out;
+  }
+
+  /** Re-commit every console under a folder at its (possibly new) path. */
+  private async reprojectFolderSubtree(
+    folderId: string,
+    workspaceId: string,
+    userId: string | undefined,
+    message: string,
+  ): Promise<void> {
+    const rows = await this.consolesUnderFolder(folderId, workspaceId);
+    if (rows.length === 0) return;
+    const moved = await commitConsoleMoves({
+      workspaceId,
+      actorUserId: userId,
+      message,
+      rows: rows.map(row => ({
+        id: row._id.toString(),
+        row,
+        previousPath: row.path,
+      })),
+    });
+    for (const row of rows) {
+      const at = moved.paths.get(row._id.toString());
+      if (
+        !at ||
+        (at.path === row.path && at.sourceBlobSha === row.sourceBlobSha)
+      ) {
+        continue;
+      }
+      await SavedConsole.updateOne(
+        { _id: row._id },
+        { $set: { path: at.path, sourceBlobSha: at.sourceBlobSha } },
+      );
+    }
+  }
+
+  /**
    * Delete a folder from database
    */
-  async deleteFolder(folderId: string, workspaceId: string): Promise<boolean> {
+  async deleteFolder(
+    folderId: string,
+    workspaceId: string,
+    userId?: string,
+  ): Promise<boolean> {
     try {
+      // Git first: every file under the folder goes in one commit.
+      const rows = await this.consolesUnderFolder(folderId, workspaceId);
+      const paths = rows
+        .map(r => r.path)
+        .filter((p): p is string => Boolean(p));
+      if (paths.length > 0) {
+        await commitConsoleBatch({
+          workspaceId,
+          actorUserId: userId,
+          mutation: {
+            deletes: paths.flatMap(p => [p, chartSidecarPath(p)]),
+          },
+          message: `delete folder (${paths.length} console${paths.length === 1 ? "" : "s"})`,
+        });
+      }
       // Delete all consoles in the folder
       await SavedConsole.deleteMany({
         folderId: new Types.ObjectId(folderId),
@@ -1062,6 +1243,7 @@ export class ConsoleManager {
 
       return result.deletedCount > 0;
     } catch (error) {
+      if (error instanceof RepoRequiredError) throw error;
       logger.error("Error deleting folder", { error });
       return false;
     }
@@ -1115,6 +1297,7 @@ export class ConsoleManager {
       const fullPath = path.join(this.consolesDir, `${consolePath}.js`);
       return fs.existsSync(fullPath);
     } catch (error) {
+      if (error instanceof RepoRequiredError) throw error;
       logger.error("Error checking console existence", { error });
       return false;
     }
@@ -1188,6 +1371,7 @@ export class ConsoleManager {
         },
       );
     } catch (error) {
+      if (error instanceof RepoRequiredError) throw error;
       logger.error("Error updating execution stats", { error });
     }
   }
@@ -1241,6 +1425,7 @@ export class ConsoleManager {
         $inc: { externalUseCount: 1 },
       });
     } catch (error) {
+      if (error instanceof RepoRequiredError) throw error;
       logger.error("Error recording external console use", {
         error,
         consoleId,
@@ -1434,6 +1619,7 @@ export class ConsoleManager {
     workspaceId: string,
     folderId: string | null,
     access?: ConsoleAccessLevel,
+    userId?: string,
   ): Promise<boolean> {
     const objectId = Types.ObjectId.isValid(consoleId)
       ? new Types.ObjectId(consoleId)
@@ -1453,6 +1639,27 @@ export class ConsoleManager {
     if (access) {
       updateFields.access = access;
       updateFields.isPrivate = access === "private";
+    }
+
+    const current = await SavedConsole.findOne({
+      _id: objectId,
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!current) return false;
+    if (current.isSaved) {
+      current.folderId = folderId ? new Types.ObjectId(folderId) : undefined;
+      if (access) {
+        current.access = access;
+        current.isPrivate = access === "private";
+      }
+      const committed = await commitConsoleState({
+        row: current,
+        previousPath: current.path,
+        actorUserId: userId,
+        message: `move: ${current.name}`,
+      });
+      updateFields.path = committed.path;
+      updateFields.sourceBlobSha = committed.sourceBlobSha;
     }
 
     const result = await SavedConsole.updateOne(
@@ -1475,6 +1682,7 @@ export class ConsoleManager {
     workspaceId: string,
     newParentId: string | null,
     access?: ConsoleAccessLevel,
+    userId?: string,
   ): Promise<boolean> {
     if (!Types.ObjectId.isValid(folderId)) return false;
 
@@ -1504,6 +1712,12 @@ export class ConsoleManager {
       updateFields.isPrivate = access === "private";
     }
 
+    const before = await ConsoleFolder.findOne({
+      _id: new Types.ObjectId(folderId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    }).lean();
+    if (!before) return false;
+
     const result = await ConsoleFolder.updateOne(
       {
         _id: new Types.ObjectId(folderId),
@@ -1511,8 +1725,40 @@ export class ConsoleManager {
       },
       { $set: updateFields },
     );
+    if (result.modifiedCount === 0) return false;
 
-    return result.modifiedCount > 0;
+    try {
+      if (access) {
+        // A folder's access moves its consoles between the workspace and
+        // the owner's private root (apps.md §16.2).
+        await SavedConsole.updateMany(
+          {
+            workspaceId: new Types.ObjectId(workspaceId),
+            folderId: new Types.ObjectId(folderId),
+          },
+          { $set: { access, isPrivate: access === "private" } },
+        );
+      }
+      await this.reprojectFolderSubtree(
+        folderId,
+        workspaceId,
+        userId,
+        `move folder: ${before.name}`,
+      );
+    } catch (error) {
+      await ConsoleFolder.updateOne(
+        { _id: new Types.ObjectId(folderId) },
+        {
+          $set: {
+            parentId: before.parentId ?? null,
+            access: before.access,
+            isPrivate: before.isPrivate,
+          },
+        },
+      );
+      throw error;
+    }
+    return true;
   }
 
   /**
@@ -1521,8 +1767,23 @@ export class ConsoleManager {
   async softDeleteConsole(
     consoleId: string,
     workspaceId: string,
+    userId?: string,
   ): Promise<boolean> {
     if (!Types.ObjectId.isValid(consoleId)) return false;
+    const current = await SavedConsole.findOne({
+      _id: new Types.ObjectId(consoleId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    }).select("path name");
+    if (!current) return false;
+    // The row keeps its `path` so a restore puts the file back where it was.
+    if (current.path) {
+      await commitConsoleRemoval({
+        workspaceId,
+        path: current.path,
+        actorUserId: userId,
+        message: `delete: ${current.path}`,
+      });
+    }
     const result = await SavedConsole.updateOne(
       {
         _id: new Types.ObjectId(consoleId),
@@ -1539,14 +1800,30 @@ export class ConsoleManager {
   async restoreConsole(
     consoleId: string,
     workspaceId: string,
+    userId?: string,
   ): Promise<boolean> {
     if (!Types.ObjectId.isValid(consoleId)) return false;
+    const current = await SavedConsole.findOne({
+      _id: new Types.ObjectId(consoleId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!current) return false;
+    const set: Record<string, unknown> = { is_deleted: false };
+    if (current.isSaved) {
+      const committed = await commitConsoleState({
+        row: current,
+        actorUserId: userId,
+        message: `restore: ${current.name}`,
+      });
+      set.path = committed.path;
+      set.sourceBlobSha = committed.sourceBlobSha;
+    }
     const result = await SavedConsole.updateOne(
       {
         _id: new Types.ObjectId(consoleId),
         workspaceId: new Types.ObjectId(workspaceId),
       },
-      { $set: { is_deleted: false }, $unset: { deletedAt: "" } },
+      { $set: set, $unset: { deletedAt: "" } },
     );
     return result.modifiedCount > 0;
   }
@@ -1584,6 +1861,13 @@ export class ConsoleManager {
       owner_id: userId,
       executionCount: 0,
     });
+    const committed = await commitConsoleState({
+      row: copy,
+      actorUserId: userId,
+      message: `duplicate: ${original.name}`,
+    });
+    copy.path = committed.path;
+    copy.sourceBlobSha = committed.sourceBlobSha;
     await copy.save();
     return copy;
   }

@@ -72,6 +72,8 @@ import NotebookRenderer from "./NotebookRenderer";
 import AppWorkspace from "./AppWorkspace";
 import AppFileEditor from "./AppFileEditor";
 import AppDiffTab from "./AppDiffTab";
+import ConsoleDiffTab from "./ConsoleDiffTab";
+import ConsoleHistoryPopover from "./ConsoleHistoryPopover";
 import AppBindingEditor from "./AppBindingEditor";
 import PlanDocumentTab from "./PlanDocumentTab";
 import DbtFileEditor from "./DbtFileEditor";
@@ -476,7 +478,14 @@ function Editor({
     resolve: (success: boolean) => void;
   } | null>(null);
 
-  // Version history panel state
+  // Console history popover (git-backed, apps.md §16) — anchored to the
+  // toolbar button of the tab that opened it.
+  const [consoleHistory, setConsoleHistory] = useState<{
+    anchor: HTMLElement;
+    tabId: string;
+  } | null>(null);
+
+  // Version history panel state (dashboards)
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   const [versionHistoryTabId, setVersionHistoryTabId] = useState<string | null>(
     null,
@@ -489,9 +498,10 @@ function Editor({
   const shareConsoleTab = useConsoleStore(s =>
     shareConsoleTabId ? s.tabs[shareConsoleTabId] : undefined,
   );
-  const [versionHistoryEntityType, setVersionHistoryEntityType] = useState<
-    "console" | "dashboard"
-  >("console");
+  // Only dashboards still use the snapshot-based panel; consoles read git.
+  const [versionHistoryEntityType] = useState<"console" | "dashboard">(
+    "dashboard",
+  );
   const [scheduleModalTabId, setScheduleModalTabId] = useState<string | null>(
     null,
   );
@@ -2552,11 +2562,9 @@ function Editor({
                       }
                       filePath={tab.filePath}
                       enableVersionControl={true}
-                      onHistoryClick={() => {
-                        setVersionHistoryTabId(tab.id);
-                        setVersionHistoryEntityType("console");
-                        setVersionHistoryOpen(true);
-                      }}
+                      onHistoryClick={anchor =>
+                        setConsoleHistory({ anchor, tabId: tab.id })
+                      }
                       historyAvailable={tab.isSaved}
                       onShareClick={() => setShareConsoleTabId(tab.id)}
                       shareAvailable={tab.isSaved}
@@ -2859,6 +2867,12 @@ function Editor({
                       appId={tab.metadata?.appId as string}
                       path={tab.metadata?.path as string}
                     />
+                  ) : tab.kind === "console-diff" ? (
+                    <ConsoleDiffTab
+                      consoleId={tab.metadata?.consoleId as string}
+                      path={tab.metadata?.path as string}
+                      sha={tab.metadata?.sha as string}
+                    />
                   ) : tab.kind === "app-diff" ? (
                     <AppDiffTab
                       appId={tab.metadata?.appId as string}
@@ -3134,7 +3148,19 @@ function Editor({
         diff={saveSuggestion.diff}
       />
 
-      {/* Version history panel */}
+      {consoleHistory && currentWorkspace && (
+        <ConsoleHistoryPopover
+          anchorEl={consoleHistory.anchor}
+          onClose={() => setConsoleHistory(null)}
+          workspaceId={currentWorkspace.id}
+          consoleId={consoleHistory.tabId}
+          onRestored={() =>
+            reloadConsole(currentWorkspace.id, consoleHistory.tabId)
+          }
+        />
+      )}
+
+      {/* Version history panel (dashboards) */}
       {versionHistoryTabId && (
         <VersionHistoryPanel
           open={versionHistoryOpen}

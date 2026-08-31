@@ -66,9 +66,7 @@ Database queries stay **read-only**; apps/consoles can be authored over MCP.
 File and shell tools still run on your machine via the adapter.
 
 **Apps in Desktop:** `app_open_app` opens the app tab in the Desktop window
-with a live dev preview (same as in-app chat). Local Claude is instructed not
-to use `create_preview_token` / paste `/preview/…` links when you’re already
-in Chat.
+with a live dev preview (same as in-app chat).
 
 To feel like the in-app agent, Mako:
 

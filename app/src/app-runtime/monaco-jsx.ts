@@ -42,5 +42,6 @@ export function languageForPath(path: string): string {
   if (path.endsWith(".css")) return "css";
   if (path.endsWith(".html")) return "html";
   if (path.endsWith(".md")) return "markdown";
+  if (path.endsWith(".sql")) return "sql";
   return "plaintext";
 }

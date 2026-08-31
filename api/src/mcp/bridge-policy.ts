@@ -165,8 +165,6 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   app_write_file: bridge(),
 
   // ── MCP-only preview / render ─────────────────────────────────────────
-  create_preview_token: mcpOnly(),
-  render_app: mcpOnly(),
 
   // ── MCP-only ChatGPT connector contract (chatgpt-connector-tools.ts) ──
   // ChatGPT only accepts an MCP server as a chat/deep-research connector
@@ -178,7 +176,7 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // ── Charts / screenshots (client) ─────────────────────────────────────
   capture_screenshot: exclude(
     "client-only",
-    "Captures the open browser tab; MCP uses run_app screenshots.",
+    "Captures the open browser tab; MCP uses app_browse screenshots.",
   ),
   get_chart_template: exclude(
     "client-only",

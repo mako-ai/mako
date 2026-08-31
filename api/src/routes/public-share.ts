@@ -22,25 +22,14 @@ import { getCookie, setCookie } from "hono/cookie";
 import { OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
   Dashboard,
-  MakoApp,
   AppProject,
   type IDashboard,
-  type IMakoApp,
   type IAppProject,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
-import {
-  buildAppSnapshot,
-  type AppSnapshot,
-} from "../services/app-version.service";
 import { buildDataSourceMaterializationStatus } from "../services/dashboard-materialization.service";
 import { queueDashboardArtifactRefresh } from "../services/dashboard-refresh-runner.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
-import {
-  getBindingArtifactInfo,
-  queueAppBindingMaterialization,
-} from "../services/app-binding-materialization.service";
-import { executePublicAppLiveBinding } from "../services/public-live-query.service";
 import { bindingArtifactKeyByName } from "../apps/bindings.service";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { serveParquetArtifact } from "../services/artifact-delivery.service";
@@ -72,9 +61,7 @@ const UNLOCK_WINDOW_MS = 15 * 60 * 1000;
 
 type SharedResource =
   | { type: "dashboard"; doc: IDashboard }
-  // "legacy-app" serves retained v1 MakoApp shares (apps.md §13.21: 45 live
-  // public links); "app" is a git-backed app's built deployment.
-  | { type: "legacy-app"; doc: IMakoApp }
+  // "app" is a git-backed app's built deployment (§13).
   | { type: "app"; doc: IAppProject };
 
 async function findByToken(token: string): Promise<SharedResource | null> {
@@ -86,11 +73,6 @@ async function findByToken(token: string): Promise<SharedResource | null> {
     "publicShare.enabled": true,
   });
   if (dashboard) return { type: "dashboard", doc: dashboard };
-  const makoApp = await MakoApp.findOne({
-    "publicShare.token": token,
-    "publicShare.enabled": true,
-  });
-  if (makoApp) return { type: "legacy-app", doc: makoApp };
   // Apps shares the same publicShare primitive; what differs is what gets
   // served — a built deployment rather than a JSON definition (§13).
   const app = await AppProject.findOne({
@@ -267,54 +249,6 @@ async function buildDashboardContent(token: string, dashboard: IDashboard) {
   };
 }
 
-function buildAppContent(token: string, makoApp: IMakoApp) {
-  // Render the PUBLISHED definition (draft/published split) so a public viewer
-  // never sees half-edited or agent-in-progress work. Fall back to the live
-  // draft for apps that were never published (back-compat).
-  const def =
-    (makoApp.published as AppSnapshot | undefined) ?? buildAppSnapshot(makoApp);
-  // Materialization artifacts are server-owned and keyed by binding id, so we
-  // hydrate artifact URLs from the LIVE binding caches (the published snapshot
-  // intentionally excludes `cache`).
-  const liveCacheById = new Map(
-    (makoApp.dataBindings || []).map(b => [b.id, b.cache]),
-  );
-  // Owner opt-in: when enabled, the viewer may re-run live bindings via the
-  // /binding/:id/execute route below (still owner-published SQL, never the
-  // viewer's). Default off keeps existing shares snapshot-only.
-  const allowLiveQueries = !!makoApp.publicShare?.allowLiveQueries;
-  return {
-    type: "app" as const,
-    title: def.title,
-    description: def.description,
-    entrypoint: def.entrypoint,
-    allowLiveQueries,
-    files: (def.files || []).map(f => ({
-      path: f.path,
-      contents: f.contents,
-    })),
-    dependencies: def.dependencies || {},
-    dataBindings: (def.dataBindings || []).map(b => {
-      const cache = liveCacheById.get(b.id as string);
-      const ready =
-        b.materialization === "parquet" &&
-        cache?.parquetBuildStatus === "ready" &&
-        !!cache?.parquetArtifactKey;
-      return {
-        id: b.id,
-        name: b.name,
-        materialization: b.materialization ?? "live",
-        ready,
-        rowCount: cache?.rowCount ?? null,
-        materializedAt: cache?.parquetBuiltAt ?? null,
-        artifactUrl: ready
-          ? `/api/share/${token}/artifacts/${encodeURIComponent(String(b.id))}?rev=${encodeURIComponent(cache?.artifactRevision || "")}`
-          : null,
-      };
-    }),
-  };
-}
-
 // ── Routes ──
 
 // GET /:token — public metadata (safe before password unlock)
@@ -449,10 +383,7 @@ app.openapi(
           { "Cache-Control": "private, no-store" },
         );
       }
-      const data =
-        resource.type === "dashboard"
-          ? await buildDashboardContent(token, resource.doc)
-          : buildAppContent(token, resource.doc);
+      const data = await buildDashboardContent(token, resource.doc);
 
       return c.json({ success: true, data }, 200, {
         "Cache-Control": "private, no-store",
@@ -518,7 +449,7 @@ app.openapi(
         artifactKey = status.artifactKey;
         revision = status.artifactRevision;
         rowCount = status.rowCount;
-      } else if (resource.type === "app") {
+      } else {
         artifactKey = await bindingArtifactKeyByName(
           resource.doc,
           artifactId,
@@ -526,8 +457,8 @@ app.openapi(
         );
         // App bindings have no revision to pin caching to, so nothing is
         // lost by handing the browser a signed bucket URL instead of a
-        // proxied stream. Dashboard/notebook artifacts below keep streaming:
-        // their `rev`-addressed responses are immutable-cacheable, which a
+        // proxied stream. Dashboard artifacts below keep streaming: their
+        // `rev`-addressed responses are immutable-cacheable, which a
         // per-request signed URL would break.
         if (artifactKey) {
           const redirected = await serveParquetArtifact(
@@ -537,13 +468,6 @@ app.openapi(
           );
           if (redirected) return redirected;
           return c.json({ success: false, error: "Artifact not found" }, 404);
-        }
-      } else {
-        const info = getBindingArtifactInfo(resource.doc, artifactId);
-        if (info) {
-          artifactKey = info.artifactKey;
-          revision = info.revision ?? null;
-          rowCount = info.rowCount ?? null;
         }
       }
 
@@ -575,71 +499,6 @@ app.openapi(
   },
 );
 
-// POST /:token/binding/:bindingId/execute — run a published live binding.
-// Apps only, and only when the owner enabled `publicShare.allowLiveQueries`.
-// The SQL is always the owner's PUBLISHED binding code (never viewer-supplied),
-// executed read-only + row-capped + rate-limited under the owner's connection.
-app.openapi(
-  createRoute({
-    method: "post",
-    path: "/{token}/binding/{bindingId}/execute",
-    tags: ["Public Shares"],
-    summary: "Run a shared app's published live binding",
-    security: [],
-    request: {
-      params: TokenParam.extend({
-        bindingId: z.string().openapi({
-          param: { name: "bindingId", in: "path" },
-        }),
-      }),
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const token = c.req.param("token");
-      const bindingId = c.req.param("bindingId");
-      const resource = await findByToken(token);
-      if (!resource) {
-        return c.json({ success: false, error: "Share link not found" }, 404);
-      }
-      if (resource.type !== "legacy-app") {
-        return c.json(
-          { success: false, error: "Live queries are only supported for apps" },
-          400,
-        );
-      }
-      const gate = requireUnlock(c, token, resource);
-      if (gate) return gate;
-
-      const result = await executePublicAppLiveBinding({
-        app: resource.doc,
-        bindingId,
-        token,
-      });
-      if (!result.success) {
-        return c.json(
-          { success: false, error: result.error },
-          result.status as 400,
-        );
-      }
-      return c.json(
-        {
-          success: true,
-          rows: result.rows,
-          fields: result.fields,
-          rowCount: result.rowCount,
-        },
-        200,
-        { "Cache-Control": "private, no-store" },
-      );
-    } catch (error) {
-      logger.error("Error running public live binding", { error });
-      return c.json({ success: false, error: "Failed to run query" }, 500);
-    }
-  },
-);
-
 // POST /:token/refresh — throttled snapshot refresh.
 // Only re-runs the owner-defined data source queries; anonymous viewers can
 // never execute arbitrary queries.
@@ -662,36 +521,24 @@ app.openapi(
       }
       const gate = requireUnlock(c, token, resource);
       if (gate) return gate;
-      if (resource.type === "legacy-app") {
-        const appDoc = resource.doc;
-        if (
-          !appDoc.dataBindings.some(
-            binding => binding.materialization === "parquet",
-          )
-        ) {
-          return c.json(
-            {
-              success: false,
-              error: "No materialized app data sources to refresh",
-            },
-            400,
-          );
-        }
-      } else if (resource.type === "dashboard") {
-        const dashboardDoc = resource.doc;
-        if (
-          !(dashboardDoc.dataSources || []).some(
-            ds => ds.materialization !== "live",
-          )
-        ) {
-          return c.json(
-            {
-              success: false,
-              error: "No materialized dashboard data sources to refresh",
-            },
-            400,
-          );
-        }
+      if (resource.type !== "dashboard") {
+        return c.json(
+          { success: false, error: "Refresh is only supported for dashboards" },
+          400,
+        );
+      }
+      if (
+        !(resource.doc.dataSources || []).some(
+          ds => ds.materialization !== "live",
+        )
+      ) {
+        return c.json(
+          {
+            success: false,
+            error: "No materialized dashboard data sources to refresh",
+          },
+          400,
+        );
       }
 
       const last =
@@ -712,40 +559,22 @@ app.openapi(
 
       // Claim the cooldown slot atomically so concurrent anonymous viewers
       // can't queue duplicate refreshes.
-      const claimed =
-        resource.type === "dashboard"
-          ? await Dashboard.findOneAndUpdate(
-              {
-                _id: resource.doc._id,
-                "publicShare.enabled": true,
-                $or: [
-                  { "publicShare.lastPublicRefreshAt": { $exists: false } },
-                  {
-                    "publicShare.lastPublicRefreshAt": {
-                      $lte: new Date(Date.now() - PUBLIC_REFRESH_COOLDOWN_MS),
-                    },
-                  },
-                ],
+      const claimed = await Dashboard.findOneAndUpdate(
+        {
+          _id: resource.doc._id,
+          "publicShare.enabled": true,
+          $or: [
+            { "publicShare.lastPublicRefreshAt": { $exists: false } },
+            {
+              "publicShare.lastPublicRefreshAt": {
+                $lte: new Date(Date.now() - PUBLIC_REFRESH_COOLDOWN_MS),
               },
-              { $set: { "publicShare.lastPublicRefreshAt": new Date() } },
-              { new: true },
-            )
-          : await MakoApp.findOneAndUpdate(
-              {
-                _id: resource.doc._id,
-                "publicShare.enabled": true,
-                $or: [
-                  { "publicShare.lastPublicRefreshAt": { $exists: false } },
-                  {
-                    "publicShare.lastPublicRefreshAt": {
-                      $lte: new Date(Date.now() - PUBLIC_REFRESH_COOLDOWN_MS),
-                    },
-                  },
-                ],
-              },
-              { $set: { "publicShare.lastPublicRefreshAt": new Date() } },
-              { new: true },
-            );
+            },
+          ],
+        },
+        { $set: { "publicShare.lastPublicRefreshAt": new Date() } },
+        { new: true },
+      );
       if (!claimed) {
         return c.json(
           {
@@ -778,33 +607,6 @@ app.openapi(
         queued = queueResult.queued;
         alreadyRunning = !queueResult.queued;
         dataSourceIds = queueResult.dataSourceIds;
-      } else if (resource.type === "app") {
-        // §13.4.2: scheduled/anonymous refresh of v2 bindings is not built.
-        return c.json(
-          {
-            success: false,
-            error: "Refresh is not available for this app yet",
-          },
-          501,
-        );
-      } else {
-        const appDoc = resource.doc;
-        const materializedBindings = appDoc.dataBindings.filter(
-          binding => binding.materialization === "parquet",
-        );
-        const results = await Promise.all(
-          materializedBindings.map(binding =>
-            queueAppBindingMaterialization({
-              workspaceId: appDoc.workspaceId.toString(),
-              appId: appDoc._id.toString(),
-              bindingId: binding.id,
-              force: true,
-            }),
-          ),
-        );
-        queued = results.some(result => result.queued);
-        alreadyRunning = results.some(result => result.alreadyRunning);
-        dataSourceIds = results.map(result => result.bindingId);
       }
 
       return c.json({

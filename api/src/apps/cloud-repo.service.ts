@@ -1,53 +1,34 @@
 /**
- * Apps durable mirrors — where a workspace repo's history is replicated.
+ * Apps durable mirror — where a workspace repo's history is replicated.
  *
- * Two tiers, ONE mirror per workspace (§13.17):
+ * ONE tier (apps.md §17): the workspace's CONNECTED GitHub repo (Settings →
+ * GitHub, `workspaceRepos[]`). That repo IS the durable mirror — commits push
+ * there, restores clone from there. A customer remote is never force-pushed:
+ * heads and tags go without force (a direct GitHub-side push stalls our
+ * mirror with a logged non-fast-forward error instead of being clobbered),
+ * and only Mako's own `refs/mako/*` WIP namespace is forced.
  *
- *  - CONNECTED: the workspace linked its own GitHub repo (Settings → GitHub,
- *    `workspaceRepos[]`). That repo IS the durable mirror — commits push
- *    there, restores clone from there, and mako-cloud is not used at all.
- *    A customer remote is never force-pushed: heads and tags go without
- *    force (a direct GitHub-side push stalls our mirror with a logged
- *    non-fast-forward error instead of being clobbered), and only Mako's own
- *    `refs/mako/*` WIP namespace is forced.
- *  - MAKO-CLOUD: workspaces that never connected a repo fall back to a
- *    Mako-owned private repo under MAKO_CLOUD_GITHUB_ORG
- *    (`<MAKO_CLOUD_REPO_PREFIX>-<workspaceId>` — the prefix namespaces per
- *    backing database: prod "ws", previews/staging "staging", local "dev").
- *    This is OUR remote, so it is mirror-pushed verbatim (--mirror: all
- *    refs, pruned).
- *
- * The connected tier only engages on production (prefix "ws") or under the
- * explicit APPS_CONNECTED_REPO_PUSH=allow opt-in. Previews and dev run on
- * prod-cloned databases that carry REAL customer bindings, and a test commit
- * must never land in a customer repo — gated environments treat the binding
- * as inert metadata and keep using their own mako-cloud tier.
+ * The connected tier only engages on production (APPS_REQUIRE_CONNECTED_REPO)
+ * or under the explicit APPS_CONNECTED_REPO_PUSH=allow opt-in. Previews and
+ * dev run on prod-cloned databases that carry REAL customer bindings, and a
+ * test commit must never land in a customer repo — gated environments treat
+ * the binding as inert metadata and keep local-only bare repos.
  *
  * The local bare repo remains the working store the API reads from; the
  * mirror is the durable replica. Mirror pushes run after commits/merges
  * (not per WIP flush — too chatty), serialized per workspace and coalesced
  * so concurrent commits produce one trailing push, never an interleaving.
  */
-import { Types } from "mongoose";
-import { Workspace } from "../database/workspace-schema";
-import {
-  getMakoCloudOrg,
-  getMakoCloudRepoPrefix,
-  getMakoCloudToken,
-  isMakoCloudConfigured,
-} from "../integrations/github/cloud-app-auth";
 import { resolveRepoToken } from "../integrations/github/app-auth";
 import { getWorkspaceRepo } from "../services/workspace-repos.service";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { runGit } from "./git";
-import { appsConnectedRepoPushEnv } from "./config";
+import { appsConnectedRepoPushEnv, appsRequireConnectedRepo } from "./config";
 import { DEFAULT_BRANCH, repoDirFor, repoExists } from "./repository.service";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps");
-
-const GITHUB_API = "https://api.github.com";
 
 /** Overridable so tests can point mirrors at file:// remotes. */
 function remoteBase(): string {
@@ -60,59 +41,40 @@ function remoteUrl(owner: string, repo: string): string {
 
 /**
  * Whether connected customer repos participate as mirrors in THIS
- * environment. Prod only (prefix "ws"), plus an explicit dev opt-in —
- * see the module doc for why previews must stay out.
+ * environment. Prod (APPS_REQUIRE_CONNECTED_REPO=true), plus an explicit
+ * dev opt-in — see the module doc for why previews must stay out.
  */
 export function connectedTierEnabled(): boolean {
-  return (
-    getMakoCloudRepoPrefix() === "ws" || appsConnectedRepoPushEnv() === "allow"
-  );
+  return appsRequireConnectedRepo() || appsConnectedRepoPushEnv() === "allow";
 }
 
-export type MirrorTarget =
-  | { kind: "connected"; owner: string; repo: string; installationId?: number }
-  | { kind: "mako-cloud"; owner: string; repo: string };
-
-export function cloudRepoNameFor(workspaceId: string): string {
-  return `${getMakoCloudRepoPrefix()}-${workspaceId}`;
-}
-
-async function findCloudRepoPointer(
-  workspaceId: string,
-): Promise<{ owner: string; repo: string } | null> {
-  const ws = await Workspace.findById(new Types.ObjectId(workspaceId))
-    .select("appsCloudRepo")
-    .lean();
-  return ws?.appsCloudRepo ?? null;
-}
+export type MirrorTarget = {
+  kind: "connected";
+  owner: string;
+  repo: string;
+  installationId?: number;
+};
 
 /**
- * The workspace's durable mirror: the connected repo when one is bound (and
- * the tier is enabled here), else the mako-cloud pointer, else null.
+ * The workspace's durable mirror: the connected repo when one is bound and
+ * the tier is enabled here, else null (local-only).
  */
 export async function resolveMirrorTarget(
   workspaceId: string,
 ): Promise<MirrorTarget | null> {
-  if (connectedTierEnabled()) {
-    const binding = await getWorkspaceRepo(workspaceId).catch(() => null);
-    if (binding) {
-      return {
-        kind: "connected",
-        owner: binding.owner,
-        repo: binding.repo,
-        installationId: binding.installationId,
-      };
-    }
-  }
-  const pointer = await findCloudRepoPointer(workspaceId);
-  return pointer ? { kind: "mako-cloud", ...pointer } : null;
+  if (!connectedTierEnabled()) return null;
+  const binding = await getWorkspaceRepo(workspaceId).catch(() => null);
+  if (!binding) return null;
+  return {
+    kind: "connected",
+    owner: binding.owner,
+    repo: binding.repo,
+    installationId: binding.installationId,
+  };
 }
 
 async function tokenFor(target: MirrorTarget): Promise<string | undefined> {
-  if (target.kind === "connected") {
-    return resolveRepoToken(target.installationId);
-  }
-  return getMakoCloudToken();
+  return resolveRepoToken(target.installationId);
 }
 
 /** Auth via header keeps the token out of the remote URL (and thus out of
@@ -121,86 +83,6 @@ function authArgs(token: string | undefined): string[] {
   if (!token) return [];
   const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
   return ["-c", `http.extraheader=Authorization: Basic ${basic}`];
-}
-
-/**
- * Create (idempotently) the workspace's mako-cloud repo and persist the
- * pointer on the workspace doc. Returns null when the cloud app is not
- * configured — callers degrade to local-only storage rather than failing app
- * creation. Workspaces with a connected repo never get one (§13.17): their
- * own repo is the durable tier.
- */
-export async function ensureCloudRepo(
-  workspaceId: string,
-): Promise<{ owner: string; repo: string } | null> {
-  const existing = await findCloudRepoPointer(workspaceId);
-  if (existing) return existing;
-  if (!isMakoCloudConfigured()) return null;
-  const org = getMakoCloudOrg();
-  if (!org) return null;
-
-  const name = cloudRepoNameFor(workspaceId);
-  const token = await getMakoCloudToken();
-  const res = await fetch(`${GITHUB_API}/orgs/${org}/repos`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github+json",
-      "Content-Type": "application/json",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-    body: JSON.stringify({
-      name,
-      private: true,
-      auto_init: false,
-      description: `Mako workspace repo (workspace ${workspaceId})`,
-    }),
-  });
-  // 422 "name already exists" = an earlier attempt got the repo but died
-  // before persisting the pointer — adopting it is the idempotent outcome.
-  if (!res.ok && res.status !== 422) {
-    const body = await res.text().catch(() => "");
-    throw new Error(
-      `Failed to create cloud repo ${org}/${name} (${res.status}): ${body.slice(0, 300)}`,
-    );
-  }
-
-  const cloudRepo = { owner: org, repo: name };
-  await Workspace.updateOne(
-    { _id: new Types.ObjectId(workspaceId) },
-    { $set: { appsCloudRepo: cloudRepo } },
-  );
-  logger.info("Apps workspace cloud repo ready", {
-    workspaceId,
-    repo: `${org}/${name}`,
-  });
-  return cloudRepo;
-}
-
-/**
- * Make sure the workspace HAS a durable mirror before content is committed:
- * the connected repo when one is bound (nothing to create — it already
- * exists on GitHub), else the mako-cloud repo (created on demand). Null =
- * no durable tier is configured (pure-local dev) and creation proceeds
- * local-only.
- */
-export async function ensureDurableRepo(
-  workspaceId: string,
-): Promise<MirrorTarget | null> {
-  if (connectedTierEnabled()) {
-    const binding = await getWorkspaceRepo(workspaceId).catch(() => null);
-    if (binding) {
-      return {
-        kind: "connected",
-        owner: binding.owner,
-        repo: binding.repo,
-        installationId: binding.installationId,
-      };
-    }
-  }
-  if (!isMakoCloudConfigured()) return null;
-  const made = await ensureCloudRepo(workspaceId);
-  return made ? { kind: "mako-cloud", ...made } : null;
 }
 
 /** `git clone --mirror` into the workspace's repo slot + serving config. */
@@ -263,7 +145,6 @@ export async function ensureLocalRepo(workspaceId: string): Promise<void> {
   const run = (async () => {
     const target = await resolveMirrorTarget(workspaceId);
     if (!target) return;
-    if (target.kind === "mako-cloud" && !isMakoCloudConfigured()) return;
     const token = await tokenFor(target);
     await cloneMirrorInto(
       workspaceId,
@@ -332,21 +213,6 @@ async function pushMirror(
   const repoDir = repoDirFor(workspaceId);
   const token = await tokenFor(target);
   const url = remoteUrl(target.owner, target.repo);
-  if (target.kind === "mako-cloud") {
-    // --mirror: all refs incl. refs/mako/* WIP snapshots (this is OUR
-    // remote, so the never-force-a-customer-remote rule doesn't apply),
-    // pruning remote refs deleted locally.
-    await runGit([
-      "-C",
-      repoDir,
-      ...authArgs(token),
-      "push",
-      "--mirror",
-      "--quiet",
-      url,
-    ]);
-    return;
-  }
   // Connected repo = a CUSTOMER remote. Heads and tags go WITHOUT force: if
   // someone pushed to GitHub directly, our push fails non-fast-forward and is
   // logged — never clobbered (the webhook fetch path reconciles when the
@@ -374,7 +240,7 @@ async function pushMirror(
  * seen.
  */
 export function queueMirrorPush(workspaceId: string): void {
-  if (!isMakoCloudConfigured() && !connectedTierEnabled()) return;
+  if (!connectedTierEnabled()) return;
   void schedulePush(workspaceId).catch(error => {
     logger.warn("Apps mirror push failed", {
       workspaceId,
@@ -390,7 +256,7 @@ export function queueMirrorPush(workspaceId: string): void {
  * guaranteed to start after the caller's commit.
  */
 export async function mirrorPushNow(workspaceId: string): Promise<void> {
-  if (!isMakoCloudConfigured() && !connectedTierEnabled()) return;
+  if (!connectedTierEnabled()) return;
   await schedulePush(workspaceId);
 }
 
@@ -399,12 +265,65 @@ export async function mirrorPushNow(workspaceId: string): Promise<void> {
  *
  * A push from someone's checkout lands on GitHub, not here — the bare repo is
  * a cache. Before anything can be built from that commit it has to arrive, so
- * a deploy triggered by a webhook fetches first. For mako-cloud repos the
- * remote is authoritative (forced update). For connected repos the local
- * branch advances only when it fast-forwards: on divergence (Mako-side
+ * a deploy triggered by a webhook fetches first. The local branch advances
+ * only when it fast-forwards: on divergence (Mako-side
  * commits that failed to push, plus direct GitHub commits) we log and stand
  * still rather than silently drop either side.
  */
+/**
+ * Make sure `sha` exists in this instance's local repo, fetching it if not.
+ *
+ * Publishing moves `main` and deploys, but only the instance that HANDLED the
+ * push (or the webhook) has the commit in its cache. Every other instance —
+ * and on Cloud Run there are several, each with its own tmpfs — has a clone
+ * that predates it, and `ensureLocalRepo` returns early because a repo dir is
+ * there. Serving a published app then reads binding files AT the published
+ * sha, and git answers `fatal: not a tree object`: measured on a freshly
+ * published app, half of its `__data/<name>.parquet` requests 500'd, the
+ * other half succeeded, purely by which instance answered.
+ *
+ * A missing commit is recoverable — it is on the mirror's default branch,
+ * since publishing promotes it to main before deploying — so fetch once and
+ * look again. Coalesced per (workspace, sha) so a page asking for sixteen
+ * bindings at once triggers one fetch, not sixteen.
+ */
+const commitFetchInFlight = new Map<string, Promise<void>>();
+
+async function commitPresent(repoDir: string, sha: string): Promise<boolean> {
+  return runGit(["-C", repoDir, "cat-file", "-e", `${sha}^{commit}`])
+    .then(() => true)
+    .catch(() => false);
+}
+
+export async function ensureCommitLocally(
+  workspaceId: string,
+  sha: string,
+  branch: string = DEFAULT_BRANCH,
+): Promise<void> {
+  if (!/^[0-9a-f]{7,40}$/.test(sha)) return;
+  await ensureLocalRepo(workspaceId);
+  const repoDir = repoDirFor(workspaceId);
+  if (await commitPresent(repoDir, sha)) return;
+  const key = `${workspaceId}#${sha}`;
+  const existing = commitFetchInFlight.get(key);
+  if (existing) return existing;
+  const run = (async () => {
+    try {
+      await fetchFromCloud(workspaceId, branch);
+    } catch (error) {
+      // Not fatal here: the caller's git command produces the real, specific
+      // error if the commit is still missing after this.
+      logger.warn("Fetch for a missing commit failed", {
+        workspaceId,
+        sha,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  })().finally(() => commitFetchInFlight.delete(key));
+  commitFetchInFlight.set(key, run);
+  return run;
+}
+
 export async function fetchFromCloud(
   workspaceId: string,
   branch: string,
@@ -414,20 +333,6 @@ export async function fetchFromCloud(
   const repoDir = repoDirFor(workspaceId);
   const token = await tokenFor(target);
   const url = remoteUrl(target.owner, target.repo);
-  if (target.kind === "mako-cloud") {
-    await runGit([
-      "-C",
-      repoDir,
-      ...authArgs(token),
-      "fetch",
-      "--quiet",
-      url,
-      // Update the local branch to match the remote. Forced because the
-      // remote is authoritative for what was pushed there.
-      `+refs/heads/${branch}:refs/heads/${branch}`,
-    ]);
-    return;
-  }
   await runGit([
     "-C",
     repoDir,
@@ -519,26 +424,7 @@ export async function adoptConnectedRepo(
   const url = remoteUrl(binding.owner, binding.repo);
   const label = `${binding.owner}/${binding.repo}`;
 
-  // Restore any pre-binding history from the LEGACY mako-cloud mirror
-  // explicitly — the general restore path would now consult the very binding
-  // being adopted.
   const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) {
-    const pointer = await findCloudRepoPointer(workspaceId);
-    if (pointer && isMakoCloudConfigured()) {
-      await cloneMirrorInto(
-        workspaceId,
-        remoteUrl(pointer.owner, pointer.repo),
-        await getMakoCloudToken(),
-        `${pointer.owner}/${pointer.repo}`,
-      ).catch(error => {
-        logger.warn("Apps legacy mirror restore failed during adoption", {
-          workspaceId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }
-  }
   const hasHistory =
     (await repoExists(repoDir)) &&
     (await runGit([

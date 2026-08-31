@@ -72,6 +72,8 @@ import {
   APPS_MAX_FILE_BYTES,
   appsGitOriginBase,
   appsSessionsRoot,
+  RepoRequiredError,
+  appsRequireConnectedRepo,
 } from "./config";
 import { assertSafeRelPath, EMPTY_TREE, runGit, ZERO_OID } from "./git";
 import {
@@ -95,11 +97,13 @@ import {
   type TreeEntry,
 } from "./repository.service";
 import { initialWorkspaceFiles } from "./workspace-template";
+import { syncConsolesIndexFromRepo } from "./workspace-consoles.service";
 import { createAppsScaffold } from "./scaffold";
 import {
-  ensureDurableRepo,
+  ensureCommitLocally,
   ensureLocalRepo,
   mirrorPushNow,
+  resolveMirrorTarget,
   queueMirrorPush,
 } from "./cloud-repo.service";
 
@@ -168,6 +172,14 @@ export function notifyRepoPushed(workspaceId: string, userId: string): void {
   pokeApp(workspaceId, null, "push", userId);
   // Another box on the same branch is now behind; let it pull on next touch.
   invalidatePullThrottle();
+  // Consoles edited in a terminal or a laptop clone reach the index (and the
+  // agent's search) by the next turn (apps.md §16.3).
+  void syncConsolesIndexFromRepo(workspaceId, userId).catch(error => {
+    logger.warn("Console index sync after push failed", {
+      workspaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 }
 
 // The sandbox HAS a remote, and a credential for it — see box.ts. Two things
@@ -621,6 +633,9 @@ export async function createProject(input: {
   slug?: string;
 }): Promise<IAppProject> {
   const title = input.title.trim() || "Untitled app";
+  // Production: the workspace's own repo is the only durable store (§17).
+  const mirror = await resolveMirrorTarget(input.workspaceId);
+  if (appsRequireConnectedRepo() && !mirror) throw new RepoRequiredError();
   const slug = input.slug ?? (await uniqueSlug(input.workspaceId, title));
   const project = await AppProject.create({
     workspaceId: new Types.ObjectId(input.workspaceId),
@@ -668,12 +683,11 @@ export async function createProject(input: {
     await AppProject.deleteOne({ _id: project._id });
     throw error;
   }
-  // Durable tier (§13.17): the connected repo when one is bound, else the
-  // mako-cloud repo. When either exists, the durable push is REQUIRED — on
-  // serverless hosts the local repo is an ephemeral cache. Hosts without any
-  // durable tier (pure local dev) keep working local-only.
+  // Durable tier (§13.17): the connected repo. When one is bound, the
+  // durable push is REQUIRED — on serverless hosts the local repo is an
+  // ephemeral cache. Hosts without a binding (dev, previews) stay local-only.
   try {
-    if (await ensureDurableRepo(input.workspaceId)) {
+    if (mirror) {
       await mirrorPushNow(input.workspaceId);
     }
   } catch (error) {
@@ -933,7 +947,19 @@ async function readSource(
   // not whatever main says today. Resolving them from main meant an edit to
   // a binding on main changed its content-addressed artifact key under the
   // live app, whose tables then 404'd until someone republished.
-  if (at) return { kind: "repo", repoDir, ref: at };
+  //
+  // The commit has to be HERE, though: only the instance that handled the
+  // push has it, so on a multi-instance host a published app read binding
+  // files at a sha its own cache had never seen (`fatal: not a tree object`,
+  // a 500 per data request, roughly half of them). Fetch it on a miss.
+  if (at) {
+    await ensureCommitLocally(
+      project.workspaceId.toString(),
+      at,
+      project.defaultBranch || DEFAULT_BRANCH,
+    );
+    return { kind: "repo", repoDir, ref: at };
+  }
   const branchRef = `refs/heads/${project.defaultBranch || DEFAULT_BRANCH}`;
   if (!userId) return { kind: "repo", repoDir, ref: branchRef };
 

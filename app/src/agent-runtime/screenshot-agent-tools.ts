@@ -1,8 +1,4 @@
 import { useDashboardStore } from "../store/dashboardStore";
-import {
-  findAppPreviewIframes,
-  requestAppPreviewCapture,
-} from "../app-runtime/preview-capture";
 
 type ScreenshotTarget =
   | "active_dashboard"
@@ -515,82 +511,17 @@ async function analyzeImageQuality(
 
 async function compositeAppPreviews(
   baseDataUrl: string,
-  target: HTMLElement,
-  options: { scale: number; backgroundColor?: string | null },
+  _target: HTMLElement,
+  _options: { scale: number; backgroundColor?: string | null },
 ): Promise<{
   dataUrl: string;
   compositedCount: number;
   failures: string[];
 }> {
-  const iframes = findAppPreviewIframes(target);
-  if (iframes.length === 0) {
-    return { dataUrl: baseDataUrl, compositedCount: 0, failures: [] };
-  }
-
-  const failures: string[] = [];
-  const captures = await Promise.all(
-    iframes.map(async iframe => {
-      try {
-        return {
-          iframe,
-          dataUrl: await requestAppPreviewCapture(iframe, options),
-        };
-      } catch (error) {
-        failures.push(
-          `${iframe.dataset.makoAppPreview ?? "unknown"}: ${
-            error instanceof Error ? error.message : "capture failed"
-          }`,
-        );
-        return null;
-      }
-    }),
-  );
-  const successful = captures.filter(
-    (c): c is { iframe: HTMLIFrameElement; dataUrl: string } => c !== null,
-  );
-  if (successful.length === 0) {
-    return { dataUrl: baseDataUrl, compositedCount: 0, failures };
-  }
-
-  const baseImage = await loadImage(baseDataUrl);
-  const canvas = document.createElement("canvas");
-  canvas.width = baseImage.naturalWidth || baseImage.width;
-  canvas.height = baseImage.naturalHeight || baseImage.height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) {
-    return { dataUrl: baseDataUrl, compositedCount: 0, failures };
-  }
-  ctx.drawImage(baseImage, 0, 0);
-
-  const targetRect = target.getBoundingClientRect();
-  const scaleX = targetRect.width > 0 ? canvas.width / targetRect.width : 1;
-  const scaleY = targetRect.height > 0 ? canvas.height / targetRect.height : 1;
-
-  for (const { iframe, dataUrl } of successful) {
-    try {
-      const image = await loadImage(dataUrl);
-      const rect = iframe.getBoundingClientRect();
-      ctx.drawImage(
-        image,
-        (rect.left - targetRect.left) * scaleX,
-        (rect.top - targetRect.top) * scaleY,
-        rect.width * scaleX,
-        rect.height * scaleY,
-      );
-    } catch (error) {
-      failures.push(
-        `${iframe.dataset.makoAppPreview ?? "unknown"}: ${
-          error instanceof Error ? error.message : "composite failed"
-        }`,
-      );
-    }
-  }
-
-  return {
-    dataUrl: canvas.toDataURL("image/png"),
-    compositedCount: successful.length,
-    failures,
-  };
+  // Git-backed apps render in same-origin iframes the rasterizer captures
+  // directly; the opaque-origin v1 preview iframes that needed self-capture
+  // are gone (apps.md §17).
+  return { dataUrl: baseDataUrl, compositedCount: 0, failures: [] };
 }
 
 async function captureWithModernScreenshot(

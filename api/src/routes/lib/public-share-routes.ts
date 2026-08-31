@@ -20,7 +20,7 @@ import {
   encrypt,
   decrypt,
   Dashboard,
-  MakoApp,
+  AppProject,
   type IPublicShare,
 } from "../../database/workspace-schema";
 import type { ShareableDocument } from "./collaborator-routes";
@@ -89,7 +89,7 @@ async function isShareTokenTaken(
   const filter = { "publicShare.token": token, _id: { $ne: excludeId } };
   const [dashboard, app] = await Promise.all([
     Dashboard.exists(filter),
-    MakoApp.exists(filter),
+    AppProject.exists(filter),
   ]);
   return !!(dashboard || app);
 }

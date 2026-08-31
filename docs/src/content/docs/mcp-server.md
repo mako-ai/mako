@@ -113,7 +113,7 @@ Read-only tools are annotated per the MCP spec (`readOnlyHint`), so well-behaved
 - **MCP credentials are MCP-only.** OAuth access tokens and scoped keys are rejected on every other API endpoint, so an MCP credential can never be replayed against REST mutation routes.
 - **OAuth grants are least-privilege by construction**: public clients with mandatory PKCE, single-use authorization codes, rotating refresh tokens, hashed at rest, always scoped to the read-only MCP set, and bound to the one workspace chosen at consent.
 - **Key management requires a browser session** — API keys cannot create or delete other API keys.
-- App data bindings and materializations are always read-only, and preview tokens are signed, single-app, and short-lived (60 s – 30 min).
+- App data bindings and materializations are always read-only.
 - **Dashboard writes edit definitions, never data.** `update_data_source_query` changes the dashboard document (query text, live/parquet toggle, refresh schedule) under the same query-access check as app bindings — an agent can point a source at a different saved query, but the query itself still executes read-only. Widget and layout mutations stay client-only and are not bridged.
 
 ## Headless & CI usage
@@ -196,7 +196,5 @@ systems must not be mixed on one app.
 | `403 … does not include the mcp scope` | Key was created without the `mcp` scope — create a new key. |
 | `Mako MCP access is read-only: the query was rejected…` | The agent attempted a write (`UPDATE`/`INSERT`/DDL). Expected — run writes with your own database tooling. |
 | `Read-only execution is not supported for mongodb…` (or `cloudflare-kv`) | Non-SQL engine — the SQL analyzer can't validate it, so it fails closed. For MongoDB, use the discovery/inspection tools instead; arbitrary Mongo execution is not available over MCP. |
-| `Server-side rendering is not configured` | The deployment has no `RENDER_APP_BROWSER_PATH` (headless Chromium). Agents fall back to `create_preview_token` — open the URL in any browser. |
-| `Preview base URL … is unreachable` | `CLIENT_URL`/`PUBLIC_URL` on the API server is wrong — it must point at the Mako frontend. |
 | Client shows the server but tools error with 401 | The OAuth token or `Authorization: Bearer` key is missing/revoked — reconnect or rotate. |
 | ChatGPT rejects the connector ("does not implement our spec") | The deployment predates the `search` / `fetch` connector tools — update Mako. Custom MCP connectors also require Developer mode to be enabled under ChatGPT's connector settings. |

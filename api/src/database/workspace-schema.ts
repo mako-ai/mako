@@ -128,11 +128,6 @@ export interface IWorkspace extends Document {
      */
     dashboardRefreshConcurrency?: number;
     /**
-     * Max concurrent app parquet binding materializations for this workspace.
-     * Clamped to [1, APP_BINDING_REFRESH_CONCURRENCY_PER_WORKSPACE_MAX].
-     */
-    appBindingRefreshConcurrency?: number;
-    /**
      * Apps (git-backed apps, sandbox, Source Control) for this workspace.
      * Off by default; super-admins flip it per workspace for the incremental
      * rollout (Settings › Super Admin › Feature flags).
@@ -153,13 +148,6 @@ export interface IWorkspace extends Document {
   workspaceRepos?: IWorkspaceRepoBinding[];
   /** @deprecated pre-workspaceRepos single binding — migrated at read time. */
   appsRepo?: IWorkspaceRepoBinding;
-  /**
-   * §10 monorepo, cloud tier: the ONE Mako-hosted mirror repo for this
-   * workspace (`<prefix>-<workspaceId>` under MAKO_CLOUD_GITHUB_ORG). Set
-   * after the first successful ensure+push; absent when the cloud app is
-   * not configured or the workspace is BYO-only.
-   */
-  appsCloudRepo?: { owner: string; repo: string };
 }
 
 export interface IWorkspaceRepoBinding {
@@ -437,6 +425,21 @@ export interface ISavedConsole extends Document {
   descriptionEmbedding?: number[];
   embeddingModel?: string;
   descriptionGeneratedAt?: Date;
+  /**
+   * Git is the source of truth for saved consoles (apps.md §16); this row is
+   * the derived index. `path` is the file in the workspace repo,
+   * `sourceBlobSha` the git blob id of that file as last projected — the
+   * push-driven sync skips rows whose blob has not moved.
+   */
+  path?: string;
+  sourceBlobSha?: string;
+  /**
+   * The blob the current description/embedding was derived from. Generation
+   * runs only while this differs from `sourceBlobSha` (§16.4).
+   */
+  descriptionSourceSha?: string;
+  /** "authored" = written in the file's front-matter; "generated" = LLM. */
+  descriptionSource?: "authored" | "generated";
   code: string;
   language: "sql" | "javascript" | "mongodb";
   chartSpec?: Record<string, unknown>;
@@ -1281,11 +1284,6 @@ Add any specific instructions for how the AI should interpret your data or respo
         default: 2,
         min: 1,
       },
-      appBindingRefreshConcurrency: {
-        type: Number,
-        default: 2,
-        min: 1,
-      },
       appsEnabled: { type: Boolean, default: false },
     },
     billing: {
@@ -1320,16 +1318,6 @@ Add any specific instructions for how the AI should interpret your data or respo
       type: String,
       default: "",
       maxlength: 10000,
-    },
-    appsCloudRepo: {
-      type: new Schema(
-        {
-          owner: { type: String, required: true },
-          repo: { type: String, required: true },
-        },
-        { _id: false },
-      ),
-      default: undefined,
     },
     workspaceRepos: {
       type: [
@@ -1758,6 +1746,10 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
     descriptionGeneratedAt: {
       type: Date,
     },
+    path: { type: String },
+    sourceBlobSha: { type: String },
+    descriptionSourceSha: { type: String },
+    descriptionSource: { type: String, enum: ["authored", "generated"] },
     code: {
       type: String,
       required: true,
@@ -1940,6 +1932,8 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
 
 // Indexes
 SavedConsoleSchema.index({ workspaceId: 1, folderId: 1 });
+// Repo path → row, for the push-driven index sync (apps.md §16.3).
+SavedConsoleSchema.index({ workspaceId: 1, path: 1 }, { sparse: true });
 SavedConsoleSchema.index({ workspaceId: 1, "sharedWith.userId": 1 });
 SavedConsoleSchema.index({ workspaceId: 1, createdBy: 1, isPrivate: 1 });
 SavedConsoleSchema.index({ workspaceId: 1, isSaved: 1 }); // For filtering saved vs draft consoles
@@ -4065,11 +4059,7 @@ export const Connector = mongoose.model<IConnector>(
  * EntityVersion — immutable append-only version snapshots for consoles and dashboards.
  * Every explicit save creates a new version record; history is never rewritten.
  */
-export type VersionableEntityType =
-  | "console"
-  | "dashboard"
-  | "dbt-file"
-  | "app";
+export type VersionableEntityType = "console" | "dashboard" | "dbt-file";
 
 export interface IEntityVersion extends Document {
   _id: Types.ObjectId;
@@ -4094,7 +4084,7 @@ const EntityVersionSchema = new Schema<IEntityVersion>(
     },
     entityType: {
       type: String,
-      enum: ["console", "dashboard", "dbt-file", "app"],
+      enum: ["console", "dashboard", "dbt-file"],
       required: true,
     },
     entityId: {
@@ -4224,248 +4214,6 @@ export const Dashboard = mongoose.model<IDashboard>(
   "Dashboard",
   DashboardSchema,
 );
-
-/**
- * MakoApp — a workspace-scoped React app (Lovable / v0 style) that runs inside
- * Mako with first-class access to workspace database connections via data
- * bindings. The app body is a virtual filesystem (`files`) + npm dependency
- * manifest (`dependencies`) + `dataBindings`. See `@mako/schemas` AppDefinition.
- */
-export interface IMakoAppFile {
-  path: string;
-  contents: string;
-}
-
-export interface IMakoAppBindingMaterializationRun {
-  at: Date;
-  status: "ready" | "error";
-  rowCount?: number;
-  byteSize?: number;
-  durationMs?: number;
-  error?: string;
-}
-
-export interface IMakoAppBindingCache {
-  parquetArtifactKey?: string;
-  definitionHash?: string;
-  artifactRevision?: string;
-  parquetBuildStatus?:
-    | "missing"
-    | "queued"
-    | "building"
-    | "ready"
-    | "error"
-    | null;
-  /**
-   * Heartbeat for the current build. Refreshed periodically while a build is
-   * queued/running so stuck "building" statuses can be detected and recovered.
-   */
-  parquetBuildStatusAt?: Date | null;
-  parquetLastError?: string | null;
-  rowCount?: number;
-  byteSize?: number;
-  lastRefreshedAt?: Date;
-  parquetBuiltAt?: Date;
-  history?: IMakoAppBindingMaterializationRun[];
-}
-
-export interface IMakoAppDataBinding {
-  id: string;
-  name: string;
-  /**
-   * Optional link to a dbt project. When set, the `{{ dbt_schema }}` token in
-   * `code` resolves to a dbt environment's target schema at execution time —
-   * the prod-like environment by default (published apps, materialization,
-   * public shares), or a per-user preview override in the draft preview.
-   */
-  dbtProjectId?: string;
-  connectionId: string;
-  language: "sql" | "javascript" | "mongodb";
-  code: string;
-  databaseId?: string;
-  databaseName?: string;
-  materialization: "live" | "parquet";
-  materializationSchedule?: {
-    enabled: boolean;
-    cron: string | null;
-    timezone?: string;
-    dataFreshnessTtlMs?: number | null;
-  };
-  cache?: IMakoAppBindingCache;
-}
-
-export interface IMakoApp extends Document {
-  _id: Types.ObjectId;
-  workspaceId: Types.ObjectId;
-  title: string;
-  description?: string;
-  template: string;
-  runtime: "cdn" | "webcontainer";
-  entrypoint: string;
-  files: IMakoAppFile[];
-  dependencies: Record<string, string>;
-  dataBindings: IMakoAppDataBinding[];
-  version: number;
-  /**
-   * Last published definition snapshot (draft/published split). The top-level
-   * fields above are the working DRAFT (autosaved on every edit); `published`
-   * is the committed definition that public/shared viewers render. Absent until
-   * the app is first published — readers fall back to the draft for back-compat.
-   * Shape matches `buildAppSnapshot` (no server-owned binding `cache`).
-   */
-  published?: Record<string, unknown>;
-  /** EntityVersion number that was published into `published`. */
-  publishedVersion?: number;
-  publishedAt?: Date;
-  access: "private" | "workspace";
-  /** Role granted to workspace members when access is "workspace". */
-  workspaceRole?: ResourceShareRole;
-  /** Per-user collaborators (viewer/editor), independent of `access`. */
-  sharedWith?: IResourceShareEntry[];
-  /** Public link sharing (read-only, snapshot data, optional password). */
-  publicShare?: IPublicShare;
-  owner_id?: string;
-  createdBy: string;
-  /**
-   * Set when this app has been migrated to Apps (see
-   * apps/migrate-v1-apps.ts). The migrator skips stamped apps, so the
-   * migration is re-runnable; clearing the stamp (and deleting the v2
-   * folder) un-migrates.
-   */
-  migratedToV2ProjectId?: Types.ObjectId;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-const MakoAppFileSchema = new Schema<IMakoAppFile>(
-  {
-    path: { type: String, required: true },
-    contents: { type: String, default: "" },
-  },
-  { _id: false },
-);
-
-const MakoAppBindingMaterializationRunSchema =
-  new Schema<IMakoAppBindingMaterializationRun>(
-    {
-      at: { type: Date, required: true },
-      status: { type: String, enum: ["ready", "error"], required: true },
-      rowCount: { type: Number },
-      byteSize: { type: Number },
-      durationMs: { type: Number },
-      error: { type: String },
-    },
-    { _id: false },
-  );
-
-const MakoAppBindingCacheSchema = new Schema<IMakoAppBindingCache>(
-  {
-    parquetArtifactKey: { type: String },
-    definitionHash: { type: String },
-    artifactRevision: { type: String },
-    parquetBuildStatus: {
-      type: String,
-      enum: ["missing", "queued", "building", "ready", "error", null],
-      default: null,
-    },
-    parquetBuildStatusAt: { type: Date, default: null },
-    parquetLastError: { type: String, default: null },
-    rowCount: { type: Number },
-    byteSize: { type: Number },
-    lastRefreshedAt: { type: Date },
-    parquetBuiltAt: { type: Date },
-    history: {
-      type: [MakoAppBindingMaterializationRunSchema],
-      default: undefined,
-    },
-  },
-  { _id: false },
-);
-
-const MakoAppDataBindingSchema = new Schema<IMakoAppDataBinding>(
-  {
-    id: { type: String, required: true },
-    name: { type: String, required: true },
-    dbtProjectId: { type: String },
-    connectionId: { type: String, required: true },
-    language: {
-      type: String,
-      enum: ["sql", "javascript", "mongodb"],
-      default: "sql",
-    },
-    code: { type: String, default: "" },
-    databaseId: { type: String },
-    databaseName: { type: String },
-    materialization: {
-      type: String,
-      enum: ["live", "parquet"],
-      default: "live",
-    },
-    materializationSchedule: {
-      enabled: { type: Boolean, default: false },
-      cron: { type: String, default: null },
-      timezone: { type: String, default: "UTC" },
-      dataFreshnessTtlMs: { type: Number, default: null },
-    },
-    cache: { type: MakoAppBindingCacheSchema, default: undefined },
-  },
-  { _id: false },
-);
-
-const MakoAppSchema = new Schema<IMakoApp>(
-  {
-    workspaceId: {
-      type: Schema.Types.ObjectId,
-      ref: "Workspace",
-      required: true,
-      index: true,
-    },
-    title: { type: String, required: true },
-    description: { type: String },
-    template: { type: String, default: "react-ts" },
-    runtime: {
-      type: String,
-      enum: ["cdn", "webcontainer"],
-      default: "cdn",
-    },
-    entrypoint: { type: String, default: "src/App.tsx" },
-    files: { type: [MakoAppFileSchema], default: [] },
-    dependencies: { type: Schema.Types.Mixed, default: {} },
-    dataBindings: { type: [MakoAppDataBindingSchema], default: [] },
-    version: { type: Number, default: 1 },
-    // Draft/published split: `published` holds the last committed definition
-    // snapshot (Mixed — same shape as buildAppSnapshot). Public/shared viewers
-    // render this; the top-level fields are the working draft.
-    published: { type: Schema.Types.Mixed, default: undefined },
-    publishedVersion: { type: Number },
-    publishedAt: { type: Date },
-    access: {
-      type: String,
-      enum: ["private", "workspace"],
-      default: "private",
-    },
-    workspaceRole: {
-      type: String,
-      enum: ["viewer", "editor"],
-      default: "viewer",
-    },
-    sharedWith: {
-      type: [ResourceShareEntrySchema],
-      default: [],
-    },
-    publicShare: { type: PublicShareSchema, default: undefined },
-    owner_id: { type: String, index: true },
-    createdBy: { type: String, required: true },
-    migratedToV2ProjectId: { type: Schema.Types.ObjectId },
-  },
-  { timestamps: true },
-);
-
-MakoAppSchema.index({ workspaceId: 1, updatedAt: -1 });
-MakoAppSchema.index({ workspaceId: 1, "sharedWith.userId": 1 });
-MakoAppSchema.index({ "publicShare.token": 1 }, { unique: true, sparse: true });
-
-export const MakoApp = mongoose.model<IMakoApp>("MakoApp", MakoAppSchema);
 
 /**
  * Skill — workspace-scoped knowledge + procedure primitive.
@@ -5704,7 +5452,7 @@ export interface IAppProject extends Document {
   defaultBranch: string;
   /**
    * Mako-hosted GitHub mirror (cloud tier): a private repo under the
-   * MAKO_CLOUD_GITHUB_ORG org that every commit is mirror-pushed to. Absent
+   * connected GitHub repo that every commit is mirror-pushed to. Absent
    * for projects created before cloud repos existed or when the cloud app is
    * not configured. Auth comes from cloud-app-auth.ts (Mako's own app), NOT
    * the per-workspace BYO installation.

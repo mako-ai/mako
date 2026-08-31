@@ -34,6 +34,11 @@ export interface RunGitOptions {
   /** Fail after this many ms (default 30s — plumbing should be fast). */
   timeoutMs?: number;
   maxBufferBytes?: number;
+  /**
+   * Bytes to feed git on stdin (`hash-object --stdin`,
+   * `update-index --index-info`). Written whole, then closed.
+   */
+  stdin?: string | Buffer;
 }
 
 const BASE_ENV: Record<string, string> = {
@@ -63,7 +68,7 @@ export function runGit(
   options: RunGitOptions = {},
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(
+    const child = execFile(
       "git",
       args,
       {
@@ -96,6 +101,12 @@ export function runGit(
         resolve({ stdout: String(stdout), stderr: String(stderr) });
       },
     );
+    if (options.stdin !== undefined && child.stdin) {
+      // A write error (git exited early) surfaces through the exit callback;
+      // swallowing it here keeps that the single failure path.
+      child.stdin.on("error", () => undefined);
+      child.stdin.end(options.stdin);
+    }
   });
 }
 
