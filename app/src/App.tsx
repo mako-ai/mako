@@ -88,6 +88,7 @@ import { WorkspaceProvider, useWorkspace } from "./contexts/workspace-context";
 import { OnboardingProvider } from "./contexts/onboarding-context";
 import type { DbFlowFormRef } from "./components/DbFlowForm";
 import { generateObjectId } from "./utils/objectId";
+import { readReturnTo, takeReturnTo } from "./utils/return-to";
 import { LoginPage } from "./components/LoginPage";
 import { DesktopAuthPage } from "./components/DesktopAuthPage";
 import { hasPendingDesktopAuth } from "./utils/desktop-auth-redirect";
@@ -918,11 +919,9 @@ function LoadingScreen() {
  * Only relative paths are honored so the parameter can't redirect off-site.
  */
 function safeReturnTo(): string | null {
-  const returnTo = new URLSearchParams(window.location.search).get("returnTo");
-  if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
-    return returnTo;
-  }
-  return null;
+  // ?returnTo on this URL, or the one stashed before an OAuth round trip
+  // (utils/return-to.ts) — the API's login gate sets the parameter.
+  return readReturnTo() ?? takeReturnTo();
 }
 
 // Auth route wrapper - redirects to "/" if already authenticated

@@ -1,5 +1,6 @@
 import { Context, Next } from "hono";
 import { sessionManager, writeSessionCookie } from "./session";
+import { loginRedirectUrl, shouldRedirectToLogin } from "./login-redirect";
 import { getCookie } from "hono/cookie";
 import { hashApiKey } from "./api-key.middleware";
 import {
@@ -17,6 +18,27 @@ import {
 } from "../logging";
 
 const logger = loggers.auth();
+
+/**
+ * No session. A script gets the JSON 401 it parses; a person who opened a link
+ * to an API-served page (a published app, a share link) gets the login screen
+ * and is returned to that URL afterwards — see ./login-redirect.
+ */
+function unauthenticated(c: Context, error: string) {
+  const url = new URL(c.req.url);
+  if (
+    shouldRedirectToLogin({
+      method: c.req.method,
+      path: url.pathname,
+      query: url.search,
+      accept: c.req.header("accept"),
+      secFetchDest: c.req.header("sec-fetch-dest"),
+    })
+  ) {
+    return c.redirect(loginRedirectUrl(url.pathname, url.search), 302);
+  }
+  return c.json({ error }, 401);
+}
 
 /**
  * Unified authentication middleware that supports both session and API key authentication
@@ -168,13 +190,13 @@ export async function unifiedAuthMiddleware(c: Context, next: Next) {
   const sessionId = getCookie(c, sessionManager.sessionCookieName);
 
   if (!sessionId) {
-    return c.json({ error: "Unauthorized" }, 401);
+    return unauthenticated(c, "Unauthorized");
   }
 
   const { session, user } = await sessionManager.validateSession(sessionId);
 
   if (!session || !user) {
-    return c.json({ error: "Invalid session" }, 401);
+    return unauthenticated(c, "Invalid session");
   }
 
   // Store user and auth type in context
