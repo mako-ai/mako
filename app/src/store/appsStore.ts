@@ -364,11 +364,15 @@ interface AppsStore {
     action: "stage" | "unstage" | "discard",
     paths: string[],
   ) => Promise<{ ok: boolean; error?: string }>;
-  /** What one commit changed in this app. Cached per (app, sha). */
+  /**
+   * What one commit changed — in this app (app-relative paths) or, with
+   * scope "repo", across the repository (repo-relative). Cached per key.
+   */
   fetchCommitFiles: (
     workspaceId: string,
     appId: string,
     sha: string,
+    scope?: "app" | "repo",
   ) => Promise<AppCommitFile[] | null>;
   fetchCommitFileVersions: (
     workspaceId: string,
@@ -1165,21 +1169,25 @@ export const useAppsStore = create<AppsStore>()(
         }
       },
 
-      fetchCommitFiles: async (workspaceId, appId, sha) => {
-        const cached = get().commitFilesByApp[appId]?.[sha];
+      fetchCommitFiles: async (workspaceId, appId, sha, scope = "app") => {
+        const key = scope === "repo" ? `repo:${sha}` : sha;
+        const cached = get().commitFilesByApp[appId]?.[key];
         if (cached) return cached;
         try {
           const body = unwrapBody(
             await api.GET(
               "/api/workspaces/{workspaceId}/apps/{id}/git/commit",
               {
-                params: { path: { workspaceId, id: appId }, query: { sha } },
+                params: {
+                  path: { workspaceId, id: appId },
+                  query: { sha, scope },
+                },
               },
             ),
           ) as { commit?: { files?: AppCommitFile[] } };
           const files = body.commit?.files ?? [];
           set(s => {
-            (s.commitFilesByApp[appId] ??= {})[sha] = files;
+            (s.commitFilesByApp[appId] ??= {})[key] = files;
           });
           return files;
         } catch (e) {

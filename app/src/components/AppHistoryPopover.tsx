@@ -15,39 +15,27 @@ import {
   Button,
   Chip,
   CircularProgress,
-  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
   DialogContentText,
   DialogTitle,
-  IconButton,
   ListItemIcon,
   ListItemText,
   Menu,
   MenuItem,
   Popover,
-  Tooltip,
   Typography,
 } from "@mui/material";
 import {
-  ChevronDown as ExpandIcon,
-  ChevronRight as CollapsedIcon,
   Copy as CopyIcon,
   FileDiff as DiffIcon,
-  MoreHorizontal as MoreIcon,
   Rocket as LiveIcon,
   Undo2 as RestoreIcon,
 } from "lucide-react";
 import { useAppsStore, type AppCommit } from "../store/appsStore";
 import { focusAppsDiffTab } from "../apps-runtime/shell";
-
-const STATUS_LETTER: Record<string, string> = {
-  added: "A",
-  modified: "M",
-  deleted: "D",
-  renamed: "R",
-};
+import { CommitChip, CommitRow } from "./CommitRow";
 
 function errorMessage(e: unknown, fallback: string): string {
   return e instanceof Error && e.message ? e.message : fallback;
@@ -198,165 +186,32 @@ export default function AppHistoryPopover({
               No commits yet.
             </Typography>
           )}
-          {commits.map(c => {
-            const isLive = !!publishedSha && c.oid === publishedSha;
-            const isHead = c.oid === headOid;
-            const isOpen = expanded === c.oid;
-            const files = commitFiles?.[c.oid];
-            return (
-              <Box key={c.oid} sx={{ borderBottom: 1, borderColor: "divider" }}>
-                <Box
-                  sx={{
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: 0.5,
-                    px: 1,
-                    py: 1,
-                    cursor: "pointer",
-                    "&:hover": { bgcolor: "action.hover" },
-                  }}
-                  onClick={() => toggleFiles(c.oid)}
-                >
-                  <Box sx={{ pt: 0.25, color: "text.secondary" }}>
-                    {isOpen ? (
-                      <ExpandIcon size={16} />
-                    ) : (
-                      <CollapsedIcon size={16} />
-                    )}
-                  </Box>
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography
-                      variant="body2"
-                      sx={{
-                        color: "text.primary",
-                        overflowWrap: "anywhere",
-                        display: "-webkit-box",
-                        WebkitLineClamp: isOpen ? "unset" : 2,
-                        WebkitBoxOrient: "vertical",
-                        overflow: "hidden",
-                      }}
-                    >
-                      {c.subject}
-                    </Typography>
-                    <Box
-                      sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 0.75,
-                        mt: 0.25,
-                        flexWrap: "wrap",
-                      }}
-                    >
-                      <Typography
-                        variant="caption"
-                        color="text.secondary"
-                        sx={{ fontFamily: "monospace" }}
-                      >
-                        {c.oid.slice(0, 7)}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        {c.author} · {new Date(c.timestamp).toLocaleString()}
-                      </Typography>
-                      {isLive && (
-                        <Chip
-                          size="small"
-                          color="success"
-                          icon={<LiveIcon size={12} />}
-                          label="Live"
-                          sx={{ height: 18, fontSize: "0.65rem" }}
-                        />
-                      )}
-                      {isHead && (
-                        <Chip
-                          size="small"
-                          variant="outlined"
-                          label="Latest"
-                          sx={{ height: 18, fontSize: "0.65rem" }}
-                        />
-                      )}
-                    </Box>
-                  </Box>
-                  <Tooltip title="Actions">
-                    <IconButton
-                      size="small"
-                      onClick={e => {
-                        e.stopPropagation();
-                        setMenu({ anchor: e.currentTarget, commit: c });
-                      }}
-                    >
-                      <MoreIcon size={16} />
-                    </IconButton>
-                  </Tooltip>
-                </Box>
-                <Collapse in={isOpen} unmountOnExit>
-                  <Box sx={{ pl: 4, pr: 1, pb: 1 }}>
-                    {!files ? (
-                      <CircularProgress size={14} sx={{ ml: 1, my: 0.5 }} />
-                    ) : files.length === 0 ? (
-                      <Typography variant="caption" color="text.secondary">
-                        No files of this app changed in this commit.
-                      </Typography>
-                    ) : (
-                      files.map(f => (
-                        <Box
-                          key={f.path}
-                          onClick={e => {
-                            e.stopPropagation();
-                            focusAppsDiffTab(
-                              appId,
-                              f.path,
-                              "commit",
-                              slug,
-                              c.oid,
-                            );
-                            onClose();
-                          }}
-                          sx={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 1,
-                            px: 1,
-                            py: 0.25,
-                            borderRadius: 1,
-                            cursor: "pointer",
-                            "&:hover": { bgcolor: "action.hover" },
-                          }}
-                        >
-                          <Typography
-                            variant="caption"
-                            sx={{
-                              fontFamily: "monospace",
-                              width: 12,
-                              color:
-                                f.status === "deleted"
-                                  ? "error.main"
-                                  : f.status === "added"
-                                    ? "success.main"
-                                    : "text.secondary",
-                            }}
-                          >
-                            {STATUS_LETTER[f.status] ?? "M"}
-                          </Typography>
-                          <Typography
-                            variant="caption"
-                            sx={{
-                              fontFamily: "monospace",
-                              color: "text.primary",
-                              overflowWrap: "anywhere",
-                            }}
-                          >
-                            {f.path}
-                          </Typography>
-                          <Box sx={{ flex: 1 }} />
-                          <DiffIcon size={13} style={{ opacity: 0.6 }} />
-                        </Box>
-                      ))
-                    )}
-                  </Box>
-                </Collapse>
-              </Box>
-            );
-          })}
+          {commits.map(c => (
+            <CommitRow
+              key={c.oid}
+              commit={c}
+              expanded={expanded === c.oid}
+              onToggle={() => toggleFiles(c.oid)}
+              files={commitFiles?.[c.oid]}
+              onFileClick={f => {
+                focusAppsDiffTab(appId, f.path, "commit", slug, c.oid);
+                onClose();
+              }}
+              onMenu={anchor => setMenu({ anchor, commit: c })}
+              chips={
+                <>
+                  {!!publishedSha && c.oid === publishedSha && (
+                    <CommitChip
+                      label="Live"
+                      color="success"
+                      icon={<LiveIcon size={12} />}
+                    />
+                  )}
+                  {c.oid === headOid && <CommitChip label="Latest" outlined />}
+                </>
+              }
+            />
+          ))}
         </Box>
       </Popover>
 
@@ -431,7 +286,7 @@ export default function AppHistoryPopover({
           <DialogContentText>
             {confirm?.kind === "restore" ? (
               <>
-                The app's files go back to what they were in{" "}
+                The app&apos;s files go back to what they were in{" "}
                 <b>{confirm.commit.subject}</b> (
                 <code>{confirm.commit.oid.slice(0, 7)}</code>), as a new commit
                 on <b>{branch}</b>. Everything after it stays in the history, so

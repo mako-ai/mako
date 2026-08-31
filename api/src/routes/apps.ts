@@ -1311,13 +1311,16 @@ appsRoutes.openapi(
     method: "get",
     path: "/{id}/git/commit",
     tags: ["Apps"],
-    summary: "What one commit changed in this app",
+    summary: "What one commit changed (in this app, or repo-wide)",
     description:
-      "The commit's parent and the app-relative files it added, modified, deleted or renamed. Read from the repository — starts no sandbox.",
+      "The commit's parent and the files it added, modified, deleted or renamed — app-relative by default, repo-relative with scope=repo (the Source Control graph). Read from the repository — starts no sandbox.",
     security: AUTH_SECURITY,
     request: {
       params: ProjectParam,
-      query: z.object({ sha: z.string().regex(/^[0-9a-f]{7,40}$/) }),
+      query: z.object({
+        sha: z.string().regex(/^[0-9a-f]{7,40}$/),
+        scope: z.enum(["app", "repo"]).optional(),
+      }),
     },
     responses: OPEN_RESPONSES,
   }),
@@ -1325,8 +1328,8 @@ appsRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const { sha } = c.req.valid("query");
-      const commit = await commitChanges(loaded.project, sha);
+      const { sha, scope } = c.req.valid("query");
+      const commit = await commitChanges(loaded.project, sha, scope ?? "app");
       return c.json({ success: true as const, commit }, 200);
     } catch (error) {
       return handleError(c, error);

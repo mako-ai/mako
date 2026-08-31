@@ -1473,13 +1473,17 @@ const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 export async function commitChanges(
   project: IAppProject,
   sha: string,
+  /** "repo": every file, repo-relative — the Source Control graph's view. */
+  scope: "app" | "repo" = "app",
 ): Promise<{ sha: string; parent: string | null; files: ChangedFile[] }> {
   const repoDir = await repoFor(project);
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
   const parent = await resolveCommit(repoDir, `${oid}^`);
+  const all = await diffNameStatus(repoDir, parent ?? EMPTY_TREE, oid);
+  if (scope === "repo") return { sha: oid, parent, files: all };
   const root = appRootFor(project);
-  const files = (await diffNameStatus(repoDir, parent ?? EMPTY_TREE, oid))
+  const files = all
     .filter(f => f.path.startsWith(`${root}/`))
     .map(f => ({ ...f, path: f.path.slice(root.length + 1) }));
   return { sha: oid, parent, files };
