@@ -29,6 +29,16 @@ export interface DashboardArtifactStore {
   openReadStream(key: string): Promise<NodeJS.ReadableStream | null>;
   getSize(key: string): Promise<number | null>;
   delete(key: string): Promise<void>;
+  /**
+   * Make sure a browser can fetch this store's signed URLs directly: the
+   * request that follows a cross-origin redirect carries an Origin header,
+   * and without a CORS rule on the bucket the browser downloads the bytes
+   * and then refuses to hand them to the page. Returns true once the bucket
+   * verifiably has such a rule (installing it if missing and permitted).
+   * Absent on stores that cannot check (filesystem, S3) — callers treat
+   * that as "not safe to redirect".
+   */
+  ensureBrowserCors?(): Promise<boolean>;
 }
 
 const logger = loggers.api("dashboard-artifact-store");
@@ -253,6 +263,48 @@ class GcsDashboardArtifactStore implements DashboardArtifactStore {
       expires: Date.now() + ttlSeconds * 1000,
     });
     return signedUrl;
+  }
+
+  /**
+   * Origin "*" on purpose: a V4 signed URL is itself the credential (anyone
+   * holding it can fetch for its TTL, from any origin), so restricting CORS
+   * origins here would protect nothing while breaking every dev host —
+   * localhost:5173, a laptop running an app's vite dev, preview URLs. The
+   * headers cover what parquet readers use: length/range for footer reads.
+   */
+  async ensureBrowserCors(): Promise<boolean> {
+    const bucket = this.storage.bucket(this.bucketName);
+    if (!this.bucketName) return false;
+    const [metadata] = await bucket.getMetadata();
+    const rules = metadata.cors ?? [];
+    const satisfied = rules.some(
+      rule =>
+        (rule.origin ?? []).includes("*") &&
+        (rule.method ?? []).includes("GET"),
+    );
+    if (satisfied) return true;
+    await bucket.setMetadata({
+      cors: [
+        ...rules,
+        {
+          origin: ["*"],
+          method: ["GET", "HEAD"],
+          responseHeader: [
+            "Content-Type",
+            "Content-Length",
+            "Content-Range",
+            "Accept-Ranges",
+            "ETag",
+            "Last-Modified",
+          ],
+          maxAgeSeconds: 3600,
+        },
+      ],
+    });
+    logger.info("Installed browser CORS rule on artifact bucket", {
+      bucket: this.bucketName,
+    });
+    return true;
   }
 
   async openReadStream(key: string): Promise<NodeJS.ReadableStream | null> {

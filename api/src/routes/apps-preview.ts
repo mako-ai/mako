@@ -10,12 +10,12 @@
  * zod-openapi's `{param}` syntax cannot express. Static asset serving does
  * not belong in the API reference anyway.
  */
-import { Readable } from "node:stream";
 import type { Context } from "hono";
 import { bindingArtifactKeyByName } from "../apps/bindings.service";
 import { AppProject } from "../database/workspace-schema";
 import { serveDeploymentFile } from "../apps/deployment.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import { readPreviewAsset, resolvePreviewGrant } from "../apps/preview.service";
 import { createRouter } from "../openapi/core";
 
@@ -74,31 +74,25 @@ async function serveAsset(c: Context): Promise<Response> {
     /^__data\/([A-Za-z0-9_][A-Za-z0-9_-]*)\.parquet$/,
   );
   if (dataMatch) {
-    const store = getDashboardArtifactStore();
     const project = await AppProject.findById(grant.projectId);
     const key = project
       ? await bindingArtifactKeyByName(project, dataMatch[1], "")
       : null;
-    const stream = key ? await store.openReadStream(key) : null;
-    if (!key || !stream) {
+    const response = key
+      ? await serveParquetArtifact(getDashboardArtifactStore(), key, {
+          cacheControl: "no-store",
+          // The preview page fetches cross-origin; without ACAO the browser
+          // rejects both the stream and the redirect before following it.
+          extraHeaders: { "Access-Control-Allow-Origin": "*" },
+        })
+      : null;
+    if (!response) {
       return c.json(
         { success: false, error: `Binding "${dataMatch[1]}" not materialized` },
         404,
       );
     }
-    // Content-Length is required: parquet readers (hyparquet's
-    // asyncBufferFromUrl, duckdb-wasm) need the size (or Range support) to
-    // read the footer.
-    const size = await store.getSize(key);
-    return new Response(Readable.toWeb(stream as Readable) as ReadableStream, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/vnd.apache.parquet",
-        ...(size !== null ? { "Content-Length": String(size) } : {}),
-        "Cache-Control": "no-store",
-        "Access-Control-Allow-Origin": "*",
-      },
-    });
+    return response;
   }
 
   const asset = await readPreviewAsset(grant, assetPathFor(c, token));

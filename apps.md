@@ -2570,3 +2570,50 @@ returns 412 `github_required` with "Connect a GitHub repository first
 Six test repos in `mako-ai-cloud` remain to be deleted by hand (`gh repo
 delete` needs the `delete_repo` scope). Cut through complexity: one tier,
 one truth, zero ghosts.
+
+## 18. Parquet leaves through the bucket, not the API (2026-08-31)
+
+Serving `__data/<name>.parquet` used to proxy every byte through the API:
+resolve the binding's artifact key, `openReadStream` from GCS, pipe. That
+made one Node process the funnel for every table of every open app — a
+16-binding app is 16 proxied streams per viewer — and it re-downloaded
+hundreds of megabytes through Cloud Run that the bucket would happily have
+served itself.
+
+Now the artifact routes answer with a **302 to a V4 signed URL** (10-minute
+TTL) and the browser downloads from the bucket directly. GCS supplies
+`Content-Length` (progress for free) and native `Range` support; parallel
+downloads are bounded by the bucket, not the API; the API's cost per file is
+one existence probe plus a locally-computed signature. Streaming remains as
+the fallback — the filesystem store has no URLs to sign, and any store that
+cannot *prove* redirects are safe keeps proxying exactly as before.
+
+"Prove safe" is CORS, and it is why the last attempt at this retreated to
+proxying (the comment lives in `dashboard-materialization.ts`): the request
+a browser makes after following a cross-origin redirect carries `Origin`,
+and a bucket without a CORS rule makes the browser discard the bytes after
+downloading them. Two rules of the design follow:
+
+- **The bucket must answer CORS, and the API takes responsibility for
+  that**: on first serve, `ensureBrowserCors()` verifies the bucket has a
+  `GET` rule for `*` and installs one if missing (origin `*` is deliberate —
+  the signed URL is itself the credential, and origin pinning would only
+  break localhost and laptop `vite dev`). No permission to do either →
+  streaming plus one actionable warning. `pnpm artifacts:cors` does the same
+  as an operator, for service accounts that may not touch bucket metadata;
+  `APPS_ARTIFACT_REDIRECTS=on|off` overrides the probe in either direction.
+- **No credentialed fetches to artifact routes**: a `credentials: "include"`
+  fetch that follows a redirect across origins is refused by browsers no
+  matter what the bucket's CORS says. The routes are same-origin (cookies
+  flow with the default mode), so the editor's preview fetch dropped
+  `include`; the SDK and published runtimes always fetched plain.
+
+Converted paths: the workspace artifact route, published `__data` (viewer
+and share), the preview grant route (whose cross-origin `ACAO: *` now rides
+on the 302 as well — a redirect response is CORS-checked *before* it is
+followed), and an app share's `/artifacts/<name>`. Dashboard/notebook
+artifacts deliberately keep streaming: their `rev`-addressed responses are
+`immutable`-cacheable, which beats a fresh signed URL per request for
+repeat views. Signing failures degrade to streaming per-response (GCS
+signing needs a private key or `iam signBlob`), so a misconfigured service
+account costs latency, never availability.

@@ -27,10 +27,12 @@ export async function previewParquetArtifact(
 ): Promise<DuckDBQueryResult & { totalRows: number }> {
   const limit = options?.limit ?? PARQUET_PREVIEW_ROW_LIMIT;
 
-  const response = await fetch(artifactUrl, {
-    credentials: "include",
-    signal: options?.signal,
-  });
+  // Default credentials mode on purpose, NOT "include": the URL is
+  // same-origin (session cookies flow either way), and the server may answer
+  // with a redirect to a signed bucket URL — a credentialed request that
+  // crosses origins on that redirect is one browsers refuse no matter how
+  // the bucket's CORS is configured.
+  const response = await fetch(artifactUrl, { signal: options?.signal });
   if (!response.ok || !response.body) {
     throw new Error("Failed to fetch the materialized artifact");
   }
