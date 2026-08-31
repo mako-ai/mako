@@ -5,7 +5,7 @@
  * edits autosave with a debounce, each save flushing to the actor's private
  * WIP ref so nothing is lost if the tab or the sandbox dies.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Alert, Box, Button, Chip, Typography } from "@mui/material";
 import { Database as DatabaseIcon, Play as PlayIcon } from "lucide-react";
 import MonacoEditor from "@monaco-editor/react";
@@ -13,6 +13,7 @@ import { EDITOR_OPTIONS, useMonacoTheme } from "../lib/monaco-presets";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppsStore } from "../store/appsStore";
 import { useConsoleStore } from "../store/consoleStore";
+import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import {
   configureMonacoForJsx,
   languageForPath,
@@ -54,7 +55,9 @@ export default function AppFileEditor({
   const updateFileLocal = useAppsStore(s => s.updateFileLocal);
   const materializeAppBinding = useAppsStore(s => s.materializeAppBinding);
   const saveFile = useAppsStore(s => s.saveFile);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const save = useDebouncedCallback(() => {
+    if (workspaceId) void saveFile(workspaceId, appId, path);
+  }, 1000);
 
   // Binding files get a console-style toolbar (Block 3 of the bindings plan;
   // connection picker + Run-through-console-engine are the next slice).
@@ -100,14 +103,9 @@ export default function AppFileEditor({
       updateFileLocal(appId, path, value ?? "");
       // First keystroke pins the tab (preview -> permanent), as for consoles.
       useConsoleStore.getState().updateDirty(_tabId, true);
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      if (workspaceId) {
-        saveTimer.current = setTimeout(() => {
-          void saveFile(workspaceId, appId, path);
-        }, 1000);
-      }
+      save.call();
     },
-    [appId, path, workspaceId, updateFileLocal, saveFile, _tabId],
+    [appId, path, updateFileLocal, save, _tabId],
   );
 
   return (
