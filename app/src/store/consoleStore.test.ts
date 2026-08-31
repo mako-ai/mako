@@ -172,3 +172,61 @@ describe("consoleStore saved baseline reconciliation", () => {
     expect(hasUnsavedLocalEdits(id)).toBe(true);
   });
 });
+
+describe("consoleStore preview-tab invariant (kind-agnostic)", () => {
+  beforeEach(() => {
+    resetConsoleStore();
+  });
+
+  function openApp(id: string, appId: string): string {
+    return useConsoleStore.getState().openTab({
+      id,
+      title: appId,
+      content: "",
+      kind: "app",
+      metadata: { appId },
+    });
+  }
+
+  it("opening a second app replaces the first app's preview tab", () => {
+    openApp("a1", "app-1");
+    openApp("a2", "app-2");
+    expect(useConsoleStore.getState().tabOrder).toEqual(["a2"]);
+    expect(useConsoleStore.getState().tabs.a1).toBeUndefined();
+  });
+
+  it("a pinned app tab is never replaced", () => {
+    openApp("a1", "app-1");
+    useConsoleStore.getState().updateDirty("a1", true);
+    openApp("a2", "app-2");
+    expect(useConsoleStore.getState().tabOrder).toEqual(["a1", "a2"]);
+  });
+
+  it("the preview tab is replaced across kinds — a console preview by an app", () => {
+    useConsoleStore.getState().openTab({
+      id: "c1",
+      title: "Untitled",
+      content: "",
+      kind: "console",
+    });
+    openApp("a1", "app-1");
+    expect(useConsoleStore.getState().tabOrder).toEqual(["a1"]);
+  });
+
+  it("replacePristine: false keeps the existing preview tab", () => {
+    openApp("a1", "app-1");
+    useConsoleStore
+      .getState()
+      .openTab(
+        { id: "n1", title: "Notebook", content: "", kind: "notebook" },
+        { replacePristine: false },
+      );
+    expect(useConsoleStore.getState().tabOrder).toEqual(["a1", "n1"]);
+  });
+
+  it("re-opening an existing tab id never counts itself as the pristine victim", () => {
+    openApp("a1", "app-1");
+    openApp("a1", "app-1");
+    expect(useConsoleStore.getState().tabOrder).toEqual(["a1"]);
+  });
+});

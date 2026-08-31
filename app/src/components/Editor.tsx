@@ -2798,6 +2798,7 @@ function Editor({
                     />
                   ) : tab.kind === "flow-editor" ? (
                     <FlowEditor
+                      tabId={tab.id}
                       flowId={tab.metadata?.flowId as string | undefined}
                       isNew={tab.metadata?.isNew as boolean | undefined}
                       flowType={

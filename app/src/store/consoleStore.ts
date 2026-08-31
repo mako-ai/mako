@@ -579,19 +579,27 @@ export const useConsoleStore = create<ConsoleStore>()(
         const id = tab.id || generateObjectId();
         const content = tab.content || "";
 
-        // Replace first pristine tab if present. Only an untouched CONSOLE
-        // is preview-tab fodder: for every other kind (app workbench,
-        // dashboard, connector) "not dirty" is its normal resting state, not
-        // a sign it is disposable — the old !isDirty check silently closed
-        // an open app's tab whenever a second app was opened.
+        // The preview-tab invariant (VS Code): at most ONE preview tab is
+        // open at a time. A tab is a preview until it is pinned (`isDirty`,
+        // rendered italic until then); opening another tab replaces it.
+        // This rule is kind-agnostic — the store owns the invariant, and
+        // each kind owns exactly one duty: pin the tab when its content is
+        // modified (console: first keystroke; app-file / dbt-file: first
+        // keystroke; app workbench: entering edit mode; flow: entering edit;
+        // dashboard: its own shouldPin; notebook / dbt-console / connector /
+        // plan: durable documents, pinned at open). A double-click on the
+        // tab title pins any kind.
+        //
+        // History: this used to check `kind === "console"` only. That was
+        // added when opening a second app closed the first app's tab — but
+        // the real defect was that the app workbench never pinned itself
+        // when work started in it, so the "fix" quietly dropped the
+        // invariant for every non-console kind and app tabs piled up.
         const replacePristine = options?.replacePristine ?? true;
         const pristineTabId = replacePristine
           ? Object.keys(get().tabs).find(tabId => {
               const candidate = get().tabs[tabId];
-              return (
-                (!candidate.kind || candidate.kind === "console") &&
-                !candidate.isDirty
-              );
+              return tabId !== id && !candidate.isDirty;
             })
           : undefined;
 
