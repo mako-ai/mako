@@ -1,4 +1,8 @@
 import { Types } from "mongoose";
+import {
+  claimScheduledRun,
+  findDueScheduledRuns,
+} from "../../services/scheduled-run-claim";
 import { inngest } from "../client";
 import {
   DatabaseConnection,
@@ -32,28 +36,14 @@ export const scheduledQuerySchedulerFunction = inngest.createFunction(
   async ({ step }) => {
     const now = new Date();
 
-    const dueConsoles = await step.run(
-      "fetch-due-scheduled-queries",
-      async () => {
-        const consoles = await SavedConsole.find({
-          "schedule.cron": { $exists: true, $ne: "" },
-          "scheduledRun.nextAt": { $lte: now },
-          isSaved: true,
-          $or: [
-            { is_deleted: { $ne: true } },
-            { is_deleted: { $exists: false } },
-          ],
-        })
-          .select("_id workspaceId schedule scheduledRun")
-          .lean();
-
-        return consoles.map(consoleDoc => ({
-          id: consoleDoc._id.toString(),
-          workspaceId: consoleDoc.workspaceId.toString(),
-          nextAt: consoleDoc.scheduledRun?.nextAt ?? null,
-          schedule: consoleDoc.schedule,
-        }));
-      },
+    const dueConsoles = await step.run("fetch-due-scheduled-queries", () =>
+      findDueScheduledRuns(SavedConsole, now, {
+        isSaved: true,
+        $or: [
+          { is_deleted: { $ne: true } },
+          { is_deleted: { $exists: false } },
+        ],
+      }),
     );
 
     for (const consoleDoc of dueConsoles) {
@@ -61,21 +51,9 @@ export const scheduledQuerySchedulerFunction = inngest.createFunction(
         continue;
       }
 
-      const nextAt = getNextScheduledConsoleRunAt(consoleDoc.schedule, now);
       const updateResult = await step.run(
         `claim-${consoleDoc.id}-${consoleDoc.nextAt?.toString() ?? "none"}`,
-        async () =>
-          SavedConsole.updateOne(
-            {
-              _id: new Types.ObjectId(consoleDoc.id),
-              "scheduledRun.nextAt": consoleDoc.nextAt,
-            },
-            {
-              $set: {
-                "scheduledRun.nextAt": nextAt,
-              },
-            },
-          ),
+        () => claimScheduledRun(SavedConsole, consoleDoc, now),
       );
 
       if (updateResult.modifiedCount === 0) {

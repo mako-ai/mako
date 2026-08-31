@@ -12,6 +12,10 @@
  */
 
 import { Types } from "mongoose";
+import {
+  claimScheduledRun,
+  findDueScheduledRuns,
+} from "../../services/scheduled-run-claim";
 import { inngest } from "../client";
 import {
   DbtJob,
@@ -53,7 +57,6 @@ import {
   warmDirsEnabled,
   withProjectDir,
 } from "../../dbt/workspace-dir.service";
-import { getNextScheduledConsoleRunAt } from "../../services/scheduled-query-schedule.service";
 import { getDashboardArtifactStore } from "../../services/dashboard-artifact-store.service";
 
 const logger = loggers.inngest("dbt");
@@ -699,43 +702,18 @@ export const dbtSchedulerFunction = inngest.createFunction(
   async ({ step }) => {
     const now = new Date();
 
-    const dueJobs = await step.run("fetch-due-dbt-jobs", async () => {
-      const jobs = await DbtJob.find({
-        enabled: true,
-        "schedule.cron": { $exists: true, $ne: "" },
-        "scheduledRun.nextAt": { $lte: now },
-      })
-        .select("_id workspaceId schedule scheduledRun")
-        .lean();
-
-      return jobs.map(job => ({
-        id: job._id.toString(),
-        workspaceId: job.workspaceId.toString(),
-        nextAt: job.scheduledRun?.nextAt ?? null,
-        schedule: job.schedule,
-      }));
-    });
+    const dueJobs = await step.run("fetch-due-dbt-jobs", () =>
+      findDueScheduledRuns(DbtJob, now, { enabled: true }),
+    );
 
     let triggered = 0;
     for (const dueJob of dueJobs) {
       if (!dueJob.schedule?.cron || !dueJob.schedule?.timezone) continue;
 
-      const nextAt = getNextScheduledConsoleRunAt(
-        { cron: dueJob.schedule.cron, timezone: dueJob.schedule.timezone },
-        now,
-      );
-
       // Optimistic claim — only the instance that flips nextAt triggers.
       const updateResult = await step.run(
         `claim-${dueJob.id}-${dueJob.nextAt?.toString() ?? "none"}`,
-        async () =>
-          DbtJob.updateOne(
-            {
-              _id: new Types.ObjectId(dueJob.id),
-              "scheduledRun.nextAt": dueJob.nextAt,
-            },
-            { $set: { "scheduledRun.nextAt": nextAt } },
-          ),
+        () => claimScheduledRun(DbtJob, dueJob, now),
       );
 
       if (updateResult.modifiedCount === 0) continue;

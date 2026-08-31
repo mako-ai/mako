@@ -1,5 +1,7 @@
 import { CronExpressionParser } from "cron-parser";
 
+import { isCronDue } from "./cron-due";
+
 export interface DashboardMaterializationScheduleInput {
   enabled?: boolean;
   cron?: string | null;
@@ -82,15 +84,10 @@ export function isDashboardMaterializationDue(input: {
   if (!schedule.enabled || !schedule.cron) {
     return false;
   }
-
-  if (!input.lastRefreshedAt) {
-    return true;
-  }
-
-  const interval = CronExpressionParser.parse(schedule.cron, {
-    currentDate: input.lastRefreshedAt,
-    tz: schedule.timezone,
+  return isCronDue({
+    cron: schedule.cron,
+    timezone: schedule.timezone,
+    lastRunAt: input.lastRefreshedAt ?? null,
+    now: input.now,
   });
-  const nextRunAt = interval.next().toDate();
-  return nextRunAt.getTime() <= (input.now ?? new Date()).getTime();
 }
