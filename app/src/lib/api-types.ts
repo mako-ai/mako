@@ -83,6 +83,8 @@ export interface ConsoleSaveResponse {
   success: boolean;
   path?: string;
   error?: string;
+  /** Machine-readable failure code (e.g. "github_required", apps.md §17). */
+  code?: string;
   /** New document version after a successful save. */
   version?: number;
   /** New draft revision after a successful save (realtime sync base). */

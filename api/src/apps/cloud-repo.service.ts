@@ -25,7 +25,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { runGit } from "./git";
 import { appsConnectedRepoPushEnv, appsRequireConnectedRepo } from "./config";
-import { DEFAULT_BRANCH, repoDirFor, repoExists } from "./repository.service";
+import {
+  DEFAULT_BRANCH,
+  initRepo,
+  repoDirFor,
+  repoExists,
+  type GitAuthor,
+} from "./repository.service";
+import { initialWorkspaceFiles } from "./workspace-template";
 import { loggers } from "../logging";
 
 const logger = loggers.api("apps");
@@ -466,4 +473,25 @@ export async function adoptConnectedRepo(
     return "seeded";
   }
   return "fresh";
+}
+
+/**
+ * The workspace repo, restored from its mirror or initialized with the
+ * starter template. Repos are provisioned lazily by whichever content type
+ * arrives first — app creation, console saves and skill writes all converge
+ * here (§10 monorepo).
+ */
+export async function ensureWorkspaceRepo(
+  workspaceId: string,
+  author?: GitAuthor,
+): Promise<string> {
+  await ensureLocalRepo(workspaceId);
+  const repoDir = repoDirFor(workspaceId);
+  if (!(await repoExists(repoDir))) {
+    await initRepo(repoDir, initialWorkspaceFiles(workspaceId), {
+      message: "Initialize workspace repository",
+      author,
+    });
+  }
+  return repoDir;
 }

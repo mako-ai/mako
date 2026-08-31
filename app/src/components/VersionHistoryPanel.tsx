@@ -106,10 +106,7 @@ export function VersionHistoryPanel({
       if (!workspaceId) return;
       setSelectedVersion({
         ...item,
-        snapshot:
-          entityType === "console"
-            ? { code: "" }
-            : ({} as Record<string, unknown>),
+        snapshot: {} as Record<string, unknown>,
       });
       setLoadingDetail(true);
       const detail = await fetchVersion(
@@ -150,15 +147,9 @@ export function VersionHistoryPanel({
   };
 
   let snapshotValue = "";
-  let previewLanguage = "json";
+  const previewLanguage = "json";
   if (selectedVersion != null) {
-    if (entityType === "console") {
-      snapshotValue = (selectedVersion.snapshot.code as string) ?? "";
-      previewLanguage = "sql";
-    } else {
-      snapshotValue = JSON.stringify(selectedVersion.snapshot ?? {}, null, 2);
-      previewLanguage = "json";
-    }
+    snapshotValue = JSON.stringify(selectedVersion.snapshot ?? {}, null, 2);
   }
 
   return (

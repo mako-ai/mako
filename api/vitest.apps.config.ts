@@ -21,6 +21,7 @@ export default defineConfig({
       "src/apps/adversarial.test.ts",
       "src/apps/git-endpoint.test.ts",
       "src/apps/workspace-consoles.service.test.ts",
+      "src/apps/workspace-skills.service.test.ts",
       "src/apps/box-state.service.test.ts",
       "src/apps/preview.service.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",

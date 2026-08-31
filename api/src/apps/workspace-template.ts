@@ -31,7 +31,7 @@ import { fetchFromCloud, queueMirrorPush } from "./cloud-repo.service";
 
 const logger = loggers.app();
 
-export const WORKSPACE_TEMPLATE_VERSION = 6;
+export const WORKSPACE_TEMPLATE_VERSION = 7;
 
 /** Where `.mcp.json` points when MAKO_API_URL is not exported. */
 export const HOSTED_MAKO_URL = "https://app.mako.ai";
@@ -62,6 +62,9 @@ of the workspace. **\`main\` is production** — a commit on \`main\` deploys.
   for the other languages); \`users/<userId>/consoles/…\` are private ones.
   Leading \`-- key: value\` lines are metadata (\`connection\`, \`database\`,
   \`description\`, \`schedule\`); a commit here shows up in the app on push.
+- \`skills/<name>/SKILL.md\` — workspace-taught agent skills (YAML
+  frontmatter: \`description\` is the retrieval trigger; then the playbook).
+  A commit here is in the agent's retrieval index by its next turn.
 - \`.mako/workspace.json\` — workspace id + template version (managed).
 - \`.mcp.json\` — the \`mako\` MCP server for your agent (managed).
 

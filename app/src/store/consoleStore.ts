@@ -1663,7 +1663,11 @@ export const useConsoleStore = create<ConsoleStore>()(
           }
 
           if (!response.ok) {
-            return { success: false, error: res.error || "Save failed" };
+            return {
+              success: false,
+              error: res.error || "Save failed",
+              code: (res as { code?: string }).code,
+            };
           }
 
           if (res.success) {
@@ -1680,7 +1684,11 @@ export const useConsoleStore = create<ConsoleStore>()(
             });
             return { success: true, path: cleanPath, version: newVersion };
           }
-          return { success: false, error: res.error || "Save failed" };
+          return {
+            success: false,
+            error: res.error || "Save failed",
+            code: (res as { code?: string }).code,
+          };
         } catch (e) {
           return {
             success: false,

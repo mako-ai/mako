@@ -54,7 +54,7 @@ import {
   validateScheduledConsoleSchedule,
 } from "../services/scheduled-query-schedule.service";
 import {
-  ensureLocalRepo,
+  ensureWorkspaceRepo,
   mirrorPushNow,
   queueMirrorPush,
   resolveMirrorTarget,
@@ -78,7 +78,6 @@ import {
   blobOid,
   commitBlobsOnBranch,
   diffNameStatus,
-  initRepo,
   listTree,
   log as repoLog,
   readBlob,
@@ -92,7 +91,6 @@ import {
   type TreeEntry,
 } from "./repository.service";
 import { EMPTY_TREE } from "./git";
-import { initialWorkspaceFiles } from "./workspace-template";
 
 const logger = loggers.api("consoles-git");
 
@@ -337,14 +335,7 @@ function filesFor(
 
 /** The workspace bare repo, restored from its mirror or initialized. */
 export async function ensureConsolesRepo(workspaceId: string): Promise<string> {
-  await ensureLocalRepo(workspaceId);
-  const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) {
-    await initRepo(repoDir, initialWorkspaceFiles(workspaceId), {
-      message: "Initialize workspace repository",
-    });
-  }
-  return repoDir;
+  return ensureWorkspaceRepo(workspaceId);
 }
 
 async function readAt(
@@ -1498,4 +1489,32 @@ export async function restoreConsoleTo(
   row.lastDraftOrigin = "user";
   await row.save();
   return { commitOid: committed.commitOid, unchanged: committed.unchanged };
+}
+
+/**
+ * The last explicitly saved state of a console — its file at HEAD. Git is
+ * the history now; snapshot rows are no longer written (§16.6).
+ */
+export async function savedConsoleStateFromRepo(
+  row: Pick<ISavedConsole, "workspaceId" | "path">,
+): Promise<{
+  code: string;
+  connectionId?: string;
+  databaseId?: string;
+  databaseName?: string;
+} | null> {
+  if (!row.path) return null;
+  const location = parseConsoleRepoPath(row.path);
+  if (!location) return null;
+  const repoDir = repoDirFor(row.workspaceId.toString());
+  if (!(await repoExists(repoDir))) return null;
+  const contents = await readAt(repoDir, row.path);
+  if (contents === null) return null;
+  const parsed = parseConsoleFile(contents, location.language);
+  return {
+    code: parsed.code,
+    connectionId: parsed.meta.connectionId,
+    databaseId: parsed.meta.databaseId,
+    databaseName: parsed.meta.databaseName,
+  };
 }

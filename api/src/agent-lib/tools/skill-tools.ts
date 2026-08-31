@@ -141,7 +141,7 @@ export function createSkillTools(workspaceId: string, userId?: string) {
         "Delete a workspace skill by name. Use this to retract a skill that turned out to be wrong — without deletion, bad skills poison every future query. Deletion is permanent.",
       inputSchema: deleteSkillSchema,
       execute: async ({ name }) => {
-        return deleteSkill(workspaceId, name);
+        return deleteSkill(workspaceId, name, authorId);
       },
     }),
     list_skills: tool({

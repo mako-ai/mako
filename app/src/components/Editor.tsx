@@ -498,10 +498,7 @@ function Editor({
   const shareConsoleTab = useConsoleStore(s =>
     shareConsoleTabId ? s.tabs[shareConsoleTabId] : undefined,
   );
-  // Only dashboards still use the snapshot-based panel; consoles read git.
-  const [versionHistoryEntityType] = useState<"console" | "dashboard">(
-    "dashboard",
-  );
+
   const [scheduleModalTabId, setScheduleModalTabId] = useState<string | null>(
     null,
   );
@@ -1484,6 +1481,28 @@ function Editor({
           setScheduleModalTabId(tabId);
           setScheduleModalMode("create");
         }
+      } else if (result.code === "github_required") {
+        // Production gate (apps.md §17): saves live in the workspace's own
+        // GitHub repo. Take the user straight to the connect screen.
+        const state = useConsoleStore.getState();
+        const existing = Object.values(state.tabs).find(
+          t => t.kind === "settings" && t.settingsSection === "github",
+        );
+        if (existing) {
+          state.setActiveTab(existing.id);
+        } else {
+          const id = state.openTab({
+            title: "GitHub",
+            content: "",
+            kind: "settings",
+            settingsSection: "github",
+          });
+          state.setActiveTab(id);
+        }
+        setSnackbarMessage(
+          "Connect a GitHub repository to save consoles — Mako keeps your work in your own repo.",
+        );
+        setSnackbarOpen(true);
       } else {
         setErrorMessage(JSON.stringify(result.error, null, 2));
         setErrorModalOpen(true);
@@ -3168,7 +3187,7 @@ function Editor({
             setVersionHistoryOpen(false);
             setVersionHistoryTabId(null);
           }}
-          entityType={versionHistoryEntityType}
+          entityType="dashboard"
           entityId={versionHistoryTabId}
           onRestore={() => {
             if (currentWorkspace && versionHistoryTabId) {

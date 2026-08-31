@@ -3,7 +3,8 @@ import { api, unwrap } from "../api";
 
 /** Typed versions base path per entity type. */
 const VERSION_BASE = {
-  console: "/api/workspaces/{workspaceId}/consoles/{id}/versions",
+  // Consoles read git history now (apps.md §16); only dashboards keep
+  // snapshot-based versions.
   dashboard: "/api/workspaces/{workspaceId}/dashboards/{id}/versions",
 } as const;
 

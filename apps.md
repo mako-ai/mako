@@ -2617,3 +2617,19 @@ artifacts deliberately keep streaming: their `rev`-addressed responses are
 repeat views. Signing failures degrade to streaming per-response (GCS
 signing needs a private key or `iam signBlob`), so a misconfigured service
 account costs latency, never availability.
+
+### 17.1 Skills followed consoles the same day (2026-08-31, late)
+
+Block D1, at last: the never-merged skills branch was re-ported onto the
+consoles primitive rather than rebased — `skills/<name>/SKILL.md` (system-
+skill package shape), `commitBlobsOnBranch` write-through with lazy adoption
+on the first save (plus the 412 gate in production), `skills/README.md` as
+the adoption marker, push-driven `syncSkillsIndexFromRepo` beside the
+consoles sync, Mongo `skills` kept as the derived retrieval index. The
+`workspace_skills_to_git` migration adopts repo-holding workspaces
+(rehearsed: RealAdvisor's 200 skills in one commit; three repo-less
+workspaces skip until they connect). Console `entity_versions` are fully
+retired the same evening: no dual-writes, no legacy `/versions` routes —
+save baselines and the version-comment diff read the file at HEAD. The 412
+now lands as UX: a failed save opens Settings → GitHub with a plain
+explanation. Template v7 documents `skills/` in AGENTS.md.

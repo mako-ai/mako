@@ -12,7 +12,6 @@ import {
   SavedConsole,
   ConsoleFolder,
   IDatabaseConnection,
-  EntityVersion,
   type ISavedConsole,
   ScheduledQueryRun,
 } from "../database/workspace-schema";
@@ -35,12 +34,6 @@ import {
   checkPreviewQuerySafety,
 } from "../services/query-pagination.service";
 import { createStreamingExportResponse } from "../utils/query-export-stream";
-import {
-  createVersion,
-  listVersions,
-  getVersion,
-  getUserDisplayName,
-} from "../services/entity-version.service";
 import { inngest } from "../inngest";
 import { requireWorkspaceAdmin } from "../middleware/workspace-admin.middleware";
 import {
@@ -53,6 +46,7 @@ import { RepoRequiredError } from "../apps/config";
 import {
   commitConsoleState,
   consoleCommitChanges,
+  savedConsoleStateFromRepo,
   consoleFileVersions,
   consoleHistory,
   projectSavedConsole,
@@ -85,23 +79,6 @@ function repoRequired(c: Context, error: RepoRequiredError) {
   );
 }
 
-function buildConsoleSnapshot(doc: ISavedConsole): Record<string, unknown> {
-  return {
-    name: doc.name,
-    description: doc.description,
-    code: doc.code,
-    language: doc.language,
-    connectionId: doc.connectionId?.toString(),
-    databaseName: doc.databaseName,
-    databaseId: doc.databaseId,
-    chartSpec: doc.chartSpec,
-    resultsViewMode: doc.resultsViewMode,
-    mongoOptions: doc.mongoOptions,
-    folderId: doc.folderId?.toString(),
-    access: doc.access,
-  };
-}
-
 // IMPORTANT: this MUST stay byte-for-byte compatible with the client hash so
 // the server-computed baseline equals what the client would compute for the
 // same snapshot. Mirror of `hashContent` in `app/src/utils/hash.ts` and
@@ -132,35 +109,20 @@ function computeConsoleStateHash(
   );
 }
 
-function computeConsoleStateHashFromSnapshot(
-  snapshot: Record<string, unknown> | undefined,
-): string | undefined {
-  if (!snapshot || typeof snapshot.code !== "string") return undefined;
-  return computeConsoleStateHash(
-    snapshot.code,
-    typeof snapshot.connectionId === "string"
-      ? snapshot.connectionId
-      : undefined,
-    typeof snapshot.databaseId === "string" ? snapshot.databaseId : undefined,
-    typeof snapshot.databaseName === "string"
-      ? snapshot.databaseName
-      : undefined,
-  );
-}
-
+/**
+ * Hash of the last explicitly saved state — read from the console's file at
+ * HEAD (git is the history; snapshot rows are no longer written).
+ */
 async function getLatestConsoleSavedStateHash(
-  entityId: Types.ObjectId,
-  workspaceId: Types.ObjectId,
+  row: Pick<ISavedConsole, "workspaceId" | "path">,
 ): Promise<string | undefined> {
-  const latestVersion = await EntityVersion.findOne(
-    { entityId, entityType: "console", workspaceId },
-    { snapshot: 1 },
-  )
-    .sort({ version: -1 })
-    .lean();
-
-  return computeConsoleStateHashFromSnapshot(
-    latestVersion?.snapshot as Record<string, unknown> | undefined,
+  const saved = await savedConsoleStateFromRepo(row);
+  if (!saved) return undefined;
+  return computeConsoleStateHash(
+    saved.code,
+    saved.connectionId,
+    saved.databaseId,
+    saved.databaseName,
   );
 }
 
@@ -386,10 +348,7 @@ consoleRoutes.openapi(
 
       const savedStateHash =
         fullConsole && (consoleData.isSaved ?? true)
-          ? await getLatestConsoleSavedStateHash(
-              fullConsole._id,
-              new Types.ObjectId(workspaceId),
-            )
+          ? await getLatestConsoleSavedStateHash(fullConsole)
           : undefined;
 
       return c.json({
@@ -511,7 +470,6 @@ consoleRoutes.openapi(
         workspaceId: new Types.ObjectId(workspaceId),
       });
       const docsById = new Map(docs.map(d => [d._id.toString(), d]));
-      const workspaceObjectId = new Types.ObjectId(workspaceId);
 
       const changed: Array<Record<string, unknown>> = [];
       const deleted: string[] = [];
@@ -530,7 +488,7 @@ consoleRoutes.openapi(
         if (serverRevision === clientRevision) continue;
         const isSaved = doc.isSaved ?? true;
         const savedStateHash = isSaved
-          ? await getLatestConsoleSavedStateHash(doc._id, workspaceObjectId)
+          ? await getLatestConsoleSavedStateHash(doc)
           : undefined;
         changed.push({
           id,
@@ -1120,16 +1078,6 @@ consoleRoutes.openapi(
       // Create version 1 for this new console
       const freshDoc = await SavedConsole.findById(savedConsole._id).lean();
       if (freshDoc) {
-        const displayName = await getUserDisplayName(user.id);
-        await createVersion({
-          entityType: "console",
-          entityId: savedConsole._id,
-          workspaceId: new Types.ObjectId(workspaceId),
-          snapshot: buildConsoleSnapshot(freshDoc as ISavedConsole),
-          savedBy: user.id,
-          savedByName: displayName,
-          comment: body.comment ?? "",
-        });
         await SavedConsole.updateOne(
           { _id: savedConsole._id },
           { $set: { version: 1 } },
@@ -1351,8 +1299,6 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           );
         }
 
-        const displayName = await getUserDisplayName(user.id);
-
         // Update with path information (use upsert in case console hasn't been auto-saved yet)
         const setFields: Record<string, any> = {
           code: body.content,
@@ -1416,17 +1362,6 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           await projected.revert();
           return versionConflictResponse();
         }
-
-        // Create version record for the new state
-        await createVersion({
-          entityType: "console",
-          entityId: result._id,
-          workspaceId: new Types.ObjectId(workspaceId),
-          snapshot: buildConsoleSnapshot(result as ISavedConsole),
-          savedBy: user.id,
-          savedByName: displayName,
-          comment: body.comment ?? "",
-        });
 
         publishConsoleUpdated(result as ISavedConsole, "save");
         requestConsoleDescription({
@@ -1525,18 +1460,6 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         }
 
         publishConsoleUpdated(result as ISavedConsole, "save");
-
-        // Create version record for the new state
-        const displayNameExplicit = await getUserDisplayName(user.id);
-        await createVersion({
-          entityType: "console",
-          entityId: result._id,
-          workspaceId: new Types.ObjectId(workspaceId),
-          snapshot: buildConsoleSnapshot(result as ISavedConsole),
-          savedBy: user.id,
-          savedByName: displayNameExplicit,
-          comment: body.comment ?? "",
-        });
 
         requestConsoleDescription({
           workspaceId,
@@ -1662,16 +1585,6 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
     // Create version 1 for this new console
     const freshDocPath = await SavedConsole.findById(savedConsole._id).lean();
     if (freshDocPath) {
-      const displayNamePath = await getUserDisplayName(user.id);
-      await createVersion({
-        entityType: "console",
-        entityId: savedConsole._id,
-        workspaceId: new Types.ObjectId(workspaceId),
-        snapshot: buildConsoleSnapshot(freshDocPath as ISavedConsole),
-        savedBy: user.id,
-        savedByName: displayNamePath,
-        comment: body.comment ?? "",
-      });
       await SavedConsole.updateOne(
         { _id: savedConsole._id },
         { $set: { version: 1 } },
@@ -2608,28 +2521,18 @@ consoleRoutes.openapi(
       let previousContent = "";
       let versionFound = false;
       if (Types.ObjectId.isValid(consoleId)) {
-        const latestSnapshot = await EntityVersion.findOne(
-          {
-            entityId: new Types.ObjectId(consoleId),
-            entityType: "console",
-          },
-          { snapshot: 1, version: 1 },
-        )
-          .sort({ version: -1 })
-          .lean();
-
-        if (latestSnapshot?.snapshot?.code) {
-          previousContent = latestSnapshot.snapshot.code as string;
+        const row = await SavedConsole.findOne({
+          _id: new Types.ObjectId(consoleId),
+          workspaceId: new Types.ObjectId(workspaceId),
+        }).select("workspaceId path");
+        const saved = row ? await savedConsoleStateFromRepo(row) : null;
+        if (saved?.code) {
+          previousContent = saved.code;
           versionFound = true;
         }
-
         logger.debug("Version comment baseline lookup", {
           consoleId,
           versionFound,
-          latestVersion: latestSnapshot?.version ?? null,
-          snapshotKeys: latestSnapshot?.snapshot
-            ? Object.keys(latestSnapshot.snapshot)
-            : null,
           previousContentLength: previousContent.length,
           newContentLength: newContent.length,
         });
@@ -3762,319 +3665,6 @@ consoleRoutes.openapi(
           success: false,
           error: error instanceof Error ? error.message : "Restore failed",
         },
-        500,
-      );
-    }
-  },
-);
-
-// GET /api/workspaces/:workspaceId/consoles/:id/versions
-consoleRoutes.openapi(
-  createRoute({
-    method: "get",
-    path: "/{id}/versions",
-    tags: ["Consoles"],
-    summary: "List console versions",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-      }),
-      query: z.object({
-        limit: z
-          .string()
-          .optional()
-          .openapi({ param: { name: "limit", in: "query" } }),
-        offset: z
-          .string()
-          .optional()
-          .openapi({ param: { name: "offset", in: "query" } }),
-      }),
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
-      const user = c.get("user");
-
-      // Workspace access itself is the router middleware's job (it ran and
-      // set memberRole); this only keeps the route session-only.
-      if (!user) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
-
-      if (!Types.ObjectId.isValid(consoleId)) {
-        return c.json({ success: false, error: "Invalid console ID" }, 400);
-      }
-
-      const consoleDoc = await SavedConsole.findOne({
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (!consoleDoc) {
-        return c.json({ success: false, error: "Console not found" }, 404);
-      }
-      // A version IS the console's content at a point in time: the same
-      // read gate as the console itself (owner / collaborator / workspace
-      // access), not just workspace membership — otherwise a private
-      // console's history was readable by any member. 404, not 403, so a
-      // private console's existence is not revealed (as the list does).
-      if (!ConsoleManager.canRead(consoleDoc, user.id, c.get("memberRole"))) {
-        return c.json({ success: false, error: "Console not found" }, 404);
-      }
-
-      const limit = Math.min(
-        parseInt(c.req.query("limit") ?? "50", 10) || 50,
-        100,
-      );
-      const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
-
-      const result = await listVersions(
-        new Types.ObjectId(consoleId),
-        "console",
-        { limit, offset },
-      );
-
-      return c.json({ success: true, ...result });
-    } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
-      logger.error("Error listing console versions", { error });
-      return c.json({ success: false, error: "Failed to list versions" }, 500);
-    }
-  },
-);
-
-// GET /api/workspaces/:workspaceId/consoles/:id/versions/:version
-consoleRoutes.openapi(
-  createRoute({
-    method: "get",
-    path: "/{id}/versions/{version}",
-    tags: ["Consoles"],
-    summary: "GET /{id}/versions/{version}",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-        version: z.string().openapi({ param: { name: "version", in: "path" } }),
-      }),
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
-      const versionNum = parseInt(c.req.param("version"), 10);
-      const user = c.get("user");
-
-      // Workspace access itself is the router middleware's job (it ran and
-      // set memberRole); this only keeps the route session-only.
-      if (!user) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
-
-      if (!Types.ObjectId.isValid(consoleId) || isNaN(versionNum)) {
-        return c.json(
-          { success: false, error: "Invalid console ID or version" },
-          400,
-        );
-      }
-
-      const consoleDoc = await SavedConsole.findOne({
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (!consoleDoc) {
-        return c.json({ success: false, error: "Console not found" }, 404);
-      }
-      // A version IS the console's content at a point in time: the same
-      // read gate as the console itself (owner / collaborator / workspace
-      // access), not just workspace membership — otherwise a private
-      // console's history was readable by any member. 404, not 403, so a
-      // private console's existence is not revealed (as the list does).
-      if (!ConsoleManager.canRead(consoleDoc, user.id, c.get("memberRole"))) {
-        return c.json({ success: false, error: "Console not found" }, 404);
-      }
-
-      const version = await getVersion(consoleId, "console", versionNum);
-      if (!version) {
-        return c.json({ success: false, error: "Version not found" }, 404);
-      }
-
-      return c.json({ success: true, version });
-    } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
-      logger.error("Error getting console version", { error });
-      return c.json({ success: false, error: "Failed to get version" }, 500);
-    }
-  },
-);
-
-// POST /api/workspaces/:workspaceId/consoles/:id/versions/:version/restore
-consoleRoutes.openapi(
-  createRoute({
-    method: "post",
-    path: "/{id}/versions/{version}/restore",
-    tags: ["Consoles"],
-    summary: "POST /{id}/versions/{version}/restore",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-        version: z.string().openapi({ param: { name: "version", in: "path" } }),
-      }),
-      body: {
-        required: false,
-        content: {
-          "application/json": { schema: z.record(z.string(), z.any()) },
-        },
-      },
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
-      const versionNum = parseInt(c.req.param("version"), 10);
-      const body = await c.req.json().catch(() => ({}));
-      const user = c.get("user");
-
-      // Workspace access itself is the router middleware's job (it ran and
-      // set memberRole); this only keeps the route session-only.
-      if (!user) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
-
-      if (!Types.ObjectId.isValid(consoleId) || isNaN(versionNum)) {
-        return c.json(
-          { success: false, error: "Invalid console ID or version" },
-          400,
-        );
-      }
-
-      const consoleDoc = await SavedConsole.findOne({
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (!consoleDoc) {
-        return c.json({ success: false, error: "Console not found" }, 404);
-      }
-
-      const member = await workspaceService.getMember(workspaceId, user.id);
-      const isAdmin = member?.role === "owner" || member?.role === "admin";
-      if (
-        !ConsoleManager.canWrite(consoleDoc, user.id, isAdmin, member?.role)
-      ) {
-        return c.json(
-          { success: false, error: "You do not have write access" },
-          403,
-        );
-      }
-
-      const oldVersion = await getVersion(consoleId, "console", versionNum);
-      if (!oldVersion) {
-        return c.json({ success: false, error: "Version not found" }, 404);
-      }
-
-      const snap = oldVersion.snapshot as Record<string, any>;
-
-      // Apply the snapshot to the console document. Includes every field
-      // captured in buildConsoleSnapshot so restore is a true revert.
-      const restoreFields: Record<string, any> = {
-        code: snap.code,
-        name: snap.name,
-        language: snap.language,
-        description: snap.description,
-        chartSpec: snap.chartSpec,
-        resultsViewMode: snap.resultsViewMode,
-        mongoOptions: snap.mongoOptions,
-        connectionId: snap.connectionId
-          ? new Types.ObjectId(snap.connectionId)
-          : undefined,
-        databaseName: snap.databaseName,
-        databaseId: snap.databaseId,
-        folderId: snap.folderId ? new Types.ObjectId(snap.folderId) : null,
-        access: snap.access,
-      };
-
-      if (consoleDoc.isSaved) {
-        const projected = await projectSavedConsole({
-          workspaceId,
-          current: consoleDoc,
-          set: restoreFields,
-          actorUserId: user.id,
-          message: body.comment ?? `Restored from version ${versionNum}`,
-        });
-        restoreFields.path = projected.path;
-        restoreFields.sourceBlobSha = projected.sourceBlobSha;
-      }
-
-      const restored = await SavedConsole.findOneAndUpdate(
-        {
-          _id: new Types.ObjectId(consoleId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        },
-        { $set: restoreFields, $inc: { version: 1 } },
-        { new: true },
-      ).lean();
-
-      if (!restored) {
-        return c.json({ success: false, error: "Restore failed" }, 500);
-      }
-      requestConsoleDescription({
-        workspaceId,
-        consoleId,
-        tracking: { userId: user.id, userEmail: user.email },
-      });
-
-      const displayName = await getUserDisplayName(user.id);
-      const comment = body.comment ?? `Restored from version ${versionNum}`;
-      await createVersion({
-        entityType: "console",
-        entityId: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-        snapshot: buildConsoleSnapshot(restored as ISavedConsole),
-        savedBy: user.id,
-        savedByName: displayName,
-        comment,
-        restoredFrom: versionNum,
-      });
-
-      return c.json({
-        success: true,
-        message: `Restored to version ${versionNum}`,
-        console: {
-          id: restored._id.toString(),
-          name: restored.name,
-          version: restored.version,
-        },
-      });
-    } catch (error) {
-      if (error instanceof RepoRequiredError) return repoRequired(c, error);
-      logger.error("Error restoring console version", { error });
-      return c.json(
-        { success: false, error: "Failed to restore version" },
         500,
       );
     }
