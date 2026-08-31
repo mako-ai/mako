@@ -12,6 +12,7 @@
  * capture, quit — nothing resident to fight the 2 GiB box for memory.
  */
 import { loggers } from "../logging";
+import { sh } from "./box";
 import { getSandboxProvider } from "./sandbox/provider";
 import { boxCtx, ensureBox, type WorktreeHandle } from "./worktree.service";
 import { currentDevPort } from "./dev-server.service";
@@ -235,6 +236,11 @@ async function ensureEyesRuntime(ctx: {
  * + console. Requires a RUNNING dev server — this never starts one (§13.9;
  * app_open_app is the start affordance).
  */
+/** Where an app_browse screenshot lives in the artifact store (§13.26). */
+export function eyesShotKey(projectId: string, shot: string): string {
+  return `apps/eyes/${projectId}/${shot}`;
+}
+
 export async function browseApp(
   handle: WorktreeHandle,
   opts: {
@@ -305,7 +311,7 @@ export async function browseApp(
     `for pid in $(pgrep -f chrome-headless-shell 2>/dev/null); do ` +
       `t=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' '); ` +
       `[ -n "$t" ] && [ "$t" -gt 180 ] && kill -9 "$pid" 2>/dev/null; done; ` +
-      `node ${RUNNER_PATH} '${args.replace(/'/g, String.raw`'\''`)}'`,
+      `node ${RUNNER_PATH} ${sh(args)}`,
     { timeoutMs: 90_000 },
   );
   const line = result.stdout
