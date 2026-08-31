@@ -10,6 +10,7 @@ import {
   Box,
   IconButton,
   InputBase,
+  Skeleton,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -44,6 +45,40 @@ export interface ExplorerShellProps {
    * like "show 'no matches' hint".
    */
   children: (ctx: { searchQuery: string; rawSearchQuery: string }) => ReactNode;
+}
+
+/**
+ * The loading state every explorer gets for free: a few tree rows (chevron,
+ * icon, label) at the tree's own indentation. Explorers used to opt in with
+ * their own `skeleton` — three did, each differently, and the rest showed an
+ * empty rail until the list arrived. The shell owns it now; `skeleton` is
+ * still accepted for an explorer with a genuinely different shape.
+ */
+export function ExplorerSkeleton({ rows = 6 }: { rows?: number }) {
+  return (
+    <Box sx={{ px: 1.5, py: 1 }} aria-busy>
+      {Array.from({ length: rows }, (_, i) => (
+        <Box
+          key={i}
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+            height: 28,
+            pl: i % 3 === 0 ? 0 : 2,
+          }}
+        >
+          <Skeleton variant="rounded" width={12} height={12} />
+          <Skeleton variant="rounded" width={16} height={16} />
+          <Skeleton
+            variant="text"
+            width={`${45 + ((i * 37) % 40)}%`}
+            sx={{ fontSize: "0.875rem" }}
+          />
+        </Box>
+      ))}
+    </Box>
+  );
 }
 
 export default function ExplorerShell({
@@ -195,8 +230,8 @@ export default function ExplorerShell({
           the content, so a selected row's highlight reaches the container's
           true edge instead of stopping at a scrollbar gutter. */}
       <VSScrollArea style={{ flex: 1, minHeight: 0 }}>
-        {loading && skeleton
-          ? skeleton
+        {loading
+          ? (skeleton ?? <ExplorerSkeleton />)
           : children({ searchQuery: debouncedQuery, rawSearchQuery: rawQuery })}
       </VSScrollArea>
     </Box>
