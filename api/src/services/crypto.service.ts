@@ -1,10 +1,14 @@
 /**
- * Shared AES-256-CBC encryption for credentials at rest.
+ * THE AES-256-CBC encryption for credentials at rest — the only one.
  *
- * Same wire format as the connector-config encryption in routes/sources.ts
- * (`<iv_hex>:<ciphertext_hex>` using the ENCRYPTION_KEY env var) so existing
- * encrypted values remain readable. New credential storage (e.g. MCP
- * connection configs) should use this service instead of re-implementing it.
+ * Wire format `<iv_hex>:<ciphertext_hex>` with the ENCRYPTION_KEY env var
+ * (32-byte hex). There used to be four copies of this (workspace-schema,
+ * routes/sources, sync/destination-manager, sync/database-data-source-
+ * manager) with different guards: one double-encrypted on round-trips, one
+ * rejected any plaintext containing ":", one swallowed the error. They all
+ * delegate here now; `encryptString`/`decryptString` are tolerant (a value
+ * not in encrypted form passes through unchanged — legacy plaintext), and
+ * `decryptEncrypted` is strict for values that must never be plaintext.
  */
 
 import crypto from "crypto";
@@ -46,6 +50,19 @@ export function decryptString(value: string): string {
   let decrypted = decipher.update(encrypted);
   decrypted = Buffer.concat([decrypted, decipher.final()]);
   return decrypted.toString();
+}
+
+/**
+ * Decrypt a value that MUST be in encrypted form — for credentials that are
+ * always stored encrypted (destination connection strings), where a value
+ * that is not `iv:ciphertext` is corruption, not plaintext, and passing it
+ * through would hand a downstream driver garbage with a confusing error.
+ */
+export function decryptEncrypted(value: string): string {
+  if (!isEncryptedValue(value)) {
+    throw new Error("Invalid encrypted value format (expected iv:ciphertext)");
+  }
+  return decryptString(value);
 }
 
 /** Encrypt every value of a string record (e.g. auth headers). */

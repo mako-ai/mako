@@ -1,8 +1,8 @@
 import { createRoute, z } from "@hono/zod-openapi";
+import { decryptEncrypted, encryptString } from "../services/crypto.service";
 import { Connector as DataSource } from "../database/workspace-schema";
 import { connectorRegistry } from "../connectors/registry";
 import { syncConnectorRegistry } from "../sync/connector-registry";
-import * as crypto from "crypto";
 import { databaseDataSourceManager } from "../sync/database-data-source-manager";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
@@ -86,29 +86,6 @@ type ConnectorFieldSchema = {
   encrypted?: boolean;
   itemFields?: ConnectorFieldSchema[];
 };
-
-function encryptString(value: string): string {
-  const encryptionKey = process.env.ENCRYPTION_KEY;
-  if (!encryptionKey) {
-    throw new Error("ENCRYPTION_KEY environment variable is not set");
-  }
-  // If already looks encrypted (iv:encrypted_hex), skip
-  if (
-    typeof value === "string" &&
-    /^[0-9a-fA-F]{32}:[0-9a-fA-F]+$/.test(value)
-  ) {
-    return value;
-  }
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv(
-    "aes-256-cbc",
-    Buffer.from(encryptionKey, "hex"),
-    iv,
-  );
-  let encrypted = cipher.update(value);
-  encrypted = Buffer.concat([encrypted, cipher.final()]);
-  return iv.toString("hex") + ":" + encrypted.toString("hex");
-}
 
 function applySchemaEncryption(
   config: any,
@@ -814,23 +791,12 @@ dataSourceRoutes.openapi(
           );
         }
 
-        const iv = Buffer.from(textParts[0], "hex");
-        const encryptedText = Buffer.from(textParts.slice(1).join(":"), "hex");
-
-        // Decrypt using AES-256-CBC
-        const decipher = crypto.createDecipheriv(
-          "aes-256-cbc",
-          Buffer.from(encryptionKey, "hex"),
-          iv,
-        );
-
-        let decrypted = decipher.update(encryptedText);
-        decrypted = Buffer.concat([decrypted, decipher.final()]);
+        const decrypted = decryptEncrypted(encryptedValue);
 
         return c.json({
           success: true,
           data: {
-            decryptedValue: decrypted.toString(),
+            decryptedValue: decrypted,
             wasEncrypted: true,
           },
         });
