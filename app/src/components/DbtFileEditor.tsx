@@ -12,6 +12,7 @@
  */
 
 import { useConsoleStore } from "../store/consoleStore";
+import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import {
   lazy,
   Suspense,
@@ -256,7 +257,12 @@ export default function DbtFileEditor({
   const previewModel = useDbtStore(s => s.previewModel);
   const setMyEnvironment = useDbtStore(s => s.setMyEnvironment);
 
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const save = useDebouncedCallback(() => {
+    if (!workspaceId) return;
+    void persistFile(workspaceId, projectId, path);
+    // Live re-compile after the edit settles (dbt Studio parity).
+    autoCompileRef.current();
+  }, 1200);
   const [environment, setEnvironment] = useState<string>("");
   const [defer, setDefer] = useState(false);
   // Run menu builds/runs with --full-refresh (rebuild incremental models
@@ -349,25 +355,15 @@ export default function DbtFileEditor({
       writeFile(projectId, path, value ?? "");
       // First keystroke pins the tab (preview -> permanent), as for consoles.
       useConsoleStore.getState().updateDirty(tabId, true);
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      if (workspaceId) {
-        saveTimer.current = setTimeout(() => {
-          void persistFile(workspaceId, projectId, path);
-          // Live re-compile after the edit settles (dbt Studio parity).
-          autoCompileRef.current();
-        }, 1200);
-      }
+      save.call();
     },
-    [projectId, path, workspaceId, writeFile, persistFile, tabId],
+    [projectId, path, writeFile, save, tabId],
   );
 
   const saveNow = useCallback(() => {
-    if (saveTimer.current) {
-      clearTimeout(saveTimer.current);
-      saveTimer.current = null;
-    }
+    save.cancel();
     if (workspaceId) void persistFile(workspaceId, projectId, path);
-  }, [workspaceId, projectId, path, persistFile]);
+  }, [save, workspaceId, projectId, path, persistFile]);
 
   // ⌘S saves, ⌘↵ previews. Both are registered once on mount, so they read the
   // live handler through a ref rather than capturing the mount-time closure.

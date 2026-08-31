@@ -657,12 +657,20 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     }
   }, [initialContent]);
 
-  // Cleanup debounce timeout on unmount
+  // On unmount, FLUSH a pending content change instead of dropping it: the
+  // debounce is 500ms, and a tab switch inside that window used to lose the
+  // last keystrokes from the persisted tab state.
+  const pendingContentRef = useRef<string | null>(null);
+  const onContentChangeRef = useRef(onContentChange);
+  onContentChangeRef.current = onContentChange;
   useEffect(() => {
     return () => {
       if (debounceTimeoutRef.current) {
         clearTimeout(debounceTimeoutRef.current);
       }
+      const pending = pendingContentRef.current;
+      pendingContentRef.current = null;
+      if (pending !== null) onContentChangeRef.current?.(pending);
     };
   }, []);
 
@@ -829,7 +837,9 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           clearTimeout(debounceTimeoutRef.current);
         }
 
+        pendingContentRef.current = content;
         debounceTimeoutRef.current = setTimeout(() => {
+          pendingContentRef.current = null;
           onContentChange(content);
         }, 500);
       }
