@@ -5,16 +5,24 @@
   "license": "ISC",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mako-ai/mako.git",
+    "url": "git+https://github.com/mako-ai/mako.git",
     "directory": "packages/cli"
   },
   "homepage": "https://docs.mako.ai/mcp-server/",
-  "keywords": ["mako", "cli", "data-apps"],
+  "keywords": [
+    "mako",
+    "cli",
+    "data-apps"
+  ],
   "type": "module",
   "bin": {
-    "mako": "./bin/mako.js"
+    "mako": "bin/mako.js"
   },
-  "files": ["bin", "src", "README.md"],
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
   "engines": {
     "node": ">=20"
   },

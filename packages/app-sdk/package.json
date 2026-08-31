@@ -5,7 +5,7 @@
   "license": "ISC",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mako-ai/mako.git",
+    "url": "git+https://github.com/mako-ai/mako.git",
     "directory": "packages/app-sdk"
   },
   "homepage": "https://docs.mako.ai/mcp-server/",
