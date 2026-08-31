@@ -6,22 +6,14 @@ export function getCurrentWorkspaceId(): string | null {
 }
 
 export function focusDashboardTab(dashboardId: string, title: string): string {
-  const consoleStore = useConsoleStore.getState();
-  const existingTab = Object.values(consoleStore.tabs).find(
-    (tab: any) =>
-      tab.kind === "dashboard" && tab.metadata?.dashboardId === dashboardId,
-  );
-
-  const tabId =
-    existingTab?.id ??
-    consoleStore.openTab({
+  const tabId = useConsoleStore
+    .getState()
+    .focusOrOpenTab({ kind: "dashboard", metadata: { dashboardId } }, () => ({
       title,
       content: "",
       kind: "dashboard",
       metadata: { dashboardId },
-    });
-
-  consoleStore.setActiveTab(tabId);
+    })) as string;
   useUIStore.getState().setLeftPane("dashboards");
   return tabId;
 }
@@ -35,24 +27,17 @@ export function focusDashboardDataSourceTab(
   dataSourceId: string,
   title: string,
 ): string {
-  const consoleStore = useConsoleStore.getState();
-  const existingTab = Object.values(consoleStore.tabs).find(
-    (tab: any) =>
-      tab.kind === "dashboard-data-source" &&
-      tab.metadata?.dashboardId === dashboardId &&
-      tab.metadata?.dataSourceId === dataSourceId,
-  );
-
-  const tabId =
-    existingTab?.id ??
-    consoleStore.openTab({
+  return useConsoleStore.getState().focusOrOpenTab(
+    {
+      kind: "dashboard-data-source",
+      metadata: { dashboardId, dataSourceId },
+    },
+    () => ({
       title,
       content: "",
       kind: "dashboard-data-source",
       isSaved: true,
       metadata: { dashboardId, dataSourceId },
-    });
-
-  consoleStore.setActiveTab(tabId);
-  return tabId;
+    }),
+  ) as string;
 }

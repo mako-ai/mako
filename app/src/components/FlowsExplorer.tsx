@@ -25,6 +25,7 @@ import type {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useConsoleStore } from "../store/consoleStore";
+import { focusFlowTab, getFlowTitle } from "../flow-runtime/shell";
 import {
   useExplorerRevealStore,
   selectRevealFor,
@@ -42,15 +43,6 @@ interface FlowTreeNode extends ResourceTreeNode {
 
 const noopIsExpanded = () => false;
 const noopToggle = () => undefined;
-
-const getFlowTitle = (flow: any): string => {
-  if (flow.sourceType === "database") {
-    return `Query -> ${flow.tableDestination?.tableName || "Table"}`;
-  }
-  const sourceName = flow.dataSourceId?.name || "Source";
-  const destName = flow.destinationDatabaseId?.name || "Destination";
-  return `${sourceName} -> ${destName}`;
-};
 
 const classifyFlow = (flow: any): FlowTreeNode["flowKind"] => {
   if (flow.syncEngine === "cdc") return "cdc";
@@ -164,31 +156,7 @@ export function FlowsExplorer() {
     selectFlow(flowId);
     const flow = flows.find(item => item._id === flowId);
     if (!flow) return;
-
-    const existingTab = Object.values(useConsoleStore.getState().tabs).find(
-      (tab: any) => tab.metadata?.flowId === flowId,
-    );
-
-    if (existingTab) {
-      setActiveTab(existingTab.id);
-      return;
-    }
-
-    const id = openTab({
-      title: getFlowTitle(flow),
-      content: "",
-      kind: "flow-editor",
-      metadata: {
-        flowId,
-        isNew: false,
-        flowType: flow.sourceType === "database" ? "db-scheduled" : flow.type,
-        enabled:
-          flow.type === "webhook"
-            ? flow.webhookConfig?.enabled
-            : flow.schedule?.enabled,
-      },
-    });
-    setActiveTab(id);
+    focusFlowTab(flow);
   };
 
   const sections = useMemo(() => {

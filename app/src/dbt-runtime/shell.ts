@@ -1,10 +1,9 @@
 /**
- * dbt tab-open helpers — clones of app-runtime/shell.ts. Both the explorer
- * and the agent's client tools open tabs through these so dedupe behavior
- * is identical everywhere.
+ * dbt tab-open helpers. Both the explorer and the agent's client tools open
+ * tabs through these; dedupe is the store's focusOrOpenTab, like every kind.
  */
 
-import { useConsoleStore } from "../store/consoleStore";
+import { findTab, useConsoleStore } from "../store/consoleStore";
 import { useUIStore } from "../store/uiStore";
 import { useDbtStore } from "../store/dbtStore";
 
@@ -18,60 +17,36 @@ function basename(path: string): string {
 
 /** Open (or focus) a full-screen editor tab for a single dbt project file. */
 export function focusDbtFileTab(projectId: string, path: string): string {
-  const consoleStore = useConsoleStore.getState();
-  const existingTab = Object.values(consoleStore.tabs).find(
-    (tab: {
-      kind?: string;
-      metadata?: { projectId?: string; path?: string };
-    }) =>
-      tab.kind === "dbt-file" &&
-      tab.metadata?.projectId === projectId &&
-      tab.metadata?.path === path,
-  );
-
-  const tabId =
-    existingTab?.id ??
-    consoleStore.openTab(
-      {
-        title: basename(path),
-        content: "",
-        kind: "dbt-file",
-        metadata: { projectId, path },
-      },
-      // Each file opens its own tab instead of replacing a pristine one.
-      { replacePristine: false },
-    );
-
+  const tabId = useConsoleStore.getState().focusOrOpenTab(
+    { kind: "dbt-file", metadata: { projectId, path } },
+    () => ({
+      title: basename(path),
+      content: "",
+      kind: "dbt-file",
+      metadata: { projectId, path },
+    }),
+    // Each file opens its own tab instead of replacing a pristine one.
+    { replacePristine: false },
+  ) as string;
   useDbtStore.getState().setActiveProject(projectId);
-  consoleStore.setActiveTab(tabId);
   return tabId;
 }
 
 /** Open (or focus) the project Console tab (command bar + problems). */
 export function focusDbtConsoleTab(projectId: string, title: string): string {
-  const consoleStore = useConsoleStore.getState();
-  const existingTab = Object.values(consoleStore.tabs).find(
-    (tab: { kind?: string; metadata?: { projectId?: string } }) =>
-      tab.kind === "dbt-console" && tab.metadata?.projectId === projectId,
-  );
-
-  const tabId =
-    existingTab?.id ??
-    consoleStore.openTab(
-      {
-        title,
-        content: "",
-        kind: "dbt-console",
-        metadata: { projectId },
-      },
-      { replacePristine: false },
-    );
-  // A project's console is a durable document, not a preview: pin it at open
-  // (as notebooks do) so the next open cannot replace it.
-  consoleStore.updateDirty(tabId, true);
-
+  const tabId = useConsoleStore.getState().focusOrOpenTab(
+    { kind: "dbt-console", metadata: { projectId } },
+    () => ({
+      title,
+      content: "",
+      kind: "dbt-console",
+      metadata: { projectId },
+    }),
+    // A project's console is a durable document, not a preview: pinned at
+    // open (as notebooks are) so the next open cannot replace it.
+    { replacePristine: false, pin: true },
+  ) as string;
   useDbtStore.getState().setActiveProject(projectId);
-  consoleStore.setActiveTab(tabId);
   return tabId;
 }
 
@@ -86,32 +61,25 @@ export function focusDbtRunsTab(
   runId?: string,
 ): string {
   const consoleStore = useConsoleStore.getState();
-  const existingTab = Object.values(consoleStore.tabs).find(
-    (tab: { kind?: string; metadata?: { projectId?: string } }) =>
-      tab.kind === "dbt-runs" && tab.metadata?.projectId === projectId,
-  );
-
-  const tabId =
-    existingTab?.id ??
-    consoleStore.openTab(
-      {
-        title,
-        content: "",
-        kind: "dbt-runs",
-        metadata: { projectId, focusRunId: runId },
-      },
-      { replacePristine: false },
-    );
-
+  const match = { kind: "dbt-runs" as const, metadata: { projectId } };
+  const existed = Boolean(findTab(match)(consoleStore));
+  const tabId = consoleStore.focusOrOpenTab(
+    match,
+    () => ({
+      title,
+      content: "",
+      kind: "dbt-runs",
+      metadata: { projectId, focusRunId: runId },
+    }),
+    { replacePristine: false },
+  ) as string;
   // If re-focusing an existing tab with a new target run, update the metadata
   // so DbtRunsView can react and select it. updateMetadata replaces the whole
   // object, so pass the full set.
-  if (existingTab && runId) {
+  if (existed && runId) {
     consoleStore.updateMetadata(tabId, { projectId, focusRunId: runId });
   }
-
   useDbtStore.getState().setActiveProject(projectId);
-  consoleStore.setActiveTab(tabId);
   return tabId;
 }
 
@@ -126,30 +94,16 @@ export function focusDbtJobTab(
   title: string,
   autoEdit?: boolean,
 ): string {
-  const consoleStore = useConsoleStore.getState();
-  const existingTab = Object.values(consoleStore.tabs).find(
-    (tab: {
-      kind?: string;
-      metadata?: { projectId?: string; jobId?: string };
-    }) =>
-      tab.kind === "dbt-job" &&
-      tab.metadata?.projectId === projectId &&
-      tab.metadata?.jobId === jobId,
-  );
-
-  const tabId =
-    existingTab?.id ??
-    consoleStore.openTab(
-      {
-        title,
-        content: "",
-        kind: "dbt-job",
-        metadata: { projectId, jobId, autoEdit },
-      },
-      { replacePristine: false },
-    );
-
+  const tabId = useConsoleStore.getState().focusOrOpenTab(
+    { kind: "dbt-job", metadata: { projectId, jobId } },
+    () => ({
+      title,
+      content: "",
+      kind: "dbt-job",
+      metadata: { projectId, jobId, autoEdit },
+    }),
+    { replacePristine: false },
+  ) as string;
   useDbtStore.getState().setActiveProject(projectId);
-  consoleStore.setActiveTab(tabId);
   return tabId;
 }

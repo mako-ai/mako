@@ -1,10 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Snackbar } from "@mui/material";
 import { useUIStore } from "../store/uiStore";
-import {
-  selectTabBySettingsSection,
-  useConsoleStore,
-} from "../store/consoleStore";
+import { useConsoleStore } from "../store/consoleStore";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useAppsStore } from "../store/appsStore";
 import {
@@ -23,7 +20,11 @@ import {
 } from "../dbt-runtime/shell";
 import { useDbtStore } from "../store/dbtStore";
 import { useMcpStore } from "../store/mcpStore";
-import { focusDashboardDataSourceTab } from "../dashboard-runtime/shell";
+import {
+  focusDashboardDataSourceTab,
+  focusDashboardTab,
+} from "../dashboard-runtime/shell";
+import { focusFlowTabById } from "../flow-runtime/shell";
 import { focusNotebookTab } from "../notebook-runtime/shell";
 import {
   TAB_DEEP_LINK_PATTERNS,
@@ -51,8 +52,7 @@ export function UrlSync() {
   const { currentWorkspace } = useWorkspace();
   const { user } = useAuth();
   const loadConsole = useConsoleStore(state => state.loadConsole);
-  const openTab = useConsoleStore(state => state.openTab);
-  const setActiveTab = useConsoleStore(state => state.setActiveTab);
+  const focusOrOpenTab = useConsoleStore(state => state.focusOrOpenTab);
 
   // Derive the URL path for the currently active tab as a primitive string.
   // Returning a primitive means zustand's default Object.is comparison skips
@@ -143,44 +143,22 @@ export function UrlSync() {
       const connectorId = connectorMatch[1];
       setLeftPane("connectors");
 
-      // Check if we already have a tab for this connector
-      const existingTab = Object.values(useConsoleStore.getState().tabs).find(
-        t => t.kind === "connectors" && t.content === connectorId,
-      );
-
-      if (existingTab) {
-        setActiveTab(existingTab.id);
-      } else {
-        // Create a new tab for this connector
-        // We don't have the name yet, it will be fetched by ConnectorTab
-        const id = openTab({
-          title: "Connector", // Will be updated when entity loads
+      // A connector tab keeps its id in `content`; the name is fetched by
+      // ConnectorTab, so the title is a placeholder until it loads.
+      focusOrOpenTab(
+        { kind: "connectors", where: t => t.content === connectorId },
+        () => ({
+          title: "Connector",
           content: connectorId,
           kind: "connectors",
-        });
-        setActiveTab(id);
-      }
+        }),
+      );
     } else if (flowMatch) {
       // /f/:flowId
       const flowId = flowMatch[1];
       setLeftPane("flows");
 
-      // Check for existing tab
-      const existingTab = Object.values(useConsoleStore.getState().tabs).find(
-        t => t.kind === "flow-editor" && t.metadata?.flowId === flowId,
-      );
-
-      if (existingTab) {
-        setActiveTab(existingTab.id);
-      } else {
-        const id = openTab({
-          title: "Flow",
-          content: "",
-          kind: "flow-editor",
-          metadata: { flowId },
-        });
-        setActiveTab(id);
-      }
+      focusFlowTabById(flowId);
     } else if (dashboardDataSourceMatch) {
       // /d/:dashboardId/data/:dataSourceId
       const dashboardId = dashboardDataSourceMatch[1];
@@ -195,26 +173,15 @@ export function UrlSync() {
       const dashboardId = dashboardMatch[1];
       setLeftPane("dashboards");
 
-      const existingTab = Object.values(useConsoleStore.getState().tabs).find(
-        t => t.kind === "dashboard" && t.metadata?.dashboardId === dashboardId,
-      );
-
-      if (existingTab) {
-        setActiveTab(existingTab.id);
-      } else {
-        // Fetch dashboards to get the title, then open tab
+      // Focus if open; else resolve the title, then open (focusDashboardTab
+      // dedupes again in case a tab appeared while the list was loading).
+      if (!focusOrOpenTab({ kind: "dashboard", metadata: { dashboardId } })) {
         useDashboardStore
           .getState()
           .fetchDashboards(currentWorkspace.id)
           .then(dashboards => {
             const dashboard = dashboards.find(d => d._id === dashboardId);
-            const id = openTab({
-              title: dashboard?.title || "Dashboard",
-              content: "",
-              kind: "dashboard",
-              metadata: { dashboardId },
-            });
-            setActiveTab(id);
+            focusDashboardTab(dashboardId, dashboard?.title || "Dashboard");
           });
       }
     } else if (tableMatch) {
@@ -227,19 +194,15 @@ export function UrlSync() {
       const databaseId = params.get("dbid") || undefined;
       setLeftPane("databases");
 
-      const existingTab = Object.values(useConsoleStore.getState().tabs).find(
-        t =>
-          t.kind === "table-data" &&
-          t.connectionId === connectionId &&
-          t.metadata?.schema === schema &&
-          t.metadata?.table === table &&
-          (t.databaseName || undefined) === databaseName,
-      );
-
-      if (existingTab) {
-        setActiveTab(existingTab.id);
-      } else {
-        const id = openTab({
+      focusOrOpenTab(
+        {
+          kind: "table-data",
+          metadata: { schema, table },
+          where: t =>
+            t.connectionId === connectionId &&
+            (t.databaseName || undefined) === databaseName,
+        },
+        () => ({
           title: table,
           content: "",
           kind: "table-data",
@@ -247,9 +210,8 @@ export function UrlSync() {
           databaseId,
           databaseName,
           metadata: { schema, table },
-        });
-        setActiveTab(id);
-      }
+        }),
+      );
     } else if (appFileMatch) {
       // /a/:appId/file/:path — Apps file editor
       const appId = appFileMatch[1];
@@ -312,18 +274,11 @@ export function UrlSync() {
       const jobId = dbtJobMatch[2];
       setLeftPane("dbt");
 
-      const existingTab = Object.values(useConsoleStore.getState().tabs).find(
-        t =>
-          t.kind === "dbt-job" &&
-          t.metadata?.projectId === projectId &&
-          t.metadata?.jobId === jobId,
-      );
-
-      if (existingTab) {
-        setActiveTab(existingTab.id);
-      } else {
-        // Fetch jobs to resolve the title, then open the tab (placeholder
-        // title until then). focusDbtJobTab dedupes if a tab already exists.
+      // Focus if open; else resolve the title, then open (focusDbtJobTab
+      // dedupes again in case a tab appeared while jobs were loading).
+      if (
+        !focusOrOpenTab({ kind: "dbt-job", metadata: { projectId, jobId } })
+      ) {
         useDbtStore
           .getState()
           .fetchJobs(currentWorkspace.id, projectId)
@@ -355,32 +310,22 @@ export function UrlSync() {
       // /p/:chatId — plans only exist within a chat session, so we can only
       // focus a plan tab that is already present in this browser's state.
       const chatId = planMatch[1];
-      const existingTab = Object.values(useConsoleStore.getState().tabs).find(
-        t => t.kind === "plan" && t.metadata?.chatId === chatId,
-      );
-      if (existingTab) {
-        setActiveTab(existingTab.id);
-      }
+      focusOrOpenTab({ kind: "plan", metadata: { chatId } });
     } else if (settingsSectionMatch) {
       // /settings/:section — open the explorer *and* focus the section's tab.
       const section = settingsSectionMatch[1];
       setLeftPane("settings");
 
       if (isSettingsSection(section)) {
-        const existingTab = selectTabBySettingsSection(section)(
-          useConsoleStore.getState(),
-        );
-        if (existingTab) {
-          setActiveTab(existingTab.id);
-        } else {
-          const id = openTab({
+        focusOrOpenTab(
+          { kind: "settings", where: t => t.settingsSection === section },
+          () => ({
             title: SECTION_LABELS[section],
             content: "",
             kind: "settings",
             settingsSection: section,
-          });
-          setActiveTab(id);
-        }
+          }),
+        );
       }
     } else if (settingsMatch) {
       // /settings — just show the explorer panel. No tab is forced open;

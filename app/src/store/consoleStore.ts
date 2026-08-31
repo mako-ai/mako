@@ -41,13 +41,45 @@ interface ConsoleState {
   error: Record<string, string | null>;
 }
 
+/** What `openTab` accepts — named so the open-or-focus primitive can share it. */
+export type OpenTabInput = Omit<ConsoleTab, "id" | "isSaved"> & {
+  id?: string;
+  isSaved?: boolean;
+};
+
+/**
+ * How an entity is recognised among open tabs: its kind, the metadata keys
+ * that identify it (every listed key must be equal — `undefined` included),
+ * and, for identity that does not live in metadata (a connection id, a
+ * connector held in `content`), a predicate.
+ */
+export interface TabMatch {
+  kind: TabKind;
+  metadata?: Record<string, unknown>;
+  where?: (tab: ConsoleTab) => boolean;
+}
+
+export function matchesTab(tab: ConsoleTab, match: TabMatch): boolean {
+  if ((tab.kind ?? "console") !== match.kind) return false;
+  if (match.metadata) {
+    const meta = (tab.metadata ?? {}) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(match.metadata)) {
+      if (meta[key] !== value) return false;
+    }
+  }
+  return match.where ? match.where(tab) : true;
+}
+
+/** The open tab showing this entity, if any. Pure — usable as a selector. */
+export const findTab =
+  (match: TabMatch) =>
+  (state: { tabs: Record<string, ConsoleTab> }): ConsoleTab | undefined =>
+    Object.values(state.tabs).find(tab => matchesTab(tab, match));
+
 interface ConsoleActions {
   // Tab management
   openTab: (
-    tab: Omit<ConsoleTab, "id" | "isSaved"> & {
-      id?: string;
-      isSaved?: boolean;
-    },
+    tab: OpenTabInput,
     options?: {
       /**
        * When false, never close the "first pristine tab" to make room (VS
@@ -63,6 +95,26 @@ interface ConsoleActions {
       preserveMissingSavedStateHash?: boolean;
     },
   ) => string;
+  /**
+   * THE way to open an entity tab: focus the tab that already shows this
+   * entity (by kind + metadata, plus an optional predicate), else open one
+   * from `create` and focus it. Returns the tab id; null when nothing
+   * matched and `create` declined (returned null) — "focus if present".
+   *
+   * `options.title` refreshes the title of an already-open tab (an entity
+   * renamed elsewhere); `options.pin` pins the tab (durable documents that
+   * must never be preview-replaced: notebooks, dbt consoles).
+   *
+   * Before this existed the same find-then-open was written out ~20 times
+   * across the runtimes' shell.ts files, explorers, UrlSync and the command
+   * palette — each with its own predicate shape, and three flow openers
+   * with three different metadata sets.
+   */
+  focusOrOpenTab: (
+    match: TabMatch,
+    create?: () => OpenTabInput | null,
+    options?: { replacePristine?: boolean; title?: string; pin?: boolean },
+  ) => string | null;
   closeTab: (id: string) => void;
   setActiveTab: (id: string | null) => void;
   clearAllConsoles: () => void;
@@ -639,6 +691,32 @@ export const useConsoleStore = create<ConsoleStore>()(
           state.activeTabId = id;
         });
 
+        return id;
+      },
+
+      focusOrOpenTab: (match, create, options) => {
+        const existing = findTab(match)(get());
+        if (existing) {
+          if (options?.title && options.title !== existing.title) {
+            set(state => {
+              const tab = state.tabs[existing.id];
+              if (tab) tab.title = options.title as string;
+            });
+          }
+          if (options?.pin) get().updateDirty(existing.id, true);
+          get().setActiveTab(existing.id);
+          return existing.id;
+        }
+        const input = create?.();
+        if (!input) return null;
+        const id = get().openTab(
+          input,
+          options?.replacePristine === undefined
+            ? undefined
+            : { replacePristine: options.replacePristine },
+        );
+        if (options?.pin) get().updateDirty(id, true);
+        get().setActiveTab(id);
         return id;
       },
 
@@ -2194,10 +2272,11 @@ export const selectConsoleById =
 export const selectTabByKind =
   (kind: TabKind) =>
   (state: ConsoleStore): ConsoleTab | undefined =>
-    Object.values(state.tabs).find(tab => tab.kind === kind);
+    findTab({ kind })(state);
 export const selectTabBySettingsSection =
   (section: SettingsSection) =>
   (state: ConsoleStore): ConsoleTab | undefined =>
-    Object.values(state.tabs).find(
-      tab => tab.kind === "settings" && tab.settingsSection === section,
-    );
+    findTab({
+      kind: "settings",
+      where: tab => tab.settingsSection === section,
+    })(state);
