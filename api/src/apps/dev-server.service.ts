@@ -34,6 +34,7 @@ import {
   rehydrateBox,
   type WorktreeHandle,
   sessionKeyFor,
+  handleProject,
 } from "./worktree.service";
 import { loggers } from "../logging";
 import { boxEnvPath, sh } from "./box";
@@ -523,10 +524,11 @@ async function stageBindingData(
   provider: ReturnType<typeof getSandboxProvider>,
   ctx: SandboxExecContext,
 ): Promise<string[]> {
-  const projectId = handle.project._id.toString();
+  const project = handleProject(handle);
+  const projectId = project._id.toString();
   let bindings: Awaited<ReturnType<typeof readBindings>>;
   try {
-    bindings = await readBindings(handle.project, handle.doc.userId);
+    bindings = await readBindings(project, handle.doc.userId);
   } catch {
     return [];
   }
@@ -891,7 +893,7 @@ async function ensureDevServerLaunch(
       { timeoutMs: 30_000 },
     );
     logger.warn("Apps dev server orphan reaped", {
-      projectId: handle.project._id.toString(),
+      projectId: handleProject(handle)._id.toString(),
       appRoot: handle.appRoot,
     });
   }
@@ -1003,7 +1005,7 @@ async function ensureDevServerLaunch(
   if (wasListening) {
     void stageBindingData(handle, provider, ctx).catch(error => {
       logger.warn("Apps background binding restage failed", {
-        projectId: handle.project._id.toString(),
+        projectId: handleProject(handle)._id.toString(),
         error: error instanceof Error ? error.message : String(error),
       });
     });
@@ -1013,7 +1015,7 @@ async function ensureDevServerLaunch(
 
   const url = await provider.publicUrlForPort(ctx, port);
   logger.info("Apps dev preview ready", {
-    projectId: handle.project._id.toString(),
+    projectId: handleProject(handle)._id.toString(),
     appRoot: handle.appRoot,
     stagedBindings,
     ...(evicted.length ? { evicted } : {}),

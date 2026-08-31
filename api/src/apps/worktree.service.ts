@@ -132,6 +132,20 @@ export function appRootFor(project: IAppProject): string {
 function appPath(project: IAppProject, relPath: string): string {
   return `${appRootFor(project)}/${assertSafeRelPath(relPath)}`;
 }
+
+/** Prefix a handle-relative path into its repo-relative form ("" root = repo). */
+function scopedPath(handle: WorktreeHandle, relPath: string): string {
+  const safe = assertSafeRelPath(relPath);
+  return handle.appRoot ? `${handle.appRoot}/${safe}` : safe;
+}
+
+/** The app this handle was opened for; workspace-scoped handles have none. */
+export function handleProject(handle: WorktreeHandle): IAppProject {
+  if (!handle.project) {
+    throw new Error("This operation requires an app-scoped worktree handle");
+  }
+  return handle.project;
+}
 import {
   getSandboxProvider,
   type SandboxExecContext,
@@ -213,10 +227,42 @@ export class WorktreeConflictError extends Error {
 
 export interface WorktreeHandle {
   doc: IAppWorktree;
-  project: IAppProject;
+  /** Absent for a workspace-scoped handle (Source Control, repo-level ops). */
+  project?: IAppProject;
   repoDir: string;
-  /** Repo-relative root of the app this handle was opened for. */
+  /** Repo-relative root this handle is scoped to; "" = the whole repo. */
   appRoot: string;
+}
+
+/**
+ * What repo-level reads operate on: the workspace repo, optionally narrowed
+ * to one content root. The repo is a WORKSPACE-level thing (§10) — an app is
+ * just one lens on it — so functions like status/history/branches take this
+ * instead of an IAppProject, and the Source Control surface needs no app
+ * handle at all.
+ */
+export interface RepoScope {
+  workspaceId: string;
+  /** Repo-relative content root to filter to; null = the whole repo. */
+  root: string | null;
+  defaultBranch: string;
+  /** Present when the scope is one app (window pokes carry the app id). */
+  projectId?: Types.ObjectId;
+}
+
+/** Scope of one app: its folder, its default branch. */
+export function scopeOf(project: IAppProject): RepoScope {
+  return {
+    workspaceId: project.workspaceId.toString(),
+    root: appRootFor(project),
+    defaultBranch: project.defaultBranch || DEFAULT_BRANCH,
+    projectId: project._id,
+  };
+}
+
+/** Scope of the whole workspace repo. */
+export function workspaceScope(workspaceId: string): RepoScope {
+  return { workspaceId, root: null, defaultBranch: DEFAULT_BRANCH };
 }
 
 /** Addresses the actor's sandbox — the one working copy. */
@@ -758,24 +804,11 @@ export async function deleteProject(project: IAppProject): Promise<void> {
  */
 export const PUBLISH_ACTOR = "publish";
 
-/**
- * Which branch an actor starts on when the caller does not name one: the
- * default branch, like a fresh clone on a laptop.
- *
- * Actors used to be forced onto a personal `user/<id>` branch ("you do not
- * edit production"). That guarded the wrong thing: publish deploys a PINNED
- * sha, so a commit on `main` moves the branch but ships nothing — exactly
- * like committing to main of a repo whose releases are tagged. Meanwhile the
- * forced branch made the everyday experience alien: everyone lived on a
- * branch named after their user id, and "just commit it" needed a merge
- * ceremony. Now the working copy is unrestricted, git-native; whoever wants
- * main protected does it at the remote (the git endpoint's pre-receive hook
- * carries GitHub's defaults — no force-push, no delete — and a mirrored
- * GitHub repo can layer its own rules).
- */
-export function defaultBranchForActor(_actorId: string): string {
-  return DEFAULT_BRANCH;
-}
+// The doctrine of which branch an actor starts on — and where each content
+// kind's commits land — lives in branch-policy.ts (apps.md §18). Re-exported
+// so existing importers keep working.
+export { defaultBranchForActor, sessionBranchFor } from "./branch-policy";
+import { defaultBranchForActor } from "./branch-policy";
 
 /**
  * Find-or-create the record of which branch this actor works on.
@@ -793,19 +826,47 @@ export async function ensureWorktree(
   actorId: string,
   options: { branch?: string } = {},
 ): Promise<WorktreeHandle> {
-  const repoDir = await repoFor(project);
+  const core = await ensureWorktreeCore(
+    project.workspaceId.toString(),
+    actorId,
+    options,
+  );
+  return { ...core, project, appRoot: appRootFor(project) };
+}
+
+/**
+ * The workspace-scoped handle: same session doc, same sandbox, no app lens.
+ * This is what repo-level surfaces (Source Control, workspace repo routes)
+ * use — the worktree was always keyed by (workspace, actor); only the code
+ * used to insist on an app to reach it.
+ */
+export async function ensureWorkspaceWorktree(
+  workspaceId: string,
+  actorId: string,
+  options: { branch?: string } = {},
+): Promise<WorktreeHandle> {
+  const core = await ensureWorktreeCore(workspaceId, actorId, options);
+  return { ...core, appRoot: "" };
+}
+
+async function ensureWorktreeCore(
+  workspaceId: string,
+  actorId: string,
+  options: { branch?: string } = {},
+): Promise<{ doc: IAppWorktree; repoDir: string }> {
+  const repoDir = await repoForWorkspace(workspaceId);
   if (!(await repoExists(repoDir))) {
-    throw new Error("Project repository is missing");
+    throw new Error("Workspace repository is missing");
   }
 
   const mainHead = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
-  if (!mainHead) throw new Error("Project branch is missing");
+  if (!mainHead) throw new Error("Workspace default branch is missing");
 
   // The doc remembers which branch this actor is on (checkoutBranch writes
   // it); an actor with no doc yet starts on the default branch, like a fresh
   // clone. options.branch overrides both (publish pins main explicitly).
   const existing = await AppWorktree.findOne({
-    workspaceId: project.workspaceId,
+    workspaceId: new Types.ObjectId(workspaceId),
     userId: actorId,
   });
   const branch =
@@ -818,10 +879,7 @@ export async function ensureWorktree(
     await updateRefCas(repoDir, `refs/heads/${branch}`, mainHead, ZERO_OID);
     branchHead = await resolveCommit(repoDir, `refs/heads/${branch}`);
     if (!branchHead) throw new Error(`Failed to create branch ${branch}`);
-    logger.info("Apps actor branch created", {
-      projectId: project._id.toString(),
-      branch,
-    });
+    logger.info("Apps actor branch created", { workspaceId, branch });
   }
 
   // No automatic merging of main into the actor's branch. That existed for
@@ -835,17 +893,12 @@ export async function ensureWorktree(
   // right after app creation, so a findOne+create pair races itself into
   // E11000 on the (workspaceId, userId) unique index.
   const doc = await AppWorktree.findOneAndUpdate(
-    { workspaceId: project.workspaceId, userId: actorId },
+    { workspaceId: new Types.ObjectId(workspaceId), userId: actorId },
     { $setOnInsert: { branch } },
     { new: true, upsert: true },
   );
 
-  return {
-    doc,
-    project,
-    repoDir,
-    appRoot: appRootFor(project),
-  };
+  return { doc, repoDir };
 }
 
 /**
@@ -1155,7 +1208,7 @@ export async function writeFile(
   relPath: string,
   contents: string,
 ): Promise<void> {
-  const safe = appPath(handle.project, relPath);
+  const safe = scopedPath(handle, relPath);
   if (Buffer.byteLength(contents, "utf8") > APPS_MAX_FILE_BYTES) {
     throw new Error("File exceeds the maximum size for a direct write");
   }
@@ -1180,7 +1233,7 @@ export async function readSessionFile(
   relPath: string,
 ): Promise<string> {
   const ctx = await ensureBox(handle);
-  const blob = await boxReadFile(ctx, appPath(handle.project, relPath));
+  const blob = await boxReadFile(ctx, scopedPath(handle, relPath));
   return blob.contents;
 }
 
@@ -1300,23 +1353,29 @@ export interface WorktreeStatus {
  * than presented as a clean tree.
  */
 export async function worktreeStatus(
-  project: IAppProject,
+  scope: RepoScope,
   userId: string,
 ): Promise<WorktreeStatus | null> {
-  const repoDir = await repoFor(project);
+  const repoDir = await repoForWorkspace(scope.workspaceId);
   const doc = await AppWorktree.findOne({
-    workspaceId: project.workspaceId,
+    workspaceId: new Types.ObjectId(scope.workspaceId),
     userId,
   });
   if (!doc) return null;
 
   const handle: WorktreeHandle = {
     doc,
-    project,
     repoDir,
-    appRoot: appRootFor(project),
+    appRoot: scope.root ?? "",
   };
   const ctx = boxCtx(handle);
+  const prefix = scope.root ? `${scope.root}/` : null;
+  const narrow = (changes: WorktreeStatus["repoChanges"]) =>
+    prefix
+      ? changes
+          .filter(ch => ch.path.startsWith(prefix))
+          .map(ch => ({ ...ch, path: ch.path.slice(prefix.length) }))
+      : changes;
 
   // Snapshot first: what the box's own agent pushed moments ago answers this
   // without three execs into the machine (~2s). The snapshot expires unless
@@ -1341,15 +1400,12 @@ export async function worktreeStatus(
       repoDir,
       `refs/heads/${snapshot.branch}`,
     );
-    const prefix = `${appRootFor(project)}/`;
     return {
       branch: snapshot.branch,
       baseSha: snapshot.head ?? branchHead ?? "",
       branchHead,
       ahead: snapshot.ahead ?? 0,
-      changes: snapshot.changes
-        .filter(ch => ch.path.startsWith(prefix))
-        .map(ch => ({ ...ch, path: ch.path.slice(prefix.length) })),
+      changes: narrow(snapshot.changes),
       repoChanges: snapshot.changes,
       offline: false,
     };
@@ -1379,15 +1435,12 @@ export async function worktreeStatus(
     repoDir,
     `refs/heads/${status.branch}`,
   );
-  const prefix = `${appRootFor(project)}/`;
   return {
     branch: status.branch,
     baseSha: status.head,
     branchHead,
     ahead: status.ahead,
-    changes: status.changes
-      .filter(ch => ch.path.startsWith(prefix))
-      .map(ch => ({ ...ch, path: ch.path.slice(prefix.length) })),
+    changes: narrow(status.changes),
     repoChanges: status.changes,
     offline: false,
   };
@@ -1413,17 +1466,17 @@ export async function defaultBranchSha(project: IAppProject): Promise<string> {
 }
 
 export async function projectHistory(
-  project: IAppProject,
+  scope: RepoScope,
   limit = 20,
   ref?: string,
-  scope: "app" | "repo" = "app",
+  view: "app" | "repo" = "app",
 ) {
-  const repoDir = await repoFor(project);
+  const repoDir = await repoForWorkspace(scope.workspaceId);
   // History follows the branch the caller is actually on (VS Code semantics),
   // falling back to the default branch when the ref is absent or bogus. The
   // shape check keeps user input out of argv option position; show-ref
   // verifies existence without ever resolving arbitrary expressions.
-  let target = `refs/heads/${project.defaultBranch || DEFAULT_BRANCH}`;
+  let target = `refs/heads/${scope.defaultBranch}`;
   if (ref && /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(ref) && !ref.includes("..")) {
     const exists = await runGit(
       ["show-ref", "--verify", "--quiet", `refs/heads/${ref}`],
@@ -1438,7 +1491,7 @@ export async function projectHistory(
     repoDir,
     target,
     limit,
-    scope === "repo" ? undefined : appRootFor(project),
+    view === "repo" ? undefined : (scope.root ?? undefined),
   );
 }
 
@@ -1488,18 +1541,20 @@ export async function gitPathsAction(
  * the bare repo: no sandbox, no working copy.
  */
 export async function commitChanges(
-  project: IAppProject,
+  scope: RepoScope,
   sha: string,
   /** "repo": every file, repo-relative — the Source Control graph's view. */
-  scope: "app" | "repo" = "app",
+  view: "app" | "repo" = "app",
 ): Promise<{ sha: string; parent: string | null; files: ChangedFile[] }> {
-  const repoDir = await repoFor(project);
+  const repoDir = await repoForWorkspace(scope.workspaceId);
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
   const parent = await resolveCommit(repoDir, `${oid}^`);
   const all = await diffNameStatus(repoDir, parent ?? EMPTY_TREE, oid);
-  if (scope === "repo") return { sha: oid, parent, files: all };
-  const root = appRootFor(project);
+  if (view === "repo" || scope.root == null) {
+    return { sha: oid, parent, files: all };
+  }
+  const root = scope.root;
   const files = all
     .filter(f => f.path.startsWith(`${root}/`))
     .map(f => ({ ...f, path: f.path.slice(root.length + 1) }));
@@ -1508,15 +1563,16 @@ export async function commitChanges(
 
 /** One app file before and after a commit (null = absent on that side). */
 export async function commitFileVersions(
-  project: IAppProject,
+  scope: RepoScope,
   sha: string,
   relPath: string,
 ): Promise<{ before: string | null; after: string | null; binary: boolean }> {
-  const repoDir = await repoFor(project);
+  const repoDir = await repoForWorkspace(scope.workspaceId);
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
   const parent = await resolveCommit(repoDir, `${oid}^`);
-  const full = appPath(project, relPath);
+  const safe = assertSafeRelPath(relPath);
+  const full = scope.root ? `${scope.root}/${safe}` : safe;
   const read = async (ref: string | null) => {
     if (!ref) return null;
     try {
@@ -1701,10 +1757,8 @@ export interface BranchInfo {
   lastCommit?: { subject: string; author: string; timestamp: number };
 }
 
-export async function listBranches(
-  project: IAppProject,
-): Promise<BranchInfo[]> {
-  const repoDir = await repoFor(project);
+export async function listBranches(scope: RepoScope): Promise<BranchInfo[]> {
+  const repoDir = await repoForWorkspace(scope.workspaceId);
   const { stdout } = await runGit([
     "-C",
     repoDir,
@@ -1712,7 +1766,7 @@ export async function listBranches(
     "--format=%(refname:short)%00%(objectname)%00%(subject)%00%(authorname)%00%(authordate:unix)",
     "refs/heads/",
   ]);
-  const defaultBranch = project.defaultBranch || DEFAULT_BRANCH;
+  const defaultBranch = scope.defaultBranch;
   const branches: BranchInfo[] = [];
   for (const line of stdout.split("\n").filter(Boolean)) {
     const [name, head, subject, author, at] = line.split("\0");
@@ -1763,12 +1817,12 @@ export interface MergeResult {
  * with a structured error — v0 has no in-product conflict resolution.
  */
 export async function mergeBranchToMain(
-  project: IAppProject,
+  scope: RepoScope,
   branch: string,
   author?: GitAuthor,
 ): Promise<MergeResult> {
-  const repoDir = await repoFor(project);
-  const defaultBranch = project.defaultBranch || DEFAULT_BRANCH;
+  const repoDir = await repoForWorkspace(scope.workspaceId);
+  const defaultBranch = scope.defaultBranch;
   if (branch === defaultBranch) {
     return {
       merged: false,
@@ -1799,8 +1853,8 @@ export async function mergeBranchToMain(
     if (!swapped) {
       throw new WorktreeConflictError("Main advanced concurrently; retry.");
     }
-    queueMirrorPush(project.workspaceId.toString());
-    pokeApp(project.workspaceId, project._id, "merge");
+    queueMirrorPush(scope.workspaceId);
+    pokeApp(scope.workspaceId, scope.projectId ?? null, "merge");
     invalidatePullThrottle();
     return { merged: true, commitOid: branchHead, fastForward: true };
   } catch (error) {
@@ -1828,12 +1882,12 @@ export async function mergeBranchToMain(
     throw new WorktreeConflictError("Main advanced concurrently; retry.");
   }
   logger.info("Apps branch merged", {
-    projectId: project._id.toString(),
+    workspaceId: scope.workspaceId,
     branch,
     commitOid,
   });
-  queueMirrorPush(project.workspaceId.toString());
-  pokeApp(project.workspaceId, project._id, "merge");
+  queueMirrorPush(scope.workspaceId);
+  pokeApp(scope.workspaceId, scope.projectId ?? null, "merge");
   invalidatePullThrottle();
   return { merged: true, commitOid, fastForward: false };
 }
@@ -1945,7 +1999,7 @@ export async function trialMerge(
   author?: GitAuthor,
 ): Promise<TrialMergeResult> {
   const repoDir = handle.repoDir;
-  const mainBranch = handle.project.defaultBranch || DEFAULT_BRANCH;
+  const mainBranch = handle.project?.defaultBranch || DEFAULT_BRANCH;
 
   // A DISPOSABLE checkout, not a session. A merge needs a working directory,
   // but it does not need the actor's working copy and it certainly does not
@@ -2039,7 +2093,7 @@ export async function promoteToMain(
   handle: WorktreeHandle,
   input: { sha: string; expectedMain: string },
 ): Promise<void> {
-  const mainBranch = handle.project.defaultBranch || DEFAULT_BRANCH;
+  const mainBranch = handle.project?.defaultBranch || DEFAULT_BRANCH;
   const swapped = await updateRefCas(
     handle.repoDir,
     `refs/heads/${mainBranch}`,

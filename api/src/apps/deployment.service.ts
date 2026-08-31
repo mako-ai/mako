@@ -26,7 +26,7 @@ import { serveParquetArtifact } from "../services/artifact-delivery.service";
 import { bindingArtifactKeyByName, readBindings } from "./bindings.service";
 import { AppProject, type IAppProject } from "../database/workspace-schema";
 import { loggers } from "../logging";
-import { boxCtx, type WorktreeHandle } from "./worktree.service";
+import { boxCtx, handleProject, type WorktreeHandle } from "./worktree.service";
 import { readBoxDir } from "./box";
 
 const logger = loggers.api("apps-deployment");
@@ -251,7 +251,8 @@ export async function readDeploymentAsset(
  * boot log uses.
  */
 export function buildLogPath(handle: WorktreeHandle): string {
-  const slug = handle.project.slug || handle.project._id.toString();
+  const project = handleProject(handle);
+  const slug = project.slug || project._id.toString();
   return `/tmp/mako-build-${slug.replace(/[^A-Za-z0-9_-]/g, "-")}.log`;
 }
 

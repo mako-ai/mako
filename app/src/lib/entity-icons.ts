@@ -95,6 +95,7 @@ export const TAB_KIND_ICONS = {
   "app-file": FileCode,
   "app-diff": GitCompare,
   "console-diff": GitCompare,
+  "repo-diff": GitCompare,
   plan: ClipboardList,
   "dbt-file": FileCode,
   "dbt-job": CalendarClock,

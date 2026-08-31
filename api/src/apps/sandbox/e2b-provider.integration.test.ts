@@ -20,6 +20,7 @@ import {
   listFiles,
   projectHistory,
   readFile,
+  scopeOf,
 } from "../worktree.service";
 
 const HAS_KEY = Boolean(process.env.E2B_API_KEY);
@@ -110,7 +111,7 @@ suite("e2b sandbox provider (live)", () => {
     // 4. Commit through the broker (never from inside the sandbox).
     const commit = await commitWorktree(handle, "E2B live change");
     expect(commit.committed).toBe(true);
-    const history = await projectHistory(project);
+    const history = await projectHistory(scopeOf(project));
     expect(history.map(c => c.subject)).toEqual([
       "E2B live change",
       "Initial scaffold",

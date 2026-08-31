@@ -73,6 +73,7 @@ import AppWorkspace from "./AppWorkspace";
 import AppFileEditor from "./AppFileEditor";
 import AppDiffTab from "./AppDiffTab";
 import ConsoleDiffTab from "./ConsoleDiffTab";
+import RepoDiffTab from "./RepoDiffTab";
 import ConsoleHistoryPopover from "./ConsoleHistoryPopover";
 import AppBindingEditor from "./AppBindingEditor";
 import PlanDocumentTab from "./PlanDocumentTab";
@@ -2891,6 +2892,17 @@ function Editor({
                       consoleId={tab.metadata?.consoleId as string}
                       path={tab.metadata?.path as string}
                       sha={tab.metadata?.sha as string}
+                    />
+                  ) : tab.kind === "repo-diff" ? (
+                    <RepoDiffTab
+                      path={tab.metadata?.path as string}
+                      mode={
+                        (tab.metadata?.mode as
+                          | "working"
+                          | "index"
+                          | "commit") ?? "working"
+                      }
+                      sha={tab.metadata?.sha as string | undefined}
                     />
                   ) : tab.kind === "app-diff" ? (
                     <AppDiffTab

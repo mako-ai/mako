@@ -35,6 +35,7 @@ import {
   readFile,
   worktreeStatus,
   writeFile,
+  scopeOf,
 } from "./worktree.service";
 import { AppWorktree } from "../database/workspace-schema";
 import { getSandboxProvider } from "./sandbox/provider";
@@ -106,7 +107,7 @@ describe("project lifecycle", () => {
     const file = await readFile(project, "src/App.tsx", USER);
     expect(file.contents).toContain("Apps");
 
-    const history = await projectHistory(project);
+    const history = await projectHistory(scopeOf(project));
     expect(history).toHaveLength(1);
     expect(history[0].subject).toContain('Create app "Test App"');
 
@@ -133,7 +134,7 @@ describe("the working copy", () => {
     expect(file.contents).toBe("export const n = 1;\n");
 
     // Uncommitted, and reported as such — no shadow commit stands in for it.
-    const status = await worktreeStatus(project, USER);
+    const status = await worktreeStatus(scopeOf(project), USER);
     expect(status?.offline).toBe(false);
     expect(status?.changes.map(ch => ch.path)).toContain("src/note.ts");
   });
@@ -171,7 +172,7 @@ describe("the working copy", () => {
     expect(entries.map(e => e.path)).not.toContain("src/scratch.ts");
 
     // And with no machine running, status says so rather than claiming clean.
-    const status = await worktreeStatus(project, USER);
+    const status = await worktreeStatus(scopeOf(project), USER);
     expect(status?.offline).toBe(true);
   });
 
@@ -325,12 +326,11 @@ describe("commits", () => {
     // A fresh actor starts on main, like a fresh clone — the commit is on
     // main's history. Publish deploys a PINNED sha, so main moving ships
     // nothing by itself.
-    expect((await projectHistory(project)).map(c => c.subject)).toEqual([
-      "Add feature module",
-      'Create app "Test App" (apps/test-app)',
-    ]);
+    expect(
+      (await projectHistory(scopeOf(project))).map(c => c.subject),
+    ).toEqual(["Add feature module", 'Create app "Test App" (apps/test-app)']);
 
-    const status = await worktreeStatus(project, USER);
+    const status = await worktreeStatus(scopeOf(project), USER);
     expect(status?.changes).toEqual([]);
     expect(status?.baseSha).toBe(result.commitOid);
     // Committed AND pushed: nothing is waiting to reach the server.
@@ -349,10 +349,10 @@ describe("commits", () => {
       "On a branch",
     );
     expect(onBranch.committed).toBe(true);
-    expect((await projectHistory(project)).map(c => c.subject)[0]).toBe(
-      "Add feature module",
-    );
-    const branch = (await listBranches(project)).find(
+    expect(
+      (await projectHistory(scopeOf(project))).map(c => c.subject)[0],
+    ).toBe("Add feature module");
+    const branch = (await listBranches(scopeOf(project))).find(
       b => b.name === "feature",
     );
     expect(branch?.aheadOfMain).toBe(1);
@@ -422,7 +422,7 @@ describe("branches are explicit", () => {
     expect(results[0].commitOid).toBeTruthy();
 
     // The commit is on the branch Alice created, NOT on main.
-    const branches = await listBranches(project);
+    const branches = await listBranches(scopeOf(project));
     const branch = branches.find(b => b.name === "alice-feature");
     expect(branch?.aheadOfMain).toBe(1);
     expect(branch?.lastCommit?.subject).toContain("add feature module");
@@ -435,12 +435,13 @@ describe("branches are explicit", () => {
     await writeFile(handle2, "src/feature2.ts", "export const g = 2;\n");
     await commitAgentTurn(WS, ALICE, "second turn");
     expect(
-      (await listBranches(project)).find(b => b.name === "alice-feature")
-        ?.aheadOfMain,
+      (await listBranches(scopeOf(project))).find(
+        b => b.name === "alice-feature",
+      )?.aheadOfMain,
     ).toBe(2);
 
     // Merge to main (fast-forward — main did not move).
-    const merge = await mergeBranchToMain(project, "alice-feature");
+    const merge = await mergeBranchToMain(scopeOf(project), "alice-feature");
     expect(merge.merged).toBe(true);
     expect(merge.fastForward).toBe(true);
     const mainAfter = (await listFiles(project)).entries.map(e => e.path);
@@ -476,7 +477,7 @@ describe("branches are explicit", () => {
     await checkoutBranch(h, "bob-work", { create: true });
     await writeFile(h, "merged.txt", "hello\n");
     await commitAgentTurn(WS, BOB);
-    await mergeBranchToMain(project, "bob-work");
+    await mergeBranchToMain(scopeOf(project), "bob-work");
 
     // The sandbox pulls on next touch — ordinary `git pull` on main.
     const resumed = await ensureWorktree(project, USER);
@@ -501,7 +502,7 @@ describe("branches are explicit", () => {
     await writeFile(userHandle, "b.txt", "from user\n");
     await commitWorktree(userHandle, "user change");
 
-    const merge = await mergeBranchToMain(project, "bob-a");
+    const merge = await mergeBranchToMain(scopeOf(project), "bob-a");
     expect(merge.merged).toBe(true);
     expect(merge.fastForward).toBe(false);
     const files = (await listFiles(project)).entries.map(e => e.path);
@@ -518,9 +519,9 @@ describe("branches are explicit", () => {
     await writeFile(user2, "a.txt", "conflicting user edit\n");
     await commitWorktree(user2, "user conflicting change");
 
-    await expect(mergeBranchToMain(project, "alice-a")).rejects.toThrow(
-      /conflict/i,
-    );
+    await expect(
+      mergeBranchToMain(scopeOf(project), "alice-a"),
+    ).rejects.toThrow(/conflict/i);
   });
 });
 

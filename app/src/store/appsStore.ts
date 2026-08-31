@@ -14,7 +14,6 @@ import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist } from "zustand/middleware";
 import { api, unwrapBody, ApiError, toErrorMessage as message } from "../api";
-import { apiClient } from "../lib/api-client";
 import { reconcileAppsTabs } from "../apps-runtime/shell";
 
 export interface AppMeta {
@@ -235,7 +234,6 @@ interface AppsStore {
   /** Files per commit, per app — the History panel's "View changes". */
   commitFilesByApp: Record<string, Record<string, AppCommitFile[]>>;
   /** Repo-wide graph (Source Control panel) — same repo, no app pathspec. */
-  repoHistoryByApp: Record<string, AppCommit[]>;
   branchesByApp: Record<string, AppBranch[]>;
   terminalByApp: Record<string, AppTerminalEntry[]>;
   execRunning: Record<string, boolean>;
@@ -251,8 +249,6 @@ interface AppsStore {
     workspaceId: string,
     installationId: number,
   ) => Promise<AppGithubRepo[]>;
-  // TODO(apps): borrows dbt's raw (non-OpenAPI) install-url route until
-  // apps gets its own /apps/github/install-url endpoint.
   getGitHubInstallUrl: (workspaceId: string) => Promise<string | null>;
   /**
    * User-authorization OAuth flow: binds installations that already exist on
@@ -324,11 +320,7 @@ interface AppsStore {
   clearTerminal: (appId: string) => void;
 
   fetchStatus: (workspaceId: string, appId: string) => Promise<void>;
-  fetchHistory: (
-    workspaceId: string,
-    appId: string,
-    scope?: "app" | "repo",
-  ) => Promise<void>;
+  fetchHistory: (workspaceId: string, appId: string) => Promise<void>;
   fetchBranches: (workspaceId: string, appId: string) => Promise<void>;
   /** Fetch (or refresh) the cookie-free URL for an app's published build. */
   fetchViewUrl: (workspaceId: string, appId: string) => Promise<void>;
@@ -508,7 +500,6 @@ export const useAppsStore = create<AppsStore>()(
       viewUrlByApp: {},
       historyByApp: {},
       commitFilesByApp: {},
-      repoHistoryByApp: {},
       runningDevApps: [],
       boxStatus: undefined,
       boxSandboxId: null,
@@ -573,11 +564,13 @@ export const useAppsStore = create<AppsStore>()(
 
       getGitHubInstallUrl: async workspaceId => {
         try {
-          const response = await apiClient.get<{
-            success: boolean;
-            url: string;
-          }>(`/workspaces/${workspaceId}/dbt/github/install-url`);
-          return response.url ?? null;
+          const body = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/repo/github/install-url",
+              { params: { path: { workspaceId } } },
+            ),
+          ) as { url?: string };
+          return body.url ?? null;
         } catch (e) {
           set(s => {
             s.error = message(e, "Failed to start GitHub App install");
@@ -588,17 +581,22 @@ export const useAppsStore = create<AppsStore>()(
 
       fetchGithubBranches: async (workspaceId, owner, repo, installationId) => {
         try {
-          const params = new URLSearchParams({ owner, repo });
-          if (installationId) {
-            params.set("installationId", String(installationId));
-          }
-          // TODO(workspace-repos): reuses dbt's raw branches route until repos
-          // get their own workspace-level GitHub surface.
-          const response = await apiClient.get<{
-            success: boolean;
-            branches: string[];
-          }>(`/workspaces/${workspaceId}/dbt/github/branches?${params}`);
-          return response.branches ?? [];
+          const body = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/repo/github/branches",
+              {
+                params: {
+                  path: { workspaceId },
+                  query: {
+                    owner,
+                    repo,
+                    ...(installationId ? { installationId } : {}),
+                  },
+                },
+              },
+            ),
+          ) as { branches?: string[] };
+          return body.branches ?? [];
         } catch (e) {
           set(s => {
             s.error = message(e, "Failed to list branches");
@@ -805,7 +803,6 @@ export const useAppsStore = create<AppsStore>()(
             delete s.filesByApp[appId];
             delete s.statusByApp[appId];
             delete s.historyByApp[appId];
-            delete s.repoHistoryByApp[appId];
             delete s.terminalByApp[appId];
             delete s.previewByApp[appId];
           });
@@ -1001,27 +998,23 @@ export const useAppsStore = create<AppsStore>()(
         }
       },
 
-      fetchHistory: async (workspaceId, appId, scope = "app") => {
+      fetchHistory: async (workspaceId, appId) => {
         try {
           // Show the branch the user's box is actually on (VS Code's graph
           // follows HEAD); the server falls back to the default branch when
-          // the ref is unknown, so a stale value degrades gracefully. The
-          // Source Control panel asks for repo scope — its CHANGES list is
-          // repo-wide, and a graph that hides your own cross-app commit is
-          // worse than useless.
+          // the ref is unknown, so a stale value degrades gracefully.
+          // Repo-wide history lives in repoStore now; this is the app's own.
           const ref = get().statusByApp[appId]?.branch;
           const body = unwrapBody(
             await api.GET("/api/workspaces/{workspaceId}/apps/{id}/history", {
               params: {
                 path: { workspaceId, id: appId },
-                query: { ...(ref ? { ref } : {}), scope },
+                query: { ...(ref ? { ref } : {}), scope: "app" },
               },
             }),
           ) as { commits?: AppCommit[] };
           set(s => {
-            if (scope === "repo") {
-              s.repoHistoryByApp[appId] = body.commits ?? [];
-            } else s.historyByApp[appId] = body.commits ?? [];
+            s.historyByApp[appId] = body.commits ?? [];
           });
         } catch (e) {
           set(s => {
@@ -1142,7 +1135,6 @@ export const useAppsStore = create<AppsStore>()(
           ) as { result?: { committed: boolean; reason?: string } };
           void get().fetchStatus(workspaceId, appId);
           void get().fetchHistory(workspaceId, appId);
-          void get().fetchHistory(workspaceId, appId, "repo");
           if (body.result?.committed) return { ok: true };
           return {
             ok: false,

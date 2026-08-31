@@ -47,6 +47,7 @@ import {
   readSessionFile,
   worktreeStatus,
   writeFile,
+  scopeOf,
 } from "../../apps/worktree.service";
 import { materializeAppBinding } from "../../apps/bindings.service";
 import {
@@ -475,7 +476,7 @@ export function createAppsTools({
         const loaded = await loadProject(appId, { write: false });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
-          const status = await worktreeStatus(loaded.project, actorId);
+          const status = await worktreeStatus(scopeOf(loaded.project), actorId);
           return { success: true, status };
         } catch (error) {
           return { success: false, error: errorMessage(error) };
@@ -747,7 +748,7 @@ export function createAppsTools({
         const loaded = await loadProject(appId, { write: false });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
-          const branches = await listBranches(loaded.project);
+          const branches = await listBranches(scopeOf(loaded.project));
           return {
             success: true,
             branches,
@@ -781,7 +782,10 @@ export function createAppsTools({
           };
         }
         try {
-          const result = await mergeBranchToMain(loaded.project, target);
+          const result = await mergeBranchToMain(
+            scopeOf(loaded.project),
+            target,
+          );
           return { success: result.merged, ...result, branch: target };
         } catch (error) {
           logger.error("app_merge_to_main failed", { error, appId });

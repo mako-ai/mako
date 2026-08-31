@@ -80,6 +80,7 @@ import {
   worktreeStatus,
   writeFile,
   repoForWorkspace,
+  scopeOf,
 } from "../apps/worktree.service";
 import { ensureWorkspaceTemplateSoon } from "../apps/workspace-template";
 import {
@@ -999,7 +1000,7 @@ appsRoutes.openapi(
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const userId = loaded.userId ?? "api-key";
-      const status = await worktreeStatus(loaded.project, userId);
+      const status = await worktreeStatus(scopeOf(loaded.project), userId);
       return c.json({ success: true as const, status }, 200);
     } catch (error) {
       return handleError(c, error);
@@ -1030,7 +1031,7 @@ appsRoutes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { limit, ref, scope } = c.req.valid("query");
       const commits = await projectHistory(
-        loaded.project,
+        scopeOf(loaded.project),
         limit ?? 20,
         ref,
         scope ?? "app",
@@ -1182,7 +1183,11 @@ appsRoutes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { path: relPath, sha } = c.req.valid("query");
       if (sha) {
-        const versions = await commitFileVersions(loaded.project, sha, relPath);
+        const versions = await commitFileVersions(
+          scopeOf(loaded.project),
+          sha,
+          relPath,
+        );
         return c.json({ success: true as const, versions }, 200);
       }
       const handle = await ensureWorktree(
@@ -1341,7 +1346,11 @@ appsRoutes.openapi(
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const { sha, scope } = c.req.valid("query");
-      const commit = await commitChanges(loaded.project, sha, scope ?? "app");
+      const commit = await commitChanges(
+        scopeOf(loaded.project),
+        sha,
+        scope ?? "app",
+      );
       return c.json({ success: true as const, commit }, 200);
     } catch (error) {
       return handleError(c, error);
@@ -1447,7 +1456,7 @@ appsRoutes.openapi(
     try {
       const loaded = await loadProject(c, { write: false });
       if ("errorResponse" in loaded) return loaded.errorResponse;
-      const branches = await listBranches(loaded.project);
+      const branches = await listBranches(scopeOf(loaded.project));
       return c.json({ success: true as const, branches }, 200);
     } catch (error) {
       return handleError(c, error);
@@ -1481,7 +1490,7 @@ appsRoutes.openapi(
       const { branch } = c.req.valid("json");
       const user = c.get("user");
       const result = await mergeBranchToMain(
-        loaded.project,
+        scopeOf(loaded.project),
         branch,
         user?.email ? { name: user.email, email: user.email } : undefined,
       );

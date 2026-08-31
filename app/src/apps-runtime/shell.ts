@@ -76,6 +76,37 @@ export function focusAppsDiffTab(
 }
 
 /**
+ * A workspace-repo diff tab: any repo path, no app handle. The Source
+ * Control panel's "Open Changes", and the graph's per-commit file diffs.
+ */
+export function focusRepoDiffTab(
+  path: string,
+  mode: "working" | "index" | "commit",
+  /** "commit" mode: the commit whose change to `path` is shown. */
+  sha?: string,
+): string {
+  const fileName = basename(path);
+  const label =
+    mode === "commit"
+      ? (sha ?? "").slice(0, 7)
+      : mode === "index"
+        ? "Index"
+        : "Working Tree";
+  return useConsoleStore.getState().focusOrOpenTab(
+    {
+      kind: "repo-diff",
+      metadata: { path, mode, ...(mode === "commit" ? { sha } : {}) },
+    },
+    () => ({
+      title: `${fileName} (${label})`,
+      content: "",
+      kind: "repo-diff",
+      metadata: { path, mode, sha },
+    }),
+  ) as string;
+}
+
+/**
  * Close any `app` / `app-file` tab pointing at an app that no longer
  * exists, and report whether anything was closed.
  *

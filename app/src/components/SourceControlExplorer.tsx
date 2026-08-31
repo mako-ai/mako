@@ -12,9 +12,9 @@
  * listed here are the repo-wide set — the same set a branch switch has to get
  * past, which the app-scoped view once hid.
  *
- * The apps API is addressed per app, but status/commit/history all operate
- * on the workspace repo, so any app id works as a handle; the first one
- * serves. No apps yet means no repo to control.
+ * Addressed by WORKSPACE via the `/repo/*` routes — no app handle. A repo
+ * that holds only consoles (or, after Block D3, only dbt) gets the same
+ * panel as one full of apps.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -59,16 +59,19 @@ import {
   type AppCommit,
   type AppCommitFile,
 } from "../store/appsStore";
+import { useRepoStore } from "../store/repoStore";
 import { CommitRow } from "./CommitRow";
 import {
   useConsoleStore,
   selectTabBySettingsSection,
 } from "../store/consoleStore";
 import { SECTION_LABELS } from "../pages/settings/sections";
-import { focusAppsDiffTab, focusAppsFileTab } from "../apps-runtime/shell";
+import { focusAppsFileTab, focusRepoDiffTab } from "../apps-runtime/shell";
 import VSScrollArea from "./VSScrollArea";
 import { basename, dirname } from "../utils/path";
 import { ConfirmDialog } from "./ConfirmDialog";
+
+const EMPTY_FILES: Record<string, AppCommitFile[]> = {};
 
 /** VS Code's status letters, in VS Code's colors. */
 const STATUS_STYLE: Record<
@@ -259,18 +262,22 @@ export default function SourceControlExplorer() {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
 
+  // Apps are only needed to map `apps/<slug>/…` paths onto app file tabs.
   const apps = useAppsStore(s => s.apps);
   const fetchApps = useAppsStore(s => s.fetchApps);
-  const statusByApp = useAppsStore(s => s.statusByApp);
-  const historyByApp = useAppsStore(s => s.repoHistoryByApp);
-  const fetchStatus = useAppsStore(s => s.fetchStatus);
-  const fetchHistory = useAppsStore(s => s.fetchHistory);
-  const commit = useAppsStore(s => s.commit);
+  const fetchStatus = useRepoStore(s => s.fetchStatus);
+  const fetchHistory = useRepoStore(s => s.fetchHistory);
+  const commit = useRepoStore(s => s.commit);
 
-  // Any app id reaches the workspace repo; the first one is the handle.
-  const appId = apps[0]?.id;
-  const status = appId ? statusByApp[appId] : undefined;
-  const history = appId ? historyByApp[appId] : undefined;
+  const hasRepo = useRepoStore(s =>
+    workspaceId ? s.hasRepoByWorkspace[workspaceId] : undefined,
+  );
+  const status = useRepoStore(s =>
+    workspaceId ? s.statusByWorkspace[workspaceId] : undefined,
+  );
+  const history = useRepoStore(s =>
+    workspaceId ? s.historyByWorkspace[workspaceId] : undefined,
+  );
   const changes = useMemo(() => status?.repoChanges ?? [], [status]);
   // VS Code's two groups. A file can be in both (staged, then edited again).
   // Older status payloads carry no flags: treat them as unstaged.
@@ -279,7 +286,7 @@ export default function SourceControlExplorer() {
     () => changes.filter(c => c.unstaged ?? !c.staged),
     [changes],
   );
-  const gitPaths = useAppsStore(s => s.gitPaths);
+  const gitPaths = useRepoStore(s => s.gitPaths);
   const [confirm, setConfirm] = useState<{
     title: string;
     body: string;
@@ -289,14 +296,14 @@ export default function SourceControlExplorer() {
 
   const runGit = useCallback(
     async (action: "stage" | "unstage" | "discard", paths: string[]) => {
-      if (!workspaceId || !appId || paths.length === 0) return;
+      if (!workspaceId || paths.length === 0) return;
       setActing(true);
       setError(null);
-      const result = await gitPaths(workspaceId, appId, action, paths);
+      const result = await gitPaths(workspaceId, action, paths);
       setActing(false);
       if (!result.ok) setError(result.error ?? `Could not ${action}`);
     },
-    [workspaceId, appId, gitPaths],
+    [workspaceId, gitPaths],
   );
 
   // Opening a change = its diff (VS Code's "Open Changes"); the inline
@@ -312,14 +319,9 @@ export default function SourceControlExplorer() {
     },
     [apps],
   );
-  const openDiff = useCallback(
-    (path: string, mode: "working" | "index") => {
-      if (!appId) return;
-      const owner = ownerOf(path);
-      focusAppsDiffTab(owner?.app.id ?? appId, path, mode, owner?.app.slug);
-    },
-    [appId, ownerOf],
-  );
+  const openDiff = useCallback((path: string, mode: "working" | "index") => {
+    focusRepoDiffTab(path, mode);
+  }, []);
   const openFile = useCallback(
     (path: string) => {
       const owner = ownerOf(path);
@@ -359,10 +361,10 @@ export default function SourceControlExplorer() {
   }, [workspaceId, fetchApps]);
 
   const refresh = useCallback(() => {
-    if (!workspaceId || !appId) return;
-    void fetchStatus(workspaceId, appId);
-    void fetchHistory(workspaceId, appId, "repo");
-  }, [workspaceId, appId, fetchStatus, fetchHistory]);
+    if (!workspaceId) return;
+    void fetchStatus(workspaceId);
+    void fetchHistory(workspaceId);
+  }, [workspaceId, fetchStatus, fetchHistory]);
 
   useEffect(refresh, [refresh]);
 
@@ -370,30 +372,30 @@ export default function SourceControlExplorer() {
   // status call (branch unknown -> default branch). Refetch once it lands.
   const currentBranch = status?.branch;
   useEffect(() => {
-    if (workspaceId && appId && currentBranch) {
-      void fetchHistory(workspaceId, appId, "repo");
+    if (workspaceId && currentBranch) {
+      void fetchHistory(workspaceId);
     }
-  }, [workspaceId, appId, currentBranch, fetchHistory]);
+  }, [workspaceId, currentBranch, fetchHistory]);
 
   const handleCommit = useCallback(async () => {
-    if (!workspaceId || !appId || !message.trim() || committing) return;
+    if (!workspaceId || !message.trim() || committing) return;
     setCommitting(true);
     setError(null);
-    const result = await commit(workspaceId, appId, message.trim(), {
+    const result = await commit(workspaceId, message.trim(), {
       stagedOnly: staged.length > 0,
     });
     setCommitting(false);
     if (result.ok) setMessage("");
     else setError(result.error ?? "Commit failed");
-  }, [workspaceId, appId, message, committing, commit, staged.length]);
+  }, [workspaceId, message, committing, commit, staged.length]);
 
   const branch = status?.branch ?? "…";
-  const branches = useAppsStore(s =>
-    appId ? s.branchesByApp[appId] : undefined,
+  const branches = useRepoStore(s =>
+    workspaceId ? s.branchesByWorkspace[workspaceId] : undefined,
   );
-  const fetchBranches = useAppsStore(s => s.fetchBranches);
-  const checkoutBranch = useAppsStore(s => s.checkoutBranch);
-  const mergeBranch = useAppsStore(s => s.mergeBranch);
+  const fetchBranches = useRepoStore(s => s.fetchBranches);
+  const checkoutBranch = useRepoStore(s => s.checkoutBranch);
+  const mergeBranch = useRepoStore(s => s.mergeBranch);
   const [merging, setMerging] = useState(false);
   // The current branch's entry in the listing — what "Merge into main" acts
   // on. Only offered for a non-default branch that is actually ahead.
@@ -401,20 +403,19 @@ export default function SourceControlExplorer() {
   const canMerge =
     !!currentEntry && !currentEntry.isDefault && currentEntry.aheadOfMain > 0;
   const mergeCurrent = useCallback(async () => {
-    if (!workspaceId || !appId || !currentEntry || merging) return;
+    if (!workspaceId || !currentEntry || merging) return;
     setMerging(true);
     setError(null);
-    const result = await mergeBranch(workspaceId, appId, currentEntry.name);
+    const result = await mergeBranch(workspaceId, currentEntry.name);
     setMerging(false);
     setBranchAnchor(null);
     if (!result.ok) setError(result.error ?? "Merge failed");
     else {
-      void fetchStatus(workspaceId, appId);
-      void fetchHistory(workspaceId, appId, "repo");
+      void fetchStatus(workspaceId);
+      void fetchHistory(workspaceId);
     }
   }, [
     workspaceId,
-    appId,
     currentEntry,
     merging,
     mergeBranch,
@@ -424,36 +425,32 @@ export default function SourceControlExplorer() {
 
   const switchTo = useCallback(
     async (target: string, options?: { create?: boolean }) => {
-      if (!workspaceId || !appId || switching) return;
+      if (!workspaceId || switching) return;
       setSwitching(true);
       setError(null);
-      const failure = await checkoutBranch(workspaceId, appId, target, options);
+      const failure = await checkoutBranch(workspaceId, target, options);
       setSwitching(false);
       setBranchAnchor(null);
       setCreateOpen(false);
       if (failure) setError(failure);
       else {
         setNewBranchName("");
-        void fetchHistory(workspaceId, appId, "repo");
+        void fetchHistory(workspaceId);
       }
     },
-    [workspaceId, appId, switching, checkoutBranch, fetchHistory],
+    [workspaceId, switching, checkoutBranch, fetchHistory],
   );
 
   const commits = useMemo(() => history ?? [], [history]);
 
   // Graph rows are the SAME CommitRow the app History popover uses — with
   // repo-wide changed files, since the graph is the whole repository.
-  const fetchCommitFiles = useAppsStore(s => s.fetchCommitFiles);
-  const commitFilesByApp = useAppsStore(s => s.commitFilesByApp);
-  const graphFiles = useMemo(() => {
-    const byKey = appId ? (commitFilesByApp[appId] ?? {}) : {};
-    const out: Record<string, AppCommitFile[]> = {};
-    for (const [key, files] of Object.entries(byKey)) {
-      if (key.startsWith("repo:")) out[key.slice(5)] = files;
-    }
-    return out;
-  }, [commitFilesByApp, appId]);
+  const fetchCommitFiles = useRepoStore(s => s.fetchCommitFiles);
+  const graphFiles = useRepoStore(s =>
+    workspaceId
+      ? (s.commitFilesByWorkspace[workspaceId] ?? EMPTY_FILES)
+      : EMPTY_FILES,
+  );
   const [graphExpanded, setGraphExpanded] = useState<string | null>(null);
   const [graphMenu, setGraphMenu] = useState<{
     anchor: HTMLElement;
@@ -463,23 +460,18 @@ export default function SourceControlExplorer() {
     (oid: string) => {
       const next = graphExpanded === oid ? null : oid;
       setGraphExpanded(next);
-      if (next && workspaceId && appId) {
-        void fetchCommitFiles(workspaceId, appId, next, "repo");
+      if (next && workspaceId) {
+        void fetchCommitFiles(workspaceId, next);
       }
     },
-    [graphExpanded, fetchCommitFiles, workspaceId, appId],
+    [graphExpanded, fetchCommitFiles, workspaceId],
   );
-  // A repo path opens as the owning app's commit diff; files outside any
-  // app (a root README) are listed but not openable.
+  // Any repo path opens as a workspace-scoped commit diff.
   const openRepoFileDiff = useCallback(
     (oid: string) => (file: AppCommitFile) => {
-      const m = file.path.match(/^apps\/([^/]+)\/(.+)$/);
-      if (!m) return;
-      const app = apps.find(a => a.slug === m[1]);
-      if (!app) return;
-      focusAppsDiffTab(app.id, m[2], "commit", app.slug, oid);
+      focusRepoDiffTab(file.path, "commit", oid);
     },
-    [apps],
+    [],
   );
 
   if (!workspaceId) return null;
@@ -504,13 +496,13 @@ export default function SourceControlExplorer() {
             SOURCE CONTROL
           </Typography>
           <Box sx={{ flex: 1 }} />
-          {appId && (
+          {hasRepo && (
             <Tooltip title="Switch branch — the same `git checkout` the terminal runs">
               <Button
                 size="small"
                 onClick={e => {
                   setBranchAnchor(e.currentTarget);
-                  if (workspaceId) void fetchBranches(workspaceId, appId);
+                  if (workspaceId) void fetchBranches(workspaceId);
                 }}
                 startIcon={
                   switching ? (
@@ -701,10 +693,10 @@ export default function SourceControlExplorer() {
           </Alert>
         )}
 
-        {!appId ? (
+        {hasRepo === false ? (
           <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
-            The workspace repository appears with its first app — create one in
-            Apps and this panel takes over from there.
+            The workspace repository appears with its first app, console or
+            skill — this panel takes over from there.
           </Typography>
         ) : (
           <>
