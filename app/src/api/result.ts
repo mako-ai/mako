@@ -120,6 +120,16 @@ export function toLoadError(e: unknown, fallbackMessage: string): LoadError {
 }
 
 /**
+ * The one "what do I show for this thrown thing" helper for stores and
+ * components: an Error's message, a string, a `{ message }` / `{ error }`
+ * record, else `fallback`. Replaces five per-store copies that disagreed on
+ * whether an API error payload counted as a message.
+ */
+export function toErrorMessage(e: unknown, fallback = "Unknown error"): string {
+  return errorMessageFrom(e) ?? fallback;
+}
+
+/**
  * Throws on transport/HTTP error; otherwise returns the parsed body as the
  * `{ success, data }` envelope with `data` typed as `unknown` (callers assert
  * their domain type — the API DTO is a structural subset).

@@ -5,7 +5,6 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useConnectorEntitiesStore } from "../store/connectorEntitiesStore";
-import { useDataSourceEntitiesStore } from "../store/dataSourceEntitiesStore";
 import { useConnectorStore } from "../store/connectorStore";
 import { trackEvent } from "../lib/analytics";
 
@@ -48,11 +47,6 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
     upsert: upsertConnector,
     entities,
   } = useConnectorEntitiesStore();
-
-  // The sidebar list (ConnectorExplorer) reads from a separate entity cache.
-  // Upsert into it too so a newly created/updated connector appears without a
-  // manual refresh.
-  const upsertDataSource = useDataSourceEntitiesStore(state => state.upsert);
 
   const [localSourceId, setLocalSourceId] = useState<string | undefined>(
     initialSourceId,
@@ -149,7 +143,6 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
         // Update the tab's entity cache and the sidebar list's cache so the
         // connector shows/updates immediately without a manual refresh.
         upsertConnector(entity);
-        upsertDataSource(entity);
         setError(null);
         updateTabIcon(data.data.type);
         // Update the tab title once after a successful save
