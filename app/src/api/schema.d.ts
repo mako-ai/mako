@@ -3049,7 +3049,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List dashboard versions */
+        /** GET /{id}/versions */
         get: operations["get_api_workspaces_workspaceId_dashboards_id_versions"];
         put?: never;
         post?: never;
@@ -3269,6 +3269,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** GET /{id}/versions */
         get: operations["get_api_workspaces_workspaceId_notebooks_id_versions"];
         put?: never;
         post?: never;
@@ -3285,6 +3286,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** GET /{id}/versions/{versionId} */
         get: operations["get_api_workspaces_workspaceId_notebooks_id_versions_versionId"];
         put?: never;
         post?: never;
@@ -3303,6 +3305,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** POST /{id}/versions/{versionId}/restore */
         post: operations["post_api_workspaces_workspaceId_notebooks_id_versions_versionId_restore"];
         delete?: never;
         options?: never;
@@ -5650,6 +5653,10 @@ export interface components {
             /** @enum {string} */
             access?: "private" | "workspace";
         };
+        RestoreDashboardVersionRequest: {
+            comment?: string;
+            clientId?: string;
+        };
         NotebookReadRequest: {
             /** @example 507f1f77bcf86cd799439011 */
             connectionId: string;
@@ -5669,6 +5676,7 @@ export interface components {
             access?: "private" | "workspace";
         };
         RestoreNotebookVersionRequest: {
+            comment?: string;
             clientId?: string;
         };
         UpdateNotebookRequest: {
@@ -15875,9 +15883,7 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
+                "application/json": components["schemas"]["RestoreDashboardVersionRequest"];
             };
         };
         responses: {

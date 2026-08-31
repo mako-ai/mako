@@ -1141,6 +1141,17 @@
           }
         }
       },
+      "RestoreDashboardVersionRequest": {
+        "type": "object",
+        "properties": {
+          "comment": {
+            "type": "string"
+          },
+          "clientId": {
+            "type": "string"
+          }
+        }
+      },
       "NotebookReadRequest": {
         "type": "object",
         "properties": {
@@ -1196,6 +1207,9 @@
       "RestoreNotebookVersionRequest": {
         "type": "object",
         "properties": {
+          "comment": {
+            "type": "string"
+          },
           "clientId": {
             "type": "string"
           }
@@ -19512,10 +19526,10 @@
     },
     "/api/workspaces/{workspaceId}/dashboards/{id}/versions": {
       "get": {
+        "summary": "GET /{id}/versions",
         "tags": [
           "Dashboards"
         ],
-        "summary": "List dashboard versions",
         "security": [
           {
             "cookieAuth": []
@@ -19605,10 +19619,10 @@
     },
     "/api/workspaces/{workspaceId}/dashboards/{id}/versions/{version}": {
       "get": {
+        "summary": "GET /{id}/versions/{version}",
         "tags": [
           "Dashboards"
         ],
-        "summary": "GET /{id}/versions/{version}",
         "security": [
           {
             "cookieAuth": []
@@ -19690,10 +19704,10 @@
     },
     "/api/workspaces/{workspaceId}/dashboards/{id}/versions/{version}/restore": {
       "post": {
+        "summary": "POST /{id}/versions/{version}/restore",
         "tags": [
           "Dashboards"
         ],
-        "summary": "POST /{id}/versions/{version}/restore",
         "security": [
           {
             "cookieAuth": []
@@ -19733,8 +19747,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "additionalProperties": {}
+                "$ref": "#/components/schemas/RestoreDashboardVersionRequest"
               }
             }
           }
@@ -21207,6 +21220,7 @@
     },
     "/api/workspaces/{workspaceId}/notebooks/{id}/versions": {
       "get": {
+        "summary": "GET /{id}/versions",
         "tags": [
           "Notebooks"
         ],
@@ -21283,6 +21297,7 @@
     },
     "/api/workspaces/{workspaceId}/notebooks/{id}/versions/{versionId}": {
       "get": {
+        "summary": "GET /{id}/versions/{versionId}",
         "tags": [
           "Notebooks"
         ],
@@ -21367,6 +21382,7 @@
     },
     "/api/workspaces/{workspaceId}/notebooks/{id}/versions/{versionId}/restore": {
       "post": {
+        "summary": "POST /{id}/versions/{versionId}/restore",
         "tags": [
           "Notebooks"
         ],
