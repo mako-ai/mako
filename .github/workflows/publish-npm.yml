@@ -1,0 +1,77 @@
+# Publish @makoai/app-sdk and @makoai/cli to npm with TRUSTED PUBLISHING:
+# the job proves its identity to npm with a GitHub OIDC token, npm mints a
+# short-lived publish credential, and no long-lived token exists anywhere
+# (npm is retiring 2FA-bypass tokens for publishing in Jan 2027).
+#
+# One-time setup per package on npmjs.com → package → Settings → Trusted
+# publisher: GitHub Actions, repository mako-ai/mako, workflow
+# publish-npm.yml. The first version of a brand-new package has to be
+# published once by a human (`npm publish --access public` from the package
+# directory) so the settings page exists.
+#
+# Trigger: push a tag `app-sdk-vX.Y.Z` or `cli-vX.Y.Z` matching the
+# package.json version, or run manually.
+name: Publish npm packages
+
+on:
+  push:
+    tags:
+      - "app-sdk-v*"
+      - "cli-v*"
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Which package"
+        required: true
+        type: choice
+        options: [app-sdk, cli]
+
+permissions:
+  contents: read
+  id-token: write # OIDC for npm trusted publishing + provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Resolve package from tag or input
+        id: pkg
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            name="${{ inputs.package }}"
+          else
+            name="${GITHUB_REF_NAME%-v*}"
+          fi
+          echo "dir=packages/$name" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - name: Trusted publishing needs npm >= 11.5
+        run: npm install -g npm@latest && npm --version
+      - name: Check the tag matches package.json
+        if: github.event_name == 'push'
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        run: |
+          v=$(node -p "require('./package.json').version")
+          [ "${GITHUB_REF_NAME}" = "${{ steps.pkg.outputs.name }}-v$v" ] || { echo "tag $GITHUB_REF_NAME != package.json $v"; exit 1; }
+      - name: Tests
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        run: |
+          # The cli depends on the workspace app-sdk; resolve it for the tests
+          # without a full pnpm install.
+          if [ "${{ steps.pkg.outputs.name }}" = "cli" ]; then
+            mkdir -p node_modules/@makoai && ln -sfn ../../../app-sdk node_modules/@makoai/app-sdk
+          fi
+          node --test
+      - name: Rewrite workspace:* to the published version (cli → app-sdk)
+        if: steps.pkg.outputs.name == 'cli'
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        run: |
+          sdk=$(node -p "require('../app-sdk/package.json').version")
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));p.dependencies['@makoai/app-sdk']='^'+process.argv[1];fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')" "$sdk"
+      - name: Publish
+        working-directory: ${{ steps.pkg.outputs.dir }}
+        run: npm publish --provenance --access public

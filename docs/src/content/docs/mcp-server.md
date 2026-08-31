@@ -131,17 +131,17 @@ To keep agent context lean, agents can pass `includeScreenshot: false` to `app_b
 Every workspace repo carries a small template Mako keeps current: `AGENTS.md`
 (imported by `CLAUDE.md`) telling your agent what the repo is and how to work
 in it, `.mcp.json` wiring the `mako` MCP server, `.envrc` for direnv, and the
-vendored `@mako/app-sdk`. The whole setup, no key to paste:
+vendored `@makoai/app-sdk`. The whole setup, no key to paste:
 
 ```bash
 git clone <your workspace repo> && cd <repo>
 claude                 # the mako MCP server prompts a browser sign-in (read-only)
-npx @mako/cli login    # same sign-in for the app dev server, kept in ~/.mako/credentials.json
-npx @mako/cli dev <app>   # or: cd apps/<app> && npm install && npm run dev
+npx @makoai/cli login    # same sign-in for the app dev server, kept in ~/.mako/credentials.json
+npx @makoai/cli dev <app>   # or: cd apps/<app> && npm install && npm run dev
 ```
 
 The app renders with **real data**: the scaffold's `vite.config.ts` includes
-`makoData()` from `@mako/app-sdk/vite`, which serves `__data/<binding>.parquet`
+`makoData()` from `@makoai/app-sdk/vite`, which serves `__data/<binding>.parquet`
 by streaming the binding's materialized artifact from your Mako host with that
 login (a binding that was never materialized is built on first request;
 results are cached for five minutes under `node_modules/.mako-data/`,

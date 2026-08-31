@@ -42,7 +42,7 @@ export function createAppsScaffold(
           preview: "vite preview",
         },
         dependencies: {
-          "@mako/app-sdk": "file:../../packages/app-sdk",
+          "@makoai/app-sdk": "file:../../packages/app-sdk",
           react: "^18.2.0",
           "react-dom": "^18.2.0",
         },
@@ -83,7 +83,7 @@ export function createAppsScaffold(
 `,
     "vite.config.ts": `import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { makoData } from "@mako/app-sdk/vite";
+import { makoData } from "@makoai/app-sdk/vite";
 
 export default defineConfig({
   // makoData serves this app's data bindings (__data/*.parquet) during a

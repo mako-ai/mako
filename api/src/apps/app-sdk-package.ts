@@ -1,5 +1,5 @@
 /**
- * `@mako/app-sdk` — a REAL package committed into every workspace repo at
+ * `@makoai/app-sdk` — a REAL package committed into every workspace repo at
  * `packages/app-sdk`, consumed by apps as a `file:` dependency.
  *
  * v1 injected this module at runtime: the host resolved the import from an
@@ -23,7 +23,7 @@ export const APP_SDK_DIR = "packages/app-sdk";
 
 /** The dependency entry an app needs to import the SDK. */
 export const APP_SDK_DEPENDENCY: Record<string, string> = {
-  "@mako/app-sdk": "file:../../packages/app-sdk",
+  "@makoai/app-sdk": "file:../../packages/app-sdk",
 };
 
 /** Files of the package that ship into workspace repos (the npm `files`). */
@@ -62,7 +62,7 @@ export function appSdkSourceDir(): string {
     }
   }
   throw new Error(
-    `@mako/app-sdk package files not found (looked in ${candidateDirs().join(", ")})`,
+    `@makoai/app-sdk package files not found (looked in ${candidateDirs().join(", ")})`,
   );
 }
 

@@ -641,7 +641,7 @@ export async function createProject(input: {
     if (!(await repoExists(repoDir))) {
       // README + .gitignore (seeded once), and the managed template: agent
       // instructions, MCP wiring, identity stamp, and the vendored
-      // @mako/app-sdk so `import { useQuery } from "@mako/app-sdk"` resolves
+      // @makoai/app-sdk so `import { useQuery } from "@makoai/app-sdk"` resolves
       // in vite dev, in npm run build, and in a laptop clone alike. Existing
       // repos are brought level by ensureWorkspaceTemplate (workspace-template.ts).
       await initRepo(repoDir, initialWorkspaceFiles(input.workspaceId), {

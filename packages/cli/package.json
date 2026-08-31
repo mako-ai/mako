@@ -1,25 +1,33 @@
 {
-  "name": "@mako/cli",
+  "name": "@makoai/cli",
   "version": "0.1.0",
   "description": "Mako from your terminal: sign in once (mako login), run a workspace app locally with real data (mako dev).",
   "license": "ISC",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mako-ai/mako.git",
+    "url": "git+https://github.com/mako-ai/mako.git",
     "directory": "packages/cli"
   },
   "homepage": "https://docs.mako.ai/mcp-server/",
-  "keywords": ["mako", "cli", "data-apps"],
+  "keywords": [
+    "mako",
+    "cli",
+    "data-apps"
+  ],
   "type": "module",
   "bin": {
-    "mako": "./bin/mako.js"
+    "mako": "bin/mako.js"
   },
-  "files": ["bin", "src", "README.md"],
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "@mako/app-sdk": "workspace:*"
+    "@makoai/app-sdk": "workspace:*"
   },
   "publishConfig": {
     "access": "public"

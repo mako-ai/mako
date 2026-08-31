@@ -47,7 +47,7 @@ Two RFCs were written independently against the same brief and then merged. Wher
 | **One substrate: E2B everywhere; the local provider is deleted (DECIDED)** | Three unrelated activities were all called "development", and the substrate was chosen for the wrong one. **(1) Developing Mako runs on E2B** — exercising a substrate no user runs ships untested code paths and carries a second implementation forever; every developer has an E2B key, like a database URL. Proven, not theoretical: the nested-node_modules bug (app could not build; 13-27s per command) survived from Block B until 2026-08-20 **because the local provider has no host↔sandbox sync at all** — structurally invisible there, immediate on E2B. **(2) Customer app dev on app.mako.ai runs on E2B** — N1, plus an unsandboxed shell lets a tenant exhaust the API host. **(3) Local customer dev uses NO Mako sandbox**: the user has the WORKSPACE repo checked out, a `mako` executable supplies data proxies + auth, and the user (or Claude Code) runs `vite dev` directly as themselves — Mako is not in the execution path, and **the user never checks out Mako**. This corrects §4.8(d)'s "local executor behind the provider seam". Deleted: local-provider.ts, dev-server.service.ts, dev-preview-ws-proxy.ts, the devPreviewAvailable probe + toolbar gating, and the APPS_V2_SANDBOX_PROVIDER knob; provider.ts stays as the seam for a Fly/Modal fallback. **Live preview moves INTO the sandbox** (vite on 0.0.0.0 + `sandbox.getHost(port)` + iframe), which is why it can finally exist in deployed environments at all. Detail: §12. | User (2026-08-21) |
 | **App lifecycle: view / edit / publish (§13)** | Found by this RFC's own author: *"even though I built this, I don't understand the UX"*. The cause is not labelling — **there is no publish, no deploy and no viewer**: `publishedSha` is never written by anything, there is no public-share route, the built bundle is served behind a 30-MINUTE in-memory token, and even browsing an app calls `ensureWorktree`. Apps v2 is an IDE with two developer preview modes. **Correction to an earlier claim in this session:** data is much further along — bindings already materialize into the shared artifact store (GCS when deployed) at `apps-v2/<projectId>/<name>.parquet`, so warehouse→parquet→bucket is DONE and durable; only the serving path is tied to the ephemeral preview token. Target: three states, one primary action each — Published (no sandbox at all; primary = Edit), Editing (branch + dev session; primary = Publish), Never published. Publish = merge → build from main → IMMUTABLE addressable artifact → repoint, which makes rollback a repoint. Open: an ACL'd data path for published apps (§4.7 capability tokens — the genuinely hard part), scheduled refresh, failed-build-on-main, rollback UX, concurrent editors, static-only boundary. Detail: §13. | User + analysis (2026-08-21) |
 | **What `mako` runs locally (OPEN)** | Two readings of "the full Mako app at localhost:6969": a **thin local shell** (serves the UI, owns the local checkout, runs `vite dev`, proxies control plane + data execution to the cloud — materially `packages/desktop` + `packages/local-agent` minus Electron; ships in weeks, no new deployment target) versus a **full local stack** (API + database + Inngest + kernel on the laptop; true self-host, permanent second deployment target and support surface). **Proposed default: thin shell**, full stack only if self-hosting proves to be a sales requirement. Detail: §11.6. | Raised 2026-08-19 |
-| **Sequencing: cheap half first; `mako agent` deferred indefinitely** | Order: (1) scaffold `CLAUDE.md`/`.mcp.json` + §10 Block D1 `skills/` so `git clone && claude` is Mako-capable with no CLI at all — generated from the same source as `buildMakoSystemPromptAppend` to avoid drift; (2) **deploy on merge** (`publishedSha` is currently read but never written — no pipeline exists, so §11.4 is not yet true); (3) minimal `@mako/cli` (`login` + `dev` only); then Block D2 consoles + Block C branch state; then revisit §11.6. The **`mako agent` terminal harness (§4.8c) is deferred indefinitely** — building a competing harness with our tokens contradicts the reason for the work. Detail: §11.7–11.9. | User (2026-08-19) |
+| **Sequencing: cheap half first; `mako agent` deferred indefinitely** | Order: (1) scaffold `CLAUDE.md`/`.mcp.json` + §10 Block D1 `skills/` so `git clone && claude` is Mako-capable with no CLI at all — generated from the same source as `buildMakoSystemPromptAppend` to avoid drift; (2) **deploy on merge** (`publishedSha` is currently read but never written — no pipeline exists, so §11.4 is not yet true); (3) minimal `@makoai/cli` (`login` + `dev` only); then Block D2 consoles + Block C branch state; then revisit §11.6. The **`mako agent` terminal harness (§4.8c) is deferred indefinitely** — building a competing harness with our tokens contradicts the reason for the work. Detail: §11.7–11.9. | User (2026-08-19) |
 
 ---
 
@@ -106,7 +106,7 @@ Both properties must survive — and both must extend to users editing from outs
 | App storage | `MakoApp` doc, embedded `files[]`, `dependencies` map | Migration source only |
 | App versioning | `version` counter + `entity_versions` snapshots | Replaced by git; keep publish pointer concept |
 | Agent tools | ~20 bespoke server tools + 3 client tools | Replaced by shell/file tools; binding tools evolve |
-| Rendering | Babel + esm.sh import-map iframe, `@mako/app-sdk` injected via postMessage bridge | Bridge + SDK concepts survive; transpile pipeline retired |
+| Rendering | Babel + esm.sh import-map iframe, `@makoai/app-sdk` injected via postMessage bridge | Bridge + SDK concepts survive; transpile pipeline retired |
 | Data bindings | `dataBindings[]` on the doc; live via `POST /workspaces/:id/execute`; parquet via Inngest + DuckDB-WASM | Execution + materialization services reused as-is; binding *definitions* move into files |
 | Sharing | `published` snapshot + `/api/share/:token` routes | Reused; "published" becomes a git ref + built artifact |
 | Git integration | dbt module: GitHub App, Git Data API, Mongo mirror + per-user drafts (`api/src/dbt/dbt-github-*.service.ts`) | GitHub App auth + webhook plumbing reused; the Mongo-mirror pattern is *not* carried into apps v2 |
@@ -271,7 +271,7 @@ The unified agent (`api/src/agents/unified/index.ts`, `app` mode in `modes/regis
 
 Two tiers replace the single CDN iframe:
 
-**Dev preview (editing).** The sandbox runs `vite dev`; E2B exposes it at a public per-sandbox URL; `AppRenderer` iframes that URL. HMR works natively. The `@mako/app-sdk` becomes a real npm package (dep of the scaffold) that keeps the same API (`useQuery`, `useDuckDB`, `useTheme`, `useLocation`) and the same postMessage bridge to the authenticated parent window — so live queries, parquet/DuckDB, theming, and virtual routing carry over with minimal renderer changes, and the iframe still never holds credentials. When no sandbox is running, the preview shows the last published build with a "start dev session" affordance.
+**Dev preview (editing).** The sandbox runs `vite dev`; E2B exposes it at a public per-sandbox URL; `AppRenderer` iframes that URL. HMR works natively. The `@makoai/app-sdk` becomes a real npm package (dep of the scaffold) that keeps the same API (`useQuery`, `useDuckDB`, `useTheme`, `useLocation`) and the same postMessage bridge to the authenticated parent window — so live queries, parquet/DuckDB, theming, and virtual routing carry over with minimal renderer changes, and the iframe still never holds credentials. When no sandbox is running, the preview shows the last published build with a "start dev session" affordance.
 
 **Published (deployed).** "Publish" = deploy an **immutable commit** (never a moving branch head; a dirty worktree gets an explicit "commit and publish"): run `vite build` with `--frozen-lockfile` in a fresh build sandbox, upload `dist/` to a GCS/R2 bucket under a content-addressed deployment prefix, record an `AppDeployment` (commit SHA, lockfile digest, artifact digest), and point the routing entry at it. Rollback is a pointer change, no rebuild. Serving reuses the Cloudflare pattern we already run (`cloudflare/app-router/` KV-routed Worker) — but on a **separate registrable domain, never a `mako.ai` subdomain** (e.g. `<stable-app-id>.makoapps.dev`, registered in the Public Suffix List so sibling apps are different browser *sites*). User code sharing a registrable domain with the control plane would share cookie scope and same-site trust; this was a flaw in the first draft of this RFC. The Worker enforces the existing public-share model (tokens, password unlock, `allowLiveQueries`); runtime data access continues through `api/src/routes/public-share.ts` initially, evolving to a dedicated runtime capability endpoint (opaque, short-lived, deployment-scoped tokens exchanged via one-time bootstrap codes) as the end state.
 
@@ -298,7 +298,7 @@ mako agent          # ...or vibe with the Mako agent itself, right in the termin
 - **Publish from local:** `mako deploy` = push + call Deploy API. USP #2 intact.
 - The repo scaffold includes `.mcp.json` and `AGENTS.md`/`CLAUDE.md` describing the layout and the SDK, so third-party harnesses are effective immediately after clone.
 
-**(c) The `mako` CLI — plumbing *and* a terminal agent.** The commands above imply a real CLI product (`@mako/cli`, installed via `npm i -g mako` or a curl script), not just glue. Beyond `login` / `clone` / `dev` / `deploy` / `run <job>`, it ships **`mako agent`: the Mako agent as a terminal harness**, so users can vibe-code an app from their shell the way they would with Claude Code — except this agent natively knows their workspace.
+**(c) The `mako` CLI — plumbing *and* a terminal agent.** The commands above imply a real CLI product (`@makoai/cli`, installed via `npm i -g mako` or a curl script), not just glue. Beyond `login` / `clone` / `dev` / `deploy` / `run <job>`, it ships **`mako agent`: the Mako agent as a terminal harness**, so users can vibe-code an app from their shell the way they would with Claude Code — except this agent natively knows their workspace.
 
 - **It is a thin client, not a second agent.** `POST /api/agent/chat` already accepts `revops_*` API keys through `unifiedAuthMiddleware`, so streaming, chat persistence, model selection, skills, modes, and MCP tools all come from the existing server for free. The CLI renders the stream and handles tool round-trips.
 - **Tool execution split reuses the existing client/server pattern.** The codebase already splits tools into server-executed and client-executed (`app/src/agent-runtime/client-tool-manifest.ts` + `useClientToolDispatch`); the CLI simply becomes an alternative "client" surface. Data tools (`sql_*`, `mongo_*`, bindings, materialization, publish) keep running server-side; the v2 `bash`/`read_file`/`write_file`/`edit_file`/`glob`/`grep` tools execute **locally against the user's checkout** instead of an E2B sandbox. Same tool contract, two interchangeable executors: cloud sandbox when driven from the web app, local filesystem when driven from the terminal. One brain, two pairs of hands.
@@ -330,7 +330,7 @@ An Inngest function (same pattern as `dbt-run.ts` / `app-binding-materialize.ts`
 - **Migration tool:** for each `MakoApp`, write `files[]` into `apps/<slug>/`, synthesize `package.json` from `dependencies` (+ scaffold `vite.config.ts`, `index.html`), convert `dataBindings[]` to `bindings/` files + `mako.json`, and commit as the app's initial history. `entity_versions` snapshots are optionally replayed as historical commits (nice-to-have).
 - **Dual runtime window:** unmigrated apps keep rendering via the CDN iframe path; migrated apps use v2. The `runtime` field ("cdn" | "webcontainer") is repurposed/extended to gate this. Migration is per-app, user- or admin-triggered, with a bulk path once stable.
 - **Retired after migration:** embedded `files[]`, the ~15 bespoke file/dependency/version tools, Babel/esm.sh preview, `entity_versions` for apps.
-- **Kept:** `MakoApp` doc slims down to metadata + sharing + publish pointer (`repoPath`, `publishedSha`, `publicShare`, ACLs) — sharing and ACLs are workspace concerns and stay in Mongo; execute/materialization/public-share services; `@mako/app-sdk` API surface.
+- **Kept:** `MakoApp` doc slims down to metadata + sharing + publish pointer (`repoPath`, `publishedSha`, `publicShare`, ACLs) — sharing and ACLs are workspace concerns and stay in Mongo; execute/materialization/public-share services; `@makoai/app-sdk` API surface.
 
 ## 6. Phasing
 
@@ -340,7 +340,7 @@ Everything lands as a **parallel v2 module**: `api/src/apps-v2/**`, new Mongo co
 
 1. **Phase 1 — Git substrate.** Mako-hosted bare repos (per app) + repository service with CAS ref updates and hidden WIP refs; Files API (tree/read from a ref); worktree service. Smart-HTTP clone endpoint. *De-risks: git hosting, the read model.* **(Foundation implemented in this PR.)**
 2. **Phase 2 — Sandbox sessions + agent v2.** `SandboxProvider` abstraction (E2B for production; a flag-gated local subprocess provider for dev VMs), session service materializing accessible apps into a workspace-shaped directory, scoped tokens, `app2_bash`/file tools, WIP flush loop, `app2_commit`. Chat can build an app end-to-end. *De-risks: sandbox integration, flush durability, tool ergonomics.* **(Foundation implemented in this PR: provider seam + local provider + session/exec/flush + tools; E2B adapter next.)**
-3. **Phase 3 — Preview & hosting.** `@mako/app-sdk` as real package + Vite scaffold; dev-preview iframe via sandbox URL; publish pipeline (build sandbox → bucket → apps-router Worker); binding-as-files reconciliation + materialization rewire.
+3. **Phase 3 — Preview & hosting.** `@makoai/app-sdk` as real package + Vite scaffold; dev-preview iframe via sandbox URL; publish pipeline (build sandbox → bucket → apps-router Worker); binding-as-files reconciliation + materialization rewire.
 4. **Phase 4 — Open editing.** MCP server, `mako` CLI (`login`/`dev`/`deploy`, then `mako agent` reusing the Phase 2 tool contract with a local executor), PATs with scopes, repo scaffold docs for third-party harnesses.
 5. **Phase 5 — Desktop local-first + extension slot + jobs.** Local-agent PTY/file capabilities; desktop-managed workspace checkout with local executor sessions (Mako chat with zero cloud sandbox); right-panel harness hosting (with `mako agent` as first-party occupant); `mako.json` scheduled jobs; bulk v1 migration + CDN runtime deprecation.
 
@@ -773,7 +773,7 @@ The substrate is largely built. The local developer surface is close to zero.
 | **Repo-resident agent instructions** (`CLAUDE.md`, `AGENTS.md`, `.mcp.json`)                                                                     | ❌ `api/src/apps-v2/scaffold.ts` writes only `package.json`, `mako.json`, `index.html`, `vite.config.ts`, `tsconfig.json`. A fresh clone tells `claude` nothing about Mako |
 | **Skills in the repo** (§10 Block D1)                                                                                                            | ❌ system skills live in the API image (`api/src/agent-skills/`)                                                                                                           |
 | **`mako` CLI / npm package**                                                                                                                     | ❌ does not exist. The `mako-agent` bin in `packages/local-agent` is the local-database daemon + ACP bridge — a different product                                          |
-| **App SDK for data access from a local checkout**                                                                                                | ❌ no `@mako/app-sdk` package exists, though §5 and §6 Phase 3 both assume one                                                                                             |
+| **App SDK for data access from a local checkout**                                                                                                | ❌ no `@makoai/app-sdk` package exists, though §5 and §6 Phase 3 both assume one                                                                                             |
 | Consoles in the repo (§10 Block D2)                                                                                                              | ❌ still Mongo `SavedConsole`                                                                                                                                              |
 | Per-session branch state (§10 Block C)                                                                                                           | ❌ not started                                                                                                                                                             |
 | **Human (builder) access to workspace repos**                                                                                                     | ❌ cloud repos are touched only by Mako's installation token — no human has any access. The builder tier of §11.5 is net-new: collaborator management or a git proxy, plus revocation wired to workspace membership |
@@ -807,7 +807,7 @@ Write `publishedSha`, build from it, serve it durably. Without this, §11.4 is
 aspirational and the monorepo model does not actually exist. PR preview deploys
 remain deferred.
 
-**Step 3 — minimal `@mako/cli`: `login` + `dev`.**
+**Step 3 — minimal `@makoai/cli`: `login` + `dev`.**
 Auth (device flow or pasted API key) and a dev server that proxies bindings and
 queries to the cloud execute API, so a local checkout renders with real data.
 This is what makes local editing _useful_ rather than merely possible. Not the
@@ -2203,7 +2203,7 @@ one-line by-hand path for older ones.
 A test pins a fingerprint of the managed
 content so changing it without bumping the version fails CI.
 
-**`@mako/app-sdk/vite`** — `makoData()`, a dependency-free Vite plugin in the
+**`@makoai/app-sdk/vite`** — `makoData()`, a dependency-free Vite plugin in the
 vendored package (`exports: { ".", "./vite" }`). During `vite dev` it answers
 `__data/index.json` from `bindings/*.sql` on disk and streams each binding's
 materialized artifact from `GET …/bindings/<name>/artifact`, materializing on
@@ -2282,7 +2282,7 @@ Three follow-ups from the review of the first pass, plus one correction.
 
 - **The refresh writes nothing under `apps/`.** See §15.2; the correction
   that keeps a template bump from fanning rebuilds out to prod.
-- **`@mako/app-sdk` is a real workspace package** (`packages/app-sdk`, plain
+- **`@makoai/app-sdk` is a real workspace package** (`packages/app-sdk`, plain
   ESM + `.d.ts`, `node --test`, publishable) instead of a 600-line template
   literal. `app-sdk-package.ts` vendors its files from disk — the API build
   copies them to `dist/app-sdk`, the same trick system skills use — so the
@@ -2290,12 +2290,12 @@ Three follow-ups from the review of the first pass, plus one correction.
   `pnpm publish` away once we own the `@mako` scope (nothing is under it
   today; `mako` and `mako-cli` unscoped are taken by strangers, and the
   Python SDK's `mako` collides with the Mako templating engine on PyPI).
-- **`mako login` / `mako dev`** (`packages/cli`, `@mako/cli`, dependency-free
+- **`mako login` / `mako dev`** (`packages/cli`, `@makoai/cli`, dependency-free
   beyond the SDK). `login` is the OAuth 2.1 sign-in every MCP client already
   performs against Mako — PKCE, loopback redirect (RFC 8252, which the
   authorization server already allowed), dynamic client registration —
   stored in `~/.mako/credentials.json` keyed by host and workspace, refreshed
-  on demand by the shared `@mako/app-sdk/credentials` module. The Vite plugin
+  on demand by the shared `@makoai/app-sdk/credentials` module. The Vite plugin
   reads it when there is no API key. So the template is now **OAuth-first**
   (v2): `.mcp.json` carries no `Authorization` header and the agent signs in
   through its own browser prompt; the API key path remains for CI. To make

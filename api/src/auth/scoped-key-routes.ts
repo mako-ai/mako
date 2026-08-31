@@ -4,7 +4,7 @@
  * Scoped keys (`mcp`, `query:read`, …) are MCP-only by construction so a
  * key handed to an agent can never be replayed against REST mutation routes
  * (AUTH_README, "MCP credentials are MCP-only"). A laptop checkout needs one
- * exception: `@mako/app-sdk/vite` streams an app's materialized binding
+ * exception: `@makoai/app-sdk/vite` streams an app's materialized binding
  * parquet during a local `vite dev`, and parquet does not travel well inside
  * a JSON-RPC tool result. So a key carrying `query:read` may additionally
  * call the binding READ routes below — each executes the binding's query
