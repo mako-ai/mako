@@ -16,6 +16,13 @@
  * DASHBOARD_ARTIFACT_PREFIX) and GCP credentials (the deploy job
  * authenticates before `pnpm run migrate`). Re-runnable: a second run finds
  * nothing to delete. Filesystem stores (dev) prune the same paths on disk.
+ *
+ * The doomed prefixes are persisted to `v1_artifact_purge_backlog` BEFORE
+ * anything is dropped, and the entry is marked purged only after the bucket
+ * delete succeeds. A denied bucket (the deployer SA lacked
+ * storage.objects.list on the first prod run) therefore cannot orphan the
+ * parquet untracked: the migration completes, and
+ * `pnpm apps:purge-v1-artifacts` sweeps the backlog once access exists.
  */
 import fs from "node:fs/promises";
 import { Db, ObjectId } from "mongodb";
@@ -43,12 +50,8 @@ const LEGACY_COLLECTIONS = [
 ];
 
 async function purgeArtifacts(
-  apps: Array<{ _id: ObjectId; workspaceId?: ObjectId }>,
+  prefixes: string[],
 ): Promise<{ prefixes: number; deleted: number; skipped: string | null }> {
-  const prefix = getArtifactPrefix();
-  const prefixes = apps
-    .filter(a => a.workspaceId)
-    .map(a => `${prefix}/workspaces/${a.workspaceId}/apps/${a._id}/`);
   if (prefixes.length === 0) return { prefixes: 0, deleted: 0, skipped: null };
 
   // A configured bucket wins over store-type detection: this runs on the
@@ -103,14 +106,36 @@ export async function up(db: Db): Promise<void> {
     ),
   );
 
-  // 1. Bucket first — it needs the app ids that step 2 drops.
+  // 1. Bucket first — it needs the app ids that step 2 drops. The prefix
+  // list is persisted before any attempt so a denied bucket loses nothing.
   if (collections.has("makoapps")) {
     const apps = (await db
       .collection("makoapps")
       .find({}, { projection: { _id: 1, workspaceId: 1 } })
       .toArray()) as Array<{ _id: ObjectId; workspaceId?: ObjectId }>;
-    const purge = await purgeArtifacts(apps);
-    log.info("v1 app artifacts purged", { apps: apps.length, ...purge });
+    const prefix = getArtifactPrefix();
+    const prefixes = apps
+      .filter(a => a.workspaceId)
+      .map(a => `${prefix}/workspaces/${a.workspaceId}/apps/${a._id}/`);
+    const backlog = db.collection("v1_artifact_purge_backlog");
+    if (prefixes.length > 0) {
+      await backlog.insertOne({ prefixes, createdAt: new Date() });
+    }
+    try {
+      const purge = await purgeArtifacts(prefixes);
+      log.info("v1 app artifacts purged", { apps: apps.length, ...purge });
+      if (!purge.skipped) {
+        await backlog.updateMany(
+          { purgedAt: { $exists: false } },
+          { $set: { purgedAt: new Date() } },
+        );
+      }
+    } catch (error) {
+      log.error(
+        "v1 artifact purge failed; prefixes are in v1_artifact_purge_backlog — run `pnpm apps:purge-v1-artifacts` once the credential can list the bucket",
+        { error: error instanceof Error ? error.message : String(error) },
+      );
+    }
 
     // 2. The documents (and with them every v1 public link).
     await db.collection("makoapps").drop();
