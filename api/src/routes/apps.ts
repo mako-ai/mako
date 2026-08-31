@@ -668,6 +668,9 @@ appsRoutes.openapi(
             title: folder.title,
             description: folder.description,
             access: state?.access ?? "workspace",
+            // Who restricted it — the sidebar files a private app someone
+            // else shared with you under "Shared with me", not "My Apps".
+            owner_id: state?.owner_id,
             publishedSha: state?.publishedSha,
             publishedAt: state?.publishedAt,
           };
