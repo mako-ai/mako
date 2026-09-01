@@ -2828,3 +2828,35 @@ Curation of the existing 202 is a separate reviewed commit (skills-triage
 branch): delete stale-machinery gotchas, fold app-specific knowledge into
 the apps' own AGENTS.md, merge duplicate families. The push-sync makes the
 merge self-applying — deleted files drop their index rows, no migration.
+
+## 23. dbt orchestration config as code: jobs + environments YAML (2026-09-01)
+
+The asterisk left on §20 ("the code moved, the orchestration config
+didn't"): the 16 job definitions and 5 environments were still Mongo rows
+behind a UI form. Now:
+
+- `dbt/jobs/<slug>.yml` — ONE file per job (name, environment, commands,
+  schedule, enabled, defer_to_production). Per-file, not a registry: the
+  bindings[] scar (§10 Block 1) stands — central metadata files are
+  merge-conflict magnets. The filename slug is the identity; rows carry
+  `slug` + `sourceBlobSha`.
+- `dbt/environments.yml` — environments (connection REFERENCES, never
+  credentials), default/prod environment, dbt version. A per-project
+  singleton, so one file is not a registry-of-many.
+- Rows stay as the scheduler's derived index with the runtime fields
+  (scheduledRun claims, failure counters) that never enter git.
+- Write-through everywhere the config mutates: job routes, agent job tools,
+  the PATCH-project environments path, personal-env auto-provisioning, and
+  the failure auto-disable (which must flip the FILE or the next push-sync
+  would re-enable the job).
+- Push-sync (`syncDbtConfigFromRepo`, chained into notifyRepoPushed)
+  reconciles external edits and re-registers schedules — editing a cron
+  from a laptop clone is now a reviewable commit that takes effect on push.
+  Fail-safe: invalid YAML, unknown environments, and allowlist-refused
+  commands are logged and skipped, never indexed — a broken or malicious
+  file cannot take down or hijack a production job.
+
+Migration adopts existing jobs/environments into the repo (one commit,
+re-runnable, mongoose connected per the §21 rule) and pushes the mirror.
+With this, "dbt is in git" carries no asterisk: source, rules, jobs,
+environments — all files; Mongo keeps runs and claims.

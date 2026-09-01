@@ -4544,6 +4544,10 @@ export interface IDbtJob extends Document {
   workspaceId: Types.ObjectId;
   projectId: Types.ObjectId;
   name: string;
+  /** Filename identity in dbt/jobs/<slug>.yml (apps.md §23). */
+  slug?: string;
+  /** Blob sha of the job file this row mirrors (sync levelling). */
+  sourceBlobSha?: string;
   /** Environment name from the project's environments list. */
   environment: string;
   /** Validated against the dbt command allowlist (api/src/dbt/commands.ts). */
@@ -4583,6 +4587,8 @@ const DbtJobSchema = new Schema<IDbtJob>(
       required: true,
     },
     name: { type: String, required: true, trim: true },
+    slug: { type: String },
+    sourceBlobSha: { type: String },
     environment: { type: String, required: true },
     commands: { type: [String], default: [] },
     schedule: {
@@ -4606,6 +4612,10 @@ const DbtJobSchema = new Schema<IDbtJob>(
 );
 
 DbtJobSchema.index({ workspaceId: 1, projectId: 1 });
+DbtJobSchema.index(
+  { projectId: 1, slug: 1 },
+  { unique: true, partialFilterExpression: { slug: { $type: "string" } } },
+);
 DbtJobSchema.index({ "scheduledRun.nextAt": 1, enabled: 1 }, { sparse: true });
 
 export const DbtJob = mongoose.model<IDbtJob>("DbtJob", DbtJobSchema);

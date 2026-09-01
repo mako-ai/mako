@@ -271,6 +271,11 @@ export async function ensurePersonalDbtEnvironment(params: {
   project.environments.push(environment);
   project.markModified("environments");
   await project.save();
+  // Environments live in dbt/environments.yml — write the provisioned one
+  // through so the file and the row never diverge (apps.md §23). Lazy
+  // import: dbt-config.service imports this module for prod-env resolution.
+  const { commitDbtEnvironmentsFile } = await import("./dbt-config.service");
+  await commitDbtEnvironmentsFile(project, params.userId);
 
   return { environment, created: true };
 }
