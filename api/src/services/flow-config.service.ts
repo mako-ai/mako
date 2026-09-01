@@ -64,11 +64,17 @@ async function commitConfig(
 }
 
 /** Write-through: the flow's file mirrors the row's definition fields. */
+export type FlowFileWriteResult =
+  | "written"
+  | "unchanged"
+  | "skipped"
+  | "failed";
+
 export async function commitFlowFile(
   flow: IFlow,
   actorUserId?: string,
   messageOverride?: string,
-): Promise<void> {
+): Promise<FlowFileWriteResult> {
   // Pre-backfill rows have neither; the migration stamps both. Skipping on
   // an empty NAME as well as an empty slug keeps serialize/parse symmetric:
   // `parseFlowFile` rejects a file with no name, so writing one would
@@ -76,12 +82,12 @@ export async function commitFlowFile(
   // authoritative, a real hazard once block 3 makes files authoritative.
   // (Caught by running the projection against production rows before their
   // backfill had deployed.)
-  if (!flow.slug || !flow.name?.trim()) return;
+  if (!flow.slug || !flow.name?.trim()) return "skipped";
   try {
     const contents = serializeFlowFile(flowToFile(flow));
     const sha = blobOid(contents);
     // Unchanged definition: no commit, no push, no churn.
-    if (flow.sourceBlobSha === sha) return;
+    if (flow.sourceBlobSha === sha) return "unchanged";
     await commitConfig(
       flow.workspaceId.toString(),
       { writes: { [flowFilePath(flow.slug)]: contents } },
@@ -89,6 +95,7 @@ export async function commitFlowFile(
       actorUserId ? await authorForUser(actorUserId) : undefined,
     );
     await Flow.updateOne({ _id: flow._id }, { $set: { sourceBlobSha: sha } });
+    return "written";
   } catch (error) {
     // Export-only: a failed mirror must never fail the user's mutation.
     // Mongo is authoritative and the next write (or the backfill CLI)
@@ -98,6 +105,7 @@ export async function commitFlowFile(
       slug: flow.slug,
       error: error instanceof Error ? error.message : String(error),
     });
+    return "failed";
   }
 }
 
@@ -130,19 +138,36 @@ export async function deleteFlowFile(
 export async function exportWorkspaceFlows(
   workspaceId: string,
   actorUserId?: string,
-): Promise<{ written: number; skipped: number }> {
-  const flows = await Flow.find({ workspaceId }).sort({ _id: 1 });
+): Promise<{
+  written: number;
+  unchanged: number;
+  skipped: number;
+  failed: string[];
+}> {
+  // `.lean()` is load-bearing, not a micro-optimisation. Mongoose documents
+  // carry circular internals, and `serializeFlowFile` ends at `yaml.dump(...,
+  // { noRefs: true })` — which recurses instead of emitting an alias, so a
+  // hydrated subdocument blows the stack. Every flow whose
+  // `destination.table.partitioning` was populated (the BigQuery writers)
+  // failed that way against production, while flows without one serialized
+  // fine — 21 of 31, reported as success by the CLI that ran them.
+  const flows = await Flow.find({ workspaceId })
+    .sort({ _id: 1 })
+    .lean<IFlow[]>();
   let written = 0;
+  let unchanged = 0;
   let skipped = 0;
+  const failed: string[] = [];
   for (const flow of flows) {
-    if (!flow.slug) {
-      skipped++;
-      continue;
-    }
-    const before = flow.sourceBlobSha;
-    await commitFlowFile(flow, actorUserId, `flow: export "${flow.slug}"`);
-    const after = await Flow.findById(flow._id).select("sourceBlobSha").lean();
-    if (after?.sourceBlobSha && after.sourceBlobSha !== before) written++;
+    const result = await commitFlowFile(
+      flow,
+      actorUserId,
+      `flow: export "${flow.slug}"`,
+    );
+    if (result === "written") written++;
+    else if (result === "unchanged") unchanged++;
+    else if (result === "skipped") skipped++;
+    else failed.push(flow.slug ?? String(flow._id));
   }
-  return { written, skipped };
+  return { written, unchanged, skipped, failed };
 }

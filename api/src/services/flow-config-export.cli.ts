@@ -14,6 +14,7 @@ import "dotenv/config";
 import mongoose from "mongoose";
 
 import { Flow } from "../database/workspace-schema";
+import { mirrorPushNow } from "../apps/cloud-repo.service";
 import { exportWorkspaceFlows } from "./flow-config.service";
 
 async function main(): Promise<void> {
@@ -27,21 +28,45 @@ async function main(): Promise<void> {
       : (await Flow.distinct("workspaceId")).map(id => String(id));
 
     let written = 0;
+    let unchanged = 0;
     let skipped = 0;
+    const failed: string[] = [];
     for (const workspaceId of workspaceIds) {
       const result = await exportWorkspaceFlows(workspaceId);
       written += result.written;
+      unchanged += result.unchanged;
       skipped += result.skipped;
+      failed.push(...result.failed.map(slug => `${workspaceId}/${slug}`));
       console.log(
-        `${workspaceId}: ${result.written} written, ${result.skipped} skipped (no slug)`,
+        `${workspaceId}: ${result.written} written, ${result.unchanged} unchanged, ` +
+          `${result.skipped} skipped (no slug/name), ${result.failed.length} FAILED`,
       );
+      // The push is fire-and-forget everywhere else, because a user's mutation
+      // must not wait on GitHub. A CLI is the opposite case: if we exit before
+      // the push runs, the commits stay in the local bare repo and the mirror
+      // never sees them — a run that writes every file and pushes none, while
+      // reporting success.
+      if (result.written > 0) await mirrorPushNow(workspaceId);
     }
+
     console.log(
-      `\n${workspaceIds.length} workspace(s): ${written} file(s) written, ${skipped} flow(s) skipped.`,
+      `\n${workspaceIds.length} workspace(s): ${written} written, ` +
+        `${unchanged} unchanged, ${skipped} skipped, ${failed.length} failed.`,
     );
     if (skipped > 0) {
       console.log(
-        "Skipped flows have no slug — run the flow_names_and_slugs migration first.",
+        "Skipped flows have no slug or no name — run the flow_names_and_slugs migration first.",
+      );
+    }
+    if (failed.length > 0) {
+      // Exit non-zero. `commitFlowFile` deliberately swallows its errors so a
+      // failed mirror never fails a user's mutation, which is right in the
+      // request path and wrong here: it once let this CLI report
+      // "10 written, 0 skipped" and exit 0 while 21 of 31 flows had thrown.
+      console.error(`\nFAILED to export ${failed.length} flow(s):`);
+      for (const slug of failed) console.error(`  ${slug}`);
+      throw new Error(
+        `${failed.length} flow(s) failed to export — see the warnings above`,
       );
     }
   } finally {

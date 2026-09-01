@@ -26,7 +26,15 @@
  * Real routes + real Mongo (mongodb-memory-server); only auth, the
  * workspace service, and the connector registry are mocked.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { Hono } from "hono";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
@@ -80,11 +88,14 @@ function req(
   path: string,
   body: unknown,
 ): Promise<Response> {
-  return app.request(`/api/workspaces/${workspaceId}/connectors${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  // `app.request` is typed `Response | Promise<Response>`; await normalises it.
+  return Promise.resolve(
+    app.request(`/api/workspaces/${workspaceId}/connectors${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
 }
 
 beforeAll(async () => {
@@ -150,11 +161,9 @@ describe("the decryption oracle is gone", () => {
     // Cross-tenant, now expressed the only way it still can be: name a
     // connector id that exists, from a workspace the caller is not in.
     const theirs = await seedConnector(WS_THEIRS);
-    const res = await req(
-      WS_MINE,
-      `/${theirs._id.toString()}/reveal-secret`,
-      { field: "api_key" },
-    );
+    const res = await req(WS_MINE, `/${theirs._id.toString()}/reveal-secret`, {
+      field: "api_key",
+    });
     expect(res.status).toBe(404);
     expect(await res.text()).not.toContain(SECRET);
   });
@@ -164,22 +173,18 @@ describe("reveal-secret is admin/owner only", () => {
   it("a VIEWER is refused — membership is not enough", async () => {
     const mine = await seedConnector(WS_MINE);
     ctx.role = "viewer";
-    const res = await req(
-      WS_MINE,
-      `/${mine._id.toString()}/reveal-secret`,
-      { field: "api_key" },
-    );
+    const res = await req(WS_MINE, `/${mine._id.toString()}/reveal-secret`, {
+      field: "api_key",
+    });
     expect(res.status).toBe(403);
     expect(await res.text()).not.toContain(SECRET);
   });
 
   it("an owner reveals their own connector's secret", async () => {
     const mine = await seedConnector(WS_MINE);
-    const res = await req(
-      WS_MINE,
-      `/${mine._id.toString()}/reveal-secret`,
-      { field: "api_key" },
-    );
+    const res = await req(WS_MINE, `/${mine._id.toString()}/reveal-secret`, {
+      field: "api_key",
+    });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       success: boolean;
@@ -192,11 +197,9 @@ describe("reveal-secret is admin/owner only", () => {
 
   it("only fields the schema declares secret may be revealed", async () => {
     const mine = await seedConnector(WS_MINE);
-    const res = await req(
-      WS_MINE,
-      `/${mine._id.toString()}/reveal-secret`,
-      { field: "account" },
-    );
+    const res = await req(WS_MINE, `/${mine._id.toString()}/reveal-secret`, {
+      field: "account",
+    });
     expect(res.status).toBe(400);
   });
 });
