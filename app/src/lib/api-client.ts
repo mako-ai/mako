@@ -94,10 +94,19 @@ class ApiClient {
       workspaceHeaders["x-workspace-id"] = workspaceId;
     }
 
+    // Only claim a JSON body when there IS one. `post(path)` with no data sends
+    // an empty body, and a `Content-Type: application/json` on an empty body
+    // makes the server's JSON validator try to parse it — "Malformed JSON in
+    // request body", a 500 on every route that accepts an optional body. That
+    // is what broke "start with demo data" in onboarding for two weeks.
+    const contentType: Record<string, string> =
+      restOptions.body === undefined || restOptions.body === null
+        ? {}
+        : { "Content-Type": "application/json" };
     const response = await fetch(url, {
       ...restOptions,
       headers: {
-        "Content-Type": "application/json",
+        ...contentType,
         ...workspaceHeaders,
         ...headers,
       },
