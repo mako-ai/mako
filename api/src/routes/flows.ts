@@ -1587,6 +1587,16 @@ flowRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId");
       const flowId = c.req.param("flowId");
+      if (!workspaceId) {
+        return c.json(
+          { success: false, error: "Workspace ID is required" },
+          400,
+        );
+      }
+      // Deleting tears the stream down AND removes the file. Refuse before
+      // `teardownFlow` disposes CDC state we could not then explain by a
+      // commit (RFC #904 decision 1).
+      await assertFlowRepo(workspaceId);
       const flowOid = new Types.ObjectId(flowId);
       const wsOid = new Types.ObjectId(workspaceId);
 
@@ -1610,6 +1620,9 @@ flowRoutes.openapi(
         message: "Flow deleted successfully",
       });
     } catch (error) {
+      // The repo gate is a precondition, not a failure: 412 with an
+      // actionable message rather than a 500 the user cannot act on.
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error deleting flow", { error });
       return c.json(
         {
@@ -1650,6 +1663,15 @@ flowRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId");
       const flowId = c.req.param("flowId");
+      if (!workspaceId) {
+        return c.json(
+          { success: false, error: "Workspace ID is required" },
+          400,
+        );
+      }
+      // Enabling or disabling is a definition change — it rewrites
+      // `flows/<slug>.yml` (RFC #904 decision 1).
+      await assertFlowRepo(workspaceId);
 
       const flow = await findFlow(workspaceId, flowId);
 
@@ -1681,6 +1703,9 @@ flowRoutes.openapi(
         },
       });
     } catch (error) {
+      // The repo gate is a precondition, not a failure: 412 with an
+      // actionable message rather than a 500 the user cannot act on.
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error toggling flow", { error });
       return c.json(
         {
@@ -1879,6 +1904,9 @@ flowRoutes.openapi(
       const flowId = c.req.param("flowId") as string;
       const authorizationError = await assertOwnerOrAdmin(c, workspaceId);
       if (authorizationError) return authorizationError;
+      // Sync engine and backfill cadence are both serialized into
+      // `flows/<slug>.yml` (RFC #904 decision 1).
+      await assertFlowRepo(workspaceId);
 
       const body = await c.req.json();
       const syncEngine = body?.syncEngine;
@@ -1937,6 +1965,9 @@ flowRoutes.openapi(
         },
       });
     } catch (error) {
+      // The repo gate is a precondition, not a failure: 412 with an
+      // actionable message rather than a 500 the user cannot act on.
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error updating sync engine", { error });
       return c.json(
         {
@@ -1986,6 +2017,9 @@ flowRoutes.openapi(
       const flowId = c.req.param("flowId") as string;
       const authorizationError = await assertOwnerOrAdmin(c, workspaceId);
       if (authorizationError) return authorizationError;
+      // Sync engine and backfill cadence are both serialized into
+      // `flows/<slug>.yml` (RFC #904 decision 1).
+      await assertFlowRepo(workspaceId);
 
       const body = await c.req.json();
       const enabled = Boolean(body?.enabled);
@@ -2041,6 +2075,9 @@ flowRoutes.openapi(
         },
       });
     } catch (error) {
+      // The repo gate is a precondition, not a failure: 412 with an
+      // actionable message rather than a 500 the user cannot act on.
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error updating backfill schedule", { error });
       return c.json(
         {
@@ -2926,6 +2963,10 @@ flowRoutes.openapi(
       );
       if (authorizationError) return authorizationError;
 
+      // Provisioning rewrites the webhook stanza of `flows/<slug>.yml`
+      // (RFC #904 decision 1).
+      await assertFlowRepo(workspaceId);
+
       const body = await c.req.json().catch(() => ({}));
 
       const flow = await findFlow(workspaceId, flowId);
@@ -3103,6 +3144,9 @@ flowRoutes.openapi(
         },
       });
     } catch (error) {
+      // The repo gate is a precondition, not a failure: 412 with an
+      // actionable message rather than a 500 the user cannot act on.
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       return c.json(
         {
           success: false,
