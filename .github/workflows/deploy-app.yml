@@ -1139,6 +1139,9 @@ jobs:
           # the customer mirror; without the connected-tier flag the push
           # silently no-ops and the salvage dies with the runner's clone.
           APPS_REQUIRE_CONNECTED_REPO: "true"
+          # Notebook adoption (apps.md §24) reads the GCS store; without the
+          # bucket the runner silently reads an empty filesystem store.
+          NOTEBOOK_GCS_BUCKET: ${{ vars.NOTEBOOK_GCS_BUCKET }}
         run: pnpm run migrate
 
       - name: Sync Inngest app

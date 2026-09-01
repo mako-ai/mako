@@ -34,6 +34,10 @@ import type { NotebookBlock } from "../notebooks/types";
 import { loggers } from "../logging";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import {
+  removeNotebookFile,
+  scheduleNotebookCheckpoint,
+} from "../notebooks/notebook-git.service";
+import {
   createNotebookIndex,
   deleteNotebookIndex,
   getNotebookIndex,
@@ -197,6 +201,7 @@ notebookRoutes.openapi(
     });
 
     logger.info("Created notebook", { workspaceId: ws, notebookId: doc.id });
+    scheduleNotebookCheckpoint(ws, doc.id, userId);
     publishRealtimeEvent(ws, {
       type: "notebook.updated",
       notebookId: doc.id,
@@ -471,6 +476,9 @@ notebookRoutes.openapi(
       clientId: typeof body.clientId === "string" ? body.clientId : undefined,
       origin: "save",
     });
+    // Git checkpoint after the edit burst goes quiet (apps.md §24) — the
+    // store above is the durable working copy; the commit is history.
+    scheduleNotebookCheckpoint(ws, id, editorUserId(c));
     return c.json({ success: true, data: doc });
   },
 );
@@ -566,11 +574,20 @@ notebookRoutes.openapi(
       );
     }
 
+    const doomedIndex = await NotebookIndex.findOne({
+      workspaceId: new Types.ObjectId(ws),
+      notebookId: id,
+    }).select("path name");
     const ok = await getNotebookStore().remove(ws, id);
     if (!ok) {
       return c.json({ success: false, error: "Notebook not found" }, 404);
     }
     await deleteNotebookIndex(ws, id);
+    if (doomedIndex) {
+      await removeNotebookFile(ws, doomedIndex, editorUserId(c)).catch(
+        () => undefined,
+      );
+    }
     publishTreeUpdated(ws);
     return c.json({ success: true });
   },
@@ -603,6 +620,9 @@ const notebookFolderBackend = createModelFolderBackend({
         return { ok: false, status: 404, error: "Folder not found" };
       }
     }
+    // Access flips relocate the committed file (notebooks/ <-> users/…);
+    // the next checkpoint reconciles the path.
+    scheduleNotebookCheckpoint(ctx.workspaceId, itemId, ctx.userId);
     await updateNotebookIndex(ctx.workspaceId, itemId, {
       folderId: folderId ?? null,
       access,

@@ -28,6 +28,7 @@
     "@ai-sdk/gateway": "^3.0.124",
     "@ai-sdk/mcp": "^2.0.5",
     "@clickhouse/client": "^1.14.0",
+    "@deepnote/blocks": "4.7.0",
     "@duckdb/node-api": "1.5.0-r.1",
     "@google-cloud/bigquery": "^8.1.1",
     "@google-cloud/cloud-sql-connector": "^1.8.4",
