@@ -50,8 +50,15 @@ const describe = (block: string) => {
 
 let mirroring = 0;
 for (const block of blocks) {
+  // `commitFlowFileOrFail` is the checked wrapper around `commitFlowFile`
+  // (see flows-writethrough.test.ts): routes call the wrapper so a failed
+  // write-through cannot be reported as success. Both count as mirroring —
+  // detecting only the raw name would read every wrapped route as "gates but
+  // mirrors nothing" the moment the indirection was introduced.
   const mirrors =
-    block.includes("commitFlowFile(") || block.includes("deleteFlowFile(");
+    block.includes("commitFlowFile(") ||
+    block.includes("commitFlowFileOrFail(") ||
+    block.includes("deleteFlowFile(");
   const gates = block.includes("assertFlowRepo(");
   if (mirrors) mirroring++;
 
