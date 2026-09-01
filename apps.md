@@ -2792,3 +2792,39 @@ deploy log were the buffering timeouts; the rehearsal masked it because the
 scratch repo short-circuited before any Mongo read). The prompt migration
 carries the mongoose connect with a comment saying never to remove it, and
 the salvage was recovered by pushing the rehearsal's identical branches.
+
+## 22. Skill discipline: proposals, honest counters, a capped catalog (2026-09-01)
+
+The pre-git agent hoarded 202 workspace skills in two months (83 from one
+user's sessions), a large share of them session-specific gotchas about
+machinery deleted this very week. Three mechanical faults made it possible
+and made it costly:
+
+1. **No bar on writes** — `save_skill` was rewarded for saving everything.
+2. **A lying counter** — auto-injection bumped the same `useCount` as an
+   explicit `load_skill`, and the index was SORTED by it, so exposure fed
+   exposure (193/200 skills showed 10+ "uses", zero never-used, top 1,578).
+3. **A linear tax** — all 200 trigger lines were injected into EVERY turn's
+   system prompt (~4-5K tokens of catalog).
+
+The fix, shipped as one PR:
+
+- **Agent saves are proposals**: a NEW skill saved by the agent commits to
+  the repo `suppressed: true` and stays out of the live index until a person
+  activates it (Skills panel toggle, or flipping the frontmatter in
+  `skills/<name>/SKILL.md` — the push-sync applies it). Updates to an
+  existing active skill apply directly. The tool's description now carries
+  the bar (would a teammate need it in a month?) and routes by scope:
+  app-specific → `apps/<slug>/AGENTS.md`, dbt → `dbt/.makorules.md`,
+  business context → `PROMPT.md`.
+- **Honest telemetry**: auto-injection bumps `injectedCount`/`lastInjectedAt`
+  (exposure); `useCount`/`lastUsedAt` is reserved for explicit `load_skill`
+  (someone reached for it). The index is no longer sorted by any counter.
+- **Capped catalog**: the per-turn index shows the top 30 workspace skills
+  ranked by THIS turn's retrieval score (recency when no query), plus a
+  "…N more via search_skills" line; system skills always show.
+
+Curation of the existing 202 is a separate reviewed commit (skills-triage
+branch): delete stale-machinery gotchas, fold app-specific knowledge into
+the apps' own AGENTS.md, merge duplicate families. The push-sync makes the
+merge self-applying — deleted files drop their index rows, no migration.

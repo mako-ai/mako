@@ -48,6 +48,13 @@ const AUTO_INJECT_LIMIT = 3;
  * `load_skill` explicitly if it decides it needs it.
  */
 const AUTO_INJECT_THRESHOLD = 0.25;
+/**
+ * Workspace entries shown in the always-injected index. The full catalog
+ * grew past 200 (apps.md §22) — injecting every trigger line each turn cost
+ * ~4-5K tokens of mostly-irrelevant catalog. The rest stays reachable via
+ * search_skills / get_relevant_skills, and the block says how many.
+ */
+const SKILL_INDEX_LIMIT = 30;
 /** Weights for the composite retrieval score. Sum should be ~1. */
 const ENTITY_WEIGHT = 0.6;
 const SEMANTIC_WEIGHT = 0.4;
@@ -83,8 +90,10 @@ export interface SkillRetrievalHit {
 }
 
 export interface SkillRetrievalResult {
-  /** The compact index of every non-suppressed skill — always injected. */
+  /** Compact index: top workspace skills for THIS turn + all system skills. */
   index: SkillIndexEntry[];
+  /** Workspace skills not shown in the index (find via search_skills). */
+  omittedFromIndex: number;
   /** Top-k hits with bodies for auto-injection (score >= threshold). */
   injected: SkillRetrievalHit[];
   /** Candidates that scored but didn't clear the threshold (for trace). */
@@ -165,8 +174,26 @@ export async function saveSkill(
   workspaceId: string,
   input: SkillInput,
   createdBy: string,
+  options: {
+    /**
+     * "agent": a NEW skill starts SUPPRESSED — a proposal a human activates
+     * in the Skills panel (or by flipping `suppressed: false` in the file).
+     * The eager-hoarding era put 200 unreviewed skills in the live index
+     * (apps.md §22); proposals cost nothing until someone approves them.
+     * Updates to an existing skill keep its current suppressed state.
+     */
+    origin?: "agent" | "user";
+  } = {},
 ): Promise<
-  | { success: true; skill: { id: string; name: string; created: boolean } }
+  | {
+      success: true;
+      skill: {
+        id: string;
+        name: string;
+        created: boolean;
+        pendingApproval?: boolean;
+      };
+    }
   | { success: false; error: string }
 > {
   const validation = validateInput(input);
@@ -188,6 +215,7 @@ export async function saveSkill(
     workspaceId: new Types.ObjectId(workspaceId),
     name,
   });
+  const pendingApproval = options.origin === "agent" && !existing;
 
   if (!existing) {
     const totalSkills = await Skill.countDocuments({
@@ -228,7 +256,7 @@ export async function saveSkill(
         // The file carries the author-DECLARED entities; the Mongo row below
         // carries the declared ∪ extracted union the retrieval uses.
         entities: unionEntities(input.entities, []),
-        suppressed: !!existing?.suppressed,
+        suppressed: pendingApproval || !!existing?.suppressed,
         body,
       },
       { author: await skillCommitAuthor(createdBy), loadAdoptable },
@@ -252,12 +280,17 @@ export async function saveSkill(
       embeddingModel: model ?? undefined,
       scopeType: "workspace",
       createdBy,
-      suppressed: false,
+      suppressed: pendingApproval,
       useCount: 0,
     });
     return {
       success: true,
-      skill: { id: created._id.toString(), name: created.name, created: true },
+      skill: {
+        id: created._id.toString(),
+        name: created.name,
+        created: true,
+        ...(pendingApproval ? { pendingApproval: true } : {}),
+      },
     };
   }
 
@@ -566,10 +599,12 @@ export async function retrieveRelevantSkills(
     suppressed: { $ne: true },
   })
     .select("name loadWhen suppressed useCount entities")
-    .sort({ useCount: -1, updatedAt: -1 })
+    // NOT sorted by useCount: the counter measures auto-injection exposure,
+    // and sorting by it fed back into what got injected (rich-get-richer).
+    .sort({ updatedAt: -1 })
     .lean();
 
-  const index: SkillIndexEntry[] = indexDocs.map(s => ({
+  const workspaceIndexAll: SkillIndexEntry[] = indexDocs.map(s => ({
     id: (s._id as Types.ObjectId).toString(),
     name: s.name,
     loadWhen: s.loadWhen,
@@ -579,20 +614,35 @@ export async function retrieveRelevantSkills(
   }));
 
   const systemSkills = getSystemSkillIndex();
-  for (const skill of systemSkills) {
-    index.push({
-      id: skill.id,
-      name: skill.name,
-      loadWhen: skill.description,
-      scope: "system",
-      suppressed: false,
-      useCount: 0,
-      references: skill.references,
-    });
-  }
+  const systemIndex: SkillIndexEntry[] = systemSkills.map(skill => ({
+    id: skill.id,
+    name: skill.name,
+    loadWhen: skill.description,
+    scope: "system",
+    suppressed: false,
+    useCount: 0,
+    references: skill.references,
+  }));
 
-  if (index.length === 0 || !queryText || queryText.trim().length === 0) {
-    return { index, injected: [], considered: [], queryEntities: [] };
+  const buildIndex = (workspaceShown: SkillIndexEntry[]): SkillIndexEntry[] => [
+    ...workspaceShown,
+    ...systemIndex,
+  ];
+  const omitted = Math.max(0, workspaceIndexAll.length - SKILL_INDEX_LIMIT);
+
+  if (
+    (workspaceIndexAll.length === 0 && systemIndex.length === 0) ||
+    !queryText ||
+    queryText.trim().length === 0
+  ) {
+    // No query to rank against: most recently updated first (the docs sort).
+    return {
+      index: buildIndex(workspaceIndexAll.slice(0, SKILL_INDEX_LIMIT)),
+      omittedFromIndex: omitted,
+      injected: [],
+      considered: [],
+      queryEntities: [],
+    };
   }
 
   const queryEntities = extractEntities(queryText);
@@ -707,22 +757,37 @@ export async function retrieveRelevantSkills(
     }
   }
 
-  // Fire-and-forget: bump useCount + lastUsedAt for workspace skills we
-  // injected. System skills have no Mongo row, so skip them.
+  // Fire-and-forget: auto-injection bumps injectedCount (EXPOSURE), never
+  // useCount — useCount is reserved for explicit load_skill calls so the two
+  // signals stay honest for curation. System skills have no Mongo row.
   const workspaceInjectedIds = injected
     .filter(i => i.scope === "workspace")
     .map(i => new Types.ObjectId(i.id));
   if (workspaceInjectedIds.length > 0) {
     void Skill.updateMany(
       { _id: { $in: workspaceInjectedIds } },
-      { $inc: { useCount: 1 }, $set: { lastUsedAt: new Date() } },
+      { $inc: { injectedCount: 1 }, $set: { lastInjectedAt: new Date() } },
     ).catch(err => {
       logger.debug("Skill useCount bump failed", { error: err });
     });
   }
 
+  // The shown workspace index follows THIS turn's relevance ranking; ties
+  // (score 0) keep the recency order from the query above.
+  const scoreById = new Map(workspaceCandidates.map(c => [c.id, c.score]));
+  const shownWorkspace = [...workspaceIndexAll]
+    .map((entry, position) => ({ entry, position }))
+    .sort(
+      (a, b) =>
+        (scoreById.get(b.entry.id) ?? 0) - (scoreById.get(a.entry.id) ?? 0) ||
+        a.position - b.position,
+    )
+    .slice(0, SKILL_INDEX_LIMIT)
+    .map(x => x.entry);
+
   return {
-    index,
+    index: buildIndex(shownWorkspace),
+    omittedFromIndex: omitted,
     injected,
     considered: considered.slice(0, 5),
     queryEntities,
@@ -756,6 +821,12 @@ export function renderSkillsPromptBlock(result: SkillRetrievalResult): string {
         ? ` (references: ${s.references.join(", ")})`
         : "";
     lines.push(`- [${s.scope}] \`${s.name}\`: ${s.loadWhen}${references}`);
+  }
+  if (result.omittedFromIndex > 0) {
+    lines.push(
+      `- …plus ${result.omittedFromIndex} more workspace skills not shown — ` +
+        "find them with `search_skills` or `get_relevant_skills`.",
+    );
   }
 
   if (result.injected.length > 0) {
