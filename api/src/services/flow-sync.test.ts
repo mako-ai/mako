@@ -12,8 +12,11 @@
  * its own, and never writes runtime state from a file.
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
 import { parseFlowFile, serializeFlowFile } from "./flow-config-files";
+import { mintedWebhookEndpoint } from "./flow-sync.service";
 
 const FILE = `name: orders → warehouse
 type: scheduled
@@ -77,6 +80,106 @@ async function main(): Promise<void> {
   assert.equal(
     parseFlowFile(FILE.replace("name: orders → warehouse", "name: ''")),
     null,
+  );
+
+  // ---- the inbound URL a file-born webhook flow needs -------------------
+  //
+  // `applyDefinition` writes only `webhookConfig.enabled` — right for an EDIT
+  // (the endpoint is inbound URL identity, the secret is a credential, neither
+  // belongs in a file) and wrong for a CREATE, which saved `enabled: true`
+  // with no endpoint: configured-looking and unreachable, on the majority case
+  // (17 of 31 production flows are webhook).
+  const WS = "6a2bd881b6f8c41ea17e9bc7";
+  const ID = "69c2719490eb18199aafa882";
+
+  const created = mintedWebhookEndpoint({
+    isNew: true,
+    type: "webhook",
+    workspaceId: WS,
+    flowId: ID,
+  });
+  assert.ok(created, "a file-born webhook flow must get an inbound URL");
+  // Derived from workspaceId + _id, never the slug — which is what makes an
+  // edit unable to move it.
+  assert.ok(
+    created.endsWith(`/api/webhooks/${WS}/${ID}`),
+    `endpoint must address the flow by id, got ${created}`,
+  );
+
+  // An UPDATE must leave it exactly where it is. This is the assertion that
+  // protects live integrations: 17 production flows have external systems
+  // POSTing to a URL that must not move when someone edits the file.
+  assert.equal(
+    mintedWebhookEndpoint({
+      isNew: false,
+      type: "webhook",
+      workspaceId: WS,
+      flowId: ID,
+      existingEndpoint: "https://api.example.com/api/webhooks/w/f",
+    }),
+    null,
+    "an edit must never re-mint an endpoint",
+  );
+  assert.equal(
+    mintedWebhookEndpoint({
+      isNew: false,
+      type: "webhook",
+      workspaceId: WS,
+      flowId: ID,
+    }),
+    null,
+    "not-new is decisive on its own, endpoint present or not",
+  );
+
+  // Non-webhook flows get nothing, and a row that somehow already carries one
+  // is never overwritten.
+  for (const type of ["scheduled", "manual", undefined]) {
+    assert.equal(
+      mintedWebhookEndpoint({ isNew: true, type, workspaceId: WS, flowId: ID }),
+      null,
+      `a ${String(type)} flow must not get a webhook endpoint`,
+    );
+  }
+  assert.equal(
+    mintedWebhookEndpoint({
+      isNew: true,
+      type: "webhook",
+      workspaceId: WS,
+      flowId: ID,
+      existingEndpoint: "https://api.example.com/api/webhooks/w/f",
+    }),
+    null,
+    "an existing endpoint is never overwritten, new row or not",
+  );
+
+  // The SECRET is never minted here. It is the provider's signing secret
+  // (Stripe's whsec_...), checked by connector.verifyWebhook — a value we
+  // invented would fail verification on every real delivery while the flow
+  // looked configured. This function returns a URL and nothing else, so there
+  // is no place for one to appear.
+  assert.equal(typeof created, "string");
+
+  // …and the create path actually CALLS it. The helper passing proves nothing
+  // on its own: this whole bug was a mapper that deliberately did not write
+  // the endpoint, with everything it did write working fine. A refactor that
+  // drops the call would leave every assertion above green. Driving the real
+  // sync needs git and Mongo, so the wiring is pinned at the source level.
+  const source = readFileSync(
+    path.join(__dirname, "flow-sync.service.ts"),
+    "utf8",
+  );
+  const syncBody = source.slice(
+    source.indexOf("export async function syncFlowsFromRepo"),
+  );
+  assert.match(
+    syncBody,
+    /mintedWebhookEndpoint\(\{[\s\S]*?isNew,/,
+    "syncFlowsFromRepo must mint through the helper, passing isNew",
+  );
+  assert.doesNotMatch(
+    syncBody,
+    /webhookConfig[\s\S]{0,120}secret/,
+    "the sync path must never write a webhook secret — it is the provider's",
   );
 
   console.log("flow-sync: all assertions passed");
