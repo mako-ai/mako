@@ -729,11 +729,18 @@ agentRoutes.openapi(
       .lean()
       .catch(() => null);
 
+    // What THIS turn's apps tools write to (repo-relative `apps/<slug>`
+    // roots). The sandbox is shared across every chat this user runs, so the
+    // turn-end auto-commit must stage only these paths — an unscoped commit
+    // sweeps a concurrent chat's in-flight work on another app.
+    const appsTouchedPaths = new Set<string>();
+
     // Build agent context
     const agentContext: AgentContext = {
       workspaceId,
       chatId,
       appsBranch: appsWorktree?.branch ?? undefined,
+      appsTouchedPaths,
       activeView,
       activeExplorer,
       userId: actorId,
@@ -1257,11 +1264,13 @@ agentRoutes.openapi(
                 }
                 const durationMs = Date.now() - startTime;
 
-                // Apps (Cursor-cloud model): turn any WIP the agent
-                // accumulated on this conversation's app branches into one
-                // commit per turn. No-op unless the turn touched an Apps
-                // worktree; never throws.
-                if (!isAborted) {
+                // Apps (Cursor-cloud model): turn the WIP this turn's apps
+                // tools produced into one commit per turn, scoped to the app
+                // folders THIS chat actually wrote to — the sandbox is shared
+                // across the user's chats, so an unscoped commit would sweep
+                // a concurrent chat's in-flight work on another app. No-op
+                // when the turn touched no app; never throws.
+                if (!isAborted && appsTouchedPaths.size > 0) {
                   try {
                     const lastUserText = [...allMessages]
                       .reverse()
@@ -1272,7 +1281,9 @@ agentRoutes.openapi(
                       )
                       .map(p => p.text)
                       .join(" ");
-                    await commitAgentTurn(workspaceId, actorId, lastUserText);
+                    await commitAgentTurn(workspaceId, actorId, lastUserText, [
+                      ...appsTouchedPaths,
+                    ]);
                   } catch (err) {
                     logger.warn("Apps turn commit failed", { error: err });
                   }

@@ -48,6 +48,14 @@ export interface AgentContext {
   /** Branch of the caller's Apps checkout — saves the agent a `git status` round trip. */
   appsBranch?: string;
   /**
+   * Mutable, request-owned: apps tools add the repo-relative root
+   * (`apps/<slug>`) of every app they WRITE to during this turn. The turn-end
+   * auto-commit stages only these paths, so a chat never commits what a
+   * concurrent chat (same user, same shared sandbox) has in flight on
+   * another app.
+   */
+  appsTouchedPaths?: Set<string>;
+  /**
    * Whether the resolved model accepts image input (model-catalog
    * capability). Gates image parts in tool outputs (app_browse screenshots)
    * — a text-only model receiving an image part loses the whole tool result.

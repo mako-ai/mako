@@ -1493,10 +1493,14 @@ got here; where this section disagrees with one of them, this one wins.
   mutating paths are blocked, and only while a repair runs.
 - **The agent gets rewritten for the sandbox.** Collapse the `App2 *` tool
   family into bash + read + edit; move git/vite/dbt know-how into skills;
-  feed it the pushed box state; commit only what it touched (today's
-  end-of-turn `git add -A` sweeps unrelated files); land its changes as a
-  staged group the user reviews with the diff view; give it its own `git
-  worktree` per chat so it and the user stop treading on each other.
+  feed it the pushed box state; ~~commit only what it touched (today's
+  end-of-turn `git add -A` sweeps unrelated files)~~ — DONE: the turn-end
+  commit and `app_commit` are pathspec-scoped to the `apps/<slug>` roots the
+  chat's tools actually wrote to, so two concurrent chats (one shared box per
+  workspace:user) no longer sweep each other's in-flight apps into one
+  commit; land its changes as a staged group the user reviews with the diff
+  view; give it its own `git worktree` per chat so it and the user stop
+  treading on each other.
 - **Coding agents in the box.** Two tracks: ship the CLIs (Claude Code,
   Codex, OpenCode, Pi) in the template so people use their own accounts in
   the terminal — nearly free; then drive an agent running in the box over

@@ -1640,7 +1640,7 @@ export async function commitWorktree(
   handle: WorktreeHandle,
   message: string,
   author?: GitAuthor,
-  options: { stagedOnly?: boolean } = {},
+  options: { stagedOnly?: boolean; paths?: string[] } = {},
 ): Promise<CommitResult> {
   const ctx = await ensureBox(handle);
   const result = await boxCommitAll({
@@ -1648,6 +1648,7 @@ export async function commitWorktree(
     message,
     author,
     stagedOnly: options.stagedOnly,
+    paths: options.paths,
   });
   if (!result.committed) return result;
   await syncBranchFromBox(handle);
@@ -1689,6 +1690,15 @@ export async function autoCommitFileEdit(
  * ACTOR, not by chat: a conversation is not a line of work, so the agent
  * commits to the branch the person is on rather than one of its own.
  *
+ * `touchedPaths` is what keeps concurrent chats out of each other's commits:
+ * the sandbox is ONE working copy per (workspace, user), shared by every chat
+ * that user runs, so an unscoped commit here swept whatever another chat had
+ * in flight (apps.md §14.2 "commit only what it touched"). Callers pass the
+ * repo-relative roots this turn's apps tools actually wrote to — empty means
+ * the turn touched no app and there is nothing of OURS to commit, so we must
+ * not commit at all. `undefined` keeps the old commit-everything behavior for
+ * callers with no tracking (deliberate full sweeps).
+ *
  * Never throws — finalization must not fail a turn. Nothing is lost by
  * failing: the work is in the working copy, exactly where it would be if a
  * person had written it and not committed yet.
@@ -1697,7 +1707,9 @@ export async function commitAgentTurn(
   workspaceId: string,
   actorId: string,
   turnSummary?: string,
+  touchedPaths?: string[],
 ): Promise<Array<{ commitOid?: string }>> {
+  if (touchedPaths && touchedPaths.length === 0) return [];
   const doc = await AppWorktree.findOne({
     workspaceId: new Types.ObjectId(workspaceId),
     userId: actorId,
@@ -1726,6 +1738,7 @@ export async function commitAgentTurn(
       message,
       author: human,
       committer: { name: "Mako Agent", email: "agent@mako.ai" },
+      paths: touchedPaths,
     });
     if (!result.committed) return [];
     // Mirror queue and window poke happen in the git endpoint's push

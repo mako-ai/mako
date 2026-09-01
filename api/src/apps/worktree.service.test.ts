@@ -20,6 +20,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {
+  appRootFor,
   boxCtx,
   checkoutBranch,
   commitAgentTurn,
@@ -522,6 +523,119 @@ describe("branches are explicit", () => {
     await expect(
       mergeBranchToMain(scopeOf(project), "alice-a"),
     ).rejects.toThrow(/conflict/i);
+  });
+});
+
+describe("concurrent chats share one box but not one commit", () => {
+  // The incident this guards: one user, two chats, two apps — ONE sandbox
+  // (keyed by workspace:user). Chat A's turn-end auto-commit ran an unscoped
+  // `git add -A` and swept chat B's in-flight app in with it. Turn commits
+  // are now pathspec-scoped to what each chat's tools actually touched.
+  it("a turn commit scoped to touched paths leaves the other chat's app alone", async () => {
+    const appA = await createProject({
+      workspaceId: WS,
+      title: "App A",
+      userId: USER,
+    });
+    const appB = await createProject({
+      workspaceId: WS,
+      title: "App B",
+      userId: USER,
+    });
+
+    // Both "chats" write into the SAME working copy, different app folders.
+    const handleA = await ensureWorktree(appA, USER);
+    const handleB = await ensureWorktree(appB, USER);
+    await writeFile(handleA, "bindings/a.sql", "SELECT 1;\n");
+    await writeFile(handleB, "bindings/b.sql", "SELECT 2;\n");
+
+    // Chat A's turn ends first, scoped to what ITS tools touched.
+    const results = await commitAgentTurn(WS, USER, "chat A work", [
+      appRootFor(appA),
+    ]);
+    expect(results).toHaveLength(1);
+    expect(results[0].commitOid).toBeTruthy();
+
+    // A's file is committed; B's is NOT in the commit and still dirty in the
+    // working copy, exactly where chat B left it.
+    const committedA = (await listFiles(appA)).entries.map(e => e.path);
+    expect(committedA).toContain("bindings/a.sql");
+    const committedB = (await listFiles(appB)).entries.map(e => e.path);
+    expect(committedB).not.toContain("bindings/b.sql");
+    const statusB = await worktreeStatus(scopeOf(appB), USER);
+    expect(statusB?.changes.map(ch => ch.path)).toContain("bindings/b.sql");
+
+    // Chat B's own turn end commits ITS app.
+    await commitAgentTurn(WS, USER, "chat B work", [appRootFor(appB)]);
+    expect((await listFiles(appB)).entries.map(e => e.path)).toContain(
+      "bindings/b.sql",
+    );
+    const history = (await projectHistory(scopeOf(appB))).map(c => c.subject);
+    expect(history[0]).toBe("Agent turn: chat B work");
+    expect(history).not.toContain("Agent turn: chat A work");
+  });
+
+  it("a turn that touched no app commits nothing at all", async () => {
+    const project = await makeProject();
+    const handle = await ensureWorktree(project, USER);
+    await writeFile(handle, "bindings/other-chat.sql", "SELECT 3;\n");
+
+    // A concurrent chat that used no apps tools ends its turn: empty touched
+    // set means NOTHING of its own to commit — before the scope existed this
+    // swept the other chat's file into an unrelated "Agent turn" commit.
+    const results = await commitAgentTurn(WS, USER, "sql-only turn", []);
+    expect(results).toEqual([]);
+    const status = await worktreeStatus(scopeOf(project), USER);
+    expect(status?.changes.map(ch => ch.path)).toContain(
+      "bindings/other-chat.sql",
+    );
+  });
+
+  it("a touched path that never materialized does not poison the commit", async () => {
+    const project = await makeProject();
+    const handle = await ensureWorktree(project, USER);
+    await writeFile(handle, "src/real.ts", "export {};\n");
+
+    // `apps/never-created` was marked touched (say, a failed app_bash), but
+    // no folder exists in the tree or HEAD. git aborts add/commit outright on
+    // an unmatched pathspec — the filter must keep the real path committable.
+    const results = await commitAgentTurn(WS, USER, "with a dead path", [
+      appRootFor(project),
+      "apps/never-created",
+    ]);
+    expect(results[0].commitOid).toBeTruthy();
+    expect((await listFiles(project)).entries.map(e => e.path)).toContain(
+      "src/real.ts",
+    );
+  });
+
+  it("app_commit's pathspec scope keeps a commit inside its app", async () => {
+    const appA = await createProject({
+      workspaceId: WS,
+      title: "Scoped A",
+      userId: USER,
+    });
+    const appB = await createProject({
+      workspaceId: WS,
+      title: "Scoped B",
+      userId: USER,
+    });
+    const handleA = await ensureWorktree(appA, USER);
+    const handleB = await ensureWorktree(appB, USER);
+    await writeFile(handleA, "mine.txt", "a\n");
+    await writeFile(handleB, "theirs.txt", "b\n");
+
+    // What the app_commit tool now runs: a commit scoped to its app root.
+    const result = await commitWorktree(handleA, "checkpoint", undefined, {
+      paths: [handleA.appRoot],
+    });
+    expect(result.committed).toBe(true);
+    expect((await listFiles(appA)).entries.map(e => e.path)).toContain(
+      "mine.txt",
+    );
+    expect((await listFiles(appB)).entries.map(e => e.path)).not.toContain(
+      "theirs.txt",
+    );
   });
 });
 
