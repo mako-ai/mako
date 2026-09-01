@@ -30,6 +30,7 @@ export default defineConfig({
       "src/sync-cdc/adapters/**/*.test.ts",
       "src/sync-cdc/backlog.test.ts",
       "src/sync-cdc/consumer.test.ts",
+      "src/sync-cdc/flow-reconcile.test.ts",
       "src/sync/legacy-flow-migration.test.ts",
       "src/sync/sync-orchestrator.test.ts",
       "src/utils/bigquery-emulator.test.ts",
