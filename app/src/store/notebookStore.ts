@@ -6,6 +6,7 @@ import type { KernelOutput } from "../notebook-runtime/kernel";
 import { useUIStore } from "./uiStore";
 import { realtimeClientId } from "../lib/realtime-client-id";
 import { useNotebookTreeStore } from "./notebookTreeStore";
+import { onRealtimeEvent } from "./lib/realtime-channel";
 
 /**
  * Notebook store — talks to the working-tree CRUD API
@@ -477,3 +478,26 @@ export const useNotebookStore = create<NotebookStore>((set, get) => {
       })),
   };
 });
+
+// ── Realtime reaction (registered here so the notebook domain owns it) ──
+
+// Notebook document changed (human or agent save): pull the authoritative
+// notebook for an OPEN notebook when its version advances (a tab that is
+// mid-save is skipped so it never stomps an in-flight local edit); if the
+// notebook isn't open here, refresh the explorer list so new notebooks
+// appear. Echo-suppressed by clientId.
+onRealtimeEvent(
+  "notebook.updated",
+  "notebookStore",
+  event => {
+    const nb = useNotebookStore.getState();
+    const open = nb.openNotebooks[event.notebookId];
+    if (!open) {
+      void nb.loadNotebooks();
+      return;
+    }
+    if ((open.version ?? 0) >= event.version) return; // stale / own echo
+    void nb.reloadOpenNotebook(event.notebookId);
+  },
+  { suppressOwnEcho: true },
+);
