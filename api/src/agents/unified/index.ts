@@ -14,6 +14,7 @@ import { createSkillTools } from "../../agent-lib/tools/skill-tools";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
 import { createDashboardSearchTools } from "../../agent-lib/tools/dashboard-search-tools";
 import { createFlowTools } from "../flow";
+import { createFlowFileTools } from "../../agent-lib/tools/flow-file-tools";
 import { createVersionHistoryTools } from "../../agent-lib/tools/version-history-tools";
 import { createWebTools } from "../../agent-lib/tools/web-tools";
 import { UNIFIED_SYSTEM_PROMPT, buildCurrentScreenContext } from "./prompt";
@@ -38,6 +39,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     { chatId: context.chatId },
   );
   const flowTools = createFlowTools(workspaceId, context.toolExecutionContext);
+  const flowFileTools = createFlowFileTools(workspaceId);
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId, userId);
   const skillTools = createSkillTools(workspaceId, userId);
   const consoleSearchTools = createConsoleSearchTools(
@@ -85,6 +87,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     ...clientNotebookTools,
     ...serverNotebookTools,
     ...flowUniqueTools,
+    ...flowFileTools,
     ...selfDirectiveTools,
     ...skillTools,
     ...consoleSearchTools,

@@ -301,6 +301,11 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   // agent can invent neither. Reads only, and neither returns a credential.
   list_connectors: bridge(),
   inspect_connector: bridge(),
+  // The pre-push check for flow files. Reads only — it says what a push
+  // WOULD do to running streams and performs none of it — so it is bridged
+  // next to the discovery pair it completes: discover ids, write the file,
+  // check it, then push.
+  check_flow_files: bridge(),
   query_duckdb: exclude(
     "client-only",
     "Queries in-browser DuckDB; MCP validates via sql_execute_query.",

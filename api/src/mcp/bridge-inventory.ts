@@ -17,6 +17,7 @@ import { createConsoleSearchTools } from "../agent-lib/tools/console-search-tool
 import { createDashboardSearchTools } from "../agent-lib/tools/dashboard-search-tools";
 import { createConnectorTools } from "../agent-lib/tools/connector-tools";
 import { createDbtServerTools } from "../agent-lib/tools/dbt-tools";
+import { createFlowFileTools } from "../agent-lib/tools/flow-file-tools";
 import { createMemberTools } from "../agent-lib/tools/member-tools";
 import { createMongoToolsV2 } from "../agent-lib/tools/mongodb-tools";
 import { createScheduleQueryTool } from "../agent-lib/tools/schedule-query-tool";
@@ -88,6 +89,7 @@ export function collectLiveAgentToolNames(): string[] {
   add(keysOf(createSkillTools(INVENTORY_WORKSPACE_ID)));
   add(keysOf(createSelfDirectiveTools(INVENTORY_WORKSPACE_ID)));
   add(keysOf(createConnectorTools(INVENTORY_WORKSPACE_ID)));
+  add(keysOf(createFlowFileTools(INVENTORY_WORKSPACE_ID)));
   // MCP-surface only (no mode lists them), but they are real server factories
   // and the bridge policy classifies them, so the inventory has to know them.
   add(keysOf(createMemberTools(INVENTORY_WORKSPACE_ID)));

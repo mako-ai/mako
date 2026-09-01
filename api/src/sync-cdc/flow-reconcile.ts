@@ -71,6 +71,25 @@ export interface PlannedFlow {
    * been created — an agent about to push has a file and no row.
    */
   flowId?: string;
+  /**
+   * True when this file has NOT been written onto its row yet, so the row's
+   * entity selection is still the old one.
+   *
+   * The live caller applies every changed definition before reconciling, so
+   * the row IS the file and reading the row is right. A pre-push dry-run has
+   * applied nothing: reading the row there would answer "what would happen if
+   * I pushed nothing", which for the one failure mode this exists to catch —
+   * an entity silently dropped from the selection — is always "nothing". The
+   * push would run `applyDefinition` first (it writes `entityFilter` and
+   * `entityLayouts` straight from the file), so for a file whose contents
+   * differ from the tree the FILE's selection is the honest prediction.
+   *
+   * Defaults to false, i.e. the live behaviour. A file identical to the one
+   * already in the tree must leave this false: the sync path short-circuits
+   * on a matching blob sha and applies nothing, so the row's own selection
+   * still stands.
+   */
+  pendingApply?: boolean;
 }
 
 /** A {@link PlannedFlow} the caller has already applied to a row. */
@@ -93,10 +112,17 @@ export interface ReconcilePlan {
    * Whether the fail-closed guard is engaged, and what it says. "would-defer"
    * is as real an answer as a teardown list — it means the destructive work
    * waits for a push where the tree can be verified.
+   *
+   * "unevaluated" is the pre-push answer and the only honest one there: the
+   * guard compares the commit the files were read at against the mirror's
+   * main, and files that have not been pushed are not a commit. Reporting
+   * "verified" for them — by handing the guard the mirror's current main —
+   * would be a true statement about the mirror dressed up as a promise about
+   * the caller's working tree.
    */
   guard: {
     required: boolean;
-    verdict: "not-needed" | "verified" | "would-defer";
+    verdict: "not-needed" | "verified" | "would-defer" | "unevaluated";
     reason?: string;
   };
 }
@@ -227,8 +253,17 @@ async function resumeAfterReconcile(
  * it twice and the second run finds nothing to do. A flow with no explicit
  * selection streams everything, so nothing is ever stale for it.
  */
-async function staleEntitiesFor(flow: IFlow): Promise<string[]> {
-  const { entities, hasExplicitSelection } = resolveConfiguredEntities(flow);
+async function staleEntitiesFor(
+  flow: IFlow,
+  /**
+   * Where the selection is read from. The row, normally — see
+   * {@link PlannedFlow.pendingApply} for the one case where the file is the
+   * honest source instead.
+   */
+  selection: Pick<IFlow, "entityFilter" | "entityLayouts">,
+): Promise<string[]> {
+  const { entities, hasExplicitSelection } =
+    resolveConfiguredEntities(selection);
   if (!hasExplicitSelection) return [];
   const selected = new Set(entities);
   const live = await CdcEntityState.find({
@@ -267,7 +302,11 @@ async function staleEntitiesFor(flow: IFlow): Promise<string[]> {
 async function computePlan(input: {
   workspaceId: string;
   desired: PlannedFlow[];
-  treeSha: string;
+  /**
+   * The commit `desired` was read at. Omitted only by a pre-push dry-run,
+   * where there is no such commit — see {@link ReconcilePlan.guard}.
+   */
+  treeSha?: string;
 }): Promise<{
   plan: ReconcilePlan;
   removals: IFlow[];
@@ -327,7 +366,15 @@ async function computePlan(input: {
   for (const item of desired) {
     const flow = bySlug.get(item.slug);
     if (!flow) continue;
-    const stale = await staleEntitiesFor(flow);
+    const stale = await staleEntitiesFor(
+      flow,
+      item.pendingApply
+        ? ({
+            entityFilter: item.file.entityFilter,
+            entityLayouts: item.file.entityLayouts,
+          } as unknown as Pick<IFlow, "entityFilter" | "entityLayouts">)
+        : flow,
+    );
     if (stale.length > 0) perFlowStale.set(item.slug, { flow, stale });
   }
 
@@ -336,9 +383,20 @@ async function computePlan(input: {
     required: false,
     verdict: "not-needed",
   };
-  if (required) {
+  if (required && treeSha === undefined) {
+    // Nothing to verify against: these files are not a commit. Saying so is
+    // the whole point — the alternative (hand the guard the mirror's current
+    // main, which of course matches itself) would report "verified" about a
+    // tree that does not contain the files being judged.
+    guard = {
+      required: true,
+      verdict: "unevaluated",
+      reason:
+        "The fail-closed mirror check runs at push time against the pushed commit. These files have not been pushed, so nothing can be verified yet: whether the destructive work above actually runs is decided when the push lands.",
+    };
+  } else if (required) {
     try {
-      await assertTreeAtMirrorMain(workspaceId, treeSha);
+      await assertTreeAtMirrorMain(workspaceId, treeSha as string);
       guard = { required: true, verdict: "verified" };
     } catch (error) {
       if (!(error instanceof TreeNotVerifiedError)) throw error;
@@ -378,11 +436,15 @@ async function computePlan(input: {
  *
  * Takes `flowId` optionally, so it answers before any row has been created —
  * which is the moment worth asking, i.e. before the push.
+ *
+ * `treeSha` is optional for the same reason. Omit it when the files are not a
+ * pushed commit, and the guard reports "unevaluated" rather than a verdict
+ * about some other tree.
  */
 export async function dryRunFlowReconcile(input: {
   workspaceId: string;
   desired: PlannedFlow[];
-  treeSha: string;
+  treeSha?: string;
 }): Promise<ReconcilePlan> {
   const { plan } = await computePlan(input);
   return plan;
@@ -415,7 +477,11 @@ export async function reconcileFlowsFromRepo(input: {
   const { plan, removals, perFlowStale } = await computePlan(input);
   const workspaceOid = new Types.ObjectId(workspaceId);
 
-  if (plan.guard.verdict === "would-defer") {
+  // Fail closed on ANY verdict that is not an affirmative "verified": the
+  // live path always passes a treeSha, so "unevaluated" cannot occur here —
+  // and if a future caller stops passing one, deferring is the safe way to
+  // find out rather than tearing streams down against an unchecked tree.
+  if (plan.guard.required && plan.guard.verdict !== "verified") {
     result.deferred = {
       removals: plan.wouldTeardown,
       reason: plan.guard.reason ?? "the tree could not be verified",
