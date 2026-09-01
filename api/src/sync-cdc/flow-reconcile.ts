@@ -62,10 +62,43 @@ const RECONCILE_RESUME = "REPO_RECONCILE_RESUME";
  * update, and passing a live Mongoose document across that boundary invites
  * one side to save half of the other's work.
  */
-export interface DesiredFlow {
+export interface PlannedFlow {
   slug: string;
   file: FlowFile;
+  /**
+   * The row this file corresponds to, when one exists yet. Optional because
+   * the useful moment to ask "what would this do?" is BEFORE anything has
+   * been created — an agent about to push has a file and no row.
+   */
+  flowId?: string;
+}
+
+/** A {@link PlannedFlow} the caller has already applied to a row. */
+export interface DesiredFlow extends PlannedFlow {
   flowId: string;
+}
+
+/**
+ * What a tree would do to the streams. Every field is a slug, so a caller can
+ * print it without another lookup.
+ */
+export interface ReconcilePlan {
+  /** Files with no matching row — the caller would create these. */
+  wouldCreate: string[];
+  /** Flows whose selection has entities still running that it no longer wants. */
+  wouldReconfigure: Array<{ slug: string; entities: string[] }>;
+  /** Flows whose file is gone: teardown, and their checkpoints with it. */
+  wouldTeardown: string[];
+  /**
+   * Whether the fail-closed guard is engaged, and what it says. "would-defer"
+   * is as real an answer as a teardown list — it means the destructive work
+   * waits for a push where the tree can be verified.
+   */
+  guard: {
+    required: boolean;
+    verdict: "not-needed" | "verified" | "would-defer";
+    reason?: string;
+  };
 }
 
 export interface ReconcileResult {
@@ -219,6 +252,151 @@ async function staleEntitiesFor(flow: IFlow): Promise<string[]> {
  * what that means for the streams, and refuses anything destructive it cannot
  * justify against the mirror.
  */
+/**
+ * What a tree WOULD do, decided once and used twice.
+ *
+ * The dry-run and the real reconcile share this function rather than each
+ * deciding for itself, because a predictor that drifts from the thing it
+ * predicts is worse than no predictor: it earns trust and then spends it on a
+ * wrong answer. Same lesson as `syncRepoBackedResources` — one list, both
+ * callers — applied to a decision rather than a list.
+ *
+ * Reads only. The destructive half lives in {@link reconcileFlowsFromRepo},
+ * which calls this first and then acts on what it says.
+ */
+async function computePlan(input: {
+  workspaceId: string;
+  desired: PlannedFlow[];
+  treeSha: string;
+}): Promise<{
+  plan: ReconcilePlan;
+  removals: IFlow[];
+  perFlowStale: Map<string, { flow: IFlow; stale: string[] }>;
+}> {
+  const { workspaceId, desired, treeSha } = input;
+  const empty = {
+    plan: {
+      wouldCreate: [],
+      wouldReconfigure: [],
+      wouldTeardown: [],
+      guard: { required: false, verdict: "not-needed" as const },
+    },
+    removals: [] as IFlow[],
+    perFlowStale: new Map<string, { flow: IFlow; stale: string[] }>(),
+  };
+
+  // An empty tree is not a mass deletion. Defence in depth: the caller returns
+  // early on an empty `flows/` too, and this is the layer that has to be right
+  // even if a future caller forgets.
+  if (desired.length === 0) return empty;
+
+  const workspaceOid = new Types.ObjectId(workspaceId);
+  const existing = await Flow.find({
+    workspaceId: workspaceOid,
+    slug: { $exists: true },
+  });
+
+  // Identity is the SLUG, because the slug is the file name and "the file is
+  // gone" is the condition being tested. Matching only on the row id would be
+  // right for the live path — the caller has applied rows by then — and wrong
+  // for a dry-run performed BEFORE anything is applied, where no id exists yet
+  // and every flow would look like a removal. The id is still honoured when
+  // present, so a rename in flight cannot tear down the row it renamed.
+  const desiredSlugs = new Set(desired.map(d => d.slug));
+  const desiredIds = new Set(
+    desired.map(d => d.flowId).filter((id): id is string => Boolean(id)),
+  );
+  const removals = existing.filter(flow => {
+    const id = (flow._id as Types.ObjectId).toString();
+    if (desiredIds.has(id)) return false;
+    return !(flow.slug && desiredSlugs.has(flow.slug));
+  });
+
+  const bySlug = new Map<string, IFlow>();
+  for (const flow of existing) {
+    if (flow.slug) bySlug.set(flow.slug, flow);
+  }
+  const wouldCreate = desired
+    .filter(d => !bySlug.has(d.slug))
+    .map(d => d.slug)
+    .sort();
+
+  // Dropping an entity disposes its checkpoint exactly as a teardown does, so
+  // both sit behind the same guard and both belong in the same plan.
+  const perFlowStale = new Map<string, { flow: IFlow; stale: string[] }>();
+  for (const item of desired) {
+    const flow = bySlug.get(item.slug);
+    if (!flow) continue;
+    const stale = await staleEntitiesFor(flow);
+    if (stale.length > 0) perFlowStale.set(item.slug, { flow, stale });
+  }
+
+  const required = removals.length > 0 || perFlowStale.size > 0;
+  let guard: ReconcilePlan["guard"] = {
+    required: false,
+    verdict: "not-needed",
+  };
+  if (required) {
+    try {
+      await assertTreeAtMirrorMain(workspaceId, treeSha);
+      guard = { required: true, verdict: "verified" };
+    } catch (error) {
+      if (!(error instanceof TreeNotVerifiedError)) throw error;
+      guard = {
+        required: true,
+        verdict: "would-defer",
+        reason: error.message,
+      };
+    }
+  }
+
+  return {
+    plan: {
+      wouldCreate,
+      wouldReconfigure: [...perFlowStale.entries()]
+        .map(([slug, { stale }]) => ({ slug, entities: stale }))
+        .sort((a, b) => a.slug.localeCompare(b.slug)),
+      wouldTeardown: removals.map(f => f.slug ?? String(f._id)).sort(),
+      guard,
+    },
+    removals,
+    perFlowStale,
+  };
+}
+
+/**
+ * Say what a tree would do to the streams, and do nothing.
+ *
+ * The agent-authored case (RFC: agent-authored flows) is why this exists. A
+ * model's failure mode is not a typo — a typo fails to parse. It is OMITTING
+ * a file, or an entity, with complete confidence. Both of those are the
+ * destructive path: a missing file is a teardown, a missing entity disposes
+ * that entity's checkpoint. `assertTreeAtMirrorMain` does not help there,
+ * because a confidently wrong file pushes successfully and verifies fine. The
+ * guard protects against reading the WRONG tree; this protects against the
+ * tree being wrong.
+ *
+ * Takes `flowId` optionally, so it answers before any row has been created —
+ * which is the moment worth asking, i.e. before the push.
+ */
+export async function dryRunFlowReconcile(input: {
+  workspaceId: string;
+  desired: PlannedFlow[];
+  treeSha: string;
+}): Promise<ReconcilePlan> {
+  const { plan } = await computePlan(input);
+  return plan;
+}
+
+/**
+ * Bring streams in line with the flow files at `treeSha`.
+ *
+ * The caller owns the definition half: it resolves main, parses the tree, and
+ * has already applied field changes to rows. It hands over what the repository
+ * says should exist, and the commit it read that from. This module decides
+ * what that means for the streams, and refuses anything destructive it cannot
+ * justify against the mirror.
+ */
 export async function reconcileFlowsFromRepo(input: {
   workspaceId: string;
   desired: DesiredFlow[];
@@ -226,7 +404,7 @@ export async function reconcileFlowsFromRepo(input: {
   treeSha: string;
   actorUserId?: string;
 }): Promise<ReconcileResult> {
-  const { workspaceId, desired, treeSha } = input;
+  const { workspaceId, treeSha } = input;
   const result: ReconcileResult = {
     reconfigured: [],
     removed: [],
@@ -234,104 +412,68 @@ export async function reconcileFlowsFromRepo(input: {
     deferred: null,
   };
 
-  // An empty tree is not a mass deletion. Defence in depth: the caller returns
-  // early on an empty `flows/` too, and this is the layer that has to be right
-  // even if a future caller forgets.
-  if (desired.length === 0) return result;
-
+  const { plan, removals, perFlowStale } = await computePlan(input);
   const workspaceOid = new Types.ObjectId(workspaceId);
-  const desiredIds = new Set(desired.map(d => d.flowId));
-  const removals = (
-    await Flow.find({ workspaceId: workspaceOid, slug: { $exists: true } })
-  ).filter(flow => !desiredIds.has((flow._id as Types.ObjectId).toString()));
 
-  // Is anything destructive on the table? Dropping an entity disposes its
-  // checkpoint exactly as a teardown does, so both go behind the same guard.
-  const perFlowStale = new Map<string, { flow: IFlow; stale: string[] }>();
-  for (const item of desired) {
-    const flow = await Flow.findOne({
-      _id: new Types.ObjectId(item.flowId),
-      workspaceId: workspaceOid,
-    });
-    if (!flow) continue;
-    const stale = await staleEntitiesFor(flow);
-    if (stale.length > 0) perFlowStale.set(item.slug, { flow, stale });
+  if (plan.guard.verdict === "would-defer") {
+    result.deferred = {
+      removals: plan.wouldTeardown,
+      reason: plan.guard.reason ?? "the tree could not be verified",
+    };
+    // Not an error-level event: refusing is the designed behaviour, and the
+    // next push retries. Loud enough to explain a deletion that has not
+    // happened yet, which is the question this will be asked.
+    log.warn(
+      "Deferred a destructive flow reconcile: the tree could not be verified against the mirror",
+      {
+        workspaceId,
+        treeSha,
+        flowsAwaitingTeardown: result.deferred.removals,
+        entitiesAwaitingDrop: [...perFlowStale.keys()],
+        reason: result.deferred.reason,
+      },
+    );
+    return result;
   }
 
-  const destructive = removals.length > 0 || perFlowStale.size > 0;
-  let verified = !destructive;
-  if (destructive) {
+  for (const [slug, { flow, stale }] of perFlowStale) {
+    const taken = await pauseForReconcile(flow);
     try {
-      await assertTreeAtMirrorMain(workspaceId, treeSha);
-      verified = true;
-    } catch (error) {
-      if (!(error instanceof TreeNotVerifiedError)) throw error;
-      verified = false;
-      result.deferred = {
-        removals: removals.map(f => f.slug ?? String(f._id)),
-        reason: error.message,
-      };
-      // Not an error-level event: refusing is the designed behaviour, and the
-      // next push retries. Loud enough to explain a deletion that has not
-      // happened yet, which is the question this will be asked.
-      log.warn(
-        "Deferred a destructive flow reconcile: the tree could not be verified against the mirror",
-        {
-          workspaceId,
-          treeSha,
-          flowsAwaitingTeardown: result.deferred.removals,
-          entitiesAwaitingDrop: [...perFlowStale.keys()],
-          reason: error.message,
-        },
-      );
+      await CdcEntityState.deleteMany({
+        flowId: flow._id,
+        workspaceId: workspaceOid,
+        entity: { $in: stale },
+      });
+      await CdcChangeEvent.deleteMany({
+        flowId: flow._id,
+        workspaceId: workspaceOid,
+        entity: { $in: stale },
+      });
+      result.entitiesDropped.push({ slug, entities: stale });
+      log.info("Dropped entities removed from a flow's selection", {
+        workspaceId,
+        slug,
+        entities: stale,
+      });
+    } finally {
+      // Always resume, including when the drop threw: a stream left paused
+      // by a failed reconcile stops moving and nothing else lifts it.
+      await resumeAfterReconcile(flow, taken);
     }
+    result.reconfigured.push(slug);
   }
 
-  if (verified) {
-    for (const [slug, { flow, stale }] of perFlowStale) {
-      const taken = await pauseForReconcile(flow);
-      try {
-        await CdcEntityState.deleteMany({
-          flowId: flow._id,
-          workspaceId: workspaceOid,
-          entity: { $in: stale },
-        });
-        await CdcChangeEvent.deleteMany({
-          flowId: flow._id,
-          workspaceId: workspaceOid,
-          entity: { $in: stale },
-        });
-        result.entitiesDropped.push({ slug, entities: stale });
-        log.info("Dropped entities removed from a flow's selection", {
-          workspaceId,
-          slug,
-          entities: stale,
-        });
-      } finally {
-        // Always resume, including when the drop threw: a stream left paused
-        // by a failed reconcile stops moving and nothing else lifts it.
-        await resumeAfterReconcile(flow, taken);
-      }
-      result.reconfigured.push(slug);
-    }
-
-    for (const flow of removals) {
-      await teardownFlow(flow);
-      result.removed.push(flow.slug ?? String(flow._id));
-    }
+  for (const flow of removals) {
+    await teardownFlow(flow);
+    result.removed.push(flow.slug ?? String(flow._id));
   }
 
-  if (
-    result.reconfigured.length > 0 ||
-    result.removed.length > 0 ||
-    result.deferred
-  ) {
+  if (result.reconfigured.length > 0 || result.removed.length > 0) {
     log.info("Flow stream reconcile complete", {
       workspaceId,
       treeSha,
       reconfigured: result.reconfigured.length,
       removed: result.removed.length,
-      deferred: result.deferred ? result.deferred.removals.length : 0,
     });
   }
   return result;
