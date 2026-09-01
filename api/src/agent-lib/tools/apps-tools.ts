@@ -56,6 +56,7 @@ import {
   repoDirFor,
   resolveCommit,
 } from "../../apps/repository.service";
+import { freshenForServe } from "../../apps/cloud-repo.service";
 import { runGit } from "../../apps/git";
 import { buildLogPath } from "../../apps/deployment.service";
 import { getSandboxProvider } from "../../apps/sandbox/provider";
@@ -507,6 +508,9 @@ export function createAppsTools({
         try {
           const project = loaded.project;
           const branch = project.defaultBranch || DEFAULT_BRANCH;
+          // Pull the cloud mirror first: the serving instance may not have
+          // seen the push this status call is asking about (#894's race).
+          await freshenForServe(project.workspaceId.toString(), 0);
           const repoDir = repoDirFor(project.workspaceId.toString());
           const branchSha = await resolveCommit(
             repoDir,
@@ -590,6 +594,11 @@ export function createAppsTools({
         try {
           const project = loaded.project;
           const branch = project.defaultBranch || DEFAULT_BRANCH;
+          // Force-freshen before resolving: this tool exists precisely for
+          // "the push's automatic deploy did not land", which is also when
+          // this instance may not have pulled that push yet — without this
+          // we would enqueue the PREVIOUS sha and report success.
+          await freshenForServe(project.workspaceId.toString(), 0);
           const sha = await resolveCommit(
             repoDirFor(project.workspaceId.toString()),
             `refs/heads/${branch}`,
