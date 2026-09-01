@@ -919,6 +919,18 @@ export interface IFlow extends Document {
   workspaceId: Types.ObjectId;
   type: "scheduled" | "webhook"; // Required field
 
+  /**
+   * Editable display name. Absent on rows created before names existed —
+   * `flowDisplayName()` falls back to the source → destination derivation.
+   */
+  name?: string;
+  /**
+   * Filename identity for `flows/<slug>.yml` (RFC #904): minted once from
+   * the name, unique per workspace, NEVER changed by a rename. Absent until
+   * the backfill stamps pre-existing rows.
+   */
+  slug?: string;
+
   // Source configuration - either connector or database
   sourceType: "connector" | "database";
   dataSourceId?: Types.ObjectId; // For connector sources (Stripe, Close, etc.)
@@ -2255,6 +2267,19 @@ const FlowSchema = new Schema<IFlow>(
       enum: ["scheduled", "webhook"],
       required: true,
     },
+    // Display name (editable) and slug (minted once; the `flows/<slug>.yml`
+    // filename identity — see RFC #904). Both optional: rows predating names
+    // fall back to the source → destination derivation until the backfill.
+    name: {
+      type: String,
+      trim: true,
+      maxlength: 200,
+    },
+    slug: {
+      type: String,
+      trim: true,
+      match: /^[a-z0-9][a-z0-9-]*$/,
+    },
     // Source type discriminator - defaults to "connector" for backward compatibility
     sourceType: {
       type: String,
@@ -2561,6 +2586,9 @@ const FlowSchema = new Schema<IFlow>(
 
 // Indexes
 FlowSchema.index({ workspaceId: 1, "schedule.enabled": 1 });
+// One file per slug per workspace. Sparse so rows awaiting the backfill
+// (no slug yet) do not collide with each other on null.
+FlowSchema.index({ workspaceId: 1, slug: 1 }, { unique: true, sparse: true });
 FlowSchema.index({ workspaceId: 1, sourceType: 1 });
 FlowSchema.index({ dataSourceId: 1 }, { sparse: true }); // Sparse since not required for database sources
 FlowSchema.index({ "databaseSource.connectionId": 1 }, { sparse: true });
