@@ -1,0 +1,58 @@
+name: Frontend tests
+
+# The frontend suite, on frontend pull requests, and nothing else.
+#
+# api-contract.yml is the only other workflow that runs tests on a pull
+# request, and it is a heavy job: the api tsx chain, agent-tools, the
+# destination suite, dbt, and an OpenAPI regenerate-and-diff. Widening ITS
+# path filter to cover app/src would give frontend changes behavioural
+# coverage, but at the cost of running all of that for a one-line CSS change.
+#
+# This runs the 436 frontend assertions on their own — no workspace build is
+# needed, because @mako/schemas and @mako/agent-tools both expose
+# `"import": "./src/index.ts"`, so vitest resolves them to source rather than
+# to a built dist. That is what keeps this job to an install plus a couple of
+# seconds.
+#
+# Deliberately NOT covered here, and deliberately left to api-contract.yml:
+# the OpenAPI contract and the generated typed client. Those are already
+# handled, because app/src/api/** and app/src/store/** are in that workflow's
+# path filter — so a change to the hand-written client, the generated schema,
+# or the stores still triggers the drift check as it does today.
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "app/src/**"
+      - "app/package.json"
+      - "app/vite.config.ts"
+      - ".github/workflows/frontend-tests.yml"
+
+jobs:
+  frontend:
+    name: Frontend unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Frontend tests
+        run: pnpm --filter app run test:unit
