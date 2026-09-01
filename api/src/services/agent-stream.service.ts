@@ -43,8 +43,25 @@ function estimateDataUrlBytes(dataUrl: string): number {
   return Math.floor(((dataUrl.length - commaIndex - 1) * 3) / 4);
 }
 
+/**
+ * Assemble the trailing user message that carries `capture_screenshot`'s
+ * images into the next model request.
+ *
+ * `supportsVision: false` must NOT silently drop the images. The model just
+ * called a screenshot tool and is about to answer a question about what is on
+ * screen; leaving it with no message at all invites a confident description of
+ * an image nobody showed it. It gets a text note instead, and the run keeps
+ * going.
+ *
+ * Sending the images anyway is a hard failure, not a degradation: text-only
+ * models reject the request outright ("messages.content.type is invalid,
+ * allowed values: ['text']" / "Model only supports text input; received
+ * unsupported content type 'image_url'"), which kills the turn. That was the
+ * single largest source of chat errors in the 21 days before this gate landed.
+ */
 export function buildScreenshotVisionModelMessage(
   attachments: ScreenshotVisionAttachment[] | undefined,
+  options: { supportsVision?: boolean } = {},
 ) {
   if (!Array.isArray(attachments) || attachments.length === 0) {
     return null;
@@ -68,6 +85,25 @@ export function buildScreenshotVisionModelMessage(
 
   if (accepted.length === 0) {
     return null;
+  }
+
+  // undefined = assume vision (external MCP clients, unknown models).
+  if (options.supportsVision === false) {
+    return {
+      role: "user" as const,
+      content: [
+        {
+          type: "text" as const,
+          text:
+            `The screenshot tool captured ${accepted.length} image(s), but the ` +
+            "selected model cannot read images, so they were not attached. " +
+            "Do NOT describe what they show. Say plainly that you cannot see " +
+            "the screenshot, and either work from non-visual evidence (page " +
+            "text, console output, the DOM summary in the tool result) or ask " +
+            "the user to switch to a vision-capable model.",
+        },
+      ],
+    };
   }
 
   const content: Array<

@@ -76,9 +76,7 @@ export function buildChatImageProxyUrl(
   return `/api/workspaces/${workspaceId}/chat-images/${attachmentId}`;
 }
 
-async function streamToBuffer(
-  stream: NodeJS.ReadableStream,
-): Promise<Buffer> {
+async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = [];
   return await new Promise<Buffer>((resolve, reject) => {
     stream.on("data", chunk =>
@@ -246,6 +244,18 @@ export async function externalizeChatAttachments(
   return result;
 }
 
+/** An image part the model would have to *see* to make use of. */
+function isImagePart(p: Record<string, unknown>): boolean {
+  if (p.type !== "file") return false;
+  if (typeof p.mediaType === "string" && p.mediaType.startsWith("image/")) {
+    return true;
+  }
+  if (typeof p.url !== "string") return false;
+  // A /chat-images/ proxy URL is an image by construction, even on an old
+  // part that never carried a mediaType.
+  return p.url.startsWith("data:image/") || PROXY_URL_REGEX.test(p.url);
+}
+
 /**
  * Resolve internal proxy URLs back into base64 data URLs before replaying
  * history to the model. The model provider cannot fetch our authenticated,
@@ -255,12 +265,22 @@ export async function externalizeChatAttachments(
  *
  * Parts that reference a missing/invalid attachment are dropped; the message
  * sanitizer downstream guards against empty parts arrays.
+ *
+ * `supportsVision: false` replaces every image part with a text placeholder.
+ * A text-only model does not degrade when handed an image — the provider
+ * rejects the whole request and the turn dies — and this path replays the
+ * FULL history, so one image attached months ago would break every subsequent
+ * turn on that model. The placeholder keeps the conversation coherent (the
+ * model can see that something was attached) without shipping the bytes.
+ * undefined = assume vision (external MCP clients, unknown models).
  */
 export async function resolveChatAttachmentsForModel(
   messages: UIMessage[],
   workspaceId: string,
+  options: { supportsVision?: boolean } = {},
 ): Promise<UIMessage[]> {
   const store = getDashboardArtifactStore();
+  const blind = options.supportsVision === false;
 
   return await Promise.all(
     messages.map(async msg => {
@@ -273,7 +293,15 @@ export async function resolveChatAttachmentsForModel(
       const resolvedParts = await Promise.all(
         parts.map(async part => {
           const p = asRecord(part);
-          if (!p || p.type !== "file" || typeof p.url !== "string") {
+          if (!p) return part;
+          if (blind && isImagePart(p)) {
+            changed = true;
+            return {
+              type: "text",
+              text: "[image attachment omitted — the selected model cannot read images]",
+            };
+          }
+          if (p.type !== "file" || typeof p.url !== "string") {
             return part;
           }
           const match = PROXY_URL_REGEX.exec(p.url);

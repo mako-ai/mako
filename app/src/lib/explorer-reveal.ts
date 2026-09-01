@@ -139,6 +139,7 @@ export function tabRevealTarget(
     case "app-diff":
     case "console-diff":
     case "repo-diff":
+    case "notebook-diff":
       // A transient diff view; nothing in an explorer corresponds to it.
       return null;
     default: {

@@ -491,6 +491,46 @@ async function endToEnd() {
     [],
     `Unclassified agent tools (add to a mode's toolNames, CORE_ALWAYS_TOOL_NAMES, or DEFERRED_BUILTIN_TOOL_DOMAINS): ${unclassified.join(", ")}`,
   );
+  // Vision gate: capture_screenshot exists to give the model eyes, so it
+  // leaves the SURFACE (not just the working set) for a text-only model —
+  // otherwise the model burns a round-trip on an image the server then has to
+  // strip, and the provider 400s on the image part if the strip is missed.
+  // Dropping it from the registered set keeps the system-prompt inventory in
+  // sync with what is actually callable.
+  assert.ok(
+    Object.keys(runtime.tools).includes("capture_screenshot"),
+    "unknown vision support assumes vision and keeps the tool",
+  );
+  const blindRuntime = buildUnifiedModeRuntime({
+    context: { ...context, modelSupportsVision: false } as AgentContext,
+    messages: [user("hello")],
+    modelId: "xai/grok-4.5",
+  });
+  assert.ok(
+    !Object.keys(blindRuntime.tools).includes("capture_screenshot"),
+    "capture_screenshot leaves the surface for a text-only model",
+  );
+  const blindStep = blindRuntime.prepareStep({ stepNumber: 0 });
+  assert.ok(blindStep);
+  assert.ok(
+    !blindStep.activeTools.includes("capture_screenshot"),
+    "and therefore never reaches the provider working set",
+  );
+  const seeingRuntime = buildUnifiedModeRuntime({
+    context: { ...context, modelSupportsVision: true } as AgentContext,
+    messages: [user("hello")],
+    modelId: "xai/grok-4.5",
+  });
+  assert.ok(
+    Object.keys(seeingRuntime.tools).includes("capture_screenshot"),
+    "a vision model keeps it",
+  );
+  // The other dashboard tools are unaffected by the gate.
+  assert.ok(
+    Object.keys(blindRuntime.tools).includes("list_open_dashboards"),
+    "the gate removes only the screenshot tool",
+  );
+
   const appModeTools = toolNamesForModes(new Set(["app"] as const));
   assert.ok(appModeTools.has("app_write_file"));
   assert.ok(appModeTools.has("app_browse"));

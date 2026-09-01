@@ -28,12 +28,17 @@ import {
   DEFAULT_BRANCH,
   blobOid,
   commitBlobsOnBranch,
+  diffNameStatus,
   listTree,
+  log as repoLog,
   readBlob,
   repoDirFor,
   repoExists,
   resolveCommit,
+  type ChangedFile,
+  type CommitInfo,
 } from "../apps/repository.service";
+import { EMPTY_TREE } from "../apps/git";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { getNotebookStore } from "./store";
 import {
@@ -370,4 +375,138 @@ export async function adoptWorkspaceNotebooks(workspaceId: string): Promise<{
     queueMirrorPush(workspaceId);
   }
   return { notebooks: indexes.length, written: Object.keys(writes).length };
+}
+
+// ---------------------------------------------------------------------------
+// History: the SAME shapes the apps/consoles History popover consumes
+// (apps.md §24) — one component, three content kinds.
+// ---------------------------------------------------------------------------
+
+const MAIN_REF = `refs/heads/${DEFAULT_BRANCH}`;
+
+/** Commits that touched this notebook's file (moves included via its path). */
+export async function notebookHistory(
+  index: Pick<INotebookIndex, "workspaceId" | "path">,
+  limit = 50,
+): Promise<CommitInfo[]> {
+  if (!index.path) return [];
+  const repoDir = repoDirFor(index.workspaceId.toString());
+  if (!(await repoExists(repoDir))) return [];
+  if (!(await resolveCommit(repoDir, MAIN_REF))) return [];
+  return repoLog(repoDir, MAIN_REF, limit, index.path);
+}
+
+/** What one commit did to this notebook's file. */
+export async function notebookCommitChanges(
+  index: Pick<INotebookIndex, "workspaceId" | "path">,
+  sha: string,
+): Promise<{ sha: string; parent: string | null; files: ChangedFile[] }> {
+  const repoDir = repoDirFor(index.workspaceId.toString());
+  const oid = await resolveCommit(repoDir, sha);
+  if (!oid) throw new Error(`No such commit: ${sha}`);
+  const parent = await resolveCommit(repoDir, `${oid}^`);
+  const all = await diffNameStatus(repoDir, parent ?? EMPTY_TREE, oid);
+  const mine = new Set(index.path ? [index.path] : []);
+  return { sha: oid, parent, files: all.filter(f => mine.has(f.path)) };
+}
+
+/** A repo path before and after one commit (null = absent on that side). */
+export async function notebookFileVersions(
+  index: Pick<INotebookIndex, "workspaceId">,
+  sha: string,
+  relPath: string,
+): Promise<{ before: string | null; after: string | null; binary: boolean }> {
+  const repoDir = repoDirFor(index.workspaceId.toString());
+  const oid = await resolveCommit(repoDir, sha);
+  if (!oid) throw new Error(`No such commit: ${sha}`);
+  const parent = await resolveCommit(repoDir, `${oid}^`);
+  const read = async (ref: string | null) => {
+    if (!ref) return null;
+    try {
+      return await readBlob(repoDir, ref, relPath);
+    } catch {
+      return null;
+    }
+  };
+  const [before, after] = await Promise.all([read(parent), read(oid)]);
+  return {
+    before: before?.isBinary ? null : (before?.contents ?? null),
+    after: after?.isBinary ? null : (after?.contents ?? null),
+    binary: Boolean(before?.isBinary || after?.isBinary),
+  };
+}
+
+/**
+ * Restore the notebook to its content at `sha`: the parsed blocks are
+ * written to the STORE (the hot layer stays authoritative for what the
+ * editor shows), then checkpointed as a NEW commit — history is
+ * append-only, so restoring is never destructive.
+ */
+export async function restoreNotebookTo(
+  workspaceId: string,
+  notebookId: string,
+  sha: string,
+  actorUserId: string,
+): Promise<{ commitOid?: string; restoredFrom: string }> {
+  const index = await NotebookIndex.findOne({
+    workspaceId: new Types.ObjectId(workspaceId),
+    notebookId,
+  });
+  if (!index?.path) {
+    throw new Error("This notebook has no file in the repo yet");
+  }
+  const repoDir = repoDirFor(workspaceId);
+  const oid = await resolveCommit(repoDir, sha);
+  if (!oid) throw new Error(`No such commit: ${sha}`);
+
+  let at = index.path;
+  let blob = await readBlob(repoDir, oid, at).catch(() => null);
+  if (!blob) {
+    // The notebook lived elsewhere at that commit (rename / access flip):
+    // fall back to the notebook file this commit actually touched.
+    const changes = await diffNameStatus(
+      repoDir,
+      (await resolveCommit(repoDir, `${oid}^`)) ?? EMPTY_TREE,
+      oid,
+    );
+    const candidate = changes.find(
+      f => isNotebookRepoPath(f.path) && f.status !== "deleted",
+    );
+    if (candidate) {
+      at = candidate.path;
+      blob = await readBlob(repoDir, oid, at).catch(() => null);
+    }
+  }
+  if (!blob || blob.isBinary) {
+    throw new Error("That commit has no readable version of this notebook");
+  }
+  const parsed = parseNotebookFile(blob.contents);
+  if (!parsed) throw new Error("That version is not a valid .deepnote file");
+
+  const updated = await getNotebookStore().update(workspaceId, notebookId, {
+    name: parsed.name,
+    blocks: parsed.blocks,
+  });
+  if (!updated) throw new Error("Notebook not found");
+  if (parsed.name && parsed.name !== index.name) {
+    index.name = parsed.name;
+    await index.save();
+  }
+  publishRealtimeEvent(workspaceId, {
+    type: "notebook.updated",
+    notebookId,
+    version: updated.version,
+    updatedBy: actorUserId,
+    origin: "save",
+  });
+  const result = await checkpointNotebook(workspaceId, notebookId, actorUserId);
+  logger.info("Notebook restored from commit", {
+    workspaceId,
+    notebookId,
+    sha: oid,
+  });
+  return {
+    commitOid: result.committed ? oid : undefined,
+    restoredFrom: oid,
+  };
 }

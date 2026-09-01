@@ -25,6 +25,7 @@ import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
 import { applyStrReplace, buildStrReplaceDiff } from "@mako/agent-tools";
+import { buildBrowseModelOutput } from "./browse-model-output";
 import { AppProject, type IAppProject } from "../../database/workspace-schema";
 import { workspaceService } from "../../services/workspace.service";
 import { canReadResource, canWriteResource } from "../../utils/resource-acl";
@@ -751,9 +752,10 @@ export function createAppsTools({
         "screenshot (you SEE it) plus console errors and failed requests. " +
         "Use it after edits to verify what actually renders, and to debug " +
         "blank screens. Needs a running dev session (app_open_app). First " +
-        "use in a fresh sandbox installs the browser (~30-60s). If your " +
-        "model cannot read images, pass screenshot:false — pageText, " +
-        "console and failed requests still tell you what rendered.",
+        "use in a fresh sandbox installs the browser (~30-60s). When the " +
+        "model cannot read images the capture is skipped automatically — " +
+        "pageText, console and failed requests still tell you what " +
+        "rendered.",
       inputSchema: z.object({
         appId: z.string(),
         steps: z
@@ -796,9 +798,15 @@ export function createAppsTools({
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
           const handle = await ensureActorWorktree(loaded.project);
+          // Capturing for a model that cannot read images is pure waste: the
+          // JPEG is rendered in the sandbox, shipped out, and uploaded to the
+          // bucket, and then toModelOutput strips it. Nothing renders
+          // screenshotUrl in the UI either, so nobody misses it.
+          const wantScreenshot =
+            supportsVision === false ? false : screenshot !== false;
           const result = await browseApp(handle, {
             steps,
-            screenshot: screenshot !== false,
+            screenshot: wantScreenshot,
             origin,
           });
           // Screenshots persist as bucket objects, never as stored base64:
@@ -829,38 +837,10 @@ export function createAppsTools({
           return { success: false, error: errorMessage(error) };
         }
       },
-      // The screenshot must reach the model as an IMAGE, not as 100KB of
-      // base64 prose: as text it is ~25k tokens of noise the model cannot
-      // see through; as media it is actual eyes.
-      toModelOutput: ({ output }) => {
-        const o = output as { screenshotBase64?: string } & Record<
-          string,
-          unknown
-        >;
-        // A text-only model receiving an image part loses the whole result
-        // (§13.26): vision-less models get text (pageText + screenshotUrl)
-        // only. undefined = assume vision (external MCP clients).
-        if (supportsVision === false && o && typeof o === "object") {
-          const { screenshotBase64: _omitted, ...rest } = o;
-          return { type: "json", value: rest as never };
-        }
-        if (o && typeof o === "object" && o.screenshotBase64) {
-          const { screenshotBase64, ...rest } = o;
-          return {
-            type: "content",
-            value: [
-              { type: "text", text: JSON.stringify(rest) },
-              {
-                type: "file-data",
-                data: screenshotBase64,
-                mediaType: "image/jpeg",
-                filename: "app-screenshot.jpg",
-              },
-            ],
-          };
-        }
-        return { type: "json", value: (o ?? null) as never };
-      },
+      // Mapping (and the two ways it has failed) lives in
+      // browse-model-output.ts, next to the test that pins it.
+      toModelOutput: ({ output }) =>
+        buildBrowseModelOutput(output, supportsVision) as never,
     }),
 
     app_open_app: tool({

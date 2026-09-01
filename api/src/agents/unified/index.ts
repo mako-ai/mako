@@ -74,6 +74,39 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     ...flowUniqueTools
   } = flowTools;
 
+  const tools = {
+    ...universalTools,
+    ...clientDashboardTools,
+    ...appsTools,
+    ...clientDbtTools,
+    ...dbtServerTools,
+    ...clientDataSourceTools,
+    ...clientNotebookTools,
+    ...serverNotebookTools,
+    ...flowUniqueTools,
+    ...selfDirectiveTools,
+    ...skillTools,
+    ...consoleSearchTools,
+    ...dashboardSearchTools,
+    ...versionHistoryTools,
+    ...webTools,
+    // MCP tools (Close CRM etc.) resolved per request in agent.routes.ts.
+    ...(context.mcpTools ?? {}),
+  };
+
+  // Vision gate. capture_screenshot exists to give the model eyes ("what is
+  // visible", "why does this look wrong"); a model that cannot read images
+  // gets nothing from it but a wasted round-trip and an image the server then
+  // has to strip. Applied to the MERGED set on purpose — the tool is spread in
+  // from two places (createUniversalTools and clientDashboardTools), so gating
+  // either source alone silently leaves the other one registered. Removing it
+  // from the registered set (not just the working set) also keeps the
+  // system-prompt tool inventory in sync with what is actually callable.
+  // undefined = assume vision (external MCP clients).
+  if (context.modelSupportsVision === false) {
+    delete (tools as Record<string, unknown>).capture_screenshot;
+  }
+
   return {
     systemPrompt: [
       {
@@ -88,24 +121,6 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
         content: buildCurrentScreenContext(context),
       },
     ],
-    tools: {
-      ...universalTools,
-      ...clientDashboardTools,
-      ...appsTools,
-      ...clientDbtTools,
-      ...dbtServerTools,
-      ...clientDataSourceTools,
-      ...clientNotebookTools,
-      ...serverNotebookTools,
-      ...flowUniqueTools,
-      ...selfDirectiveTools,
-      ...skillTools,
-      ...consoleSearchTools,
-      ...dashboardSearchTools,
-      ...versionHistoryTools,
-      ...webTools,
-      // MCP tools (Close CRM etc.) resolved per request in agent.routes.ts.
-      ...(context.mcpTools ?? {}),
-    },
+    tools,
   };
 }

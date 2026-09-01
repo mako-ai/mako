@@ -3262,15 +3262,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{workspaceId}/notebooks/{id}/versions": {
+    "/api/workspaces/{workspaceId}/notebooks/{id}/history": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** GET /{id}/versions */
-        get: operations["get_api_workspaces_workspaceId_notebooks_id_versions"];
+        /** Commit history of a notebook (its .deepnote file in the repo) */
+        get: operations["get_api_workspaces_workspaceId_notebooks_id_history"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3279,15 +3279,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{workspaceId}/notebooks/{id}/versions/{versionId}": {
+    "/api/workspaces/{workspaceId}/notebooks/{id}/git/commit": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** GET /{id}/versions/{versionId} */
-        get: operations["get_api_workspaces_workspaceId_notebooks_id_versions_versionId"];
+        /** What one commit changed for this notebook */
+        get: operations["get_api_workspaces_workspaceId_notebooks_id_git_commit"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3296,7 +3296,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{workspaceId}/notebooks/{id}/versions/{versionId}/restore": {
+    "/api/workspaces/{workspaceId}/notebooks/{id}/git/file-versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A notebook file before and after one commit (for diffs) */
+        get: operations["get_api_workspaces_workspaceId_notebooks_id_git_file_versions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspaceId}/notebooks/{id}/restore": {
         parameters: {
             query?: never;
             header?: never;
@@ -3305,8 +3322,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** POST /{id}/versions/{versionId}/restore */
-        post: operations["post_api_workspaces_workspaceId_notebooks_id_versions_versionId_restore"];
+        /** Restore a notebook to its content at a commit (as a new commit) */
+        post: operations["post_api_workspaces_workspaceId_notebooks_id_restore"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5674,10 +5691,6 @@ export interface components {
             folderId?: string | null;
             /** @enum {string} */
             access?: "private" | "workspace";
-        };
-        RestoreNotebookVersionRequest: {
-            comment?: string;
-            clientId?: string;
         };
         UpdateNotebookRequest: {
             name?: string;
@@ -16691,9 +16704,11 @@ export interface operations {
             };
         };
     };
-    get_api_workspaces_workspaceId_notebooks_id_versions: {
+    get_api_workspaces_workspaceId_notebooks_id_history: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+            };
             header?: never;
             path: {
                 workspaceId: string;
@@ -16732,14 +16747,15 @@ export interface operations {
             };
         };
     };
-    get_api_workspaces_workspaceId_notebooks_id_versions_versionId: {
+    get_api_workspaces_workspaceId_notebooks_id_git_commit: {
         parameters: {
-            query?: never;
+            query: {
+                sha: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;
                 id: string;
-                versionId: string;
             };
             cookie?: never;
         };
@@ -16774,20 +16790,65 @@ export interface operations {
             };
         };
     };
-    post_api_workspaces_workspaceId_notebooks_id_versions_versionId_restore: {
+    get_api_workspaces_workspaceId_notebooks_id_git_file_versions: {
+        parameters: {
+            query: {
+                sha: string;
+                path: string;
+            };
+            header?: never;
+            path: {
+                workspaceId: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful response */
+            "2XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericJsonResponse"] & (Record<string, never> | null);
+                };
+            };
+            /** @description Invalid request */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal server error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_api_workspaces_workspaceId_notebooks_id_restore: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 workspaceId: string;
                 id: string;
-                versionId: string;
             };
             cookie?: never;
         };
         requestBody?: {
             content: {
-                "application/json": components["schemas"]["RestoreNotebookVersionRequest"];
+                "application/json": {
+                    sha: string;
+                };
             };
         };
         responses: {
