@@ -80,14 +80,41 @@ dataSourceRoutes.use("*", async (c: AuthenticatedContext, next) => {
 });
 
 // --- Helper: encrypt config values based on connector schema ---
-type ConnectorFieldSchema = {
+export type ConnectorFieldSchema = {
   name: string;
   type: string;
   encrypted?: boolean;
   itemFields?: ConnectorFieldSchema[];
 };
 
-function applySchemaEncryption(
+/**
+ * Thrown when a credential field cannot be encrypted. Names the field, never
+ * the value — this message ends up in a 500 body and a log line.
+ */
+export class SecretEncryptionError extends Error {
+  constructor(
+    public readonly field: string,
+    cause: unknown,
+  ) {
+    super(
+      `could not encrypt credential field "${field}": ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+    this.name = "SecretEncryptionError";
+  }
+}
+
+/**
+ * Encrypt every field the connector's own schema marks as a secret.
+ *
+ * Fails CLOSED. This used to catch the encryption error and store the value
+ * as-is — "if encryption fails, leave as-is" — which meant a missing or
+ * malformed ENCRYPTION_KEY stored the customer's API key in plaintext and
+ * returned 201. The only realistic error here is that misconfiguration, and
+ * the right answer to it is a 500 with nothing written, not a quiet success.
+ * Both call sites sit inside the route's try/catch, which already maps a
+ * throw to 500.
+ */
+export function applySchemaEncryption(
   config: any,
   schema: { fields: ConnectorFieldSchema[] } | null,
 ): any {
@@ -115,9 +142,8 @@ function applySchemaEncryption(
       if (requiresEncryption && typeof val === "string" && val) {
         try {
           target[key] = encryptString(val);
-        } catch {
-          // If encryption fails, leave as-is
-          target[key] = val;
+        } catch (error) {
+          throw new SecretEncryptionError(key, error);
         }
       }
     }
