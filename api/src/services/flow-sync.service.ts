@@ -48,51 +48,20 @@ import {
   slugFromFlowFilePath,
   type FlowFile,
 } from "./flow-config-files";
+import {
+  reconcileFlowsFromRepo,
+  type DesiredFlow,
+} from "../sync-cdc/flow-reconcile";
 
 const logger = loggers.api("flow-sync");
-
-/**
- * The stream side, injected rather than imported.
- *
- * Owned by the CDC lane (`sync-cdc/flow-reconcile.ts`). It receives the
- * DESIRED set and the commit that set was read at, and it verifies that sha
- * against the mirror's main before anything destructive runs — so a stale or
- * partial tree cannot reach a teardown even if this module hands it one. The
- * safety property is checkable at its boundary rather than being a convention
- * here.
- *
- * Removal is entirely its concern: the row and the stream have to die
- * together or not at all, so this module never deletes a flow.
- */
-export interface DesiredFlow {
-  slug: string;
-  file: FlowFile;
-}
-
-export interface FlowReconciler {
-  reconcileFlowsFromRepo(input: {
-    workspaceId: string;
-    desired: DesiredFlow[];
-    /** The commit `desired` was read AT — verified against the mirror. */
-    treeSha: string;
-    actorUserId?: string;
-  }): Promise<void>;
-}
-
-let reconciler: FlowReconciler | null = null;
-
-/** Registered once at startup by the CDC lane. */
-export function setFlowReconciler(next: FlowReconciler | null): void {
-  reconciler = next;
-}
 
 export interface FlowSyncResult {
   created: number;
   updated: number;
   unchanged: number;
   invalid: string[];
-  /** False when no reconciler is registered: definitions applied, streams not. */
-  reconciled: boolean;
+  /** Slugs whose destructive reconcile was refused; see ReconcileResult. */
+  deferred: string[];
 }
 
 /**
@@ -225,7 +194,7 @@ export async function syncFlowsFromRepo(
     updated: 0,
     unchanged: 0,
     invalid: [],
-    reconciled: false,
+    deferred: [],
   };
 
   await ensureLocalRepo(workspaceId);
@@ -261,12 +230,18 @@ export async function syncFlowsFromRepo(
     const contents = buf.toString("utf8");
     const sha = blobOid(contents);
     const parsedForDesired = parseFlowFile(contents);
-    // The desired set is EVERY file present, not only the changed ones: the
-    // reconciler derives removals from it, so omitting an unchanged file
-    // would read as "this flow was deleted" and tear down a live stream.
-    if (parsedForDesired) desired.push({ slug, file: parsedForDesired });
-
     const row = await Flow.findOne({ workspaceId, slug });
+    // The desired set is EVERY file present, not only the changed ones: the
+    // reconciler derives removals from it, so omitting an unchanged file would
+    // read as "this flow was deleted" and tear down a live stream.
+    if (row && parsedForDesired) {
+      desired.push({
+        slug,
+        file: parsedForDesired,
+        flowId: String(row._id),
+      });
+    }
+
     if (row && row.sourceBlobSha === sha) {
       result.unchanged++;
       continue;
@@ -298,33 +273,38 @@ export async function syncFlowsFromRepo(
     }
     (doc as IFlow).sourceBlobSha = sha;
     await doc.save();
-    if (isNew) result.created++;
-    else result.updated++;
+    if (isNew) {
+      result.created++;
+      // A row created in this pass has no id until now, so its desired entry
+      // is added here rather than above.
+      desired.push({ slug, file: parsed, flowId: String(doc._id) });
+    } else {
+      result.updated++;
+    }
     logger.info("Flow synced from repo", { workspaceId, slug, isNew });
   }
 
   // Removal is the reconciler's, end to end. A flow is a running stream, so a
   // missing file means teardown plus checkpoint disposal — and unlike a dbt
   // row, that is not recoverable by recreating the flow: the stream position
-  // is gone and the next sync re-backfills. It verifies `treeSha` against the
-  // mirror's main and REFUSES rather than guessing, so a stale or partial tree
-  // cannot reach the destructive path even though this module already guards
-  // against an empty one.
-  //
-  // Without a reconciler registered, definitions are applied and streams are
-  // left alone. That is deliberate: an orphaned row is recoverable, a stream
-  // torn down without disposing its checkpoints is not.
-  if (reconciler) {
-    await reconciler.reconcileFlowsFromRepo({
+  // is gone and the next sync re-backfills. `reconcileFlowsFromRepo` verifies
+  // `treeSha` against the mirror's main and REFUSES rather than guessing, so a
+  // stale or partial tree cannot reach the destructive path even though this
+  // module already guards against an empty one.
+  const reconciled = await reconcileFlowsFromRepo({
+    workspaceId,
+    desired,
+    treeSha: head,
+  });
+  if (reconciled.deferred) {
+    // Destructive work was refused, not skipped silently: report which flows
+    // and why, so a deletion that has not happened yet is distinguishable
+    // from one that quietly did nothing.
+    result.deferred = reconciled.deferred.removals;
+    logger.warn("Destructive flow reconcile refused; retrying on next push", {
       workspaceId,
-      desired,
-      treeSha: head,
-    });
-    result.reconciled = true;
-  } else if (desired.length > 0) {
-    logger.warn("Flow definitions synced but no reconciler is registered", {
-      workspaceId,
-      desired: desired.length,
+      removals: reconciled.deferred.removals,
+      reason: reconciled.deferred.reason,
     });
   }
 
