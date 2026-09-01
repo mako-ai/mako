@@ -62,7 +62,14 @@ export async function commitFlowFile(
   actorUserId?: string,
   messageOverride?: string,
 ): Promise<void> {
-  if (!flow.slug) return; // pre-backfill row; the migration stamps slugs
+  // Pre-backfill rows have neither; the migration stamps both. Skipping on
+  // an empty NAME as well as an empty slug keeps serialize/parse symmetric:
+  // `parseFlowFile` rejects a file with no name, so writing one would
+  // produce a file the reader refuses — harmless while Mongo is
+  // authoritative, a real hazard once block 3 makes files authoritative.
+  // (Caught by running the projection against production rows before their
+  // backfill had deployed.)
+  if (!flow.slug || !flow.name?.trim()) return;
   try {
     const contents = serializeFlowFile(flowToFile(flow));
     const sha = blobOid(contents);

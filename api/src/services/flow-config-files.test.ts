@@ -227,6 +227,31 @@ assert.equal(slugFromFlowFilePath("flows/Bad_Slug.yml"), null);
   assert.equal(parsed.schedule, null);
 }
 
+// ── serialize/parse symmetry: anything writable must be readable ──
+// A row without a name serializes to `name: ''`, which parseFlowFile
+// rejects. commitFlowFile therefore refuses to write one (it requires both
+// a slug and a name); this asserts the asymmetry that guard exists for, so
+// nobody "fixes" the guard away. Found by projecting production rows whose
+// name backfill had not yet deployed.
+{
+  const nameless = {
+    _id: new Types.ObjectId(),
+    workspaceId: new Types.ObjectId(),
+    type: "scheduled",
+    sourceType: "connector",
+    dataSourceId: connectorId,
+    destinationDatabaseId: destId,
+    createdBy: "u1",
+  } as unknown as IFlow;
+  const text = serializeFlowFile(flowToFile(nameless));
+  assert.match(text, /name: ''/, "a nameless row serializes to an empty name");
+  assert.equal(
+    parseFlowFile(text),
+    null,
+    "…and that file is not readable, which is why commitFlowFile skips it",
+  );
+}
+
 // ── malformed input is rejected, not half-parsed ──
 assert.equal(parseFlowFile("this: [is: not: valid"), null);
 assert.equal(parseFlowFile("just a string"), null);
