@@ -78,6 +78,47 @@ const logger = loggers.inngest("flow");
  * repo — and stops being free the moment flows have external users. That is
  * the opposite of the position consoles were in when they hit this.
  */
+/**
+ * Write the definition to its file, and REFUSE to report success if it did
+ * not land.
+ *
+ * `commitFlowFile` is deliberately tolerant — a failed mirror must not fail a
+ * user's mutation — and that was right while the file was a projection of the
+ * row. Block 3 made the file authoritative, and the tolerance then produces a
+ * silent, undetectable divergence: the row moves, the file does not, and
+ * `sourceBlobSha` still matches the OLD file, so the next sync sees "unchanged"
+ * and skips it. The row and the file disagree, permanently, and the system
+ * believes they agree.
+ *
+ * The row is left as saved rather than rolled back: Mongo still drives the
+ * running flow, so reverting it would stop a stream the user asked to change.
+ * What changes is that the caller is TOLD, instead of being shown a 200 for a
+ * definition that never reached its home.
+ */
+async function commitFlowFileOrFail(
+  c: AuthenticatedContext,
+  flow: Parameters<typeof commitFlowFile>[0],
+  actorUserId?: string,
+): Promise<Response | null> {
+  const result = await commitFlowFile(flow, actorUserId);
+  if (result.ok) return null;
+  logger.error("Flow definition did not reach the workspace repo", {
+    workspaceId: flow.workspaceId.toString(),
+    slug: flow.slug,
+    error: result.error,
+  });
+  return c.json(
+    {
+      success: false,
+      code: "definition_not_committed",
+      error:
+        "The flow was saved but its definition could not be written to the workspace repo, so the repo and the running flow now disagree. Retry the change; if it keeps failing, check the GitHub connection.",
+      detail: result.error,
+    },
+    502,
+  );
+}
+
 async function assertFlowRepo(workspaceId: string): Promise<void> {
   if (!appsRequireConnectedRepo()) return;
   if (!(await resolveMirrorTarget(workspaceId))) throw new RepoRequiredError();
@@ -1073,7 +1114,10 @@ flowRoutes.openapi(
       await flow.save();
       // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
       // export-only — Mongo stays authoritative, a failed write is logged).
-      await commitFlowFile(flow, c.get("user")?.id);
+      {
+        const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
+        if (failed) return failed;
+      }
 
       // Pre-create BigQuery dataset for connector flows (tables created on first write with full schema)
       if (
@@ -1534,7 +1578,10 @@ flowRoutes.openapi(
       await flow.save();
       // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
       // export-only — Mongo stays authoritative, a failed write is logged).
-      await commitFlowFile(flow, c.get("user")?.id);
+      {
+        const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
+        if (failed) return failed;
+      }
 
       // Populate references for response based on source type
       if (flow.sourceType !== "database" && flow.dataSourceId) {
@@ -1693,7 +1740,10 @@ flowRoutes.openapi(
       await flow.save();
       // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
       // export-only — Mongo stays authoritative, a failed write is logged).
-      await commitFlowFile(flow, c.get("user")?.id);
+      {
+        const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
+        if (failed) return failed;
+      }
 
       return c.json({
         success: true,
@@ -1954,7 +2004,10 @@ flowRoutes.openapi(
       await flow.save();
       // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
       // export-only — Mongo stays authoritative, a failed write is logged).
-      await commitFlowFile(flow, c.get("user")?.id);
+      {
+        const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
+        if (failed) return failed;
+      }
 
       return c.json({
         success: true,
@@ -2065,7 +2118,10 @@ flowRoutes.openapi(
       await flow.save();
       // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
       // export-only — Mongo stays authoritative, a failed write is logged).
-      await commitFlowFile(flow, c.get("user")?.id);
+      {
+        const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
+        if (failed) return failed;
+      }
 
       return c.json({
         success: true,
@@ -3109,7 +3165,10 @@ flowRoutes.openapi(
       await flow.save();
       // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
       // export-only — Mongo stays authoritative, a failed write is logged).
-      await commitFlowFile(flow, c.get("user")?.id);
+      {
+        const failed = await commitFlowFileOrFail(c, flow, c.get("user")?.id);
+        if (failed) return failed;
+      }
 
       if (!created.signingSecret) {
         // Some providers create the endpoint but omit the signing secret from
