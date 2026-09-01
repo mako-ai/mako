@@ -42,7 +42,11 @@ export interface EyesResult {
   failedRequests?: string[];
   /** Entries shed beyond the per-category caps, when any (flood signal). */
   droppedBeyondCaps?: Record<string, number>;
-  /** JPEG, base64 (no data: prefix). */
+  /**
+   * JPEG, base64 (no data: prefix). Filled by the SERVICE, not the runner:
+   * the runner writes the frame to a file in the box and the bytes are read
+   * back over the provider, so the image never rides inside the result line.
+   */
   screenshotBase64?: string;
   /** Rendered body text (capped) — real signal for models without vision. */
   pageText?: string;
@@ -59,15 +63,30 @@ import { readdirSync } from "node:fs";
 import path from "node:path";
 
 const MARK = "MAKO_EYES_RESULT:";
+// NEVER console.log this line and exit in the same tick.
+//
+// process.exit() discards whatever the write has not drained, so a line past
+// the pipe buffer arrives cut mid-JSON and parses as nothing —
+// "Unparseable eyes result.", with no clue why. Measured with one 300,000-byte
+// payload: macOS/node 24 delivered 65,536 B, Linux CI/node 20 delivered
+// 219,264 B. Both cut, at different boundaries; the boundary is a buffer
+// artifact and it moves, so do not reason from it.
+//
+// The screenshot no longer travels here — it is written to a file and read
+// back as bytes — but this line can still get large on its own: the caps
+// below allow 120 console entries, 40 page errors and 40 failed requests at
+// 600 chars each, which is ~72KB of console output alone. Flush, then exit.
 const out = (obj) => {
-  console.log(MARK + JSON.stringify(obj));
-  process.exit(0);
+  process.stdout.write(MARK + JSON.stringify(obj) + "\\n", () => process.exit(0));
 };
 
 const args = JSON.parse(process.argv[2] || "{}");
 const base = args.base;
 const steps = Array.isArray(args.steps) ? args.steps.slice(0, 10) : [];
 const wantShot = args.screenshot !== false;
+// Chosen by the service, so it knows where to read the bytes from without
+// having to trust anything this process prints.
+const shotPath = args.shotPath;
 
 function findShell() {
   const root = ${JSON.stringify(`${EYES_DIR}/browsers/chrome-headless-shell`)};
@@ -159,12 +178,17 @@ try {
     try {
       pageText = String(await page.evaluate(() => (document.body && document.body.innerText) || "")).slice(0, 6000);
     } catch {}
-    let screenshotBase64;
+    // The JPEG goes to a FILE, never into this JSON line. The service reads
+    // the bytes back with provider.readFile. Inlining it as base64 put a
+    // ~100KB binary inside a single stdout line, which is what made a
+    // truncated, unparseable result possible in the first place.
+    let shotWritten = false;
     if (wantShot) {
-      screenshotBase64 = await page.screenshot({ type: "jpeg", quality: 55, encoding: "base64" });
+      await page.screenshot({ type: "jpeg", quality: 55, path: shotPath });
+      shotWritten = true;
     }
     const truncated = Object.fromEntries(Object.entries(droppedCounts).filter(e => e[1] > 0));
-    out({ ok: true, url: page.url(), pageText, stepResults, consoleLogs, pageErrors, failedRequests, ...(Object.keys(truncated).length ? { droppedBeyondCaps: truncated } : {}), screenshotBase64 });
+    out({ ok: true, url: page.url(), pageText, stepResults, consoleLogs, pageErrors, failedRequests, ...(Object.keys(truncated).length ? { droppedBeyondCaps: truncated } : {}), shotWritten });
   } finally {
     await browser.close().catch(() => {});
   }
@@ -298,10 +322,16 @@ export async function browseApp(
     }
     base = url;
   }
+  // Unique per browse: two browses in the same box must not read each
+  // other's frame, and a stale file must never be mistaken for this run's.
+  const shotPath = `${EYES_DIR}/shot-${Date.now().toString(36)}${Math.random()
+    .toString(36)
+    .slice(2, 8)}.jpg`;
   const args = JSON.stringify({
     base,
     steps: opts.steps ?? [],
     screenshot: opts.screenshot !== false,
+    shotPath,
   });
   const result = await provider.exec(
     ctx,
@@ -311,6 +341,11 @@ export async function browseApp(
     `for pid in $(pgrep -f chrome-headless-shell 2>/dev/null); do ` +
       `t=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' '); ` +
       `[ -n "$t" ] && [ "$t" -gt 180 ] && kill -9 "$pid" 2>/dev/null; done; ` +
+      // Same idea for frames: a browse reads its own shot and then leaves it
+      // behind, so sweep anything older than 5 minutes rather than growing a
+      // pile of JPEGs in a 2 GiB box.
+      `find ${EYES_DIR} -maxdepth 1 -name 'shot-*.jpg' -mmin +5 -delete ` +
+      `2>/dev/null; ` +
       `node ${RUNNER_PATH} ${sh(args)}`,
     { timeoutMs: 90_000 },
   );
@@ -332,9 +367,46 @@ export async function browseApp(
         (result.stderr || result.stdout).slice(-500),
     };
   }
+  let parsed: EyesResult & { shotWritten?: boolean };
   try {
-    return JSON.parse(line.slice("MAKO_EYES_RESULT:".length)) as EyesResult;
+    parsed = JSON.parse(
+      line.slice("MAKO_EYES_RESULT:".length),
+    ) as EyesResult & {
+      shotWritten?: boolean;
+    };
   } catch {
-    return { ok: false, error: "Unparseable eyes result." };
+    // Say WHY it could not be parsed. This used to be a bare "Unparseable
+    // eyes result.", which is indistinguishable from a runner bug and told
+    // nobody that the output had simply been cut — the actual cause every
+    // time so far. The line length and the provider's own truncation flag
+    // are the two facts that identify it immediately.
+    return {
+      ok: false,
+      error:
+        `The in-box browser's result line could not be parsed ` +
+        `(${line.length} bytes` +
+        (result.truncated ? `, and the exec output hit its size cap` : "") +
+        `). A cut-off line means the result exceeded an output limit. The ` +
+        `screenshot does not travel in this line, so suspect a console flood ` +
+        `instead — droppedBeyondCaps names the category. See runnerSource()'s ` +
+        `flush-before-exit note.`,
+    };
   }
+
+  // The frame travels as BYTES, not as base64 inside the line above. A failed
+  // read costs the picture and nothing else: pageText, console output and
+  // failed requests are the rest of the signal, and a browse that saw the page
+  // is far more useful than an error saying it could not fetch the JPEG.
+  if (parsed.ok && parsed.shotWritten) {
+    try {
+      const bytes = await provider.readFile(ctx, shotPath);
+      parsed.screenshotBase64 = Buffer.from(bytes).toString("base64");
+    } catch (error) {
+      logger.warn("Apps eyes: could not read the screenshot back", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  delete parsed.shotWritten;
+  return parsed;
 }
