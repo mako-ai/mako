@@ -487,6 +487,24 @@ export async function resolveMcpToolGrant(params: {
  *  - user chose Always allow (tool or `*`) → auto-run
  *  - no choice yet on a write tool → prompt
  */
+/**
+ * Is a "read" tier something the provider will hold us to, or just a label?
+ *
+ * `readOnlyHint` comes from the MCP server's own tool annotations, so it is
+ * the server's claim about its own tool. `writeScope` is ours: it is picked in
+ * the add-server form, defaults to "read", and only becomes a real constraint
+ * when the preset sends a scope header the provider enforces (Close's
+ * Close-API-Key scope, GitHub's X-MCP-Readonly). Without one, a connection
+ * labelled "read" can still call whatever the credential allows.
+ */
+export function mcpReadTierIsEnforced(
+  server: Pick<IMcpServer, "writeScope" | "connectorType">,
+  tool: Pick<IMcpCachedTool, "annotations">,
+): boolean {
+  if (tool.annotations?.readOnlyHint === true) return true;
+  return Boolean(getMcpPreset(server.connectorType).scopeHeader);
+}
+
 async function mcpNeedsApproval(params: {
   server: IMcpServer;
   tool: IMcpCachedTool;
@@ -507,7 +525,20 @@ async function mcpNeedsApproval(params: {
   if (ceiling === "ask") return true;
   // Read tools with an open ceiling don't need a grant — matches the product
   // docs and stops Close-style connectors from prompting on every search.
-  if (mcpToolRiskTier(server, tool) === "read") return false;
+  //
+  // But only when the read-ness is TRUSTWORTHY. `writeScope` is a label chosen
+  // in the add-server form, it defaults to "read", and it reaches the provider
+  // only for presets that send a scope header (Close, GitHub). On a custom or
+  // Slack connection the same label is unenforced — so treating it alone as
+  // "read" would silently auto-run every tool on a default-configured server,
+  // including ones annotated destructive. A tool the server itself annotates
+  // readOnlyHint is trustworthy on any connection.
+  if (
+    mcpToolRiskTier(server, tool) === "read" &&
+    mcpReadTierIsEnforced(server, tool)
+  ) {
+    return false;
+  }
   return grant?.decision !== "always_allow";
 }
 

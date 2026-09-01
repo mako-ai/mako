@@ -24,6 +24,7 @@ import {
   mcpServerSlug,
   mcpToolRestriction,
   mcpToolRiskTier,
+  mcpReadTierIsEnforced,
   normalizeMcpToolOutput,
 } from "./mcp-client.service";
 import {
@@ -157,6 +158,38 @@ function testRiskTiers() {
   );
   // Unannotated tools default to plain write (approval required, grantable).
   assert.equal(mcpToolRiskTier(destroyServer, {}), "write");
+
+  // A "read" TIER is not the same as read-ness we can rely on to skip the
+  // approval prompt. `writeScope` is picked in the add-server form and
+  // defaults to "read"; it only binds the provider when the preset sends a
+  // scope header. Without this distinction, adding any custom MCP server with
+  // default settings would auto-run every tool on it, destructive ones
+  // included.
+  const closeRead = {
+    writeScope: "read",
+    connectorType: "close",
+  } as Pick<IMcpServer, "writeScope" | "connectorType">;
+  const customRead = {
+    writeScope: "read",
+    connectorType: "custom",
+  } as Pick<IMcpServer, "writeScope" | "connectorType">;
+
+  // Close sends Close-API-Key scope, so the provider holds us to it.
+  assert.equal(mcpReadTierIsEnforced(closeRead, {}), true);
+  // A custom connection's "read" is a label only — not enough on its own.
+  assert.equal(mcpReadTierIsEnforced(customRead, {}), false);
+  assert.equal(
+    mcpReadTierIsEnforced(customRead, {
+      annotations: { destructiveHint: true },
+    }),
+    false,
+  );
+  // The server's own readOnlyHint is its claim about its own tool, and is
+  // trustworthy on any connection.
+  assert.equal(
+    mcpReadTierIsEnforced(customRead, { annotations: { readOnlyHint: true } }),
+    true,
+  );
 }
 
 function testAllowlistFiltering() {
