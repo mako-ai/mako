@@ -17,6 +17,7 @@ export default defineConfig({
       "src/dbt/**/*.test.ts",
       "src/integrations/github/**/*.test.ts",
       "src/routes/dbt.routes.integration.test.ts",
+      "src/routes/connector-reveal-secret.test.ts",
       "src/agent-lib/tools/dbt-*.test.ts",
     ],
     exclude: [

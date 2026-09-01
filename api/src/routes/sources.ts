@@ -731,91 +731,152 @@ dataSourceRoutes.openapi(
   },
 );
 
+/**
+ * Reveal ONE stored secret of ONE connector the caller's workspace owns.
+ *
+ * This replaces `POST /decrypt`, which took ciphertext from the request body
+ * and returned its plaintext. That endpoint was a cross-tenant decryption
+ * oracle: ENCRYPTION_KEY is global, the ciphertext was never bound to a
+ * workspace, and membership was the only gate — so any member of any
+ * workspace could decrypt ciphertext harvested from another tenant, a DB
+ * dump or a backup, and any VIEWER could read admin-managed credentials.
+ * (An earlier fix closed the padding-oracle half by collapsing distinct
+ * decryption errors to one opaque message; the plaintext-on-success half is
+ * what this removes.)
+ *
+ * The primitive is gone rather than narrowed: the server reads the
+ * ciphertext from its OWN record, addressed by connector id scoped to the
+ * URL workspace, so nothing decryptable can be supplied by the caller. The
+ * gate is admin/owner — the same people who may edit these credentials —
+ * and every reveal is logged with actor, connector and field, because
+ * showing a credential should leave a trace.
+ */
 dataSourceRoutes.openapi(
   createRoute({
     method: "post",
-    path: "/decrypt",
+    path: "/{id}/reveal-secret",
     tags: ["Connectors"],
-    summary: "Decrypt a connector value (debug)",
+    summary: "Reveal one stored secret of a connector (admin/owner only)",
     security: AUTH_SECURITY,
-    request: { params: WorkspaceParam, body: OpenBody },
+    request: {
+      params: WorkspaceParam.extend({
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              field: z
+                .string()
+                .min(1)
+                .max(128)
+                .openapi({
+                  description:
+                    "Top-level config field name declared encrypted by the connector's schema.",
+                }),
+            }),
+          },
+        },
+      },
+    },
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
     try {
-      const { encryptedValue } = await c.req.json();
+      const workspaceId = c.req.param("workspaceId");
+      const id = c.req.param("id");
+      const { field } = await c.req.json();
 
-      if (!encryptedValue) {
+      if (!workspaceId || !id || !Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid connector id" }, 400);
+      }
+      if (typeof field !== "string" || !field) {
+        return c.json({ success: false, error: "field is required" }, 400);
+      }
+
+      // Revealing a credential is an admin/owner act — the same bar as
+      // editing it. Membership is NOT enough (a viewer must not read the
+      // credentials an admin configured).
+      const user = c.get("user");
+      if (!user || !(await workspaceService.isAdmin(workspaceId, user.id))) {
         return c.json(
           {
             success: false,
-            error: "Encrypted value is required",
+            error:
+              "Revealing a connector secret requires the admin or owner workspace role",
           },
+          403,
+        );
+      }
+
+      // The ciphertext comes from OUR record for THIS workspace — never from
+      // the caller. This is what makes the oracle impossible.
+      const dataSource = await DataSource.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId,
+      }).lean();
+      if (!dataSource) {
+        return c.json({ success: false, error: "Connector not found" }, 404);
+      }
+
+      // Only fields the connector's schema declares secret may be revealed,
+      // so this cannot be used to walk arbitrary config.
+      const schema = await syncConnectorRegistry.getConfigSchemaForType(
+        (dataSource as { type: string }).type,
+      );
+      const declared = (schema?.fields ?? []).find(
+        (f: ConnectorFieldSchema) => f.name === field,
+      );
+      const isSecret =
+        declared &&
+        (declared.encrypted === true || declared.type === "password");
+      if (!isSecret) {
+        return c.json(
+          { success: false, error: "That field is not a connector secret" },
           400,
         );
       }
 
-      // Get encryption key from environment
-      const encryptionKey = process.env.ENCRYPTION_KEY;
-      if (!encryptionKey) {
-        return c.json(
-          {
-            success: false,
-            error: "ENCRYPTION_KEY not configured",
-          },
-          500,
-        );
+      const stored = (dataSource as { config?: Record<string, unknown> })
+        .config?.[field];
+      if (typeof stored !== "string" || !stored) {
+        return c.json({ success: true, data: { value: "", wasEncrypted: false } });
       }
 
-      // Check if the value is encrypted (contains ':')
-      if (!encryptedValue.includes(":")) {
+      logger.info("Connector secret revealed", {
+        workspaceId,
+        connectorId: id,
+        field,
+        actorId: user.id,
+      });
+
+      if (!stored.includes(":")) {
+        // Stored in the clear (legacy rows predating schema-driven
+        // encryption): hand it back, but say so.
         return c.json({
           success: true,
-          data: {
-            decryptedValue: encryptedValue,
-            wasEncrypted: false,
-          },
+          data: { value: stored, wasEncrypted: false },
         });
       }
 
       try {
-        // Parse the encrypted string (format: iv:encrypted_data)
-        const textParts = encryptedValue.split(":");
-        if (textParts.length < 2) {
-          return c.json(
-            {
-              success: false,
-              error: "Invalid encrypted format (expected iv:data)",
-            },
-            400,
-          );
-        }
-
-        const decrypted = decryptEncrypted(encryptedValue);
-
         return c.json({
           success: true,
-          data: {
-            decryptedValue: decrypted,
-            wasEncrypted: true,
-          },
+          data: { value: decryptEncrypted(stored), wasEncrypted: true },
         });
-      } catch (error: any) {
-        // Log full detail server-side, but return a single opaque error to the
-        // client. Distinct decryption-failure messages (e.g. bad padding) turn
-        // this endpoint into a padding oracle against the unauthenticated
-        // AES-256-CBC scheme, enabling plaintext recovery.
-        logger.error("Decryption error", { error });
-        return c.json(
-          {
-            success: false,
-            error: "Decryption failed",
-          },
-          400,
-        );
+      } catch (error) {
+        // One opaque message: distinct decryption failures against the
+        // unauthenticated AES-256-CBC scheme are a padding oracle.
+        logger.error("Connector secret decryption failed", {
+          error,
+          workspaceId,
+          connectorId: id,
+          field,
+        });
+        return c.json({ success: false, error: "Decryption failed" }, 400);
       }
-    } catch (error: any) {
-      logger.error("Decrypt endpoint error", { error });
+    } catch (error) {
+      logger.error("Reveal-secret endpoint error", { error });
       return c.json(
         {
           success: false,

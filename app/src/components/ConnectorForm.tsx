@@ -1,3 +1,4 @@
+import { useWorkspace } from "../contexts/workspace-context";
 import { useEffect, useState, useMemo, useRef } from "react";
 import {
   Button,
@@ -112,6 +113,7 @@ function ConnectorForm({
   tabId,
   onDirtyChange,
 }: ConnectorFormProps) {
+  const { currentWorkspace } = useWorkspace();
   const [schema, setSchema] = useState<ConnectorSchemaResponse | null>(null);
   const [schemaLoading, setSchemaLoading] = useState(false);
   const [schemaError, setSchemaError] = useState<string | null>(null);
@@ -249,25 +251,27 @@ function ConnectorForm({
     });
   }, [selectedType, schemas, fetchSchema, form]);
 
-  const decryptValue = async (fieldName: string, encryptedValue: string) => {
-    if (!encryptedValue) {
-      setSnackbarMessage("No value to decrypt");
+  // Reveal a stored secret: the SERVER reads the ciphertext from its own
+  // connector record (apps.md — connector decrypt oracle fix). The client
+  // names a field; it never sends ciphertext, and it no longer picks the
+  // workspace id. Admin/owner only, server-enforced.
+  const revealSecret = async (fieldName: string) => {
+    const connectorId = connector?._id;
+    if (!connectorId) {
+      setSnackbarMessage("Save the connector before revealing its secrets");
       return;
     }
+    if (!currentWorkspace?.id) return;
 
     setDecryptingFields(prev => ({ ...prev, [fieldName]: true }));
 
     try {
-      const workspaceId = connector?.workspaceId || "default";
-
       const response = await fetch(
-        `/api/workspaces/${workspaceId}/connectors/decrypt`,
+        `/api/workspaces/${currentWorkspace.id}/connectors/${connectorId}/reveal-secret`,
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ encryptedValue }),
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ field: fieldName }),
         },
       );
 
@@ -276,22 +280,17 @@ function ConnectorForm({
       if (result.success) {
         setDecryptedValues(prev => ({
           ...prev,
-          [fieldName]: result.data.decryptedValue,
+          [fieldName]: result.data.value,
         }));
-        setShowDecryptedFields(prev => ({
-          ...prev,
-          [fieldName]: true,
-        }));
-
+        setShowDecryptedFields(prev => ({ ...prev, [fieldName]: true }));
         if (!result.data.wasEncrypted) {
           setSnackbarMessage("Value was not encrypted");
         }
       } else {
-        setSnackbarMessage(result.error || "Failed to decrypt value");
+        setSnackbarMessage(result.error || "Failed to reveal value");
       }
-    } catch (error) {
-      console.error("Decrypt error:", error);
-      setSnackbarMessage("Failed to decrypt value");
+    } catch {
+      setSnackbarMessage("Failed to reveal value");
     } finally {
       setDecryptingFields(prev => ({ ...prev, [fieldName]: false }));
     }
@@ -594,7 +593,7 @@ function ConnectorForm({
                                 !decryptedValues[name] &&
                                 !showDecryptedFields[name]
                               ) {
-                                decryptValue(name, field.value);
+                                revealSecret(name);
                               } else {
                                 toggleDecryptedVisibility(name);
                               }
@@ -663,7 +662,7 @@ function ConnectorForm({
                               !decryptedValues[name] &&
                               !showDecryptedFields[name]
                             ) {
-                              decryptValue(name, field.value);
+                              revealSecret(name);
                             } else {
                               toggleDecryptedVisibility(name);
                             }
