@@ -102,8 +102,14 @@ folder (§3.3).
 | Tier | Lives in | Type on the data source | Who writes it |
 |---|---|---|---|
 | **Native** (Mako-sanctioned) | Mako's source, `api/src/connectors/<slug>/` | `<slug>` | Mako. Stripe and Close today, as in-process classes; new ones as in-process classes or as folders on the SDK, whichever is convenient |
-| **Emulated, sanctioned** | Mako's source, same directory, a folder with `connector.yaml` and no class | `<slug>` | vendored by Mako, kept current by a bot PR per upstream release |
+| **Emulated, sanctioned** | Mako's repo, but a top-level `connectors/`, not `api/src/` | `<slug>` | vendored by Mako, kept current by a bot PR per upstream release |
 | **Workspace** | the workspace repo, `connectors/<slug>/` | `ws:<slug>` | any agent; discovered on push; may be native-shaped or emulated |
+
+Sanctioned emulated connectors sit in a top-level `connectors/` rather
+than under `api/src/` because hundreds of manifests, licenses and icons
+are data, not TypeScript: inside `api/src/` they would enter the API's
+compile and its Docker image for no reason. Native connectors stay where
+they are, because they are code.
 
 The folder shape is identical across tiers, so promotion is moving the
 folder into Mako's source. The namespaces do not overlap and nothing
@@ -175,6 +181,16 @@ Close implement, and each of its methods has one wire command:
 | `extractWebhookCdcRecords` | `webhook` | `node` |
 | `createWebhookSubscription` | `subscribe` | `node` |
 | `getIncrementalCapabilities` | derived from `SPEC` and `CATALOG` | every runtime |
+| `getConfigSchema` (static) | `connectionSpecification` in `SPEC` | every runtime |
+
+`getConfigSchema` is easy to miss and blocks everything else: it is what
+`GET /api/connectors/{type}/schema` returns (`connectors.ts:140`) and what
+renders the credential form (`ConnectorForm.tsx:218`). A sandboxed
+connector has no class to call it on, so it comes from `spec`, whose
+`connectionSpecification` is a JSON Schema of exactly the config fields
+the connector needs. Without that wiring there is no way to type an API
+key into a workspace connector, so it is iteration 1, not a detail.
+`GET /{type}/icon` is served the same way, from the folder's `icon.svg`.
 
 A stock Airbyte connector implements the first three rows. A native
 connector implements them all. That is the whole difference between
@@ -263,6 +279,15 @@ One E2B box per workspace, separate from users' session boxes, paused with
 memory between chunks. Its template is the apps template plus Python 3.11,
 `airbyte-cdk` and a Docker daemon.
 
+**Dependencies come with the folder or not at all.** In iteration 1 a
+connector may depend on `@makoai/connector-sdk` and nothing else, and the
+box's template ships it. That is a deliberate scope cut, not an oversight:
+the box no longer clones, so the workspace's `package.json` and lockfile
+are not there to install from, and reproducing an install in a paused box
+is its own problem. When arbitrary dependencies are wanted, the copied
+payload grows a generated `package.json` pinning what `connector.yaml`
+declares, installed into `scratch()` once per sha and cached there.
+
 **The sync box never clones the repo.** For every tier the API resolves the
 folder and copies it into `scratch()` before the first command of a run: a
 workspace connector at the sha the flow was reconciled against, a
@@ -290,7 +315,7 @@ even for `spec` on reconcile.
 | Read the one credential the data source holds, decrypted into a file for the duration of a command | Read any other data source, any other workspace, or the API's environment | It runs in the workspace's E2B microVM with the allowlisted environment `SandboxProvider.exec` already enforces for apps |
 | Reach the internet, which it needs to reach the vendor | Reach Mako's API at all; the box holds no Mako token | The sync box never clones, so it never gets the `mgt_` git token (§6.3). That is the difference between a connector that can read one API key and a connector that can rewrite the workspace repo |
 | Emit records | Write to the destination database | The engine writes; the connector never sees a destination credential |
-| Install npm dependencies pinned in the workspace `package.json` | Affect any other tenant's box or the API's dependencies | Per-workspace box, per-workspace disk |
+| Import the SDK the template ships, and in later iterations the dependencies its folder declares | Affect any other tenant's box or the API's dependencies | Per-workspace box, per-workspace disk |
 | Run until the command's hard timeout and fill its output cap | Run forever or exhaust the API | `exec` and `execDetached` timeouts and caps; a stuck `read` is killed and restarted from the last `STATE` |
 | Become active by being pushed to the workspace repo's main | Become active from a session branch, a fork, or an API call | The push reconciler runs on main only, behind the same branch policy flows and dbt use (apps.md §19) |
 | Declare how its webhooks are verified | Run code before an inbound webhook is stored | Verification is declared in `SPEC` and executed in-process; parsing runs later, in the box, over stored events |
@@ -307,10 +332,22 @@ network policy on the sync box, not an API change.
 **Workspace push.** `connectors/*/connector.yaml` is reconciled the way
 skills are (`skills.service.ts:231`): run `spec` in the sync box, write a
 `ConnectorDefinition` index row (`workspaceId`, `slug`, `sha`, `runtime`,
-`spec`, `testedAt`, `status`), tear down on delete behind the fail-closed
-tree guard flows use. No install step; the repo is the truth and Mongo is
-the index. A connector whose conformance run fails is indexed as `blocked`
-and does not appear in the data-source picker.
+`spec`, `status`), tear down on delete behind the fail-closed tree guard
+flows use. No install step; the repo is the truth and Mongo is the index.
+
+**Reconcile cannot prove a connector works, and should not pretend to.**
+At push time there may be no data source and no credential, so `check`,
+`discover` and `read` have nothing to run against. What reconcile can do
+is run `spec`, validate it, and replay the folder's cassettes, which
+catches a connector that does not start, does not declare its config, or
+has drifted from its own fixtures. That yields `indexed`, and an
+`indexed` connector is offered in the picker so a credential can be
+entered. The live `check` runs when the data source is saved, exactly as
+it does for a built-in connector today, and that is what yields
+`verified`. A connector that fails either step is `blocked`, with the
+failing message stored, and blocked connectors cannot back a flow.
+Entities and incremental capabilities also arrive only after the first
+`discover`, for the same reason.
 
 **Conformance is a command.** `mako connector test <path>` runs `spec`,
 `check`, `discover` and one `read` page against a real credential,
@@ -464,7 +501,7 @@ leaves Stripe and Close untouched.
 
 | # | Iteration | Ships | Gate |
 |---|---|---|---|
-| 1 | **A vibe-coded connector in the workspace repo, discovered, used in a flow, safely** | The folder shape and `connector.yaml` with the `node` runtime only (§3.1); `@makoai/connector-sdk` with `defineConnector` for `check`, `discover` and `read`, `ctx.http` and `ctx.paginate`; the wire fixed as Airbyte's protocol (§4), so iteration 3 is a runtime and not a translator; the sync box, copying folders rather than cloning (§6.3); `SandboxedConnector` with one `exec` per chunk, which is all a `node` connector needs (§6.2); the push reconciler and `ConnectorDefinition` index; `ws:` resolution and the data-source picker; `mako connector test` as a CLI and as an MCP tool, run by the reconciler so a failing connector is indexed as blocked and never offered; the security model in §6.4, every row of it. | From a laptop clone, an agent writes `connectors/<slug>/` for a vendor Mako has never had a connector for, the test passes, it pushes to main, the connector appears in the picker, a scheduled flow created through the RFC #936 path lands rows in BigQuery. A second workspace cannot see or use it. The connector's process is shown to hold no Mako token and no other credential. Cost per chunk and resume latency are measured here. |
+| 1 | **A vibe-coded connector in the workspace repo, discovered, used in a flow, safely** | The folder shape and `connector.yaml` with the `node` runtime only (§3.1); `@makoai/connector-sdk` with `defineConnector` for `check`, `discover` and `read`, `ctx.http` and `ctx.paginate`, and no other dependency allowed yet (§6.3); the wire fixed as Airbyte's protocol (§4), so iteration 3 is a runtime and not a translator; the sync box, copying folders rather than cloning (§6.3); `SandboxedConnector` with one `exec` per chunk, which is all a `node` connector needs (§6.2); the credential form and icon served from `spec` and the folder (§5); the push reconciler and `ConnectorDefinition` index with its three states (§7); `ws:` resolution and the data-source picker; `mako connector test` as a CLI and as an MCP tool; the security model in §6.4, every row of it. | From a laptop clone, an agent writes `connectors/<slug>/` for a vendor Mako has never had a connector for, the test passes, it pushes to main, the connector appears in the picker, a scheduled flow created through the RFC #936 path lands rows in BigQuery. A second workspace cannot see or use it. The connector's process is shown to hold no Mako token and no other credential. Cost per chunk and resume latency are measured here. |
 | 2 | **Instant: webhooks on the wire** | The `webhook` and `subscribe` commands, `mako.webhooks.verification` in `SPEC`, the adapter's three webhook methods, `defineConnector` extended with `webhooks`. | The iteration-1 connector gains webhook methods and its flow becomes instant: events verified in-process, stored, parsed in the box in batches, and a backfill with webhooks arriving during it reconciles through the engine's drain. Separate from 1 because it opens a public endpoint per data source and is the only place connector-declared behaviour touches the hot path. |
 | 3 | **Airbyte connectors** | The `declarative`, `pypi` and `image` runtimes (§3.4), the streaming-`read` adapter for processes that cannot be told to stop (§6.2), the registry's class-less-folder case for sanctioned vendored folders, the loose-schema policy (§4), `fromAirbyteManifest` in the SDK. Staged: `declarative` first, then `pypi` and `image`. | Airbyte's Calendly, PandaDoc and Wise vendored as folders match the in-house connectors on the same accounts. GitHub from PyPI and one image-only source land rows. An agent adds webhook methods to the vendored Calendly with `fromAirbyteManifest` and it becomes instant. |
 | 4 | **Estuary connectors** | The `estuary` runtime: a stdio host for their capture protocol, the `changes` command feeding ingest, the written consent committed, the reduction-annotation check in conformance. | Estuary's Postgres capture streams inserts, updates and deletes from a dev database into BigQuery, with a backfill and changes arriving during it, acknowledged only after events are stored. One estuary-cdk SaaS connector passes conformance. |
