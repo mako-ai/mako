@@ -36,11 +36,6 @@ const DELIBERATELY_UNCOVERED: Readonly<Record<string, string>> = {
     "Needs E2B credentials and a network, and self-skips without E2B_API_KEY. " +
     "Must never join an offline run — vitest.apps.config.ts documents the " +
     "same exclusion.",
-  "src/services/bigquery-abandoned-job.test.ts":
-    "TEMPORARY. Wired by PR #910, which must land first: the test passes but " +
-    "never exits until #910's .unref() fix, and an '&&' chain turns that into " +
-    "a CI timeout rather than a failure. Delete this entry when #910 lands — " +
-    "the stale-entry check below will fail until you do.",
 };
 
 // ── Glob matching ─────────────────────────────────────────────────
