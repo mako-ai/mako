@@ -505,6 +505,88 @@ export function freshenBeforeMainWrite(workspaceId: string): Promise<void> {
   return freshenForServe(workspaceId, 0, "write");
 }
 
+/**
+ * Thrown when we cannot PROVE the local tree matches the mirror's main.
+ *
+ * Distinct from a freshen failure, which is survivable: this one means a
+ * caller must not proceed with something destructive.
+ */
+export class TreeNotVerifiedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TreeNotVerifiedError";
+  }
+}
+
+/**
+ * Fail CLOSED: prove the tree a caller read is the mirror's current main, or
+ * throw.
+ *
+ * `freshenBeforeMainWrite` is deliberately best-effort — a brief mirror outage
+ * must not fail a user's save, so it logs and proceeds. That trade is right
+ * for a commit and wrong for a deletion, and the asymmetry is not a matter of
+ * degree. A dbt job row deleted from a stale read comes back on the next sync,
+ * because the file recreates it. A CDC teardown DISPOSES CHECKPOINTS
+ * (`CdcEntityState.lastIngestSeq`, `backfillCursor`): recreating the flow does
+ * not recover the stream position, it re-backfills from scratch. One is churn;
+ * the other is data loss.
+ *
+ * So the destructive path asks a different question — not "did we try to
+ * refresh?" but "is this tree definitely current?" — and refuses when the
+ * answer is unknown. `ls-remote` is asked rather than the local repo, because
+ * the local repo is the very thing under suspicion.
+ *
+ * The consequence is deliberate and worth stating where it will be found: when
+ * the mirror is unreachable, a genuinely deleted flow does NOT tear down on
+ * this push. It tears down on the next one. Someone will eventually report
+ * that as a bug; it is the cost of never tearing down a live stream because we
+ * could not check.
+ *
+ * A workspace with no mirror (dev, previews — the connected tier gated off)
+ * has nothing to diverge from: the local repo IS the store, so the check
+ * passes.
+ */
+export async function assertTreeAtMirrorMain(
+  workspaceId: string,
+  treeSha: string,
+): Promise<void> {
+  const target = await resolveMirrorTarget(workspaceId);
+  if (!target) return; // No mirror: the local repo is authoritative.
+  if (!/^[0-9a-f]{40}$/.test(treeSha)) {
+    throw new TreeNotVerifiedError(
+      `Refusing a destructive reconcile: "${treeSha}" is not a commit sha`,
+    );
+  }
+  const url = remoteUrl(target.owner, target.repo);
+  const token = await tokenFor(target);
+  let remoteMain: string;
+  try {
+    const { stdout } = await runGit([
+      ...authArgs(token),
+      "ls-remote",
+      url,
+      `refs/heads/${DEFAULT_BRANCH}`,
+    ]);
+    remoteMain = stdout.trim().split(/\s+/)[0] ?? "";
+  } catch (error) {
+    throw new TreeNotVerifiedError(
+      `Refusing a destructive reconcile: could not read the mirror's ${DEFAULT_BRANCH} (${
+        error instanceof Error ? error.message : String(error)
+      })`,
+    );
+  }
+  if (!/^[0-9a-f]{40}$/.test(remoteMain)) {
+    throw new TreeNotVerifiedError(
+      `Refusing a destructive reconcile: the mirror reported no ${DEFAULT_BRANCH}`,
+    );
+  }
+  if (remoteMain !== treeSha) {
+    throw new TreeNotVerifiedError(
+      `Refusing a destructive reconcile: read at ${treeSha.slice(0, 8)} but the mirror's ${DEFAULT_BRANCH} is ${remoteMain.slice(0, 8)}`,
+    );
+  }
+}
+
 export type ConnectedRepoAdoption =
   | "imported"
   | "seeded"

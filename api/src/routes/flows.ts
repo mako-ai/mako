@@ -31,6 +31,7 @@ import {
   checkQuerySafety,
   dryRunDbSync,
 } from "../services/destination-writer.service";
+import { teardownFlow } from "../sync-cdc/flow-reconcile";
 import { cdcBackfillService } from "../sync-cdc/backfill";
 import { syncMachineService } from "../sync-cdc/sync-state";
 import { databaseRegistry } from "../databases/registry";
@@ -1549,32 +1550,15 @@ flowRoutes.openapi(
         return c.json({ success: false, error: "Flow not found" }, 404);
       }
 
-      await inngest.send({ name: "flow.cancel", data: { flowId } });
-
-      const childFilter = { flowId: flowOid, workspaceId: wsOid };
-      const [webhooks, executions, cdcEvents, entityStates, transitions] =
-        await Promise.all([
-          WebhookEvent.deleteMany(childFilter),
-          FlowExecution.deleteMany(childFilter),
-          CdcChangeEvent.deleteMany(childFilter),
-          CdcEntityState.deleteMany(childFilter),
-          CdcStateTransition.deleteMany(childFilter),
-        ]);
-
-      await Flow.deleteOne({ _id: flowOid, workspaceId: wsOid });
+      // Cancel + cascade + row delete live in one place, shared with the
+      // repo reconciler (sync-cdc/flow-reconcile.ts). Two copies of a
+      // five-collection teardown would drift, and the halves that drifted
+      // would be the ones nobody deletes.
+      await teardownFlow(flow);
+      // Only this direction writes the file: a deletion made HERE is Mongo →
+      // git. When the reconciler tears down, the file is already gone from
+      // the tree and committing again would fight the push that caused it.
       await deleteFlowFile(flow, c.get("user")?.id);
-
-      logger.info("Flow deleted with cascade cleanup", {
-        flowId,
-        workspaceId,
-        deleted: {
-          webhookEvents: webhooks.deletedCount,
-          flowExecutions: executions.deletedCount,
-          cdcChangeEvents: cdcEvents.deletedCount,
-          cdcEntityStates: entityStates.deletedCount,
-          cdcStateTransitions: transitions.deletedCount,
-        },
-      });
 
       return c.json({
         success: true,
