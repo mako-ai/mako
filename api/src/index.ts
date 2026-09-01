@@ -2,6 +2,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { serve } from "@hono/node-server";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
+import { HTTPException } from "hono/http-exception";
 import { secureHeaders } from "hono/secure-headers";
 import { serve as serveInngest } from "inngest/hono";
 import { Scalar } from "@scalar/hono-api-reference";
@@ -126,6 +127,19 @@ app.use(
 
 // Global JSON error handler – ensures errors are returned as JSON
 app.onError((err, c) => {
+  // Hono's own exceptions carry their status (the JSON validator throws a 400
+  // "Malformed JSON in request body", for one). A client mistake is not a
+  // server failure: answer with that status and log it as a warning, so the
+  // error log stays a list of things that are actually broken here.
+  if (err instanceof HTTPException) {
+    logger.warn("Rejected API request", {
+      status: err.status,
+      error: err.message,
+      path: c.req.path,
+      method: c.req.method,
+    });
+    return c.json({ success: false, error: err.message }, err.status);
+  }
   logger.error("Unhandled API error", {
     error: err,
     path: c.req.path,
