@@ -187,6 +187,8 @@ export const APP_TOOL_NAMES = new Set<string>([
   "app_edit_file",
   "app_status",
   "app_publish_status",
+  "app_publish",
+  "app_build_log",
   "app_commit",
   "app_open_app",
   "app_dev_log",

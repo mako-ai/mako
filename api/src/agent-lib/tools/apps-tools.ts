@@ -47,6 +47,8 @@ import {
   worktreeStatus,
   writeFile,
   scopeOf,
+  PUBLISH_ACTOR,
+  boxCtx,
 } from "../../apps/worktree.service";
 import { materializeAppBinding } from "../../apps/bindings.service";
 import {
@@ -54,6 +56,9 @@ import {
   repoDirFor,
   resolveCommit,
 } from "../../apps/repository.service";
+import { runGit } from "../../apps/git";
+import { buildLogPath } from "../../apps/deployment.service";
+import { getSandboxProvider } from "../../apps/sandbox/provider";
 import {
   devConsolePath,
   devLogPath,
@@ -502,11 +507,55 @@ export function createAppsTools({
         try {
           const project = loaded.project;
           const branch = project.defaultBranch || DEFAULT_BRANCH;
+          const repoDir = repoDirFor(project.workspaceId.toString());
           const branchSha = await resolveCommit(
-            repoDirFor(project.workspaceId.toString()),
+            repoDir,
             `refs/heads/${branch}`,
           );
+          // The commit that last TOUCHED this app's folder — commits to other
+          // apps or non-app files must not read as "this app is stale".
+          let branchAppSha: string | null = null;
+          if (branchSha) {
+            try {
+              const { stdout } = await runGit([
+                "-C",
+                repoDir,
+                "log",
+                "-1",
+                "--pretty=%H",
+                `refs/heads/${branch}`,
+                "--",
+                `apps/${project.slug}/`,
+              ]);
+              branchAppSha = stdout.trim() || null;
+            } catch {
+              branchAppSha = null;
+            }
+          }
           const publishedSha = project.publishedSha ?? null;
+          // Up to date when the published deployment contains the app's last
+          // change: either shas match, or the published commit is a
+          // descendant of the last app-touching commit.
+          let upToDate =
+            !!publishedSha && !!branchSha && publishedSha === branchSha;
+          if (!upToDate && publishedSha && branchAppSha) {
+            if (publishedSha === branchAppSha) upToDate = true;
+            else {
+              try {
+                await runGit([
+                  "-C",
+                  repoDir,
+                  "merge-base",
+                  "--is-ancestor",
+                  branchAppSha,
+                  publishedSha,
+                ]);
+                upToDate = true;
+              } catch {
+                /* not an ancestor — genuinely stale */
+              }
+            }
+          }
           return {
             success: true,
             status: {
@@ -515,9 +564,101 @@ export function createAppsTools({
               publishedAt: project.publishedAt ?? null,
               branch,
               branchSha,
-              upToDate:
-                !!publishedSha && !!branchSha && publishedSha === branchSha,
+              branchAppSha,
+              upToDate,
             },
+          };
+        } catch (error) {
+          return { success: false, error: errorMessage(error) };
+        }
+      },
+    }),
+
+    app_publish: tool({
+      description:
+        "Deploy the app's default branch NOW. Enqueues the exact build+deploy " +
+        "the push webhook uses (single-build concurrency per app, so it never " +
+        "races a push-triggered build) and returns immediately with the " +
+        "enqueued sha — poll app_publish_status until publishedSha reaches it " +
+        "(typically under 2 minutes; a failing build surfaces in " +
+        "app_build_log). Use when a push's automatic deploy did not land, or " +
+        "to force a redeploy of the current branch tip.",
+      inputSchema: z.object({ appId: z.string() }),
+      execute: async ({ appId }) => {
+        const loaded = await loadProject(appId, { write: true });
+        if ("error" in loaded) return { success: false, error: loaded.error };
+        try {
+          const project = loaded.project;
+          const branch = project.defaultBranch || DEFAULT_BRANCH;
+          const sha = await resolveCommit(
+            repoDirFor(project.workspaceId.toString()),
+            `refs/heads/${branch}`,
+          );
+          if (!sha) {
+            return { success: false, error: `branch ${branch} has no commits` };
+          }
+          const { requestAppDeploys } = await import(
+            "../../inngest/functions/apps-deploy"
+          );
+          await requestAppDeploys(
+            project.workspaceId.toString(),
+            [project.slug ?? appId],
+            sha,
+            "manual",
+          );
+          return {
+            success: true,
+            enqueued: { branch, sha },
+            message:
+              "Deploy enqueued. Poll app_publish_status until publishedSha " +
+              "reaches this sha; if it does not land, read app_build_log.",
+          };
+        } catch (error) {
+          return { success: false, error: errorMessage(error) };
+        }
+      },
+    }),
+
+    app_build_log: tool({
+      description:
+        "Tail the PUBLISH build log (npm install + build output from the " +
+        "shared publish sandbox) — the first place to look when app_publish " +
+        "or a push deploy does not land. Distinct from app_dev_log (the dev " +
+        "server's log). Never starts a sandbox: an empty result means no " +
+        "publish build has run recently.",
+      inputSchema: z.object({
+        appId: z.string(),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe(
+            "Byte offset to tail from (default 0; use the returned size to poll).",
+          ),
+      }),
+      execute: async ({ appId, offset }) => {
+        const loaded = await loadProject(appId, { write: false });
+        if ("error" in loaded) return { success: false, error: loaded.error };
+        try {
+          const handle = await ensureWorktree(loaded.project, PUBLISH_ACTOR);
+          const ctx = boxCtx(handle);
+          if (!(await getSandboxProvider().hasSession(ctx))) {
+            return { success: true, size: 0, chunk: "" };
+          }
+          const start = (offset ?? 0) + 1;
+          const result = await getSandboxProvider().exec(
+            ctx,
+            `wc -c < ${buildLogPath(handle)} 2>/dev/null || echo 0; ` +
+              `tail -c +${start} ${buildLogPath(handle)} 2>/dev/null | head -c 65536`,
+            { timeoutMs: 30_000 },
+          );
+          const newline = result.stdout.indexOf("\n");
+          const size = Number(result.stdout.slice(0, newline).trim()) || 0;
+          return {
+            success: true,
+            size,
+            chunk: result.stdout.slice(newline + 1),
           };
         } catch (error) {
           return { success: false, error: errorMessage(error) };

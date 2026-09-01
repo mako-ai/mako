@@ -4,6 +4,7 @@ import { loadContext } from "./context.js";
 import { login } from "./login.js";
 import { dev } from "./dev.js";
 import { status } from "./status.js";
+import { publish } from "./publish.js";
 
 const HELP = `mako — Mako from your terminal
 
@@ -12,6 +13,7 @@ const HELP = `mako — Mako from your terminal
   mako whoami                                     show which host/workspace you are signed in to
   mako dev     [<app>] [--port <n>] [--open]      run apps/<app> locally with real data
   mako status  [<app>]                            what is LIVE: published commit vs the tip of main
+  mako publish [<app>]                            deploy the app's main branch now (enqueue + wait)
 
 Run inside a workspace checkout; the host comes from --api-url, MAKO_API_URL,
 the repo's .env, or defaults to https://app.mako.ai. An API key in .env
@@ -47,6 +49,8 @@ export async function main(argv, io = { log: console.log }) {
       return dev(ctx, positional, flags, io);
     case "status":
       return status(ctx, positional, io);
+    case "publish":
+      return publish(ctx, positional, io);
     default:
       io.log(`unknown command "${command}"\n\n${HELP}`);
       return 2;
