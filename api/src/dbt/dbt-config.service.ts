@@ -125,6 +125,8 @@ async function commitConfig(
   // freshenBeforeMainWrite is un-throttled, so doing it in both places would
   // cost two sequential fetches per write).
   const repoDir = await repoDirIfExists(workspaceId);
+  // No repo (pre-§17 workspace): Mongo remains the only home — nothing to
+  // write through. RealAdvisor and every §17-era workspace has one.
   if (!repoDir) return;
   const result = await commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
     message,
