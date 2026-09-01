@@ -15,7 +15,7 @@
  *   enters the sandbox.
  */
 import path from "node:path";
-import { Sandbox } from "e2b";
+import { Sandbox, SandboxNotFoundError } from "e2b";
 import {
   APPS_EXEC_DEFAULT_TIMEOUT_MS,
   APPS_EXEC_MAX_OUTPUT_BYTES,
@@ -338,6 +338,12 @@ async function execE2b(
       exitCode = 124;
       timedOut = true;
     } else {
+      // The box is gone, not busy: drop the remembered session so the next
+      // `hasSession` asks E2B instead of repeating this instance's stale
+      // "yes" — otherwise every later discovery call execs into nothing and
+      // throws again. The error still propagates; callers that promise an
+      // empty answer rather than a failure catch it themselves.
+      if (isSandboxGone(error)) forgetSession(ctx.sessionKey);
       throw error;
     }
   }
@@ -498,13 +504,56 @@ async function keepAliveE2b(
 /**
  * Whether an error means the sandbox is gone rather than merely unhappy.
  *
- * E2B reports an expired or deleted sandbox as a plain "not found" on whatever
- * call happens to touch it next, so this is matched on the message.
+ * The SDK's own `SandboxNotFoundError` is the reliable signal, so it is
+ * checked FIRST and by type. Matching on the message alone is what made this
+ * predicate quietly answer "no" to the single most common form of the error:
+ * an idle-killed box surfaces as `SandboxNotFoundError: Sandbox is probably
+ * not running anymore`, and the old pattern ("sandbox is not running") does
+ * not match that string — the word "probably" sits in the middle of it. Every
+ * recovery this gates was therefore dead code in exactly the case it exists
+ * for (prod, 2026-09-01: a dead box 500'd the dev-servers route, and a
+ * terminal whose box had gone logged one warning per keystroke instead of
+ * reporting the exit).
+ *
+ * Messages are still matched, as a fallback for an error that crossed a
+ * boundary that flattened it (a worker, a JSON round trip). `NotFoundError`
+ * itself is deliberately NOT accepted: `FileNotFoundError` extends it, and a
+ * missing file says nothing about the machine.
  */
-function isSandboxGone(message: string): boolean {
-  return /sandbox was not found|sandbox is not running|not found: This error/i.test(
-    message,
-  );
+const SANDBOX_GONE_MESSAGE =
+  /sandbox (?:was not found|is (?:probably )?not running)|not found: This error/i;
+
+export function isSandboxGone(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 5; depth += 1) {
+    if (current instanceof SandboxNotFoundError) return true;
+    const { name, message, cause } = current as {
+      name?: unknown;
+      message?: unknown;
+      cause?: unknown;
+    };
+    if (name === "SandboxNotFoundError") return true;
+    if (typeof message === "string" && SANDBOX_GONE_MESSAGE.test(message)) {
+      return true;
+    }
+    current = cause;
+  }
+  return false;
+}
+
+/**
+ * Forget a session whose sandbox has gone.
+ *
+ * `sessionExists` answers from this map without asking E2B, so a dead box
+ * left in it makes `hasSession` claim a machine that cannot be reached — the
+ * caller then execs into nothing and gets an error where the contract
+ * promised an empty answer. Discovering the box is gone is the moment the
+ * memory becomes wrong, so that is where it is dropped.
+ */
+function forgetSession(sessionKey: string): void {
+  sessions.delete(sessionKey);
+  knownAlive.delete(sessionKey);
+  knownAbsent.set(sessionKey, Date.now() + KNOWN_ABSENT_TTL_MS);
 }
 
 async function openTerminalE2b(
@@ -641,7 +690,7 @@ async function openTerminalE2b(
             // Unless the shell is gone for good, in which case carrying on
             // means logging one of these per keystroke forever while the user
             // stares at a terminal that will never answer.
-            if (isSandboxGone(message)) {
+            if (isSandboxGone(error)) {
               pending = [];
               reportExit("the sandbox this terminal was running in has gone");
               return;
