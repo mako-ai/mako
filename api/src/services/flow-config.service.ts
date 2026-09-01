@@ -17,6 +17,7 @@ import { authorForUser } from "../apps/workspace-consoles.service";
 import {
   ensureLocalRepo,
   freshenBeforeMainWrite,
+  mirrorPushNow,
   queueMirrorPush,
 } from "../apps/cloud-repo.service";
 import {
@@ -74,11 +75,18 @@ async function commitConfig(
 }
 
 /** Write-through: the flow's file mirrors the row's definition fields. */
+export interface FlowFileWriteResult {
+  ok: boolean;
+  /** True when a commit was actually made (an unchanged definition is a no-op). */
+  changed: boolean;
+  error?: string;
+}
+
 export async function commitFlowFile(
   flow: IFlow,
   actorUserId?: string,
   messageOverride?: string,
-): Promise<void> {
+): Promise<FlowFileWriteResult> {
   // Pre-backfill rows have neither; the migration stamps both. Skipping on
   // an empty NAME as well as an empty slug keeps serialize/parse symmetric:
   // `parseFlowFile` rejects a file with no name, so writing one would
@@ -86,12 +94,14 @@ export async function commitFlowFile(
   // authoritative, a real hazard once block 3 makes files authoritative.
   // (Caught by running the projection against production rows before their
   // backfill had deployed.)
-  if (!flow.slug || !flow.name?.trim()) return;
+  if (!flow.slug || !flow.name?.trim()) {
+    return { ok: true, changed: false };
+  }
   try {
     const contents = serializeFlowFile(flowToFile(flow));
     const sha = blobOid(contents);
     // Unchanged definition: no commit, no push, no churn.
-    if (flow.sourceBlobSha === sha) return;
+    if (flow.sourceBlobSha === sha) return { ok: true, changed: false };
     await commitConfig(
       flow.workspaceId.toString(),
       { writes: { [flowFilePath(flow.slug)]: contents } },
@@ -99,15 +109,22 @@ export async function commitFlowFile(
       actorUserId ? await authorForUser(actorUserId) : undefined,
     );
     await Flow.updateOne({ _id: flow._id }, { $set: { sourceBlobSha: sha } });
+    return { ok: true, changed: true };
   } catch (error) {
     // Export-only: a failed mirror must never fail the user's mutation.
     // Mongo is authoritative and the next write (or the backfill CLI)
     // re-syncs the file.
+    const message = error instanceof Error ? error.message : String(error);
+    // The user's mutation still succeeds — Mongo is authoritative — but the
+    // failure is RETURNED as well as logged. Swallowing it silently is how
+    // 21 of 31 production flows failed to export while the CLI reported
+    // success.
     logger.warn("Flow config write-through failed", {
       workspaceId: flow.workspaceId.toString(),
       slug: flow.slug,
-      error: error instanceof Error ? error.message : String(error),
+      error: message,
     });
+    return { ok: false, changed: false, error: message };
   }
 }
 
@@ -140,19 +157,64 @@ export async function deleteFlowFile(
 export async function exportWorkspaceFlows(
   workspaceId: string,
   actorUserId?: string,
-): Promise<{ written: number; skipped: number }> {
-  const flows = await Flow.find({ workspaceId }).sort({ _id: 1 });
-  let written = 0;
+): Promise<{
+  written: number;
+  skipped: number;
+  failed: Array<{ slug: string; error: string }>;
+  commitMade: boolean;
+}> {
+  // `.lean()` matters: a live document's DocumentArrays are circular and
+  // overflow the YAML dumper (see `plain()` in flow-config-files).
+  const flows = await Flow.find({ workspaceId }).sort({ _id: 1 }).lean();
+
+  const writes: Record<string, string> = {};
+  const shaBySlug = new Map<string, { id: unknown; sha: string }>();
+  const failed: Array<{ slug: string; error: string }> = [];
   let skipped = 0;
-  for (const flow of flows) {
-    if (!flow.slug) {
+
+  for (const flow of flows as unknown as IFlow[]) {
+    if (!flow.slug || !flow.name?.trim()) {
       skipped++;
       continue;
     }
-    const before = flow.sourceBlobSha;
-    await commitFlowFile(flow, actorUserId, `flow: export "${flow.slug}"`);
-    const after = await Flow.findById(flow._id).select("sourceBlobSha").lean();
-    if (after?.sourceBlobSha && after.sourceBlobSha !== before) written++;
+    try {
+      const contents = serializeFlowFile(flowToFile(flow));
+      writes[flowFilePath(flow.slug)] = contents;
+      shaBySlug.set(flow.slug, { id: flow._id, sha: blobOid(contents) });
+    } catch (error) {
+      failed.push({
+        slug: flow.slug,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
-  return { written, skipped };
+
+  // One commit for the whole backfill rather than one per flow: a readable
+  // history, and a single push to await.
+  let commitMade = false;
+  if (Object.keys(writes).length > 0) {
+    try {
+      await commitConfig(
+        workspaceId,
+        { writes },
+        `flows: export ${Object.keys(writes).length} definition(s)`,
+        actorUserId ? await authorForUser(actorUserId) : undefined,
+      );
+      commitMade = true;
+      for (const { id, sha } of shaBySlug.values()) {
+        await Flow.updateOne({ _id: id }, { $set: { sourceBlobSha: sha } });
+      }
+      // `queueMirrorPush` is fire-and-forget; a CLI that exits immediately
+      // kills the push in flight, which is how a "successful" export landed
+      // nothing on GitHub. Await the flush.
+      await mirrorPushNow(workspaceId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      for (const slug of shaBySlug.keys())
+        failed.push({ slug, error: message });
+      return { written: 0, skipped, failed, commitMade: false };
+    }
+  }
+
+  return { written: shaBySlug.size, skipped, failed, commitMade };
 }

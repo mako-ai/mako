@@ -112,6 +112,43 @@ export interface FlowFile {
  * key in the file is snake_case. Normalise both directions — cheap now,
  * a breaking format change once people hand-edit these files.
  */
+/**
+ * Mongoose-safe plain data for the pass-through blobs.
+ *
+ * A live document's arrays are DocumentArrays whose subdocuments hold a
+ * `$__parent` back-reference to the parent — circular. `yaml.dump` is called
+ * with `noRefs: true`, which recurses instead of emitting an alias, so
+ * handing it a subdocument overflows the stack. That is not hypothetical:
+ * every production flow with `entityLayouts` (i.e. every BigQuery-write
+ * flow) failed with "Maximum call stack size exceeded" until this existed —
+ * silently, because the write-through swallows its errors.
+ *
+ * Callers pass live documents (the route write-through does), so the
+ * defence belongs here rather than in each caller.
+ */
+function plain<T>(value: unknown): T | undefined {
+  if (value === null || value === undefined) return undefined;
+  // Options matter: FlowSchema sets `toObject: { getters: true }`, which adds
+  // Mongoose's `id` virtual to every subdocument. The write-through passes
+  // documents and the export passes lean objects, so with defaults the two
+  // paths produce DIFFERENT bytes for the same flow — different
+  // `sourceBlobSha`, and every save rewrites what the export just wrote.
+  // Raw data only, so both paths agree.
+  const source =
+    typeof (value as { toObject?: (o: unknown) => unknown }).toObject ===
+    "function"
+      ? (value as { toObject: (o: unknown) => unknown }).toObject({
+          virtuals: false,
+          getters: false,
+          versionKey: false,
+          depopulate: true,
+        })
+      : value;
+  // The round-trip also normalises ObjectIds and Dates to strings, which is
+  // what the file wants anyway.
+  return JSON.parse(JSON.stringify(source)) as T;
+}
+
 function snakeKeys(v: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, val] of Object.entries(v)) {
@@ -386,8 +423,8 @@ export function flowToFile(flow: IFlow): FlowFile {
             schema: t.schema,
             tableName: t.tableName,
             createIfNotExists: t.createIfNotExists,
-            partitioning: t.partitioning as Record<string, unknown> | undefined,
-            clustering: t.clustering as Record<string, unknown> | undefined,
+            partitioning: plain<Record<string, unknown>>(t.partitioning),
+            clustering: plain<Record<string, unknown>>(t.clustering),
           }
         : undefined,
     },
@@ -420,10 +457,8 @@ export function flowToFile(flow: IFlow): FlowFile {
       deleteMode: flow.deleteMode,
       batchSize: flow.batchSize,
     },
-    entityFilter: flow.entityFilter ? [...flow.entityFilter] : undefined,
-    entityLayouts: flow.entityLayouts
-      ? (flow.entityLayouts as unknown as Array<Record<string, unknown>>)
-      : undefined,
+    entityFilter: plain<string[]>(flow.entityFilter),
+    entityLayouts: plain<Array<Record<string, unknown>>>(flow.entityLayouts),
     // Definition halves only — `lastValue` / `lastKeysetValue` are cursors
     // that move on every sync and must never reach a commit.
     incremental: flow.incrementalConfig
@@ -447,11 +482,7 @@ export function flowToFile(flow: IFlow): FlowFile {
           keysetDirection: flow.paginationConfig.keysetDirection,
         }
       : undefined,
-    typeCoercions: flow.typeCoercions
-      ? (flow.typeCoercions as unknown as Array<Record<string, unknown>>)
-      : undefined,
-    queries: flow.queries
-      ? (flow.queries as unknown as Array<Record<string, unknown>>)
-      : undefined,
+    typeCoercions: plain<Array<Record<string, unknown>>>(flow.typeCoercions),
+    queries: plain<Array<Record<string, unknown>>>(flow.queries),
   };
 }
