@@ -603,6 +603,21 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             jobId: updatedJob._id.toString(),
             consecutiveFailures: failures,
           });
+          // enabled is authored state in dbt/jobs/<slug>.yml — flip the
+          // file too or the next push-sync would re-enable the job.
+          try {
+            const { commitDbtJobFile } = await import(
+              "../../dbt/dbt-config.service"
+            );
+            await commitDbtJobFile(
+              { workspaceId: updatedJob.workspaceId },
+              updatedJob,
+              undefined,
+              `dbt: auto-disable job "${updatedJob.name}" after ${failures} failures`,
+            );
+          } catch (error) {
+            logger.warn("Auto-disable file write-through failed", { error });
+          }
         }
       }
 

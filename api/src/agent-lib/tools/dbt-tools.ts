@@ -63,6 +63,11 @@ import {
 } from "../../dbt/dbt-working-tree.service";
 import { resolveDbtRules } from "../../dbt/dbt-rules.service";
 import {
+  commitDbtJobFile,
+  deleteDbtJobFile,
+  reserveJobSlug,
+} from "../../dbt/dbt-config.service";
+import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
   isDbtCompatibleConnectionType,
 } from "../../dbt/adapter-map";
@@ -1279,6 +1284,7 @@ export const createDbtServerTools = (
           const job = await DbtJob.create({
             workspaceId: project.workspaceId,
             projectId: project._id,
+            slug: await reserveJobSlug(project._id, name),
             name,
             environment: env,
             commands,
@@ -1288,6 +1294,7 @@ export const createDbtServerTools = (
             createdBy: "agent",
           });
           await applyJobScheduleChange(job);
+          await commitDbtJobFile(project, job, actingUserId);
           publishJobUpdated(projectId);
           return {
             success: true,
@@ -1358,6 +1365,7 @@ export const createDbtServerTools = (
           }
           await job.save();
           await applyJobScheduleChange(job);
+          await commitDbtJobFile(project, job, actingUserId);
           publishJobUpdated(projectId);
           return {
             success: true,
@@ -1397,6 +1405,7 @@ export const createDbtServerTools = (
           if (!job) return { success: false, error: "Job not found" };
           const name = job.name;
           await DbtJob.deleteOne({ _id: job._id, projectId: project._id });
+          await deleteDbtJobFile(project, job.slug, actingUserId);
           publishJobUpdated(projectId);
           return { success: true, jobId: job._id.toString(), name };
         } catch (error) {

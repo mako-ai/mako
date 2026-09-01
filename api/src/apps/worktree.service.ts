@@ -202,6 +202,16 @@ export function notifyRepoPushed(workspaceId: string, userId: string): void {
       error: error instanceof Error ? error.message : String(error),
     });
   });
+  // dbt orchestration config (jobs/environments YAML — apps.md §23):
+  // external edits re-register schedules on the next push.
+  void import("../dbt/dbt-config.service")
+    .then(m => m.syncDbtConfigFromRepo(workspaceId, userId))
+    .catch(error => {
+      logger.warn("dbt config sync after push failed", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
 }
 
 // The sandbox HAS a remote, and a credential for it — see box.ts. Two things

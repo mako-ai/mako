@@ -45,6 +45,12 @@ import {
 } from "../dbt/commands";
 import { buildStarterScaffold } from "../dbt/scaffold";
 import {
+  commitDbtEnvironmentsFile,
+  commitDbtJobFile,
+  deleteDbtJobFile,
+  reserveJobSlug,
+} from "../dbt/dbt-config.service";
+import {
   DBT_PREVIEW_DEFAULT_LIMIT,
   DBT_PREVIEW_MAX_LIMIT,
   parseDbtShowPreview,
@@ -484,6 +490,8 @@ dbtRoutes.patch("/projects/:projectId", async (c: AuthenticatedContext) => {
       if (personalError) return badRequest(c, personalError);
     }
     await project.save();
+    // Environments/settings live in dbt/environments.yml (apps.md §23).
+    await commitDbtEnvironmentsFile(project, getUserId(c));
     publishDbtEvent(c, {
       type: "dbt.project.updated",
       projectId: project._id.toString(),
@@ -869,6 +877,7 @@ dbtRoutes.post("/projects/:projectId/jobs", async (c: AuthenticatedContext) => {
     const job = await DbtJob.create({
       workspaceId: project.workspaceId,
       projectId: project._id,
+      slug: await reserveJobSlug(project._id, parsed.data.name),
       name: parsed.data.name,
       environment: parsed.data.environment,
       commands: parsed.data.commands,
@@ -878,6 +887,8 @@ dbtRoutes.post("/projects/:projectId/jobs", async (c: AuthenticatedContext) => {
       createdBy: getUserId(c),
     });
     await applyJobScheduleChange(job);
+    // The definition is a file: dbt/jobs/<slug>.yml (apps.md §23).
+    await commitDbtJobFile(project, job, getUserId(c));
     const fresh = await DbtJob.findById(job._id).lean();
     publishDbtEvent(c, {
       type: "dbt.job.updated",
@@ -935,6 +946,7 @@ dbtRoutes.patch(
       job.deferToProduction = merged.deferToProduction;
       await job.save();
       await applyJobScheduleChange(job);
+      await commitDbtJobFile(project, job, getUserId(c));
       const fresh = await DbtJob.findById(job._id).lean();
       publishDbtEvent(c, {
         type: "dbt.job.updated",
@@ -959,13 +971,15 @@ dbtRoutes.delete(
       if (!Types.ObjectId.isValid(jobId)) {
         return badRequest(c, "Invalid job id");
       }
-      const result = await DbtJob.deleteOne({
+      const doomed = await DbtJob.findOne({
         _id: new Types.ObjectId(jobId),
         projectId: project._id,
-      });
-      if (result.deletedCount === 0) {
+      }).select("slug");
+      if (!doomed) {
         return c.json({ success: false, error: "Job not found" }, 404);
       }
+      await DbtJob.deleteOne({ _id: doomed._id });
+      await deleteDbtJobFile(project, doomed.slug, getUserId(c));
       publishDbtEvent(c, {
         type: "dbt.job.updated",
         projectId: project._id.toString(),
