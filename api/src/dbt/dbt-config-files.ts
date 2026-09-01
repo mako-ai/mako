@@ -14,6 +14,8 @@
  */
 import yaml from "js-yaml";
 
+import { slugifyName } from "../utils/slugify";
+
 export const DBT_JOBS_DIR = "dbt/jobs";
 export const DBT_ENVIRONMENTS_PATH = "dbt/environments.yml";
 
@@ -51,14 +53,7 @@ export function slugFromJobFilePath(repoRelative: string): string | null {
 
 /** Stable filename identity for a job, derived once from its display name. */
 export function slugifyJobName(name: string): string {
-  const slug = name
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 64);
-  return slug || "job";
+  return slugifyName(name, { fallback: "job" });
 }
 
 export function serializeJobFile(job: DbtJobFile): string {

@@ -9,7 +9,12 @@ import {
   DatabaseConnection,
   FlowExecution,
   WebhookEvent,
+  type IFlow,
 } from "../database/workspace-schema";
+import {
+  deriveFlowDisplayName,
+  reserveFlowSlug,
+} from "../services/flow-identity.service";
 import { Types, PipelineStage } from "mongoose";
 import { inngest } from "../inngest";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
@@ -466,6 +471,8 @@ flowRoutes.openapi(
             _id: 1,
             workspaceId: 1,
             type: 1,
+            name: 1,
+            slug: 1,
             sourceType: { $ifNull: ["$sourceType", "connector"] },
             destinationDatabaseName: 1,
             schedule: 1,
@@ -1005,6 +1012,17 @@ flowRoutes.openapi(
       }
       const syncConfigWarnings = createValidation.warnings;
 
+      // The create forms have always POSTed a synthesized `name`; until this
+      // field existed Mongoose silently dropped it. Persist it, fall back to
+      // the shared derivation, and mint the slug that names the flow's file
+      // (RFC #904) — once, here; a later rename never moves it.
+      const requestedName =
+        typeof body.name === "string" && body.name.trim()
+          ? body.name.trim().slice(0, 200)
+          : await deriveFlowDisplayName(flowData as unknown as IFlow);
+      flowData.name = requestedName;
+      flowData.slug = await reserveFlowSlug(workspaceId, requestedName);
+
       const flow = new Flow(flowData);
 
       // Update webhook endpoint with actual flow ID
@@ -1185,6 +1203,11 @@ flowRoutes.openapi(
             ? body.schedule.timezone || flow.schedule?.timezone || "UTC"
             : flow.schedule?.timezone,
         };
+      }
+      // Rename changes the DISPLAY name only: `slug` is the filename identity
+      // and never moves (RFC #904 / apps.md §23).
+      if (typeof body.name === "string" && body.name.trim()) {
+        flow.name = body.name.trim().slice(0, 200);
       }
       if (body.destinationDatabaseName !== undefined) {
         flow.destinationDatabaseName =

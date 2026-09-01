@@ -1,8 +1,16 @@
 import { useConsoleStore } from "../store/consoleStore";
 import type { Flow } from "../store/flowStore";
 
-/** The title a flow row, tab and palette entry all show. Was three copies. */
+/**
+ * The title a flow row, tab and palette entry all show. Was three copies.
+ *
+ * A flow's stored `name` wins when it has one (RFC #904): it is what the
+ * create form sent and what a rename edits. The source → destination
+ * derivation below stays as the fallback for rows the backfill has not
+ * reached, so nothing renders blank mid-deploy.
+ */
 export function getFlowTitle(flow: Flow): string {
+  if (flow.name?.trim()) return flow.name.trim();
   const f = flow as Flow & {
     sourceType?: string;
     tableDestination?: { tableName?: string };

@@ -2,7 +2,6 @@ import { inngest } from "../client";
 import {
   Flow,
   IFlow,
-  Connector as DataSource,
   DatabaseConnection,
 } from "../../database/workspace-schema";
 import { performSync, SyncLogger } from "../../services/sync-executor.service";
@@ -17,6 +16,7 @@ import { databaseDataSourceManager } from "../../sync/database-data-source-manag
 import { Types } from "mongoose";
 import * as os from "os";
 import { isCronDue } from "../../services/cron-due";
+import { flowDisplayName as resolveFlowDisplayName } from "../../services/flow-identity.service";
 import { getExecutionLogger, getSyncLogger } from "../logging";
 import { loggers } from "../../logging";
 import {
@@ -42,51 +42,6 @@ import {
 const flowLogger = loggers.inngest("flow");
 
 // Helper function to get flow display name
-async function getFlowDisplayName(flow: IFlow): Promise<string> {
-  try {
-    let sourceName: string;
-    let destName: string;
-
-    // Get source name based on source type
-    if (flow.sourceType === "database" && flow.databaseSource?.connectionId) {
-      const sourceDb = await DatabaseConnection.findById(
-        flow.databaseSource.connectionId,
-      );
-      sourceName =
-        sourceDb?.name || flow.databaseSource.connectionId.toString();
-    } else if (flow.dataSourceId) {
-      const dataSource = await DataSource.findById(flow.dataSourceId);
-      sourceName = dataSource?.name || flow.dataSourceId.toString();
-    } else {
-      sourceName = "Unknown Source";
-    }
-
-    // Get destination name
-    if (flow.tableDestination?.connectionId) {
-      const destDb = await DatabaseConnection.findById(
-        flow.tableDestination.connectionId,
-      );
-      destName = flow.tableDestination.tableName
-        ? `${destDb?.name || "DB"}.${flow.tableDestination.tableName}`
-        : destDb?.name || flow.tableDestination.connectionId.toString();
-    } else {
-      const database = await DatabaseConnection.findById(
-        flow.destinationDatabaseId,
-      );
-      destName = database?.name || flow.destinationDatabaseId.toString();
-    }
-
-    return `${sourceName} → ${destName}`;
-  } catch {
-    // Fallback to IDs if lookup fails
-    const sourceId =
-      flow.sourceType === "database"
-        ? flow.databaseSource?.connectionId?.toString()
-        : flow.dataSourceId?.toString();
-    return `${sourceId || "Unknown"} → ${flow.destinationDatabaseId}`;
-  }
-}
-
 // Flow execution logging interface
 interface FlowExecutionLog {
   timestamp: Date;
@@ -683,7 +638,7 @@ export const flowFunction = inngest.createFunction(
         const execLogger = createExecutionLogger(flow);
         await execLogger.start();
 
-        const flowDisplayName = await getFlowDisplayName(flow);
+        const flowDisplayName = await resolveFlowDisplayName(flow);
         logger.info("Starting flow execution", {
           flowId,
           flowDisplayName,
@@ -2106,7 +2061,7 @@ export const flowSchedulerFunction = inngest.createFunction(
           },
         });
 
-        const flowDisplayName = await getFlowDisplayName(flow);
+        const flowDisplayName = await resolveFlowDisplayName(flow);
         executedFlows.push(flowDisplayName);
 
         // Increment jitter for next flow (0-5 seconds)

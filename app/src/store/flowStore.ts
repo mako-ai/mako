@@ -67,6 +67,10 @@ export type FlowQuery = z.infer<typeof flowQuerySchema>;
 const flowSchema = z.object({
   _id: z.string(),
   workspaceId: z.string(),
+  /** Editable display name; absent on rows predating RFC #904's backfill. */
+  name: z.string().nullable().optional(),
+  /** Filename identity for `flows/<slug>.yml`. Never changes on rename. */
+  slug: z.string().nullable().optional(),
   dataSourceId: flowDataSourceSchema.optional(), // Optional for database-to-database flows
   destinationDatabaseId: flowDestinationSchema.optional(), // Optional for database-to-database flows
   destinationDatabaseName: z.string().nullable().optional(),
