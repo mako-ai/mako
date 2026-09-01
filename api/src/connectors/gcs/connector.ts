@@ -8,6 +8,7 @@ import {
   FetchState,
   EntityMetadata,
   type ConnectorEntitySchema,
+  type IncrementalCapabilities,
 } from "../base/BaseConnector";
 import { loggers } from "../../logging";
 import { fileMatchesGlob, parseCsvStream } from "./csv";
@@ -295,6 +296,19 @@ export class GcsConnector extends BaseConnector {
     return true;
   }
 
+  getIncrementalCapabilities(): IncrementalCapabilities {
+    // GCS object listing has no server-side time filter, so a poll lists the
+    // prefix and drops objects whose `updated` is at or before `since`
+    // (listNewObjects). That is client-filter, not native: the listing cost
+    // still scales with the folder, only the download and parse are saved.
+    //
+    // The unit is the OBJECT, not the row — a file that changed at all is
+    // re-imported whole, and its rows upsert on the entity's `id` key. An
+    // object with no `updated` metadata is kept rather than skipped, so the
+    // failure direction is re-importing, never silently missing a change.
+    return { supported: true, mode: "client-filter", anchorField: "updated" };
+  }
+
   async testConnection(): Promise<ConnectionTestResult> {
     try {
       const validation = this.validateConfig();
@@ -480,11 +494,15 @@ export class GcsConnector extends BaseConnector {
         current.name,
         current.generation ? { generation: current.generation } : undefined,
       );
+      // Hold the name: `current` is cleared on success inside the try, so the
+      // catch cannot rely on it still being set.
+      const objectName = current.name;
+      const inFlight = current;
 
       try {
         const { rowsRead, rowsEmitted } = await this.processObject(
           gcsFile,
-          current,
+          inFlight,
           folder,
           rowOffset,
           onBatch,
@@ -492,7 +510,7 @@ export class GcsConnector extends BaseConnector {
         totalProcessed += rowsEmitted;
         logger.info("Finished GCS object", {
           entity,
-          object: current.name,
+          object: objectName,
           rowsRead,
           rowsEmitted,
         });
@@ -505,7 +523,7 @@ export class GcsConnector extends BaseConnector {
           error instanceof Error ? error.message : "CSV parse failed";
         logger.error("Failed processing GCS object", {
           entity,
-          object: current.name,
+          object: objectName,
           rowOffset,
           error: message,
         });
