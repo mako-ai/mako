@@ -3522,6 +3522,10 @@ export interface INotebookIndex extends Document {
   folderId?: Types.ObjectId;
   ownerId: string;
   access: "private" | "workspace";
+  /** Repo-relative path of the committed .deepnote checkpoint (apps.md §24). */
+  path?: string;
+  /** Blob sha of the last checkpoint (sync levelling). */
+  checkpointBlobSha?: string;
   /** Role workspace members get when `access === "workspace"`. */
   workspaceRole?: ResourceShareRole;
   sharedWith?: IResourceShareEntry[];
@@ -3969,6 +3973,8 @@ const NotebookIndexSchema = new Schema<INotebookIndex>(
       enum: ["private", "workspace"],
       default: "private",
     },
+    path: { type: String },
+    checkpointBlobSha: { type: String },
     workspaceRole: {
       type: String,
       enum: ["viewer", "editor"],

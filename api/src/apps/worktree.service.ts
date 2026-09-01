@@ -212,6 +212,16 @@ export function notifyRepoPushed(workspaceId: string, userId: string): void {
         error: error instanceof Error ? error.message : String(error),
       });
     });
+  // Notebook .deepnote checkpoints (apps.md §24): external edits flow into
+  // the hot store unless the live document is ahead.
+  void import("../notebooks/notebook-git.service")
+    .then(m => m.syncNotebooksFromRepo(workspaceId, userId))
+    .catch(error => {
+      logger.warn("Notebook sync after push failed", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
 }
 
 // The sandbox HAS a remote, and a credential for it — see box.ts. Two things

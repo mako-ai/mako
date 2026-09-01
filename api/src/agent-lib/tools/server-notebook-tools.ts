@@ -9,6 +9,7 @@
  *
  * Spread AFTER `clientNotebookTools` in the unified factory so these win.
  */
+import { scheduleNotebookCheckpoint } from "../../notebooks/notebook-git.service";
 import { tool } from "ai";
 import { z } from "zod";
 import { randomUUID } from "crypto";
@@ -173,6 +174,7 @@ export function createNotebookServerTools({
     await updateNotebookIndex(workspaceId, notebookId, {
       updatedAt: new Date(updated.updatedAt),
     });
+    scheduleNotebookCheckpoint(workspaceId, notebookId, userId);
     publishRealtimeEvent(workspaceId, {
       type: "notebook.updated",
       notebookId,

@@ -2860,3 +2860,41 @@ Migration adopts existing jobs/environments into the repo (one commit,
 re-runnable, mongoose connected per the §21 rule) and pushes the mirror.
 With this, "dbt is in git" carries no asterisk: source, rules, jobs,
 environments — all files; Mongo keeps runs and claims.
+
+## 24. Notebooks checkpoint as .deepnote files (2026-09-01)
+
+Notebooks join the repo — by RIPPING OFF the best available architecture
+rather than inventing one. Deepnote open-sourced their project format
+(`@deepnote/blocks` 4.7, `@deepnote/convert` 4.0), and their own design
+answers all three open questions from §11.11:
+
+- **Format**: the committed file is a canonical single-notebook `.deepnote`
+  (YAML, validated against Deepnote's zod schema before every write — we
+  never commit a file their toolchain rejects). It opens in Deepnote and
+  converts to .ipynb/Quarto/percent/Marimo with `npx @deepnote/convert`.
+  SQL blocks carry `sql_integration_id` (their key) + `mako_connection_id`
+  (our round-trip anchor). Serialization is BYTE-STABLE (deterministic
+  v5-style uuids) so blob-sha levelling works.
+- **Outputs**: STRIPPED — Deepnote's own source-vs-execution-snapshot
+  split, the nbstripout convention, and ours: outputs stay in the hot
+  store document and the artifact store.
+- **Cadence** (§19 rule 3 made concrete): the notebook STORE (GCS) remains
+  the durable hot working copy the editor autosaves into; git gets
+  CHECKPOINTS — debounced 30s after an edit burst goes quiet, max 5min,
+  flushed on delete. Losing a timer loses nothing durable; the checkpoint
+  is the history/review/interop surface, not the durability layer.
+
+Paths: `notebooks/<slug>.deepnote`, private under
+`users/<ownerId>/notebooks/` (consoles' owner-first layout). Rename and
+access flips relocate the file in the next checkpoint commit. Push-sync
+flows external `.deepnote` edits into the store — unless the live document
+moved past its last checkpoint, in which case THE EDITOR WINS (git history
+keeps the external version; the next checkpoint records the resolution).
+Deliberate v1 gaps, documented: externally-created files are not yet
+materialized as store docs (store API lacks create-with-id), file deletions
+on main do not delete notebooks, and Mongo folder organization is not
+mirrored into paths yet.
+
+Migration checkpoints every existing notebook (non-destructive — the store
+keeps everything) and the deploy migrate step gains NOTEBOOK_GCS_BUCKET —
+the third instance of the runner-env bug class, caught at design time.
