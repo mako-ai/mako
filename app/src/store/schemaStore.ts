@@ -205,7 +205,16 @@ interface SchemaState {
   ) => Promise<void>;
   testConnection: (
     workspaceId: string,
-    payload: { type: string; connection: Record<string, unknown> },
+    payload: {
+      type: string;
+      connection: Record<string, unknown>;
+      /**
+       * Set when testing an edit of a saved connection: the form holds
+       * sentinels in place of its secrets, and the API resolves them from
+       * the stored row.
+       */
+      connectionId?: string;
+    },
     options?: { local?: boolean },
   ) => Promise<{ success: boolean; error?: string }>;
   fetchDatabase: (

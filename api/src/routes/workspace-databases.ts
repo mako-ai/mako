@@ -24,6 +24,11 @@ import {
 import { Types } from "mongoose";
 import { loggers } from "../logging";
 import { ConsoleManager } from "../utils/console-manager";
+import {
+  maskPasswordInConnectionString,
+  redactConnectionSecrets,
+  restoreKeptSecrets,
+} from "../utils/connection-secrets";
 import { checkPreviewQuerySafety } from "../services/query-pagination.service";
 import { createStreamingExportResponse } from "../utils/query-export-stream";
 import { createArrowIPCStreamResponse } from "../utils/arrow-serializer";
@@ -285,19 +290,6 @@ function getDemoDatabaseConfig() {
 
 export const workspaceDatabaseRoutes = createRouter();
 
-// Helper function to mask passwords in connection strings
-function maskPasswordInConnectionString(connectionString: string): string {
-  if (!connectionString) return connectionString;
-
-  // Generic pattern for database connection strings:
-  // protocol://[username:password@]host[:port][/database][?options]
-  // This handles mongodb://, mongodb+srv://, postgresql://, postgres://, mysql://, etc.
-  return connectionString.replace(
-    /^([a-z][a-z0-9+.-]*:\/\/[^:]+:)([^@]+)(@)/g,
-    "$1*****$3",
-  );
-}
-
 // Create demo database for workspace (onboarding)
 workspaceDatabaseRoutes.openapi(
   createRoute({
@@ -494,7 +486,13 @@ workspaceDatabaseRoutes.openapi(
     tags: ["Databases"],
     summary: "GET /{id}",
     security: AUTH_SECURITY,
-    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    // Connection internals (host, username, options) are for the people who
+    // may edit connections — the same list that gates create/update below.
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin", "member"]),
+    ] as const,
     request: {
       params: z.object({
         workspaceId: z
@@ -533,7 +531,9 @@ workspaceDatabaseRoutes.openapi(
           connectionId: database._id.toString(),
           name: database.name,
           type: database.type,
-          connection: database.connection, // Will be decrypted by getter
+          // Decrypted by the getter, then stripped of every credential: the
+          // edit dialog needs the shape, never the secrets.
+          connection: redactConnectionSecrets(conn),
           databaseName: conn.database,
           isClusterMode,
           createdAt: database.createdAt,
@@ -603,11 +603,28 @@ workspaceDatabaseRoutes.openapi(
         );
       }
 
+      // Testing an edit of a SAVED connection: the form holds sentinels where
+      // its secrets used to be, so resolve them from the stored row. Without
+      // this, "Test" on an existing connection would dial with a placeholder
+      // password and always fail.
+      let connection = body.connection as Record<string, unknown>;
+      if (body.connectionId && Types.ObjectId.isValid(body.connectionId)) {
+        const saved = await DatabaseConnection.findOne({
+          _id: new Types.ObjectId(body.connectionId),
+          workspaceId: c.get("workspace")._id,
+        });
+        if (saved) {
+          const previous =
+            (saved.toObject({ getters: true }) as any).connection || {};
+          connection = restoreKeptSecrets(connection, previous);
+        }
+      }
+
       // Create a temporary database object for testing
       const tempDatabase = {
         _id: new Types.ObjectId(),
         type: body.type,
-        connection: body.connection,
+        connection,
       } as IDatabaseConnection;
 
       const startedAt = Date.now();
@@ -852,7 +869,12 @@ workspaceDatabaseRoutes.openapi(
         // Build candidate connection using decrypted previous + incoming patch
         const previous =
           (database.toObject({ getters: true }) as any).connection || {};
-        const candidate = { ...previous, ...body.connection };
+        // The client never received the real secrets, so put them back
+        // wherever it echoed the sentinel or a masked connection string.
+        const candidate = {
+          ...previous,
+          ...restoreKeptSecrets(body.connection, previous),
+        };
 
         // Optionally verify the candidate before persisting the change.
         if (verifyBeforeSave) {

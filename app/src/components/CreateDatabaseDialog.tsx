@@ -199,6 +199,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
         {
           type: values.type,
           connection: values.connection,
+          connectionId: local ? undefined : (databaseId ?? undefined),
         },
         { local },
       );
