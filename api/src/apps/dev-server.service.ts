@@ -41,6 +41,7 @@ import { boxEnvPath, sh } from "./box";
 import { ensureBoxAgent } from "./box-agent";
 import { getBoxState, probeReachable } from "./box-state.service";
 import { readBindings, bindingArtifactKey } from "./bindings.service";
+import { resolveAppEnv } from "./env.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 
 const logger = loggers.api("apps-dev-server");
@@ -930,6 +931,21 @@ async function ensureDevServerLaunch(
   if (!wasListening) {
     // Make room BEFORE launching: never let this box exceed the running cap.
     evicted = await enforceRunningCap(provider, ctx, appSlug(handle));
+    // The app's own env vars (env.service), applied at LAUNCH: dtach → script
+    // → node → vite inherit them, so `VITE_*` reaches import.meta.env and the
+    // rest reaches the dev-server process. dev target = secrets included;
+    // this launch env is the only place a secret ever exists in the box.
+    // Edits made while a server runs apply on its next (re)start.
+    let appEnv: Record<string, string> = {};
+    try {
+      appEnv = await resolveAppEnv(handleProject(handle), "dev");
+    } catch (error) {
+      // A missing vault must not take dev mode down with it.
+      logger.warn("Apps env resolution failed; launching without app env", {
+        appRoot: handle.appRoot,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     const write = await provider.exec(
       ctx,
       `cat > ${launcher} <<'MAKO_LAUNCHER_EOF'\n${launcherSource(appDir, port, dataDir(handle), appSlug(handle), boxEnvPath(ctx))}\nMAKO_LAUNCHER_EOF\necho written`,
@@ -965,6 +981,7 @@ async function ensureDevServerLaunch(
       await provider.execDetached(ctx, launchCmd, {
         cwd: handle.appRoot,
         timeoutMs: 60_000,
+        env: appEnv,
       });
     } catch (error) {
       if (!isMissingCwd(error)) throw error;
@@ -973,6 +990,7 @@ async function ensureDevServerLaunch(
       await provider.execDetached(ctx, launchCmd, {
         cwd: handle.appRoot,
         timeoutMs: 60_000,
+        env: appEnv,
       });
     }
 

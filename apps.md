@@ -358,7 +358,7 @@ Each phase ships behind a flag and is independently valuable (Phase 1 alone give
 | Do bindings-as-files break the binding editor UI? | No — the binding editor becomes a structured editor over `bindings/*.sql` + `mako.json` via the Files API. |
 | Monaco in-browser editing (no sandbox running) | Explorer writes go through a Files API write endpoint that commits directly to the draft ref server-side (isomorphic-git or a transient sandbox); keeps "quick edit" cheap. |
 | Public URL isolation for published apps | Per-app host on a separate PSL-registered registrable domain (never `mako.ai`): different browser *sites*, no shared cookies or same-site trust with the control plane; Worker enforces share tokens/passwords. |
-| Where do secrets for apps/scripts live? | Workspace-scoped secrets vault (encrypt with existing `crypto.service`), injected as env into sandboxes per `mako.json` declaration; never committed. Design in Phase 5. |
+| Where do secrets for apps/scripts live? | SHIPPED as the per-app env vault (`env.service.ts`, §13.21): vars on the `AppProject` row, values encrypted with `crypto.service`, never committed. One `secret` boolean encodes the static-publish boundary — non-secret vars reach the dev server and the publish build (`VITE_*` inlined into the public bundle: the publishable-key class), secrets reach dev processes only and refuse the `VITE_` prefix. Runtime secrets for published apps (a true backend) remain out of scope. |
 
 ## 8. Alternatives considered (summary)
 
@@ -1419,6 +1419,38 @@ tab to Start dev via the box-state push, no reload.
 Known cosmetic leftover: the dev boot banner can print twice when two
 dev-preview POSTs race the same cold boot (mount effect + status poll — the
 launch is single-flighted, the route's log-genesis section is not).
+
+### 13.21 Per-app environment variables (2026-09-01)
+
+An app hits a wall the moment it needs a vendor key — a Google Maps browser
+key, a Supabase URL + anon key — because there was nowhere sanctioned to put
+one: hardcoding commits it to a clonable repo, and the sandbox env was
+deliberately credential-free. The env vault (`env.service.ts`) is that place:
+vars live on the `AppProject` row, values encrypted with `crypto.service`
+like every other credential, managed via `GET/PUT/DELETE /apps/:id/env`
+(editor-gated) and the explorer's "Environment variables…" dialog.
+
+One `secret` boolean encodes the publish model's hard boundary (§13.4.6 —
+a published app is a static bundle, no server, no runtime env):
+
+- **non-secret** → injected into the sandbox dev-server launch AND the
+  publish build. `VITE_*` is inlined into the public bundle, which is exactly
+  right for the publishable-key class (Maps keys, anon keys, Stripe
+  publishable keys — public by design, protected by referrer restrictions and
+  RLS, not secrecy).
+- **secret** → injected into sandbox DEV processes only, never into a build
+  (`resolveAppEnv(project, "build")` excludes them by construction), and the
+  `VITE_` prefix is refused outright — a "secret" Vite would inline is a
+  contradiction that fails loudly at the door.
+
+Injection is process-env at launch time only: the dev-server `execDetached`
+and the publish build exec carry the record; nothing is ever written into
+the working tree, committed, or served. A running dev server picks edits up
+on its next restart. Secrets never echo back through the API — the list
+returns only their key. Reserved names (`PATH`, `HOME`, `MAKO_*`, …) are
+refused so a var cannot break the box contract. Runtime secrets for
+published apps (a real backend/proxy) remain out of scope, exactly as §7's
+risk table says.
 
 ## 14. State of play and roadmap (2026-08-26)
 

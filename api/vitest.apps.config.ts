@@ -19,6 +19,7 @@ export default defineConfig({
       "src/apps/workspace-repo.test.ts",
       "src/apps/workspace-prompt.test.ts",
       "src/apps/bindings.service.test.ts",
+      "src/apps/env.service.test.ts",
       "src/apps/cloud-repo.service.test.ts",
       "src/apps/adversarial.test.ts",
       "src/apps/git-endpoint.test.ts",

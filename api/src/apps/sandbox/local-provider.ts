@@ -106,6 +106,27 @@ function truncate(text: string): { text: string; truncated: boolean } {
   };
 }
 
+/**
+ * The allowlisted base env plus the caller's extras — the same contract the
+ * E2B provider keeps. Deliberately minimal: a local sandbox must not become
+ * the one place where an app can read the API's secrets.
+ */
+function sandboxEnv(extra?: Record<string, string>): Record<string, string> {
+  return {
+    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    // OUTSIDE the working tree, and not the developer's real home either.
+    // npm and friends write caches into $HOME; pointed at the tree, every
+    // one of them would land in the next commit.
+    HOME: SANDBOX_HOME,
+    LANG: "C.UTF-8",
+    TERM: "xterm-256color",
+    // There is no human at this end. Without it git blocks on a credential
+    // prompt until the timeout and reports nothing.
+    GIT_TERMINAL_PROMPT: "0",
+    ...(extra ?? {}),
+  };
+}
+
 async function execLocal(
   ctx: SandboxExecContext,
   command: string,
@@ -129,20 +150,7 @@ async function execLocal(
         timeout: options.timeoutMs ?? 120_000,
         maxBuffer: MAX_OUTPUT_BYTES * 4,
         encoding: "utf8",
-        env: {
-          // Deliberately minimal, like the microVM's: a local sandbox must not
-          // become the one place where an app can read the API's secrets.
-          PATH: process.env.PATH ?? "/usr/bin:/bin",
-          // OUTSIDE the working tree, and not the developer's real home
-          // either. npm and friends write caches into $HOME; pointed at the
-          // tree, every one of them would land in the next commit.
-          HOME: SANDBOX_HOME,
-          LANG: "C.UTF-8",
-          TERM: "xterm-256color",
-          // There is no human at this end. Without it git blocks on a
-          // credential prompt until the timeout and reports nothing.
-          GIT_TERMINAL_PROMPT: "0",
-        },
+        env: sandboxEnv(options.env),
       },
       (error, stdout, stderr) => {
         const out = truncate(String(stdout ?? ""));
@@ -192,10 +200,13 @@ export const localSandboxProvider: SandboxProvider = {
     assertNotProduction();
     await ensureDirs(ctx);
     const cwd = path.resolve(rootFor(ctx), options.cwd ?? ".");
+    // Same allowlisted env as exec — inheriting the API process env here
+    // would hand a detached dev server every secret this process holds.
     const child = spawn("bash", ["-lc", command], {
       cwd,
       detached: true,
       stdio: "ignore",
+      env: sandboxEnv(options.env),
     });
     child.unref();
   },

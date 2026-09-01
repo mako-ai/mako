@@ -27,7 +27,11 @@ export interface SandboxExecOptions {
   /** Working directory relative to the session root ("" = root). */
   cwd?: string;
   timeoutMs?: number;
-  /** Extra env vars visible to the command (non-secret only). */
+  /**
+   * Extra env vars visible to the command. Never a Mako API secret — the
+   * only credentials that may enter a box are the tenant's own (the git
+   * token file, and per-app env vars from env.service).
+   */
   env?: Record<string, string>;
 }
 
