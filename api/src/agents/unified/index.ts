@@ -64,6 +64,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     workspaceId,
     userId,
     supportsVision: context.modelSupportsVision,
+    touchedPaths: context.appsTouchedPaths,
   });
 
   const {

@@ -50,6 +50,7 @@ import {
   scopeOf,
   PUBLISH_ACTOR,
   boxCtx,
+  appRootFor,
 } from "../../apps/worktree.service";
 import { materializeAppBinding } from "../../apps/bindings.service";
 import {
@@ -78,6 +79,15 @@ export interface AppsToolsOptions {
   userId?: string;
   /** Resolved model accepts image input; undefined = assume yes (external MCP). */
   supportsVision?: boolean;
+  /**
+   * Caller-owned set the write-capable tools add their app's repo-relative
+   * root (`apps/<slug>`) to. The sandbox is ONE working copy per
+   * (workspace, user) shared by every chat that user runs, so the turn-end
+   * auto-commit needs to know which folders THIS chat wrote to — otherwise it
+   * `git add -A`s the whole tree and sweeps a concurrent chat's in-flight
+   * work on another app into this turn's commit.
+   */
+  touchedPaths?: Set<string>;
 }
 
 type LoadResult = { project: IAppProject } | { error: string };
@@ -86,6 +96,7 @@ export function createAppsTools({
   workspaceId,
   userId,
   supportsVision,
+  touchedPaths,
 }: AppsToolsOptions): ToolSet {
   // A conversation is not a line of work.
   //
@@ -102,6 +113,10 @@ export function createAppsTools({
   const actorId = userId ?? "api-key";
   const ensureActorWorktree = (project: IAppProject) =>
     ensureWorktree(project, actorId);
+  // Every tool that can dirty the working copy records the app folder it
+  // wrote to; see AppsToolsOptions.touchedPaths for why.
+  const markTouched = (project: IAppProject) =>
+    touchedPaths?.add(appRootFor(project));
   // The branch is whatever the checkout is on — main by default, or wherever
   // the user (or this agent, via `git checkout` in app_bash) switched to.
   // Read it fresh per call; a cached value goes stale the moment anyone
@@ -230,6 +245,7 @@ export function createAppsTools({
           // heard yet, so without a catch-up the brand-new app lists as
           // empty and the agent rebuilds the scaffold by hand over it.
           await catchUpLiveBox(project, actorId);
+          markTouched(project);
           const { entries } = await listFiles(project, actorId);
           return {
             success: true,
@@ -273,6 +289,7 @@ export function createAppsTools({
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
           const handle = await ensureActorWorktree(loaded.project);
+          markTouched(loaded.project);
           const result = await execInWorktree(handle, command, {
             cwd,
             timeoutMs: timeoutSeconds ? timeoutSeconds * 1000 : undefined,
@@ -416,6 +433,7 @@ export function createAppsTools({
             }
           }
           const handle = await ensureActorWorktree(loaded.project);
+          markTouched(loaded.project);
           await writeFile(handle, relPath, contents);
           markRead(appId, relPath);
           return { success: true, path: relPath };
@@ -460,6 +478,7 @@ export function createAppsTools({
             replaceAll ?? false,
           );
           if (!result.ok) return { success: false, error: result.error };
+          markTouched(loaded.project);
           await writeFile(handle, relPath, result.contents);
           return {
             success: true,
@@ -976,6 +995,7 @@ export function createAppsTools({
         const loaded = await loadProject(appId, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
+          markTouched(loaded.project);
           const result = await materializeAppBinding(
             loaded.project,
             name,
@@ -1001,7 +1021,13 @@ export function createAppsTools({
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
           const handle = await ensureActorWorktree(loaded.project);
-          const result = await commitWorktree(handle, message);
+          markTouched(loaded.project);
+          // Scoped to THIS app's folder: the working copy is shared by every
+          // chat this user runs, so an unscoped commit would sweep a
+          // concurrent chat's in-flight work on another app in with it.
+          const result = await commitWorktree(handle, message, undefined, {
+            paths: [handle.appRoot],
+          });
           return { success: result.committed, ...result };
         } catch (error) {
           logger.error("app_commit failed", { error, appId });
