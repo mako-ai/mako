@@ -464,6 +464,15 @@ export class DatabaseConnectionService {
       void this.cleanupIdlePostgresPools();
       void this.cleanupIdleMySQLPools();
     }, 60000); // Every minute
+    // Housekeeping must not be a reason for the process to stay alive. The
+    // singleton below is constructed on IMPORT, so this timer starts in
+    // anything that so much as mentions this module — a test, a migration, a
+    // CLI — and an interval Node counts keeps the event loop non-empty
+    // forever: the work finishes, nothing exits, and it reads as a hang with
+    // no error. The server is unaffected (its listener holds the loop open on
+    // its own) and the sweep still runs every 60s there. ssh-tunnel.service
+    // unrefs its sweep timer for exactly this reason.
+    this.cleanupInterval.unref();
   }
 
   /**
