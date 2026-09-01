@@ -7,6 +7,7 @@
  * their own.
  */
 import { APP_CAPABILITIES } from "./app-capabilities";
+import { CONNECTOR_CAPABILITIES } from "./connector-capabilities";
 import { CONSOLE_CAPABILITIES } from "./console-capabilities";
 import { DASHBOARD_CAPABILITIES } from "./dashboard-capabilities";
 import { DBT_CAPABILITIES } from "./dbt-capabilities";
@@ -21,6 +22,7 @@ export const AGENT_CAPABILITIES: readonly AgentCapabilityDefinition[] = [
   ...DASHBOARD_CAPABILITIES,
   ...QUERY_CAPABILITIES,
   ...NOTEBOOK_CAPABILITIES,
+  ...CONNECTOR_CAPABILITIES,
 ];
 
 export const AGENT_CAPABILITY_BY_NAME: ReadonlyMap<

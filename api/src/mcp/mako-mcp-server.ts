@@ -46,6 +46,7 @@ import { createDashboardSearchTools } from "../agent-lib/tools/dashboard-search-
 import { createVersionHistoryTools } from "../agent-lib/tools/version-history-tools";
 import { createSkillTools } from "../agent-lib/tools/skill-tools";
 import { createSelfDirectiveTools } from "../agent-lib/tools/self-directive-tool";
+import { createConnectorTools } from "../agent-lib/tools/connector-tools";
 import { createWebTools } from "../agent-lib/tools/web-tools";
 import { createDbtServerTools } from "../agent-lib/tools/dbt-tools";
 import {
@@ -201,7 +202,10 @@ export function buildMakoMcpCandidateTools(
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId, userId);
   const webTools = createWebTools();
   const dbtTools = createDbtServerTools(workspaceId, userId, { chatId });
+  // Connector discovery for flow authoring (RFC: agent-authored flows).
+  const connectorTools = createConnectorTools(workspaceId);
   return {
+    ...connectorTools,
     ...appsTools,
     ...consoleTools,
     ...dashboardTools,

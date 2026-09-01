@@ -15,6 +15,7 @@ import { Types } from "mongoose";
 import { createFlowTools } from "../agents/flow";
 import { createConsoleSearchTools } from "../agent-lib/tools/console-search-tools";
 import { createDashboardSearchTools } from "../agent-lib/tools/dashboard-search-tools";
+import { createConnectorTools } from "../agent-lib/tools/connector-tools";
 import { createDbtServerTools } from "../agent-lib/tools/dbt-tools";
 import { createMongoToolsV2 } from "../agent-lib/tools/mongodb-tools";
 import { createScheduleQueryTool } from "../agent-lib/tools/schedule-query-tool";
@@ -85,6 +86,7 @@ export function collectLiveAgentToolNames(): string[] {
   add(keysOf(createVersionHistoryTools(INVENTORY_WORKSPACE_ID)));
   add(keysOf(createSkillTools(INVENTORY_WORKSPACE_ID)));
   add(keysOf(createSelfDirectiveTools(INVENTORY_WORKSPACE_ID)));
+  add(keysOf(createConnectorTools(INVENTORY_WORKSPACE_ID)));
   add(keysOf(createWebTools()));
   add(keysOf(createDbtServerTools(INVENTORY_WORKSPACE_ID)));
   add(
