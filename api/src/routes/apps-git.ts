@@ -30,7 +30,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import type { Context } from "hono";
 import { appsReposRoot } from "../apps/config";
-import { ensureLocalRepo } from "../apps/cloud-repo.service";
+import { ensureLocalRepo, freshenForServe } from "../apps/cloud-repo.service";
 import { DEFAULT_BRANCH, repoExists } from "../apps/repository.service";
 import { GitTokenError, verifyGitToken } from "../apps/git-token.service";
 import { notifyRepoPushed } from "../apps/worktree.service";
@@ -218,6 +218,17 @@ async function serveGit(c: Context): Promise<Response> {
   }
 
   const isReceivePack = parts.rest === "/git-receive-pack";
+  // A FETCH must see commits that landed on the mirror via another instance
+  // (GitHub webhook, publish, another window's push): pull the mirror —
+  // throttled — before advertising refs or answering upload-pack, or a
+  // just-pushed sha is `not our ref` here even though the workspace has it.
+  // Pushes skip this: receive-pack only appends, and the post-receive hook
+  // mirrors outward.
+  const service = new URL(c.req.url).searchParams.get("service");
+  const isUploadPack =
+    parts.rest === "/git-upload-pack" ||
+    (parts.rest === "/info/refs" && service === "git-upload-pack");
+  if (isUploadPack) await freshenForServe(payload.wsId);
   return runHttpBackend({
     repoRoot: appsReposRoot(),
     hooksDir: await hooksDir(),
