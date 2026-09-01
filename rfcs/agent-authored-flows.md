@@ -36,7 +36,7 @@ whole design:
 | API key | encrypted Mongo | a secret in git is a secret forever, in every clone |
 | Flow definition | `flows/<slug>.yml` | reviewable, diffable, revertible |
 | Run state | Mongo | cursors move every sync; committing them is a merge-conflict machine |
-| Webhook endpoint | Mongo | inbound URL identity external systems POST to; must survive a rename |
+| Webhook endpoint | Mongo | inbound URL identity external systems POST to; survives a `name:` change, while a file rename is a *different flow* — the slug is identity |
 
 So this is deliberately **two mechanisms, not one**: a call that takes a secret
 and returns an id, then a file that references it. Any design that puts the key
@@ -83,37 +83,108 @@ exists.
 because those are Mongo-side identity that must survive a rename.
 
 That is correct for an *edit* and wrong for a *create*. A file-born webhook flow
-gets `enabled: true`, no endpoint and no secret: Stripe has nowhere to POST. It
-is a dead flow that looks configured.
+gets `enabled: true` and **no endpoint**: Stripe has nowhere to POST. It is a
+dead flow that looks configured.
+
+The missing `secret` is NOT part of this gap, and mistaking it for one would
+ship a bug. It is the *provider's* signing secret: `routes/flows.ts:1056` takes
+it from the user ("Webhook secret must be provided by the user (from
+Stripe/Close)"), the Stripe-managed path at :3162 stores `created.signingSecret`
+from Stripe's API, and `routes/webhooks.ts:125` hands it to
+`connector.verifyWebhook`. A value Mako invented would fail signature
+verification on every real delivery while looking configured — worse than the
+empty string, which at least fails honestly.
 
 **17 of 31 production flows are webhook**, so this is the common case, not the
-edge. The fix is narrow — mint an endpoint when a row is created from a file,
-never on update — but it must exist before an agent can author one.
+edge. The fix is narrow — mint an ENDPOINT ONLY when a row is created from a
+file, never on update — but it must exist before an agent can author one. The
+secret stays a user-supplied value — Stripe's `whsec_...`, checked by
+`connector.verifyWebhook` — so an agent-authored webhook flow needs the
+provider's signing secret supplied separately. That is a real limit on the
+headline scenario and belongs in the skill.
 
-### 3. `create_data_source` is classified for a world that changed
+Note what cannot be pinned here: "a rename must not re-mint the endpoint" is not
+a case. The slug IS identity and the sync path matches on it, so a renamed file
+finds no row and is a DIFFERENT flow by construction — new row, new `_id`, the
+old one reconciled away. The real property to test is that the endpoint derives
+from `workspaceId` + `_id` and never the slug, so an EDIT cannot move it. Making
+renames preserve inbound URLs would need identity in the file or git rename
+detection, and deserves its own argument.
 
-`bridge-policy.ts:245` reads:
+### 3. Nothing can create a connector headlessly
 
-```ts
-create_data_source: exclude("client-only", "Dashboard builder UI."),
-```
+**Corrected 2026-09-01, after this RFC first claimed otherwise.** The original
+text said `create_data_source` already exists and merely needs reclassifying
+from `exclude("client-only", "Dashboard builder UI.")` at `bridge-policy.ts:245`.
+That is wrong, and the exclusion note is the reason it misleads: the note is
+accurate about the tool and is easily read as being about connectors.
 
-That was right when connectors were made in a form. In this scenario the caller
-is a local Claude Code with a scoped key, and the form is not involved.
+`create_data_source` lives in `packages/agent-tools/src/dashboard-tools.ts`. It
+creates a **dashboard-local** data source — a query materialized into DuckDB in
+the browser — alongside `list_data_sources` and `inspect_data_source`. Bridging
+it would expose a dashboard-builder tool over MCP and would not create a Stripe
+connector.
 
-Note what should stay excluded: `create_flow_tab` (:198), `list_flow_tabs`
-(:223), `get_form_state` (:210), `set_form_field` (:224) and
-`set_multiple_fields` (:228) all read or write **the open flow form in the
-UI**. **The file replaces every one of them.** Claude does not drive the form;
-it writes the definition. That is the elegant part of
-this design and it means the MCP surface grows by roughly one tool, not six.
+What actually creates a connector is `POST /api/workspaces/{id}/sources`
+(`routes/sources.ts:213`, `new DataSource(...)` at `:256`). That is the *only*
+construction site outside tests, and **no agent tool exposes it**. A scoped
+`mgt_` key cannot reach it either: `scopedKeyMayAccess` limits scoped keys to
+`/api/mcp` plus three binding routes.
 
-### 4. The agent cannot invent an ObjectId
+So this item is **build a new credential-accepting tool**, not flip an
+exclusion — which changes both the effort and the security question. What stays
+true is that the six flow-form tools remain excluded and the file replaces them.
 
-A definition references a connector id and a destination connection id. The
-agent needs to *discover* them, plus the entities a connector offers and the
-BigQuery datasets available. Some read tools exist; the set has not been walked
-against this specific task.
+### 4. The agent cannot invent an ObjectId — three discovery gaps
+
+A definition references ids the agent has to *find*. Walked against what
+`FlowFile` (`flow-config-files.ts:59`) actually requires, and verified live over
+MCP:
+
+**Available today:** `destination.connectionId` and a database source's
+`connectionId` via `list_connections` (which allowlists fields and returns no
+credentials), and `destination.table.{database,schema,tableName}` via
+`list_databases` / `list_tables` / `inspect_table`.
+
+**Missing, all three:**
+
+- **`source.connectorId`** — nothing lists connectors over MCP. An agent that
+  has just created a Stripe connector cannot re-find it. (`list_data_sources`
+  is the DuckDB dashboard tool, not this — see gap 3.)
+- **`entityFilter[]`** — no way to ask what entities a connector offers.
+  The registry has `supportedEntities` and connectors implement
+  `resolveSchema(entity)`; neither is exposed. This is precisely how you get a
+  flow that runs and syncs nothing.
+- **Sync-shape introspection** — `getIncrementalCapabilities()` decides whether
+  `sync.mode: incremental` is even valid for a connector. Not exposed, so an
+  agent guesses.
+
+So the MCP surface grows by roughly **three read tools plus one
+credential-accepting write tool**, not one policy line.
+
+### 4b. The connector secret path is fail-open
+
+Found while auditing gap 3's security question, and true today independently of
+this RFC. Connector credentials are encrypted **at the route** by
+`applySchemaEncryption`, driven by each connector's own config schema
+(`encrypted: true` or `type: "password"`), not by a mongoose setter. Two
+consequences:
+
+- It **fails open**: `try { encryptString(val) } catch { target[key] = val }` —
+  "if encryption fails, leave as-is". A missing or short `ENCRYPTION_KEY` stores
+  the secret in **plaintext** and returns 201. That is the #915 shape exactly:
+  partial protection that reads as success.
+- Protection depends on per-connector metadata being right, with nothing
+  central enforcing it. A new connector that omits the marker stores plaintext
+  silently. A census found 11/11 connectors and 49 fields correctly marked
+  today — so this is a latent trap, not a live leak, and it deserves an
+  executable check rather than a periodic census.
+
+Note this is a **third** credential model: connections redact-on-read with a
+sentinel restore (#909/#915), the app env vault is write-only (#899), and
+connectors return **ciphertext** on read. Ciphertext is not a plaintext leak, so
+this is not urgent — but a fourth model arriving with a new MCP tool is the
+drift worth refusing now.
 
 ### 5. "Make it live" is unproven for a NEW flow
 
