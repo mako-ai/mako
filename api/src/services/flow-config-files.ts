@@ -285,19 +285,51 @@ function scheduleFrom(v: unknown): FlowFileSchedule | null {
   return { cron, timezone: str(s.timezone) ?? "UTC" };
 }
 
-export function parseFlowFile(contents: string): FlowFile | null {
+/**
+ * Why a file was rejected, for callers that must tell a human (or an agent)
+ * what to fix.
+ *
+ * `parseFlowFile` returns `null` and is used on the hot sync path, where the
+ * only correct response to a bad file is to keep the current row. That is
+ * right there and useless everywhere else: an agent that writes a file, pushes,
+ * and receives no reason cannot correct itself. Both share this function so the
+ * rules cannot drift — a validator that disagrees with the parser is worse than
+ * no validator, because it certifies files the parser will reject.
+ */
+export type FlowFileParse =
+  | { ok: true; file: FlowFile }
+  | { ok: false; reason: string };
+
+export function parseFlowFileResult(contents: string): FlowFileParse {
   let raw: unknown;
   try {
     raw = yaml.load(contents);
-  } catch {
-    return null;
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `not valid YAML: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`,
+    };
   }
-  if (!raw || typeof raw !== "object") return null;
+  if (!raw || typeof raw !== "object") {
+    return { ok: false, reason: "the file is empty, or is not a YAML mapping" };
+  }
   const doc = raw as Record<string, unknown>;
 
   const name = str(doc.name);
   const type = str(doc.type);
-  if (!name || (type !== "scheduled" && type !== "webhook")) return null;
+  if (!name) {
+    return {
+      ok: false,
+      reason:
+        "`name:` is required and must be a non-empty string — it is the flow's display name",
+    };
+  }
+  if (type !== "scheduled" && type !== "webhook") {
+    return {
+      ok: false,
+      reason: `\`type:\` must be "scheduled" or "webhook"${type ? `, not "${type}"` : " and is missing"}`,
+    };
+  }
 
   const srcDoc = (doc.source ?? {}) as Record<string, unknown>;
   const source: FlowFile["source"] =
@@ -341,7 +373,7 @@ export function parseFlowFile(contents: string): FlowFile | null {
   const pageDoc = (doc.pagination ?? {}) as Record<string, unknown>;
   const webhookDoc = doc.webhook as Record<string, unknown> | undefined;
 
-  return {
+  const file: FlowFile = {
     name,
     type,
     source,
@@ -387,6 +419,16 @@ export function parseFlowFile(contents: string): FlowFile | null {
       ? (doc.queries as Array<Record<string, unknown>>)
       : undefined,
   };
+  return { ok: true, file };
+}
+
+/**
+ * The hot-path parser: a bad file keeps the current row, so the reason is not
+ * needed. Callers that must explain a rejection use `parseFlowFileResult`.
+ */
+export function parseFlowFile(contents: string): FlowFile | null {
+  const result = parseFlowFileResult(contents);
+  return result.ok ? result.file : null;
 }
 
 /**
