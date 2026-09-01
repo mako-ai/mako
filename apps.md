@@ -2953,3 +2953,67 @@ parsed blocks to the STORE (the hot layer stays authoritative for what the
 editor shows) and checkpoints a NEW commit — append-only, like consoles.
 The notebook backend leaves the store-based version registrar (dashboards
 stay); `NotebookHistoryDrawer` is deleted.
+
+## 25. Four times today, "done" was wrong (2026-09-01)
+
+Not a changelog — a shape. Four changes today were written, reviewed,
+merged and reported complete, and none of them did what its report said.
+Each was caught by a person checking the effect afterwards, never by the
+green signal that preceded it.
+
+1. **A test that never ran.** `bigquery-abandoned-job.test.ts` was correct
+   — three real assertions against a genuinely wired cancel path — and it
+   appeared in no runner: zero occurrences in `api/package.json`, absent
+   from every vitest include. It also never exited (the idle-connection
+   `setInterval` in `database-connection.service`'s constructor, reached on
+   import via the module-scope singleton, with no `unref`). Wiring it in as
+   it stood would have hung the `&&` chain into a CI timeout rather than a
+   failure. Both halves fixed in #910.
+2. **A mask that returned the secret.** #909's credential masking shipped
+   and deployed, then turned out to slide past two production ClickHouse
+   connections carrying the credential as a query parameter. It did not
+   error; it returned the secret while looking like it had worked. The
+   name-based regex looked exhaustive and missed `;pwd=`. #915 fixed it by
+   failing closed.
+3. **Shipped ≠ live.** #907 put `--min-instances=3` in the workflow, merged
+   green, and production served a MIN=1 revision for 2h18m (13:42→16:00)
+   because the deploy run was cancelled mid-flight by the next merge. The
+   revisions carrying MIN=3 existed, were ready, and took no traffic. Every
+   dashboard and the PR itself said the fix had shipped.
+4. **Success reported over silent failures.** The flows exporter printed
+   `10 written, 0 skipped` and exited 0 while 21 of 31 flows had thrown and
+   nothing reached the mirror. `commitFlowFile`'s catch — correct for a
+   user's mutation, where one failed write must not fail the request — was
+   wrong in a backfill, where it turned every failure into a success line.
+   #923.
+
+The meta-fact: **CI here is advisory.** master's ruleset requires a pull
+request, sets `required_approving_review_count: 0`, and has no
+`required_status_checks` rule. Nothing was enforcing the ticks people were
+reading. #912 and the ruleset work close that, but the discipline below is
+what actually prevented the recurrence, and it holds even with enforcement
+on.
+
+### 25.1 The four rules that fall out of it
+
+- **Verify the effect, not the report.** A deploy going green does not mean
+  the change is live for anything that takes effect only on traffic
+  migration. For a Cloud Run config change, read the SERVING revision's
+  annotation (`gcloud run services describe … --format="value(status.traffic[0].revisionName)"`,
+  then that revision's `minScale`), not the run's conclusion. "Shipped" and
+  "live" are different claims and today they differed by 2h18m.
+- **A catch that is right in the request path is wrong in a CLI.** The same
+  swallow that protects a user's save turns a backfill into a liar. When a
+  helper is reused by a batch job, the batch must count and re-raise its
+  failures, not inherit the interactive error posture.
+- **Fail closed on anything you cannot prove safe.** #915's rule: if a
+  connection string cannot be positively parsed, mask the whole thing. An
+  enumeration of secret-looking parameter names is a guess about the
+  future; `;pwd=` is what a guess misses.
+- **A test that has never run is not evidence.** Neither is one that cannot
+  fail. Before claiming a fix, run the new test against the OLD code and
+  watch it fail — #920's two `/decrypt` specs are proofs because they were
+  seen failing, and its four `reveal-secret` specs are labelled forward
+  pins because they only fail on old code for the trivial reason that the
+  route did not exist yet. #912 now enforces the first half of this
+  mechanically.
