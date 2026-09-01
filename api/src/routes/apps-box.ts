@@ -13,6 +13,10 @@ import { z } from "zod";
 import { GitTokenError, verifyGitToken } from "../apps/git-token.service";
 import { patchBoxState } from "../apps/box-state.service";
 import { buildBindingParquet } from "../apps/bindings.service";
+import {
+  LiveBindingCoolingDown,
+  withLiveBindingGuard,
+} from "../apps/live-binding-guard";
 import { synthesizeProjectFromFolder } from "../apps/worktree.service";
 import { AppProject } from "../database/workspace-schema";
 import { Types } from "mongoose";
@@ -156,8 +160,25 @@ appsBoxRoutes.post("/:workspaceId/live-binding", async c => {
 
   let built;
   try {
-    built = await buildBindingParquet(project, name, payload.userId);
+    // Guarded: a binding that cannot succeed must not be re-queried as fast as
+    // a page can re-request it. See live-binding-guard.ts — 41 abandoned
+    // BigQuery jobs in 48 minutes is what this exists to stop.
+    built = await withLiveBindingGuard({ workspaceId, slug, name }, () =>
+      buildBindingParquet(project, name, payload.userId),
+    );
   } catch (error) {
+    if (error instanceof LiveBindingCoolingDown) {
+      // 503 + Retry-After, not 502: the query was not attempted, and this is
+      // temporary by construction. Distinguishable in logs from a real failure.
+      return c.json(
+        {
+          error: `This binding failed ${error.failures} time(s) in a row and is not being re-run yet: ${error.message}`,
+          retryAfterMs: error.retryAfterMs,
+        },
+        503,
+        { "retry-after": String(Math.ceil(error.retryAfterMs / 1000)) },
+      );
+    }
     logger.warn("Apps live binding failed", {
       workspaceId,
       slug,
