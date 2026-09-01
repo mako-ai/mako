@@ -403,9 +403,12 @@ export function buildCurrentScreenContext(context: AgentContext): string {
 
   if (context.appsBranch) {
     // Orientation the agent would otherwise burn a tool call on: its Apps
-    // checkout (shared with the user) and the branch it is on.
+    // checkout (ONE working copy shared with the user and their other chats)
+    // and the branch it is on. The shared-checkout warning is what keeps an
+    // agent from reading a concurrent session's WIP or turn commits as
+    // corruption and burning turns "fixing" them.
     sections.push(
-      `Apps checkout: on branch \`${context.appsBranch}\` (shared with the user; commits land here).`,
+      `Apps checkout: on branch \`${context.appsBranch}\` (one working copy, shared with the user and their other chats; commits land here). Files or commits you don't recognize are someone else's in-flight work — leave them alone. Your end-of-turn auto-commit covers only apps you touch this turn.`,
     );
     sections.push("");
   }

@@ -689,8 +689,42 @@ export async function boxCommitAll(input: {
   committer?: { name?: string; email?: string };
   /** Commit only what is staged (VS Code with a non-empty Staged group). */
   stagedOnly?: boolean;
+  /**
+   * Repo-relative pathspecs to limit the commit to. The working copy is ONE
+   * clone per (workspace, user), shared by every chat that user runs — so an
+   * unscoped commit sweeps whatever a concurrent chat left in its app's
+   * folder. With paths, both the `add` and the `commit` are pathspec-scoped:
+   * `git commit -- <paths>` takes the listed paths' contents and disregards
+   * anything staged for other paths, which stays staged for whoever staged it.
+   */
+  paths?: string[];
 }): Promise<BoxCommitResult> {
   const { ctx, message, author, committer, stagedOnly } = input;
+  let paths = input.paths?.map(safeRepoPath);
+  if (paths && paths.length > 0) {
+    // One pathspec that matches nothing — neither in the working tree nor in
+    // HEAD (an app whose folder never actually got created, say) — makes BOTH
+    // `git add` and `git commit` abort outright, taking the valid paths down
+    // with it. Keep only the paths git can resolve.
+    const probe = paths
+      .map(
+        p =>
+          `{ [ -e ${sh(p)} ] || git cat-file -e ${sh(`HEAD:${p}`)} 2>/dev/null; } && printf '%s\\n' ${sh(p)}`,
+      )
+      .join("; ");
+    const existing = await boxExec(
+      ctx,
+      `cd ${sh(boxRoot(ctx))} && { ${probe}; true; }`,
+      { timeoutMs: 60_000 },
+    );
+    paths = existing.stdout.split("\n").filter(Boolean);
+  }
+  // A pathspec scope with nothing left in it: there is nothing of OURS to
+  // stage or commit. Don't fall back to an unscoped sweep — that is exactly
+  // the concurrent-chat clobber the scope exists to prevent. The push
+  // fall-through below still runs, making any earlier local-only commit
+  // durable.
+  const nothingInScope = paths !== undefined && paths.length === 0;
   const identity =
     author?.name && author?.email
       ? ["-c", `user.name=${author.name}`, "-c", `user.email=${author.email}`]
@@ -703,41 +737,48 @@ export async function boxCommitAll(input: {
       ? `GIT_COMMITTER_NAME=${sh(committer.name)} GIT_COMMITTER_EMAIL=${sh(committer.email)} `
       : "";
 
-  if (!stagedOnly) {
-    const staged = await boxExec(ctx, boxGit(ctx, "add", "-A"), {
-      timeoutMs: 120_000,
-    });
+  if (!stagedOnly && !nothingInScope) {
+    const staged = await boxExec(
+      ctx,
+      paths?.length
+        ? boxGit(ctx, "add", "-A", "--", ...paths)
+        : boxGit(ctx, "add", "-A"),
+      { timeoutMs: 120_000 },
+    );
     if (staged.exitCode !== 0) {
       throw new Error(`Could not stage changes: ${staged.stderr.slice(-300)}`);
     }
   }
 
-  const committed = await boxExec(
-    ctx,
-    committerEnv +
-      [
-        "git",
-        "-C",
-        sh(boxRoot(ctx)),
-        ...identity.map(sh),
-        "commit",
-        "-q",
-        "-m",
-        sh(message),
-      ].join(" "),
-    { timeoutMs: 120_000 },
-  );
-  let madeCommit = true;
-  if (committed.exitCode !== 0) {
-    const said = `${committed.stdout}${committed.stderr}`;
-    if (/nothing to commit|nothing added to commit/i.test(said)) {
-      // No NEW commit — but don't return yet. An earlier commit whose push
-      // failed (stale tunnel origin, say) is still local-only, and this is
-      // exactly the moment to make it durable: fall through to the push,
-      // which is a no-op when everything is already upstream.
-      madeCommit = false;
-    } else {
-      throw new Error(`Could not commit: ${said.slice(-300)}`);
+  let madeCommit = !nothingInScope;
+  if (!nothingInScope) {
+    const committed = await boxExec(
+      ctx,
+      committerEnv +
+        [
+          "git",
+          "-C",
+          sh(boxRoot(ctx)),
+          ...identity.map(sh),
+          "commit",
+          "-q",
+          "-m",
+          sh(message),
+          ...(paths?.length ? ["--", ...paths.map(sh)] : []),
+        ].join(" "),
+      { timeoutMs: 120_000 },
+    );
+    if (committed.exitCode !== 0) {
+      const said = `${committed.stdout}${committed.stderr}`;
+      if (/nothing to commit|nothing added to commit/i.test(said)) {
+        // No NEW commit — but don't return yet. An earlier commit whose push
+        // failed (stale tunnel origin, say) is still local-only, and this is
+        // exactly the moment to make it durable: fall through to the push,
+        // which is a no-op when everything is already upstream.
+        madeCommit = false;
+      } else {
+        throw new Error(`Could not commit: ${said.slice(-300)}`);
+      }
     }
   }
 

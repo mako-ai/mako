@@ -50,6 +50,7 @@ import {
   scopeOf,
   PUBLISH_ACTOR,
   boxCtx,
+  appRootFor,
 } from "../../apps/worktree.service";
 import { materializeAppBinding } from "../../apps/bindings.service";
 import {
@@ -78,6 +79,15 @@ export interface AppsToolsOptions {
   userId?: string;
   /** Resolved model accepts image input; undefined = assume yes (external MCP). */
   supportsVision?: boolean;
+  /**
+   * Caller-owned set the write-capable tools add their app's repo-relative
+   * root (`apps/<slug>`) to. The sandbox is ONE working copy per
+   * (workspace, user) shared by every chat that user runs, so the turn-end
+   * auto-commit needs to know which folders THIS chat wrote to — otherwise it
+   * `git add -A`s the whole tree and sweeps a concurrent chat's in-flight
+   * work on another app into this turn's commit.
+   */
+  touchedPaths?: Set<string>;
 }
 
 type LoadResult = { project: IAppProject } | { error: string };
@@ -86,6 +96,7 @@ export function createAppsTools({
   workspaceId,
   userId,
   supportsVision,
+  touchedPaths,
 }: AppsToolsOptions): ToolSet {
   // A conversation is not a line of work.
   //
@@ -102,6 +113,10 @@ export function createAppsTools({
   const actorId = userId ?? "api-key";
   const ensureActorWorktree = (project: IAppProject) =>
     ensureWorktree(project, actorId);
+  // Every tool that can dirty the working copy records the app folder it
+  // wrote to; see AppsToolsOptions.touchedPaths for why.
+  const markTouched = (project: IAppProject) =>
+    touchedPaths?.add(appRootFor(project));
   // The branch is whatever the checkout is on — main by default, or wherever
   // the user (or this agent, via `git checkout` in app_bash) switched to.
   // Read it fresh per call; a cached value goes stale the moment anyone
@@ -230,6 +245,7 @@ export function createAppsTools({
           // heard yet, so without a catch-up the brand-new app lists as
           // empty and the agent rebuilds the scaffold by hand over it.
           await catchUpLiveBox(project, actorId);
+          markTouched(project);
           const { entries } = await listFiles(project, actorId);
           return {
             success: true,
@@ -248,7 +264,7 @@ export function createAppsTools({
 
     app_bash: tool({
       description:
-        "Run a bash command in the app's sandbox session. cwd is the APP's folder (apps/<slug>) inside the workspace repo, not the repo root, so package.json and src/ are right here and `cwd` is interpreted relative to it. Use for anything a developer would do in a terminal: ls, grep, sed, cat, node, npm/pnpm install, npm run build, git status/log/diff. Each call is a one-shot command: backgrounding a long-running process (`vite &`) does NOT leave a server running the user can reach — use the app's preview controls for that. Git is fully yours: commit with app_commit or run git yourself — branch, checkout, merge, push; the sandbox is a real clone with a real remote. Note the checkout is SHARED with the user, so a branch switch changes what they see too — do it when the task calls for it, and say so.",
+        "Run a bash command in the app's sandbox session. cwd is the APP's folder (apps/<slug>) inside the workspace repo, not the repo root, so package.json and src/ are right here and `cwd` is interpreted relative to it. Use for anything a developer would do in a terminal: ls, grep, sed, cat, node, npm/pnpm install, npm run build, git status/log/diff. Each call is a one-shot command: backgrounding a long-running process (`vite &`) does NOT leave a server running the user can reach — use the app's preview controls for that. Git is fully yours: commit with app_commit or run git yourself — branch, checkout, merge, push; the sandbox is a real clone with a real remote. Note the checkout is SHARED with the user AND their other concurrent chats: a branch switch changes what everyone sees (do it when the task calls for it, and say so), and dirty files or 'Mako Agent' commits you don't recognize are someone else's in-flight work — normal, not corruption; leave them alone. Your end-of-turn auto-commit only includes apps YOU touched this turn.",
       inputSchema: z.object({
         appId: z
           .string()
@@ -273,6 +289,7 @@ export function createAppsTools({
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
           const handle = await ensureActorWorktree(loaded.project);
+          markTouched(loaded.project);
           const result = await execInWorktree(handle, command, {
             cwd,
             timeoutMs: timeoutSeconds ? timeoutSeconds * 1000 : undefined,
@@ -416,6 +433,7 @@ export function createAppsTools({
             }
           }
           const handle = await ensureActorWorktree(loaded.project);
+          markTouched(loaded.project);
           await writeFile(handle, relPath, contents);
           markRead(appId, relPath);
           return { success: true, path: relPath };
@@ -460,6 +478,7 @@ export function createAppsTools({
             replaceAll ?? false,
           );
           if (!result.ok) return { success: false, error: result.error };
+          markTouched(loaded.project);
           await writeFile(handle, relPath, result.contents);
           return {
             success: true,
@@ -482,6 +501,7 @@ export function createAppsTools({
     app_status: tool({
       description:
         "Show an Apps worktree's durable status: base commit, WIP snapshot, changed files vs base, and whether the branch has moved. " +
+        "`changes` is THIS app's uncommitted slice; `repoChanges` is the whole shared working copy — entries outside this app usually belong to the user or one of their other chats, and are not yours to commit, revert, or clean. " +
         "This is the SANDBOX's git state, not what is deployed — for the live app's published commit, use app_publish_status.",
       inputSchema: z.object({ appId: z.string() }),
       execute: async ({ appId }) => {
@@ -489,7 +509,22 @@ export function createAppsTools({
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
           const status = await worktreeStatus(scopeOf(loaded.project), actorId);
-          return { success: true, status };
+          // The working copy is shared (user + their other chats), so foreign
+          // WIP is normal. Say so explicitly — without this, agents read a
+          // stranger's dirty files (or a turn commit they didn't make) as
+          // corruption and burn turns "fixing" it.
+          const root = `${appRootFor(loaded.project)}/`;
+          const foreign =
+            status?.repoChanges.filter(ch => !ch.path.startsWith(root))
+              .length ?? 0;
+          return {
+            success: true,
+            status,
+            hint:
+              foreign > 0
+                ? `${foreign} uncommitted change(s) elsewhere in the repo (outside ${appRootFor(loaded.project)}) — likely the user's or a concurrent chat's in-flight work. Leave them alone: don't commit, revert, or clean them. Your end-of-turn auto-commit only includes apps you touched this turn.`
+                : undefined,
+          };
         } catch (error) {
           return { success: false, error: errorMessage(error) };
         }
@@ -976,6 +1011,7 @@ export function createAppsTools({
         const loaded = await loadProject(appId, { write: true });
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
+          markTouched(loaded.project);
           const result = await materializeAppBinding(
             loaded.project,
             name,
@@ -991,7 +1027,7 @@ export function createAppsTools({
 
     app_commit: tool({
       description:
-        "Commit the current WIP snapshot of an Apps project onto this conversation's branch with a message (compare-and-swap; fails cleanly if the branch moved). Note: uncommitted work is auto-committed at the end of every turn anyway; use this for meaningful mid-turn checkpoints with a good message.",
+        "Commit THIS app's uncommitted work (scoped to its apps/<slug> folder — other apps' and other chats' in-flight files in the shared checkout are untouched) onto the current branch with a message. Note: apps you touched are auto-committed at the end of every turn anyway; use this for meaningful mid-turn checkpoints with a good message.",
       inputSchema: z.object({
         appId: z.string(),
         message: z.string().min(1).describe("Commit message"),
@@ -1001,7 +1037,13 @@ export function createAppsTools({
         if ("error" in loaded) return { success: false, error: loaded.error };
         try {
           const handle = await ensureActorWorktree(loaded.project);
-          const result = await commitWorktree(handle, message);
+          markTouched(loaded.project);
+          // Scoped to THIS app's folder: the working copy is shared by every
+          // chat this user runs, so an unscoped commit would sweep a
+          // concurrent chat's in-flight work on another app in with it.
+          const result = await commitWorktree(handle, message, undefined, {
+            paths: [handle.appRoot],
+          });
           return { success: result.committed, ...result };
         } catch (error) {
           logger.error("app_commit failed", { error, appId });
