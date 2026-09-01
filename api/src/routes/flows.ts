@@ -15,6 +15,10 @@ import {
   deriveFlowDisplayName,
   reserveFlowSlug,
 } from "../services/flow-identity.service";
+import {
+  commitFlowFile,
+  deleteFlowFile,
+} from "../services/flow-config.service";
 import { Types, PipelineStage } from "mongoose";
 import { inngest } from "../inngest";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
@@ -1036,6 +1040,9 @@ flowRoutes.openapi(
       }
 
       await flow.save();
+      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
+      // export-only — Mongo stays authoritative, a failed write is logged).
+      await commitFlowFile(flow, c.get("user")?.id);
 
       // Pre-create BigQuery dataset for connector flows (tables created on first write with full schema)
       if (
@@ -1482,6 +1489,9 @@ flowRoutes.openapi(
       }
 
       await flow.save();
+      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
+      // export-only — Mongo stays authoritative, a failed write is logged).
+      await commitFlowFile(flow, c.get("user")?.id);
 
       // Populate references for response based on source type
       if (flow.sourceType !== "database" && flow.dataSourceId) {
@@ -1552,6 +1562,7 @@ flowRoutes.openapi(
         ]);
 
       await Flow.deleteOne({ _id: flowOid, workspaceId: wsOid });
+      await deleteFlowFile(flow, c.get("user")?.id);
 
       logger.info("Flow deleted with cascade cleanup", {
         flowId,
@@ -1629,6 +1640,9 @@ flowRoutes.openapi(
         flow.schedule.enabled = !flow.schedule.enabled;
       }
       await flow.save();
+      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
+      // export-only — Mongo stays authoritative, a failed write is logged).
+      await commitFlowFile(flow, c.get("user")?.id);
 
       return c.json({
         success: true,
@@ -1881,6 +1895,9 @@ flowRoutes.openapi(
         };
       }
       await flow.save();
+      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
+      // export-only — Mongo stays authoritative, a failed write is logged).
+      await commitFlowFile(flow, c.get("user")?.id);
 
       return c.json({
         success: true,
@@ -1983,6 +2000,9 @@ flowRoutes.openapi(
         lastRunAt: flow.backfillSchedule?.lastRunAt,
       };
       await flow.save();
+      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
+      // export-only — Mongo stays authoritative, a failed write is logged).
+      await commitFlowFile(flow, c.get("user")?.id);
 
       return c.json({
         success: true,
@@ -3017,6 +3037,9 @@ flowRoutes.openapi(
         webhookConfig.secret = created.signingSecret;
       }
       await flow.save();
+      // Mirror the definition into `flows/<slug>.yml` (RFC #904 block 2:
+      // export-only — Mongo stays authoritative, a failed write is logged).
+      await commitFlowFile(flow, c.get("user")?.id);
 
       if (!created.signingSecret) {
         // Some providers create the endpoint but omit the signing secret from

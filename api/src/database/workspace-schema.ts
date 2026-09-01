@@ -930,6 +930,12 @@ export interface IFlow extends Document {
    * the backfill stamps pre-existing rows.
    */
   slug?: string;
+  /**
+   * Blob sha of the definition last mirrored to `flows/<slug>.yml`, so an
+   * unchanged definition makes no commit. Runtime bookkeeping, never in the
+   * file itself.
+   */
+  sourceBlobSha?: string;
 
   // Source configuration - either connector or database
   sourceType: "connector" | "database";
@@ -2279,6 +2285,10 @@ const FlowSchema = new Schema<IFlow>(
       type: String,
       trim: true,
       match: /^[a-z0-9][a-z0-9-]*$/,
+    },
+    // Change detection for the git write-through (RFC #904).
+    sourceBlobSha: {
+      type: String,
     },
     // Source type discriminator - defaults to "connector" for backward compatibility
     sourceType: {
