@@ -73,12 +73,27 @@ assert.ok(
   "fetchFromCloud must run BEFORE syncRepoBackedResources: dbt's sync deletes jobs missing from the tree it reads, so reacting to a tree that predates the push would remove live jobs",
 );
 
-// Flows are Mongo → git only until RFC #904 block 3 flips authority. This is a
-// deliberate exclusion, and it is recorded here so that adding a flow sync is
-// a conscious act rather than an oversight in the other direction.
+// RFC #904 block 3 flipped authority: `flows/<slug>.yml` is now the
+// definition, so flows belong in the shared list like every other repo-backed
+// resource. This assertion used to pin the OPPOSITE — that flows were
+// deliberately excluded — and it failed the moment the sync was wired in,
+// which is exactly what it was for: the change had to be a conscious act.
+// It now pins the same property from the other side.
 assert.ok(
-  !shared.includes("syncFlows") && !shared.includes("flow-config.service"),
-  "flows are deliberately not synced from the repo yet (RFC #904 block 3) — see flow-config.service.ts",
+  shared.includes("flow-sync.service"),
+  "flows must be synced from the repo (RFC #904 block 3) — see services/flow-sync.service.ts",
+);
+
+// A flow is a running stream, not a row: a file missing from the tree tears
+// down a CDC stream and disposes its checkpoints, which re-backfills rather
+// than resuming. The ordering asserted above for dbt therefore matters more
+// here, and the same `fetchFromCloud` → `syncRepoBackedResources` guarantee
+// covers both — flows ride the same call deliberately rather than getting a
+// second, separately-ordered one.
+assert.ok(
+  shared.indexOf("flow-sync.service") >
+    shared.indexOf("syncConsolesIndexFromRepo"),
+  "flows must be inside syncRepoBackedResources, not called ahead of it",
 );
 
 console.log("repo-backed resource sync tests passed");

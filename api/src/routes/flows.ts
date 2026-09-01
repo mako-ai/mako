@@ -32,6 +32,8 @@ import {
   dryRunDbSync,
 } from "../services/destination-writer.service";
 import { teardownFlow } from "../sync-cdc/flow-reconcile";
+import { RepoRequiredError, appsRequireConnectedRepo } from "../apps/config";
+import { resolveMirrorTarget } from "../apps/cloud-repo.service";
 import { cdcBackfillService } from "../sync-cdc/backfill";
 import { syncMachineService } from "../sync-cdc/sync-state";
 import { databaseRegistry } from "../databases/registry";
@@ -63,6 +65,31 @@ const findFlow = findInWorkspace(Flow);
 
 const logger = loggers.inngest("flow");
 
+/**
+ * RFC #904 decision 1: a connected repo is REQUIRED for flows.
+ *
+ * `flows/<slug>.yml` is the definition, so a workspace without a repo has
+ * nowhere durable to keep one — there is no Mongo fallback and no second
+ * definition path. Flows follow consoles and dbt into `RepoRequiredError`
+ * rather than silently writing a definition that only exists in a database
+ * (apps.md §17).
+ *
+ * Deciding it now costs one workspace's configuration — ours, which has a
+ * repo — and stops being free the moment flows have external users. That is
+ * the opposite of the position consoles were in when they hit this.
+ */
+async function assertFlowRepo(workspaceId: string): Promise<void> {
+  if (!appsRequireConnectedRepo()) return;
+  if (!(await resolveMirrorTarget(workspaceId))) throw new RepoRequiredError();
+}
+
+/** 412 with the actionable message, as consoles and the prompt already do. */
+function repoRequired(c: AuthenticatedContext, error: RepoRequiredError) {
+  return c.json(
+    { success: false, code: error.code, error: error.message },
+    error.status as 412,
+  );
+}
 export const flowRoutes = createRouter();
 
 type RequestContextLike = {
@@ -692,6 +719,9 @@ flowRoutes.openapi(
           400,
         );
       }
+      // A flow's definition lives in the repo, so refuse before creating one
+      // that would have nowhere durable to live (RFC #904 decision 1).
+      await assertFlowRepo(workspaceId);
       // TODO: Get userId from authentication
       const userId = "system";
       const body = await c.req.json();
@@ -1090,6 +1120,9 @@ flowRoutes.openapi(
           : {}),
       });
     } catch (error) {
+      // The repo gate is a precondition, not a failure: 412 with an
+      // actionable message rather than a 500 the user cannot act on.
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error creating flow", { error });
       return c.json(
         {
@@ -1189,6 +1222,15 @@ flowRoutes.openapi(
     try {
       const workspaceId = c.req.param("workspaceId");
       const flowId = c.req.param("flowId");
+      if (!workspaceId) {
+        return c.json(
+          { success: false, error: "Workspace ID is required" },
+          400,
+        );
+      }
+      // An edit rewrites `flows/<slug>.yml`; refuse when there is no repo to
+      // write it to (RFC #904 decision 1).
+      await assertFlowRepo(workspaceId);
       const body = await c.req.json();
 
       // Find and validate flow
@@ -1508,6 +1550,9 @@ flowRoutes.openapi(
           : {}),
       });
     } catch (error) {
+      // The repo gate is a precondition, not a failure: 412 with an
+      // actionable message rather than a 500 the user cannot act on.
+      if (error instanceof RepoRequiredError) return repoRequired(c, error);
       logger.error("Error updating flow", { error });
       return c.json(
         {

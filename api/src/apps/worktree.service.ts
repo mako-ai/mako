@@ -214,11 +214,12 @@ export function notifyRepoPushed(workspaceId: string, userId: string): void {
  * against a stale tree would not merely miss an update, it would remove live
  * jobs and deregister their schedules.
  *
- * Flows are deliberately NOT here. `flows/<slug>.yml` is Mongo → git only
- * until RFC #904 block 3 adds the push reactor and flips authority; reading
- * it back now would make the file authoritative ahead of the CDC
- * pause/reconfigure/resume that a stream-shaped resource needs
- * (services/flow-config.service.ts).
+ * Flows (RFC #904 block 3) are the most dangerous entry in this list, because
+ * a flow is a running stream rather than a row: a file missing from the tree
+ * means a CDC teardown and checkpoint disposal, which re-backfills rather than
+ * resuming. Two guards make that safe, and both live below this call — an
+ * empty `flows/` changes nothing, and every destructive branch is behind a
+ * fail-closed assertion that the tree really is the mirror's main.
  */
 export function syncRepoBackedResources(
   workspaceId: string,
@@ -255,6 +256,26 @@ export function syncRepoBackedResources(
     .then(m => m.syncNotebooksFromRepo(workspaceId, userId))
     .catch(error => {
       logger.warn("Notebook sync after push failed", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  // Flow definitions (RFC #904 block 3): `flows/<slug>.yml` is authoritative,
+  // so an external edit reconfigures a live CDC stream and a removed file
+  // tears one down. Caught like the others — one resource's bad YAML must not
+  // stop the rest — and a refused teardown is reported, not silently skipped.
+  void import("../services/flow-sync.service")
+    .then(m => m.syncFlowsFromRepo(workspaceId))
+    .then(result => {
+      if (result.deferred.length > 0) {
+        logger.warn("Flow teardown deferred; will retry on the next push", {
+          workspaceId,
+          slugs: result.deferred,
+        });
+      }
+    })
+    .catch(error => {
+      logger.warn("Flow sync after push failed", {
         workspaceId,
         error: error instanceof Error ? error.message : String(error),
       });
