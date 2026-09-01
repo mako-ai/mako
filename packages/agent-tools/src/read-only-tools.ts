@@ -49,6 +49,10 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   // Version history reads
   "browse_version_history",
   "get_version_snapshot",
+  // Flow files: the pre-push check reads the repo + Mongo and calls the
+  // dry-run, which shares its decision function with the reconciler and
+  // performs none of its writes.
+  "check_flow_files",
   // Flow form reads + query validation/explanation (read-only by design)
   "get_form_state",
   "list_flow_tabs",

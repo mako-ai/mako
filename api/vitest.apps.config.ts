@@ -29,6 +29,9 @@ export default defineConfig({
       "src/apps/workspace-skills.service.test.ts",
       "src/apps/box-state.service.test.ts",
       "src/apps/live-binding-guard.test.ts",
+      // Real git + mongo: the pre-push flow-file check reads the workspace
+      // repo at main and plans against live rows.
+      "src/agent-lib/tools/flow-file-tools.test.ts",
       "src/apps/preview.service.test.ts",
       "src/inngest/functions/apps-binding-refresh.test.ts",
       // These two were written as vitest suites but listed in no vitest

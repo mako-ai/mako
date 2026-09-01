@@ -224,6 +224,119 @@ function applyDefinition(doc: IFlow, file: FlowFile): string | null {
   return null;
 }
 
+/** What a file would produce if it were written onto a fresh row. */
+export interface HydratedFlowRow {
+  /** Set when `applyDefinition` refuses the file outright. */
+  refusal: string | null;
+  /** Field-level schema failures, as mongoose would raise them on save. */
+  schemaErrors: Array<{ path: string; message: string }>;
+}
+
+/**
+ * Build the row a file would produce and ask the model whether it is valid —
+ * WITHOUT saving it.
+ *
+ * The third validation layer, and the one nothing else covers. Parsing and
+ * referential resolution (`flow-validate.service.ts`) both pass for a file
+ * whose `entities.layouts` entry has no `partition_field`, or whose
+ * `sync.write_mode` is outside the schema's enum; `doc.save()` in the push
+ * reactor then throws and the row is never written. A checker that certifies
+ * a file the reactor refuses is the silent-no-op failure the RFC exists to
+ * end, one layer further in.
+ *
+ * Uses the reactor's own `applyDefinition` rather than a second mapping, so
+ * the check cannot disagree with what it is predicting.
+ *
+ * `createdBy` is required on the schema and is not in the file (it is the
+ * acting user, supplied by the reactor); callers checking a file rather than
+ * creating one pass a placeholder so the check reports the file's problems
+ * and not that one.
+ */
+export function hydrateFlowRow(
+  file: FlowFile,
+  args: { workspaceId: string; slug: string; createdBy: string },
+): HydratedFlowRow {
+  const doc = new Flow({
+    workspaceId: new Types.ObjectId(args.workspaceId),
+    slug: args.slug,
+    createdBy: args.createdBy,
+  }) as unknown as IFlow;
+
+  const refusal = applyDefinition(doc, file);
+  if (refusal) return { refusal, schemaErrors: [] };
+
+  // validateSync() runs the schema's own validators in-process and touches no
+  // connection — the document is never saved and this function never writes.
+  const error = (
+    doc as unknown as {
+      validateSync: () =>
+        | { errors?: Record<string, { message?: string }> }
+        | undefined;
+    }
+  ).validateSync();
+  const errors = error?.errors ?? {};
+  return {
+    refusal: null,
+    schemaErrors: Object.entries(errors).map(([path, err]) => ({
+      path,
+      message: err?.message ?? "is invalid",
+    })),
+  };
+}
+
+/** Every `flows/*.yml` in the workspace repo at main, with the commit read. */
+export interface FlowFilesAtMain {
+  /** The commit the files were read at; null when there is no repo/main. */
+  commit: string | null;
+  files: Array<{ path: string; contents: string }>;
+}
+
+/**
+ * Read `flows/*.yml` from the workspace repo's main branch.
+ *
+ * Extracted so the push reactor below and the pre-push checker
+ * (`agent-lib/tools/flow-file-tools.ts`) read the same set the same way. A
+ * second copy of this walk is exactly the drift `syncRepoBackedResources`
+ * exists to prevent — and here it would be worse than a missed sync: the
+ * checker's whole job is to predict what the reactor will do, and a predictor
+ * reading a different set of files predicts nothing.
+ *
+ * `freshen` is the difference between the two callers and is deliberately
+ * explicit. The reactor is about to DELETE, so it must judge against the
+ * mirror's main rather than this instance's cache (#894/#897). The checker
+ * writes nothing and is not allowed to reset a shared local repo as a side
+ * effect of a read, so it takes the cache as it finds it and reports the
+ * commit it read.
+ */
+export async function readFlowFilesAtMain(
+  workspaceId: string,
+  options: { freshen: boolean },
+): Promise<FlowFilesAtMain> {
+  const none: FlowFilesAtMain = { commit: null, files: [] };
+
+  await ensureLocalRepo(workspaceId);
+  const repoDir = repoDirFor(workspaceId);
+  if (!(await repoExists(repoDir))) return none;
+  if (options.freshen) await freshenBeforeMainWrite(workspaceId);
+
+  const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+  if (!head) return none;
+
+  const paths = (await listTree(repoDir, head))
+    .map(e => e.path)
+    .filter(p => slugFromFlowFilePath(p) !== null);
+  if (paths.length === 0) return { commit: head, files: [] };
+
+  const blobs = await readBlobsBatch(repoDir, head, paths);
+  return {
+    commit: head,
+    files: [...blobs.entries()].map(([path, buf]) => ({
+      path,
+      contents: buf.toString("utf8"),
+    })),
+  };
+}
+
 /**
  * Reconcile every flow row in a workspace against `flows/*.yml` at main.
  *
@@ -250,37 +363,28 @@ export async function syncFlowsFromRepo(
     deferred: [],
   };
 
-  await ensureLocalRepo(workspaceId);
-  const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir))) return empty;
   // A reconcile that DELETES must be judged against the mirror's main, never
   // this instance's cache: `ensureLocalRepo` returns early once the directory
   // exists and never refreshes it.
-  await freshenBeforeMainWrite(workspaceId);
-
-  const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+  const { commit: head, files } = await readFlowFilesAtMain(workspaceId, {
+    freshen: true,
+  });
   if (!head) return empty;
-
-  const paths = (await listTree(repoDir, head))
-    .map(e => e.path)
-    .filter(p => slugFromFlowFilePath(p) !== null);
 
   // No flows/ in the repo at all → this workspace has not adopted flows as
   // code. Leave Mongo alone. Without this an empty or partial tree would read
   // as "every flow was deleted" and tear down every running stream.
-  if (paths.length === 0) return empty;
+  if (files.length === 0) return empty;
 
   const result: FlowSyncResult = { ...empty, invalid: [] };
   const desired: DesiredFlow[] = [];
-  const blobs = await readBlobsBatch(repoDir, head, paths);
   const seen = new Set<string>();
 
-  for (const [path, buf] of blobs) {
+  for (const { path, contents } of files) {
     const slug = slugFromFlowFilePath(path);
     if (!slug) continue;
     seen.add(slug);
 
-    const contents = buf.toString("utf8");
     const sha = blobOid(contents);
     const parsedForDesired = parseFlowFile(contents);
     const row = await Flow.findOne({ workspaceId, slug });

@@ -55,6 +55,12 @@ export const DEFERRED_BUILTIN_TOOL_DOMAINS: Readonly<Record<string, string>> = {
   delete_skill: "skills",
   list_skills: "skills",
   search_skills: "skills",
+  // Pre-push check for `flows/<slug>.yml` (RFC: agent-authored flows). Its
+  // audience is an agent with the WORKSPACE repo checked out, reaching Mako
+  // over MCP; in-chat it is registered and executable but stays out of the
+  // default working set, since the in-product flow surface is the form, not
+  // the file.
+  check_flow_files: "flows",
   // Deprecated single-field alias of set_multiple_fields (which updates one
   // or many fields). Its FIELD_PATHS enum makes it one of the heaviest
   // schemas in the catalog, so it stays out of the flow working set.
