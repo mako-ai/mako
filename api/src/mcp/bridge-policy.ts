@@ -242,7 +242,18 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   add_global_filter: exclude("client-only", "Dashboard builder UI."),
   add_widget: exclude("client-only", "Dashboard builder UI."),
   create_dashboard: exclude("client-only", "Dashboard builder UI."),
-  create_data_source: exclude("client-only", "Dashboard builder UI."),
+  // NOT a connector tool, despite the name. This creates a DASHBOARD-LOCAL
+  // data source: a query materialized into the browser's DuckDB for widgets.
+  // It cannot create a Stripe/Close/GCS connector — that is
+  // `POST /workspaces/{id}/sources`, which no agent tool exposes. The old
+  // note here ("Dashboard builder UI.") was true and misleading: it reads as
+  // "the UI way to do the thing you want" rather than "a different thing",
+  // and it led an RFC to plan connector creation as a one-line
+  // reclassification. Use list_connectors / inspect_connector for connectors.
+  create_data_source: exclude(
+    "client-only",
+    "Creates a dashboard-local DuckDB data source in the browser — NOT a workspace connector. Connector discovery is list_connectors / inspect_connector.",
+  ),
   dashboard_restore_version: exclude(
     "deferred",
     "Deprecated alias of restore_version; dashboard versioning stays in-product until dashboards are MCP-bridged.",
@@ -282,8 +293,14 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   ),
   list_data_sources: exclude(
     "client-only",
-    "Lists in-browser DuckDB materializations.",
+    "Lists in-browser DuckDB materializations — NOT workspace connectors. For those, list_connectors.",
   ),
+
+  // ── Connector discovery (RFC: agent-authored flows) ────────────────────
+  // A flow definition references its connector by id and names entities; an
+  // agent can invent neither. Reads only, and neither returns a credential.
+  list_connectors: bridge(),
+  inspect_connector: bridge(),
   query_duckdb: exclude(
     "client-only",
     "Queries in-browser DuckDB; MCP validates via sql_execute_query.",

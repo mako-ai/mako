@@ -247,6 +247,12 @@ export {
 } from "./capabilities/notebook-capabilities";
 
 export {
+  CONNECTOR_CAPABILITIES,
+  type ConnectorCapabilityDefinition,
+  type ConnectorCapabilityPack,
+} from "./capabilities/connector-capabilities";
+
+export {
   AGENT_CAPABILITIES,
   AGENT_CAPABILITY_BY_NAME,
   agentCapabilitiesForSurface,
