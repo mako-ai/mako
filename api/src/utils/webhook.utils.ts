@@ -44,7 +44,11 @@ export function verifyWebhookSignature(
  * Parse webhook payload to extract entity ID and type
  */
 export function parseWebhookPayload(
-  provider: string,
+  // Unused, like the deprecated sibling above: kept for the signature until
+  // the last caller moves to connector.extractWebhookData(). Underscored so
+  // it survives a strict noUnusedParameters check — this module is now in the
+  // app's typecheck graph, which is stricter than the api's.
+  _provider: string,
   payload: any,
 ): {
   entityId: string;

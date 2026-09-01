@@ -43,6 +43,7 @@ import {
   freshenBeforeMainWrite,
 } from "../apps/cloud-repo.service";
 import { Flow, type IFlow } from "../database/workspace-schema";
+import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import {
   parseFlowFile,
   slugFromFlowFilePath,
@@ -54,6 +55,49 @@ import {
 } from "../sync-cdc/flow-reconcile";
 
 const logger = loggers.api("flow-sync");
+
+/**
+ * The inbound URL a file-born webhook flow needs, or null when none should be
+ * minted.
+ *
+ * `applyDefinition` writes only `webhookConfig.enabled`, because the endpoint
+ * is inbound URL identity and the secret is a credential — neither belongs in
+ * a file and an EDIT must move neither. That is right for an update and left a
+ * CREATE broken: a file-born webhook flow saved with `enabled: true` and no
+ * endpoint has nowhere for Stripe to POST. It looks configured and receives
+ * nothing, and webhook is the majority case (17 of 31 production flows).
+ *
+ * So the endpoint is minted exactly once, when the row is first created, and
+ * derived from `workspaceId` + the flow's `_id` — never from the slug, so
+ * editing a file cannot move it.
+ *
+ * THE SECRET IS DELIBERATELY NOT MINTED. It is the provider's signing secret
+ * (Stripe's `whsec_...`), handed to `connector.verifyWebhook` by
+ * routes/webhooks.ts. A value invented here would fail signature verification
+ * on every real delivery while the flow looked fully configured — strictly
+ * worse than the empty string, which at least fails honestly. It arrives from
+ * the user, or from the Stripe-managed path that stores `signingSecret`
+ * returned by Stripe's own API.
+ *
+ * On renames: a renamed FILE is a different flow by construction — the slug is
+ * identity and this module matches on it, so a new slug finds no row and mints
+ * its own endpoint. Changing a flow's `name:` does not move the file, so that
+ * row and its endpoint are untouched. Preserving an inbound URL across a file
+ * rename would need identity inside the file, and is a separate change.
+ */
+export function mintedWebhookEndpoint(args: {
+  isNew: boolean;
+  type: string | undefined;
+  workspaceId: string;
+  flowId: string;
+  existingEndpoint?: string;
+}): string | null {
+  if (!args.isNew) return null;
+  if (args.type !== "webhook") return null;
+  // Belt and braces: never overwrite one that somehow already exists.
+  if (args.existingEndpoint) return null;
+  return generateWebhookEndpoint(args.workspaceId, args.flowId);
+}
 
 export interface FlowSyncResult {
   created: number;
@@ -270,6 +314,22 @@ export async function syncFlowsFromRepo(
       });
       result.invalid.push(slug);
       continue;
+    }
+    // A file-born webhook flow needs an inbound URL, and this is the only
+    // place one may be minted. `isNew` is the create/update distinction: an
+    // update must leave the endpoint exactly where it is.
+    const mintedEndpoint = mintedWebhookEndpoint({
+      isNew,
+      type: (doc as IFlow).type,
+      workspaceId,
+      flowId: String((doc as IFlow)._id),
+      existingEndpoint: (doc as IFlow).webhookConfig?.endpoint,
+    });
+    if (mintedEndpoint) {
+      (doc as IFlow).webhookConfig = {
+        ...((doc as IFlow).webhookConfig ?? {}),
+        endpoint: mintedEndpoint,
+      } as IFlow["webhookConfig"];
     }
     (doc as IFlow).sourceBlobSha = sha;
     await doc.save();
