@@ -15,8 +15,6 @@
     "build:ci": "pnpm --filter @mako/schemas run build && pnpm --filter @mako/agent-tools run build && pnpm run app:build && pnpm run api:build && node scripts/check-connector-agnosticism.js",
     "start": "node dist/index.js",
     "format": "prettier --write \"api/**/*.ts\"",
-    "sync": "ts-node api/src/sync/cli.ts",
-    "sync:help": "ts-node api/src/sync/cli.ts --help",
     "migrate": "ts-node -r dotenv/config api/src/migrations/cli.ts",
     "query": "tsx api/src/sync/query-runner.ts",
     "backfill:descriptions": "ts-node -r dotenv/config api/src/scripts/backfill-console-descriptions.ts",
