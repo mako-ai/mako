@@ -17,6 +17,7 @@ import { RepoRequiredError, appsRequireConnectedRepo } from "./config";
 import { authorForUser } from "./workspace-consoles.service";
 import {
   ensureWorkspaceRepo,
+  freshenBeforeMainWrite,
   queueMirrorPush,
   resolveMirrorTarget,
 } from "./cloud-repo.service";
@@ -63,6 +64,8 @@ export async function commitWorkspacePrompt(
   }
   const repoDir = await ensureWorkspaceRepo(workspaceId);
   if (!(await repoExists(repoDir))) throw new RepoRequiredError();
+  // Commit onto the mirror's main, not a stale cached tip.
+  await freshenBeforeMainWrite(workspaceId);
   const author = actorUserId ? await authorForUser(actorUserId) : undefined;
   const trimmed = content.trim();
   const result = await commitBlobsOnBranch(

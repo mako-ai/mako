@@ -55,6 +55,7 @@ import {
 } from "../services/scheduled-query-schedule.service";
 import {
   ensureWorkspaceRepo,
+  freshenBeforeMainWrite,
   mirrorPushNow,
   queueMirrorPush,
   resolveMirrorTarget,
@@ -386,6 +387,9 @@ export async function commitConsoleBatch(input: {
     throw new RepoRequiredError();
   }
   const repoDir = await ensureConsolesRepo(input.workspaceId);
+  // Commit onto the mirror's main, not a stale cached tip (consoles pin to
+  // the default branch — see branch-policy.ts).
+  await freshenBeforeMainWrite(input.workspaceId);
   if (!input.skipAdoption && !(await consolesAdopted(repoDir))) {
     // First console write on a workspace that never adopted: bring every
     // saved console in (snapshot; the CLI replays history).

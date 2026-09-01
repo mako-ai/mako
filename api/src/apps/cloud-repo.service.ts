@@ -4,9 +4,13 @@
  * ONE tier (apps.md §17): the workspace's CONNECTED GitHub repo (Settings →
  * GitHub, `workspaceRepos[]`). That repo IS the durable mirror — commits push
  * there, restores clone from there. A customer remote is never force-pushed:
- * heads and tags go without force (a direct GitHub-side push stalls our
- * mirror with a logged non-fast-forward error instead of being clobbered),
- * and only Mako's own `refs/mako/*` WIP namespace is forced.
+ * heads and tags go without force (a direct GitHub-side push is never
+ * clobbered), and only Mako's own `refs/mako/*` WIP namespace is forced.
+ * The mirror is the source of truth and the local repo its cache: every
+ * write onto `main` here freshens from the mirror first
+ * (`freshenBeforeMainWrite`), and a local branch found diverged from the
+ * mirror is reset to it with its commits parked under `refs/mako/diverged/*`
+ * (`fetchFromCloud`).
  *
  * The connected tier only engages on production (APPS_REQUIRE_CONNECTED_REPO)
  * or under the explicit APPS_CONNECTED_REPO_PUSH=allow opt-in. Previews and
@@ -272,10 +276,9 @@ export async function mirrorPushNow(workspaceId: string): Promise<void> {
  *
  * A push from someone's checkout lands on GitHub, not here — the bare repo is
  * a cache. Before anything can be built from that commit it has to arrive, so
- * a deploy triggered by a webhook fetches first. The local branch advances
- * only when it fast-forwards: on divergence (Mako-side
- * commits that failed to push, plus direct GitHub commits) we log and stand
- * still rather than silently drop either side.
+ * a deploy triggered by a webhook fetches first. Remote ahead → fast-forward;
+ * local ahead → leave it (a mirror push is pending); diverged → the mirror
+ * wins and the local tip is parked under refs/mako/diverged/* (see below).
  */
 /**
  * Make sure `sha` exists in this instance's local repo, fetching it if not.
@@ -413,17 +416,12 @@ export async function fetchFromCloud(
     return;
   }
   if (localOid === remoteOid) return;
-  const fastForwards = await runGit([
-    "-C",
-    repoDir,
-    "merge-base",
-    "--is-ancestor",
-    localOid,
-    remoteOid,
-  ])
-    .then(() => true)
-    .catch(() => false);
-  if (fastForwards) {
+  const isAncestor = (ancestor: string, descendant: string) =>
+    runGit(["-C", repoDir, "merge-base", "--is-ancestor", ancestor, descendant])
+      .then(() => true)
+      .catch(() => false);
+  if (await isAncestor(localOid, remoteOid)) {
+    // Remote is ahead: plain fast-forward.
     await runGit([
       "-C",
       repoDir,
@@ -432,12 +430,55 @@ export async function fetchFromCloud(
       remoteOid,
       localOid,
     ]);
-  } else {
-    logger.warn(
-      "Apps connected-repo fetch skipped: local branch has diverged from the remote",
-      { workspaceId, branch, localOid, remoteOid },
-    );
+    return;
   }
+  if (await isAncestor(remoteOid, localOid)) {
+    // Local is ahead: commits made here whose mirror push has not landed yet
+    // (or is in flight). Nothing to reconcile — the push carries them up.
+    return;
+  }
+  // DIVERGED: both sides have commits the other lacks. The local repo is a
+  // cache of the mirror, and a cache that disagrees with its source is wrong
+  // by definition — leaving it be is what made a whole instance's publishes
+  // fail for hours in prod (every mirror push rejected non-fast-forward until
+  // the instance was recycled, and its local-only commits died with the
+  // tmpfs). So the mirror wins, and nothing is dropped: the local tip is
+  // parked under refs/mako/diverged/* — Mako's own forced namespace, so the
+  // next mirror push carries it to GitHub where it can be recovered — and the
+  // branch is reset to the mirror. Whoever made those commits still has them
+  // in their box/clone; their next push is judged against the real branch
+  // and the pre-receive hook tells them to merge.
+  const parkedRef = `refs/mako/diverged/${branch}/${localOid.slice(0, 12)}`;
+  await runGit(["-C", repoDir, "update-ref", parkedRef, localOid]);
+  const swapped = await runGit([
+    "-C",
+    repoDir,
+    "update-ref",
+    `refs/heads/${branch}`,
+    remoteOid,
+    localOid,
+  ])
+    .then(() => true)
+    .catch(() => false);
+  logger.warn(
+    "Apps connected-repo branch had diverged from the mirror; reset to the mirror, local commits parked",
+    { workspaceId, branch, localOid, remoteOid, parkedRef, swapped },
+  );
+  queueMirrorPush(workspaceId);
+}
+
+/**
+ * Bring `main` up to date with the mirror BEFORE something is committed or
+ * pushed onto it here. Un-throttled (coalesced only), because a write judged
+ * against a stale main is exactly how divergence starts: a laptop pushes to
+ * GitHub, and moments later a skill save, a branch merge, a publish or a
+ * box's `git push` lands on an instance whose main predates it — accepted
+ * locally (it fast-forwards the STALE tip), unmirrorable forever after.
+ * Failures are logged and swallowed: a mirror that is briefly unreachable
+ * must not block the user's write; the mirror push simply retries later.
+ */
+export function freshenBeforeMainWrite(workspaceId: string): Promise<void> {
+  return freshenForServe(workspaceId, 0);
 }
 
 export type ConnectedRepoAdoption =
