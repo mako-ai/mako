@@ -65,6 +65,7 @@ import {
   fetchFromCloud,
   mirrorPushNow,
   resolveMirrorTarget,
+  freshenForServe,
 } from "./cloud-repo.service";
 
 let tmpRoot: string;
@@ -379,5 +380,57 @@ describe("fetchFromCloud on a connected repo", () => {
 
     await fetchFromCloud(workspaceId, DEFAULT_BRANCH);
     expect(await headOf(repoDirFor(workspaceId))).toBe(ourCommit);
+  });
+});
+
+/**
+ * serveGit calls this before answering a FETCH: an instance whose clone
+ * predates a push must pull the mirror or a just-pushed sha is
+ * `upload-pack: not our ref` (the deploy-on-push race seen in prod).
+ */
+describe("freshenForServe", () => {
+  it("makes a mirror-only commit servable, and throttles repeat calls", async () => {
+    const remoteDir = await makeBareRemote("acme", "freshen");
+    state.binding = { owner: "acme", repo: "freshen" };
+    await initRepo(repoDirFor(workspaceId), { "apps/a/mako.json": "{}" });
+    await adoptConnectedRepo(workspaceId, state.binding);
+
+    // Another instance handled a push: the commit exists only on the mirror.
+    const pushedSha = await commitFiles(
+      remoteDir,
+      { "apps/a/index.html": "<h1>new</h1>" },
+      "push handled elsewhere",
+    );
+    const has = (sha: string) =>
+      runGit([
+        "-C",
+        repoDirFor(workspaceId),
+        "cat-file",
+        "-e",
+        `${sha}^{commit}`,
+      ]);
+    await expect(has(pushedSha)).rejects.toThrow();
+
+    await freshenForServe(workspaceId);
+    await expect(has(pushedSha)).resolves.toBeDefined();
+
+    // Inside the throttle window a newer mirror commit is NOT pulled…
+    const laterSha = await commitFiles(
+      remoteDir,
+      { "apps/a/later.txt": "later" },
+      "later push",
+    );
+    await freshenForServe(workspaceId);
+    await expect(has(laterSha)).rejects.toThrow();
+
+    // …and a zero-interval call (the window elapsed) pulls it.
+    await freshenForServe(workspaceId, 0);
+    await expect(has(laterSha)).resolves.toBeDefined();
+  });
+
+  it("serves local state quietly when the mirror is unreachable", async () => {
+    state.binding = null; // no connected repo — nothing to freshen from
+    await initRepo(repoDirFor(workspaceId), { "apps/a/mako.json": "{}" });
+    await expect(freshenForServe(workspaceId, 0)).resolves.toBeUndefined();
   });
 });

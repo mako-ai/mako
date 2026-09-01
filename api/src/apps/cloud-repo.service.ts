@@ -331,6 +331,47 @@ export async function ensureCommitLocally(
   return run;
 }
 
+/**
+ * Freshen the local bare repo from the cloud mirror before SERVING a fetch.
+ *
+ * ensureLocalRepo only restores a MISSING repo; an instance whose clone
+ * predates a push happily serves stale refs, and a sandbox fetching a
+ * just-pushed sha gets `upload-pack: not our ref` — seen in prod when
+ * deploy-on-push raced the GitHub webhook across Cloud Run instances (the
+ * webhook instance had the commit, the instance serving the sandbox's
+ * fetch did not, and the deploy burned its retries inside the window).
+ *
+ * Throttled per workspace: bursts of fetches (a clone is several requests)
+ * share one mirror pull. Failure is non-fatal — serve local state and let
+ * the client's git command produce the specific error.
+ */
+const FRESHEN_INTERVAL_MS = 3_000;
+const lastFreshenAt = new Map<string, number>();
+const freshenInFlight = new Map<string, Promise<void>>();
+
+export async function freshenForServe(
+  workspaceId: string,
+  intervalMs: number = FRESHEN_INTERVAL_MS,
+): Promise<void> {
+  if (Date.now() - (lastFreshenAt.get(workspaceId) ?? 0) < intervalMs) return;
+  const existing = freshenInFlight.get(workspaceId);
+  if (existing) return existing;
+  const run = (async () => {
+    try {
+      await fetchFromCloud(workspaceId, DEFAULT_BRANCH);
+    } catch (error) {
+      logger.warn("Freshen before serve failed; serving local state", {
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      lastFreshenAt.set(workspaceId, Date.now());
+    }
+  })().finally(() => freshenInFlight.delete(workspaceId));
+  freshenInFlight.set(workspaceId, run);
+  return run;
+}
+
 export async function fetchFromCloud(
   workspaceId: string,
   branch: string,
