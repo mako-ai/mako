@@ -40,6 +40,45 @@ export function maskPasswordInConnectionString(connectionString: string) {
   return connectionString.replace(CONNECTION_STRING_PASSWORD, "$1*****$3");
 }
 
+/** `scheme://host/path` with no `user:pass@` — nothing to hide in the authority. */
+const URI_WITHOUT_USERINFO = /^[a-z][a-z0-9+.-]*:\/\/[^@]*$/i;
+
+/**
+ * A credential carried as a parameter rather than in the authority:
+ * `...?password=`, `;pwd=`, `&api_key=`. No URI-shaped mask catches these.
+ */
+const CREDENTIAL_PARAMETER =
+  /[?&;]\s*[a-z0-9_.-]*(pass(word|wd)?|pwd|secret|token|auth|api[_-]?key|credential)[a-z0-9_.-]*\s*=/i;
+
+/**
+ * Redact a connection string, failing CLOSED.
+ *
+ * Masking the password inside a URI keeps the host legible in the edit dialog,
+ * which is genuinely useful — but it only works on strings shaped like
+ * `scheme://user:pass@host`. Production also holds ClickHouse strings in
+ * neither that shape nor any other we parse, carrying their credential as a
+ * query parameter; a URI mask leaves those untouched and hands back the secret
+ * while looking like it did its job. Partial masking is worse than none,
+ * because it reads as safe.
+ *
+ * So: mask what we can prove, return verbatim only what is provably
+ * credential-free, and withhold everything else entirely. An unrecognised
+ * format is treated as a secret, not as a host.
+ */
+export function redactConnectionString(connectionString: string): string {
+  if (!connectionString) return connectionString;
+  if (CONNECTION_STRING_PASSWORD.test(connectionString)) {
+    return maskPasswordInConnectionString(connectionString);
+  }
+  if (
+    URI_WITHOUT_USERINFO.test(connectionString) &&
+    !CREDENTIAL_PARAMETER.test(connectionString)
+  ) {
+    return connectionString;
+  }
+  return SECRET_KEPT;
+}
+
 /** Strip every credential from a decrypted connection, keeping its shape. */
 export function redactConnectionSecrets(
   connection: Record<string, unknown> | undefined,
@@ -47,7 +86,7 @@ export function redactConnectionSecrets(
   const redacted: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(connection ?? {})) {
     if (key === "connectionString" && typeof value === "string") {
-      redacted[key] = maskPasswordInConnectionString(value);
+      redacted[key] = redactConnectionString(value);
     } else if (SECRET_FIELD.test(key) && typeof value === "string" && value) {
       redacted[key] = SECRET_KEPT;
     } else {

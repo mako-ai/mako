@@ -62,6 +62,59 @@ assert.equal(
   "clickhouse://mako:*****@db.example.com:8443/analytics",
 );
 
+// --- connection strings fail CLOSED on any shape we cannot parse ------------
+
+// A URI whose credential sits in a query parameter is NOT masked by a
+// URI-shaped rule, so it must be withheld wholesale. This is the shape that
+// actually shipped past the first version of this fix: two production
+// ClickHouse connections were still handing back their credential.
+for (const dsn of [
+  "clickhouse:https://host.example.com:8443/db?password=hunter2",
+  "clickhouse://host.example.com:8443/db?password=hunter2",
+  "host=db.example.com;port=9000;user=mako;password=hunter2",
+  "https://api.example.com/v1?api_key=sk-live-1",
+  "sqlserver://host/db;pwd=hunter2",
+  "mongodb://host/db?authSource=admin&secret=shh",
+]) {
+  assert.equal(
+    redactConnectionSecrets({ connectionString: dsn }).connectionString,
+    SECRET_KEPT,
+    `must withhold: ${dsn}`,
+  );
+}
+
+// A string in no recognised format at all is withheld rather than guessed at.
+assert.equal(
+  redactConnectionSecrets({ connectionString: "not a uri at all" })
+    .connectionString,
+  SECRET_KEPT,
+);
+
+// Provably credential-free URIs stay legible — over-redacting these would cost
+// the edit dialog its usefulness for nothing.
+for (const safe of [
+  "bigquery://realadvisor-prod",
+  "clickhouse://db.example.com:8443/analytics",
+  "postgres://db.example.com:5432/analytics?sslmode=require",
+]) {
+  assert.equal(
+    redactConnectionSecrets({ connectionString: safe }).connectionString,
+    safe,
+    `must stay visible: ${safe}`,
+  );
+}
+
+// A withheld connection string round-trips like any other secret.
+{
+  const stored = { connectionString: "host=h;user=u;password=hunter2" };
+  const shown = redactConnectionSecrets(stored);
+  assert.equal(shown.connectionString, SECRET_KEPT);
+  assert.equal(
+    restoreKeptSecrets(shown, stored).connectionString,
+    stored.connectionString,
+  );
+}
+
 // --- restore: a round-trip must never clobber the stored secret -------------
 
 // The dialog echoes back exactly what it was given.
