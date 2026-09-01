@@ -106,6 +106,28 @@ export interface FlowFile {
   queries?: Array<Record<string, unknown>>;
 }
 
+/**
+ * `partitioning` / `clustering` are pass-through blobs from the row, so
+ * their keys arrive camelCase (`requirePartitionFilter`) while every other
+ * key in the file is snake_case. Normalise both directions — cheap now,
+ * a breaking format change once people hand-edit these files.
+ */
+function snakeKeys(v: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(v)) {
+    out[k.replace(/[A-Z]/g, c => `_${c.toLowerCase()}`)] = val;
+  }
+  return out;
+}
+
+function camelKeys(v: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(v)) {
+    out[k.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase())] = val;
+  }
+  return out;
+}
+
 function omitEmpty(obj: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(obj)) {
@@ -148,8 +170,12 @@ export function serializeFlowFile(flow: FlowFile): string {
           schema: table.schema,
           table_name: table.tableName,
           create_if_not_exists: table.createIfNotExists,
-          partitioning: table.partitioning,
-          clustering: table.clustering,
+          partitioning: table.partitioning
+            ? snakeKeys(table.partitioning)
+            : undefined,
+          clustering: table.clustering
+            ? snakeKeys(table.clustering)
+            : undefined,
         })
       : undefined,
   });
@@ -261,12 +287,12 @@ export function parseFlowFile(contents: string): FlowFile | null {
           createIfNotExists: tableDoc.create_if_not_exists as
             | boolean
             | undefined,
-          partitioning: tableDoc.partitioning as
-            | Record<string, unknown>
-            | undefined,
-          clustering: tableDoc.clustering as
-            | Record<string, unknown>
-            | undefined,
+          partitioning: tableDoc.partitioning
+            ? camelKeys(tableDoc.partitioning as Record<string, unknown>)
+            : undefined,
+          clustering: tableDoc.clustering
+            ? camelKeys(tableDoc.clustering as Record<string, unknown>)
+            : undefined,
         }
       : undefined,
   };

@@ -186,6 +186,43 @@ assert.equal(slugFromFlowFilePath("flows/Bad_Slug.yml"), null);
   assert.equal(parsed.incremental?.trackingColumn, "updated_at");
   assert.equal(parsed.pagination?.keysetDirection, "asc");
   assert.equal(parsed.webhookEnabled, true);
+  // Pass-through blobs are snake_case in the file and camelCase back in
+  // memory, so the file reads consistently and the row shape is preserved.
+  assert.deepEqual(parsed.destination.table?.partitioning, {
+    enabled: true,
+    type: "time",
+    field: "created_at",
+  });
+}
+
+// ── partitioning/clustering keys are snake_case in the file ──
+{
+  const text = serializeFlowFile(flowToFile(flowWithTraps()));
+  assert.ok(
+    text.includes("require_partition_filter") ||
+      !text.includes("requirePartitionFilter"),
+    `no camelCase keys leak into the file:\n${text}`,
+  );
+  const withFlag = {
+    ...flowWithTraps(),
+    tableDestination: {
+      tableName: "t",
+      partitioning: { enabled: true, requirePartitionFilter: true },
+    },
+  } as unknown as IFlow;
+  const out = serializeFlowFile(flowToFile(withFlag));
+  assert.ok(out.includes("require_partition_filter: true"), out);
+  assert.ok(!out.includes("requirePartitionFilter"), out);
+  const back = parseFlowFile(out);
+  assert.equal(
+    (
+      back?.destination.table?.partitioning as {
+        requirePartitionFilter?: boolean;
+      }
+    )?.requirePartitionFilter,
+    true,
+    "and it round-trips back to the row's camelCase shape",
+  );
 }
 
 // ── a database-source, schedule-less flow ──
