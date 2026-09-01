@@ -47,6 +47,7 @@ import { createVersionHistoryTools } from "../agent-lib/tools/version-history-to
 import { createSkillTools } from "../agent-lib/tools/skill-tools";
 import { createSelfDirectiveTools } from "../agent-lib/tools/self-directive-tool";
 import { createConnectorTools } from "../agent-lib/tools/connector-tools";
+import { createMemberTools } from "../agent-lib/tools/member-tools";
 import { createWebTools } from "../agent-lib/tools/web-tools";
 import { createDbtServerTools } from "../agent-lib/tools/dbt-tools";
 import {
@@ -204,9 +205,13 @@ export function buildMakoMcpCandidateTools(
   const dbtTools = createDbtServerTools(workspaceId, userId, { chatId });
   // Connector discovery for flow authoring (RFC: agent-authored flows).
   const connectorTools = createConnectorTools(workspaceId);
+  // Gated by the members-write grant AND a live owner/admin check inside the
+  // tools themselves — a key outlives the membership that justified it.
+  const memberTools = createMemberTools(workspaceId, userId);
   return {
     ...connectorTools,
     ...appsTools,
+    ...memberTools,
     ...consoleTools,
     ...dashboardTools,
     ...notebookTools,
@@ -253,14 +258,29 @@ const EXTERNAL_MCP_IMPLICIT_GRANTS: readonly CapabilityGrant[] = [
   "schedule-write",
 ];
 
+/**
+ * Grants that "the signed-in desktop client holds everything" must NOT sweep
+ * up. `members-write` changes who can reach the workspace at all, so it is
+ * opted into per key via `members:write` and never conferred by the blanket
+ * ACP-desktop grant — otherwise adding a grant to CAPABILITY_GRANTS silently
+ * widens that surface, which is exactly what happened when this one was
+ * added.
+ */
+const ACP_DESKTOP_WITHHELD_GRANTS: ReadonlySet<CapabilityGrant> =
+  new Set<CapabilityGrant>(["members-write"]);
+
 function sessionCapabilityGrants(
   context: MakoMcpContext,
   scopes: readonly WorkspaceApiKeyScope[],
 ): Set<CapabilityGrant> {
   if (context.acpDesktop) {
     return new Set<CapabilityGrant>([
-      ...CAPABILITY_GRANTS,
-      ...(context.capabilityGrants ?? []),
+      ...CAPABILITY_GRANTS.filter(
+        grant => !ACP_DESKTOP_WITHHELD_GRANTS.has(grant),
+      ),
+      ...(context.capabilityGrants ?? []).filter(
+        grant => !ACP_DESKTOP_WITHHELD_GRANTS.has(grant),
+      ),
     ]);
   }
   return new Set<CapabilityGrant>([

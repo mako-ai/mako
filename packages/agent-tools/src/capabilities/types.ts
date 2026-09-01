@@ -14,12 +14,16 @@ export type CapabilityRisk = "read" | "write" | "destructive";
 export type CapabilityGrant =
   | "artifact-write"
   | "git-write"
+  | "members-write"
   | "schedule-write"
   | "warehouse-write";
 
 export const CAPABILITY_GRANTS = [
   "artifact-write",
   "git-write",
+  // Who can reach the workspace at all — the only grant that can widen the
+  // set of people holding every other one. Never implicit on any surface.
+  "members-write",
   "schedule-write",
   "warehouse-write",
 ] as const satisfies readonly CapabilityGrant[];

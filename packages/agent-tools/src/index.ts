@@ -253,6 +253,12 @@ export {
 } from "./capabilities/connector-capabilities";
 
 export {
+  MEMBER_CAPABILITIES,
+  type MemberCapabilityDefinition,
+  type MemberCapabilityPack,
+} from "./capabilities/member-capabilities";
+
+export {
   AGENT_CAPABILITIES,
   AGENT_CAPABILITY_BY_NAME,
   agentCapabilitiesForSurface,

@@ -3,6 +3,15 @@
  * Desktop/web renderer (apps, consoles, HITL clarify/plan cards).
  */
 import { type CapabilityGrant } from "@mako/agent-tools";
+
+/**
+ * The grants a plan approval may confer. Every capability grant EXCEPT
+ * `members-write`: approving a plan is a one-off decision in chat, and
+ * changing who can reach the workspace is not a decision that should be made
+ * that way. Written as an Exclude so a future grant is opted OUT of ACP
+ * deliberately rather than swept in by widening a list.
+ */
+type AcpGrantableCapability = Exclude<CapabilityGrant, "members-write">;
 import { useConsoleStore } from "../store/consoleStore";
 import {
   useDesktopHitlStore,
@@ -103,7 +112,11 @@ export async function completeDesktopHitlJob(
       }
       const editedPlanMarkdown = output.editedPlan?.planMarkdown;
       const originalPlanMarkdown = pending.input.planMarkdown;
-      const allowedGrants = new Set<CapabilityGrant>([
+      // `members-write` is deliberately not grantable by approving a plan:
+      // it changes who can reach the workspace, so it is opted into per API
+      // key (scope `members:write`) and re-checked against the caller's live
+      // workspace role, never conferred by a one-off approval in chat.
+      const allowedGrants = new Set<AcpGrantableCapability>([
         "artifact-write",
         "warehouse-write",
         "git-write",
@@ -111,9 +124,9 @@ export async function completeDesktopHitlJob(
       ]);
       const requestedGrants = Array.isArray(pending.input.requiredCapabilities)
         ? pending.input.requiredCapabilities.filter(
-            (grant): grant is CapabilityGrant =>
+            (grant): grant is AcpGrantableCapability =>
               typeof grant === "string" &&
-              allowedGrants.has(grant as CapabilityGrant),
+              allowedGrants.has(grant as AcpGrantableCapability),
           )
         : undefined;
       await useAcpStore.getState().applyPlanDecision({
