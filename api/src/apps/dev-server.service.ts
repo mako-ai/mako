@@ -25,7 +25,9 @@
  */
 import {
   getSandboxProvider,
+  isSandboxGone,
   type SandboxExecContext,
+  type SandboxExecResult,
 } from "./sandbox/provider";
 import {
   boxCtx,
@@ -696,9 +698,20 @@ export async function discoverDevServers(
     `if(--left===0)console.log(JSON.stringify(out))};` +
     `s.setTimeout(800);s.once("connect",()=>done(true));` +
     `s.once("error",()=>done(false));s.once("timeout",()=>done(false));});`;
-  const result = await provider.exec(ctx, `node -e ${sh(script)}`, {
-    timeoutMs: 15_000,
-  });
+  // "Empty when none is running" is this function's contract, and a box that
+  // has gone is a box with nothing running in it. hasSession above can still
+  // answer from a stale memory of an idle-killed sandbox (it forgets one the
+  // moment an exec proves it dead), so the exec is where the truth arrives —
+  // as an error that must not become a 500 on a discovery endpoint.
+  let result: SandboxExecResult;
+  try {
+    result = await provider.exec(ctx, `node -e ${sh(script)}`, {
+      timeoutMs: 15_000,
+    });
+  } catch (error) {
+    if (isSandboxGone(error)) return [];
+    throw error;
+  }
   try {
     const parsed = JSON.parse(result.stdout.trim() || "[]") as Array<{
       slug: string;

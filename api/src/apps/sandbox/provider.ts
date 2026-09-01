@@ -23,6 +23,18 @@ import { appsSandboxProviderEnv, type AppsSandboxProviderId } from "../config";
 import { e2bSandboxProvider } from "./e2b-provider";
 import { localSandboxProvider } from "./local-provider";
 
+/**
+ * "The machine this call needed is gone" — the one provider failure callers
+ * outside this folder have to tell apart from an ordinary error, because a
+ * question about a sandbox ("what is running in it?") has an honest empty
+ * answer when there is no sandbox, while a failed command does not.
+ *
+ * Re-exported here so nothing outside imports a specific provider. Only E2B
+ * can produce it; a local sandbox is a directory, and a directory does not
+ * expire — so `false` there is the right answer, not a missing case.
+ */
+export { isSandboxGone } from "./e2b-provider";
+
 export interface SandboxExecOptions {
   /** Working directory relative to the session root ("" = root). */
   cwd?: string;
