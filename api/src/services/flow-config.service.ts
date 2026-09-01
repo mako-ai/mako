@@ -15,8 +15,10 @@
 import { loggers } from "../logging";
 import { authorForUser } from "../apps/workspace-consoles.service";
 import {
+  connectedTierEnabled,
   ensureLocalRepo,
   freshenBeforeMainWrite,
+  resolveMirrorTarget,
   mirrorPushNow,
   queueMirrorPush,
 } from "../apps/cloud-repo.service";
@@ -26,6 +28,7 @@ import {
   commitBlobsOnBranch,
   repoDirFor,
   repoExists,
+  resolveCommit,
   type GitAuthor,
 } from "../apps/repository.service";
 import { Flow, type IFlow } from "../database/workspace-schema";
@@ -154,6 +157,50 @@ export async function deleteFlowFile(
  * Mirror every flow in a workspace. Used by the one-time export and
  * available to an operator when a repo was connected after the fact.
  */
+/**
+ * Refuse to write when this process cannot reach the workspace's mirror.
+ *
+ * Without a resolvable mirror target the export resolves nothing, freshens
+ * nothing, commits to a local-only repo and pushes nothing — a silent no-op
+ * that prints success. That is what the first production run did, and it is
+ * indistinguishable from a real export unless something checks. So check:
+ * a bare repo that does not contain the mirror's current main is not a
+ * cache of it, and committing on top of it would produce history that can
+ * never be pushed.
+ */
+export async function assertMirrorReachable(
+  workspaceId: string,
+): Promise<{ ok: true; mainOid: string } | { ok: false; reason: string }> {
+  if (!connectedTierEnabled()) {
+    return {
+      ok: false,
+      reason:
+        "connected-repo tier is disabled here (set APPS_CONNECTED_REPO_PUSH=allow); " +
+        "an export would commit locally and push nothing",
+    };
+  }
+  const target = await resolveMirrorTarget(workspaceId);
+  if (!target) {
+    return {
+      ok: false,
+      reason: `no connected repo resolves for workspace ${workspaceId}`,
+    };
+  }
+  const repoDir = await repoDirIfExists(workspaceId);
+  if (!repoDir) {
+    return { ok: false, reason: "no local repo after ensureLocalRepo" };
+  }
+  // repoDirIfExists has freshened, so main must now BE the mirror's main.
+  const mainOid = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
+  if (!mainOid) {
+    return {
+      ok: false,
+      reason: `local ${DEFAULT_BRANCH} is missing after freshen — the local repo is not a clone of ${target.owner}/${target.repo}`,
+    };
+  }
+  return { ok: true, mainOid };
+}
+
 export async function exportWorkspaceFlows(
   workspaceId: string,
   actorUserId?: string,
@@ -163,6 +210,18 @@ export async function exportWorkspaceFlows(
   failed: Array<{ slug: string; error: string }>;
   commitMade: boolean;
 }> {
+  // Refuse to run at all when the mirror is unreachable from here, rather
+  // than committing into a local-only repo and reporting success.
+  const reachable = await assertMirrorReachable(workspaceId);
+  if (!reachable.ok) {
+    return {
+      written: 0,
+      skipped: 0,
+      failed: [{ slug: "(workspace)", error: reachable.reason }],
+      commitMade: false,
+    };
+  }
+
   // `.lean()` matters: a live document's DocumentArrays are circular and
   // overflow the YAML dumper (see `plain()` in flow-config-files).
   const flows = await Flow.find({ workspaceId }).sort({ _id: 1 }).lean();
@@ -210,8 +269,9 @@ export async function exportWorkspaceFlows(
       await mirrorPushNow(workspaceId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      for (const slug of shaBySlug.keys())
+      for (const slug of shaBySlug.keys()) {
         failed.push({ slug, error: message });
+      }
       return { written: 0, skipped, failed, commitMade: false };
     }
   }
