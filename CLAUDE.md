@@ -68,7 +68,6 @@ pnpm docker:down           # Stop all services
 pnpm docker:logs           # View service logs
 pnpm docker:rebuild        # Rebuild and restart containers
 pnpm docker:clean          # Clean volumes and reset data
-pnpm sync                  # Interactive sync CLI (legacy system)
 pnpm query <query_file>    # Execute MongoDB queries from file
 ```
 
@@ -300,6 +299,14 @@ MongoDB, PostgreSQL, BigQuery, ClickHouse, Cloud SQL (Postgres), Cloudflare D1, 
 
 ### Legacy Systems
 
-- **Legacy sync CLI** (`/sync/cli.ts`) — being replaced by Inngest workflows
-- **config.yaml** — data sources now managed via UI, legacy support remains
 - **Lucia Auth references** — now using Arctic for OAuth
+
+The legacy sync CLI (`pnpm sync`, `api/src/sync/cli.ts`) is **deleted**
+(RFC #904 block 4). Flows are the sync system: definitions live in
+`flows/<slug>.yml` in the workspace repo and execute through Inngest. Note
+that `api/src/sync/` itself is NOT legacy — `sync-orchestrator.ts` is the
+engine the Inngest path runs via `sync-executor.service.ts`, and
+`connector-registry.ts` / `database-data-source-manager.ts` are used by the
+connector and flow routes. Only the interactive CLI entrypoint is gone.
+There is no `config.yaml`; data sources are DB-backed and managed in the
+UI.
