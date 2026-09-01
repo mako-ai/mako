@@ -16,6 +16,8 @@ import { persist } from "zustand/middleware";
 import { api, unwrapBody, ApiError, toErrorMessage as message } from "../api";
 import { focusAppsTab, reconcileAppsTabs } from "../apps-runtime/shell";
 import { onRealtimeEvent } from "./lib/realtime-channel";
+import { useConsoleStore } from "./consoleStore";
+import { useUIStore } from "./uiStore";
 
 export interface AppMeta {
   id: string;
@@ -210,6 +212,15 @@ interface AppsStore {
 
   filesByApp: Record<string, AppFileEntry[]>;
   /**
+   * Apps whose cached per-app state is known to be out of date.
+   *
+   * A workspace-wide change marks every loaded app instead of refetching it.
+   * The set is drained by {@link AppsStore.refreshAppIfStale}, which the
+   * active tab calls on activation — so "stale" is never a resting state for
+   * something on screen, only for something nobody is looking at.
+   */
+  staleApps: Record<string, true>;
+  /**
    * Set when the server capped an app's listing — { shown, total }. A
    * 100k-file folder (a committed node_modules, a data dump) renders its
    * first files plus this notice instead of crashing the tree.
@@ -328,6 +339,15 @@ interface AppsStore {
   fetchStatus: (workspaceId: string, appId: string) => Promise<void>;
   fetchHistory: (workspaceId: string, appId: string) => Promise<void>;
   fetchBranches: (workspaceId: string, appId: string) => Promise<void>;
+  /**
+   * Refetch an app's cached state, but only if a workspace change marked it
+   * stale. Called when an app tab becomes active, which is what makes
+   * "invalidate, don't refetch" safe: nothing on screen stays stale, and the
+   * work happens for one app at a time instead of for every app at once.
+   */
+  refreshAppIfStale: (workspaceId: string, appId: string) => void;
+  /** Mark every loaded app stale — a workspace-wide change touched them all. */
+  markAllAppsStale: () => void;
   /** Fetch (or refresh) the cookie-free URL for an app's published build. */
   fetchViewUrl: (workspaceId: string, appId: string) => Promise<void>;
   /** Enter or leave edit mode for an app (see `editingByApp`). */
@@ -513,6 +533,7 @@ export const useAppsStore = create<AppsStore>()(
       appsLoading: false,
       error: null,
       filesByApp: {},
+      staleApps: {},
       filesTruncatedByApp: {},
       fileContents: {},
       selectedFile: {},
@@ -1076,6 +1097,40 @@ export const useAppsStore = create<AppsStore>()(
         if (editing) {
           void get().fetchFiles(workspaceId, appId);
           void get().fetchStatus(workspaceId, appId);
+        }
+      },
+
+      markAllAppsStale: () => {
+        ensureActivationDrain();
+        set(s => {
+          for (const appId of Object.keys(s.filesByApp)) {
+            s.staleApps[appId] = true;
+          }
+          for (const appId of Object.keys(s.branchesByApp)) {
+            s.staleApps[appId] = true;
+          }
+        });
+      },
+
+      refreshAppIfStale: (workspaceId, appId) => {
+        const state = get();
+        if (!state.staleApps[appId]) return;
+        set(s => {
+          delete s.staleApps[appId];
+        });
+        if (state.filesByApp[appId]) {
+          void state.fetchFiles(workspaceId, appId);
+          void state.fetchStatus(workspaceId, appId);
+        }
+        if (state.branchesByApp[appId]) {
+          void state.fetchBranches(workspaceId, appId);
+        }
+        const selected = state.selectedFile[appId];
+        if (selected) {
+          const entry = state.fileContents[`${appId}\u0000${selected}`];
+          if (entry && !entry.dirty) {
+            void state.openFile(workspaceId, appId, selected);
+          }
         }
       },
 
@@ -1939,28 +1994,95 @@ onRealtimeEvent("app.updated", "appsStore", (event, ctx) => {
   // Explorer list (titles, new/deleted apps).
   void v2.fetchApps(workspaceId);
   if (event.origin === "lifecycle") return;
-  // §10 monorepo: appId "" = workspace-wide (a workspace worktree
-  // changed; it may span apps) — refresh every app this window has
-  // loaded. A non-empty appId scopes to that app as before.
-  const appIds = event.appId ? [event.appId] : Object.keys(v2.filesByApp);
-  for (const appId of appIds) {
-    // Only refresh heavier per-app state when this window has it loaded.
-    if (v2.filesByApp[appId]) {
-      void v2.fetchFiles(workspaceId, appId);
-      void v2.fetchStatus(workspaceId, appId);
-    }
-    if (v2.branchesByApp[appId]) {
-      void v2.fetchBranches(workspaceId, appId);
-    }
-    const selected = v2.selectedFile[appId];
-    if (selected) {
-      const entry = v2.fileContents[`${appId}\u0000${selected}`];
-      if (entry && !entry.dirty) {
-        void v2.openFile(workspaceId, appId, selected);
-      }
+
+  // A NAMED app is refreshed immediately — one app, three requests, which is
+  // what the event is for.
+  if (event.appId) {
+    refreshAppNow(workspaceId, event.appId);
+    return;
+  }
+
+  // §10 monorepo: appId "" = workspace-wide (a workspace worktree changed; it
+  // may span apps). This used to refresh every app the window had loaded, in
+  // one tick. `filesByApp` is a cache that grows all session — it is pruned
+  // only when an app is DELETED, never when a tab closes — so the burst scaled
+  // with how long somebody had been working rather than with what they were
+  // looking at. Measured in production: a single push produced 118 requests in
+  // one second (33 files + 33 branches + 32 status + a list) against a ~10-15
+  // baseline, and Cloud Run refused 65 of them while it scaled.
+  //
+  // So: mark them stale and refresh only what is on screen. Every other app
+  // refetches when its tab is next activated, which is the first moment its
+  // freshness matters to anyone.
+  useAppsStore.getState().markAllAppsStale();
+  const active = activeAppId();
+  if (active) refreshAppNow(workspaceId, active);
+});
+
+/** Refresh one app's cached state now, ignoring whether it was marked stale. */
+function refreshAppNow(workspaceId: string, appId: string): void {
+  const v2 = useAppsStore.getState();
+  useAppsStore.setState(s => {
+    delete s.staleApps[appId];
+  });
+  if (v2.filesByApp[appId]) {
+    void v2.fetchFiles(workspaceId, appId);
+    void v2.fetchStatus(workspaceId, appId);
+  }
+  if (v2.branchesByApp[appId]) {
+    void v2.fetchBranches(workspaceId, appId);
+  }
+  const selected = v2.selectedFile[appId];
+  if (selected) {
+    const entry = v2.fileContents[`${appId}\u0000${selected}`];
+    if (entry && !entry.dirty) {
+      void v2.openFile(workspaceId, appId, selected);
     }
   }
-});
+}
+
+/** Same source notebookStore reads, so the app shell has one answer. */
+function currentWorkspaceId(): string | null {
+  return useUIStore.getState().currentWorkspaceId ?? null;
+}
+
+/** The app the user is actually looking at, if the active tab is an app. */
+function activeAppId(): string | null {
+  const console = useConsoleStore.getState();
+  const tab = console.activeTabId ? console.tabs[console.activeTabId] : null;
+  if (!tab || tab.kind !== "app") return null;
+  const appId = (tab.metadata as { appId?: unknown } | undefined)?.appId;
+  return typeof appId === "string" && appId ? appId : null;
+}
+
+/**
+ * Draining the stale set is what makes marking safe.
+ *
+ * Without it, "invalidate, don't refetch" trades a request storm for a
+ * correctness bug: someone switching back to a tab that never unmounted would
+ * be shown state from before the push, silently and indefinitely. Activation
+ * is the right trigger rather than mount, precisely because the tab that
+ * stayed mounted is the one that would otherwise never re-read.
+ *
+ * Registered on first use rather than at import. Subscribing at module scope
+ * made importing this store fail outright wherever consoleStore is mocked
+ * without a `subscribe` — a real breakage (UrlSync's suite) caused by a side
+ * effect that had no reason to run before anything could be stale.
+ */
+let activationDrainRegistered = false;
+function ensureActivationDrain(): void {
+  if (activationDrainRegistered) return;
+  if (typeof useConsoleStore.subscribe !== "function") return;
+  activationDrainRegistered = true;
+  useConsoleStore.subscribe((state, previous) => {
+    if (state.activeTabId === previous.activeTabId) return;
+    const appId = activeAppId();
+    if (!appId) return;
+    const workspaceId = currentWorkspaceId();
+    if (!workspaceId) return;
+    useAppsStore.getState().refreshAppIfStale(workspaceId, appId);
+  });
+}
 
 onRealtimeEvent("app.box-state", "appsStore", event => {
   useAppsStore.getState().applyBoxState(event.userId, event.state);
