@@ -188,6 +188,42 @@ export function notifyRepoPushed(workspaceId: string, userId: string): void {
   pokeApp(workspaceId, null, "push", userId);
   // Another box on the same branch is now behind; let it pull on next touch.
   invalidatePullThrottle();
+  syncRepoBackedResources(workspaceId, userId);
+}
+
+/**
+ * Reconcile every Mongo index that a file in the repo is authoritative for.
+ *
+ * Split out of {@link notifyRepoPushed} because commits reach main by two
+ * routes, not one: this server's git endpoint, and a push made directly on
+ * GitHub, which arrives as a webhook (routes/github.routes.ts) and never
+ * touches receive-pack here. That second route had grown its own copy of this
+ * list containing consoles and skills only, so a dbt job or a notebook edited
+ * on GitHub reached Mongo only when someone later happened to push through
+ * Mako — config-as-code flowing one way, silently. One list, both callers, so
+ * adding a repo-backed resource cannot leave one route behind again.
+ *
+ * Every sync is an idempotent reconcile against the tree at main, so a push
+ * touching none of these costs one tree read each and changes nothing. Each
+ * is fire-and-forget and independently caught: one resource's bad YAML must
+ * not stop the others from syncing.
+ *
+ * Callers must have the commit locally FIRST — the git endpoint does by
+ * construction, the webhook by fetching before it calls. dbt's sync deletes
+ * job rows whose slugs are absent from the tree it reads, so running it
+ * against a stale tree would not merely miss an update, it would remove live
+ * jobs and deregister their schedules.
+ *
+ * Flows are deliberately NOT here. `flows/<slug>.yml` is Mongo → git only
+ * until RFC #904 block 3 adds the push reactor and flips authority; reading
+ * it back now would make the file authoritative ahead of the CDC
+ * pause/reconfigure/resume that a stream-shaped resource needs
+ * (services/flow-config.service.ts).
+ */
+export function syncRepoBackedResources(
+  workspaceId: string,
+  userId?: string,
+): void {
   // Consoles edited in a terminal or a laptop clone reach the index (and the
   // agent's search) by the next turn (apps.md §16.3).
   void syncConsolesIndexFromRepo(workspaceId, userId).catch(error => {

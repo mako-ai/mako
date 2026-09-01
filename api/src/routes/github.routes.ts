@@ -37,9 +37,8 @@ import { loggers } from "../logging";
 import { deployAppsForPush } from "../apps/deploy-on-push";
 import { ensureLocalRepo, fetchFromCloud } from "../apps/cloud-repo.service";
 import { findWorkspaceIdByRepoBinding } from "../services/workspace-repos.service";
+import { syncRepoBackedResources } from "../apps/worktree.service";
 import { repoDirFor } from "../apps/repository.service";
-import { syncConsolesIndexFromRepo } from "../apps/workspace-consoles.service";
-import { syncSkillsIndexFromRepo } from "../apps/workspace-skills.service";
 
 const logger = loggers.api("github");
 
@@ -149,20 +148,15 @@ async function handleAppsPush(input: {
   // may not exist at all yet.
   await ensureLocalRepo(workspaceId);
   await fetchFromCloud(workspaceId, branch);
-  // A console committed on GitHub (laptop clone, PR merge) is in the index
-  // before anyone opens the app (apps.md §16.3).
-  void syncConsolesIndexFromRepo(workspaceId).catch(error => {
-    logger.warn("Console index sync after GitHub push failed", {
-      workspaceId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  });
-  void syncSkillsIndexFromRepo(workspaceId).catch(error => {
-    logger.warn("Skills index sync after GitHub push failed", {
-      workspaceId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  });
+  // Everything the repo is authoritative for — consoles, skills, dbt jobs and
+  // environments, notebooks — reconciled from the tree we just fetched. This
+  // used to be a local copy of that list holding consoles and skills only, so
+  // a dbt job or notebook edited on GitHub reached Mongo only if someone later
+  // pushed through Mako. It is now the same call the git endpoint makes
+  // (worktree.service.notifyRepoPushed), which is what keeps the two routes
+  // from drifting apart again. Ordering matters: the fetch above must land
+  // first, because dbt's sync deletes jobs absent from the tree it reads.
+  syncRepoBackedResources(workspaceId);
   // Builds run as Inngest work (apps-deploy) — this only decides what changed.
   const requested = await deployAppsForPush({
     workspaceId,
