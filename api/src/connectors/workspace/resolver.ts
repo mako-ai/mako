@@ -140,8 +140,9 @@ export async function listConnectorFoldersAtMain(workspaceId: string): Promise<{
   filesBySlug: Map<string, Map<string, Uint8Array>>;
 }> {
   const repoDir = repoDirFor(workspaceId);
-  if (!(await repoExists(repoDir)))
+  if (!(await repoExists(repoDir))) {
     return { commit: null, slugs: [], filesBySlug: new Map() };
+  }
 
   const commit = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
   if (!commit) return { commit: null, slugs: [], filesBySlug: new Map() };
@@ -208,8 +209,9 @@ async function readSdkFiles(): Promise<Map<string, Uint8Array>> {
 
   const walk = async (dir: string, prefix: string): Promise<void> => {
     for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
-      if (entry.name === "node_modules" || entry.name.endsWith(".test.mjs"))
+      if (entry.name === "node_modules" || entry.name.endsWith(".test.mjs")) {
         continue;
+      }
       const absolute = path.join(dir, entry.name);
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {

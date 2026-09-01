@@ -249,8 +249,9 @@ export class SandboxedConnector extends BaseConnector {
     });
 
     const failure = failureMessage(result);
-    if (failure)
+    if (failure) {
       throw new Error(`read failed for "${options.entity}": ${failure}`);
+    }
 
     const records: unknown[] = [];
     let stateMessage: ProtocolMessage | undefined;

@@ -90,6 +90,26 @@ const DEFAULT_WORKSPACE_INCREMENTAL = {
   mode: "none" as const,
 };
 
+/**
+ * A letter mark for a connector that ships no icon.
+ *
+ * Deterministic from the slug: the same connector is the same colour in every
+ * session and on every machine, which is what makes it usable as an
+ * identifier in a list rather than decoration.
+ */
+function monogramSvg(slug: string): string {
+  let hash = 0;
+  for (const char of slug) hash = (hash * 31 + char.charCodeAt(0)) % 360;
+  const initial = (slug[0] ?? "?").toUpperCase();
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">`,
+    `<rect width="40" height="40" rx="8" fill="hsl(${hash} 52% 46%)"/>`,
+    `<text x="20" y="27" text-anchor="middle" font-family="system-ui,sans-serif"`,
+    ` font-size="20" font-weight="600" fill="#fff">${initial.replace(/[<>&"]/g, "")}</text>`,
+    `</svg>`,
+  ].join("");
+}
+
 const TypeParam = z.object({
   type: z.string().openapi({ param: { name: "type", in: "path" } }),
 });
@@ -258,10 +278,21 @@ connectorRoutes.openapi(
   c => {
     const { type } = c.req.valid("param");
 
+    // An `<img>` carries no workspace header, so a workspace connector's own
+    // icon cannot be fetched from its repo here without putting a tenant id
+    // in a public URL. It gets a generated monogram instead: derived purely
+    // from the slug, so it exposes nothing and still gives the picker a
+    // stable, distinguishable mark per connector.
+    if (isWorkspaceConnectorType(type)) {
+      return c.body(monogramSvg(type.slice(3)), 200, {
+        "Content-Type": "image/svg+xml",
+        "Cache-Control": "public, max-age=3600",
+      });
+    }
+
     // The type becomes a path segment, so it has to be a plain directory
     // name. Without this, `..%2f..%2fsomething` reads an icon.svg from
-    // anywhere on the filesystem the process can reach. Workspace connectors
-    // are excluded here too: their icons live in a git repo, not on this disk.
+    // anywhere on the filesystem the process can reach.
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(type)) {
       return c.json({ success: false, error: "Icon not found" }, 404);
     }

@@ -132,8 +132,9 @@ function formFieldType(
 /** JSON Schema allows `type: ["null", "string"]`; the meaningful one is wanted. */
 function normalizeType(type: unknown): string | undefined {
   if (typeof type === "string") return type;
-  if (Array.isArray(type))
+  if (Array.isArray(type)) {
     return type.find(t => t !== "null") as string | undefined;
+  }
   return undefined;
 }
 
@@ -196,8 +197,9 @@ export function logicalType(
   const format = property?.format;
   // A date-time string is a timestamp to every destination adapter; leaving it
   // a string is how a warehouse ends up unable to partition by it.
-  if (type === "string" && (format === "date-time" || format === "date"))
+  if (type === "string" && (format === "date-time" || format === "date")) {
     return "timestamp";
+  }
   if (type === "integer") return "integer";
   if (type === "number") return "number";
   if (type === "boolean") return "boolean";
