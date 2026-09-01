@@ -11,6 +11,7 @@ import { CONNECTOR_CAPABILITIES } from "./connector-capabilities";
 import { CONSOLE_CAPABILITIES } from "./console-capabilities";
 import { DASHBOARD_CAPABILITIES } from "./dashboard-capabilities";
 import { DBT_CAPABILITIES } from "./dbt-capabilities";
+import { MEMBER_CAPABILITIES } from "./member-capabilities";
 import { NOTEBOOK_CAPABILITIES } from "./notebook-capabilities";
 import { QUERY_CAPABILITIES } from "./query-capabilities";
 import type { AgentCapabilityDefinition, AgentSurface } from "./types";
@@ -23,6 +24,7 @@ export const AGENT_CAPABILITIES: readonly AgentCapabilityDefinition[] = [
   ...QUERY_CAPABILITIES,
   ...NOTEBOOK_CAPABILITIES,
   ...CONNECTOR_CAPABILITIES,
+  ...MEMBER_CAPABILITIES,
 ];
 
 export const AGENT_CAPABILITY_BY_NAME: ReadonlyMap<

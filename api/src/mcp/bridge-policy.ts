@@ -344,6 +344,15 @@ export const MCP_BRIDGE_POLICY: Readonly<Record<string, McpBridgeEntry>> = {
   ),
   update_self_directive: bridge(),
 
+  // ── Workspace membership ──────────────────────────────────────────────
+  // Bridged, but hidden from any key without the members:write scope (the
+  // members-write grant), and refused at execution unless the key's owner is
+  // STILL an owner/admin. Not destructive — an invitation expires and can be
+  // revoked — but it is the only tool that can widen who holds every other
+  // one, so it is the one place a scope alone is not treated as enough.
+  list_workspace_members: bridge(),
+  invite_workspace_member: bridge(),
+
   // ── Version history ───────────────────────────────────────────────────
   browse_version_history: bridge(),
   get_version_snapshot: bridge(),

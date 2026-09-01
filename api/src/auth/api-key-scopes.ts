@@ -17,6 +17,13 @@ import type { CapabilityGrant } from "@mako/agent-tools";
  * so raw DML/DDL requires BOTH a deliberately-scoped key AND a
  * deliberately-flagged connection.
  *
+ * `members:write` maps to the `members-write` grant behind workspace
+ * invitations. It is the one scope that can widen who holds every other
+ * scope, so it is gated twice over: the key must carry it AND the key's
+ * owner must still be an owner/admin of the workspace at call time, checked
+ * on each execution rather than trusted from the key. A key cannot invite
+ * above its owner's own role either — see invite_workspace_member.
+ *
  * None of the write scopes are granted by default; workspace admins opt a
  * key in explicitly.
  */
@@ -26,6 +33,7 @@ export const WORKSPACE_API_KEY_SCOPES = [
   "query:write",
   "warehouse:write",
   "git:write",
+  "members:write",
 ] as const;
 
 export type WorkspaceApiKeyScope = (typeof WORKSPACE_API_KEY_SCOPES)[number];
@@ -127,6 +135,9 @@ export function capabilityGrantsFromScopes(
   }
   if (hasWorkspaceApiKeyScope(scopes, "git:write")) {
     grants.push("git-write");
+  }
+  if (hasWorkspaceApiKeyScope(scopes, "members:write")) {
+    grants.push("members-write");
   }
   return grants;
 }
