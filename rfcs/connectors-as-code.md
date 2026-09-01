@@ -1,4 +1,4 @@
-# RFC: Connectors as code — Airbyte-compatible on day one, native for streaming CDC
+# RFC: Connectors as code — a folder anyone can write, run in the workspace's sandbox
 
 **Status:** proposed
 **Continues:** RFC #936 (agent-authored flows), RFC #904 (flows as code)
@@ -29,10 +29,16 @@ The model is a game console:
    The emulator runs them; they work against every destination on day one.
 
 In one sentence: **a connector is a folder that a runtime turns into a
-process speaking the Airbyte protocol inside the workspace's sandbox,
-adapted into the existing `BaseConnector` so nothing downstream changes.
-The contract is `BaseConnector`, unchanged; the webhook methods become two
-extra commands on the wire.**
+process in the workspace's sandbox, speaking `BaseConnector`'s methods as
+commands over stdio, so nothing downstream changes.**
+
+The message format on that stdio is Airbyte's, taken unchanged. It is a
+JSON line per record and per checkpoint, Singer's shape with more message
+types, and it is what every connector in every corpus worth importing
+already emits. Adopting it verbatim is the whole difference between
+iteration 3 being a runtime and being a translator. Nobody writing a Mako
+connector ever sees it: they write `defineConnector`, and the SDK does the
+talking.
 
 ## 2. Decisions already taken
 
