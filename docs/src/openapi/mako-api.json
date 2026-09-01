@@ -11707,12 +11707,12 @@
         "operationId": "get_api_workspaces_workspaceId_connectors_id_entities"
       }
     },
-    "/api/workspaces/{workspaceId}/connectors/decrypt": {
+    "/api/workspaces/{workspaceId}/connectors/{id}/reveal-secret": {
       "post": {
         "tags": [
           "Connectors"
         ],
-        "summary": "Decrypt a connector value (debug)",
+        "summary": "Reveal one stored secret of a connector (admin/owner only)",
         "security": [
           {
             "cookieAuth": []
@@ -11729,15 +11729,32 @@
             "required": true,
             "name": "workspaceId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
           }
         ],
         "requestBody": {
-          "required": false,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "additionalProperties": {}
+                "properties": {
+                  "field": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "Top-level config field name declared encrypted by the connector's schema."
+                  }
+                },
+                "required": [
+                  "field"
+                ]
               }
             }
           }
@@ -11784,7 +11801,7 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_connectors_decrypt"
+        "operationId": "post_api_workspaces_workspaceId_connectors_id_reveal_secret"
       }
     },
     "/api/workspaces/{workspaceId}/flows": {

@@ -1714,7 +1714,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/workspaces/{workspaceId}/connectors/decrypt": {
+    "/api/workspaces/{workspaceId}/connectors/{id}/reveal-secret": {
         parameters: {
             query?: never;
             header?: never;
@@ -1723,8 +1723,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Decrypt a connector value (debug) */
-        post: operations["post_api_workspaces_workspaceId_connectors_decrypt"];
+        /** Reveal one stored secret of a connector (admin/owner only) */
+        post: operations["post_api_workspaces_workspaceId_connectors_id_reveal_secret"];
         delete?: never;
         options?: never;
         head?: never;
@@ -11546,19 +11546,21 @@ export interface operations {
             };
         };
     };
-    post_api_workspaces_workspaceId_connectors_decrypt: {
+    post_api_workspaces_workspaceId_connectors_id_reveal_secret: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 workspaceId: string;
+                id: string;
             };
             cookie?: never;
         };
         requestBody?: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    /** @description Top-level config field name declared encrypted by the connector's schema. */
+                    field: string;
                 };
             };
         };
