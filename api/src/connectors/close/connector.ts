@@ -26,6 +26,26 @@ import { loggers } from "../../logging";
 
 const logger = loggers.connector("close");
 
+const MAX_CLOSE_ERROR_RESPONSE_LENGTH = 2_000;
+
+export function formatCloseApiErrorResponse(
+  error: unknown,
+): string | undefined {
+  if (!axios.isAxiosError(error) || error.response?.data === undefined) {
+    return undefined;
+  }
+
+  const responseData = error.response.data;
+  const serialized =
+    typeof responseData === "string"
+      ? responseData
+      : JSON.stringify(responseData);
+
+  return serialized.length > MAX_CLOSE_ERROR_RESPONSE_LENGTH
+    ? `${serialized.slice(0, MAX_CLOSE_ERROR_RESPONSE_LENGTH)}...`
+    : serialized;
+}
+
 // Close.com activity types
 const CLOSE_ACTIVITY_TYPES = [
   { name: "Email", label: "Email", description: "Email communications" },
@@ -702,6 +722,7 @@ export class CloseConnector extends BaseConnector {
                         error: axios.isAxiosError(error)
                           ? error.message
                           : String(error),
+                        responseBody: formatCloseApiErrorResponse(error),
                       });
                       return Promise.reject(error);
                     },
