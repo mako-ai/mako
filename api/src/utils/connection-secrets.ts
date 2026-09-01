@@ -15,6 +15,7 @@
  *
  * Pure functions, no I/O — the route and its tests both import from here.
  */
+import { createHash } from "node:crypto";
 
 /** Matches `scheme://user:password@` — capture 2 is the password. */
 export const CONNECTION_STRING_PASSWORD =
@@ -33,7 +34,13 @@ export const SECRET_KEPT = "__mako_secret_kept__";
 const SECRET_FIELD =
   /pass(word|wd)?$|secret|token|api[_-]?key|private[_-]?key|service_account|credential/i;
 
-export function maskPasswordInConnectionString(connectionString: string) {
+/**
+ * NOT exported: masking is fail-OPEN — it only recognises `scheme://user:pass@`
+ * and hands back anything else untouched. Reachable only through
+ * {@link redactConnectionString}, which decides when it is safe to trust.
+ * Exporting it once already put a live credential in the list response.
+ */
+function maskPasswordInConnectionString(connectionString: string) {
   if (!connectionString) return connectionString;
   // protocol://[username:password@]host[:port][/database][?options] — covers
   // mongodb://, mongodb+srv://, postgresql://, mysql://, clickhouse://, ...
@@ -77,6 +84,35 @@ export function redactConnectionString(connectionString: string): string {
     return connectionString;
   }
   return SECRET_KEPT;
+}
+
+/**
+ * A stable, credential-free key identifying the HOST a connection string points
+ * at, for grouping connections in the explorer.
+ *
+ * The list route used to group by `maskPasswordInConnectionString(...)`, which
+ * masks only `scheme://user:pass@` and returns everything else verbatim — so a
+ * ClickHouse string carrying its credential as a query parameter went into the
+ * response in full. That is the same fail-open masking {@link
+ * redactConnectionString} was written to replace, and the list route is the
+ * worse place for it: `GET /{id}` is gated to roles that may edit connections,
+ * while listing is open to every member of the workspace.
+ *
+ * A grouping key never needed the credential, so it does not get one. A URI
+ * yields `scheme://host:port` — userinfo, path and query dropped, which is
+ * legible and groups the way the explorer wants. Anything unparseable falls
+ * back to a digest: still stable, still groups identical strings together, and
+ * reveals nothing about a format we could not prove safe.
+ */
+export function connectionStringGroupKey(connectionString: string): string {
+  if (!connectionString) return "unknown";
+  try {
+    const url = new URL(connectionString);
+    if (url.host) return `${url.protocol}//${url.host}`;
+  } catch {
+    // Not a parseable URI — fall through to the digest.
+  }
+  return `opaque:${createHash("sha256").update(connectionString).digest("hex").slice(0, 16)}`;
 }
 
 /** Strip every credential from a decrypted connection, keeping its shape. */

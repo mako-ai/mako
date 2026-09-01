@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   SECRET_KEPT,
+  connectionStringGroupKey,
   redactConnectionSecrets,
   restoreKeptSecrets,
 } from "./connection-secrets";
@@ -89,6 +90,51 @@ assert.equal(
     .connectionString,
   SECRET_KEPT,
 );
+
+// --- the explorer's grouping key never carries a credential -----------------
+
+// GET /databases (the list) is open to EVERY workspace member, unlike
+// GET /databases/{id}. It used to group by a password-masked connection
+// string, which is fail-open: the query-parameter and DSN shapes above came
+// back verbatim, credential included, to anyone who could open the explorer.
+// The key is host-only now, so there is no credential left to fail open with.
+const SECRET_IN_KEY = "hunter2";
+for (const dsn of [
+  "clickhouse://mako:hunter2@db.example.com:8443/analytics",
+  "clickhouse:https://host.example.com:8443/db?password=hunter2",
+  "clickhouse://host.example.com:8443/db?password=hunter2",
+  "host=db.example.com;port=9000;user=mako;password=hunter2",
+  "sqlserver://host/db;pwd=hunter2",
+  "mongodb://host/db?authSource=admin&secret=shh",
+  "not a uri at all",
+]) {
+  assert.ok(
+    !connectionStringGroupKey(dsn).includes(SECRET_IN_KEY),
+    `group key must not carry the credential: ${dsn}`,
+  );
+}
+
+// It still groups: the key is stable, and two connections to the same host
+// share it however their credentials differ.
+assert.equal(
+  connectionStringGroupKey("clickhouse://a:pw1@db.example.com:8443/analytics"),
+  connectionStringGroupKey("clickhouse://b:pw2@db.example.com:8443/other"),
+);
+assert.notEqual(
+  connectionStringGroupKey("clickhouse://db.example.com:8443/db"),
+  connectionStringGroupKey("clickhouse://other.example.com:8443/db"),
+);
+// Unparseable strings still group with themselves rather than collapsing
+// together into one bucket.
+assert.equal(
+  connectionStringGroupKey("host=a;password=x"),
+  connectionStringGroupKey("host=a;password=x"),
+);
+assert.notEqual(
+  connectionStringGroupKey("host=a;password=x"),
+  connectionStringGroupKey("host=b;password=x"),
+);
+assert.equal(connectionStringGroupKey(""), "unknown");
 
 // Provably credential-free URIs stay legible — over-redacting these would cost
 // the edit dialog its usefulness for nothing.
