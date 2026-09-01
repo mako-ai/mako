@@ -45,7 +45,9 @@ import { tool } from "ai";
 import { z } from "zod";
 
 import { loggers } from "../../logging";
+import { Flow } from "../../database/workspace-schema";
 import {
+  flowToFile,
   parseFlowFile,
   slugFromFlowFilePath,
 } from "../../services/flow-config-files";
@@ -212,7 +214,7 @@ export async function checkFlowFiles(input: {
     if (proposedByPath.delete(path)) overlay.deleted.push(path);
   }
 
-  /** Caller files whose contents cannot be loaded — absence, to the reactor. */
+  /** Caller files whose contents cannot be loaded — a no-op, to the reactor. */
   const unparseableSlugs = new Set<string>();
   for (const file of files) {
     const slug = slugFromFlowFilePath(file.path);
@@ -231,19 +233,32 @@ export async function checkFlowFiles(input: {
     if (!parseFlowFile(file.contents)) unparseableSlugs.add(slug);
   }
 
-  const plannedFrom = (
+  const plannedFrom = async (
     entries: Iterable<[string, { contents: string; pendingApply: boolean }]>,
-  ): PlannedFlow[] => {
+  ): Promise<PlannedFlow[]> => {
     const planned: PlannedFlow[] = [];
     for (const [path, { contents, pendingApply }] of entries) {
       const slug = slugFromFlowFilePath(path);
       if (!slug) continue;
       const file = parseFlowFile(contents);
-      // A file that does not parse is left OUT, exactly as `syncFlowsFromRepo`
-      // leaves it out of its desired set. That is faithful rather than kind:
-      // the reconciler reads the resulting absence as a removal.
-      if (!file) continue;
-      planned.push({ slug, file, pendingApply });
+      if (file) {
+        planned.push({ slug, file, pendingApply });
+        continue;
+      }
+      // A file that does not parse KEEPS the current row, in both halves:
+      // `syncFlowsFromRepo` stands the row's own definition in for it so the
+      // reconciler sees the flow present and unchanged. Model that exactly —
+      // the row's definition, nothing pending — so the plan matches what the
+      // push does. With no row there is nothing to keep, and nothing to
+      // create either.
+      const row = await Flow.findOne({ workspaceId, slug });
+      if (!row) continue;
+      planned.push({
+        slug,
+        file: flowToFile(row),
+        flowId: String(row._id),
+        pendingApply: false,
+      });
     }
     return planned;
   };
@@ -253,7 +268,7 @@ export async function checkFlowFiles(input: {
     .map(f => f.path);
   if (baselineInvalid.length > 0) {
     notes.push(
-      `Already in the repo and not parseable: ${baselineInvalid.join(", ")}. The push path skips such a file, which the reconciler reads as absence — that is why they appear under preExisting.`,
+      `Already in the repo and not parseable: ${baselineInvalid.join(", ")}. A push keeps their current rows untouched, in both definition and stream; nothing about them changes until the file parses again.`,
     );
   }
 
@@ -268,11 +283,11 @@ export async function checkFlowFiles(input: {
   ]);
   const baselinePlan = await dryRunFlowReconcile({
     workspaceId,
-    desired: plannedFrom(baselineEntries),
+    desired: await plannedFrom(baselineEntries),
   });
   const proposedPlan = await dryRunFlowReconcile({
     workspaceId,
-    desired: plannedFrom(proposedByPath.entries()),
+    desired: await plannedFrom(proposedByPath.entries()),
   });
 
   const created = sortedDiff(
@@ -296,23 +311,21 @@ export async function checkFlowFiles(input: {
   }
 
   // Teardown attribution is by explicit intent ONLY — the caller said "I
-  // deleted this", or handed over a file that cannot be loaded. A flow whose
-  // file is simply not in the repo is torn down by any push, with or without
-  // this change, and saying otherwise is the exact false alarm this tool must
-  // never raise.
-  const wouldTeardown = proposedPlan.wouldTeardown.filter(
-    slug => deletedSlugs.has(slug) || unparseableSlugs.has(slug),
+  // deleted this". A flow whose file is simply not in the repo is torn down
+  // by any push, with or without this change, and saying otherwise is the
+  // exact false alarm this tool must never raise. An unparseable file is
+  // neither: the push keeps that row as it is.
+  const wouldTeardown = proposedPlan.wouldTeardown.filter(slug =>
+    deletedSlugs.has(slug),
   );
   const teardownPreExisting = proposedPlan.wouldTeardown.filter(
-    slug => !deletedSlugs.has(slug) && !unparseableSlugs.has(slug),
+    slug => !deletedSlugs.has(slug),
   );
 
-  for (const slug of wouldTeardown) {
-    if (unparseableSlugs.has(slug)) {
-      notes.push(
-        `\`${slug}\`: the file you passed does not parse. Pushing it is worse than a no-op — the sync path skips an unparseable file, and the reconciler reads that absence as a removal, so the flow and its checkpoints go. Fix the file before committing.`,
-      );
-    }
+  for (const slug of unparseableSlugs) {
+    notes.push(
+      `\`${slug}\`: the file you passed does not parse. Pushing it changes nothing — the sync keeps the current row (if any) untouched and logs a warning you will not see — so the edit you intended will silently not happen. Fix the file before committing.`,
+    );
   }
   if (teardownPreExisting.length > 0) {
     notes.push(
@@ -374,7 +387,7 @@ export function createFlowFileTools(workspaceId: string) {
       description: [
         "Check proposed `flows/<slug>.yml` files BEFORE committing them: whether each parses, whether the connector/connection ids it names exist in this workspace, whether the flow row it describes would actually save, and what the resulting push would do to running syncs (create, reconfigure, tear down).",
         "Pass ONLY the files you added or changed. The rest of `flows/` is read from the workspace repo's main branch and merged underneath yours, so a flow you do not mention is never read as deleted.",
-        "To check a DELETION, name its path in `deletedPaths`. That, or a file that fails to parse, is the only way a teardown is attributed to you — and a teardown deletes the flow and disposes its CDC checkpoints, which re-adding the file does not recover.",
+        "To check a DELETION, name its path in `deletedPaths`. That is the only way a teardown is attributed to you — and a teardown deletes the flow and disposes its CDC checkpoints, which re-adding the file does not recover.",
         "Read-only: nothing is created, changed, deleted, or committed, and this never pushes.",
       ].join("\n"),
       inputSchema: z.object({

@@ -187,6 +187,32 @@ describe("one bad file is that file's problem", () => {
     expect(await Flow.countDocuments({ workspaceId: WS })).toBe(1);
   });
 
+  it("a YAML typo in an EXISTING flow's file is a no-op, not a teardown", async () => {
+    // The definition half always "kept the current row" for an unparseable
+    // file. The stream half did not: the row was left out of the desired set,
+    // the reconciler read that absence as a removal, and — guard permitting —
+    // tore the flow down and disposed its checkpoints. So `deferred` is the
+    // tell here: a reconciler that WANTS the removal but cannot verify the
+    // tree reports it there; one that never wanted it reports nothing.
+    await push({
+      "flows/close-to-bigquery.yml": flowYaml("Close → BigQuery"),
+      "flows/other.yml": flowYaml("Other"),
+    });
+    await syncFlowsFromRepo(WS, "user-42");
+    const before = await Flow.findOne({ workspaceId: WS, slug: "close-to-bigquery" });
+
+    await push({ "flows/close-to-bigquery.yml": "name: [broken\n" });
+    const result = await syncFlowsFromRepo(WS, "user-42");
+
+    expect(result.invalid).toEqual(["close-to-bigquery"]);
+    expect(result.deferred).toEqual([]);
+    const after = await Flow.findOne({ workspaceId: WS, slug: "close-to-bigquery" });
+    expect(after).not.toBeNull();
+    expect(after!.name).toBe(before!.name);
+    expect(after!.sourceBlobSha).toBe(before!.sourceBlobSha);
+    expect(await Flow.countDocuments({ workspaceId: WS })).toBe(2);
+  });
+
   it("a failed save on an EXISTING row keeps that row as it was", async () => {
     await push({ "flows/close-to-bigquery.yml": flowYaml("Close → BigQuery") });
     await syncFlowsFromRepo(WS, "user-42");

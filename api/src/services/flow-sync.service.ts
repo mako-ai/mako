@@ -45,6 +45,7 @@ import {
 import { Flow, type IFlow } from "../database/workspace-schema";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import {
+  flowToFile,
   parseFlowFile,
   slugFromFlowFilePath,
   type FlowFile,
@@ -391,10 +392,16 @@ export async function syncFlowsFromRepo(
     // The desired set is EVERY file present, not only the changed ones: the
     // reconciler derives removals from it, so omitting an unchanged file would
     // read as "this flow was deleted" and tear down a live stream.
-    if (row && parsedForDesired) {
+    //
+    // That includes a file that does not PARSE. "Keeping the current row" has
+    // to mean the reconciler sees the row too, or the definition half keeps
+    // it while the stream half tears it down and disposes its checkpoints — a
+    // YAML typo as a teardown. So the row's own current definition stands in
+    // for the file: same slug, same selection, nothing stale, nothing removed.
+    if (row) {
       desired.push({
         slug,
-        file: parsedForDesired,
+        file: parsedForDesired ?? flowToFile(row),
         flowId: String(row._id),
       });
     }
