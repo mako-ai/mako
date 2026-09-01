@@ -60,12 +60,28 @@ function assertNotProduction(): void {
   }
 }
 
+/**
+ * Session keys are `<workspaceId>:<userId>` — and that colon must not reach a
+ * directory name. npm prepends every ancestor `node_modules/.bin` to a
+ * script's PATH, PATH is colon-separated, and a colon in the session path
+ * split each of those entries into two garbage halves: every `npm run` under
+ * this provider failed with "vite: not found" while the binary sat right
+ * there. (E2B never sees this — the microVM's working copy is a fixed path.)
+ */
+function dirNameFor(sessionKey: string): string {
+  return sessionKey.replace(/[^A-Za-z0-9._-]+/g, "_");
+}
+
 function rootFor(ctx: SandboxExecContext): string {
-  return path.join(appsSessionsRoot(), "local", ctx.sessionKey);
+  return path.join(appsSessionsRoot(), "local", dirNameFor(ctx.sessionKey));
 }
 
 function scratchFor(ctx: SandboxExecContext): string {
-  return path.join(os.tmpdir(), "mako-local-sandbox", ctx.sessionKey);
+  return path.join(
+    os.tmpdir(),
+    "mako-local-sandbox",
+    dirNameFor(ctx.sessionKey),
+  );
 }
 
 /**

@@ -188,11 +188,19 @@ function launcherSource(
   stagedDataDir: string,
   slug: string,
   boxEnv: string,
+  appEnv: Record<string, string>,
 ): string {
   return `
 import { createServer } from "${appDir}/node_modules/vite/dist/node/index.js";
 import { appendFileSync, createReadStream, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+
+// The app's env vault (env.service, dev tier — secrets included), baked into
+// the launcher rather than inherited: inheritance survives dtach and nohup
+// but NOT the tmux fallback, whose sessions take the tmux server's
+// environment instead of the client's. Assigned before createServer() runs,
+// so Vite's env resolution sees it and VITE_* reaches import.meta.env.
+Object.assign(process.env, ${JSON.stringify(appEnv)});
 
 // Tell Mako the moment this server is up or gone, instead of leaving the UI
 // to discover it on a poll. Best effort: the API address and token are read
@@ -861,7 +869,10 @@ async function ensureDevServerLaunch(
 ): Promise<DevPreview> {
   const provider = getSandboxProvider();
   const ctx = await ensureBox(handle);
-  const appDir = `/home/user/app/${handle.appRoot}`;
+  // The provider knows where the working copy lives — hardcoding the E2B
+  // path here made every local-provider dev preview die on a launcher that
+  // imported vite from a directory that only exists in a microVM.
+  const appDir = `${provider.root(ctx)}/${handle.appRoot}`;
 
   await provider.keepAlive(ctx, DEV_SESSION_KEEPALIVE_MS);
 
@@ -948,7 +959,7 @@ async function ensureDevServerLaunch(
     }
     const write = await provider.exec(
       ctx,
-      `cat > ${launcher} <<'MAKO_LAUNCHER_EOF'\n${launcherSource(appDir, port, dataDir(handle), appSlug(handle), boxEnvPath(ctx))}\nMAKO_LAUNCHER_EOF\necho written`,
+      `cat > ${launcher} <<'MAKO_LAUNCHER_EOF'\n${launcherSource(appDir, port, dataDir(handle), appSlug(handle), boxEnvPath(ctx), appEnv)}\nMAKO_LAUNCHER_EOF\necho written`,
       { timeoutMs: 30_000 },
     );
     if (write.exitCode !== 0) {
@@ -975,7 +986,11 @@ async function ensureDevServerLaunch(
       // reported as down forever. With the guard, the loser's dtach -n just
       // fails against the existing socket and the winner is untouched.
       `if command -v dtach >/dev/null && command -v script >/dev/null; then if ! pgrep -f "dtach -n ${devSock}" >/dev/null 2>&1; then rm -f ${devSock}; fi; dtach -n ${devSock} script -qfa -c 'node ${launcher} 2>&1' ${logPath} || true; ` +
-      `elif command -v tmux >/dev/null; then tmux new-session -d -s ${devSession} 'node ${launcher} 2>&1 | tee -a ${logPath}' 2>/dev/null || true; ` +
+      // A stale same-name session (its process reaped, tmux shell lingering)
+      // makes new-session fail SILENTLY under the `|| true` — the launch
+      // no-ops and the poll below times out. Clear it first; the port's
+      // owner was already reaped by the caller.
+      `elif command -v tmux >/dev/null; then tmux kill-session -t ${devSession} 2>/dev/null; tmux new-session -d -s ${devSession} 'node ${launcher} 2>&1 | tee -a ${logPath}' 2>/dev/null || true; ` +
       `else nohup node ${launcher} >> ${logPath} 2>&1 & fi; echo started`;
     try {
       await provider.execDetached(ctx, launchCmd, {
