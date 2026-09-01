@@ -25,24 +25,45 @@ import { useRepoStore } from "../store/repoStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent, resetIdentity } from "../lib/analytics";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { tabRevealTarget } from "../lib/explorer-reveal";
 
+/**
+ * The rail answers TWO questions, and conflating them is confusing.
+ *
+ * `isActive` is "this explorer's panel is the one on screen". `ownsActiveTab`
+ * is "the tab you are looking at lives in here". They are independent by
+ * design — browsing the Databases tree while editing a console is a real
+ * workflow, and a reload deliberately restores the panel you had rather than
+ * the one the URL implies (see UrlSync's isReload note).
+ *
+ * With only the selected-background state, a rail showing Settings while the
+ * address bar said /apps/ubiflow read as "Settings is the active app". So the
+ * two facts now look different: selected background for the open panel, brand
+ * colour for the explorer holding the open tab.
+ */
 const NavButton = styled(Button, {
-  shouldForwardProp: prop => prop !== "isActive",
-})<{ isActive?: boolean }>(({ theme, isActive }) => ({
-  minWidth: 40,
-  width: 40,
-  height: 40,
-  padding: 0,
-  borderRadius: 8,
-  backgroundColor: isActive ? theme.palette.action.selected : "transparent",
-  color: isActive ? theme.palette.text.primary : theme.palette.text.secondary,
-  "&:hover": {
-    backgroundColor: isActive
-      ? theme.palette.action.selected
-      : theme.palette.action.hover,
-  },
-  transition: "all 0.2s ease",
-}));
+  shouldForwardProp: prop => prop !== "isActive" && prop !== "ownsActiveTab",
+})<{ isActive?: boolean; ownsActiveTab?: boolean }>(
+  ({ theme, isActive, ownsActiveTab }) => ({
+    minWidth: 40,
+    width: 40,
+    height: 40,
+    padding: 0,
+    borderRadius: 8,
+    backgroundColor: isActive ? theme.palette.action.selected : "transparent",
+    color: isActive
+      ? theme.palette.text.primary
+      : ownsActiveTab
+        ? theme.palette.primary.main
+        : theme.palette.text.secondary,
+    "&:hover": {
+      backgroundColor: isActive
+        ? theme.palette.action.selected
+        : theme.palette.action.hover,
+    },
+    transition: "all 0.2s ease",
+  }),
+);
 
 // Views that can appear in the sidebar navigation. Extends the core AppView
 // union with additional sidebar-specific entries that don't directly map to
@@ -309,6 +330,15 @@ function Sidebar() {
   // the last-selected view retained across collapse — to decide which icon
   // is highlighted, so collapsing the pane clears the highlight.
   const activeExplorer = useUIStore(selectActiveExplorer);
+  // Which explorer holds the tab currently in the editor. Returns a primitive
+  // so this only re-renders when the answer actually changes, not on every
+  // keystroke in the tab. Tabs with no sidebar home (settings, plans) map to
+  // null and mark nothing.
+  const activeTabExplorer = useConsoleStore(state => {
+    const id = state.activeTabId;
+    const tab = id ? state.tabs[id] : null;
+    return tabRevealTarget(tab)?.explorer ?? null;
+  });
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
   const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
   const setLeftPane = useUIStore(state => state.setLeftPane);
@@ -371,11 +401,26 @@ function Sidebar() {
           {topNavigationItems.map(item => {
             const Icon = item.icon;
             const isActive = activeExplorer === item.view;
+            const ownsActiveTab = activeTabExplorer === item.view;
 
             return (
-              <Tooltip key={item.view} title={item.label} placement="right">
+              <Tooltip
+                key={item.view}
+                title={
+                  ownsActiveTab && !isActive
+                    ? `${item.label} — holds the open tab`
+                    : item.label
+                }
+                placement="right"
+              >
                 <NavButton
                   isActive={isActive}
+                  ownsActiveTab={ownsActiveTab}
+                  // Stable hooks for tests: the two states are otherwise only
+                  // visible as emotion-generated colours.
+                  data-view={item.view}
+                  data-open-explorer={isActive ? "true" : "false"}
+                  data-owns-active-tab={ownsActiveTab ? "true" : "false"}
                   onClick={() => handleNavigation(item.view as NavigationView)}
                   onMouseEnter={
                     item.view === "dashboards"
@@ -446,11 +491,26 @@ function Sidebar() {
             // Settings is now a real explorer — track `activeExplorer` like
             // every other rail so collapsing the pane clears the highlight.
             const isActive = activeExplorer === item.view;
+            const ownsActiveTab = activeTabExplorer === item.view;
 
             return (
-              <Tooltip key={item.view} title={item.label} placement="right">
+              <Tooltip
+                key={item.view}
+                title={
+                  ownsActiveTab && !isActive
+                    ? `${item.label} — holds the open tab`
+                    : item.label
+                }
+                placement="right"
+              >
                 <NavButton
                   isActive={isActive}
+                  ownsActiveTab={ownsActiveTab}
+                  // Stable hooks for tests: the two states are otherwise only
+                  // visible as emotion-generated colours.
+                  data-view={item.view}
+                  data-open-explorer={isActive ? "true" : "false"}
+                  data-owns-active-tab={ownsActiveTab ? "true" : "false"}
                   onClick={() => handleNavigation(item.view as NavigationView)}
                 >
                   <Icon strokeWidth={1.5} />
