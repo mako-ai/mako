@@ -86,16 +86,26 @@ class DatabaseDataSourceManager {
    */
   private async getConnectorSchema(
     connectorType: string,
+    workspaceId?: string,
   ): Promise<ConnectorSchema | null> {
-    const cachedSchema = this.schemaCache.get(connectorType);
+    // A workspace connector's schema belongs to ONE workspace: two of them
+    // can each define a connector of the same name with different fields, so
+    // the cache key has to carry the workspace or one tenant's schema would
+    // decide which of another tenant's fields are secret.
+    const cacheKey = workspaceId
+      ? `${workspaceId}:${connectorType}`
+      : connectorType;
+    const cachedSchema = this.schemaCache.get(cacheKey);
     if (cachedSchema) {
       return cachedSchema;
     }
     // Ask the connector registry for the live schema
-    const schema =
-      await syncConnectorRegistry.getConfigSchemaForType(connectorType);
+    const schema = await syncConnectorRegistry.getConfigSchemaForType(
+      connectorType,
+      workspaceId,
+    );
     if (schema && schema.fields) {
-      this.schemaCache.set(connectorType, schema as ConnectorSchema);
+      this.schemaCache.set(cacheKey, schema as ConnectorSchema);
       return schema as ConnectorSchema;
     }
     logger.warn("No schema found for connector type", { connectorType });
@@ -126,7 +136,11 @@ class DatabaseDataSourceManager {
         description: source.description,
         type: source.type,
         active: source.isActive,
-        connection: await this.decryptConfig(source.config, source.type),
+        connection: await this.decryptConfig(
+          source.config,
+          source.type,
+          source.workspaceId ? String(source.workspaceId) : undefined,
+        ),
         settings: {
           sync_batch_size: source.settings?.sync_batch_size || 100,
           rate_limit_delay_ms: source.settings?.rate_limit_delay_ms || 200,
@@ -164,7 +178,11 @@ class DatabaseDataSourceManager {
       description: source.description,
       type: source.type,
       active: source.isActive,
-      connection: await this.decryptConfig(source.config, source.type),
+      connection: await this.decryptConfig(
+        source.config,
+        source.type,
+        source.workspaceId ? String(source.workspaceId) : undefined,
+      ),
       settings: {
         sync_batch_size: source.settings?.sync_batch_size || 100,
         rate_limit_delay_ms: source.settings?.rate_limit_delay_ms || 200,
@@ -192,7 +210,11 @@ class DatabaseDataSourceManager {
         description: source.description,
         type: source.type,
         active: source.isActive,
-        connection: await this.decryptConfig(source.config, source.type),
+        connection: await this.decryptConfig(
+          source.config,
+          source.type,
+          source.workspaceId ? String(source.workspaceId) : undefined,
+        ),
         settings: {
           sync_batch_size: source.settings?.sync_batch_size || 100,
           rate_limit_delay_ms: source.settings?.rate_limit_delay_ms || 200,
@@ -269,10 +291,11 @@ class DatabaseDataSourceManager {
   private async decryptConfig(
     config: any,
     connectorType: string,
+    workspaceId?: string,
   ): Promise<any> {
     if (!config) return config;
 
-    const schema = await this.getConnectorSchema(connectorType);
+    const schema = await this.getConnectorSchema(connectorType, workspaceId);
     if (!schema) {
       logger.warn("No schema found for connector type, skipping decryption", {
         connectorType,

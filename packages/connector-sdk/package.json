@@ -1,0 +1,46 @@
+{
+  "name": "@makoai/connector-sdk",
+  "version": "0.1.0",
+  "description": "Write a Mako connector: check, discover and read, with HTTP retries and pagination handled.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mako-ai/mako.git",
+    "directory": "packages/connector-sdk"
+  },
+  "homepage": "https://docs.mako.ai/mcp-server/",
+  "keywords": [
+    "mako",
+    "connector",
+    "etl",
+    "elt"
+  ],
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "bin": {
+    "mako-connector": "bin/mako-connector.js"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "src",
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

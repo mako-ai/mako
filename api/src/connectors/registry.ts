@@ -7,6 +7,10 @@ import { IConnector } from "../database/workspace-schema";
 import * as fs from "fs";
 import * as path from "path";
 import { loggers } from "../logging";
+import {
+  isWorkspaceConnectorType,
+  SandboxedConnector,
+} from "./workspace/SandboxedConnector";
 
 const logger = loggers.connector();
 
@@ -197,8 +201,18 @@ class ConnectorRegistry {
 
   /**
    * Get a connector instance for a data source
+   *
+   * A `ws:` type is a connector the workspace itself wrote, which lives in its
+   * git repo rather than in this directory. It resolves to one adapter class
+   * whose methods run the folder in a sandbox — the instance is built here
+   * without touching Mongo or a sandbox, because this is a hot, synchronous
+   * path and constructing a connector must never boot a machine.
    */
   getConnector(dataSource: IConnector): BaseConnector | null {
+    if (isWorkspaceConnectorType(dataSource.type)) {
+      return new SandboxedConnector(dataSource);
+    }
+
     const metadata = this.connectors.get(dataSource.type);
     if (!metadata) {
       return null;
@@ -231,6 +245,12 @@ class ConnectorRegistry {
 
   /**
    * Check if a connector type is registered
+   *
+   * Workspace connectors are deliberately NOT answered here. Whether
+   * `ws:acme` exists depends on which workspace is asking, and a global
+   * yes/no would either leak one workspace's connectors into another's or
+   * refuse every one of them. Callers with a workspace in hand use
+   * `hasWorkspaceConnector` instead.
    */
   hasConnector(type: string): boolean {
     return this.connectors.has(type);

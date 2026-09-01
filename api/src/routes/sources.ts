@@ -3,6 +3,8 @@ import { decryptEncrypted, encryptString } from "../services/crypto.service";
 import { Connector as DataSource } from "../database/workspace-schema";
 import { connectorRegistry } from "../connectors/registry";
 import { syncConnectorRegistry } from "../sync/connector-registry";
+import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
+import { connectorTypeExists } from "../connectors/workspace/catalog";
 import { databaseDataSourceManager } from "../sync/database-data-source-manager";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
@@ -262,8 +264,22 @@ dataSourceRoutes.openapi(
         );
       }
 
-      // Check if connector type is supported
-      if (!connectorRegistry.hasConnector(body.type)) {
+      // Check if connector type is supported. A `ws:` type is one this
+      // workspace wrote, so the answer comes from its index rather than from
+      // the global registry, and a blocked connector is refused here rather
+      // than at the first sync.
+      if (isWorkspaceConnectorType(body.type)) {
+        if (!workspaceId) {
+          return c.json(
+            { success: false, error: "workspaceId is required" },
+            400,
+          );
+        }
+        const exists = await connectorTypeExists(body.type, workspaceId);
+        if (!exists.ok) {
+          return c.json({ success: false, error: exists.reason }, 400);
+        }
+      } else if (!connectorRegistry.hasConnector(body.type)) {
         return c.json(
           {
             success: false,
@@ -276,6 +292,7 @@ dataSourceRoutes.openapi(
       // Load connector schema for schema-driven encryption
       const schema = await syncConnectorRegistry.getConfigSchemaForType(
         body.type,
+        workspaceId,
       );
 
       // Create connector
@@ -396,6 +413,7 @@ dataSourceRoutes.openapi(
         if (configChanged) {
           const schema = await syncConnectorRegistry.getConfigSchemaForType(
             dataSource.type,
+            workspaceId,
           );
           dataSource.config = applySchemaEncryption(newConfig, schema);
           hasChanges = true;
@@ -792,14 +810,10 @@ dataSourceRoutes.openapi(
         content: {
           "application/json": {
             schema: z.object({
-              field: z
-                .string()
-                .min(1)
-                .max(128)
-                .openapi({
-                  description:
-                    "Top-level config field name declared encrypted by the connector's schema.",
-                }),
+              field: z.string().min(1).max(128).openapi({
+                description:
+                  "Top-level config field name declared encrypted by the connector's schema.",
+              }),
             }),
           },
         },
@@ -849,6 +863,7 @@ dataSourceRoutes.openapi(
       // so this cannot be used to walk arbitrary config.
       const schema = await syncConnectorRegistry.getConfigSchemaForType(
         (dataSource as { type: string }).type,
+        workspaceId,
       );
       const declared = (schema?.fields ?? []).find(
         (f: ConnectorFieldSchema) => f.name === field,
@@ -866,7 +881,10 @@ dataSourceRoutes.openapi(
       const stored = (dataSource as { config?: Record<string, unknown> })
         .config?.[field];
       if (typeof stored !== "string" || !stored) {
-        return c.json({ success: true, data: { value: "", wasEncrypted: false } });
+        return c.json({
+          success: true,
+          data: { value: "", wasEncrypted: false },
+        });
       }
 
       logger.info("Connector secret revealed", {

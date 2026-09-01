@@ -3,6 +3,11 @@ import fs from "fs";
 import path from "path";
 
 import { connectorRegistry } from "../connectors/registry";
+import { isWorkspaceConnectorType } from "../connectors/workspace/SandboxedConnector";
+import {
+  listWorkspaceConnectors,
+  workspaceConnectorForm,
+} from "../connectors/workspace/catalog";
 import {
   createRouter,
   errorJson,
@@ -63,6 +68,28 @@ const ConnectorMetadataSchema = z
   })
   .openapi("ConnectorMetadata");
 
+/**
+ * What a workspace connector claims it can do, today.
+ *
+ * Both false on purpose. Webhooks are not part of this iteration, and an
+ * incremental cursor is declared per stream in `discover`, which is not known
+ * without a credential. Claiming either would let the flow form offer a sync
+ * mode the connector cannot honour.
+ */
+const DEFAULT_WORKSPACE_WEBHOOK = {
+  supported: false,
+  provisioning: {
+    supported: false,
+    providerLabel: "Provider",
+    storesSecretAutomatically: false,
+  },
+};
+
+const DEFAULT_WORKSPACE_INCREMENTAL = {
+  supported: false,
+  mode: "none" as const,
+};
+
 const TypeParam = z.object({
   type: z.string().openapi({ param: { name: "type", in: "path" } }),
 });
@@ -84,16 +111,38 @@ connectorRoutes.openapi(
       500: errorJson("Internal server error"),
     },
   }),
-  c => {
+  async c => {
     try {
       const connectors = connectorRegistry.getAllMetadata();
+      const built = connectors.map(entry => ({
+        type: entry.type,
+        ...entry.metadata,
+      }));
+
+      // A workspace's own connectors are appended when the caller identifies
+      // one. The route is public and unauthenticated, so an absent or unknown
+      // workspace simply yields the built-in list rather than an error: this
+      // must never become a way to enumerate another tenant's connectors.
+      const workspaceId = c.req.header("x-workspace-id");
+      const own = workspaceId
+        ? await listWorkspaceConnectors(workspaceId).catch(() => [])
+        : [];
+
       return c.json(
         {
           success: true as const,
-          data: connectors.map(entry => ({
-            type: entry.type,
-            ...entry.metadata,
-          })),
+          data: [
+            ...built,
+            ...own.map(entry => ({
+              type: entry.type,
+              name: entry.name,
+              version: entry.version,
+              description: entry.description,
+              supportedEntities: entry.supportedEntities,
+              webhook: DEFAULT_WORKSPACE_WEBHOOK,
+              incremental: DEFAULT_WORKSPACE_INCREMENTAL,
+            })),
+          ],
         },
         200,
       );
@@ -127,8 +176,44 @@ connectorRoutes.openapi(
       404: errorJson("Connector or schema not found"),
     },
   }),
-  c => {
+  async c => {
     const { type } = c.req.valid("param");
+
+    // A workspace connector has no class to call a static method on: its form
+    // is derived from the `spec` captured when it was pushed, so this stays a
+    // single Mongo read and never boots a sandbox.
+    if (isWorkspaceConnectorType(type)) {
+      const workspaceId = c.req.header("x-workspace-id");
+      if (!workspaceId) {
+        return c.json(
+          {
+            success: false,
+            error: "A workspace connector needs a workspace context",
+          },
+          404,
+        );
+      }
+      try {
+        const form = await workspaceConnectorForm(workspaceId, type);
+        return c.json(
+          {
+            success: true as const,
+            data: form as unknown as Record<string, unknown>,
+          },
+          200,
+        );
+      } catch (error) {
+        return c.json(
+          {
+            success: false,
+            error:
+              error instanceof Error ? error.message : "Connector not found",
+          },
+          404,
+        );
+      }
+    }
+
     const metadata = connectorRegistry.getMetadata(type);
     if (!metadata) {
       return c.json({ success: false, error: "Connector not found" }, 404);
@@ -172,6 +257,14 @@ connectorRoutes.openapi(
   }),
   c => {
     const { type } = c.req.valid("param");
+
+    // The type becomes a path segment, so it has to be a plain directory
+    // name. Without this, `..%2f..%2fsomething` reads an icon.svg from
+    // anywhere on the filesystem the process can reach. Workspace connectors
+    // are excluded here too: their icons live in a git repo, not on this disk.
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(type)) {
+      return c.json({ success: false, error: "Icon not found" }, 404);
+    }
 
     let iconPath = path.resolve(
       __dirname,
