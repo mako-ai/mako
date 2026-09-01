@@ -1026,7 +1026,7 @@ jobs:
             --timeout=3600 \
             --memory=4Gi \
             --concurrency=80 \
-            --min-instances=1 \
+            --min-instances=3 \
             --max-instances=15 \
             --allow-unauthenticated \
             --network=mako-vpc \
