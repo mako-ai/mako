@@ -103,6 +103,7 @@ import { createAppsScaffold } from "./scaffold";
 import {
   ensureCommitLocally,
   ensureLocalRepo,
+  freshenBeforeMainWrite,
   mirrorPushNow,
   resolveMirrorTarget,
   queueMirrorPush,
@@ -1839,6 +1840,9 @@ export async function mergeBranchToMain(
       reason: "Cannot merge the default branch into itself",
     };
   }
+  // Merge onto the mirror's main, not a stale cached tip (see
+  // freshenBeforeMainWrite for why that would be unmirrorable).
+  await freshenBeforeMainWrite(scope.workspaceId);
   const mainRef = `refs/heads/${defaultBranch}`;
   const branchHead = await resolveCommit(repoDir, `refs/heads/${branch}`);
   const mainHead = await resolveCommit(repoDir, mainRef);

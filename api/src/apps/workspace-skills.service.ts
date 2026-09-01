@@ -25,6 +25,7 @@ import { extractEntities } from "../agent-lib/entity-extraction";
 import { loggers } from "../logging";
 import {
   ensureWorkspaceRepo,
+  freshenBeforeMainWrite,
   queueMirrorPush,
   resolveMirrorTarget,
 } from "./cloud-repo.service";
@@ -131,6 +132,8 @@ export async function commitSkillSave(
 ): Promise<void> {
   await assertDurableWritable(workspaceId);
   const repoDir = await ensureWorkspaceRepo(workspaceId, options.author);
+  // Commit onto the mirror's main, not a stale cached tip.
+  await freshenBeforeMainWrite(workspaceId);
   const writes: Record<string, string> = {};
   let message = `Save skill "${skill.name}"`;
   if (!(await skillsAdopted(repoDir))) {
@@ -180,6 +183,7 @@ export async function commitSkillDelete(
   if (!SKILL_NAME_RE.test(name)) return false;
   const repoDir = repoDirFor(workspaceId);
   if (!(await repoExists(repoDir))) return false;
+  await freshenBeforeMainWrite(workspaceId);
   const deletes = await skillFolderPaths(repoDir, name);
   if (deletes.length === 0) return false;
   await commitBlobsOnBranch(
@@ -205,6 +209,7 @@ export async function commitSkillSuppressed(
   if (!SKILL_NAME_RE.test(name)) return false;
   const repoDir = repoDirFor(workspaceId);
   if (!(await repoExists(repoDir))) return false;
+  await freshenBeforeMainWrite(workspaceId);
   const path = skillFilePath(name);
   const raw = await readRepoFile(repoDir, path);
   const parsed = raw === null ? null : parseSkillFile(name, raw);

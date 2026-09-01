@@ -30,7 +30,11 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import type { Context } from "hono";
 import { appsReposRoot } from "../apps/config";
-import { ensureLocalRepo, freshenForServe } from "../apps/cloud-repo.service";
+import {
+  ensureLocalRepo,
+  freshenBeforeMainWrite,
+  freshenForServe,
+} from "../apps/cloud-repo.service";
 import { DEFAULT_BRANCH, repoExists } from "../apps/repository.service";
 import { GitTokenError, verifyGitToken } from "../apps/git-token.service";
 import { notifyRepoPushed } from "../apps/worktree.service";
@@ -222,13 +226,21 @@ async function serveGit(c: Context): Promise<Response> {
   // (GitHub webhook, publish, another window's push): pull the mirror —
   // throttled — before advertising refs or answering upload-pack, or a
   // just-pushed sha is `not our ref` here even though the workspace has it.
-  // Pushes skip this: receive-pack only appends, and the post-receive hook
-  // mirrors outward.
+  // A PUSH is judged against the refs advertised here, so they must be the
+  // mirror's, un-throttled: a push accepted against a stale main is a
+  // fast-forward of the WRONG tip — locally fine, unmirrorable forever after
+  // (the mirror rejects it non-fast-forward), and the instance's publishes
+  // die with it (seen in prod, 2026-09-01). The receive-pack POST itself
+  // needs no freshen: git checks the client's reported old tips against the
+  // refs as they are, so a ref that moved in between is refused, not clobbered.
   const service = new URL(c.req.url).searchParams.get("service");
   const isUploadPack =
     parts.rest === "/git-upload-pack" ||
     (parts.rest === "/info/refs" && service === "git-upload-pack");
+  const isReceiveAdvert =
+    parts.rest === "/info/refs" && service === "git-receive-pack";
   if (isUploadPack) await freshenForServe(payload.wsId);
+  else if (isReceiveAdvert) await freshenBeforeMainWrite(payload.wsId);
   return runHttpBackend({
     repoRoot: appsReposRoot(),
     hooksDir: await hooksDir(),

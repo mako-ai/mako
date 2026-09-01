@@ -11,8 +11,9 @@
  *    an empty workspace, refuse when both sides have content
  *  - a customer remote is NEVER force-pushed: a diverged remote branch
  *    survives our push attempt; only refs/mako/* may move non-fast-forward
- *  - webhook fetch fast-forwards the local branch and stands still on
- *    divergence instead of dropping either side
+ *  - webhook fetch fast-forwards the local branch, leaves a merely-ahead
+ *    branch alone, and on divergence resets to the mirror with the local
+ *    tip parked under refs/mako/diverged/* (nothing dropped, cache honest)
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -366,12 +367,32 @@ describe("fetchFromCloud on a connected repo", () => {
     expect(await headOf(repoDirFor(workspaceId))).toBe(theirCommit);
   });
 
-  it("stands still on divergence instead of dropping either side", async () => {
+  it("leaves a local branch that is merely ahead alone (its push is pending)", async () => {
+    const remoteDir = await makeBareRemote("acme", "ahead-local");
+    state.binding = { owner: "acme", repo: "ahead-local" };
+    await initRepo(repoDirFor(workspaceId), { "apps/a/mako.json": "{}" });
+    await adoptConnectedRepo(workspaceId, state.binding);
+    const ourCommit = await commitFiles(
+      repoDirFor(workspaceId),
+      { "l.txt": "local" },
+      "committed here, not pushed yet",
+    );
+
+    await fetchFromCloud(workspaceId, DEFAULT_BRANCH);
+    expect(await headOf(repoDirFor(workspaceId))).toBe(ourCommit);
+    expect(await headOf(remoteDir)).not.toBe(ourCommit);
+  });
+
+  it("on divergence the mirror wins and the local tip is parked under refs/mako/diverged", async () => {
     const remoteDir = await makeBareRemote("acme", "split");
     state.binding = { owner: "acme", repo: "split" };
     await initRepo(repoDirFor(workspaceId), { "apps/a/mako.json": "{}" });
     await adoptConnectedRepo(workspaceId, state.binding);
-    await commitFiles(remoteDir, { "r.txt": "remote" }, "remote side");
+    const theirCommit = await commitFiles(
+      remoteDir,
+      { "r.txt": "remote" },
+      "remote side",
+    );
     const ourCommit = await commitFiles(
       repoDirFor(workspaceId),
       { "l.txt": "local" },
@@ -379,7 +400,24 @@ describe("fetchFromCloud on a connected repo", () => {
     );
 
     await fetchFromCloud(workspaceId, DEFAULT_BRANCH);
-    expect(await headOf(repoDirFor(workspaceId))).toBe(ourCommit);
+    // The cache agrees with its source again…
+    expect(await headOf(repoDirFor(workspaceId))).toBe(theirCommit);
+    // …and nothing was dropped: the local tip is parked, here and — via the
+    // forced refs/mako/* namespace — on the mirror, where it can be recovered.
+    const parked = `refs/mako/diverged/${DEFAULT_BRANCH}/${ourCommit.slice(0, 12)}`;
+    const localParked = await runGit([
+      "-C",
+      repoDirFor(workspaceId),
+      "rev-parse",
+      parked,
+    ]);
+    expect(localParked.stdout.trim()).toBe(ourCommit);
+    // fetchFromCloud queued the push; a push scheduled now starts after it.
+    await mirrorPushNow(workspaceId);
+    const remoteParked = await runGit(["-C", remoteDir, "rev-parse", parked]);
+    expect(remoteParked.stdout.trim()).toBe(ourCommit);
+    // The mirror's own main was never touched.
+    expect(await headOf(remoteDir)).toBe(theirCommit);
   });
 });
 

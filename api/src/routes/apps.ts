@@ -103,6 +103,7 @@ import {
 import {
   adoptConnectedRepo,
   type ConnectedRepoAdoption,
+  freshenBeforeMainWrite,
   mirrorPushNow,
 } from "../apps/cloud-repo.service";
 import { updateRefCas } from "../apps/repository.service";
@@ -2068,6 +2069,11 @@ appsRoutes.openapi(
       );
       const body = c.req.valid("json") ?? {};
       const user = c.get("user");
+      // Merge onto the mirror's main, not this instance's cached copy of it.
+      // A laptop push or a PR merge on GitHub that this instance has not seen
+      // yet would otherwise make the promoted main unmirrorable (non-fast-
+      // forward) and the publish fail with "could not save durably".
+      await freshenBeforeMainWrite(loaded.project.workspaceId.toString());
       // Publishing means "ship MY work" — the branch the caller is actually
       // on (their worktree doc remembers it; checkout keeps it current),
       // not a computed name. On main, publish simply builds main's head.

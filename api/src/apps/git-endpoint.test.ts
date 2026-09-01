@@ -18,6 +18,19 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 const pushed = vi.hoisted(() => vi.fn());
 vi.mock("./worktree.service", () => ({ notifyRepoPushed: pushed }));
 
+// The connected mirror, when a case wants one (null = local-only workspace,
+// which is what every case but the last runs against).
+const mirror = vi.hoisted(() => ({
+  binding: null as null | { owner: string; repo: string },
+}));
+vi.mock("../services/workspace-repos.service", () => ({
+  getWorkspaceRepo: vi.fn(async () => mirror.binding),
+  findWorkspaceIdByRepoBinding: vi.fn(async () => null),
+}));
+vi.mock("../integrations/github/app-auth", () => ({
+  resolveRepoToken: async () => undefined,
+}));
+
 import {
   GitTokenError,
   mintGitToken,
@@ -437,5 +450,107 @@ describe("commit authorship enforcement", () => {
     await expect(
       run("git", ["-C", repoDir, "rev-parse", "--verify", "refs/heads/legacy"]),
     ).resolves.toBeTruthy();
+  });
+});
+
+/**
+ * The bare repo here is a CACHE of the workspace's connected mirror. A push
+ * must be judged against the mirror's main, not against whatever tip this
+ * instance last saw — otherwise a box pushing after a laptop pushed to GitHub
+ * fast-forwards the stale tip, the server accepts it, and the commit can never
+ * be mirrored (the mirror rejects it non-fast-forward). That is the failure
+ * that took prod publishing down on 2026-09-01.
+ */
+describe("pushes against a connected mirror", () => {
+  const token = () => mintGitToken({ workspaceId: WS, userId: "u1" });
+
+  it("a push is judged against the mirror's main, not this instance's cached copy", async () => {
+    const remotesRoot = path.join(tmpRoot, "remotes");
+    const remoteDir = path.join(remotesRoot, "acme", "mirror.git");
+    await fs.mkdir(path.dirname(remoteDir), { recursive: true });
+    await run("git", ["init", "-q", "--bare", "-b", "main", remoteDir]);
+    await run("git", [
+      "-C",
+      repoDir,
+      "push",
+      "-q",
+      remoteDir,
+      "refs/heads/*:refs/heads/*",
+    ]);
+    process.env.APPS_GITHUB_REMOTE_BASE = `file://${remotesRoot}`;
+    process.env.APPS_CONNECTED_REPO_PUSH = "allow";
+    mirror.binding = { owner: "acme", repo: "mirror" };
+    try {
+      // A box clones while main is at M0…
+      const box = await freshClone(token());
+      // …then someone pushes straight to GitHub: main → M1.
+      const laptop = await fs.mkdtemp(path.join(tmpRoot, "laptop-"));
+      await run("git", ["clone", "-q", remoteDir, laptop]);
+      await run("git", ["-C", laptop, "config", "user.email", "l@l"]);
+      await run("git", ["-C", laptop, "config", "user.name", "L"]);
+      await fs.writeFile(path.join(laptop, "gh.txt"), "from GitHub\n");
+      await run("git", ["-C", laptop, "add", "-A"]);
+      await run("git", ["-C", laptop, "commit", "-qm", "pushed on GitHub"]);
+      await run("git", ["-C", laptop, "push", "-q", "origin", "HEAD:main"]);
+      const m1 = (
+        await run("git", ["-C", laptop, "rev-parse", "HEAD"])
+      ).stdout.trim();
+
+      // The box commits on its stale main and pushes. The server advertises
+      // the MIRROR's main (M1), so git itself refuses: not a fast-forward.
+      await fs.writeFile(path.join(box, "box.txt"), "from the box\n");
+      await run("git", ["-C", box, "add", "-A"]);
+      await run("git", ["-C", box, "commit", "-qm", "from the box"]);
+      await expect(
+        run(
+          "git",
+          ["-C", box, "push", "-q", "origin", "HEAD:refs/heads/main"],
+          {
+            env: gitEnv(token()),
+          },
+        ),
+      ).rejects.toThrow(/rejected|fetch first|non-fast-forward/i);
+      const serverMain = await run("git", [
+        "-C",
+        repoDir,
+        "rev-parse",
+        "refs/heads/main",
+      ]);
+      expect(serverMain.stdout.trim()).toBe(m1);
+
+      // The box does what git says — merge, then push — and that lands.
+      await run(
+        "git",
+        ["-C", box, "-c", "pull.rebase=false", "pull", "-q", "origin", "main"],
+        { env: { ...gitEnv(token()), GIT_MERGE_AUTOEDIT: "no" } },
+      );
+      await run(
+        "git",
+        ["-C", box, "push", "-q", "origin", "HEAD:refs/heads/main"],
+        { env: gitEnv(token()) },
+      );
+      const merged = (
+        await run("git", ["-C", box, "rev-parse", "HEAD"])
+      ).stdout.trim();
+      const after = await run("git", [
+        "-C",
+        repoDir,
+        "rev-parse",
+        "refs/heads/main",
+      ]);
+      expect(after.stdout.trim()).toBe(merged);
+      const parents = await run("git", [
+        "-C",
+        repoDir,
+        "rev-parse",
+        `${merged}^1`,
+        `${merged}^2`,
+      ]);
+      expect(parents.stdout).toContain(m1);
+    } finally {
+      mirror.binding = null;
+      delete process.env.APPS_GITHUB_REMOTE_BASE;
+      delete process.env.APPS_CONNECTED_REPO_PUSH;
+    }
   });
 });
