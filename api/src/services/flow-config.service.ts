@@ -1,12 +1,18 @@
 /**
- * Flow definitions mirrored into the workspace repo (RFC #904, block 2).
+ * Flow definitions mirrored into the workspace repo (RFC #904).
  *
- * **Direction, for now: Mongo → git only.** The rows stay authoritative;
- * every in-product mutation writes its `flows/<slug>.yml` through here so
- * the files can be verified against real flows before anything depends on
- * them. Block 3 adds the push reactor and flips authority — including the
- * CDC pause/reconfigure/resume that a stream-shaped resource needs and a
- * dbt job does not.
+ * **This is the git-ward half only.** Every in-product mutation writes its
+ * `flows/<slug>.yml` through here. The other direction — a push making the
+ * FILE authoritative — landed with block 3 and lives elsewhere:
+ * `flow-sync.service.ts` maps a file back onto a row, and
+ * `sync-cdc/flow-reconcile.ts` reconciles the running stream behind a
+ * fail-closed guard. Both are reached from `syncRepoBackedResources`.
+ *
+ * So this file is no longer "Mongo → git only" in the sense block 2 meant.
+ * What remains true is narrower and still load-bearing: nothing here reads a
+ * file, and the tolerance below (a failed mirror never fails a user's
+ * mutation) is deliberately NOT shared by the read path, where a refused
+ * write is a refusal rather than a warning.
  *
  * Structure mirrors `dbt/dbt-config.service.ts` deliberately: same commit
  * primitives, same "no repo, no write-through" tolerance, same
