@@ -81,10 +81,36 @@ function environmentsToFile(project: IDbtProject) {
   };
 }
 
+/**
+ * The workspace repo, at a tip that agrees with the mirror.
+ *
+ * Every path in this module — the write, the push-triggered sync, the
+ * adoption migration — reaches the repo through here, so the freshen belongs
+ * here and nowhere else. `ensureLocalRepo` returns early once the directory
+ * exists and never refreshes it, so on a long-lived Cloud Run instance
+ * "the repo is present" says nothing about whether it is current.
+ *
+ * A stale tip is not merely stale on these paths, it is WRONG, and on one of
+ * them it is destructive: `syncDbtConfigNow` deletes every job row whose file
+ * is absent from the tree it read, so reading an old tip deletes the rows for
+ * jobs added since — and deregisters their schedules with them. `adoptDbtConfig`
+ * fails the other way: it computes "which files already exist" from the tree
+ * and writes the rest, so an old tip makes it overwrite a newer job file with
+ * Mongo's version. Freshening at COMMIT time cannot fix that second one — the
+ * payload was already decided from a stale read — which is why this moved up
+ * here from commitConfig rather than being added alongside it (#916).
+ *
+ * Cheap where it sits: the three callers are a write, a push reaction that is
+ * already detached and coalesced by `syncInFlight`, and a rare migration.
+ * None is a per-request hot path, so this is not the reflexive freshen that a
+ * read path should refuse.
+ */
 async function repoDirIfExists(workspaceId: string): Promise<string | null> {
   await ensureLocalRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
-  return (await repoExists(repoDir)) ? repoDir : null;
+  if (!(await repoExists(repoDir))) return null;
+  await freshenBeforeMainWrite(workspaceId);
+  return repoDir;
 }
 
 async function commitConfig(
@@ -93,14 +119,13 @@ async function commitConfig(
   message: string,
   author?: GitAuthor,
 ): Promise<void> {
+  // Freshened by repoDirIfExists: config-as-code commits land on main, so
+  // they are judged against the mirror's main rather than this instance's
+  // cache (#916, moved up to the choke point so the reads get it too —
+  // freshenBeforeMainWrite is un-throttled, so doing it in both places would
+  // cost two sequential fetches per write).
   const repoDir = await repoDirIfExists(workspaceId);
   if (!repoDir) return;
-  // Config-as-code commits land on main, so they must be judged against the
-  // mirror's main, not this instance's cache. Without this a stale instance
-  // commits onto an old tip and pushes it — the divergence class #897 fixed
-  // for skills and worktree writes, which these two write paths never
-  // adopted. Coalesced and non-blocking on failure.
-  await freshenBeforeMainWrite(workspaceId);
   const result = await commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
     message,
     author,

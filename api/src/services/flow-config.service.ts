@@ -36,10 +36,22 @@ import {
 
 const logger = loggers.api("flow-config");
 
+/**
+ * The workspace repo, at a tip that agrees with the mirror.
+ *
+ * Freshening lives at this choke point rather than beside the commit, for the
+ * same reason it does in dbt-config.service: `ensureLocalRepo` returns early
+ * once the directory exists and never refreshes it, and any caller that READS
+ * the tree to decide what to write has already made its decision by the time
+ * a commit-time freshen runs. Kept identical to the dbt module deliberately —
+ * these two are the same shape and drifted apart once already (#916).
+ */
 async function repoDirIfExists(workspaceId: string): Promise<string | null> {
   await ensureLocalRepo(workspaceId);
   const repoDir = repoDirFor(workspaceId);
-  return (await repoExists(repoDir)) ? repoDir : null;
+  if (!(await repoExists(repoDir))) return null;
+  await freshenBeforeMainWrite(workspaceId);
+  return repoDir;
 }
 
 async function commitConfig(
@@ -48,14 +60,9 @@ async function commitConfig(
   message: string,
   author?: GitAuthor,
 ): Promise<void> {
+  // Freshened by repoDirIfExists (#916, moved up to the choke point).
   const repoDir = await repoDirIfExists(workspaceId);
   if (!repoDir) return;
-  // Config-as-code commits land on main, so they must be judged against the
-  // mirror's main, not this instance's cache. Without this a stale instance
-  // commits onto an old tip and pushes it — the divergence class #897 fixed
-  // for skills and worktree writes, which these two write paths never
-  // adopted. Coalesced and non-blocking on failure.
-  await freshenBeforeMainWrite(workspaceId);
   const result = await commitBlobsOnBranch(repoDir, DEFAULT_BRANCH, mutation, {
     message,
     author,
