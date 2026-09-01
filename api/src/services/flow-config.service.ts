@@ -49,6 +49,9 @@ async function commitConfig(
   author?: GitAuthor,
 ): Promise<void> {
   const repoDir = await repoDirIfExists(workspaceId);
+  // No repo: Mongo remains the only home. Block 3 makes a repo required at
+  // the route boundary; while this is export-only, a workspace without one
+  // simply gets no files.
   if (!repoDir) return;
   // Config-as-code commits land on main, so they must be judged against the
   // mirror's main, not this instance's cache. Without this a stale instance

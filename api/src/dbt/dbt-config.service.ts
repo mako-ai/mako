@@ -94,6 +94,8 @@ async function commitConfig(
   author?: GitAuthor,
 ): Promise<void> {
   const repoDir = await repoDirIfExists(workspaceId);
+  // No repo (pre-§17 workspace): Mongo remains the only home — nothing to
+  // write through. RealAdvisor and every §17-era workspace has one.
   if (!repoDir) return;
   // Config-as-code commits land on main, so they must be judged against the
   // mirror's main, not this instance's cache. Without this a stale instance
