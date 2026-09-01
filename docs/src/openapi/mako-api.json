@@ -1204,17 +1204,6 @@
           }
         }
       },
-      "RestoreNotebookVersionRequest": {
-        "type": "object",
-        "properties": {
-          "comment": {
-            "type": "string"
-          },
-          "clientId": {
-            "type": "string"
-          }
-        }
-      },
       "UpdateNotebookRequest": {
         "type": "object",
         "properties": {
@@ -21276,12 +21265,12 @@
         "operationId": "get_api_workspaces_workspaceId_notebooks_id_artifacts_artifactId"
       }
     },
-    "/api/workspaces/{workspaceId}/notebooks/{id}/versions": {
+    "/api/workspaces/{workspaceId}/notebooks/{id}/history": {
       "get": {
-        "summary": "GET /{id}/versions",
         "tags": [
           "Notebooks"
         ],
+        "summary": "Commit history of a notebook (its .deepnote file in the repo)",
         "security": [
           {
             "cookieAuth": []
@@ -21306,6 +21295,16 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 200
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
           }
         ],
         "responses": {
@@ -21350,15 +21349,15 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_notebooks_id_versions"
+        "operationId": "get_api_workspaces_workspaceId_notebooks_id_history"
       }
     },
-    "/api/workspaces/{workspaceId}/notebooks/{id}/versions/{versionId}": {
+    "/api/workspaces/{workspaceId}/notebooks/{id}/git/commit": {
       "get": {
-        "summary": "GET /{id}/versions/{versionId}",
         "tags": [
           "Notebooks"
         ],
+        "summary": "What one commit changed for this notebook",
         "security": [
           {
             "cookieAuth": []
@@ -21386,11 +21385,12 @@
           },
           {
             "schema": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9a-f]{7,40}$"
             },
             "required": true,
-            "name": "versionId",
-            "in": "path"
+            "name": "sha",
+            "in": "query"
           }
         ],
         "responses": {
@@ -21435,15 +21435,111 @@
             }
           }
         },
-        "operationId": "get_api_workspaces_workspaceId_notebooks_id_versions_versionId"
+        "operationId": "get_api_workspaces_workspaceId_notebooks_id_git_commit"
       }
     },
-    "/api/workspaces/{workspaceId}/notebooks/{id}/versions/{versionId}/restore": {
+    "/api/workspaces/{workspaceId}/notebooks/{id}/git/file-versions": {
+      "get": {
+        "tags": [
+          "Notebooks"
+        ],
+        "summary": "A notebook file before and after one commit (for diffs)",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{7,40}$"
+            },
+            "required": true,
+            "name": "sha",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "required": true,
+            "name": "path",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_api_workspaces_workspaceId_notebooks_id_git_file_versions"
+      }
+    },
+    "/api/workspaces/{workspaceId}/notebooks/{id}/restore": {
       "post": {
-        "summary": "POST /{id}/versions/{versionId}/restore",
         "tags": [
           "Notebooks"
         ],
+        "summary": "Restore a notebook to its content at a commit (as a new commit)",
         "security": [
           {
             "cookieAuth": []
@@ -21467,14 +21563,6 @@
             },
             "required": true,
             "name": "id",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "versionId",
             "in": "path"
           }
         ],
@@ -21483,7 +21571,16 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/RestoreNotebookVersionRequest"
+                "type": "object",
+                "properties": {
+                  "sha": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{7,40}$"
+                  }
+                },
+                "required": [
+                  "sha"
+                ]
               }
             }
           }
@@ -21530,7 +21627,7 @@
             }
           }
         },
-        "operationId": "post_api_workspaces_workspaceId_notebooks_id_versions_versionId_restore"
+        "operationId": "post_api_workspaces_workspaceId_notebooks_id_restore"
       }
     },
     "/api/workspaces/{workspaceId}/notebooks/{id}/presence": {

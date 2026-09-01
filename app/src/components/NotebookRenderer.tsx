@@ -30,7 +30,7 @@ import {
 import { runCell } from "../notebook-runtime/run";
 import { stopKernelSession } from "../notebook-runtime/kernel";
 import NotebookCell from "./NotebookCell";
-import NotebookHistoryDrawer from "./NotebookHistoryDrawer";
+import NotebookHistoryPopover from "./NotebookHistoryPopover";
 import { useNotebookPresence } from "../notebook-runtime/presence";
 import {
   presenceColor,
@@ -81,7 +81,7 @@ export default function NotebookRenderer({
 
   const [loading, setLoading] = useState(!doc);
   const [addAnchor, setAddAnchor] = useState<HTMLElement | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyAnchor, setHistoryAnchor] = useState<HTMLElement | null>(null);
   // Which cell the local user is focused on — heartbeated as their live cursor.
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
 
@@ -285,20 +285,27 @@ export default function NotebookRenderer({
             </IconButton>
           </span>
         </Tooltip>
-        <Tooltip title="Version history">
+        <Tooltip title="Version History">
           <span>
-            <IconButton size="small" onClick={() => setHistoryOpen(true)}>
+            <IconButton
+              size="small"
+              aria-label="Version History"
+              onClick={e => setHistoryAnchor(e.currentTarget)}
+            >
               <History size={16} />
             </IconButton>
           </span>
         </Tooltip>
       </Box>
 
-      <NotebookHistoryDrawer
-        open={historyOpen}
-        onClose={() => setHistoryOpen(false)}
-        notebookId={notebookId}
-      />
+      {workspaceId && (
+        <NotebookHistoryPopover
+          anchorEl={historyAnchor}
+          onClose={() => setHistoryAnchor(null)}
+          workspaceId={workspaceId}
+          notebookId={notebookId}
+        />
+      )}
 
       <Box sx={{ p: 2 }}>
         {doc.blocks.map((block, index) => (

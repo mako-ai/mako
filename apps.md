@@ -2897,4 +2897,23 @@ mirrored into paths yet.
 
 Migration checkpoints every existing notebook (non-destructive — the store
 keeps everything) and the deploy migrate step gains NOTEBOOK_GCS_BUCKET —
-the third instance of the runner-env bug class, caught at design time.
+the third instance of the runner-env bug class, caught at design time. (A
+fourth followed at deploy: the runner SA lacked storage.objectViewer on the
+notebook bucket, so adoption FAILED CLOSED rather than adopting nothing —
+granted, re-run, 60 notebooks adopted.)
+
+### 24.1 History is the apps/consoles surface (2026-09-01)
+
+The store's own object generations were surfaced in a bespoke
+`NotebookHistoryDrawer` showing relative time and byte size — no author, no
+message, no diff, because GCS generations carry none of that. Now that the
+`.deepnote` file is committed, notebooks get the SAME history surface apps
+and consoles use: `/{id}/history`, `/{id}/git/commit`,
+`/{id}/git/file-versions`, `/{id}/restore` mirroring the console routes,
+backed by `notebookHistory`/`notebookCommitChanges`/`notebookFileVersions`/
+`restoreNotebookTo`; frontend `notebookHistoryStore` + `NotebookHistoryPopover`
+(CommitRow) + a `notebook-diff` tab (GitFileDiffView). Restore writes the
+parsed blocks to the STORE (the hot layer stays authoritative for what the
+editor shows) and checkpoints a NEW commit — append-only, like consoles.
+The notebook backend leaves the store-based version registrar (dashboards
+stay); `NotebookHistoryDrawer` is deleted.

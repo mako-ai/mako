@@ -73,6 +73,14 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
     kind: "repo-diff",
     metadata: { path: "consoles/revenue.sql", mode: "working" },
   }),
+  "notebook-diff": baseTab({
+    kind: "notebook-diff",
+    metadata: {
+      notebookId: "nb-1",
+      path: "notebooks/revenue.deepnote",
+      sha: "abc1234",
+    },
+  }),
   plan: baseTab({ kind: "plan", metadata: { chatId: "chat-1" } }),
   settings: baseTab({ kind: "settings", settingsSection: "models" }),
   members: baseTab({ kind: "members" }),

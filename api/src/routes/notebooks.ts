@@ -10,7 +10,10 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { Types } from "mongoose";
 
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { requireWorkspace } from "../middleware/workspace.middleware";
+import {
+  requireWorkspace,
+  type AuthenticatedContext,
+} from "../middleware/workspace.middleware";
 import {
   AUTH_SECURITY,
   OPEN_RESPONSES,
@@ -18,15 +21,16 @@ import {
   jsonBody,
   pathParam,
 } from "../openapi/core";
-import { NotebookFolder, NotebookIndex } from "../database/workspace-schema";
+import {
+  NotebookFolder,
+  NotebookIndex,
+  type INotebookIndex,
+} from "../database/workspace-schema";
 import {
   createModelFolderBackend,
   registerFolderRoutes,
 } from "./lib/folder-routes";
-import {
-  registerVersionRoutes,
-  type VersionBackend,
-} from "./lib/version-routes";
+import {} from "./lib/version-routes";
 import { getNotebookStore } from "../notebooks/store";
 import { NotebookVersionConflictError } from "../notebooks/store/types";
 import { offloadBlocks } from "../notebooks/offload";
@@ -34,7 +38,11 @@ import type { NotebookBlock } from "../notebooks/types";
 import { loggers } from "../logging";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import {
+  notebookCommitChanges,
+  notebookFileVersions,
+  notebookHistory,
   removeNotebookFile,
+  restoreNotebookTo,
   scheduleNotebookCheckpoint,
 } from "../notebooks/notebook-git.service";
 import {
@@ -296,99 +304,183 @@ notebookRoutes.openapi(
   },
 );
 
-// ── Version history (shared registrar; notebook store generations) ──
+// ── Version history: git commits of the notebook's .deepnote file ──
+// The SAME surface apps and consoles use (CommitRow + GitFileDiffView), so
+// authors, messages and diffs come free (apps.md §24). The store's own
+// object generations are no longer surfaced — they carried neither author
+// nor message.
 
-const notebookVersionBackend: VersionBackend = {
-  list: async (ctx, { id }) => {
-    const access = await requireNotebookAccess(
-      ctx.workspaceId,
-      id,
-      ctx.userId,
-      ctx.role ?? "member",
-      "read",
-    );
-    if (!access.ok) {
-      return { ok: false, status: access.status, error: "Notebook not found" };
-    }
-    const data = await getNotebookStore().listVersions(ctx.workspaceId, id);
-    return { ok: true, payload: { data } };
-  },
-
-  get: async (ctx, { id, ref }) => {
-    const access = await requireNotebookAccess(
-      ctx.workspaceId,
-      id,
-      ctx.userId,
-      ctx.role ?? "member",
-      "read",
-    );
-    if (!access.ok) {
-      return { ok: false, status: access.status, error: "Version not found" };
-    }
-    const doc = await getNotebookStore().getVersion(ctx.workspaceId, id, ref);
-    if (!doc) {
-      return { ok: false, status: 404, error: "Version not found" };
-    }
-    return { ok: true, payload: { data: doc } };
-  },
-
-  restore: async (ctx, { id, ref, body }) => {
-    const access = await requireNotebookAccess(
-      ctx.workspaceId,
-      id,
-      ctx.userId,
-      ctx.role ?? "member",
-      "write",
-    );
-    if (!access.ok) {
-      return {
-        ok: false,
-        status: access.status === 403 ? 403 : 404,
-        error: "Notebook or version not found",
-      };
-    }
-    const doc = await getNotebookStore().restoreVersion(
-      ctx.workspaceId,
-      id,
-      ref,
-    );
-    if (!doc) {
-      return {
-        ok: false,
-        status: 404,
-        error: "Notebook or version not found",
-      };
-    }
-    await updateNotebookIndex(ctx.workspaceId, id, {
-      updatedAt: new Date(doc.updatedAt),
-    });
-
-    logger.info("Restored notebook version", {
-      workspaceId: ctx.workspaceId,
-      notebookId: id,
-      versionId: ref,
-      newVersion: doc.version,
-    });
-    publishRealtimeEvent(ctx.workspaceId, {
-      type: "notebook.updated",
-      notebookId: doc.id,
-      version: doc.version,
-      updatedBy: ctx.userId,
-      clientId: typeof body.clientId === "string" ? body.clientId : undefined,
-      origin: "save",
-    });
-    return { ok: true, payload: { data: doc } };
-  },
-};
-
-registerVersionRoutes(notebookRoutes, {
-  tag: "Notebooks",
-  schemaPrefix: "Notebook",
-  refParam: "versionId",
-  middleware: [unifiedAuthMiddleware, requireWorkspace],
-  actor: "allow-system",
-  backend: notebookVersionBackend,
+const NotebookHistoryParams = wsParams.extend({
+  id: z.string().openapi({ param: { name: "id", in: "path" } }),
 });
+
+async function loadReadableNotebook(
+  c: AuthenticatedContext,
+  mode: "read" | "write",
+): Promise<
+  | { index: INotebookIndex; workspaceId: string; userId: string }
+  | { errorResponse: Response }
+> {
+  const ws = workspaceId(c);
+  const id = c.req.param("id");
+  const userId = editorUserId(c);
+  const access = await requireNotebookAccess(
+    ws,
+    id,
+    userId,
+    memberRole(c) ?? "member",
+    mode,
+  );
+  if (!access.ok) {
+    return {
+      errorResponse: c.json(
+        { success: false, error: "Notebook not found" },
+        access.status as 403 | 404,
+      ),
+    };
+  }
+  const index = await NotebookIndex.findOne({
+    workspaceId: new Types.ObjectId(ws),
+    notebookId: id,
+  });
+  if (!index) {
+    return {
+      errorResponse: c.json(
+        { success: false, error: "Notebook not found" },
+        404,
+      ),
+    };
+  }
+  return { index, workspaceId: ws, userId };
+}
+
+notebookRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/history",
+    tags: ["Notebooks"],
+    summary: "Commit history of a notebook (its .deepnote file in the repo)",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: NotebookHistoryParams,
+      query: z.object({
+        limit: z.coerce.number().int().positive().max(200).optional(),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const loaded = await loadReadableNotebook(c, "read");
+    if ("errorResponse" in loaded) return loaded.errorResponse;
+    const { limit } = c.req.valid("query");
+    const commits = await notebookHistory(loaded.index, limit ?? 50);
+    return c.json({
+      success: true as const,
+      commits,
+      path: loaded.index.path ?? null,
+    });
+  },
+);
+
+notebookRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/git/commit",
+    tags: ["Notebooks"],
+    summary: "What one commit changed for this notebook",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: NotebookHistoryParams,
+      query: z.object({ sha: z.string().regex(/^[0-9a-f]{7,40}$/) }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const loaded = await loadReadableNotebook(c, "read");
+    if ("errorResponse" in loaded) return loaded.errorResponse;
+    const { sha } = c.req.valid("query");
+    const commit = await notebookCommitChanges(loaded.index, sha);
+    return c.json({ success: true as const, commit });
+  },
+);
+
+notebookRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/git/file-versions",
+    tags: ["Notebooks"],
+    summary: "A notebook file before and after one commit (for diffs)",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: NotebookHistoryParams,
+      query: z.object({
+        sha: z.string().regex(/^[0-9a-f]{7,40}$/),
+        path: z
+          .string()
+          .min(1)
+          .max(4096)
+          .refine(
+            p => !p.startsWith("/") && !p.split("/").includes(".."),
+            "path must stay inside the repository",
+          ),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const loaded = await loadReadableNotebook(c, "read");
+    if ("errorResponse" in loaded) return loaded.errorResponse;
+    const { sha, path: relPath } = c.req.valid("query");
+    const versions = await notebookFileVersions(loaded.index, sha, relPath);
+    return c.json({ success: true as const, versions });
+  },
+);
+
+notebookRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/restore",
+    tags: ["Notebooks"],
+    summary: "Restore a notebook to its content at a commit (as a new commit)",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: NotebookHistoryParams,
+      body: jsonBody(
+        z.object({ sha: z.string().regex(/^[0-9a-f]{7,40}$/) }),
+        true,
+      ),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const loaded = await loadReadableNotebook(c, "write");
+    if ("errorResponse" in loaded) return loaded.errorResponse;
+    const { sha } = (await c.req.json()) as { sha: string };
+    try {
+      const result = await restoreNotebookTo(
+        loaded.workspaceId,
+        loaded.index.notebookId,
+        sha,
+        loaded.userId,
+      );
+      publishTreeUpdated(loaded.workspaceId);
+      return c.json({ success: true as const, ...result });
+    } catch (error) {
+      logger.error("Notebook restore failed", { error });
+      return c.json(
+        {
+          success: false,
+          error: error instanceof Error ? error.message : "Restore failed",
+        },
+        400,
+      );
+    }
+  },
+);
 
 // PATCH /:id — rename and/or replace blocks
 notebookRoutes.openapi(

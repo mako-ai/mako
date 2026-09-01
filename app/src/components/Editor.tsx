@@ -73,6 +73,7 @@ import AppWorkspace from "./AppWorkspace";
 import AppFileEditor from "./AppFileEditor";
 import AppDiffTab from "./AppDiffTab";
 import ConsoleDiffTab from "./ConsoleDiffTab";
+import NotebookDiffTab from "./NotebookDiffTab";
 import RepoDiffTab from "./RepoDiffTab";
 import ConsoleHistoryPopover from "./ConsoleHistoryPopover";
 import AppBindingEditor from "./AppBindingEditor";
@@ -2886,6 +2887,12 @@ function Editor({
                       tabId={tab.id}
                       appId={tab.metadata?.appId as string}
                       path={tab.metadata?.path as string}
+                    />
+                  ) : tab.kind === "notebook-diff" ? (
+                    <NotebookDiffTab
+                      notebookId={tab.metadata?.notebookId as string}
+                      path={tab.metadata?.path as string}
+                      sha={tab.metadata?.sha as string}
                     />
                   ) : tab.kind === "console-diff" ? (
                     <ConsoleDiffTab

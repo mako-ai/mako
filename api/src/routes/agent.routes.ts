@@ -848,6 +848,7 @@ agentRoutes.openapi(
       const messagesWithAttachments = await resolveChatAttachmentsForModel(
         segmentUiMessages,
         workspaceId,
+        { supportsVision: agentContext.modelSupportsVision },
       );
       const sanitizedMessages = sanitizeMessagesForModel(
         messagesWithAttachments,
@@ -938,6 +939,7 @@ agentRoutes.openapi(
       if (includeVisionAttachments) {
         const screenshotVisionMessage = buildScreenshotVisionModelMessage(
           screenshotVisionAttachments,
+          { supportsVision: agentContext.modelSupportsVision },
         );
         if (screenshotVisionMessage) {
           modelMessages.push(

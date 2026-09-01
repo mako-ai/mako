@@ -286,6 +286,21 @@ async function withRetry<T>(
  *
  * Always includes the HTTP status code so the caller sees 400/401/403 etc.
  */
+/**
+ * How a timed-out BigQuery query ended, said accurately.
+ *
+ * The old message always claimed the query "may still be running", which was
+ * true only because nothing tried to stop it. Now that we do, the message has
+ * to distinguish the two outcomes — a cancelled job stops scanning and stops
+ * billing, and telling someone otherwise sends them hunting a job that is
+ * already gone.
+ */
+function bqAbandonedSuffix(cancelled: boolean): string {
+  return cancelled
+    ? " and was cancelled in BigQuery."
+    : ". The query may still be running in BigQuery.";
+}
+
 function describeGoogleApiError(error: any, fallback: string): string {
   const status: number | undefined = error?.response?.status;
   const data = error?.response?.data;
@@ -1620,9 +1635,16 @@ export class DatabaseConnectionService {
 
       checkAborted();
       if (data.jobComplete === false) {
+        const stopped = await this.cancelAbandonedBigQueryJob({
+          client,
+          projectId: project_id,
+          jobId: jobId as string,
+          location: jobLocation,
+          executionId,
+        });
         return {
           success: false,
-          error: `Query timed out after ${maxWaitMs / 1000} seconds. The query may still be running in BigQuery.`,
+          error: `Query timed out after ${maxWaitMs / 1000} seconds${bqAbandonedSuffix(stopped)}`,
         };
       }
 
@@ -1818,9 +1840,16 @@ export class DatabaseConnectionService {
 
       checkAborted();
       if (data.jobComplete === false) {
+        const stopped = await this.cancelAbandonedBigQueryJob({
+          client,
+          projectId: project_id,
+          jobId: jobId as string,
+          location: jobLocation,
+          executionId,
+        });
         return {
           success: false,
-          error: `Query timed out after ${maxWaitMs / 1000} seconds. The query may still be running in BigQuery.`,
+          error: `Query timed out after ${maxWaitMs / 1000} seconds${bqAbandonedSuffix(stopped)}`,
         };
       }
 
@@ -1976,10 +2005,17 @@ export class DatabaseConnectionService {
 
       checkAborted();
       if (data.jobComplete === false) {
+        const stopped = await this.cancelAbandonedBigQueryJob({
+          client,
+          projectId: project_id,
+          jobId: jobId as string,
+          location: jobLocation,
+          executionId,
+        });
         return {
           success: false,
           totalRows,
-          error: `Query timed out after ${maxWaitMs / 1000} seconds. The query may still be running in BigQuery.`,
+          error: `Query timed out after ${maxWaitMs / 1000} seconds${bqAbandonedSuffix(stopped)}`,
         };
       }
 
@@ -2038,6 +2074,58 @@ export class DatabaseConnectionService {
       if (executionId) {
         this.runningBigQueryJobs.delete(executionId);
       }
+    }
+  }
+
+  /**
+   * Stop a job we have stopped waiting for.
+   *
+   * When the poll loop gives up at `maxWaitMs` the HTTP request ends, but the
+   * BigQuery job does not: it runs to completion, scans what it was going to
+   * scan, and bills for it — which is what "the query may still be running in
+   * BigQuery" in the timeout message has always meant. Nobody reads the
+   * result, so every byte after we walk away is paid for and thrown away.
+   *
+   * Measured on 2026-09-01: one app's two bindings abandoned 41 jobs in 48
+   * minutes, each a 300s query. The circuit breaker in front of live bindings
+   * cut that to 7; this makes the ones that still happen stop scanning.
+   *
+   * Best effort by construction — it runs on a path that is already failing,
+   * so a failed cancel must not replace the timeout the caller needs to hear
+   * about. Returns whether the job was actually cancelled, so the message can
+   * say which happened instead of always claiming the worse one.
+   */
+  private async cancelAbandonedBigQueryJob(input: {
+    client: AxiosInstance;
+    projectId: string;
+    jobId: string;
+    location?: string;
+    executionId?: string;
+  }): Promise<boolean> {
+    const { client, projectId, jobId, location, executionId } = input;
+    try {
+      const params: Record<string, string> = {};
+      if (location) params.location = location;
+      await client.post(
+        `/projects/${projectId}/jobs/${jobId}/cancel`,
+        {},
+        { params },
+      );
+      if (executionId) this.runningBigQueryJobs.delete(executionId);
+      logger.info("Cancelled an abandoned BigQuery job", {
+        category: "db.bigquery",
+        projectId,
+        jobId,
+      });
+      return true;
+    } catch (error) {
+      logger.warn("Could not cancel an abandoned BigQuery job", {
+        category: "db.bigquery",
+        projectId,
+        jobId,
+        error: describeGoogleApiError(error, "Failed to cancel job"),
+      });
+      return false;
     }
   }
 
