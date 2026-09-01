@@ -30,6 +30,7 @@ import {
   FileText as TextFileIcon,
   Folder as FolderIcon,
   FolderOpen as FolderOpenIcon,
+  KeyRound as EnvIcon,
   Plus as AddIcon,
   Github as LinkIcon,
   RefreshCw as RefreshIcon,
@@ -46,6 +47,7 @@ import { useAppsStore, type AppFileEntry } from "../store/appsStore";
 import { useAuth } from "../contexts/auth-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import ShareDialog from "./ShareDialog";
+import AppEnvDialog from "./AppEnvDialog";
 import { focusAppsFileTab, focusAppsTab } from "../apps-runtime/shell";
 import {
   useExplorerRevealStore,
@@ -230,6 +232,7 @@ export default function AppsExplorer() {
   );
   const [createOpen, setCreateOpen] = useState(false);
   const [shareAppId, setShareAppId] = useState<string | null>(null);
+  const [envAppId, setEnvAppId] = useState<string | null>(null);
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
   const [newTitle, setNewTitle] = useState("");
   const [creating, setCreating] = useState(false);
@@ -449,6 +452,18 @@ export default function AppsExplorer() {
           Share…
         </MenuItem>,
         <MenuItem
+          key="env"
+          onClick={() => {
+            helpers.closeMenu();
+            setEnvAppId(parsed.appId);
+          }}
+        >
+          <ListItemIcon>
+            <EnvIcon size={16} />
+          </ListItemIcon>
+          Environment variables…
+        </MenuItem>,
+        <MenuItem
           key="delete"
           onClick={() => {
             helpers.closeMenu();
@@ -466,6 +481,7 @@ export default function AppsExplorer() {
   );
 
   const shareApp = shareAppId ? apps.find(a => a.id === shareAppId) : null;
+  const envApp = envAppId ? apps.find(a => a.id === envAppId) : null;
 
   const actions = (
     <>
@@ -696,6 +712,16 @@ export default function AppsExplorer() {
             // the list is the only place that learns about it.
             if (workspaceId) void fetchApps(workspaceId);
           }}
+        />
+      )}
+
+      {envApp && workspaceId && (
+        <AppEnvDialog
+          open={!!envAppId}
+          onClose={() => setEnvAppId(null)}
+          workspaceId={workspaceId}
+          appId={envApp.id}
+          appTitle={envApp.title}
         />
       )}
     </>

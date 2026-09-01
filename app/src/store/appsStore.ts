@@ -46,6 +46,13 @@ export interface AppFileEntry {
   size: number;
 }
 
+/** One env var as the API returns it (no value when it is a secret). */
+export interface AppEnvVar {
+  key: string;
+  secret: boolean;
+  value?: string;
+}
+
 export interface AppChange {
   path: string;
   status: "added" | "modified" | "deleted" | "renamed";
@@ -440,6 +447,22 @@ interface AppsStore {
    * exactly one fresh dev terminal.
    */
   stopDev: (workspaceId: string, appId: string) => Promise<void>;
+  /**
+   * The app's env vault (per-app environment variables). Secrets never echo
+   * their value back — the API accepts and injects them, it does not
+   * retrieve them — so `value` is absent whenever `secret` is true.
+   */
+  fetchAppEnv: (workspaceId: string, appId: string) => Promise<AppEnvVar[]>;
+  setAppEnvVar: (
+    workspaceId: string,
+    appId: string,
+    input: { key: string; value: string; secret: boolean },
+  ) => Promise<AppEnvVar[]>;
+  deleteAppEnvVar: (
+    workspaceId: string,
+    appId: string,
+    key: string,
+  ) => Promise<void>;
   /** Bindings state for an app (per-binding materialization status/history). */
   fetchAppBindings: (
     workspaceId: string,
@@ -1476,6 +1499,34 @@ export const useAppsStore = create<AppsStore>()(
         }
         get().markDevDown(appId);
         get().setEditing(workspaceId, appId, false);
+      },
+
+      fetchAppEnv: async (workspaceId, appId) => {
+        const body = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/apps/{id}/env", {
+            params: { path: { workspaceId, id: appId } },
+          }),
+        ) as { vars?: AppEnvVar[] };
+        return body.vars ?? [];
+      },
+
+      setAppEnvVar: async (workspaceId, appId, input) => {
+        const body = unwrapBody(
+          await api.PUT("/api/workspaces/{workspaceId}/apps/{id}/env", {
+            params: { path: { workspaceId, id: appId } },
+            body: input,
+          }),
+        ) as { vars?: AppEnvVar[] };
+        return body.vars ?? [];
+      },
+
+      deleteAppEnvVar: async (workspaceId, appId, key) => {
+        unwrapBody(
+          await api.DELETE(
+            "/api/workspaces/{workspaceId}/apps/{id}/env/{key}",
+            { params: { path: { workspaceId, id: appId, key } } },
+          ),
+        );
       },
 
       fetchAppBindings: async (workspaceId, appId) => {

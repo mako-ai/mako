@@ -5251,6 +5251,32 @@ export const McpToolGrant = mongoose.model<IMcpToolGrant>(
 // ---------------------------------------------------------------------------
 
 /**
+ * One environment variable of an app (apps.md §13.21).
+ *
+ * The value is ALWAYS stored encrypted (crypto.service), like connection
+ * credentials. `secret` decides where the value may flow: non-secret vars
+ * reach the sandbox dev server AND the publish build (a `VITE_`-prefixed one
+ * is inlined into the public bundle — Maps keys, Supabase anon keys, and the
+ * rest of the publishable-credential class); secret vars reach only sandbox
+ * dev processes and are refused the `VITE_` prefix outright, because a
+ * published app is a static bundle and anything Vite inlines is public.
+ */
+export interface IAppEnvVar {
+  key: string;
+  valueEncrypted: string;
+  secret: boolean;
+}
+
+const AppEnvVarSchema = new Schema<IAppEnvVar>(
+  {
+    key: { type: String, required: true },
+    valueEncrypted: { type: String, required: true },
+    secret: { type: Boolean, required: true, default: false },
+  },
+  { _id: false },
+);
+
+/**
  * An Apps project: control-plane record for one git-backed app.
  * One bare repo per project (per-app ACLs make the repo the authorization
  * boundary); source contents are never stored in Mongo.
@@ -5290,6 +5316,8 @@ export interface IAppProject extends Document {
    * routes and the /api/share/:token consumption side are shared verbatim.
    */
   publicShare?: IPublicShare;
+  /** Per-app environment variables, values encrypted at rest (env.service). */
+  env?: IAppEnvVar[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -5327,6 +5355,7 @@ const AppProjectSchema = new Schema<IAppProject>(
     publishedSha: { type: String },
     publishedAt: { type: Date },
     publicShare: { type: PublicShareSchema, default: undefined },
+    env: { type: [AppEnvVarSchema], default: undefined },
   },
   { collection: "app_projects", timestamps: true },
 );

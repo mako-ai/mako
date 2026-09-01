@@ -21,6 +21,7 @@ export default defineConfig({
       "src/services/skills.service.test.ts",
       "src/notebooks/notebook-git.service.test.ts",
       "src/apps/bindings.service.test.ts",
+      "src/apps/env.service.test.ts",
       "src/apps/cloud-repo.service.test.ts",
       "src/apps/adversarial.test.ts",
       "src/apps/git-endpoint.test.ts",

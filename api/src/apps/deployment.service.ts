@@ -28,6 +28,7 @@ import { AppProject, type IAppProject } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { boxCtx, handleProject, type WorktreeHandle } from "./worktree.service";
 import { readBoxDir } from "./box";
+import { resolveAppEnv } from "./env.service";
 
 const logger = loggers.api("apps-deployment");
 
@@ -261,10 +262,15 @@ export async function buildApp(
   exec: (
     handle: WorktreeHandle,
     command: string,
-    options: { timeoutMs: number },
+    options: { timeoutMs: number; env?: Record<string, string> },
   ) => Promise<{ exitCode: number; stdout: string; stderr: string }>,
 ): Promise<{ ok: boolean; output: string }> {
   const log = buildLogPath(handle);
+  // The app's NON-SECRET env vars (env.service): `vite build` inlines the
+  // `VITE_*` ones into the bundle — which is the point, that class of key is
+  // publishable — and the build target excludes secrets by construction, so
+  // nothing secret can ever influence a published artifact.
+  const env = await resolveAppEnv(handleProject(handle), "build");
   // Fresh log per build; `pipefail` so a failing step's exit code survives the
   // `tee`, and `2>&1 | tee` puts the whole stream both on the wire (for the
   // final payload) and in the file the client tails live.
@@ -294,7 +300,7 @@ export async function buildApp(
   const build = await exec(
     handle,
     `set -o pipefail; npm run build -- --base=./ 2>&1 | tee -a ${log}`,
-    { timeoutMs: 300_000 },
+    { timeoutMs: 300_000, env },
   );
   return {
     ok: build.exitCode === 0,
