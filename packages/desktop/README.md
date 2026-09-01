@@ -45,7 +45,7 @@ Releases are automated by `.github/workflows/release-desktop.yml`:
    - `https://github.com/mako-ai/mako/releases/latest/download/Mako-win-x64.exe`
    - `https://github.com/mako-ai/mako/releases/latest/download/Mako-linux-x86_64.AppImage`
 
-The website download page (`website/app/download`) auto-detects the visitor's
+The mako.ai download page (`app/download` in the marketing repo) auto-detects the visitor's
 platform and points at these evergreen links.
 
 ### Auto-update

@@ -9,7 +9,7 @@
 
 Stop wrestling with complex SQL and slow, bloated database tools. Write queries in plain English, get instant results, and turn them into interactive dashboards with cross-filtering and scheduled refresh.
 
-![Mako App Interface](./website/public/app-screenshot.png)
+![Mako App Interface](./.github/screenshots/app-screenshot.png)
 
 ## 🚀 Why Mako?
 
@@ -36,15 +36,15 @@ A modern SQL client built for the AI era, replacing slow desktop tools with a fa
 
 **AI-powered console** — ask in plain English, get a verified query and live results.
 
-![AI-powered console](./website/public/screenshots/ai-console.webp)
+![AI-powered console](./.github/screenshots/ai-console.webp)
 
 **Transforms (dbt)** — build, run, and schedule dbt Core projects with a file IDE, jobs, run history, and lineage.
 
-![dbt Transforms IDE](./website/public/screenshots/transforms-dbt.webp)
+![dbt Transforms IDE](./.github/screenshots/transforms-dbt.webp)
 
 **Apps** — build live React apps wired to your data, rendered in a sandboxed preview.
 
-![React Apps live preview](./website/public/screenshots/apps.webp)
+![React Apps live preview](./.github/screenshots/apps.webp)
 
 ## 🔌 Integrations
 

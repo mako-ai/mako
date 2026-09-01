@@ -67,7 +67,6 @@ mako/
 │   │   ├── sync/         # Sync orchestrator & CLI
 │   │   └── routes/       # API route handlers
 ├── docs/          # Documentation (Astro Starlight)
-├── website/       # Marketing site (Next.js)
 └── cloudflare/    # Cloudflare Workers config
 ```
 
