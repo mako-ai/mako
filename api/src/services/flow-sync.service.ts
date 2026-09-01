@@ -229,9 +229,18 @@ function applyDefinition(doc: IFlow, file: FlowFile): string | null {
  *
  * Idempotent: a file whose blob sha matches the row's `sourceBlobSha` costs a
  * read and nothing else.
+ *
+ * `actorUserId` is whoever pushed, when the push came through Mako's own git
+ * endpoint; a push made directly on GitHub arrives as a webhook with no actor
+ * and gets the same `"sync"` author the dbt job sync uses. It only matters on
+ * CREATE: `createdBy` is required on the schema, and a new row without one
+ * does not fail quietly — `save()` throws, and before this was threaded that
+ * throw escaped the per-file loop, so a single new file aborted the rest of
+ * the push's sync and the reconciler with it. Nothing anyone could see.
  */
 export async function syncFlowsFromRepo(
   workspaceId: string,
+  actorUserId?: string,
 ): Promise<FlowSyncResult> {
   const empty: FlowSyncResult = {
     created: 0,
@@ -304,8 +313,20 @@ export async function syncFlowsFromRepo(
     }
 
     const isNew = !row;
-    const doc = row ?? new Flow({ workspaceId, slug });
-    const refusal = applyDefinition(doc as IFlow, parsed);
+    const doc =
+      row ??
+      new Flow({ workspaceId, slug, createdBy: actorUserId ?? "sync" });
+    // `applyDefinition` refuses with a reason, but it can also THROW: an id
+    // that is not an ObjectId (`connector_id: close` — a name where an id
+    // belongs, the likeliest agent mistake) fails inside `new ObjectId()`.
+    // Same treatment as a refusal; see the save() catch below for why it
+    // must not escape.
+    let refusal: string | null;
+    try {
+      refusal = applyDefinition(doc as IFlow, parsed);
+    } catch (error) {
+      refusal = error instanceof Error ? error.message : String(error);
+    }
     if (refusal) {
       logger.warn("Flow file cannot be applied; keeping current row", {
         workspaceId,
@@ -332,7 +353,24 @@ export async function syncFlowsFromRepo(
       } as IFlow["webhookConfig"];
     }
     (doc as IFlow).sourceBlobSha = sha;
-    await doc.save();
+    // One file's failure is that file's problem. `save()` can still throw for
+    // a file that parsed and applied — a value outside a schema enum, an id
+    // that is not an ObjectId — and letting that escape would skip every file
+    // after it AND the reconcile below, for the whole push. The row that
+    // exists is kept (the failed save is not applied); a new one is simply
+    // not created, and since it never reached `desired` there is nothing for
+    // the reconciler to tear down either way.
+    try {
+      await doc.save();
+    } catch (error) {
+      logger.warn("Flow file could not be saved; keeping current row", {
+        workspaceId,
+        path,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      result.invalid.push(slug);
+      continue;
+    }
     if (isNew) {
       result.created++;
       // A row created in this pass has no id until now, so its desired entry

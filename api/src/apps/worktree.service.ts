@@ -265,7 +265,7 @@ export function syncRepoBackedResources(
   // tears one down. Caught like the others — one resource's bad YAML must not
   // stop the rest — and a refused teardown is reported, not silently skipped.
   void import("../services/flow-sync.service")
-    .then(m => m.syncFlowsFromRepo(workspaceId))
+    .then(m => m.syncFlowsFromRepo(workspaceId, userId))
     .then(result => {
       if (result.deferred.length > 0) {
         logger.warn("Flow teardown deferred; will retry on the next push", {

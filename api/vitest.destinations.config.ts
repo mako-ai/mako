@@ -31,6 +31,8 @@ export default defineConfig({
       "src/sync-cdc/backlog.test.ts",
       "src/sync-cdc/consumer.test.ts",
       "src/sync-cdc/flow-reconcile.test.ts",
+      // The push reactor's create path, against a real repo and the real model.
+      "src/services/flow-sync.repo.test.ts",
       "src/sync/legacy-flow-migration.test.ts",
       "src/sync/sync-orchestrator.test.ts",
       "src/utils/bigquery-emulator.test.ts",
